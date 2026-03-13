@@ -728,18 +728,19 @@ class DataSourceConnectionService:
         config: Dict[str, Any],
         search_query: str = None
     ) -> List[Dict[str, str]]:
-        """List manual table (always returns single table)."""
+        """List all sheets / tables from an imported file datasource."""
         try:
-            # Manual datasource only has one "table" which is the data itself
-            tables = [{
-                "name": "manual_data",
-                "schema": "manual",
-                "type": "table"
-            }]
-            
-            logger.info(f"Manual table listed: {len(tables)}")
+            from app.services.manual_table_connector import create_manual_table_connector
+            connector = create_manual_table_connector(config)
+            tables = [
+                {"name": name, "schema": "manual", "type": "table"}
+                for name in connector.list_sheets()
+            ]
+            if search_query:
+                q = search_query.lower()
+                tables = [t for t in tables if q in t["name"].lower()]
+            logger.info(f"Manual datasource sheets listed: {len(tables)}")
             return tables
-            
         except Exception as e:
             logger.error(f"Manual table list failed: {str(e)}")
             raise
@@ -782,26 +783,23 @@ class DataSourceConnectionService:
         sql_query: str,
         limit: int = None
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
-        """Execute query against manual table (returns stored data)."""
+        """Execute query against an imported-file datasource (returns data for the named sheet)."""
         try:
-            from app.services.manual_table_connector import create_manual_table_connector
-            
+            from app.services.manual_table_connector import create_manual_table_connector, extract_sheet_name_from_sql
+
             connector = create_manual_table_connector(config)
-            data = connector.get_table_data()
-            
+            sheet_name = extract_sheet_name_from_sql(sql_query)
+            data = connector.get_sheet_data(sheet_name)
+
             columns = [col['name'] for col in data['columns']]
             rows = data['rows']
-            
-            # Apply limit if specified
+
             if limit:
                 rows = rows[:limit]
-            
-            logger.info(f"Manual table data fetched: {len(rows)} rows")
+
+            logger.info(f"Manual table '{sheet_name}' data fetched: {len(rows)} rows")
             return columns, rows
-            
+
         except Exception as e:
             logger.error(f"Manual table query failed: {str(e)}")
             raise
-        finally:
-            if client:
-                client.close()

@@ -4,9 +4,14 @@
  */
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { DataSourceType, DataSourceCreate } from '@/types/api';
-import { Loader2 } from 'lucide-react';
+import { Loader2, UploadCloud, FileSpreadsheet, X, CheckCircle, AlertCircle } from 'lucide-react';
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api/v1';
+
+// Type shared with backend response
+type SheetData = { columns: { name: string; type: string }[]; rows: Record<string, any>[] };
 
 interface DataSourceFormProps {
   initialData?: {
@@ -36,9 +41,61 @@ export default function DataSourceForm({
     initialData?.config || {}
   );
 
+  // Multi-sheet import preview state
+  const [importPreview, setImportPreview] = useState<{
+    filename: string;
+    sheets: Record<string, SheetData>;
+    activeSheet: string;
+  } | null>(() => {
+    const cfg = initialData?.config;
+    if (!cfg) return null;
+    if (cfg.sheets && Object.keys(cfg.sheets).length > 0) {
+      return { filename: '(imported file)', sheets: cfg.sheets, activeSheet: Object.keys(cfg.sheets)[0] };
+    }
+    if (cfg.columns?.length) {
+      return { filename: '(imported file)', sheets: { manual_data: { columns: cfg.columns, rows: cfg.rows || [] } }, activeSheet: 'manual_data' };
+    }
+    return null;
+  });
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileImport = async (file: File) => {
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    if (!['csv', 'xlsx', 'xls'].includes(ext ?? '')) {
+      setUploadError('Unsupported file type. Please upload a .csv, .xlsx, or .xls file.');
+      return;
+    }
+    setIsUploading(true);
+    setUploadError(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch(`${API_BASE}/datasources/manual/parse-file`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail ?? 'Upload failed');
+      }
+      const data: { filename: string; sheets: Record<string, SheetData> } = await res.json();
+      const activeSheet = Object.keys(data.sheets)[0] ?? '';
+      setImportPreview({ filename: data.filename, sheets: data.sheets, activeSheet });
+      setConfig({ sheets: data.sheets });
+    } catch (e: any) {
+      setUploadError(e.message ?? 'Failed to parse file');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   useEffect(() => {
-    // Reset config when type changes
+    // Reset config when type changes (only for new datasource creation)
     if (!initialData) {
+      setImportPreview(null);
       if (type === DataSourceType.POSTGRESQL) {
         setConfig({ host: 'localhost', port: 5432, database: '', username: '', password: '' });
       } else if (type === DataSourceType.MYSQL) {
@@ -48,7 +105,7 @@ export default function DataSourceForm({
       } else if (type === DataSourceType.GOOGLE_SHEETS) {
         setConfig({ credentials_json: '', spreadsheet_id: '', sheet_name: '' });
       } else if (type === DataSourceType.MANUAL) {
-        setConfig({ columns: [], rows: [] });
+        setConfig({ sheets: {} });
       }
     }
   }, [type, initialData]);
@@ -248,13 +305,143 @@ export default function DataSourceForm({
       );
     } else if (type === DataSourceType.MANUAL) {
       return (
-        <>
-          <div className="border border-blue-200 bg-blue-50 p-4 rounded-md">
-            <p className="text-sm text-blue-800">
-              <strong>Manual Table:</strong> You'll be able to define columns and enter data directly after creating the datasource.
-            </p>
+        <div className="space-y-4">
+          {/* Drop zone */}
+          <div
+            onDragOver={e => { e.preventDefault(); if (!isUploading) setIsDragOver(true); }}
+            onDragLeave={() => setIsDragOver(false)}
+            onDrop={e => {
+              e.preventDefault();
+              setIsDragOver(false);
+              if (!isUploading) { const file = e.dataTransfer.files[0]; if (file) handleFileImport(file); }
+            }}
+            onClick={() => { if (!isUploading) fileInputRef.current?.click(); }}
+            className={`border-2 border-dashed rounded-lg p-6 flex flex-col items-center gap-3 transition-colors ${
+              isUploading ? 'border-blue-300 bg-blue-50 cursor-wait' :
+              isDragOver  ? 'border-blue-400 bg-blue-50 cursor-copy' :
+                            'border-gray-300 hover:border-gray-400 bg-gray-50 cursor-pointer'
+            }`}
+          >
+            {isUploading
+              ? <><Loader2 className="w-10 h-10 text-blue-500 animate-spin" /><p className="text-sm text-blue-600 font-medium">Đang xử lý file...</p></>
+              : <><UploadCloud className={`w-10 h-10 ${isDragOver ? 'text-blue-500' : 'text-gray-400'}`} />
+                  <div className="text-center">
+                    <p className="text-sm font-medium text-gray-700">Kéo thả file vào đây, hoặc click để chọn</p>
+                    <p className="text-xs text-gray-500 mt-1">Hỗ trợ: .csv, .xlsx, .xls · Excel nhiều sheet sẽ được import tất cả</p>
+                  </div></>
+            }
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,.xlsx,.xls"
+              className="hidden"
+              onChange={e => {
+                const file = e.target.files?.[0];
+                if (file) handleFileImport(file);
+                e.target.value = '';
+              }}
+            />
           </div>
-        </>
+
+          {/* Upload error */}
+          {uploadError && (
+            <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+              <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-red-700">{uploadError}</p>
+            </div>
+          )}
+
+          {/* Preview after import */}
+          {importPreview && (() => {
+            const sheetNames = Object.keys(importPreview.sheets);
+            const active = importPreview.sheets[importPreview.activeSheet];
+            return (
+              <div className="border border-green-200 bg-green-50 rounded-lg overflow-hidden">
+                {/* Header */}
+                <div className="flex items-center justify-between px-4 py-2 border-b border-green-200">
+                  <div className="flex items-center gap-2">
+                    <FileSpreadsheet className="w-4 h-4 text-green-600 flex-shrink-0" />
+                    <span className="text-sm font-medium text-green-800 truncate max-w-[200px]">{importPreview.filename}</span>
+                    <CheckCircle className="w-4 h-4 text-green-500" />
+                    <span className="text-xs text-green-700">{sheetNames.length} sheet</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={e => { e.stopPropagation(); setImportPreview(null); setConfig({ sheets: {} }); setUploadError(null); }}
+                    className="text-gray-400 hover:text-red-500 transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Sheet tabs */}
+                {sheetNames.length > 1 && (
+                  <div className="flex overflow-x-auto border-b border-green-200 bg-white">
+                    {sheetNames.map(s => (
+                      <button
+                        key={s}
+                        type="button"
+                        onClick={() => setImportPreview(prev => prev ? { ...prev, activeSheet: s } : prev)}
+                        className={`px-4 py-2 text-xs font-medium whitespace-nowrap border-r border-green-100 transition-colors ${
+                          importPreview.activeSheet === s
+                            ? 'bg-green-50 text-green-800 border-b-2 border-b-green-600'
+                            : 'text-gray-500 hover:bg-gray-50'
+                        }`}
+                      >
+                        {s}
+                        <span className="ml-1.5 text-gray-400">{importPreview.sheets[s].rows.length}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Active sheet info */}
+                <div className="p-3 space-y-2">
+                  <div className="flex gap-4 text-xs text-green-700">
+                    <span><strong>{active.columns.length}</strong> cột</span>
+                    <span><strong>{active.rows.length}</strong> dòng dữ liệu</span>
+                  </div>
+                  {/* Column tags */}
+                  <div className="flex flex-wrap gap-1.5">
+                    {active.columns.map(col => (
+                      <span key={col.name} className="px-2 py-0.5 bg-white border border-green-200 rounded text-xs text-gray-700">
+                        {col.name}<span className="ml-1 text-gray-400">{col.type}</span>
+                      </span>
+                    ))}
+                  </div>
+                  {/* Data preview */}
+                  {active.rows.length > 0 && (
+                    <div className="overflow-x-auto rounded border border-green-200 bg-white">
+                      <table className="text-xs w-full">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            {active.columns.map(col => (
+                              <th key={col.name} className="px-3 py-1.5 text-left font-medium text-gray-600 border-b whitespace-nowrap">{col.name}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {active.rows.slice(0, 5).map((row, i) => (
+                            <tr key={i} className="border-b last:border-0">
+                              {active.columns.map(col => (
+                                <td key={col.name} className="px-3 py-1.5 text-gray-700 whitespace-nowrap max-w-[140px] truncate">
+                                  {String(row[col.name] ?? '')}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {active.rows.length > 5 && (
+                        <p className="text-xs text-gray-400 px-3 py-1.5">... và {active.rows.length - 5} dòng nữa</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
       );
     }
   };

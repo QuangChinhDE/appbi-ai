@@ -17,6 +17,9 @@ google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
 cryptography==41.0.7
 
+# File parsing (Manual Table: CSV / Excel import)
+openpyxl==3.1.5
+
 # Utilities
 pydantic==2.5.3
 pydantic-settings==2.1.0

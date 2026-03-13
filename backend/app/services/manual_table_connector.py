@@ -1,66 +1,87 @@
 """Manual Table Data Source
 
-Allows users to manually input table data.
+Allows users to import file data (CSV / Excel) as a data source.
+Config format (new): { "sheets": { "SheetName": { "columns": [...], "rows": [...] } } }
+Config format (legacy): { "columns": [...], "rows": [...] }
 """
 from typing import List, Dict, Any
+import re
 
 
 class ManualTableConnector:
-    """Connector for manual table data source"""
-    
-    def __init__(self, data: Dict[str, Any]):
+    """Connector for imported-file data source (CSV / Excel)"""
+
+    def __init__(self, config: Dict[str, Any]):
         """
-        Initialize manual table connector.
-        
         Args:
-            data: Dictionary containing 'columns' and 'rows'
+            config: Top-level datasource config dict.
+                    New format:    {"sheets": {"Sheet1": {"columns": [...], "rows": [...]}, ...}}
+                    Legacy format: {"columns": [...], "rows": [...]}
         """
-        self.data = data
-        self.columns = data.get('columns', [])
-        self.rows = data.get('rows', [])
-    
+        self._config = config
+        # Normalise to sheets dict for uniform access
+        if 'sheets' in config and isinstance(config['sheets'], dict):
+            self._sheets: Dict[str, Dict[str, Any]] = config['sheets']
+        else:
+            # Legacy flat format — wrap it
+            self._sheets = {
+                'manual_data': {
+                    'columns': config.get('columns', []),
+                    'rows':    config.get('rows', []),
+                }
+            }
+
     def test_connection(self) -> bool:
-        """Manual tables don't need connection test"""
         return True
-    
+
+    def list_sheets(self) -> List[str]:
+        """Return all available sheet / table names."""
+        return list(self._sheets.keys())
+
+    def get_sheet_data(self, sheet_name: str) -> Dict[str, Any]:
+        """Return data for a specific sheet."""
+        data = self._sheets.get(sheet_name)
+        if data is None:
+            # Fallback: case-insensitive match
+            for k, v in self._sheets.items():
+                if k.lower() == sheet_name.lower():
+                    data = v
+                    break
+        if data is None:
+            # Last resort: return first available sheet
+            data = next(iter(self._sheets.values())) if self._sheets else {'columns': [], 'rows': []}
+        return {'columns': data.get('columns', []), 'rows': data.get('rows', [])}
+
     def get_table_data(self) -> Dict[str, Any]:
-        """
-        Get the manually entered table data.
-        
-        Returns:
-            Dictionary with columns and rows
-        """
-        return {
-            'columns': self.columns,
-            'rows': self.rows,
-            'row_count': len(self.rows)
-        }
-    
-    def update_data(self, columns: List[Dict[str, str]], rows: List[Dict[str, Any]]):
-        """
-        Update the manual table data.
-        
-        Args:
-            columns: List of column definitions [{'name': str, 'type': str}, ...]
-            rows: List of row data
-        """
-        self.columns = columns
-        self.rows = rows
-        self.data = {
-            'columns': columns,
-            'rows': rows
-        }
+        """Legacy helper — returns first sheet's data."""
+        return self.get_sheet_data(list(self._sheets.keys())[0] if self._sheets else 'manual_data')
 
 
 def create_manual_table_connector(config: Dict[str, Any]) -> ManualTableConnector:
     """
-    Create a manual table connector from config.
-    
-    Args:
-        config: Configuration dict with table data
-        
-    Returns:
-        ManualTableConnector instance
+    Create a ManualTableConnector from a datasource config dict.
+
+    New config:    {"sheets": {"Sheet1": {"columns": [...], "rows": [...]}, ...}}
+    Legacy config: {"columns": [...], "rows": [...]}
     """
-    data = config.get('data', {'columns': [], 'rows': []})
-    return ManualTableConnector(data)
+    return ManualTableConnector(config)
+
+
+def extract_sheet_name_from_sql(sql: str) -> str:
+    """
+    Parse the table / sheet name from a SQL statement.
+    Handles:
+      SELECT * FROM Sheet1
+      SELECT * FROM manual.Sheet1
+      SELECT * FROM "Sheet1"
+      SELECT * FROM `Sheet1`
+    """
+    # Strip schema prefix (e.g. manual.Sheet1 -> Sheet1)
+    match = re.search(
+        r'[Ff][Rr][Oo][Mm]\s+(?:[\w`"]+\.)?([`"]?)([\w\s]+)\1',
+        sql.strip(),
+    )
+    if match:
+        return match.group(2).strip()
+    return 'manual_data'
+

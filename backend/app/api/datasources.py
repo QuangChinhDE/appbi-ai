@@ -1,9 +1,11 @@
 """
 API router for data source endpoints.
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Dict, Any
+import io
+import csv as csv_module
 
 from app.core import get_db
 from app.schemas import (
@@ -21,6 +23,121 @@ import time
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/datasources", tags=["datasources"])
+
+
+# ── Manual datasource: server-side file parsing ───────────────────────────────
+
+def _infer_type(values: list) -> str:
+    """Infer column type from a sample of values."""
+    samples = [v for v in values if v is not None and str(v).strip() != ''][:20]
+    if not samples:
+        return 'string'
+    num_count = sum(1 for v in samples if _is_number(v))
+    if num_count == len(samples):
+        return 'number'
+    date_count = sum(1 for v in samples if _is_date_like(str(v)))
+    if date_count >= len(samples) * 0.8:
+        return 'date'
+    return 'string'
+
+def _is_number(v) -> bool:
+    try:
+        float(str(v).replace(',', ''))
+        return True
+    except (ValueError, TypeError):
+        return False
+
+def _is_date_like(s: str) -> bool:
+    import re
+    return bool(re.match(r'^\d{2,4}[-/]\d{1,2}[-/]\d{1,4}', s.strip()))
+
+def _parse_excel_bytes(content: bytes) -> Dict[str, Any]:
+    """Parse all sheets from an Excel file (.xlsx/.xls) using openpyxl."""
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    sheets: Dict[str, Any] = {}
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        all_rows = list(ws.iter_rows(values_only=True))
+        if not all_rows:
+            sheets[sheet_name] = {'columns': [], 'rows': []}
+            continue
+        # First non-empty row is the header
+        header_row = [str(c).strip() if c is not None else '' for c in all_rows[0]]
+        headers = [h if h else f'col{i+1}' for i, h in enumerate(header_row)]
+        data_rows = all_rows[1:]
+        rows = []
+        for r in data_rows:
+            row_dict = {}
+            has_value = False
+            for i, h in enumerate(headers):
+                val = r[i] if i < len(r) else None
+                # Convert to JSON-serialisable types
+                if val is None:
+                    row_dict[h] = ''
+                elif isinstance(val, (int, float)):
+                    row_dict[h] = val
+                    has_value = True
+                else:
+                    str_val = str(val).strip()
+                    row_dict[h] = str_val
+                    if str_val:
+                        has_value = True
+            if has_value:
+                rows.append(row_dict)
+        # Build column metadata
+        columns = [
+            {'name': h, 'type': _infer_type([r.get(h) for r in rows])}
+            for h in headers
+        ]
+        sheets[sheet_name] = {'columns': columns, 'rows': rows}
+    wb.close()
+    return sheets
+
+def _parse_csv_bytes(content: bytes, filename: str) -> Dict[str, Any]:
+    """Parse a CSV file and return as a single-sheet dict."""
+    try:
+        text = content.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        text = content.decode('latin-1')
+    reader = csv_module.DictReader(io.StringIO(text))
+    rows = [dict(r) for r in reader]
+    fieldnames = list(reader.fieldnames or [])
+    columns = [
+        {'name': h, 'type': _infer_type([r.get(h) for r in rows])}
+        for h in fieldnames
+    ]
+    sheet_name = filename.rsplit('.', 1)[0] or 'Sheet1'
+    return {sheet_name: {'columns': columns, 'rows': rows}}
+
+
+@router.post("/manual/parse-file")
+async def parse_manual_file(file: UploadFile = File(...)):
+    """
+    Parse an uploaded Excel (.xlsx/.xls) or CSV file server-side.
+    Returns: { sheets: { sheetName: { columns: [...], rows: [...] } } }
+    """
+    allowed = {'.xlsx', '.xls', '.csv'}
+    ext = '.' + (file.filename or '').rsplit('.', 1)[-1].lower()
+    if ext not in allowed:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type '{ext}'. Allowed: xlsx, xls, csv")
+
+    content = await file.read()
+    if len(content) > 50 * 1024 * 1024:  # 50 MB guard
+        raise HTTPException(status_code=400, detail="File too large (max 50 MB)")
+
+    try:
+        if ext in ('.xlsx', '.xls'):
+            sheets = _parse_excel_bytes(content)
+        else:
+            sheets = _parse_csv_bytes(content, file.filename or 'data')
+    except Exception as e:
+        logger.error(f"File parse error: {e}")
+        raise HTTPException(status_code=422, detail=f"Failed to parse file: {str(e)}")
+
+    total_rows = sum(len(v['rows']) for v in sheets.values())
+    logger.info(f"Parsed '{file.filename}': {len(sheets)} sheet(s), {total_rows} total rows")
+    return {'filename': file.filename, 'sheets': sheets}
 
 
 @router.get("/", response_model=List[DataSourceResponse])

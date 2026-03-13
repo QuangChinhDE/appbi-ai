@@ -1,70 +1,38 @@
 /**
- * Data Sources Management Page
- * Full UI for CRUD operations, connection testing, and ad-hoc queries
+ * Data Sources Management Page — List + Query Runner
  */
 'use client';
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { ArrowLeft, Plus, X, AlertCircle, CheckCircle } from 'lucide-react';
 import {
   useDataSources,
-  useCreateDataSource,
-  useUpdateDataSource,
   useDeleteDataSource,
   useTestDataSource,
   useExecuteQuery,
 } from '@/hooks/use-datasources';
 import DataSourceList from '@/components/datasources/DataSourceList';
-import DataSourceForm from '@/components/datasources/DataSourceForm';
 import QueryRunner from '@/components/datasources/QueryRunner';
-import type { DataSource, DataSourceCreate, QueryExecuteResponse } from '@/types/api';
+import type { DataSource, QueryExecuteResponse } from '@/types/api';
 
-type View = 'list' | 'create' | 'edit' | 'query';
+type View = 'list' | 'query';
 
 export default function DataSourcesPage() {
+  const router = useRouter();
   const [currentView, setCurrentView] = useState<View>('list');
-  const [editingDataSource, setEditingDataSource] = useState<DataSource | null>(null);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [queryResult, setQueryResult] = useState<QueryExecuteResponse | null>(null);
   const [queryError, setQueryError] = useState<string | null>(null);
 
   // Queries
   const { data: dataSources = [], isLoading } = useDataSources();
-  const createMutation = useCreateDataSource();
-  const updateMutation = useUpdateDataSource();
   const deleteMutation = useDeleteDataSource();
   const testMutation = useTestDataSource();
   const executeMutation = useExecuteQuery();
 
   // Handlers
-  const handleCreate = async (data: DataSourceCreate) => {
-    try {
-      await createMutation.mutateAsync(data);
-      setCurrentView('list');
-    } catch (error: any) {
-      alert(`Failed to create data source: ${error.response?.data?.detail || error.message}`);
-    }
-  };
-
-  const handleUpdate = async (data: DataSourceCreate) => {
-    if (!editingDataSource) return;
-    try {
-      await updateMutation.mutateAsync({
-        id: editingDataSource.id,
-        data: {
-          name: data.name,
-          description: data.description,
-          config: data.config,
-        },
-      });
-      setCurrentView('list');
-      setEditingDataSource(null);
-    } catch (error: any) {
-      alert(`Failed to update data source: ${error.response?.data?.detail || error.message}`);
-    }
-  };
-
   const handleDelete = async (id: number) => {
     if (!confirm('Are you sure you want to delete this data source?')) return;
     try {
@@ -75,8 +43,7 @@ export default function DataSourcesPage() {
   };
 
   const handleEdit = (dataSource: DataSource) => {
-    setEditingDataSource(dataSource);
-    setCurrentView('edit');
+    router.push(`/datasources/${dataSource.id}/edit`);
   };
 
   const handleTest = async (dataSource: DataSource) => {
@@ -114,55 +81,6 @@ export default function DataSourcesPage() {
   };
 
   const renderContent = () => {
-    if (currentView === 'create') {
-      return (
-        <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-2xl font-bold">Create Data Source</h2>
-            <button
-              onClick={() => setCurrentView('list')}
-              className="text-gray-500 hover:text-gray-700"
-            >
-              <X className="w-6 h-6" />
-            </button>
-          </div>
-          <DataSourceForm
-            onSubmit={handleCreate}
-            onCancel={() => setCurrentView('list')}
-            isLoading={createMutation.isPending}
-          />
-        </div>
-      );
-    }
-
-    if (currentView === 'edit' && editingDataSource) {
-      return (
-        <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-2xl font-bold">Edit Data Source</h2>
-            <button
-              onClick={() => {
-                setCurrentView('list');
-                setEditingDataSource(null);
-              }}
-              className="text-gray-500 hover:text-gray-700"
-            >
-              <X className="w-6 h-6" />
-            </button>
-          </div>
-          <DataSourceForm
-            initialData={editingDataSource}
-            onSubmit={handleUpdate}
-            onCancel={() => {
-              setCurrentView('list');
-              setEditingDataSource(null);
-            }}
-            isLoading={updateMutation.isPending}
-          />
-        </div>
-      );
-    }
-
     if (currentView === 'query') {
       return (
         <div className="bg-white rounded-lg shadow p-6">
@@ -210,7 +128,7 @@ export default function DataSourcesPage() {
                 Run Query
               </button>
               <button
-                onClick={() => setCurrentView('create')}
+                onClick={() => router.push('/datasources/new')}
                 className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors flex items-center gap-2"
               >
                 <Plus className="w-4 h-4" />

@@ -1,0 +1,97 @@
+version: '3.8'
+
+# ============================================================
+# AppBI – Production Docker Compose
+# Usage:
+#   1. Copy .env.docker.example → .env  (or edit the .env that's already here)
+#   2. docker compose up --build -d
+#   3. App is live at http://localhost:${FRONTEND_PORT:-3000}
+#
+# Port mapping is CONFIGURABLE via .env so you never clash with
+# other services already running on your machine:
+#   FRONTEND_PORT=3000   → http://localhost:3000
+#   BACKEND_PORT=8000    → http://localhost:8000  (API)
+#   DB port is NOT exposed to the host — internal use only
+# ============================================================
+
+services:
+
+  # ----------------------------------------------------------
+  # PostgreSQL – internal network only, no host port exposed
+  # ----------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${DB_USER:-appbi}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-appbi}
+      POSTGRES_DB:       ${DB_NAME:-appbi}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-appbi} -d ${DB_NAME:-appbi}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - appbi-net
+
+  # ----------------------------------------------------------
+  # FastAPI Backend
+  # ----------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL:      postgresql+psycopg2://${DB_USER:-appbi}:${DB_PASSWORD:-appbi}@db:5432/${DB_NAME:-appbi}
+      DB_HOST:           db
+      POSTGRES_USER:     ${DB_USER:-appbi}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-appbi}
+      POSTGRES_DB:       ${DB_NAME:-appbi}
+      CORS_ORIGINS:      http://localhost:${FRONTEND_PORT:-3000}
+      LOG_LEVEL:         ${LOG_LEVEL:-INFO}
+      SECRET_KEY:        ${SECRET_KEY:-change-this-in-production}
+      API_RELOAD:        "false"
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - appbi-net
+
+  # ----------------------------------------------------------
+  # Next.js Frontend
+  # NEXT_PUBLIC_API_URL is baked into the JS bundle at build
+  # time, so it must point to the URL the *browser* can reach.
+  # We pass it as a build ARG using the value from .env.
+  # ----------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_PORT:-8000}/api/v1
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      - backend
+    networks:
+      - appbi-net
+
+# ----------------------------------------------------------
+# Named volume – DB data survives container restarts
+# ----------------------------------------------------------
+volumes:
+  db_data:
+
+# ----------------------------------------------------------
+# Isolated bridge network – containers talk by service name
+# ----------------------------------------------------------
+networks:
+  appbi-net:
+    driver: bridge

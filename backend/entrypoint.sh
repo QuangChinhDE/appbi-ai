@@ -1,20 +1,18 @@
 #!/bin/bash
 set -e
 
-echo "Waiting for PostgreSQL to be ready..."
+echo "==> Waiting for PostgreSQL to be ready..."
 
-# Wait for PostgreSQL to be ready
-until PGPASSWORD=$POSTGRES_PASSWORD psql -h "$DB_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c '\q' 2>/dev/null; do
-  >&2 echo "PostgreSQL is unavailable - sleeping"
-  sleep 1
+# Wait until pg_isready succeeds (uses DB_HOST / POSTGRES_USER / POSTGRES_DB)
+until pg_isready -h "${DB_HOST:-db}" -U "${POSTGRES_USER:-appbi}" -d "${POSTGRES_DB:-appbi}" -q; do
+  >&2 echo "    PostgreSQL is unavailable — retrying in 2s"
+  sleep 2
 done
 
->&2 echo "PostgreSQL is up - executing command"
+echo "==> PostgreSQL is up"
 
-# Run Alembic migrations
-echo "Running database migrations..."
+echo "==> Running Alembic migrations..."
 alembic upgrade head
 
-# Start the FastAPI application
-echo "Starting FastAPI application..."
+echo "==> Starting FastAPI application..."
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000
