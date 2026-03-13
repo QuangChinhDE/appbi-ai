@@ -14,7 +14,7 @@ interface DatasetEditorProps {
   mode: 'create' | 'edit';
   initialData?: Dataset;
   dataSources: Array<{ id: number; name: string; type: string }>;
-  onSave: (data: DatasetCreate | DatasetUpdate) => void;
+  onSave: (data: DatasetCreate | DatasetUpdate) => void | Promise<void>;
   onCancel: () => void;
   onPreview?: (dataSourceId: number, sqlQuery: string, limit: number) => void;
   previewResult?: {

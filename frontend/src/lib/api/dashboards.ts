@@ -53,7 +53,7 @@ export const dashboardApi = {
 
   updateLayout: async (
     dashboardId: number,
-    chartLayouts: Array<{ id: number; layout: Record<string, number> }>
+    chartLayouts: Array<{ id: number; layout: Record<string, any> }>
   ): Promise<Dashboard> => {
     const response = await apiClient.put(`/dashboards/${dashboardId}/layout`, {
       chart_layouts: chartLayouts,

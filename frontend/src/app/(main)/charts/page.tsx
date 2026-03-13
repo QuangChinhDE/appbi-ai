@@ -27,9 +27,9 @@ export default function ChartsPage() {
   const updateMutation = useUpdateChart();
   const deleteMutation = useDeleteChart();
 
-  const handleCreate = async (data: ChartCreate) => {
+  const handleCreate = async (data: ChartCreate | ChartUpdate) => {
     try {
-      await createMutation.mutateAsync(data);
+      await createMutation.mutateAsync(data as ChartCreate);
       setCurrentView('list');
       setSelectedChart(null);
     } catch (error) {
@@ -37,11 +37,11 @@ export default function ChartsPage() {
     }
   };
 
-  const handleUpdate = async (data: ChartUpdate) => {
+  const handleUpdate = async (data: ChartCreate | ChartUpdate) => {
     if (!selectedChart) return;
     
     try {
-      await updateMutation.mutateAsync({ id: selectedChart.id, data });
+      await updateMutation.mutateAsync({ id: selectedChart.id, data: data as ChartUpdate });
       setCurrentView('list');
       setSelectedChart(null);
     } catch (error) {

@@ -23,7 +23,8 @@ export function SavedLooksPanel({ onLoadLook, currentLookId }: SavedLooksPanelPr
   const { data: datasets } = useDatasets();
   const deleteMutation = useDeleteChart();
 
-  const getDatasetName = (datasetId: number) => {
+  const getDatasetName = (datasetId: number | null | undefined) => {
+    if (!datasetId) return 'Workspace Table';
     const dataset = datasets?.find((ds) => ds.id === datasetId);
     return dataset?.name || 'Unknown';
   };

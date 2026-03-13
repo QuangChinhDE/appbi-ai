@@ -41,9 +41,9 @@ export default function DatasetsPage() {
   const executeMutation = useExecuteDataset();
 
   // Handlers
-  const handleCreate = async (data: DatasetCreate) => {
+  const handleCreate = async (data: DatasetCreate | DatasetUpdate) => {
     try {
-      await createMutation.mutateAsync(data);
+      await createMutation.mutateAsync(data as DatasetCreate);
       setCurrentView('list');
       setPreviewResult(null);
       setPreviewError(null);
@@ -52,12 +52,12 @@ export default function DatasetsPage() {
     }
   };
 
-  const handleUpdate = async (data: DatasetUpdate) => {
+  const handleUpdate = async (data: DatasetCreate | DatasetUpdate) => {
     if (!editingDataset) return;
     try {
       await updateMutation.mutateAsync({
         id: editingDataset.id,
-        data,
+        data: data as DatasetUpdate,
       });
       setCurrentView('list');
       setEditingDataset(null);

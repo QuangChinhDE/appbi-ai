@@ -1,5 +1,6 @@
 """API endpoints for Dataset Workspaces (Table-based Datasets)"""
 from typing import List, Optional
+from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -279,11 +280,10 @@ def preview_workspace_table(
                 else:
                     val = rows[0][i] if i < len(rows[0]) else None
                 
-                if isinstance(val, (int, float)):
-                    col_type = "number"
-                elif isinstance(val, bool):
+                if isinstance(val, bool):
                     col_type = "boolean"
-                # Add more type checks as needed
+                elif isinstance(val, (int, float, Decimal)):
+                    col_type = "number"
             
             column_metadata.append(
                 WorkspaceColumnMetadata(
@@ -441,10 +441,10 @@ def execute_workspace_table_query(
                 else:
                     val = rows[0][i] if i < len(rows[0]) else None
                 
-                if isinstance(val, (int, float)):
-                    col_type = "number"
-                elif isinstance(val, bool):
+                if isinstance(val, bool):
                     col_type = "boolean"
+                elif isinstance(val, (int, float, Decimal)):
+                    col_type = "number"
             
             column_metadata.append(
                 WorkspaceColumnMetadata(

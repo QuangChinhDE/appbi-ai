@@ -187,9 +187,19 @@ class ChartBase(BaseModel):
     """Base schema for chart."""
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    dataset_id: int
+    dataset_id: Optional[int] = Field(None, description="Dataset source (mutually exclusive with workspace_table_id)")
+    workspace_table_id: Optional[int] = Field(None, description="Workspace table source (mutually exclusive with dataset_id)")
     chart_type: ChartTypeSchema
     config: Dict[str, Any] = Field(..., description="Chart configuration")
+
+    @model_validator(mode='after')
+    def validate_source(self):
+        """Exactly one of dataset_id or workspace_table_id must be set."""
+        if self.dataset_id is None and self.workspace_table_id is None:
+            raise ValueError("Either dataset_id or workspace_table_id must be provided")
+        if self.dataset_id is not None and self.workspace_table_id is not None:
+            raise ValueError("Only one of dataset_id or workspace_table_id can be set")
+        return self
 
 
 class ChartCreate(ChartBase):
@@ -203,6 +213,8 @@ class ChartUpdate(BaseModel):
     description: Optional[str] = None
     chart_type: Optional[ChartTypeSchema] = None
     config: Optional[Dict[str, Any]] = None
+    workspace_table_id: Optional[int] = None
+    dataset_id: Optional[int] = None
 
 
 class ChartResponse(ChartBase):
@@ -210,7 +222,7 @@ class ChartResponse(ChartBase):
     id: int
     created_at: datetime
     updated_at: datetime
-    
+
     model_config = ConfigDict(from_attributes=True)
 
 

@@ -12,11 +12,11 @@ interface ChartBuilderProps {
     id: number;
     name: string;
     description?: string;
-    dataset_id: number;
+    dataset_id?: number | null;
     chart_type: ChartType;
     config: Record<string, any>;
   };
-  onSave: (data: ChartCreate | ChartUpdate) => void;
+  onSave: (data: ChartCreate | ChartUpdate) => void | Promise<void>;
   onCancel: () => void;
   isSaving: boolean;
 }
@@ -27,7 +27,7 @@ export function ChartBuilder({ initialData, onSave, onCancel, isSaving }: ChartB
   // Form state
   const [name, setName] = useState(initialData?.name || '');
   const [description, setDescription] = useState(initialData?.description || '');
-  const [datasetId, setDatasetId] = useState<number | ''>(initialData?.dataset_id || '');
+  const [datasetId, setDatasetId] = useState<number | ''>(initialData?.dataset_id ?? '');
   const [chartType, setChartType] = useState<ChartType>(initialData?.chart_type || ChartType.BAR);
   
   // Config state

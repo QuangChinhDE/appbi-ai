@@ -390,7 +390,7 @@ export default function WorkspaceDetailPage() {
       {selectedTable && (
         <ManageColumnsDrawer
           table={selectedTable}
-          allColumns={previewData?.columns || []}
+          allColumns={(previewData?.columns || []).map((c) => c.name)}
           isOpen={isManageColumnsOpen}
           onClose={() => setIsManageColumnsOpen(false)}
           onSave={handleSaveTransformations}

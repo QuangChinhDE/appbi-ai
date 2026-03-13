@@ -64,7 +64,6 @@ export interface UpdateTableInput {
   display_name?: string;
   enabled?: boolean;
   transformations?: Transformation[];
-  transformations?: Record<string, any>;
 }
 
 export interface ColumnMetadata {

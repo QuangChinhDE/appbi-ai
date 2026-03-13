@@ -115,7 +115,7 @@ export default function DashboardDetailPage() {
     try {
       await removeChartMutation.mutateAsync({
         dashboardId,
-        chartId: dashboardChart.chart_id,
+        dashboardChartId,
       });
     } catch (error) {
       console.error('Failed to remove chart:', error);
@@ -263,6 +263,7 @@ export default function DashboardDetailPage() {
 
         {/* Dashboard Grid */}
         <DashboardGrid
+          dashboardId={dashboardId}
           dashboardCharts={dashboard.dashboard_charts || []}
           onLayoutChange={handleLayoutChange}
           onRemoveChart={handleRemoveChart}

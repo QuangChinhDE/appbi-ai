@@ -112,8 +112,11 @@ class Chart(Base):
     name = Column(String(255), unique=True, nullable=False, index=True)
     description = Column(Text, nullable=True)
     
-    # Foreign key to dataset
-    dataset_id = Column(Integer, ForeignKey("datasets.id"), nullable=False)
+    # Foreign key to dataset (nullable — chart can use dataset OR workspace table)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"), nullable=True)
+    
+    # Foreign key to workspace table (alternative source to dataset)
+    workspace_table_id = Column(Integer, ForeignKey("dataset_workspace_tables.id", ondelete="SET NULL"), nullable=True)
     
     # Chart type
     chart_type = Column(Enum(ChartType), nullable=False)
@@ -131,6 +134,7 @@ class Chart(Base):
     
     # Relationships
     dataset = relationship("Dataset", back_populates="charts")
+    workspace_table = relationship("DatasetWorkspaceTable", foreign_keys=[workspace_table_id])
     dashboard_charts = relationship("DashboardChart", back_populates="chart", cascade="all, delete-orphan")
 
 

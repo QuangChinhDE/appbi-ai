@@ -215,7 +215,7 @@ export default function DatasetDesigner({ datasetId, mode }: DatasetDesignerProp
   const handleAddStep = (type: string) => {
     const newStep: TransformationStep = {
       id: `step_${Date.now()}`,
-      type,
+      type: type as TransformationStep['type'],
       enabled: true,
       params: {},
     };

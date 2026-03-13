@@ -99,7 +99,7 @@ export const useUpdateDashboardLayout = () => {
       chartLayouts,
     }: {
       dashboardId: number;
-      chartLayouts: Array<{ id: number; layout: Record<string, number> }>;
+      chartLayouts: Array<{ id: number; layout: Record<string, any> }>;
     }) => dashboardApi.updateLayout(dashboardId, chartLayouts),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['dashboards', variables.dashboardId] });

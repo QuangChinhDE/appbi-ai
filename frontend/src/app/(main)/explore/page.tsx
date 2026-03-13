@@ -1,114 +1,55 @@
 /**
- * Explore v2 - Data exploration with backend group_by, aggregations, and filters
+ * Explore — list saved charts or open the editor
  */
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Search, Play, Save, X, Table2, BarChart3, LineChart as LineChartIcon, PieChart as PieChartIcon } from 'lucide-react';
-import { useWorkspace, useTablePreview, useExecuteWorkspaceTableQuery, type AggregationSpec, type FilterCondition } from '@/hooks/use-dataset-workspaces';
+import { Search, Play, Save, Plus, ArrowLeft, Trash2, BarChart3, Clock, Layers, ChevronDown, ChevronUp, Pencil, Check } from 'lucide-react';
+import { useWorkspace, useTablePreview } from '@/hooks/use-dataset-workspaces';
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { FilterBuilder, type Filter } from '@/components/explore/FilterBuilder';
-import { useCreateChart, useCharts, useUpdateChart } from '@/hooks/use-charts';
-import { useDatasets, useCreateDataset } from '@/hooks/use-datasets';
-import { useDataSources } from '@/hooks/use-datasources';
-import { classifyFields } from '@/lib/explore-utils';
+import { useCreateChart, useCharts, useUpdateChart, useDeleteChart } from '@/hooks/use-charts';
+import { applyFilters } from '@/lib/explore-utils';
+import { ExploreChartConfig, type ExploreChartType, type ChartRoleConfig, type AggFn } from '@/components/explore/ExploreChartConfig';
 import { toast } from 'sonner';
 
-type ChartType = 'TABLE' | 'BAR' | 'LINE' | 'PIE';
-type AggFunction = 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct';
-
-interface MeasureWithAgg {
-  field: string;
-  aggregation: AggFunction;
-}
+type ChartType = ExploreChartType;
+type PageMode = 'list' | 'editor';
 
 export default function ExplorePage() {
-  // Source selection
+  const [pageMode, setPageMode] = useState<PageMode>('list');
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number | null>(null);
   const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
   const [previewLimit, setPreviewLimit] = useState(500);
-
-  // Field selection
-  const [selectedDimensions, setSelectedDimensions] = useState<string[]>([]);
-  const [selectedMeasures, setSelectedMeasures] = useState<MeasureWithAgg[]>([]);
   const [filters, setFilters] = useState<Filter[]>([]);
   const [chartType, setChartType] = useState<ChartType>('TABLE');
-  
-  // UI state
-  const [fieldSearch, setFieldSearch] = useState('');
+  const [chartRoleConfig, setChartRoleConfig] = useState<ChartRoleConfig>({ metrics: [] });
   const [selectedChartId, setSelectedChartId] = useState<number | null>(null);
+  const [isSourceOpen, setIsSourceOpen] = useState(true);
+  const [chartNameInput, setChartNameInput] = useState('');
+  const [isEditingName, setIsEditingName] = useState(false);
 
-  // Mutations
   const createChart = useCreateChart();
   const updateChart = useUpdateChart();
-  const createDataset = useCreateDataset();
-  
-  // Fetch datasets, datasources and charts
-  const { data: datasets } = useDatasets();
-  const { data: datasources } = useDataSources();
+  const deleteChart = useDeleteChart();
   const { data: charts } = useCharts();
-
-  // Fetch workspace
   const { data: workspace } = useWorkspace(selectedWorkspaceId);
 
-  // Build query request
-  const executeRequest = useMemo(() => {
-    const req: any = { limit: previewLimit };
+  const {
+    data: previewData,
+    isLoading,
+    error,
+    refetch,
+  } = useTablePreview(selectedWorkspaceId, selectedTableId, { limit: previewLimit });
 
-    if (selectedDimensions.length > 0) {
-      req.dimensions = selectedDimensions;
-    }
-
-    if (selectedMeasures.length > 0) {
-      req.measures = selectedMeasures.map(m => ({
-        field: m.field,
-        function: m.aggregation,
-      }));
-    }
-
-    if (filters.length > 0) {
-      req.filters = filters.map(f => ({
-        field: f.field,
-        operator: f.operator,
-        value: f.value,
-      }));
-    }
-
-    return req;
-  }, [previewLimit, filters, selectedDimensions, selectedMeasures]);
-
-  // Use execute query when measures are selected, otherwise use preview
-  const hasAggregation = selectedMeasures.length > 0;
-  
-  const { 
-    data: executeData, 
-    isLoading: loadingExecute,
-    error: executeError,
-    refetch: refetchExecute 
-  } = useExecuteWorkspaceTableQuery(
-    hasAggregation ? selectedWorkspaceId : null, 
-    hasAggregation ? selectedTableId : null, 
-    executeRequest
-  );
-
-  // Always fetch preview to get available fields (dimensions/measures)
-  const { 
-    data: previewData, 
-    isLoading: loadingPreview,
-    error: previewError,
-    refetch: refetchPreview 
-  } = useTablePreview(
-    selectedWorkspaceId, 
-    selectedTableId, 
-    { limit: previewLimit }
-  );
-
-  // Use execute data if aggregation, otherwise preview
-  const displayData = hasAggregation ? executeData : previewData;
-  const isLoading = hasAggregation ? loadingExecute : loadingPreview;
-  const error = hasAggregation ? executeError : previewError;
+  // Apply filters client-side
+  const displayData = useMemo(() => {
+    if (!previewData) return previewData;
+    if (filters.length === 0) return previewData;
+    return { ...previewData, rows: applyFilters(previewData.rows, filters) };
+  }, [previewData, filters]);
 
   // Auto-select first table when workspace changes
   useEffect(() => {
@@ -117,58 +58,26 @@ export default function ExplorePage() {
     }
   }, [workspace?.tables, selectedTableId]);
 
-  // Reset selections when table changes
+  // Reset on table change
   useEffect(() => {
     if (selectedTableId) {
-      setSelectedDimensions([]);
-      setSelectedMeasures([]);
       setFilters([]);
+      setChartRoleConfig({ metrics: [] });
     }
   }, [selectedTableId]);
 
-  // Classify fields from raw preview (without aggregations)
-  const { dimensions, measures } = useMemo(() => {
-    if (!previewData?.columns) {
-      return { dimensions: [], measures: [] };
-    }
-    return classifyFields(previewData.columns);
-  }, [previewData?.columns]);
-
-  // Filter fields by search
-  const filteredDimensions = useMemo(() => {
-    if (!fieldSearch) return dimensions;
-    const query = fieldSearch.toLowerCase();
-    return dimensions.filter(d => d.name.toLowerCase().includes(query));
-  }, [dimensions, fieldSearch]);
-
-  const filteredMeasures = useMemo(() => {
-    if (!fieldSearch) return measures;
-    const query = fieldSearch.toLowerCase();
-    return measures.filter(m => m.name.toLowerCase().includes(query));
-  }, [measures, fieldSearch]);
-
-  const handleToggleDimension = (field: string) => {
-    setSelectedDimensions(prev =>
-      prev.includes(field) ? prev.filter(f => f !== field) : [...prev, field]
-    );
-  };
-
-  const handleToggleMeasure = (field: string) => {
-    setSelectedMeasures(prev => {
-      const exists = prev.find(m => m.field === field);
-      if (exists) {
-        return prev.filter(m => m.field !== field);
-      } else {
-        return [...prev, { field, aggregation: 'sum' as AggFunction }];
-      }
+  // Auto-suggest fields when switching to chart mode
+  useEffect(() => {
+    if (chartType === 'TABLE') return;
+    const cols = previewData?.columns;
+    if (!cols?.length) return;
+    setChartRoleConfig(prev => {
+      if (prev.dimension || prev.metrics.length > 0) return prev;
+      const firstDim = cols.find(c => c.type !== 'number')?.name;
+      const firstNum = cols.find(c => c.type === 'number')?.name;
+      return { ...prev, dimension: firstDim, metrics: firstNum ? [{ field: firstNum, agg: 'sum' as AggFn }] : [] };
     });
-  };
-
-  const handleUpdateMeasureAggregation = (field: string, aggregation: AggFunction) => {
-    setSelectedMeasures(prev =>
-      prev.map(m => (m.field === field ? { ...m, aggregation } : m))
-    );
-  };
+  }, [chartType, previewData?.columns]);
 
   const loadChart = (chartId: number) => {
     const chart = charts?.find(c => c.id === chartId);
@@ -176,47 +85,71 @@ export default function ExplorePage() {
 
     const config = chart.config as any;
     
-    // Load workspace/table if from workspace source
-    if (config.source?.kind === 'workspace_table') {
+    // Restore workspace and table from the FK stored on the chart
+    if (chart.workspace_table_id) {
+      setSelectedTableId(chart.workspace_table_id);
+      // workspace_id is stored in config for lookup
+      if (config.workspace_id) {
+        setSelectedWorkspaceId(config.workspace_id);
+      }
+    } else if (config.source?.kind === 'workspace_table') {
+      // Legacy format fallback
       setSelectedWorkspaceId(config.source.workspaceId);
       setSelectedTableId(config.source.tableId);
     }
     
-    // Load field selections
-    setSelectedDimensions(config.dimensions || []);
-    
-    // Load measures with aggregations
-    if (config.measures) {
-      setSelectedMeasures(config.measures.map((m: any) => ({
-        field: typeof m === 'string' ? m : m.field,
-        aggregation: typeof m === 'string' ? 'sum' : (m.aggregation || 'sum'),
-      })));
-    }
-    
     setFilters(config.filters || []);
     setChartType(config.chartType || 'TABLE');
+    if (config.roleConfig) {
+      const rc = config.roleConfig as ChartRoleConfig;
+      // Migrate legacy format where metrics was string[]
+      if (rc.metrics?.length > 0 && typeof (rc.metrics as any)[0] === 'string') {
+        rc.metrics = (rc.metrics as unknown as string[]).map(f => ({ field: f, agg: 'sum' as AggFn }));
+      }
+      setChartRoleConfig(rc);
+    } else {
+      setChartRoleConfig({ metrics: [] });
+    }
+    setChartNameInput(chart.name);
+    setIsEditingName(false);
     setSelectedChartId(chartId);
-    
-    toast.success(`Loaded chart: ${chart.name}`);
+    setPageMode('editor');
+  };
+
+  const openNewChart = () => {
+    setSelectedChartId(null);
+    setFilters([]);
+    setChartType('TABLE');
+    setChartRoleConfig({ metrics: [] });
+    setChartNameInput('');
+    setIsEditingName(true);
+    setPageMode('editor');
+  };
+
+  const handleDeleteChart = async (id: number, name: string) => {
+    if (!confirm(`Delete chart "${name}"?`)) return;
+    try {
+      await deleteChart.mutateAsync(id);
+      toast.success(`Chart "${name}" deleted`);
+      if (selectedChartId === id) {
+        setSelectedChartId(null);
+      }
+    } catch {
+      toast.error('Failed to delete chart');
+    }
   };
 
   const handleSaveLook = async () => {
-    if (selectedDimensions.length === 0 && selectedMeasures.length === 0) {
-      toast.error('Please select at least one dimension or measure');
+    if (!selectedTableId) {
+      toast.error('Please select a workspace table first');
       return;
     }
-    
-    // Prepare look config
-    const lookConfig = {
-      source: {
-        kind: 'workspace_table',
-        workspaceId: selectedWorkspaceId,
-        tableId: selectedTableId,
-      },
-      dimensions: selectedDimensions,
-      measures: selectedMeasures,
+
+    const exploreConfig = {
+      workspace_id: selectedWorkspaceId,
       filters,
       chartType,
+      roleConfig: chartRoleConfig,
     };
 
     try {
@@ -225,57 +158,32 @@ export default function ExplorePage() {
         await updateChart.mutateAsync({
           id: selectedChartId,
           data: {
+            name: chartNameInput.trim() || undefined,
             chart_type: chartType as any,
-            config: lookConfig,
+            workspace_table_id: selectedTableId,
+            config: exploreConfig as unknown as import('@/types/api').ChartConfig,
           },
         });
         toast.success('Chart updated successfully!');
       } else {
-        // Create new chart
-        const chartName = prompt('Enter chart name:');
-        if (!chartName || !chartName.trim()) {
+        // Create new chart — use inline name input
+        const name = chartNameInput.trim();
+        if (!name) {
+          setIsEditingName(true);
+          toast.error('Please enter a chart name');
           return;
         }
 
-        // Get or create a dataset for workspace charts
-        let datasetId = 1;
-        
-        if (datasets && datasets.length > 0) {
-          datasetId = datasets[0].id;
-        } else {
-          const sqlDatasources = datasources?.filter(ds => 
-            ds.type !== 'manual' && ds.type !== 'google_sheets'
-          );
-          
-          if (!sqlDatasources || sqlDatasources.length === 0) {
-            toast.error('No SQL datasource available. Please create a PostgreSQL, MySQL, or BigQuery datasource first.');
-            return;
-          }
-          
-          try {
-            const dummyDataset = await createDataset.mutateAsync({
-              name: 'Workspace Charts',
-              description: 'Dataset for charts created from workspace tables',
-              data_source_id: sqlDatasources[0].id,
-              sql_query: 'SELECT 1',
-            });
-            datasetId = dummyDataset.id;
-          } catch (err) {
-            console.error('Failed to create dummy dataset:', err);
-            toast.error('Failed to create dataset. Please create a dataset manually first.');
-            return;
-          }
-        }
-
         const newChart = await createChart.mutateAsync({
-          name: chartName.trim(),
+          name,
           chart_type: chartType as any,
-          dataset_id: datasetId,
-          config: lookConfig,
+          workspace_table_id: selectedTableId,
+          config: exploreConfig as unknown as import('@/types/api').ChartConfig,
         });
 
         setSelectedChartId(newChart.id);
-        toast.success(`Chart "${chartName}" saved successfully!`);
+        toast.success(`Chart "${name}" saved!`);
+        setPageMode('list');
       }
     } catch (error: any) {
       console.error('Error saving chart:', error);
@@ -285,117 +193,165 @@ export default function ExplorePage() {
 
   const selectedTable = workspace?.tables?.find((t: any) => t.id === selectedTableId);
 
-  // Compute columns for display (after grouping/aggregation)
-  const displayColumns = useMemo(() => {
-    if (!displayData?.columns) return [];
-    
-    // If we have grouping or aggregation, return the aggregated columns
-    if (selectedDimensions.length > 0 || selectedMeasures.length > 0) {
-      const cols = [];
-      selectedDimensions.forEach(d => cols.push({ name: d, type: 'string' }));
-      selectedMeasures.forEach(m => cols.push({ 
-        name: `${m.field}_${m.aggregation}`, 
-        type: 'number' 
-      }));
-      return cols;
-    }
-    
-    return displayData.columns;
-  }, [displayData?.columns, selectedDimensions, selectedMeasures]);
+  const CHART_TYPE_LABELS: Record<string, string> = {
+    BAR: 'Bar', LINE: 'Line', PIE: 'Pie', TIME_SERIES: 'Time Series',
+    AREA: 'Area', STACKED_BAR: 'Stacked Bar', GROUPED_BAR: 'Grouped Bar',
+    SCATTER: 'Scatter', KPI: 'KPI', TABLE: 'Table',
+  };
 
+  // ── LIST VIEW ─────────────────────────────────────────────────────────────
+  if (pageMode === 'list') {
+    return (
+      <div className="h-screen flex flex-col bg-gray-50">
+        <div className="bg-white border-b border-gray-200 px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">Explore</h1>
+              <p className="text-sm text-gray-500 mt-0.5">
+                {charts?.length ?? 0} saved chart{charts?.length !== 1 ? 's' : ''}
+              </p>
+            </div>
+            <button
+              onClick={openNewChart}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 flex items-center gap-2"
+            >
+              <Plus className="w-4 h-4" />
+              New Chart
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6">
+          {!charts || charts.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-64 text-center">
+              <BarChart3 className="w-14 h-14 text-gray-300 mb-4" />
+              <h3 className="text-lg font-medium text-gray-700 mb-1">No saved charts yet</h3>
+              <p className="text-sm text-gray-500 mb-4">Create your first chart from a workspace table</p>
+              <button
+                onClick={openNewChart}
+                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 flex items-center gap-2"
+              >
+                <Plus className="w-4 h-4" />
+                New Chart
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {charts.map(chart => {
+                const config = chart.config as any;
+                const typeLabel = CHART_TYPE_LABELS[chart.chart_type] ?? chart.chart_type;
+                const createdAt = new Date(chart.created_at).toLocaleDateString('vi-VN', {
+                  day: '2-digit', month: '2-digit', year: 'numeric',
+                });
+                return (
+                  <div
+                    key={chart.id}
+                    className="bg-white rounded-lg border border-gray-200 p-4 flex flex-col gap-3 hover:shadow-md transition-shadow cursor-pointer group"
+                    onClick={() => loadChart(chart.id)}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
+                        <BarChart3 className="w-5 h-5 text-blue-600" />
+                      </div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeleteChart(chart.id, chart.name); }}
+                        className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 transition-all p-1 rounded"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-semibold text-gray-900 truncate text-sm">{chart.name}</h3>
+                      {config?.roleConfig?.dimension && (
+                        <p className="text-xs text-gray-500 mt-0.5 truncate flex items-center gap-1">
+                          <Layers className="w-3 h-3 flex-shrink-0" />
+                          {config.roleConfig.dimension}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs text-gray-400">
+                      <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full font-medium">
+                        {typeLabel}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <Clock className="w-3 h-3" />
+                        {createdAt}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── EDITOR VIEW ───────────────────────────────────────────────────────────
   return (
     <div className="h-screen flex flex-col bg-gray-50">
       {/* Header */}
       <div className="bg-white border-b border-gray-200 px-6 py-4">
         <div className="flex items-center justify-between">
           <div>
-            <div className="flex items-center gap-4">
-              <h1 className="text-2xl font-bold text-gray-900">Explore</h1>
-              
-              {/* Chart Selector */}
-              <select
-                value={selectedChartId || ''}
-                onChange={(e) => {
-                  const chartId = Number(e.target.value);
-                  if (chartId) {
-                    loadChart(chartId);
-                  } else {
-                    setSelectedChartId(null);
-                    setSelectedDimensions([]);
-                    setSelectedMeasures([]);
-                    setFilters([]);
-                    setChartType('TABLE');
-                  }
-                }}
-                className="px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setPageMode('list')}
+                className="text-gray-500 hover:text-gray-700 flex items-center gap-1 text-sm"
               >
-                <option value="">New Chart</option>
-                {charts?.map(chart => (
-                  <option key={chart.id} value={chart.id}>
-                    {chart.name}
-                  </option>
-                ))}
-              </select>
+                <ArrowLeft className="w-4 h-4" />
+                All Charts
+              </button>
+              <span className="text-gray-300">/</span>
+              {isEditingName ? (
+                <div className="flex items-center gap-1.5">
+                  <input
+                    autoFocus
+                    type="text"
+                    value={chartNameInput}
+                    onChange={e => setChartNameInput(e.target.value)}
+                    onBlur={() => {
+                      setIsEditingName(false);
+                      if (selectedChartId && chartNameInput.trim()) {
+                        updateChart.mutate({ id: selectedChartId, data: { name: chartNameInput.trim() } });
+                      }
+                    }}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                      if (e.key === 'Escape') { setChartNameInput(charts?.find(c => c.id === selectedChartId)?.name ?? ''); setIsEditingName(false); }
+                    }}
+                    placeholder="Chart name…"
+                    className="text-lg font-semibold text-gray-900 border-b border-blue-400 bg-transparent outline-none px-0.5 min-w-[10rem]"
+                  />
+                  <Check className="w-4 h-4 text-blue-500" />
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 group/name">
+                  <h1 className="text-lg font-semibold text-gray-900">
+                    {chartNameInput || (selectedChartId ? 'Chart' : 'New Chart')}
+                  </h1>
+                  <button
+                    onClick={() => setIsEditingName(true)}
+                    className="opacity-0 group-hover/name:opacity-100 text-gray-400 hover:text-gray-600 transition-opacity"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
             </div>
-            
             {selectedTable && (
-              <p className="text-sm text-gray-500 mt-1">
-                Exploring: {workspace?.name} / {(selectedTable as any).display_name || 'Table'}
+              <p className="text-sm text-gray-500 mt-0.5 ml-[calc(1rem+4px+8px)]">
+                {workspace?.name} / {(selectedTable as any).display_name || 'Table'}
               </p>
             )}
           </div>
           <div className="flex items-center gap-3">
-            {/* Chart Type Selector */}
-            <div className="flex items-center bg-gray-100 rounded-md p-1">
-              <button
-                onClick={() => setChartType('TABLE')}
-                className={`p-2 rounded transition-colors ${
-                  chartType === 'TABLE'
-                    ? 'bg-white shadow-sm text-blue-600'
-                    : 'text-gray-600 hover:text-gray-900'
-                }`}
-                title="Table"
-              >
-                <Table2 className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setChartType('BAR')}
-                className={`p-2 rounded transition-colors ${
-                  chartType === 'BAR'
-                    ? 'bg-white shadow-sm text-blue-600'
-                    : 'text-gray-600 hover:text-gray-900'
-                }`}
-                title="Bar Chart"
-              >
-                <BarChart3 className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setChartType('LINE')}
-                className={`p-2 rounded transition-colors ${
-                  chartType === 'LINE'
-                    ? 'bg-white shadow-sm text-blue-600'
-                    : 'text-gray-600 hover:text-gray-900'
-                }`}
-                title="Line Chart"
-              >
-                <LineChartIcon className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setChartType('PIE')}
-                className={`p-2 rounded transition-colors ${
-                  chartType === 'PIE'
-                    ? 'bg-white shadow-sm text-blue-600'
-                    : 'text-gray-600 hover:text-gray-900'
-                }`}
-                title="Pie Chart"
-              >
-                <PieChartIcon className="w-4 h-4" />
-              </button>
-            </div>
-
             <button
-              onClick={() => refetchPreview()}
-              disabled={!selectedTableId || loadingPreview}
+              onClick={() => refetch()}
+              disabled={!selectedTableId || isLoading}
               className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
               <Play className="w-4 h-4" />
@@ -403,11 +359,11 @@ export default function ExplorePage() {
             </button>
             <button
               onClick={handleSaveLook}
-              disabled={!selectedTableId || (selectedDimensions.length === 0 && selectedMeasures.length === 0)}
+              disabled={!selectedTableId}
               className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
               <Save className="w-4 h-4" />
-              {selectedChartId ? 'Update Chart' : 'Save Look'}
+              {selectedChartId ? 'Update Chart' : 'Save Chart'}
             </button>
           </div>
         </div>
@@ -416,113 +372,44 @@ export default function ExplorePage() {
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar */}
         <div className="w-80 bg-white border-r border-gray-200 flex flex-col overflow-hidden">
-          <div className="p-4 border-b">
-            <h2 className="text-sm font-semibold text-gray-900 mb-4">Data Source</h2>
-            <ExploreSourceSelector
-              selectedWorkspaceId={selectedWorkspaceId}
-              selectedTableId={selectedTableId}
-              previewLimit={previewLimit}
-              onWorkspaceChange={setSelectedWorkspaceId}
-              onTableChange={setSelectedTableId}
-              onLimitChange={setPreviewLimit}
-            />
+          <div className="border-b">
+            <button
+              onClick={() => setIsSourceOpen(o => !o)}
+              className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors"
+            >
+              <h2 className="text-sm font-semibold text-gray-900">Data Source</h2>
+              {isSourceOpen ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+            </button>
+            {isSourceOpen && (
+              <div className="px-4 pb-4">
+                <ExploreSourceSelector
+                  selectedWorkspaceId={selectedWorkspaceId}
+                  selectedTableId={selectedTableId}
+                  previewLimit={previewLimit}
+                  onWorkspaceChange={setSelectedWorkspaceId}
+                  onTableChange={setSelectedTableId}
+                  onLimitChange={setPreviewLimit}
+                />
+              </div>
+            )}
           </div>
 
-          {/* Fields Section */}
+          {/* Chart config + Filter */}
           {selectedTableId && (
             <div className="flex-1 overflow-y-auto">
-              <div className="p-4 border-b">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                  <input
-                    type="text"
-                    placeholder="Search fields..."
-                    value={fieldSearch}
-                    onChange={(e) => setFieldSearch(e.target.value)}
-                    className="w-full pl-9 pr-4 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
-
-              {/* Filters */}
-              <div className="p-4 border-b">
+              <ExploreChartConfig
+                chartType={chartType}
+                roleConfig={chartRoleConfig}
+                availableColumns={previewData?.columns || []}
+                onChartTypeChange={setChartType}
+                onRoleConfigChange={setChartRoleConfig}
+              />
+              <div className="p-4 border-t">
                 <FilterBuilder
                   filters={filters}
                   onChange={setFilters}
-                  availableFields={[...dimensions, ...measures]}
+                  availableFields={previewData?.columns?.map(c => c.name) || []}
                 />
-              </div>
-
-              {/* Dimensions */}
-              <div className="p-4 border-b">
-                <h3 className="text-xs font-semibold text-gray-700 uppercase mb-3">
-                  Dimensions ({filteredDimensions.length})
-                </h3>
-                <div className="space-y-1">
-                  {filteredDimensions.map((field) => (
-                    <button
-                      key={field.name}
-                      onClick={() => handleToggleDimension(field.name)}
-                      className={`w-full text-left px-3 py-2 text-sm rounded transition-colors ${
-                        selectedDimensions.includes(field.name)
-                          ? 'bg-blue-50 text-blue-900 font-medium'
-                          : 'text-gray-700 hover:bg-gray-50'
-                      }`}
-                    >
-                      {field.name}
-                    </button>
-                  ))}
-                  {filteredDimensions.length === 0 && (
-                    <p className="text-xs text-gray-500 text-center py-2">
-                      {fieldSearch ? 'No matching dimensions' : 'No dimensions available'}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              {/* Measures with Aggregation Selector */}
-              <div className="p-4">
-                <h3 className="text-xs font-semibold text-gray-700 uppercase mb-3">
-                  Measures ({filteredMeasures.length})
-                </h3>
-                <div className="space-y-2">
-                  {filteredMeasures.map((field) => {
-                    const selected = selectedMeasures.find(m => m.field === field.name);
-                    return (
-                      <div key={field.name} className="space-y-1">
-                        <button
-                          onClick={() => handleToggleMeasure(field.name)}
-                          className={`w-full text-left px-3 py-2 text-sm rounded transition-colors ${
-                            selected
-                              ? 'bg-blue-50 text-blue-900 font-medium'
-                              : 'text-gray-700 hover:bg-gray-50'
-                          }`}
-                        >
-                          {field.name}
-                        </button>
-                        {selected && (
-                          <select
-                            value={selected.aggregation}
-                            onChange={(e) => handleUpdateMeasureAggregation(field.name, e.target.value as AggFunction)}
-                            className="w-full text-xs px-2 py-1 border border-gray-300 rounded bg-white"
-                          >
-                            <option value="sum">SUM</option>
-                            <option value="avg">AVG</option>
-                            <option value="count">COUNT</option>
-                            <option value="min">MIN</option>
-                            <option value="max">MAX</option>
-                            <option value="count_distinct">COUNT DISTINCT</option>
-                          </select>
-                        )}
-                      </div>
-                    );
-                  })}
-                  {filteredMeasures.length === 0 && (
-                    <p className="text-xs text-gray-500 text-center py-2">
-                      {fieldSearch ? 'No matching measures' : 'No measures available'}
-                    </p>
-                  )}
-                </div>
               </div>
             </div>
           )}
@@ -530,57 +417,6 @@ export default function ExplorePage() {
 
         {/* Main Content */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Selected Fields Bar */}
-          {(selectedDimensions.length > 0 || selectedMeasures.length > 0) && (
-            <div className="bg-white border-b border-gray-200 p-4">
-              <div className="flex items-start gap-6">
-                {selectedDimensions.length > 0 && (
-                  <div>
-                    <h3 className="text-xs font-semibold text-gray-700 uppercase mb-2">Dimensions</h3>
-                    <div className="flex flex-wrap gap-2">
-                      {selectedDimensions.map(dim => (
-                        <span
-                          key={dim}
-                          className="inline-flex items-center gap-1 px-2 py-1 text-sm bg-blue-50 text-blue-700 rounded"
-                        >
-                          {dim}
-                          <button
-                            onClick={() => handleToggleDimension(dim)}
-                            className="hover:bg-blue-100 rounded"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {selectedMeasures.length > 0 && (
-                  <div>
-                    <h3 className="text-xs font-semibold text-gray-700 uppercase mb-2">Measures</h3>
-                    <div className="flex flex-wrap gap-2">
-                      {selectedMeasures.map(measure => (
-                        <span
-                          key={measure.field}
-                          className="inline-flex items-center gap-1 px-2 py-1 text-sm bg-green-50 text-green-700 rounded"
-                        >
-                          {measure.aggregation.toUpperCase()}({measure.field})
-                          <button
-                            onClick={() => handleToggleMeasure(measure.field)}
-                            className="hover:bg-green-100 rounded"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Results */}
           <div className="flex-1 overflow-hidden p-4">
             {!selectedTableId ? (
               <div className="h-full flex items-center justify-center">
@@ -606,18 +442,25 @@ export default function ExplorePage() {
               </div>
             ) : (
               <div className="h-full bg-white rounded-lg border border-gray-200 overflow-hidden">
-                {chartType === 'TABLE' ? (
-                  <DatasetTableGrid
-                    columns={displayColumns}
-                    rows={displayData?.rows || []}
-                  />
-                ) : (
+                {chartType === 'TABLE' ? (() => {
+                  const sel = chartRoleConfig.selectedColumns;
+                  const cols = sel && sel.length > 0
+                    ? (displayData?.columns || []).filter(c => sel.includes(c.name))
+                    : (displayData?.columns || []);
+                  const rows = (displayData?.rows || []).map(row =>
+                    sel && sel.length > 0
+                      ? Object.fromEntries(sel.map(k => [k, row[k]]))
+                      : row
+                  );
+                  return (
+                    <DatasetTableGrid columns={cols} rows={rows} />
+                  );
+                })() : (
                   <div className="h-full p-4">
                     <ExploreChart
                       type={chartType}
                       data={displayData?.rows || []}
-                      dimensions={selectedDimensions}
-                      measures={selectedMeasures.map(m => `${m.field}_${m.aggregation}`)}
+                      roleConfig={chartRoleConfig}
                     />
                   </div>
                 )}

@@ -135,8 +135,7 @@ docker-compose up --build
 ```
 
 **For detailed Docker setup, troubleshooting, and production deployment, see:**
-- [DOCKER_SETUP.md](DOCKER_SETUP.md) - Comprehensive Docker guide
-- [DOCKER_QUICKREF.md](DOCKER_QUICKREF.md) - Quick command reference
+- [docs/DOCKER.md](docs/DOCKER.md) - Comprehensive Docker guide, quick reference, architecture, Windows install
 
 ---
 
@@ -450,6 +449,17 @@ MIT License - feel free to use this project as a starting point for your own BI 
 ## Support
 
 For issues, questions, or feature requests, please open an issue on the GitHub repository.
+
+## Documentation
+
+All documentation is organized under the `docs/` folder:
+
+| File | Nội dung |
+|------|---------|
+| [docs/SETUP.md](docs/SETUP.md) | Getting started, quickstart, manual run without Docker |
+| [docs/DOCKER.md](docs/DOCKER.md) | Docker setup, quick reference, architecture, Windows install |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Folder structure, component hierarchy, API reference |
+| [docs/IMPLEMENTATION_NOTES.md](docs/IMPLEMENTATION_NOTES.md) | Dev history: Prompt 1→4, transformations implementation |
 
 ---
 

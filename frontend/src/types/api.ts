@@ -247,7 +247,8 @@ export interface Chart {
   id: number;
   name: string;
   description?: string;
-  dataset_id: number;
+  dataset_id?: number | null;
+  workspace_table_id?: number | null;
   chart_type: ChartType;
   config: ChartConfig;
   created_at: string;
@@ -257,7 +258,9 @@ export interface Chart {
 export interface ChartCreate {
   name: string;
   description?: string;
-  dataset_id: number;
+  /** Exactly one of dataset_id or workspace_table_id must be set */
+  dataset_id?: number | null;
+  workspace_table_id?: number | null;
   chart_type: ChartType;
   config: ChartConfig;
 }
@@ -267,6 +270,8 @@ export interface ChartUpdate {
   description?: string;
   chart_type?: ChartType;
   config?: ChartConfig;
+  dataset_id?: number | null;
+  workspace_table_id?: number | null;
 }
 
 export interface DashboardChartLayout {
@@ -274,6 +279,7 @@ export interface DashboardChartLayout {
   y: number;
   w: number;
   h: number;
+  custom_title?: string;
 }
 
 export interface DashboardChart {
@@ -329,4 +335,9 @@ export interface DatasetExecuteResponse {
 export interface ChartDataResponse {
   chart: Chart;
   data: Record<string, any>[];
+  meta?: {
+    row_count?: number;
+    execution_time_ms?: number;
+    dataset_name?: string;
+  };
 }

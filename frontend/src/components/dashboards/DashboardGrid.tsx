@@ -11,6 +11,7 @@ import { DashboardFilter } from '@/lib/filters';
 const ResponsiveGridLayout = WidthProvider(Responsive);
 
 interface DashboardGridProps {
+  dashboardId: number;
   dashboardCharts: DashboardChart[];
   onLayoutChange: (layouts: Layout[]) => void;
   onRemoveChart: (dashboardChartId: number) => void;
@@ -20,6 +21,7 @@ interface DashboardGridProps {
 }
 
 export function DashboardGrid({
+  dashboardId,
   dashboardCharts,
   onLayoutChange,
   onRemoveChart,
@@ -84,10 +86,12 @@ export function DashboardGrid({
       preventCollision={false}
     >
       {dashboardCharts.map((dc) => (
-        <div key={dc.id.toString()} className="drag-handle">
+        <div key={dc.id.toString()}>
           <ChartTile
             chartId={dc.chart_id}
             dashboardChartId={dc.id}
+            dashboardId={dashboardId}
+            currentLayout={dc.layout as Record<string, any>}
             datasetId={dc.chart?.dataset_id || 0}
             onRemove={onRemoveChart}
             isRemoving={removingChartId === dc.id}

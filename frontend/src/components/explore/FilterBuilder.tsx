@@ -4,7 +4,7 @@ import { Plus, X } from 'lucide-react';
 
 export interface Filter {
   field: string;
-  operator: '=' | '!=' | '>' | '<' | '>=' | '<=' | 'LIKE' | 'IN';
+  operator: 'eq' | 'neq' | 'gt' | 'lt' | 'gte' | 'lte' | 'contains' | 'notContains' | 'in' | 'notIn';
   value: string;
 }
 
@@ -18,7 +18,7 @@ export function FilterBuilder({ filters, onChange, availableFields }: FilterBuil
   const addFilter = () => {
     onChange([
       ...filters,
-      { field: availableFields[0] || '', operator: '=', value: '' }
+      { field: availableFields[0] || '', operator: 'eq', value: '' }
     ]);
   };
 
@@ -68,14 +68,16 @@ export function FilterBuilder({ filters, onChange, availableFields }: FilterBuil
               onChange={(e) => updateFilter(index, { operator: e.target.value as Filter['operator'] })}
               className="text-sm border border-gray-300 rounded px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             >
-              <option value="=">=</option>
-              <option value="!=">!=</option>
-              <option value=">">{'>'}</option>
-              <option value="<">{'<'}</option>
-              <option value=">=">{'>='}</option>
-              <option value="<=">{'<='}</option>
-              <option value="LIKE">LIKE</option>
-              <option value="IN">IN</option>
+              <option value="eq">=</option>
+              <option value="neq">!=</option>
+              <option value="gt">&gt;</option>
+              <option value="lt">&lt;</option>
+              <option value="gte">&gt;=</option>
+              <option value="lte">&lt;=</option>
+              <option value="contains">contains</option>
+              <option value="notContains">not contains</option>
+              <option value="in">in</option>
+              <option value="notIn">not in</option>
             </select>
 
             <input
