@@ -50,7 +50,7 @@ export function AddChartModal({
 
   // Filter out charts already in dashboard
   const availableCharts = charts?.filter(
-    (chart) => !existingChartIds.includes(chart.id)
+    (chart) => !existingChartIds?.includes(chart.id)
   );
 
   return (

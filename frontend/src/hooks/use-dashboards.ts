@@ -81,8 +81,8 @@ export const useRemoveChartFromDashboard = () => {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: ({ dashboardId, chartId }: { dashboardId: number; chartId: number }) =>
-      dashboardApi.removeChart(dashboardId, chartId),
+    mutationFn: ({ dashboardId, dashboardChartId }: { dashboardId: number; dashboardChartId: number }) =>
+      dashboardApi.removeChart(dashboardId, dashboardChartId),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['dashboards'] });
       queryClient.invalidateQueries({ queryKey: ['dashboards', variables.dashboardId] });

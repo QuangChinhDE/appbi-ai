@@ -1,20 +1,73 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { ChartPreview } from '@/components/charts/ChartPreview';
+import { DashboardFilter, applyFiltersToRows } from '@/lib/filters';
 
 interface ChartTileProps {
   chartId: number;
   dashboardChartId: number;
+  datasetId: number;
   onRemove: (dashboardChartId: number) => void;
   isRemoving?: boolean;
+  dashboardFilters?: DashboardFilter[];
+  onDataLoaded?: (datasetId: number, data: any[]) => void;
 }
 
-export function ChartTile({ chartId, dashboardChartId, onRemove, isRemoving }: ChartTileProps) {
+export function ChartTile({ 
+  chartId, 
+  dashboardChartId, 
+  datasetId,
+  onRemove, 
+  isRemoving,
+  dashboardFilters = [],
+  onDataLoaded,
+}: ChartTileProps) {
   const { data: chart, isLoading: isLoadingChart } = useChart(chartId);
   const { data: chartData, isLoading: isLoadingData } = useChartData(chartId);
+
+  // Notify parent when data is loaded (for filter dropdown options)
+  React.useEffect(() => {
+    if (chartData?.data && onDataLoaded && datasetId) {
+      onDataLoaded(datasetId, chartData.data);
+    }
+  }, [chartData?.data, onDataLoaded, datasetId]);
+
+  // Filter chart data based on dashboard filters for this dataset
+  const filteredData = useMemo(() => {
+    if (!chartData?.data) return [];
+    
+    // Get filters that apply to this chart's dataset
+    const filtersForThisChart = dashboardFilters.filter(
+      (f) => f.datasetId === datasetId
+    );
+    
+    // Apply filters (client-side v1)
+    return applyFiltersToRows(chartData.data, filtersForThisChart);
+  }, [chartData?.data, dashboardFilters, datasetId]);
+
+  // Transform Explore config to ChartPreview config
+  const chartConfig = useMemo(() => {
+    if (!chart?.config) return {};
+    
+    const config = chart.config as any;
+    
+    // If config has dimensions/measures (from Explore), transform it
+    if (config.dimensions || config.measures) {
+      return {
+        xField: config.dimensions?.[0], // First dimension as X axis
+        yFields: config.measures || [], // All measures as Y fields
+        showLegend: true,
+        showGrid: true,
+        ...config, // Keep other config properties
+      };
+    }
+    
+    // Otherwise use config as-is (standard chart config)
+    return config;
+  }, [chart?.config]);
 
   if (isLoadingChart || isLoadingData) {
     return (
@@ -60,8 +113,8 @@ export function ChartTile({ chartId, dashboardChartId, onRemove, isRemoving }: C
       <div className="h-[calc(100%-3rem)] overflow-hidden">
         <ChartPreview
           chartType={chart.chart_type}
-          data={chartData.data}
-          config={chart.config}
+          data={filteredData}
+          config={chartConfig}
         />
       </div>
     </div>

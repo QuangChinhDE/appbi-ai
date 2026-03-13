@@ -1,0 +1,188 @@
+/**
+ * PhysicalTableTab - Select physical tables from datasources
+ */
+'use client';
+
+import React, { useState, useMemo } from 'react';
+import { Search, Database, CheckSquare, Square, Loader2 } from 'lucide-react';
+import { useDataSources } from '@/hooks/use-datasources';
+import { useDatasourceTables } from '@/hooks/use-dataset-workspaces';
+import type { DatasourceTable, AddTableInput } from '@/hooks/use-dataset-workspaces';
+
+interface PhysicalTableTabProps {
+  onAddTable: (input: AddTableInput) => Promise<void>;
+  isLoading: boolean;
+}
+
+export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProps) {
+  const [selectedDatasourceId, setSelectedDatasourceId] = useState<number | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedTable, setSelectedTable] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState('');
+
+  const { data: datasources, isLoading: loadingDatasources } = useDataSources();
+  const { data: tables, isLoading: loadingTables } = useDatasourceTables(
+    selectedDatasourceId,
+    searchQuery || undefined
+  );
+
+  // Filter tables by search
+  const filteredTables = useMemo(() => {
+    if (!tables) return [];
+    if (!searchQuery) return tables;
+    
+    const query = searchQuery.toLowerCase();
+    return tables.filter((table: DatasourceTable) => 
+      table.name.toLowerCase().includes(query) ||
+      table.schema?.toLowerCase().includes(query)
+    );
+  }, [tables, searchQuery]);
+
+  const handleSelectTable = (tableName: string) => {
+    setSelectedTable(tableName);
+    
+    // Auto-generate display name if not set
+    if (!displayName) {
+      const shortName = tableName.split('.').pop() || tableName;
+      const generatedName = shortName.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+      setDisplayName(generatedName);
+    }
+  };
+
+  const handleAdd = async () => {
+    if (!selectedDatasourceId || !selectedTable || !displayName.trim()) return;
+
+    await onAddTable({
+      datasource_id: selectedDatasourceId,
+      source_kind: 'physical_table',
+      source_table_name: selectedTable,
+      display_name: displayName.trim(),
+      enabled: true,
+    });
+  };
+
+  const canAdd = selectedDatasourceId && selectedTable && displayName.trim() && !isLoading;
+
+  return (
+    <div className="p-6 space-y-6">
+      {/* Datasource selector */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Select Datasource *
+        </label>
+        <select
+          value={selectedDatasourceId || ''}
+          onChange={(e) => {
+            setSelectedDatasourceId(Number(e.target.value) || null);
+            setSelectedTable(null);
+            setDisplayName('');
+          }}
+          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+          disabled={loadingDatasources || isLoading}
+        >
+          <option value="">Choose a datasource...</option>
+          {datasources?.map((ds) => (
+            <option key={ds.id} value={ds.id}>
+              {ds.name} ({ds.type})
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Table search and list */}
+      {selectedDatasourceId && (
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Select Table *
+          </label>
+          
+          {/* Search */}
+          <div className="relative mb-3">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search tables..."
+              className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              disabled={isLoading}
+            />
+          </div>
+
+          {/* Table list */}
+          <div className="border border-gray-300 rounded-md max-h-64 overflow-y-auto">
+            {loadingTables ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+              </div>
+            ) : filteredTables.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-8 text-gray-500">
+                <Database className="w-8 h-8 mb-2 text-gray-400" />
+                <p>No tables found</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-200">
+                {filteredTables.map((table) => (
+                  <button
+                    key={table.name}
+                    onClick={() => handleSelectTable(table.name)}
+                    className={`w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center justify-between ${
+                      selectedTable === table.name ? 'bg-blue-50' : ''
+                    }`}
+                    disabled={isLoading}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-gray-900 truncate">
+                        {table.name}
+                      </div>
+                      {table.schema && (
+                        <div className="text-xs text-gray-500">
+                          Schema: {table.schema}
+                        </div>
+                      )}
+                    </div>
+                    {selectedTable === table.name && (
+                      <CheckSquare className="w-5 h-5 text-blue-600 flex-shrink-0 ml-2" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Display name */}
+      {selectedTable && (
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Display Name *
+          </label>
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="e.g., Orders"
+            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            disabled={isLoading}
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            This name will be shown in the workspace
+          </p>
+        </div>
+      )}
+
+      {/* Action button */}
+      <div className="flex justify-end pt-4 border-t">
+        <button
+          onClick={handleAdd}
+          disabled={!canAdd}
+          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+        >
+          {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+          Add Table
+        </button>
+      </div>
+    </div>
+  );
+}

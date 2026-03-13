@@ -1,0 +1,56 @@
+"""
+Dashboard Filter Schemas
+Pydantic schemas for dashboard-level filters
+"""
+from typing import Any, Literal, Union, List
+from pydantic import BaseModel, Field
+from datetime import datetime
+
+
+class DashboardFilterBase(BaseModel):
+    """Base schema for dashboard filter"""
+    name: str = Field(..., description="Display name for the filter")
+    field: str = Field(..., description="Qualified field name (e.g., customers.country)")
+    type: Literal["string", "number", "date", "datetime"]
+    operator: Literal["eq", "ne", "in", "not_in", "contains", "starts_with", "ends_with", "gte", "lte", "between"]
+    value: Union[str, int, float, List[Any]] = Field(..., description="Filter value(s)")
+
+
+class DashboardFilterCreate(DashboardFilterBase):
+    """Schema for creating a dashboard filter"""
+    pass
+
+
+class DashboardFilterUpdate(BaseModel):
+    """Schema for updating a dashboard filter"""
+    name: str | None = None
+    field: str | None = None
+    type: Literal["string", "number", "date", "datetime"] | None = None
+    operator: Literal["eq", "ne", "in", "not_in", "contains", "starts_with", "ends_with", "gte", "lte", "between"] | None = None
+    value: Union[str, int, float, List[Any]] | None = None
+
+
+class DashboardFilter(DashboardFilterBase):
+    """Schema for dashboard filter response"""
+    id: int
+    dashboard_id: int
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class CrossFilter(BaseModel):
+    """Schema for temporary cross-filter (not persisted)"""
+    chart_id: int = Field(..., description="Chart that triggered the filter")
+    field: str = Field(..., description="Field to filter on")
+    value: Any = Field(..., description="Value to filter by")
+    operator: Literal["eq", "ne", "in", "not_in"] = "eq"
+
+
+class MergedFilters(BaseModel):
+    """Schema for merged dashboard + cross filters"""
+    persistent_filters: List[DashboardFilter] = []
+    cross_filters: List[CrossFilter] = []
+    merged: dict = Field(default_factory=dict, description="Combined filter dict for semantic query")

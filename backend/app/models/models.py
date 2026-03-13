@@ -17,14 +17,22 @@ class DataSourceType(str, enum.Enum):
     POSTGRESQL = "postgresql"
     MYSQL = "mysql"
     BIGQUERY = "bigquery"
+    GOOGLE_SHEETS = "google_sheets"
+    MANUAL = "manual"
 
 
 class ChartType(str, enum.Enum):
     """Supported chart types."""
-    BAR = "bar"
-    LINE = "line"
-    PIE = "pie"
-    TIME_SERIES = "time_series"
+    BAR = "BAR"
+    LINE = "LINE"
+    PIE = "PIE"
+    TIME_SERIES = "TIME_SERIES"
+    TABLE = "TABLE"
+    AREA = "AREA"
+    STACKED_BAR = "STACKED_BAR"
+    GROUPED_BAR = "GROUPED_BAR"
+    SCATTER = "SCATTER"
+    KPI = "KPI"
 
 
 class DataSource(Base):
@@ -36,7 +44,7 @@ class DataSource(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), unique=True, nullable=False, index=True)
-    type = Column(Enum(DataSourceType), nullable=False)
+    type = Column(Enum(DataSourceType, values_callable=lambda obj: [e.value for e in obj]), nullable=False)
     description = Column(Text, nullable=True)
     
     # Connection configuration stored as JSON
@@ -74,6 +82,15 @@ class Dataset(Base):
     # Format: [{"name": "col1", "type": "integer"}, {"name": "col2", "type": "string"}, ...]
     columns = Column(JSON, nullable=True)
     
+    # Transformations pipeline (Power Query-style)
+    # Format: [{"id": "uuid", "type": "filter_rows", "enabled": true, "params": {...}}, ...]
+    transformations = Column(JSON, nullable=True, default=list)
+    transformation_version = Column(Integer, nullable=True, default=2)
+    
+    # Materialization configuration (v2)
+    # Format: {"mode": "none|view|table", "name": "...", "schema": "...", "refresh": {...}, "last_refreshed_at": "...", "status": "...", "error": "..."}
+    materialization = Column(JSON, nullable=True)
+    
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -81,6 +98,7 @@ class Dataset(Base):
     # Relationships
     data_source = relationship("DataSource", back_populates="datasets")
     charts = relationship("Chart", back_populates="dataset", cascade="all, delete-orphan")
+    semantic_views = relationship("SemanticView", back_populates="dataset")
 
 
 class Chart(Base):
@@ -125,6 +143,10 @@ class Dashboard(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), unique=True, nullable=False, index=True)
     description = Column(Text, nullable=True)
+    
+    # Store dashboard-level filters as JSON (hybrid approach v1)
+    # Structure: [{"id": "uuid", "datasetId": 1, "field": "country", "type": "dropdown", "operator": "in", "value": ["US"]}]
+    filters_config = Column(JSON, nullable=True, default=list)
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

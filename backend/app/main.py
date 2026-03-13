@@ -18,6 +18,7 @@ app = FastAPI(
 )
 
 # Configure CORS
+print(f"DEBUG: CORS origins = {settings.cors_origins_list}")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -25,6 +26,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+print("DEBUG: CORS middleware added")
 
 # Include API router
 app.include_router(api_router, prefix="/api/v1")

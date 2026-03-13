@@ -102,10 +102,62 @@ class ChartService:
         if not db_chart:
             raise ValueError(f"Chart with ID {chart_id} not found")
         
-        # Execute the underlying dataset query
-        dataset_result = DatasetService.execute(db, db_chart.dataset_id)
-        
-        return {
-            "chart": db_chart,
-            "data": dataset_result["data"]
-        }
+        # Check if chart config has workspace table source (from Explore)
+        config = db_chart.config or {}
+        if isinstance(config, dict) and config.get('source', {}).get('kind') == 'workspace_table':
+            # Fetch data from workspace table
+            from app.services.dataset_workspace_crud import DatasetWorkspaceCRUDService
+            from app.services.datasource_service import DataSourceConnectionService
+            from app.models.models import DataSource
+            
+            workspace_id = config['source'].get('workspaceId')
+            table_id = config['source'].get('tableId')
+            
+            if not workspace_id or not table_id:
+                raise ValueError("Invalid workspace table source in chart config")
+            
+            # Get table
+            db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, table_id)
+            if not db_table or db_table.workspace_id != workspace_id:
+                raise ValueError("Table not found in workspace")
+            
+            # Get datasource
+            datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+            if not datasource:
+                raise ValueError("Datasource not found")
+            
+            # Execute query based on source_kind
+            if db_table.source_kind == "sql_query":
+                if not db_table.source_query:
+                    raise ValueError("Table has no SQL query")
+                result = DataSourceConnectionService.execute_query(
+                    db,
+                    db_table.datasource_id,
+                    db_table.source_query,
+                    limit=1000
+                )
+            elif db_table.source_kind == "physical_table":
+                if not db_table.source_table:
+                    raise ValueError("Table has no physical table")
+                query = f"SELECT * FROM {db_table.source_table}"
+                result = DataSourceConnectionService.execute_query(
+                    db,
+                    db_table.datasource_id,
+                    query,
+                    limit=1000
+                )
+            else:
+                raise ValueError(f"Unsupported source_kind: {db_table.source_kind}")
+            
+            return {
+                "chart": db_chart,
+                "data": result["rows"]
+            }
+        else:
+            # Execute the underlying dataset query (standard charts)
+            dataset_result = DatasetService.execute(db, db_chart.dataset_id)
+            
+            return {
+                "chart": db_chart,
+                "data": dataset_result["data"]
+            }

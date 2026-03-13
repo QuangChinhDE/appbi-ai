@@ -42,6 +42,7 @@ export function ChartBuilder({ initialData, onSave, onCancel, isSaving }: ChartB
   const [columns, setColumns] = useState<ColumnMetadata[]>([]);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewLimit, setPreviewLimit] = useState(100);
 
   const { data: datasets } = useDatasets();
 
@@ -62,7 +63,8 @@ export function ChartBuilder({ initialData, onSave, onCancel, isSaving }: ChartB
     setPreviewError(null);
     
     try {
-      const result = await datasetApi.execute(Number(datasetId), 100);
+      const limit = previewLimit > 0 ? previewLimit : 100;
+      const result = await datasetApi.execute(Number(datasetId), limit);
       setPreviewData(result.data);
       
       // Extract columns from data
@@ -218,6 +220,23 @@ export function ChartBuilder({ initialData, onSave, onCancel, isSaving }: ChartB
                 Dataset cannot be changed in edit mode
               </p>
             )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Preview Limit
+            </label>
+            <input
+              type="number"
+              value={previewLimit}
+              onChange={(e) => setPreviewLimit(Number(e.target.value))}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md"
+              min={1}
+              max={1000}
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Number of rows to load for preview and charting (1-1000)
+            </p>
           </div>
         </div>
 

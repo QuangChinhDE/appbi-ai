@@ -1,6 +1,7 @@
 /**
- * Datasets Management Page
+ * Legacy SQL Datasets Management Page
  * Full UI for creating, editing, and executing saved SQL queries
+ * NOTE: This is legacy - new workspaces at /dataset-workspaces
  */
 'use client';
 

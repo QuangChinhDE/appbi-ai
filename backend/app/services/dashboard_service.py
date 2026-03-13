@@ -2,7 +2,7 @@
 CRUD service for dashboards.
 """
 from typing import List, Optional
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 
 from app.models import Dashboard, DashboardChart
@@ -25,7 +25,9 @@ class DashboardService:
     @staticmethod
     def get_by_id(db: Session, dashboard_id: int) -> Optional[Dashboard]:
         """Get a dashboard by ID."""
-        return db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+        return db.query(Dashboard)\
+            .options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))\
+            .filter(Dashboard.id == dashboard_id).first()
     
     @staticmethod
     def get_by_name(db: Session, name: str) -> Optional[Dashboard]:

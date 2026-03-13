@@ -76,6 +76,37 @@ class BigQueryConfig(BaseModel):
         return v
 
 
+class GoogleSheetsConfig(BaseModel):
+    """Google Sheets connection configuration."""
+    credentials_json: str = Field(..., description="Service account JSON as string")
+    spreadsheet_id: str = Field(..., description="Google Sheets spreadsheet ID")
+    sheet_name: Optional[str] = Field(None, description="Sheet name (optional, uses first sheet if not provided)")
+    
+    @field_validator('credentials_json')
+    @classmethod
+    def validate_credentials(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Credentials JSON cannot be empty")
+        # Basic validation that it looks like JSON
+        v = v.strip()
+        if not (v.startswith('{') and v.endswith('}')):
+            raise ValueError("Credentials must be valid JSON object")
+        return v
+    
+    @field_validator('spreadsheet_id')
+    @classmethod
+    def validate_spreadsheet_id(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Spreadsheet ID cannot be empty")
+        return v.strip()
+
+
+class ManualConfig(BaseModel):
+    """Manual table configuration."""
+    columns: list = Field(default_factory=list, description="List of column definitions")
+    rows: list = Field(default_factory=list, description="List of row data")
+
+
 def validate_datasource_config(ds_type: str, config: dict) -> dict:
     """
     Validate data source configuration based on type.
@@ -99,6 +130,10 @@ def validate_datasource_config(ds_type: str, config: dict) -> dict:
             validated = MySQLConfig(**config)
         elif ds_type_lower == 'bigquery':
             validated = BigQueryConfig(**config)
+        elif ds_type_lower == 'google_sheets':
+            validated = GoogleSheetsConfig(**config)
+        elif ds_type_lower == 'manual':
+            validated = ManualConfig(**config)
         else:
             raise ValueError(f"Unsupported data source type: {ds_type}")
         

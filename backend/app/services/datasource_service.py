@@ -13,6 +13,8 @@ import json
 from app.core.logging import get_logger
 from app.models import DataSourceType
 from app.services.sql_validator import validate_select_only
+from app.services.google_sheets_connector import create_google_sheets_connector
+from app.services.manual_table_connector import create_manual_table_connector
 
 logger = get_logger(__name__)
 
@@ -39,6 +41,10 @@ class DataSourceConnectionService:
                 return DataSourceConnectionService._test_mysql(config)
             elif ds_type == DataSourceType.BIGQUERY.value:
                 return DataSourceConnectionService._test_bigquery(config)
+            elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
+                return DataSourceConnectionService._test_google_sheets(config)
+            elif ds_type == DataSourceType.MANUAL.value:
+                return DataSourceConnectionService._test_manual(config)
             else:
                 return False, f"Unsupported data source type: {ds_type}"
         except Exception as e:
@@ -103,6 +109,22 @@ class DataSourceConnectionService:
             return False, str(e)
     
     @staticmethod
+    def _test_google_sheets(config: Dict[str, Any]) -> Tuple[bool, str]:
+        """Test Google Sheets connection."""
+        try:
+            connector = create_google_sheets_connector(config)
+            if connector.test_connection():
+                return True, "Connection successful"
+            return False, "Failed to connect to Google Sheets"
+        except Exception as e:
+            return False, str(e)
+    
+    @staticmethod
+    def _test_manual(config: Dict[str, Any]) -> Tuple[bool, str]:
+        """Test manual table (always succeeds)."""
+        return True, "Manual table ready"
+    
+    @staticmethod
     def execute_query(
         ds_type: str,
         config: Dict[str, Any],
@@ -138,6 +160,10 @@ class DataSourceConnectionService:
                 result = DataSourceConnectionService._execute_mysql(config, sql_query, limit, timeout_seconds)
             elif ds_type == DataSourceType.BIGQUERY.value:
                 result = DataSourceConnectionService._execute_bigquery(config, sql_query, limit, timeout_seconds)
+            elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
+                result = DataSourceConnectionService._execute_google_sheets(config, sql_query, limit)
+            elif ds_type == DataSourceType.MANUAL.value:
+                result = DataSourceConnectionService._execute_manual(config, sql_query, limit)
             else:
                 raise ValueError(f"Unsupported data source type: {ds_type}")
             
@@ -273,10 +299,22 @@ class DataSourceConnectionService:
             # Get column names
             columns = [field.name for field in results.schema]
             
-            # Fetch data
+            # Fetch data and handle encoding issues
             data = []
             for row in results:
-                data.append(dict(row.items()))
+                row_dict = {}
+                for key, value in row.items():
+                    # Handle bytes/binary data
+                    if isinstance(value, bytes):
+                        try:
+                            row_dict[key] = value.decode('utf-8')
+                        except UnicodeDecodeError:
+                            # If UTF-8 decode fails, use base64 encoding
+                            import base64
+                            row_dict[key] = base64.b64encode(value).decode('ascii')
+                    else:
+                        row_dict[key] = value
+                data.append(row_dict)
             
             logger.info(f"BigQuery query completed. Rows returned: {len(data)}")
             return columns, data
@@ -461,3 +499,309 @@ class DataSourceConnectionService:
             254: "char",
         }
         return type_map.get(type_code, "unknown")
+    
+    @staticmethod
+    def list_tables(
+        ds_type: str,
+        config: Dict[str, Any],
+        search_query: str = None
+    ) -> List[Dict[str, str]]:
+        """
+        List all tables from a datasource.
+        
+        Args:
+            ds_type: Type of data source
+            config: Connection configuration
+            search_query: Optional search query to filter tables
+            
+        Returns:
+            List of table dicts with 'name', 'schema', and 'type' keys
+        """
+        try:
+            if ds_type == DataSourceType.POSTGRESQL.value:
+                return DataSourceConnectionService._list_postgresql_tables(config, search_query)
+            elif ds_type == DataSourceType.MYSQL.value:
+                return DataSourceConnectionService._list_mysql_tables(config, search_query)
+            elif ds_type == DataSourceType.BIGQUERY.value:
+                return DataSourceConnectionService._list_bigquery_tables(config, search_query)
+            elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
+                return DataSourceConnectionService._list_google_sheets(config, search_query)
+            elif ds_type == DataSourceType.MANUAL.value:
+                return DataSourceConnectionService._list_manual_tables(config, search_query)
+            else:
+                raise ValueError(f"Unsupported data source type: {ds_type}")
+        except Exception as e:
+            logger.error(f"Failed to list tables: {str(e)}")
+            raise
+    
+    @staticmethod
+    def _list_postgresql_tables(
+        config: Dict[str, Any],
+        search_query: str = None
+    ) -> List[Dict[str, str]]:
+        """List tables from PostgreSQL."""
+        conn = None
+        cursor = None
+        try:
+            conn = psycopg2.connect(
+                host=config.get("host"),
+                port=config.get("port", 5432),
+                database=config.get("database"),
+                user=config.get("username"),
+                password=config.get("password")
+            )
+            cursor = conn.cursor()
+            
+            # Query information_schema for tables and views
+            query = """
+                SELECT 
+                    table_schema,
+                    table_name,
+                    table_type
+                FROM information_schema.tables
+                WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+            """
+            
+            if search_query:
+                query += f" AND table_name ILIKE '%{search_query}%'"
+            
+            query += " ORDER BY table_schema, table_name"
+            
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            
+            tables = []
+            for schema, name, table_type in rows:
+                tables.append({
+                    "name": f"{schema}.{name}",
+                    "schema": schema,
+                    "type": "view" if table_type == "VIEW" else "table"
+                })
+            
+            return tables
+            
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+    
+    @staticmethod
+    def _list_mysql_tables(
+        config: Dict[str, Any],
+        search_query: str = None
+    ) -> List[Dict[str, str]]:
+        """List tables from MySQL."""
+        conn = None
+        cursor = None
+        try:
+            conn = pymysql.connect(
+                host=config.get("host"),
+                port=config.get("port", 3306),
+                user=config.get("username"),
+                password=config.get("password")
+            )
+            cursor = conn.cursor()
+            
+            database = config.get("database")
+            
+            # Query information_schema for tables
+            query = f"""
+                SELECT 
+                    TABLE_NAME,
+                    TABLE_TYPE
+                FROM information_schema.tables
+                WHERE TABLE_SCHEMA = '{database}'
+            """
+            
+            if search_query:
+                query += f" AND TABLE_NAME LIKE '%{search_query}%'"
+            
+            query += " ORDER BY TABLE_NAME"
+            
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            
+            tables = []
+            for name, table_type in rows:
+                tables.append({
+                    "name": name,
+                    "schema": database,
+                    "type": "view" if table_type == "VIEW" else "table"
+                })
+            
+            return tables
+            
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+    
+    @staticmethod
+    def _list_bigquery_tables(
+        config: Dict[str, Any],
+        search_query: str = None
+    ) -> List[Dict[str, str]]:
+        """List tables from BigQuery."""
+        client = None
+        try:
+            credentials_info = json.loads(config.get("credentials_json", "{}"))
+            credentials = service_account.Credentials.from_service_account_info(credentials_info)
+            project_id = config.get("project_id")
+            
+            client = bigquery.Client(
+                credentials=credentials,
+                project=project_id
+            )
+            
+            logger.info(f"Listing BigQuery tables for project {project_id}")
+            
+            # List all datasets
+            datasets = list(client.list_datasets())
+            
+            tables = []
+            for dataset in datasets:
+                dataset_id = dataset.dataset_id
+                
+                # List tables in dataset
+                dataset_tables = list(client.list_tables(dataset_id))
+                
+                for table in dataset_tables:
+                    table_name = f"{dataset_id}.{table.table_id}"
+                    
+                    # Apply search filter
+                    if search_query and search_query.lower() not in table_name.lower():
+                        continue
+                    
+                    tables.append({
+                        "name": table_name,
+                        "schema": dataset_id,
+                        "type": "view" if table.table_type == "VIEW" else "table"
+                    })
+            
+            logger.info(f"BigQuery tables listed: {len(tables)}")
+            return tables
+            
+        except Exception as e:
+            logger.error(f"BigQuery list tables failed on project {config.get('project_id')}: {str(e)}")
+            raise
+    
+    @staticmethod
+    def _list_google_sheets(
+        config: Dict[str, Any],
+        search_query: str = None
+    ) -> List[Dict[str, str]]:
+        """List sheets from Google Sheets."""
+        try:
+            from app.services.google_sheets_connector import create_google_sheets_connector
+            
+            connector = create_google_sheets_connector(config)
+            spreadsheet_id = config.get('spreadsheet_id')
+            
+            if not spreadsheet_id:
+                raise ValueError("spreadsheet_id is required")
+            
+            # Get list of sheets
+            sheets = connector.list_sheets(spreadsheet_id)
+            
+            tables = []
+            for sheet_name in sheets:
+                if search_query and search_query.lower() not in sheet_name.lower():
+                    continue
+                
+                tables.append({
+                    "name": sheet_name,
+                    "schema": spreadsheet_id,
+                    "type": "sheet"
+                })
+            
+            logger.info(f"Google Sheets listed: {len(tables)}")
+            return tables
+            
+        except Exception as e:
+            logger.error(f"Google Sheets list failed: {str(e)}")
+            raise
+    
+    @staticmethod
+    def _list_manual_tables(
+        config: Dict[str, Any],
+        search_query: str = None
+    ) -> List[Dict[str, str]]:
+        """List manual table (always returns single table)."""
+        try:
+            # Manual datasource only has one "table" which is the data itself
+            tables = [{
+                "name": "manual_data",
+                "schema": "manual",
+                "type": "table"
+            }]
+            
+            logger.info(f"Manual table listed: {len(tables)}")
+            return tables
+            
+        except Exception as e:
+            logger.error(f"Manual table list failed: {str(e)}")
+            raise
+    
+    @staticmethod
+    def _execute_google_sheets(
+        config: Dict[str, Any],
+        sql_query: str,
+        limit: int = None
+    ) -> Tuple[List[str], List[Dict[str, Any]]]:
+        """Execute query against Google Sheets (fetches sheet data)."""
+        try:
+            from app.services.google_sheets_connector import create_google_sheets_connector
+            
+            connector = create_google_sheets_connector(config)
+            spreadsheet_id = config.get('spreadsheet_id')
+            sheet_name = config.get('sheet_name')
+            
+            # Parse simple table name from query if possible
+            # For now, just fetch the configured sheet
+            data = connector.get_sheet_data(spreadsheet_id, sheet_name=sheet_name)
+            
+            columns = [col['name'] for col in data['columns']]
+            rows = data['rows']
+            
+            # Apply limit if specified
+            if limit:
+                rows = rows[:limit]
+            
+            logger.info(f"Google Sheets data fetched: {len(rows)} rows")
+            return columns, rows
+            
+        except Exception as e:
+            logger.error(f"Google Sheets query failed: {str(e)}")
+            raise
+    
+    @staticmethod
+    def _execute_manual(
+        config: Dict[str, Any],
+        sql_query: str,
+        limit: int = None
+    ) -> Tuple[List[str], List[Dict[str, Any]]]:
+        """Execute query against manual table (returns stored data)."""
+        try:
+            from app.services.manual_table_connector import create_manual_table_connector
+            
+            connector = create_manual_table_connector(config)
+            data = connector.get_table_data()
+            
+            columns = [col['name'] for col in data['columns']]
+            rows = data['rows']
+            
+            # Apply limit if specified
+            if limit:
+                rows = rows[:limit]
+            
+            logger.info(f"Manual table data fetched: {len(rows)} rows")
+            return columns, rows
+            
+        except Exception as e:
+            logger.error(f"Manual table query failed: {str(e)}")
+            raise
+        finally:
+            if client:
+                client.close()

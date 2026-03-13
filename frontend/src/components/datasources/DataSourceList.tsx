@@ -40,6 +40,10 @@ export default function DataSourceList({
         return 'bg-orange-100 text-orange-800';
       case 'bigquery':
         return 'bg-green-100 text-green-800';
+      case 'google_sheets':
+        return 'bg-emerald-100 text-emerald-800';
+      case 'manual':
+        return 'bg-purple-100 text-purple-800';
       default:
         return 'bg-gray-100 text-gray-800';
     }
@@ -53,6 +57,10 @@ export default function DataSourceList({
         return 'MySQL';
       case 'bigquery':
         return 'BigQuery';
+      case 'google_sheets':
+        return 'Google Sheets';
+      case 'manual':
+        return 'Manual Table';
       default:
         return type;
     }

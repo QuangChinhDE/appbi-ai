@@ -6,6 +6,7 @@ import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { ChartTile } from './ChartTile';
 import { DashboardChart } from '@/types/api';
+import { DashboardFilter } from '@/lib/filters';
 
 const ResponsiveGridLayout = WidthProvider(Responsive);
 
@@ -14,6 +15,8 @@ interface DashboardGridProps {
   onLayoutChange: (layouts: Layout[]) => void;
   onRemoveChart: (dashboardChartId: number) => void;
   removingChartId?: number;
+  dashboardFilters?: DashboardFilter[];
+  onChartDataLoaded?: (datasetId: number, data: any[]) => void;
 }
 
 export function DashboardGrid({
@@ -21,6 +24,8 @@ export function DashboardGrid({
   onLayoutChange,
   onRemoveChart,
   removingChartId,
+  dashboardFilters = [],
+  onChartDataLoaded,
 }: DashboardGridProps) {
   // Convert backend layout to react-grid-layout format
   const layouts = dashboardCharts.map((dc) => {
@@ -83,8 +88,11 @@ export function DashboardGrid({
           <ChartTile
             chartId={dc.chart_id}
             dashboardChartId={dc.id}
+            datasetId={dc.chart?.dataset_id || 0}
             onRemove={onRemoveChart}
             isRemoving={removingChartId === dc.id}
+            dashboardFilters={dashboardFilters}
+            onDataLoaded={onChartDataLoaded}
           />
         </div>
       ))}

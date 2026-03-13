@@ -22,6 +22,14 @@ export const useDataset = (id: number) => {
   });
 };
 
+export const useDatasetDetail = (id: number | null) => {
+  return useQuery({
+    queryKey: ['datasets', id],
+    queryFn: () => datasetApi.getById(id!),
+    enabled: !!id,
+  });
+};
+
 export const useCreateDataset = () => {
   const queryClient = useQueryClient();
   
@@ -59,7 +67,15 @@ export const useDeleteDataset = () => {
 
 export const useExecuteDataset = () => {
   return useMutation({
-    mutationFn: ({ id, limit }: { id: number; limit?: number }) =>
-      datasetApi.execute(id, limit),
+    mutationFn: ({ 
+      id, 
+      limit, 
+      apply_transformations = true 
+    }: { 
+      id: number; 
+      limit?: number;
+      apply_transformations?: boolean;
+    }) =>
+      datasetApi.execute(id, limit, apply_transformations),
   });
 };

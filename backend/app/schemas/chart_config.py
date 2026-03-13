@@ -28,7 +28,24 @@ class ChartConfigBase(BaseModel):
     # Common options
     title: Optional[str] = Field(None, description="Chart title")
     filters: Optional[Dict[str, Any]] = Field(None, description="Additional filters to apply")
-    colors: Optional[List[str]] = Field(None, description="Custom color palette")
+    colors: Optional[List[str]] = Field(None, description="Custom color palette (deprecated, use color or series_colors)")
+    
+    # Color configuration
+    color: Optional[str] = Field(None, description="Single color for single-series charts (PIE, KPI)")
+    series_colors: Optional[Dict[str, str]] = Field(None, description="Per-series colors: {'sales': '#ff0000', 'profit': '#00aa88'}")
+    
+    # Theme and palette
+    palette: Optional[str] = Field(None, description="Named color palette: 'default', 'vibrant', 'classic', 'monochrome', 'pastel'")
+    color_by_dimension: Optional[str] = Field(None, description="Dimension name to use for color mapping (e.g., 'country', 'category')")
+    
+    # Explore 2.0: Advanced features
+    dimensions: Optional[List[str]] = Field(None, description="Selected dimension columns (legacy, for backward compatibility)")
+    measures: Optional[List[str]] = Field(None, description="Selected measure columns (legacy, for backward compatibility)")
+    dimension_configs: Optional[List[Dict[str, Any]]] = Field(None, description="Dimension configs with labels: [{field, label}]")
+    measure_configs: Optional[List[Dict[str, Any]]] = Field(None, description="Measure configs: [{field, agg, label}]")
+    grouping: Optional[Dict[str, Any]] = Field(None, description="Grouping config: {rowDimensions: [], columnDimension: ''}")
+    sorts: Optional[List[Dict[str, Any]]] = Field(None, description="Sort configs: [{field, direction, index}]")
+    conditional_formatting: Optional[List[Dict[str, Any]]] = Field(None, description="Conditional format rules: [{field, operator, value, color, backgroundColor}]")
     
     class Config:
         extra = "allow"  # Allow additional fields for extensibility
@@ -39,7 +56,7 @@ class DashboardChartLayout(BaseModel):
     Layout configuration for a chart in a dashboard.
     Compatible with react-grid-layout format.
     """
-    i: str = Field(..., description="Unique identifier (chart ID as string)")
+    i: Optional[str] = Field(None, description="Unique identifier (chart ID as string)")
     x: int = Field(..., ge=0, description="X position in grid (columns)")
     y: int = Field(..., ge=0, description="Y position in grid (rows)")
     w: int = Field(..., ge=1, le=12, description="Width in grid columns (1-12)")

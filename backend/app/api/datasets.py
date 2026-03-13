@@ -4,6 +4,7 @@ API router for dataset endpoints.
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
+import os
 
 from app.core import get_db
 from app.schemas import (
@@ -12,6 +13,11 @@ from app.schemas import (
     DatasetResponse,
     DatasetExecuteRequest,
     DatasetExecuteResponse,
+    DatasetPreviewRequest,
+    DatasetPreviewResponse,
+    DatasetMaterializeRequest,
+    DatasetMaterializeResponse,
+    ColumnMetadata
 )
 from app.services import DatasetService
 from app.core.logging import get_logger
@@ -87,9 +93,14 @@ def execute_dataset(
     request: DatasetExecuteRequest,
     db: Session = Depends(get_db)
 ):
-    """Execute a dataset query and return the results."""
+    """Execute a dataset query and return the results with optional transformations."""
     try:
-        result = DatasetService.execute(db, dataset_id, request.limit)
+        result = DatasetService.execute(
+            db, 
+            dataset_id, 
+            request.limit,
+            apply_transformations=request.apply_transformations
+        )
         return DatasetExecuteResponse(**result)
     except ValueError as e:
         raise HTTPException(
@@ -101,4 +112,271 @@ def execute_dataset(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Dataset execution failed: {str(e)}"
+        )
+
+
+@router.post("/preview", response_model=DatasetPreviewResponse)
+def preview_adhoc_dataset(
+    request: DatasetPreviewRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Preview an ad-hoc dataset query (without saving).
+    Used for dataset designer/creation flow.
+    """
+    from app.models import DataSource
+    
+    try:
+        # Validate required fields for ad-hoc preview
+        if not request.data_source_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="data_source_id is required for ad-hoc preview"
+            )
+        if not request.sql_query:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="sql_query is required for ad-hoc preview"
+            )
+        
+        # Get data source
+        data_source = db.query(DataSource).filter(DataSource.id == request.data_source_id).first()
+        if not data_source:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"DataSource with ID {request.data_source_id} not found"
+            )
+        
+        # Execute preview using the service with ad-hoc parameters
+        result = DatasetService.preview_adhoc(
+            db=db,
+            data_source_id=request.data_source_id,
+            sql_query=request.sql_query,
+            transformations=request.transformations or [],
+            stop_at_step_id=request.stop_at_step_id,
+            limit=request.limit
+        )
+        
+        return DatasetPreviewResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ad-hoc preview failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Preview failed: {str(e)}"
+        )
+
+
+@router.post("/{dataset_id}/preview", response_model=DatasetPreviewResponse)
+def preview_dataset(
+    dataset_id: int,
+    request: DatasetPreviewRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Preview dataset with transformations applied up to a specific step.
+    Returns column schema and sample data.
+    """
+    try:
+        # Get dataset
+        dataset = DatasetService.get_by_id(db, dataset_id)
+        if not dataset:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Dataset with ID {dataset_id} not found"
+            )
+        
+        data_source = dataset.data_source
+        
+        # Compile SQL with transformations up to stop_at_step_id
+        if request.apply_transformations and dataset.transformations:
+            from app.services.dataset_service import compile_transformed_sql
+            compiled_sql = compile_transformed_sql(
+                db,
+                dataset,
+                stop_at_step_id=request.stop_at_step_id
+            )
+        else:
+            compiled_sql = dataset.sql_query
+        
+        # Execute query with limit
+        from app.services.datasource_service import DataSourceConnectionService
+        columns, data, _ = DataSourceConnectionService.execute_query(
+            data_source.type.value,
+            data_source.config,
+            compiled_sql,
+            request.limit,
+            30  # timeout
+        )
+        
+        # Infer column schema
+        from app.services.schema_inference import infer_schema_from_sql
+        column_metadata = infer_schema_from_sql(
+            db,
+            data_source,
+            compiled_sql,
+            timeout=30
+        )
+        
+        # Include compiled SQL if debug flag is set
+        include_sql = os.environ.get('INCLUDE_COMPILED_SQL', 'false').lower() == 'true'
+        
+        return DatasetPreviewResponse(
+            columns=column_metadata,
+            data=data,
+            row_count=len(data),
+            step_id=request.stop_at_step_id,
+            compiled_sql=compiled_sql if include_sql else None
+        )
+    
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Dataset preview failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Dataset preview failed: {str(e)}"
+        )
+
+
+@router.post("/{dataset_id}/materialize", response_model=DatasetMaterializeResponse)
+def materialize_dataset(
+    dataset_id: int,
+    request: DatasetMaterializeRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Materialize dataset as VIEW or TABLE.
+    """
+    try:
+        dataset = DatasetService.get_by_id(db, dataset_id)
+        if not dataset:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Dataset with ID {dataset_id} not found"
+            )
+        
+        if request.mode not in ('none', 'view', 'table'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Mode must be 'none', 'view', or 'table'"
+            )
+        
+        # If mode is 'none', dematerialize
+        if request.mode == 'none':
+            from app.services.materialization_service import dematerialize_dataset
+            result = dematerialize_dataset(db, dataset)
+            return DatasetMaterializeResponse(
+                success=result['success'],
+                message=result['message'],
+                materialization=result.get('materialization', {})
+            )
+        
+        # Materialize as view or table
+        from app.services.materialization_service import materialize_dataset as do_materialize
+        result = do_materialize(
+            db,
+            dataset,
+            mode=request.mode,
+            custom_name=request.name,
+            custom_schema=request.schema
+        )
+        
+        return DatasetMaterializeResponse(
+            success=result['success'],
+            message=result['message'],
+            materialization=result.get('materialization', {})
+        )
+    
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Materialization failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Materialization failed: {str(e)}"
+        )
+
+
+@router.post("/{dataset_id}/refresh", response_model=DatasetMaterializeResponse)
+def refresh_dataset(
+    dataset_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Refresh materialized VIEW or TABLE.
+    """
+    try:
+        dataset = DatasetService.get_by_id(db, dataset_id)
+        if not dataset:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Dataset with ID {dataset_id} not found"
+            )
+        
+        if not dataset.materialization or dataset.materialization.get('mode') == 'none':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Dataset is not materialized"
+            )
+        
+        from app.services.materialization_service import refresh_materialized_dataset
+        result = refresh_materialized_dataset(db, dataset)
+        
+        return DatasetMaterializeResponse(
+            success=result['success'],
+            message=result['message'],
+            materialization=result.get('materialization', {})
+        )
+    
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Refresh failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Refresh failed: {str(e)}"
+        )
+
+
+@router.post("/{dataset_id}/dematerialize", response_model=DatasetMaterializeResponse)
+def dematerialize_dataset_endpoint(
+    dataset_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Dematerialize dataset (drop VIEW/TABLE).
+    """
+    try:
+        dataset = DatasetService.get_by_id(db, dataset_id)
+        if not dataset:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Dataset with ID {dataset_id} not found"
+            )
+        
+        from app.services.materialization_service import dematerialize_dataset
+        result = dematerialize_dataset(db, dataset)
+        
+        return DatasetMaterializeResponse(
+            success=result['success'],
+            message=result['message'],
+            materialization=result.get('materialization', {})
+        )
+    
+    except Exception as e:
+        logger.error(f"Dematerialization failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Dematerialization failed: {str(e)}"
         )

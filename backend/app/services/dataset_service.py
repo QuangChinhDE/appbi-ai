@@ -1,9 +1,10 @@
 """
 CRUD service for datasets.
 """
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+import os
 
 from app.models import Dataset
 from app.schemas import DatasetCreate, DatasetUpdate
@@ -13,6 +14,48 @@ from app.services.sql_validator import validate_select_only
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def compile_transformed_sql(
+    db: Session,
+    dataset: Dataset,
+    stop_at_step_id: Optional[str] = None
+) -> str:
+    """
+    Compile dataset SQL with transformations applied.
+    
+    Args:
+        db: Database session (required for join steps)
+        dataset: Dataset model instance
+        stop_at_step_id: Optional step ID to stop compilation at (for preview)
+    
+    Returns:
+        Compiled SQL string
+    """
+    if not dataset.transformations:
+        return dataset.sql_query
+    
+    version = dataset.transformation_version or 1
+    
+    if version == 2:
+        # Use v2 compiler
+        from app.services.transform_compiler_v2 import compile_pipeline_sql
+        return compile_pipeline_sql(
+            base_sql=dataset.sql_query,
+            transformations=dataset.transformations,
+            datasource_type=dataset.data_source.type.value,
+            stop_at_step_id=stop_at_step_id,
+            dataset_id=dataset.id,
+            db=db
+        )
+    else:
+        # Use v1 compiler (backward compatibility)
+        from app.services.transform_compiler import TransformCompiler
+        compiler = TransformCompiler(dataset.data_source.type.value)
+        return compiler.compile_transformations(
+            dataset.sql_query,
+            dataset.transformations
+        )
 
 
 class DatasetService:
@@ -127,18 +170,63 @@ class DatasetService:
         return True
     
     @staticmethod
-    def execute(db: Session, dataset_id: int, limit: Optional[int] = None, timeout_seconds: int = 30):
-        """Execute a dataset query and return results."""
+    def execute(
+        db: Session, 
+        dataset_id: int, 
+        limit: Optional[int] = None, 
+        timeout_seconds: int = 30,
+        apply_transformations: bool = True
+    ):
+        """Execute a dataset query and return results with optional transformations."""
         db_dataset = DatasetService.get_by_id(db, dataset_id)
         if not db_dataset:
             raise ValueError(f"Dataset with ID {dataset_id} not found")
         
         data_source = db_dataset.data_source
         
+        # Determine final SQL query
+        final_sql = db_dataset.sql_query
+        
+        # Check if materialized view/table exists and should be used
+        if db_dataset.materialization:
+            mat = db_dataset.materialization
+            if mat.get('mode') in ('view', 'table') and mat.get('name'):
+                # Use materialized object instead of compiling
+                schema = mat.get('schema', '')
+                mat_name = mat['name']
+                
+                if schema:
+                    final_sql = f"SELECT * FROM {schema}.{mat_name}"
+                else:
+                    final_sql = f"SELECT * FROM {mat_name}"
+                
+                logger.info(f"Using materialized {mat['mode']}: {mat_name}")
+            else:
+                # No valid materialization, compile normally
+                if apply_transformations and db_dataset.transformations:
+                    try:
+                        final_sql = compile_transformed_sql(db, db_dataset)
+                        logger.info(f"Applied {len(db_dataset.transformations)} transformations to dataset {dataset_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to compile transformations: {str(e)}")
+                        final_sql = db_dataset.sql_query
+        else:
+            # No materialization, compile with transformations if enabled
+            if apply_transformations and db_dataset.transformations:
+                try:
+                    final_sql = compile_transformed_sql(db, db_dataset)
+                    logger.info(f"Applied {len(db_dataset.transformations)} transformations to dataset {dataset_id}")
+                except Exception as e:
+                    logger.error(f"Failed to compile transformations: {str(e)}")
+                    final_sql = db_dataset.sql_query
+        
+        # Validate final SQL is SELECT-only
+        validate_select_only(final_sql)
+        
         columns, data, execution_time = DataSourceConnectionService.execute_query(
             data_source.type.value,
             data_source.config,
-            db_dataset.sql_query,
+            final_sql,
             limit,
             timeout_seconds
         )
@@ -147,4 +235,84 @@ class DatasetService:
             "columns": columns,
             "data": data,
             "row_count": len(data)
+        }
+    
+    @staticmethod
+    def preview_adhoc(
+        db: Session,
+        data_source_id: int,
+        sql_query: str,
+        transformations: Optional[List[Dict[str, Any]]] = None,
+        stop_at_step_id: Optional[str] = None,
+        limit: int = 500,
+        timeout_seconds: int = 30
+    ):
+        """
+        Preview an ad-hoc dataset query without saving it.
+        Used for live preview during dataset creation.
+        
+        Args:
+            db: Database session
+            data_source_id: ID of the data source
+            sql_query: SQL query to execute
+            transformations: Optional transformation steps
+            stop_at_step_id: Optional step ID to stop compilation at
+            limit: Maximum rows to return
+            timeout_seconds: Query timeout
+            
+        Returns:
+            Dict with columns, data, row_count, and compiled_sql
+        """
+        # Validate SQL query is SELECT-only
+        validate_select_only(sql_query)
+        
+        # Get data source
+        data_source = DataSourceCRUDService.get_by_id(db, data_source_id)
+        if not data_source:
+            raise ValueError(f"Data source with ID {data_source_id} not found")
+        
+        # Determine final SQL query
+        final_sql = sql_query
+        
+        # Apply transformations if provided
+        if transformations:
+            version = 2  # Use v2 compiler for all new/adhoc datasets
+            
+            from app.services.transform_compiler_v2 import compile_pipeline_sql
+            try:
+                final_sql = compile_pipeline_sql(
+                    base_sql=sql_query,
+                    transformations=transformations,
+                    datasource_type=data_source.type.value,
+                    stop_at_step_id=stop_at_step_id,
+                    dataset_id=None,  # No dataset ID for ad-hoc preview
+                    db=db
+                )
+                logger.info(f"Compiled {len(transformations)} transformations for ad-hoc preview")
+            except Exception as e:
+                logger.error(f"Failed to compile transformations: {str(e)}")
+                raise ValueError(f"Failed to compile transformations: {str(e)}")
+        
+        # Validate final SQL is SELECT-only
+        validate_select_only(final_sql)
+        
+        # Execute query
+        try:
+            columns, data, execution_time = DataSourceConnectionService.execute_query(
+                data_source.type.value,
+                data_source.config,
+                final_sql,
+                limit,
+                timeout_seconds
+            )
+        except Exception as e:
+            logger.error(f"Failed to execute ad-hoc preview query: {str(e)}")
+            raise ValueError(f"Failed to execute query: {str(e)}")
+        
+        return {
+            "columns": columns,
+            "data": data,
+            "row_count": len(data),
+            "compiled_sql": final_sql,
+            "step_id": stop_at_step_id
         }

@@ -45,6 +45,10 @@ export default function DataSourceForm({
         setConfig({ host: 'localhost', port: 3306, database: '', username: '', password: '' });
       } else if (type === DataSourceType.BIGQUERY) {
         setConfig({ project_id: '', credentials_json: '', default_dataset: '' });
+      } else if (type === DataSourceType.GOOGLE_SHEETS) {
+        setConfig({ credentials_json: '', spreadsheet_id: '', sheet_name: '' });
+      } else if (type === DataSourceType.MANUAL) {
+        setConfig({ columns: [], rows: [] });
       }
     }
   }, [type, initialData]);
@@ -188,6 +192,70 @@ export default function DataSourceForm({
           </div>
         </>
       );
+    } else if (type === DataSourceType.GOOGLE_SHEETS) {
+      return (
+        <>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Service Account JSON
+            </label>
+            <textarea
+              value={config.credentials_json || ''}
+              onChange={(e) => handleConfigChange('credentials_json', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+              placeholder='{"type": "service_account", "project_id": "...", ...}'
+              rows={8}
+              required
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Paste your Google Service Account JSON credentials
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Spreadsheet ID
+            </label>
+            <input
+              type="text"
+              value={config.spreadsheet_id || ''}
+              onChange={(e) => handleConfigChange('spreadsheet_id', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
+              required
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Found in the URL: docs.google.com/spreadsheets/d/<strong>SPREADSHEET_ID</strong>/edit
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Sheet Name (Optional)
+            </label>
+            <input
+              type="text"
+              value={config.sheet_name || ''}
+              onChange={(e) => handleConfigChange('sheet_name', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Sheet1"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Leave empty to use the first sheet
+            </p>
+          </div>
+        </>
+      );
+    } else if (type === DataSourceType.MANUAL) {
+      return (
+        <>
+          <div className="border border-blue-200 bg-blue-50 p-4 rounded-md">
+            <p className="text-sm text-blue-800">
+              <strong>Manual Table:</strong> You'll be able to define columns and enter data directly after creating the datasource.
+            </p>
+          </div>
+        </>
+      );
     }
   };
 
@@ -220,6 +288,8 @@ export default function DataSourceForm({
           <option value={DataSourceType.POSTGRESQL}>PostgreSQL</option>
           <option value={DataSourceType.MYSQL}>MySQL</option>
           <option value={DataSourceType.BIGQUERY}>BigQuery</option>
+          <option value={DataSourceType.GOOGLE_SHEETS}>Google Sheets</option>
+          <option value={DataSourceType.MANUAL}>Manual Table</option>
         </select>
         {initialData && (
           <p className="text-xs text-gray-500 mt-1">Type cannot be changed after creation</p>

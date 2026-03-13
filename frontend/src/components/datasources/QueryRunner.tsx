@@ -103,12 +103,12 @@ export default function QueryRunner({
           <textarea
             value={sqlQuery}
             onChange={(e) => setSqlQuery(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+            className="w-full min-h-[200px] px-3 py-2 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
             rows={6}
             placeholder="SELECT * FROM table_name WHERE condition"
           />
           <p className="text-xs text-gray-500 mt-1">
-            Only SELECT queries are allowed for safety
+            💡 Only SELECT queries are supported
           </p>
         </div>
 

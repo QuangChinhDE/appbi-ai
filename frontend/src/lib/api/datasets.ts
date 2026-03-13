@@ -34,8 +34,15 @@ export const datasetApi = {
     await apiClient.delete(`/datasets/${id}`);
   },
 
-  execute: async (id: number, limit?: number): Promise<DatasetExecuteResponse> => {
-    const response = await apiClient.post(`/datasets/${id}/execute`, { limit });
+  execute: async (
+    id: number, 
+    limit?: number,
+    apply_transformations: boolean = true
+  ): Promise<DatasetExecuteResponse> => {
+    const response = await apiClient.post(`/datasets/${id}/execute`, { 
+      limit,
+      apply_transformations
+    });
     return response.data;
   },
 };

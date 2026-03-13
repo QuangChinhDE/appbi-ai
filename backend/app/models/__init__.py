@@ -10,6 +10,25 @@ from app.models.models import (
     Dashboard,
     DashboardChart,
 )
+from app.models.semantic import (
+    SemanticView,
+    SemanticModel,
+    SemanticExplore,
+)
+from app.models.dataset_model import (
+    DatasetModel,
+    DatasetTable as DatasetModelTable,
+    DatasetRelationship,
+    DatasetCalculatedColumn,
+    TableRole,
+    JoinType,
+)
+from app.models.dataset_workspace import (
+    DatasetWorkspace,
+    DatasetWorkspaceTable,
+)
+# Commented out - using hybrid approach with filters_config JSON field instead
+# from app.models.dashboard_filter import DashboardFilter
 
 __all__ = [
     "DataSource",
@@ -19,4 +38,11 @@ __all__ = [
     "ChartType",
     "Dashboard",
     "DashboardChart",
+    "SemanticView",
+    "SemanticModel",
+    "DatasetModelTable",
+    "DatasetWorkspace",
+    "DatasetWorkspaceTable",
+    "SemanticExplore",
+    # "DashboardFilter",  # Commented out - using filters_config JSON field
 ]
