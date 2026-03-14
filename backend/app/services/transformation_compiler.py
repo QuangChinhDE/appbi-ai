@@ -46,7 +46,11 @@ class TransformationCompiler:
                 
             t_type = transformation.get("type")
             params = transformation.get("params", {})
-            
+
+            # js_formula columns are evaluated client-side — skip silently
+            if t_type == "js_formula":
+                continue
+
             if t_type == "select_columns":
                 # Filter columns
                 selected_columns = params.get("columns", [])

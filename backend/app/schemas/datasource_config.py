@@ -1,7 +1,7 @@
 """
 Type-safe configuration models for different data source types.
 """
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Optional
 
 
@@ -77,7 +77,13 @@ class BigQueryConfig(BaseModel):
 
 
 class GoogleSheetsConfig(BaseModel):
-    """Google Sheets connection configuration."""
+    """Google Sheets connection configuration.
+
+    Extra fields (e.g. 'sheets' snapshot cache) are preserved so that
+    snapshotted sheet data survives the Pydantic validation round-trip.
+    """
+    model_config = ConfigDict(extra='allow')
+
     credentials_json: str = Field(..., description="Service account JSON as string")
     spreadsheet_id: str = Field(..., description="Google Sheets spreadsheet ID")
     sheet_name: Optional[str] = Field(None, description="Sheet name (optional, uses first sheet if not provided)")
@@ -102,9 +108,16 @@ class GoogleSheetsConfig(BaseModel):
 
 
 class ManualConfig(BaseModel):
-    """Manual table configuration."""
-    columns: list = Field(default_factory=list, description="List of column definitions")
-    rows: list = Field(default_factory=list, description="List of row data")
+    """Manual table configuration.
+
+    Accepts both formats and preserves all fields:
+      New:    {"sheets": {"SheetName": {"columns": [...], "rows": [...]}, ...}}
+      Legacy: {"columns": [...], "rows": [...]}
+    """
+    model_config = ConfigDict(extra='allow')
+
+    columns: list = Field(default_factory=list)
+    rows: list = Field(default_factory=list)
 
 
 def validate_datasource_config(ds_type: str, config: dict) -> dict:

@@ -354,7 +354,8 @@ export default function DataSourceForm({
           {/* Preview after import */}
           {importPreview && (() => {
             const sheetNames = Object.keys(importPreview.sheets);
-            const active = importPreview.sheets[importPreview.activeSheet];
+            const active = importPreview.sheets[importPreview.activeSheet] ?? importPreview.sheets[sheetNames[0]];
+            if (!active) return null;
             return (
               <div className="border border-green-200 bg-green-50 rounded-lg overflow-hidden">
                 {/* Header */}

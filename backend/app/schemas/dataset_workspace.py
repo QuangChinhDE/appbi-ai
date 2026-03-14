@@ -68,6 +68,8 @@ class TableUpdate(BaseModel):
     display_name: Optional[str] = None
     enabled: Optional[bool] = None
     transformations: Optional[List[Dict[str, Any]]] = None
+    type_overrides: Optional[Dict[str, str]] = Field(default=None, description="User-defined column type overrides, e.g. {'price': 'float', 'created_at': 'date'}")
+    column_formats: Optional[Dict[str, Any]] = Field(default=None, description="Full display format config per column")
 
 
 class TableResponse(WorkspaceTableBase):
@@ -81,6 +83,8 @@ class TableResponse(WorkspaceTableBase):
     transformations: Optional[List[Dict[str, Any]]] = None
     columns_cache: Optional[Dict[str, Any]] = None
     sample_cache: Optional[List[Dict[str, Any]]] = None
+    type_overrides: Optional[Dict[str, str]] = None
+    column_formats: Optional[Dict[str, Any]] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

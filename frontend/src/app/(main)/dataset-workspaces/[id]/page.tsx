@@ -11,16 +11,59 @@ import {
   Database, 
   RefreshCw, 
   ChevronLeft,
-  MoreVertical,
   Loader2,
   Columns,
+  Trash2,
+  AlertTriangle,
+  X,
 } from 'lucide-react';
-import { useWorkspace, useTablePreview, useUpdateTable } from '@/hooks/use-dataset-workspaces';
+import { useWorkspace, useTablePreview, useUpdateTable, useRemoveTable } from '@/hooks/use-dataset-workspaces';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
 import { AddTableModal } from '@/components/datasets/AddTableModalV2';
 import { ManageColumnsDrawer } from '@/components/datasets/ManageColumnsDrawer';
-import { AddColumnModal } from '@/components/datasets/AddColumnModal';
+import { AddColumnModal, buildFNS } from '@/components/datasets/AddColumnModal';
 import type { Transformation } from '@/hooks/use-dataset-workspaces';
+
+// Inline Excel formula evaluator (mirrors AddColumnModal's evalExcelFormula)
+function evalExcelFormulaInPage(
+  formula: string,
+  row: Record<string, any>,
+  fns: Record<string, Function>
+): { ok: true; value: any } | { ok: false; error: string } {
+  try {
+    const colMap: Record<string, string> = {};
+    let idx = 0;
+    let expr = formula.replace(/\[([^\]]+)\]/g, (_m: string, name: string) => {
+      const key = `__COL${idx++}__`;
+      colMap[key] = name;
+      return key;
+    });
+    const strings: string[] = [];
+    expr = expr.replace(/"([^"]*)"/g, (_m: string, s: string) => {
+      strings.push(s);
+      return `__STR${strings.length - 1}__`;
+    });
+    expr = expr
+      .replace(/<>/g, '!==')
+      .replace(/(?<![<>!=])=(?![>=])/g, '===')
+      .replace(/&/g, '+')
+      .replace(/\bTRUE\b/gi, 'true')
+      .replace(/\bFALSE\b/gi, 'false');
+    expr = expr.replace(/\b([A-Z][A-Z0-9_]*)\s*\(/g, (m: string, name: string) => {
+      if (name in fns) return `__FN.${name}(`;
+      return m;
+    });
+    expr = expr.replace(/__STR(\d+)__/g, (_m: string, i: string) => JSON.stringify(strings[Number(i)]));
+    for (const [key, colName] of Object.entries(colMap)) {
+      expr = expr.replace(new RegExp(key, 'g'), `__ROW[${JSON.stringify(colName)}]`);
+    }
+    // eslint-disable-next-line no-new-func
+    const fn = new Function('__ROW', '__FN', `return (${expr});`);
+    return { ok: true, value: fn(row, fns) };
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) };
+  }
+}
 
 export default function WorkspaceDetailPage() {
   const params = useParams();
@@ -32,7 +75,11 @@ export default function WorkspaceDetailPage() {
   const [isAddTableModalOpen, setIsAddTableModalOpen] = useState(false);
   const [isManageColumnsOpen, setIsManageColumnsOpen] = useState(false);
   const [isAddColumnModalOpen, setIsAddColumnModalOpen] = useState(false);
+  const [editingColumnStep, setEditingColumnStep] = useState<Transformation | null>(null);
   const [tableSearchQuery, setTableSearchQuery] = useState('');
+  const [tableToDelete, setTableToDelete] = useState<{ id: number; name: string } | null>(null);
+  const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
+  const [isDeletingTable, setIsDeletingTable] = useState(false);
 
   // Fetch workspace with tables
   const { 
@@ -71,6 +118,7 @@ export default function WorkspaceDetailPage() {
 
   // Update table mutation
   const updateTableMutation = useUpdateTable();
+  const removeTableMutation = useRemoveTable();
 
   // Handle table addition success
   const handleTableAddSuccess = () => {
@@ -98,58 +146,199 @@ export default function WorkspaceDetailPage() {
     refetchWorkspace();
   };
 
-  // Handle remove column
-  const handleRemoveColumn = async (columnName: string) => {
-    if (!selectedTable || !workspaceId || !selectedTableId) return;
+  // Handle table deletion with dependency check
+  const handleDeleteTable = async () => {
+    if (!workspaceId || !tableToDelete) return;
+    setIsDeletingTable(true);
+    try {
+      await removeTableMutation.mutateAsync({
+        workspaceId,
+        tableId: tableToDelete.id,
+      });
+      // Select another table if the deleted one was selected
+      if (selectedTableId === tableToDelete.id) {
+        const remaining = (workspace?.tables ?? []).filter((t: any) => t.id !== tableToDelete.id);
+        setSelectedTableId(remaining.length > 0 ? remaining[0].id : null);
+      }
+      setTableToDelete(null);
+      setDeleteConstraints(null);
+    } catch (err: any) {
+      const data = err?.response?.data;
+      if (data?.detail?.constraints) {
+        setDeleteConstraints(data.detail.constraints);
+      } else {
+        alert(data?.detail?.message ?? data?.detail ?? 'Không thể xóa bảng.');
+        setTableToDelete(null);
+      }
+    } finally {
+      setIsDeletingTable(false);
+    }
+  };
 
-    // Get existing transformations
-    const existingTransforms = selectedTable.transformations || [];
-
-    // Get current select_columns transformation
-    const selectTransform = existingTransforms.find(
-      (t) => t.type === 'select_columns' && t.enabled
-    );
-
-    // Get all columns
-    const allColumns = previewData?.columns.map(c => c.name) || [];
-    
-    // Determine selected columns
-    let selectedColumns: string[];
-    if (selectTransform && selectTransform.params.columns) {
-      selectedColumns = selectTransform.params.columns;
+  // Handle full format change (decimal places, separator, etc.) — persists to DB
+  const handleColumnFormatChange = async (colName: string, fmt: Record<string, any> | null) => {
+    if (!workspaceId || !selectedTableId) return;
+    const current: Record<string, any> = (selectedTable as any)?.column_formats ?? {};
+    let updated: Record<string, any>;
+    if (fmt === null) {
+      updated = { ...current };
+      delete updated[colName];
     } else {
-      selectedColumns = allColumns;
+      updated = { ...current, [colName]: fmt };
     }
+    await updateTableMutation.mutateAsync({
+      workspaceId,
+      tableId: selectedTableId,
+      input: { column_formats: updated },
+    });
+    refetchWorkspace();
+  };
 
-    // Remove the column
-    const updatedColumns = selectedColumns.filter(col => col !== columnName);
-
-    if (updatedColumns.length === 0) {
-      alert('Cannot remove all columns. At least one column must remain.');
-      return;
-    }
-
-    // Update transformations
-    const filteredTransforms = existingTransforms.filter(
-      (t) => t.type !== 'select_columns'
+  // Handle deleting a computed column directly from the grid format popover
+  const handleDeleteColumn = async (colName: string) => {
+    if (!workspaceId || !selectedTableId || !selectedTable) return;
+    const existing: Transformation[] = selectedTable.transformations || [];
+    const updated = existing.filter(
+      (t) =>
+        !(
+          (t.type === 'js_formula' || t.type === 'add_column') &&
+          t.params?.newField === colName
+        )
     );
+    // Also remove from select_columns list if present
+    const withSelectFixed = updated.map((t) => {
+      if (t.type === 'select_columns' && Array.isArray(t.params?.columns)) {
+        return { ...t, params: { ...t.params, columns: t.params.columns.filter((c: string) => c !== colName) } };
+      }
+      return t;
+    });
+    await updateTableMutation.mutateAsync({
+      workspaceId,
+      tableId: selectedTableId,
+      input: { transformations: withSelectFixed },
+    });
+    refetchWorkspace();
+    refetchPreview();
+  };
 
-    const newTransform: Transformation = {
-      type: 'select_columns',
-      enabled: true,
-      params: {
-        columns: updatedColumns,
-      },
-    };
+  // Handle editing an existing computed column's formula
+  const handleEditColumn = (colName: string) => {
+    if (!selectedTable) return;
+    const step = (selectedTable.transformations ?? []).find(
+      (t) => t.type === 'js_formula' && t.params?.newField === colName
+    ) ?? null;
+    setEditingColumnStep(step);
+    setIsAddColumnModalOpen(true);
+  };
 
-    const updatedTransforms = [newTransform, ...filteredTransforms];
-
-    await handleSaveTransformations(updatedTransforms);
+  // Handle column type override from format panel
+  const handleTypeOverride = async (colName: string, backendType: string | null) => {
+    if (!workspaceId || !selectedTableId) return;
+    const current: Record<string, string> = (selectedTable as any)?.type_overrides ?? {};
+    let updated: Record<string, string>;
+    if (backendType === null) {
+      updated = { ...current };
+      delete updated[colName];
+    } else {
+      updated = { ...current, [colName]: backendType };
+    }
+    await updateTableMutation.mutateAsync({
+      workspaceId,
+      tableId: selectedTableId,
+      input: { type_overrides: updated },
+    });
+    refetchWorkspace();
+    refetchPreview();
   };
 
   const selectedTable = workspace?.tables?.find((t: any) => t.id === selectedTableId);
 
-  // Loading state
+  // Names of columns produced by js_formula OR add_column transformations (deletable in drawer)
+  const computedColumnNames = useMemo(() => {
+    return (selectedTable?.transformations ?? [])
+      .filter((t: any) =>
+        (t.type === 'js_formula' || t.type === 'add_column') &&
+        t.enabled !== false &&
+        t.params?.newField
+      )
+      .map((t: any) => t.params.newField as string);
+  }, [selectedTable?.transformations]);
+
+  /**
+   * Lookup data for cross-table LOOKUP() use in formulas.
+   * Keyed by each other table's display label; value = their sample_cache rows.
+   * sample_cache holds the first 10 rows cached on last preview.
+   */
+  const workspaceLookupData = useMemo(() => {
+    const result: Record<string, Record<string, any>[]> = {};
+    for (const t of workspace?.tables ?? []) {
+      if (t.id === selectedTableId) continue; // skip current table
+      const label = (t as any).display_name || (t as any).source_table_name || String(t.id);
+      const rows: Record<string, any>[] = (t as any).sample_cache ?? [];
+      if (rows.length > 0) result[label] = rows;
+    }
+    return result;
+  }, [workspace?.tables, selectedTableId]);
+
+  // Apply js_formula transformations client-side on top of server preview rows
+  const computedPreviewData = useMemo(() => {
+    if (!previewData) return previewData;
+    const jsSteps = (selectedTable?.transformations ?? []).filter(
+      (t: any) => t.type === 'js_formula' && t.enabled !== false && t.params?.newField && (t.params?.code || t.params?.formula)
+    );
+    if (jsSteps.length === 0) return previewData;
+
+    const augmentedRows = previewData.rows.map((row, idx) => {
+      const out = { ...row };
+      const fns = buildFNS(workspaceLookupData);
+      for (const step of jsSteps) {
+        try {
+          const { code, formula, newField } = step.params as { code?: string; formula?: string; newField: string };
+          if (formula) {
+            const result = evalExcelFormulaInPage(formula, out, fns);
+            if (result.ok) out[newField] = result.value;
+          } else if (code) {
+            const body = code.trim().includes('return') ? code : `return (${code})`;
+            // eslint-disable-next-line no-new-func
+            const fn = new Function('$row', '$index', body);
+            out[newField] = fn(out, idx);
+          }
+        } catch {
+          // leave column as undefined on error
+        }
+      }
+      return out;
+    });
+
+    const addedCols = jsSteps.map((s: any) => ({ name: s.params.newField, type: 'string', nullable: true }));
+    return {
+      ...previewData,
+      rows: augmentedRows,
+      columns: [...previewData.columns, ...addedCols],
+    };
+  }, [previewData, selectedTable?.transformations, workspaceLookupData]);
+
+  /**
+   * Column groups for the formula modal:
+   * - Group 1: current table's columns (from computedPreviewData)
+   * - Group N: each other table with cached columns (columns_cache)
+   */
+  const modalColumnGroups = useMemo(() => {
+    const currentCols = (computedPreviewData?.columns ?? []).map((c) => c.name);
+    const groups: { sourceLabel: string; columns: string[] }[] = [
+      { sourceLabel: (selectedTable as any)?.display_name || (selectedTable as any)?.source_table_name || 'Bảng hiện tại', columns: currentCols },
+    ];
+    for (const t of workspace?.tables ?? []) {
+      if (t.id === selectedTableId) continue;
+      const label = (t as any).display_name || (t as any).source_table_name || String(t.id);
+      const cachedCols: string[] = ((t as any).columns_cache?.columns ?? []).map((c: any) => c.name);
+      if (cachedCols.length > 0) {
+        groups.push({ sourceLabel: `${label} (lookup)`, columns: cachedCols });
+      }
+    }
+    return groups.filter((g) => g.columns.length > 0);
+  }, [computedPreviewData?.columns, workspace?.tables, selectedTableId, selectedTable]);
+
   if (loadingWorkspace) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -231,14 +420,14 @@ export default function WorkspaceDetailPage() {
           ) : (
             <div className="p-2">
               {filteredTables.map((table: any) => (
-                <button
+                <div
                   key={table.id}
-                  onClick={() => setSelectedTableId(table.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-left transition-colors ${
+                  className={`group relative w-full flex items-center gap-3 px-3 py-2 rounded-md text-left transition-colors cursor-pointer ${
                     selectedTableId === table.id
                       ? 'bg-blue-50 text-blue-900'
                       : 'hover:bg-gray-100 text-gray-900'
                   }`}
+                  onClick={() => setSelectedTableId(table.id)}
                 >
                   <Database className="w-4 h-4 flex-shrink-0 text-gray-400" />
                   <div className="flex-1 min-w-0">
@@ -251,16 +440,21 @@ export default function WorkspaceDetailPage() {
                       </div>
                     )}
                   </div>
-                  <div
+                  <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      // TODO: Show menu
+                      setDeleteConstraints(null);
+                      setTableToDelete({
+                        id: table.id,
+                        name: table.display_name || table.source_table_name,
+                      });
                     }}
-                    className="p-1 hover:bg-gray-200 rounded opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                    className="p-1 hover:bg-red-100 rounded opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-red-600"
+                    title="Xóa bảng"
                   >
-                    <MoreVertical className="w-4 h-4 text-gray-400" />
-                  </div>
-                </button>
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               ))}
             </div>
           )}
@@ -365,13 +559,19 @@ export default function WorkspaceDetailPage() {
             {/* Grid Body */}
             <div className="flex-1 overflow-auto p-6">
               <DatasetTableGrid
-                columns={previewData?.columns || []}
-                rows={previewData?.rows || []}
+                columns={computedPreviewData?.columns || []}
+                rows={computedPreviewData?.rows || []}
                 isLoading={loadingPreview}
                 error={previewError instanceof Error ? previewError.message : null}
                 onRetry={() => refetchPreview()}
                 onAddColumn={() => setIsAddColumnModalOpen(true)}
-                onRemoveColumn={handleRemoveColumn}
+                onDeleteColumn={handleDeleteColumn}
+                onEditColumn={handleEditColumn}
+                computedColumns={computedColumnNames}
+                typeOverrides={(selectedTable as any)?.type_overrides}
+                onTypeOverride={handleTypeOverride}
+                columnFormatsDb={(selectedTable as any)?.column_formats}
+                onColumnFormatChange={handleColumnFormatChange}
               />
             </div>
           </>
@@ -390,7 +590,8 @@ export default function WorkspaceDetailPage() {
       {selectedTable && (
         <ManageColumnsDrawer
           table={selectedTable}
-          allColumns={(previewData?.columns || []).map((c) => c.name)}
+          allColumns={(computedPreviewData?.columns || []).map((c) => c.name)}
+          computedColumns={computedColumnNames}
           isOpen={isManageColumnsOpen}
           onClose={() => setIsManageColumnsOpen(false)}
           onSave={handleSaveTransformations}
@@ -401,10 +602,95 @@ export default function WorkspaceDetailPage() {
       {selectedTable && (
         <AddColumnModal
           table={selectedTable}
+          allColumns={(computedPreviewData?.columns || []).map((c) => c.name)}
+          columnGroups={modalColumnGroups}
+          previewRows={computedPreviewData?.rows || []}
+          lookupData={workspaceLookupData}
           isOpen={isAddColumnModalOpen}
-          onClose={() => setIsAddColumnModalOpen(false)}
+          onClose={() => { setIsAddColumnModalOpen(false); setEditingColumnStep(null); }}
           onSave={handleSaveTransformations}
+          editingStep={editingColumnStep}
         />
+      )}
+
+      {/* Delete Table Modal */}
+      {tableToDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
+            {deleteConstraints ? (
+              // ---- Constraint error view ----
+              <>
+                <div className="flex items-start gap-3 mb-4">
+                  <AlertTriangle className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <h2 className="text-lg font-semibold text-gray-900">Không thể xóa bảng</h2>
+                    <p className="text-sm text-gray-600 mt-1">
+                      Bảng <span className="font-medium">&ldquo;{tableToDelete.name}&rdquo;</span> đang được sử dụng bởi:
+                    </p>
+                  </div>
+                </div>
+                <ul className="mb-6 space-y-2">
+                  {deleteConstraints.map((c: any, i: number) => (
+                    <li key={i} className="flex items-center gap-2 text-sm bg-red-50 rounded-lg px-3 py-2">
+                      {c.type === 'chart' ? (
+                        <>
+                          <span className="text-xs font-semibold uppercase text-red-500 bg-red-100 rounded px-1.5 py-0.5">Chart</span>
+                          <span className="text-gray-800">{c.name}</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-xs font-semibold uppercase text-amber-600 bg-amber-100 rounded px-1.5 py-0.5">LOOKUP</span>
+                          <span className="text-gray-800">Bảng <strong>{c.table_name}</strong>, cột <strong>{c.column}</strong></span>
+                        </>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-gray-500 mb-4">
+                  Hãy xóa hoặc cập nhật các ràng buộc trên trước khi xóa bảng này.
+                </p>
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => { setTableToDelete(null); setDeleteConstraints(null); }}
+                    className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium"
+                  >
+                    Đóng
+                  </button>
+                </div>
+              </>
+            ) : (
+              // ---- Confirmation view ----
+              <>
+                <div className="flex items-start gap-3 mb-4">
+                  <Trash2 className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <h2 className="text-lg font-semibold text-gray-900">Xóa bảng?</h2>
+                    <p className="text-sm text-gray-600 mt-1">
+                      Bạn có chắc muốn xóa bảng <span className="font-medium">&ldquo;{tableToDelete.name}&rdquo;</span>? Hành động này không thể hoàn tác.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex justify-end gap-3">
+                  <button
+                    onClick={() => setTableToDelete(null)}
+                    disabled={isDeletingTable}
+                    className="px-4 py-2 text-sm text-gray-700 hover:text-gray-900 disabled:opacity-50"
+                  >
+                    Hủy
+                  </button>
+                  <button
+                    onClick={handleDeleteTable}
+                    disabled={isDeletingTable}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {isDeletingTable && <Loader2 className="w-4 h-4 animate-spin" />}
+                    Xóa bảng
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

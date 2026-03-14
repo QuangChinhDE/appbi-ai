@@ -692,33 +692,41 @@ class DataSourceConnectionService:
         config: Dict[str, Any],
         search_query: str = None
     ) -> List[Dict[str, str]]:
-        """List sheets from Google Sheets."""
+        """List sheets from Google Sheets.
+
+        Prefers the local snapshot in config['sheets'] so no live API call is
+        made after the first connection.  Falls back to a live API call when
+        the snapshot is absent (e.g. datasources created before this change).
+        """
         try:
-            from app.services.google_sheets_connector import create_google_sheets_connector
-            
-            connector = create_google_sheets_connector(config)
-            spreadsheet_id = config.get('spreadsheet_id')
-            
-            if not spreadsheet_id:
-                raise ValueError("spreadsheet_id is required")
-            
-            # Get list of sheets
-            sheets = connector.list_sheets(spreadsheet_id)
-            
+            spreadsheet_id = config.get('spreadsheet_id', '')
+
+            # --- use cached snapshot if available ---
+            cached_sheets = config.get('sheets')
+            if cached_sheets:
+                sheet_names = list(cached_sheets.keys())
+                logger.info(f"Google Sheets list from cache: {len(sheet_names)} sheets")
+            else:
+                # fallback: live API call
+                from app.services.google_sheets_connector import create_google_sheets_connector
+                if not spreadsheet_id:
+                    raise ValueError("spreadsheet_id is required")
+                connector = create_google_sheets_connector(config)
+                sheet_names = connector.list_sheets(spreadsheet_id)
+                logger.info(f"Google Sheets list via API: {len(sheet_names)} sheets")
+
             tables = []
-            for sheet_name in sheets:
+            for sheet_name in sheet_names:
                 if search_query and search_query.lower() not in sheet_name.lower():
                     continue
-                
                 tables.append({
                     "name": sheet_name,
                     "schema": spreadsheet_id,
                     "type": "sheet"
                 })
-            
-            logger.info(f"Google Sheets listed: {len(tables)}")
+
             return tables
-            
+
         except Exception as e:
             logger.error(f"Google Sheets list failed: {str(e)}")
             raise
@@ -751,28 +759,55 @@ class DataSourceConnectionService:
         sql_query: str,
         limit: int = None
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
-        """Execute query against Google Sheets (fetches sheet data)."""
+        """Execute query against Google Sheets.
+
+        Sheet resolution order:
+          1. Parse the sheet name from the SQL (e.g. SELECT * FROM "Sheet1")
+          2. Look it up in the local snapshot (config['sheets']) — no API call
+          3. Fall back to a live API call when the snapshot is missing
+        """
         try:
-            from app.services.google_sheets_connector import create_google_sheets_connector
-            
-            connector = create_google_sheets_connector(config)
-            spreadsheet_id = config.get('spreadsheet_id')
-            sheet_name = config.get('sheet_name')
-            
-            # Parse simple table name from query if possible
-            # For now, just fetch the configured sheet
-            data = connector.get_sheet_data(spreadsheet_id, sheet_name=sheet_name)
-            
-            columns = [col['name'] for col in data['columns']]
-            rows = data['rows']
-            
-            # Apply limit if specified
+            from app.services.manual_table_connector import extract_sheet_name_from_sql
+
+            # Determine which sheet the query is targeting
+            parsed_name = extract_sheet_name_from_sql(sql_query)
+            # extract_sheet_name_from_sql returns 'manual_data' as sentinel when not found
+            sheet_name = parsed_name if (parsed_name and parsed_name != 'manual_data') \
+                else config.get('sheet_name')
+
+            cached_sheets = config.get('sheets')
+
+            if cached_sheets:
+                # Resolve sheet: exact match → first available
+                if sheet_name and sheet_name in cached_sheets:
+                    sheet_data = cached_sheets[sheet_name]
+                elif cached_sheets:
+                    first = next(iter(cached_sheets))
+                    logger.warning(
+                        f"Sheet '{sheet_name}' not in snapshot; using '{first}' instead"
+                    )
+                    sheet_data = cached_sheets[first]
+                else:
+                    return [], []
+
+                columns = [col['name'] for col in sheet_data.get('columns', [])]
+                rows = sheet_data.get('rows', [])
+                logger.info(f"Google Sheets data from cache: {len(rows)} rows")
+            else:
+                # No snapshot — live API call
+                from app.services.google_sheets_connector import create_google_sheets_connector
+                connector = create_google_sheets_connector(config)
+                spreadsheet_id = config.get('spreadsheet_id')
+                data = connector.get_sheet_data(spreadsheet_id, sheet_name=sheet_name)
+                columns = [col['name'] for col in data['columns']]
+                rows = data['rows']
+                logger.info(f"Google Sheets data via API: {len(rows)} rows")
+
             if limit:
                 rows = rows[:limit]
-            
-            logger.info(f"Google Sheets data fetched: {len(rows)} rows")
+
             return columns, rows
-            
+
         except Exception as e:
             logger.error(f"Google Sheets query failed: {str(e)}")
             raise

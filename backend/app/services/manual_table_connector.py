@@ -70,18 +70,19 @@ def create_manual_table_connector(config: Dict[str, Any]) -> ManualTableConnecto
 def extract_sheet_name_from_sql(sql: str) -> str:
     """
     Parse the table / sheet name from a SQL statement.
-    Handles:
+    Handles all common quoting styles and ignores trailing clauses:
       SELECT * FROM Sheet1
       SELECT * FROM manual.Sheet1
-      SELECT * FROM "Sheet1"
+      SELECT * FROM "Sales Data"
       SELECT * FROM `Sheet1`
+      SELECT * FROM "Sheet1" LIMIT 100
     """
-    # Strip schema prefix (e.g. manual.Sheet1 -> Sheet1)
     match = re.search(
-        r'[Ff][Rr][Oo][Mm]\s+(?:[\w`"]+\.)?([`"]?)([\w\s]+)\1',
+        r"""\bFROM\s+(?:\w+\.)?(?:`([^`]+)`|"([^"]+)"|'([^']+)'|(\w+))""",
         sql.strip(),
+        re.IGNORECASE,
     )
     if match:
-        return match.group(2).strip()
+        return (match.group(1) or match.group(2) or match.group(3) or match.group(4) or '').strip()
     return 'manual_data'
 

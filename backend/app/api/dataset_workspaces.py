@@ -1,11 +1,13 @@
 """API endpoints for Dataset Workspaces (Table-based Datasets)"""
 from typing import List, Optional
 from decimal import Decimal
+import re
+from datetime import datetime, date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.models import DataSource
+from app.models import DataSource, Chart, DatasetWorkspaceTable
 from app.schemas import (
     WorkspaceCreate,
     WorkspaceUpdate,
@@ -27,6 +29,76 @@ from app.services import (
 )
 
 router = APIRouter()
+
+
+# ISO date/datetime patterns for string-based detection
+_ISO_DATETIME_RE = re.compile(
+    r'^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?'
+)
+_ISO_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+
+def _infer_column_type(col: str, col_index: int, rows: list) -> str:
+    """
+    Infer the column type from sample row values.
+    Samples up to 20 non-null rows for better accuracy.
+    Returns: 'boolean' | 'integer' | 'float' | 'date' | 'datetime' | 'string'
+    """
+    values = []
+    for row in rows[:20]:
+        if isinstance(row, dict):
+            val = row.get(col)
+        elif isinstance(row, (list, tuple)):
+            val = row[col_index] if col_index < len(row) else None
+        else:
+            val = None
+        if val is not None and val != '':
+            values.append(val)
+
+    if not values:
+        return "string"
+
+    # Check Python native types first (SQL/Postgres datasources)
+    for val in values:
+        if isinstance(val, bool):
+            return "boolean"
+        if isinstance(val, datetime):
+            return "datetime"
+        if isinstance(val, date):
+            return "date"
+
+    # Check if all numeric Python types
+    numeric_vals = [v for v in values if isinstance(v, (int, float, Decimal)) and not isinstance(v, bool)]
+    if len(numeric_vals) == len(values):
+        if all(isinstance(v, int) or (isinstance(v, float) and v == int(v)) for v in numeric_vals):
+            return "integer"
+        return "float"
+
+    # String-based detection (GG Sheets, Manual Table — all values come as strings)
+    str_vals = [str(v).strip() for v in values]
+
+    # Boolean strings
+    bool_set = {'true', 'false', '1', '0', 'yes', 'no'}
+    if all(v.lower() in bool_set for v in str_vals):
+        return "boolean"
+
+    # Integer strings
+    if all(re.fullmatch(r'-?\d+', v) for v in str_vals):
+        return "integer"
+
+    # Float strings
+    if all(re.fullmatch(r'-?\d+[.,]\d+', v) for v in str_vals):
+        return "float"
+
+    # Datetime strings (has time component)
+    if all(_ISO_DATETIME_RE.match(v) for v in str_vals):
+        return "datetime"
+
+    # Date strings
+    if all(_ISO_DATE_RE.fullmatch(v) for v in str_vals):
+        return "date"
+
+    return "string"
 
 
 # ===== Workspace Endpoints =====
@@ -193,14 +265,69 @@ def remove_table_from_workspace(
     table_id: int,
     db: Session = Depends(get_db)
 ):
-    """Remove a table from a workspace"""
+    """Remove a table from a workspace, after checking for chart/formula dependencies"""
     # Verify table belongs to workspace
     db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.workspace_id != workspace_id:
         raise HTTPException(status_code=404, detail="Table not found in this workspace")
-    
+
+    # ------------------------------------------------------------------
+    # Check 1: charts that directly reference this table
+    # ------------------------------------------------------------------
+    blocking_charts = (
+        db.query(Chart)
+        .filter(Chart.workspace_table_id == table_id)
+        .all()
+    )
+
+    # ------------------------------------------------------------------
+    # Check 2: other tables in this workspace whose js_formula
+    # transformations reference this table by its display label
+    # ------------------------------------------------------------------
+    table_label = db_table.display_name or db_table.source_table_name or str(table_id)
+    other_tables = (
+        db.query(DatasetWorkspaceTable)
+        .filter(
+            DatasetWorkspaceTable.workspace_id == workspace_id,
+            DatasetWorkspaceTable.id != table_id,
+        )
+        .all()
+    )
+    blocking_lookups = []
+    for t in other_tables:
+        transforms = t.transformations or []
+        for step in transforms:
+            if step.get("type") == "js_formula" and step.get("enabled", True):
+                formula = step.get("params", {}).get("formula", "")
+                if table_label and f'"{table_label}"' in formula:
+                    blocking_lookups.append({
+                        "type": "lookup",
+                        "table_id": t.id,
+                        "table_name": t.display_name or t.source_table_name,
+                        "column": step.get("params", {}).get("newField", ""),
+                    })
+                    break  # one entry per table is enough
+
+    constraints = []
+    for ch in blocking_charts:
+        constraints.append({
+            "type": "chart",
+            "id": ch.id,
+            "name": ch.name,
+        })
+    constraints.extend(blocking_lookups)
+
+    if constraints:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": f"Bảng \"{table_label}\" đang được sử dụng và không thể xóa.",
+                "constraints": constraints,
+            },
+        )
+
     success = DatasetWorkspaceCRUDService.delete_table(db, table_id)
-    
+
     if not success:
         raise HTTPException(status_code=404, detail="Table not found")
 
@@ -236,7 +363,11 @@ def preview_workspace_table(
         # Use physical table
         if not db_table.source_table_name:
             raise HTTPException(status_code=400, detail="Table has source_kind='physical_table' but source_table_name is NULL")
-        base_query = f"SELECT * FROM {db_table.source_table_name}"
+        # Quote sheet name with double-quotes for MANUAL sources (handles spaces/special chars)
+        if datasource.type == "manual":
+            base_query = f'SELECT * FROM "{db_table.source_table_name}"'
+        else:
+            base_query = f"SELECT * FROM {db_table.source_table_name}"
     
     # Apply transformations if any
     from app.services.transformation_compiler import TransformationCompiler
@@ -271,20 +402,7 @@ def preview_workspace_table(
         # Infer column types
         column_metadata = []
         for i, col in enumerate(columns):
-            # Simple type inference from first row
-            col_type = "string"
-            if rows and len(rows) > 0:
-                # Handle both dict and list/tuple rows
-                if isinstance(rows[0], dict):
-                    val = rows[0].get(col)
-                else:
-                    val = rows[0][i] if i < len(rows[0]) else None
-                
-                if isinstance(val, bool):
-                    col_type = "boolean"
-                elif isinstance(val, (int, float, Decimal)):
-                    col_type = "number"
-            
+            col_type = _infer_column_type(col, i, rows)
             column_metadata.append(
                 WorkspaceColumnMetadata(
                     name=col,
@@ -292,6 +410,12 @@ def preview_workspace_table(
                     nullable=True
                 )
             )
+        
+        # Apply user-defined type overrides
+        type_overrides = db_table.type_overrides or {}
+        for col_meta in column_metadata:
+            if col_meta.name in type_overrides:
+                col_meta.type = type_overrides[col_meta.name]
         
         # Get total count (approximate for now)
         # In production, run a COUNT query
@@ -308,7 +432,7 @@ def preview_workspace_table(
         
         # Convert rows to serializable format
         serializable_rows = []
-        for row in rows[:10]:  # Keep only first 10 for cache
+        for row in rows[:500]:  # Keep up to 500 rows for LOOKUP support
             if isinstance(row, dict):
                 serializable_rows.append({k: serialize_value(v) for k, v in row.items()})
             else:

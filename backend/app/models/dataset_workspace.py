@@ -49,6 +49,8 @@ class DatasetWorkspaceTable(Base):
     # Cache for performance
     columns_cache = Column(JSON, nullable=True)  # Cached column metadata
     sample_cache = Column(JSON, nullable=True)  # Cached sample data
+    type_overrides = Column(JSON, nullable=True)  # {"col_name": "integer"} user-defined type overrides
+    column_formats = Column(JSON, nullable=True)  # {"col_name": {formatType, decimalPlaces, ...}} full display format per column
     
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)

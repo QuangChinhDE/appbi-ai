@@ -1,0 +1,36 @@
+date,event_type,event_description,event_severity
+2010-04-20,disaster,Deepwater Horizon oil spill,7
+2011-02-15,war,Libyan Civil War begins,9
+2011-03-19,war,NATO intervention in Libya,9
+2012-01-23,sanctions,EU embargo on Iranian oil imports,8
+2014-03-18,annexation,Russia annexes Crimea,8
+2014-11-27,opec,OPEC maintains production despite falling prices,9
+2015-03-26,war,Saudi-led intervention in Yemen,7
+2016-01-16,sanctions,Iran nuclear sanctions lifted,6
+2016-09-28,opec,OPEC Algiers agreement on production cuts,8
+2016-11-30,opec,First OPEC+ production cut agreement,8
+2017-06-05,diplomatic_crisis,Qatar diplomatic crisis begins,6
+2018-05-08,sanctions,US withdraws from Iran nuclear deal,8
+2019-09-14,attack,Saudi Aramco Abqaiq oil facility attack,10
+2020-01-03,conflict,US kills Iranian General Qasem Soleimani,9
+2020-03-08,oil_price_war,Saudi-Russia oil price war begins,10
+2020-04-20,market_crash,WTI crude prices turn negative,10
+2021-03-23,blockage,Suez Canal blocked by Ever Given,8
+2021-10-04,energy_crisis,Global energy crisis intensifies,7
+2022-02-24,war,Russia invades Ukraine,10
+2022-03-08,sanctions,US bans Russian oil imports,9
+2022-06-01,sanctions,EU oil embargo on Russia,8
+2022-12-05,sanctions,G7 price cap on Russian oil,7
+2023-04-02,opec,OPEC+ announces surprise production cuts,9
+2023-10-07,war,Israel-Hamas war begins,9
+2024-01-12,conflict,Red Sea shipping attacks escalate,8
+2024-04-14,conflict,Iran launches drone attack on Israel,9
+2024-08-26,blockade,Libya eastern administration halts oil production,8
+2024-10-01,conflict,Expanded Red Sea tanker attacks,8
+2025-02-20,conflict,Middle East tanker security crisis,8
+2025-06-10,opec,OPEC+ announces additional production cuts,8
+2025-10-28,market_shift,World Bank warns of major 2026 oil glut,7
+2025-11-18,sanctions,Expanded Iran oil sanctions,7
+2026-02-28,conflict,US-Israel strikes on Iranian infrastructure,10
+2026-03-01,opec,OPEC+ extends voluntary production cuts,8
+2026-03-09,blockade,Closure of Strait of Hormuz shipping lane,10

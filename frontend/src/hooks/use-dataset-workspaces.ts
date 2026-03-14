@@ -16,7 +16,7 @@ export interface DatasetWorkspace {
 
 export interface Transformation {
   id?: string;
-  type: 'select_columns' | 'add_column' | 'rename_columns';
+  type: 'select_columns' | 'add_column' | 'rename_columns' | 'js_formula';
   enabled: boolean;
   params: Record<string, any>;
 }
@@ -33,6 +33,8 @@ export interface WorkspaceTable {
   transformations?: Transformation[];
   columns_cache?: Record<string, any>;
   sample_cache?: Record<string, any>[];
+  type_overrides?: Record<string, string>;
+  column_formats?: Record<string, any>;
   created_at: string;
   updated_at: string;
 }
@@ -64,6 +66,8 @@ export interface UpdateTableInput {
   display_name?: string;
   enabled?: boolean;
   transformations?: Transformation[];
+  type_overrides?: Record<string, string>;
+  column_formats?: Record<string, any>;
 }
 
 export interface ColumnMetadata {

@@ -62,8 +62,10 @@ def validate_select_only(sql_query: str) -> None:
             "Only single SELECT queries are allowed. Multiple statements detected."
         )
     
-    # Verify it starts with SELECT (after removing whitespace)
-    if not normalized_upper.strip().startswith('SELECT'):
+    # Verify it starts with SELECT or WITH (CTE).
+    # Compiled transformations produce "WITH base AS (...) SELECT ..." queries.
+    stripped_upper = normalized_upper.strip()
+    if not (stripped_upper.startswith('SELECT') or stripped_upper.startswith('WITH')):
         raise ValueError(
             "Query must start with SELECT. Only SELECT queries are allowed."
         )

@@ -140,7 +140,11 @@ class TransformCompilerV2:
         dataset_id: Optional[int]
     ) -> str:
         """Compile a single transformation step to SQL."""
-        
+
+        # js_formula steps are evaluated client-side only
+        if step_type == "js_formula":
+            return f"SELECT * FROM {prev_cte}"
+
         # Dispatch to specific compiler method
         compiler_method = getattr(self, f"_compile_{step_type}", None)
         if compiler_method is None:

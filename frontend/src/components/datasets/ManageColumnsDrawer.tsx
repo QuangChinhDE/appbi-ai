@@ -1,15 +1,17 @@
 /**
- * ManageColumnsDrawer - Hide/Show columns
+ * ManageColumnsDrawer - Hide/Show columns, and delete computed (js_formula) columns
  */
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { X, Loader2 } from 'lucide-react';
+import { X, Loader2, Trash2, Cpu } from 'lucide-react';
 import type { WorkspaceTable, Transformation } from '@/hooks/use-dataset-workspaces';
 
 interface ManageColumnsDrawerProps {
   table: WorkspaceTable;
   allColumns: string[];
+  /** Names of columns produced by js_formula transformations — these can be deleted */
+  computedColumns?: string[];
   isOpen: boolean;
   onClose: () => void;
   onSave: (transformations: Transformation[]) => Promise<void>;
@@ -18,27 +20,46 @@ interface ManageColumnsDrawerProps {
 export function ManageColumnsDrawer({
   table,
   allColumns,
+  computedColumns = [],
   isOpen,
   onClose,
   onSave,
 }: ManageColumnsDrawerProps) {
   const [selectedColumns, setSelectedColumns] = useState<Set<string>>(new Set());
+  const [deletedComputed, setDeletedComputed] = useState<Set<string>>(new Set());
   const [isSaving, setIsSaving] = useState(false);
+  // fullSourceColumns is the COMPLETE source column list (including hidden ones).
+  // It is derived from all_columns stored in the select_columns transform params,
+  // or falls back to the allColumns prop on first open (before any hiding).
+  const [fullSourceColumns, setFullSourceColumns] = useState<string[]>([]);
+
+  const computedSet = new Set(computedColumns);
 
   // Initialize selected columns
   useEffect(() => {
     if (!isOpen) return;
+    setDeletedComputed(new Set()); // reset deletions on open
 
     // Find select_columns transformation
     const selectTransform = table.transformations?.find(
       (t) => t.type === 'select_columns' && t.enabled
     );
 
+    // Reconstruct the FULL source column list:
+    // prefer the persisted all_columns (saved on last Apply), else use the allColumns prop.
+    const persistedAll = selectTransform?.params?.all_columns as string[] | undefined;
+    const fullList = (persistedAll ?? allColumns).filter((c) => !computedSet.has(c));
+    setFullSourceColumns(fullList);
+
     if (selectTransform && selectTransform.params.columns) {
-      setSelectedColumns(new Set(selectTransform.params.columns));
+      setSelectedColumns(
+        new Set(
+          (selectTransform.params.columns as string[]).filter((c) => !computedSet.has(c))
+        )
+      );
     } else {
-      // Default: all columns selected
-      setSelectedColumns(new Set(allColumns));
+      // No filter saved yet — all source columns are visible
+      setSelectedColumns(new Set(fullList));
     }
   }, [isOpen, table.transformations, allColumns]);
 
@@ -53,31 +74,58 @@ export function ManageColumnsDrawer({
   };
 
   const handleSelectAll = () => {
-    setSelectedColumns(new Set(allColumns));
+    setSelectedColumns(new Set(fullSourceColumns.filter((c) => !deletedComputed.has(c))));
   };
 
   const handleDeselectAll = () => {
     setSelectedColumns(new Set());
   };
 
+  const handleDeleteComputed = (column: string) => {
+    setDeletedComputed((prev) => new Set([...prev, column]));
+    // Also remove from visible selection
+    setSelectedColumns((prev) => {
+      const next = new Set(prev);
+      next.delete(column);
+      return next;
+    });
+  };
+
+  const handleUndoDelete = (column: string) => {
+    setDeletedComputed((prev) => {
+      const next = new Set(prev);
+      next.delete(column);
+      return next;
+    });
+    setSelectedColumns((prev) => new Set([...prev, column]));
+  };
+
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      // Get existing transformations
       const existingTransforms = table.transformations || [];
-      
-      // Remove old select_columns transformation
-      const filteredTransforms = existingTransforms.filter(
-        (t) => t.type !== 'select_columns'
+
+      // Remove deleted computed steps (js_formula or add_column) and old select_columns
+      const filteredTransforms = existingTransforms.filter((t) => {
+        if (t.type === 'select_columns') return false;
+        if (
+          (t.type === 'js_formula' || t.type === 'add_column') &&
+          t.params?.newField &&
+          deletedComputed.has(t.params.newField as string)
+        ) return false;
+        return true;
+      });
+
+      // Build columns list: only source columns (computed ones are added client-side by js_formula)
+      const visibleColumns = Array.from(selectedColumns).filter(
+        (c) => !deletedComputed.has(c) && !computedSet.has(c)
       );
 
-      // Add new select_columns transformation
       const newTransform: Transformation = {
         type: 'select_columns',
         enabled: true,
-        params: {
-          columns: Array.from(selectedColumns),
-        },
+        // Persist all_columns so the drawer can restore hidden cols on next open
+        params: { columns: visibleColumns, all_columns: fullSourceColumns },
       };
 
       const updatedTransforms = [newTransform, ...filteredTransforms];
@@ -108,7 +156,7 @@ export function ManageColumnsDrawer({
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Manage Columns</h2>
             <p className="text-sm text-gray-500 mt-1">
-              {selectedColumns.size} of {allColumns.length} columns selected
+              {selectedColumns.size} of {fullSourceColumns.length} columns selected
             </p>
           </div>
           <button
@@ -138,25 +186,74 @@ export function ManageColumnsDrawer({
             Deselect All
           </button>
         </div>
+        {deletedComputed.size > 0 && (
+          <div className="px-6 py-2 bg-red-50 border-b text-xs text-red-700">
+            ⚠️ {deletedComputed.size} cột công thức sẽ bị xóa khi lưu
+          </div>
+        )}
 
         {/* Column list */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
           <div className="space-y-2">
-            {allColumns.map((column) => (
-              <label
-                key={column}
-                className="flex items-center gap-3 p-2 rounded hover:bg-gray-50 cursor-pointer"
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedColumns.has(column)}
-                  onChange={() => handleToggle(column)}
-                  disabled={isSaving}
-                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-900 font-mono">{column}</span>
-              </label>
-            ))}
+            {/* Render ALL source columns (including hidden ones) so users can toggle them */}
+            {fullSourceColumns.map((column) => {
+              const isPendingDelete = deletedComputed.has(column);
+              return (
+                // Source column — hide/show only
+                <label
+                  key={column}
+                  className="flex items-center gap-3 p-2 rounded hover:bg-gray-50 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedColumns.has(column)}
+                    onChange={() => handleToggle(column)}
+                    disabled={isSaving || isPendingDelete}
+                    className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-900 font-mono">{column}</span>
+                </label>
+              );
+            })}
+            {/* Computed columns (js_formula) - always appended, can be deleted */}
+            {computedColumns.map((column) => {
+              const isPendingDelete = deletedComputed.has(column);
+              return (
+                <div
+                  key={column}
+                  className={`flex items-center gap-3 p-2 rounded ${
+                    isPendingDelete ? 'bg-red-50 opacity-60' : 'bg-purple-50'
+                  }`}
+                >
+                  <Cpu className="w-4 h-4 text-purple-400 shrink-0" />
+                  <span className={`text-sm font-mono flex-1 ${
+                    isPendingDelete ? 'line-through text-gray-400' : 'text-purple-900'
+                  }`}>
+                    {column}
+                  </span>
+                  <span className="text-[10px] text-purple-400 font-medium shrink-0">công thức</span>
+                  {isPendingDelete ? (
+                    <button
+                      onClick={() => handleUndoDelete(column)}
+                      disabled={isSaving}
+                      className="text-xs text-gray-500 hover:text-gray-800 underline shrink-0"
+                      title="Hoàn tác xóa"
+                    >
+                      Hoàn tác
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => handleDeleteComputed(column)}
+                      disabled={isSaving}
+                      className="p-1 text-red-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors shrink-0"
+                      title="Xóa cột công thức"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 
