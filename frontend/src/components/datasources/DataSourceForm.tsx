@@ -21,7 +21,7 @@ interface DataSourceFormProps {
     description?: string;
     config: Record<string, any>;
   };
-  onSubmit: (data: DataSourceCreate) => void;
+  onSubmit: (data: DataSourceCreate, meta: { configModified: boolean }) => void;
   onCancel: () => void;
   isLoading?: boolean;
 }
@@ -66,6 +66,10 @@ export default function DataSourceForm({
   type TestState = 'idle' | 'testing' | 'ok' | 'fail';
   const [testState, setTestState] = useState<TestState>('idle');
   const [testMessage, setTestMessage] = useState('');
+
+  // Track if config was actually changed by the user (matters for edit mode with Manual Table)
+  // New datasource: always true. Edit: starts false, becomes true when user re-uploads data.
+  const [configModified, setConfigModified] = useState(!initialData);
 
   // Reset test state whenever config fields change
   useEffect(() => { setTestState('idle'); setTestMessage(''); }, [config]);
@@ -118,6 +122,7 @@ export default function DataSourceForm({
       const activeSheet = Object.keys(data.sheets)[0] ?? '';
       setImportPreview({ filename: data.filename, sheets: data.sheets, activeSheet });
       setConfig({ sheets: data.sheets });
+      setConfigModified(true);
     } catch (e: any) {
       setUploadError(e.message ?? 'Failed to parse file');
     } finally {
@@ -145,18 +150,17 @@ export default function DataSourceForm({
 
   const handleConfigChange = (key: string, value: any) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
+    setConfigModified(true);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     // For DB types, require a successful test before creating (not when editing)
     if (!initialData && isDbType && testState !== 'ok') return;
-    onSubmit({
-      name,
-      type,
-      description: description || undefined,
-      config,
-    });
+    onSubmit(
+      { name, type, description: description || undefined, config },
+      { configModified },
+    );
   };
 
   const renderConfigFields = () => {
@@ -420,7 +424,7 @@ export default function DataSourceForm({
                   </div>
                   <button
                     type="button"
-                    onClick={e => { e.stopPropagation(); setImportPreview(null); setConfig({ sheets: {} }); setUploadError(null); }}
+                    onClick={e => { e.stopPropagation(); setImportPreview(null); setConfig({ sheets: {} }); setUploadError(null); setConfigModified(true); }}
                     className="text-gray-400 hover:text-red-500 transition-colors"
                   >
                     <X className="w-4 h-4" />

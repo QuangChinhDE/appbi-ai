@@ -11,7 +11,7 @@ export default function NewDataSourcePage() {
   const router = useRouter();
   const createMutation = useCreateDataSource();
 
-  const handleCreate = async (data: DataSourceCreate) => {
+  const handleCreate = async (data: DataSourceCreate, _meta: { configModified: boolean }) => {
     try {
       await createMutation.mutateAsync(data);
       router.push('/datasources');

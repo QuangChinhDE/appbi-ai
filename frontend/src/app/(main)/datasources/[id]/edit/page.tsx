@@ -15,11 +15,17 @@ export default function EditDataSourcePage() {
   const { data: dataSource, isLoading } = useDataSource(datasourceId);
   const updateMutation = useUpdateDataSource();
 
-  const handleUpdate = async (data: DataSourceCreate) => {
+  const handleUpdate = async (data: DataSourceCreate, meta: { configModified: boolean }) => {
     try {
       await updateMutation.mutateAsync({
         id: datasourceId,
-        data: { name: data.name, description: data.description, config: data.config },
+        data: {
+          name: data.name,
+          description: data.description,
+          // Only resend config when the user actually re-imported data.
+          // Skipping it for a rename avoids sending potentially large Manual Table payloads.
+          ...(meta.configModified ? { config: data.config } : {}),
+        },
       });
       router.push('/datasources');
     } catch (error: any) {

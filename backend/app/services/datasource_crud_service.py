@@ -128,6 +128,9 @@ class DataSourceCRUDService:
                 logger.info(
                     f"Invalidated workspace table caches for datasource id={db_data_source.id}"
                 )
+
+            db.commit()
+            db.refresh(db_data_source)
             logger.info(f"Updated data source: {db_data_source.name}")
             return db_data_source
         except IntegrityError:
