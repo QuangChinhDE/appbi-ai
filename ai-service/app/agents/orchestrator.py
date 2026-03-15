@@ -63,6 +63,34 @@ def _make_anthropic_client():
         raise RuntimeError("anthropic package not installed")
 
 
+def _make_gemini_model(model_name: str):
+    """Create a Gemini GenerativeModel with tool schemas configured."""
+    try:
+        import google.generativeai as genai
+        from google.generativeai.types import FunctionDeclaration, Tool as GeminiTool
+    except ImportError:
+        raise RuntimeError("google-generativeai package not installed")
+
+    genai.configure(api_key=settings.gemini_api_key)
+
+    declarations = []
+    for t in TOOL_SCHEMAS:
+        fn = t["function"]
+        declarations.append(FunctionDeclaration(
+            name=fn["name"],
+            description=fn["description"],
+            parameters=fn["parameters"],
+        ))
+    gemini_tools = [GeminiTool(function_declarations=declarations)]
+
+    return genai.GenerativeModel(
+        model_name=model_name,
+        tools=gemini_tools,
+        system_instruction=SYSTEM_PROMPT,
+        generation_config={"temperature": 0.2, "max_output_tokens": 2048},
+    )
+
+
 def _build_provider_chain() -> List[Dict[str, str]]:
     """Build ordered list of {provider, model} to try, primary first."""
     chain = [{"provider": settings.llm_provider, "model": settings.llm_model}]
@@ -202,6 +230,10 @@ async def run_agent(
     # Append user message
     session.messages.append(Message(role="user", content=user_message))
 
+    # Auto-title: use the first user message (truncated)
+    if session.title == "New Conversation":
+        session.title = user_message[:60] + ("…" if len(user_message) > 60 else "")
+
     provider_chain = _build_provider_chain()
     tool_calls_made = 0
     
@@ -250,6 +282,11 @@ async def _run_with_provider(
         client = _make_anthropic_client()
         yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
         async for event in _anthropic_loop(client, model, session, tool_calls_made, chart_data_cache):
+            yield event
+    elif provider == "gemini":
+        gemini_model = _make_gemini_model(model)
+        yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
+        async for event in _gemini_loop(gemini_model, session, tool_calls_made, chart_data_cache):
             yield event
     else:
         raise ValueError(f"Unknown provider: {provider}")
@@ -461,6 +498,115 @@ async def _anthropic_loop(
         if tool_calls_made >= settings.ai_max_tool_calls:
             break
 
+# ── Gemini loop ────────────────────────────────────────────────────────────────
+
+async def _gemini_loop(
+    model,
+    session: ConversationSession,
+    tool_calls_made: int,
+    chart_data_cache: Dict[int, Dict],
+) -> AsyncGenerator[Dict, None]:
+    try:
+        import google.generativeai.protos as protos
+    except ImportError:
+        raise RuntimeError("google-generativeai package not installed")
+
+    # Build simplified history (text-only user/model messages).
+    # Gemini can't reconstruct interleaved function_call/response pairs from
+    # prior turns, so we feed only conversational text into the history.
+    all_msgs = list(_trim_history(session.messages))
+    history_msgs = all_msgs[:-1]     # all but the last (current user message)
+    current_user_msg = all_msgs[-1].content if all_msgs else ""
+
+    gemini_history = []
+    for m in history_msgs:
+        if m.role == "user" and m.content and not m.content.startswith("[System:"):
+            gemini_history.append({"role": "user", "parts": [m.content]})
+        elif m.role == "assistant" and m.content:
+            gemini_history.append({"role": "model", "parts": [m.content]})
+        # skip tool messages — Gemini needs special proto interleaving for those
+
+    chat = model.start_chat(history=gemini_history)
+
+    # current_msg is either the initial user text or a list of FunctionResponse Parts
+    current_msg: Any = current_user_msg
+
+    while tool_calls_made <= settings.ai_max_tool_calls:
+        response = await chat.send_message_async(current_msg)
+
+        text_content = ""
+        function_calls_found = []
+
+        for part in response.parts:
+            if hasattr(part, "text") and part.text:
+                text_content += part.text
+            if hasattr(part, "function_call") and part.function_call.name:
+                function_calls_found.append(part.function_call)
+
+        if text_content:
+            for word in text_content.split():
+                yield TextEvent(content=word + " ").model_dump()
+            session.messages.append(Message(role="assistant", content=text_content))
+            async for chart_event in _emit_chart_events(text_content, chart_data_cache):
+                yield chart_event
+
+        if not function_calls_found:
+            break  # No more tool calls — conversation turn complete
+
+        # Execute all tool calls and collect FunctionResponse parts
+        response_parts = []
+        for fc in function_calls_found:
+            fn_name = fc.name
+            fn_args = {k: v for k, v in fc.args.items()} if fc.args else {}
+
+            yield ToolCallEvent(tool=fn_name, args=fn_args).model_dump()
+
+            tool_result = await execute_tool(fn_name, fn_args)
+            tool_calls_made += 1
+
+            if fn_name == "run_chart" and "chart_id" in tool_result:
+                chart_data_cache[tool_result["chart_id"]] = tool_result
+
+            summary = _tool_summary(fn_name, tool_result)
+            yield ToolResultEvent(tool=fn_name, summary=summary).model_dump()
+
+            result_str = json.dumps(tool_result, ensure_ascii=False, default=str)
+            session.messages.append(Message(
+                role="tool",
+                content=result_str,
+                tool_call_id=fn_name,
+                name=fn_name,
+            ))
+
+            response_parts.append(
+                protos.Part(function_response=protos.FunctionResponse(
+                    name=fn_name,
+                    response={"content": result_str},
+                ))
+            )
+
+        if tool_calls_made >= settings.ai_max_tool_calls:
+            # Send all function responses then force a final answer
+            try:
+                await chat.send_message_async(response_parts)
+                final_resp = await chat.send_message_async(
+                    "You have reached the tool call limit. Please provide your final analysis based on the data collected so far."
+                )
+                final_text = "".join(
+                    p.text for p in final_resp.parts if hasattr(p, "text") and p.text
+                )
+                if final_text:
+                    for word in final_text.split():
+                        yield TextEvent(content=word + " ").model_dump()
+                    session.messages.append(Message(role="assistant", content=final_text))
+                    async for ev in _emit_chart_events(final_text, chart_data_cache):
+                        yield ev
+            except Exception:
+                pass
+            break
+
+        # Feed function responses back — loop continues for more tool calls / final answer
+        current_msg = response_parts
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 

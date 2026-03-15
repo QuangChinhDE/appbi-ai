@@ -70,7 +70,17 @@ class Message(BaseModel):
 
 class ConversationSession(BaseModel):
     session_id: str
+    title: str = "New Conversation"
     messages: List[Message] = []
     context: Dict[str, Any] = {}
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_active: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SessionSummary(BaseModel):
+    session_id: str
+    title: str
+    created_at: datetime
+    last_active: datetime
+    message_count: int
+    last_message: Optional[str] = None

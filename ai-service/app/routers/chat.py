@@ -1,16 +1,16 @@
 """
-Chat router — WebSocket streaming + REST fallback.
+Chat router — WebSocket streaming + REST fallback + session management.
 """
 import json
 import logging
 import uuid
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.schemas.chat import ChatRequest, DoneEvent, ErrorEvent
-from app.agents.orchestrator import get_or_create_session, run_agent, cleanup_expired_sessions
+from app.schemas.chat import ChatRequest, ConversationSession, DoneEvent, ErrorEvent, SessionSummary
+from app.agents.orchestrator import get_or_create_session, run_agent, cleanup_expired_sessions, _sessions
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -94,13 +94,60 @@ async def chat_stream(req: ChatRequest):
 
 # ── Session management ─────────────────────────────────────────────────────────
 
+@router.get("/sessions", response_model=List[SessionSummary])
+async def list_sessions():
+    """List all active sessions, newest first."""
+    result = []
+    for s in sorted(_sessions.values(), key=lambda x: x.last_active, reverse=True):
+        last_msg = None
+        for m in reversed(s.messages):
+            if m.role in ("user", "assistant") and isinstance(m.content, str):
+                last_msg = m.content[:120]
+                break
+        result.append(SessionSummary(
+            session_id=s.session_id,
+            title=s.title,
+            created_at=s.created_at,
+            last_active=s.last_active,
+            message_count=len([m for m in s.messages if m.role in ("user", "assistant")]),
+            last_message=last_msg,
+        ))
+    return result
+
+
+@router.post("/sessions", status_code=201)
+async def create_session():
+    """Create a new empty session and return its ID."""
+    new_id = str(uuid.uuid4())
+    session = ConversationSession(session_id=new_id)
+    _sessions[new_id] = session
+    return {"session_id": new_id}
+
+
+@router.get("/sessions/{session_id}")
+async def get_session(session_id: str):
+    """Get session detail including message history (for restore on page load)."""
+    if session_id not in _sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    s = _sessions[session_id]
+    msgs = [
+        {"role": m.role, "content": m.content if isinstance(m.content, str) else ""}
+        for m in s.messages
+        if m.role in ("user", "assistant")
+    ]
+    return {
+        "session_id": s.session_id,
+        "title": s.title,
+        "created_at": s.created_at.isoformat(),
+        "last_active": s.last_active.isoformat(),
+        "messages": msgs,
+    }
+
+
 @router.delete("/sessions/{session_id}", status_code=204)
 async def delete_session(session_id: str):
     """Delete a conversation session."""
-    from app.agents.orchestrator import _sessions
-    if session_id in _sessions:
-        del _sessions[session_id]
-    # 204 even if not found
+    _sessions.pop(session_id, None)
 
 
 @router.post("/cleanup", status_code=200)

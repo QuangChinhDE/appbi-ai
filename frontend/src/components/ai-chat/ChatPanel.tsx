@@ -1,17 +1,20 @@
 'use client';
 
 /**
- * ChatPanel — full conversation UI.
+ * ChatPanel — full conversation UI for a specific session.
  * Connects to AI service via WebSocket, streams events, renders messages.
+ * Restores history from the AI service on mount.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { v4 as uuidv4 } from 'uuid';
-import { Bot, RefreshCw, Sparkles } from 'lucide-react';
+import { ArrowLeft, Bot, Sparkles } from 'lucide-react';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
 import type { ChatMessageData, ChartPayload, ToolCallBadge } from './types';
 
 const AI_WS_URL = process.env.NEXT_PUBLIC_AI_WS_URL || 'ws://localhost:8001/chat/ws';
+const AI_HTTP_URL = AI_WS_URL.replace(/^ws/, 'http').replace('/chat/ws', '');
 
 const QUICK_PROMPTS = [
   'Top 10 đội có điểm FIFA cao nhất?',
@@ -22,47 +25,67 @@ const QUICK_PROMPTS = [
   'Dashboard nào liên quan đến World Cup?',
 ];
 
-export function ChatPanel() {
+interface ChatPanelProps {
+  sessionId: string;
+}
+
+export function ChatPanel({ sessionId }: ChatPanelProps) {
+  const router = useRouter();
   const [messages, setMessages] = useState<ChatMessageData[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
   const [wsError, setWsError] = useState<string | null>(null);
+  const [sessionTitle, setSessionTitle] = useState('New Conversation');
+  const [historyLoaded, setHistoryLoaded] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  // ID of the current AI reply being streamed
   const currentAiMsgIdRef = useRef<string | null>(null);
 
-  // Auto-scroll on new messages
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages]);
 
-  // Connect WebSocket once on mount
   useEffect(() => {
+    loadHistory();
     connectWs();
     return () => wsRef.current?.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [sessionId]);
+
+  async function loadHistory() {
+    try {
+      const res = await fetch(`${AI_HTTP_URL}/chat/sessions/${sessionId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setSessionTitle(data.title ?? 'New Conversation');
+      const restored: ChatMessageData[] = (data.messages ?? []).map(
+        (m: { role: string; content: string }) => ({
+          id: uuidv4(),
+          role: m.role as 'user' | 'assistant',
+          text: m.content,
+          toolCalls: [],
+          charts: [],
+        })
+      );
+      setMessages(restored);
+    } catch {
+      // History unavailable — ignore
+    } finally {
+      setHistoryLoaded(true);
+    }
+  }
 
   function connectWs() {
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
+    wsRef.current?.close();
     setWsError(null);
-
     const ws = new WebSocket(AI_WS_URL);
     wsRef.current = ws;
-
     ws.onopen = () => setWsConnected(true);
-    ws.onclose = () => {
-      setWsConnected(false);
-      setLoading(false);
-    };
+    ws.onclose = () => { setWsConnected(false); setLoading(false); };
     ws.onerror = () => {
-      setWsError('Cannot connect to AI service. Make sure docker-compose.ai.yml is running.');
+      setWsError('Không kết nối được AI service. Kiểm tra AI service đang chạy chưa.');
       setWsConnected(false);
       setLoading(false);
     };
@@ -70,39 +93,25 @@ export function ChatPanel() {
   }
 
   function handleWsEvent(event: Record<string, any>) {
-    const type = event.type as string;
-
-    switch (type) {
-      case 'thinking': {
-        upsertCurrentAiMsg(msg => ({
-          ...msg,
-          isThinking: true,
-          thinkingContent: event.content,
-        }));
+    switch (event.type as string) {
+      case 'thinking':
+        upsertCurrentAiMsg(msg => ({ ...msg, isThinking: true, thinkingContent: event.content }));
         break;
-      }
 
       case 'tool_call': {
-        const badge: ToolCallBadge = {
-          label: formatToolLabel(event.tool, event.args),
-          done: false,
-        };
+        const badge: ToolCallBadge = { label: formatToolLabel(event.tool, event.args), done: false };
         upsertCurrentAiMsg(msg => ({
-          ...msg,
-          isThinking: false,
-          thinkingContent: undefined,
+          ...msg, isThinking: false, thinkingContent: undefined,
           toolCalls: [...(msg.toolCalls ?? []), badge],
         }));
         break;
       }
 
-      case 'tool_result': {
-        // Mark the last matching tool call as done
+      case 'tool_result':
         upsertCurrentAiMsg(msg => {
-          const toolCalls = (msg.toolCalls ?? []).map((tc, i, arr) => {
-            // Mark the last non-done tool call matching this tool name
-            const label = formatToolLabel(event.tool, {});
-            if (!tc.done && tc.label.startsWith(label.split('(')[0])) {
+          const toolCalls = (msg.toolCalls ?? []).map(tc => {
+            const base = formatToolLabel(event.tool, {}).split('(')[0];
+            if (!tc.done && tc.label.startsWith(base)) {
               return { ...tc, label: `${tc.label} — ${event.summary}`, done: true };
             }
             return tc;
@@ -110,59 +119,50 @@ export function ChatPanel() {
           return { ...msg, toolCalls };
         });
         break;
-      }
 
-      case 'text': {
+      case 'text':
         upsertCurrentAiMsg(msg => ({
-          ...msg,
-          isThinking: false,
-          thinkingContent: undefined,
+          ...msg, isThinking: false, thinkingContent: undefined,
           text: (msg.text ?? '') + event.content,
         }));
         break;
-      }
 
       case 'chart': {
         const chart: ChartPayload = {
-          chart_id: event.chart_id,
-          chart_name: event.chart_name,
-          chart_type: event.chart_type,
-          data: event.data,
-          role_config: event.role_config,
+          chart_id: event.chart_id, chart_name: event.chart_name,
+          chart_type: event.chart_type, data: event.data, role_config: event.role_config,
         };
-        upsertCurrentAiMsg(msg => ({
-          ...msg,
-          charts: [...(msg.charts ?? []), chart],
-        }));
+        upsertCurrentAiMsg(msg => ({ ...msg, charts: [...(msg.charts ?? []), chart] }));
         break;
       }
 
-      case 'done': {
-        setSessionId(event.session_id);
+      case 'done':
         setLoading(false);
         currentAiMsgIdRef.current = null;
-        // Clean up thinking state on the last message
         upsertCurrentAiMsg(msg => ({ ...msg, isThinking: false, thinkingContent: undefined }));
+        setMessages(prev => {
+          const first = prev.find(m => m.role === 'user');
+          if (first?.text && sessionTitle === 'New Conversation') {
+            setSessionTitle(first.text.slice(0, 60) + (first.text.length > 60 ? '…' : ''));
+          }
+          return prev;
+        });
         break;
-      }
 
-      case 'error': {
+      case 'error':
         upsertCurrentAiMsg(msg => ({
-          ...msg,
-          isThinking: false,
+          ...msg, isThinking: false,
           text: (msg.text ?? '') + `\n\n⚠️ ${event.content}`,
         }));
         setLoading(false);
         currentAiMsgIdRef.current = null;
         break;
-      }
 
       default:
         break;
     }
   }
 
-  /** Update-or-insert the current AI reply in state. */
   function upsertCurrentAiMsg(updater: (prev: ChatMessageData) => ChatMessageData) {
     setMessages(prev => {
       if (!currentAiMsgIdRef.current) return prev;
@@ -178,68 +178,48 @@ export function ChatPanel() {
   const sendMessage = useCallback((text: string) => {
     if (!text.trim() || loading) return;
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      setWsError('WebSocket not connected. Reconnecting...');
+      setWsError('WebSocket chưa kết nối. Đang thử lại...');
       connectWs();
       return;
     }
-
-    // Add user message
     const userMsgId = uuidv4();
     setMessages(prev => [...prev, { id: userMsgId, role: 'user', text }]);
-
-    // Create placeholder AI reply
     const aiMsgId = uuidv4();
     currentAiMsgIdRef.current = aiMsgId;
     setMessages(prev => [...prev, {
-      id: aiMsgId,
-      role: 'assistant',
-      isThinking: true,
-      thinkingContent: '',
-      toolCalls: [],
-      charts: [],
-      text: '',
+      id: aiMsgId, role: 'assistant',
+      isThinking: true, thinkingContent: '', toolCalls: [], charts: [], text: '',
     }]);
-
     setLoading(true);
     setInput('');
-
-    wsRef.current.send(JSON.stringify({
-      session_id: sessionId,
-      message: text,
-    }));
+    wsRef.current.send(JSON.stringify({ session_id: sessionId, message: text }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, sessionId]);
 
-  const handleClearSession = () => {
-    setMessages([]);
-    setSessionId(null);
-    currentAiMsgIdRef.current = null;
-  };
+  const isEmpty = historyLoaded && messages.length === 0;
 
   return (
     <div className="flex flex-col h-full bg-gray-50">
       {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 bg-white border-b border-gray-200">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center">
-            <Sparkles className="h-5 w-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-base font-semibold text-gray-900">AI Data Assistant</h1>
-            <p className="text-xs text-gray-500">
-              {wsConnected
-                ? <span className="text-green-600">● Connected</span>
-                : <span className="text-red-500">● Disconnected</span>}
-              {sessionId && <span className="ml-2 text-gray-400">Session active</span>}
-            </p>
-          </div>
-        </div>
+      <div className="flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-200">
         <button
-          onClick={handleClearSession}
-          className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 px-2.5 py-1.5 rounded-lg hover:bg-gray-100 transition-colors"
-          title="New conversation"
+          onClick={() => router.push('/chat')}
+          className="p-1.5 rounded-lg text-gray-500 hover:text-gray-800 hover:bg-gray-100 transition-colors"
+          title="Back to conversations"
         >
-          <RefreshCw className="h-3.5 w-3.5" /> New chat
+          <ArrowLeft className="h-4 w-4" />
         </button>
+        <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center flex-shrink-0">
+          <Sparkles className="h-4 w-4 text-white" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <h1 className="text-sm font-semibold text-gray-900 truncate">{sessionTitle}</h1>
+          <p className="text-xs">
+            {wsConnected
+              ? <span className="text-green-600">● Connected</span>
+              : <span className="text-red-500">● Disconnected</span>}
+          </p>
+        </div>
       </div>
 
       {/* Connection error banner */}
@@ -252,7 +232,7 @@ export function ChatPanel() {
 
       {/* Message list */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
-        {messages.length === 0 && (
+        {isEmpty && (
           <div className="flex flex-col items-center justify-center h-full gap-6 py-12">
             <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-100 to-blue-100 flex items-center justify-center">
               <Bot className="h-8 w-8 text-blue-500" />
@@ -263,7 +243,6 @@ export function ChatPanel() {
                 Hỏi tôi về dữ liệu trong hệ thống — tôi sẽ tìm chart phù hợp, chạy query và phân tích kết quả cho bạn.
               </p>
             </div>
-            {/* Quick prompts */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-xl">
               {QUICK_PROMPTS.map((prompt) => (
                 <button
@@ -278,7 +257,6 @@ export function ChatPanel() {
             </div>
           </div>
         )}
-
         {messages.map(msg => (
           <ChatMessage key={msg.id} message={msg} />
         ))}
