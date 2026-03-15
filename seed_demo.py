@@ -15,7 +15,7 @@ import psycopg2
 
 BASE      = "http://localhost:8000/api/v1"
 XLSX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scope-foodball-demo.xlsx")
-DB_URL    = "postgresql://postgres:postgres@localhost:5432/appbi_metadata"
+DB_URL    = os.environ.get("DB_URL", "postgresql://appbi:appbi@localhost:5432/appbi")
 
 # ─── truncate all tables and reset sequences ──────────────────────────────────
 

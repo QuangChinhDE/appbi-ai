@@ -12,16 +12,17 @@ class Settings(BaseSettings):
     bi_api_url: str = Field("http://localhost:8000/api/v1", alias="BI_API_URL")
 
     # Primary LLM
-    llm_provider: str = Field("openai", alias="LLM_PROVIDER")   # openai | anthropic
+    llm_provider: str = Field("openai", alias="LLM_PROVIDER")   # openai | anthropic | gemini
     llm_model: str = Field("gpt-4o-mini", alias="LLM_MODEL")
 
     # Fallback chain — comma-separated "provider:model" pairs
-    # e.g. "openai:gpt-4o-mini,anthropic:claude-3-5-haiku-20241022"
+    # e.g. "openai:gpt-4o-mini,anthropic:claude-3-5-haiku-20241022,gemini:gemini-2.0-flash"
     llm_fallback_chain: str = Field("", alias="LLM_FALLBACK_CHAIN")
 
     # API keys
     openai_api_key: str = Field("", alias="OPENAI_API_KEY")
     anthropic_api_key: str = Field("", alias="ANTHROPIC_API_KEY")
+    gemini_api_key: str = Field("", alias="GEMINI_API_KEY")
 
     # Session
     ai_session_ttl_minutes: int = Field(30, alias="AI_SESSION_TTL_MINUTES")
@@ -47,6 +48,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         populate_by_name = True
+        extra = "ignore"
 
 
 settings = Settings()
