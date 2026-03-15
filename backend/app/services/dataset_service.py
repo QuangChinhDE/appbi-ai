@@ -98,13 +98,51 @@ class DatasetService:
             logger.error(f"Failed to infer column types: {str(e)}")
             raise ValueError(f"Failed to validate query: {str(e)}")
         
+        transformations = dataset.transformations or []
+
+        # If transformations exist, compile and execute to get actual output columns
+        if transformations:
+            try:
+                from app.services.transform_compiler_v2 import compile_pipeline_sql
+                compiled_sql = compile_pipeline_sql(
+                    base_sql=dataset.sql_query,
+                    transformations=transformations,
+                    datasource_type=data_source.type.value,
+                    db=None,
+                    dataset_id=None,
+                )
+                col_names, rows, _ = DataSourceConnectionService.execute_query(
+                    data_source.type.value,
+                    data_source.config,
+                    compiled_sql,
+                    limit=1,
+                )
+                if col_names:
+                    first = rows[0] if rows else {}
+                    def _infer_type(val):
+                        if isinstance(val, bool):
+                            return "boolean"
+                        if isinstance(val, int):
+                            return "integer"
+                        if isinstance(val, float):
+                            return "number"
+                        return "string"
+                    columns = [
+                        {"name": n, "type": _infer_type(first.get(n))}
+                        for n in col_names
+                    ]
+            except Exception as e:
+                logger.warning(f"Could not infer transformed columns, using raw: {e}")
+
         try:
             db_dataset = Dataset(
                 name=dataset.name,
                 description=dataset.description,
                 data_source_id=dataset.data_source_id,
                 sql_query=dataset.sql_query,
-                columns=columns
+                columns=columns,
+                transformations=transformations,
+                transformation_version=dataset.transformation_version or 2,
             )
             db.add(db_dataset)
             db.commit()

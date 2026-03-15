@@ -361,6 +361,8 @@ class DataSourceConnectionService:
                 return DataSourceConnectionService._infer_mysql_types(config, sql_query)
             elif ds_type == DataSourceType.BIGQUERY.value:
                 return DataSourceConnectionService._infer_bigquery_types(config, sql_query)
+            elif ds_type == DataSourceType.MANUAL.value or ds_type == DataSourceType.GOOGLE_SHEETS.value:
+                return DataSourceConnectionService._infer_manual_types(config, sql_query)
             else:
                 raise ValueError(f"Unsupported data source type: {ds_type}")
         except Exception as e:
@@ -470,6 +472,19 @@ class DataSourceConnectionService:
             if client:
                 client.close()
     
+    @staticmethod
+    def _infer_manual_types(config: Dict[str, Any], sql_query: str) -> List[Dict[str, str]]:
+        """Infer column types for Manual Table / Google Sheets datasources."""
+        try:
+            from app.services.manual_table_connector import create_manual_table_connector, extract_sheet_name_from_sql
+            connector = create_manual_table_connector(config)
+            sheet_name = extract_sheet_name_from_sql(sql_query)
+            data = connector.get_sheet_data(sheet_name)
+            return [{"name": col["name"], "type": col.get("type", "string")} for col in data["columns"]]
+        except Exception as e:
+            logger.error(f"Manual type inference failed: {str(e)}")
+            raise
+
     @staticmethod
     def _pg_type_to_string(type_code: int) -> str:
         """Convert PostgreSQL type code to string."""
@@ -828,21 +843,76 @@ class DataSourceConnectionService:
         sql_query: str,
         limit: int = None
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
-        """Execute query against an imported-file datasource (returns data for the named sheet)."""
+        """Execute SQL query against an imported-file datasource using DuckDB.
+
+        All sheets are registered as in-memory tables so any SQL statement
+        (WHERE, GROUP BY, ORDER BY, CTEs, JOINs across sheets) is fully supported.
+        Falls back to raw sheet scan if DuckDB is not available.
+        """
         try:
-            from app.services.manual_table_connector import create_manual_table_connector, extract_sheet_name_from_sql
+            from app.services.manual_table_connector import create_manual_table_connector
 
             connector = create_manual_table_connector(config)
+
+            # ── Try DuckDB first (full SQL support) ──────────────────────────
+            try:
+                import duckdb
+                import pandas as pd
+
+                con = duckdb.connect(database=":memory:")
+
+                # Register every sheet as a DuckDB view
+                for sheet_name in connector.list_sheets():
+                    sheet_data = connector.get_sheet_data(sheet_name)
+                    rows = sheet_data.get("rows", [])
+                    if rows:
+                        df = pd.DataFrame(rows)
+                    else:
+                        cols = [c["name"] for c in sheet_data.get("columns", [])]
+                        df = pd.DataFrame(columns=cols)
+                    # Register with both the exact sheet name and a sanitised alias
+                    safe_name = sheet_name.replace(" ", "_")
+                    con.register(safe_name, df)
+                    if safe_name != sheet_name:
+                        con.register(sheet_name, df)
+
+                final_sql = sql_query
+                if limit:
+                    final_sql = f"SELECT * FROM ({sql_query}) _lim LIMIT {limit}"
+
+                result_df = con.execute(final_sql).df()
+                con.close()
+
+                columns = list(result_df.columns)
+                # Convert to list of dicts, coercing numpy types to native Python
+                rows = []
+                for _, row in result_df.iterrows():
+                    row_dict = {}
+                    for col in columns:
+                        val = row[col]
+                        if hasattr(val, "item"):          # numpy scalar → Python
+                            val = val.item()
+                        elif val != val:                  # NaN → None
+                            val = None
+                        row_dict[col] = val
+                    rows.append(row_dict)
+
+                logger.info(f"DuckDB executed manual query: {len(rows)} rows")
+                return columns, rows
+
+            except ImportError:
+                # DuckDB / pandas not installed – fall back to raw sheet scan
+                logger.warning("DuckDB not available; falling back to raw sheet scan")
+
+            # ── Fallback: raw sheet scan (simple SELECT * only) ───────────────
+            from app.services.manual_table_connector import extract_sheet_name_from_sql
             sheet_name = extract_sheet_name_from_sql(sql_query)
             data = connector.get_sheet_data(sheet_name)
-
-            columns = [col['name'] for col in data['columns']]
-            rows = data['rows']
-
+            columns = [col["name"] for col in data["columns"]]
+            rows = data["rows"]
             if limit:
                 rows = rows[:limit]
-
-            logger.info(f"Manual table '{sheet_name}' data fetched: {len(rows)} rows")
+            logger.info(f"Manual table '{sheet_name}' fallback fetch: {len(rows)} rows")
             return columns, rows
 
         except Exception as e:

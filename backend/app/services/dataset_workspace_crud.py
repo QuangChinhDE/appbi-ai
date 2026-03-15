@@ -134,20 +134,21 @@ class DatasetWorkspaceCRUDService:
         if not workspace:
             return None
         
-        # Check if table already exists in this workspace
-        existing = db.query(DatasetWorkspaceTable)\
-            .filter(
-                and_(
-                    DatasetWorkspaceTable.workspace_id == workspace_id,
-                    DatasetWorkspaceTable.datasource_id == table.datasource_id,
-                    DatasetWorkspaceTable.source_table_name == table.source_table_name
-                )
-            )\
-            .first()
-        
-        if existing:
-            # Return existing table instead of error
-            return existing
+        # Check if table already exists in this workspace.
+        # Only deduplicate physical_table sources (by table name).
+        # sql_query sources are always allowed to be created independently.
+        if table.source_table_name is not None:
+            existing = db.query(DatasetWorkspaceTable)\
+                .filter(
+                    and_(
+                        DatasetWorkspaceTable.workspace_id == workspace_id,
+                        DatasetWorkspaceTable.datasource_id == table.datasource_id,
+                        DatasetWorkspaceTable.source_table_name == table.source_table_name
+                    )
+                )\
+                .first()
+            if existing:
+                return existing
         
         # Create display name if not provided
         display_name = table.display_name

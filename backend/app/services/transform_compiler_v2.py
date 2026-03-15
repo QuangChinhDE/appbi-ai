@@ -34,9 +34,11 @@ class TransformCompilerV2:
         Initialize compiler with specific SQL dialect.
         
         Args:
-            dialect: One of 'postgresql', 'mysql', 'bigquery'
+            dialect: One of 'postgresql', 'mysql', 'bigquery', 'manual'
         """
-        self.dialect = dialect.lower()
+        d = dialect.lower()
+        # 'manual' datasource executes via DuckDB which is PostgreSQL-compatible
+        self.dialect = 'postgresql' if d == 'manual' else d
         self._validate_dialect()
         
     def _validate_dialect(self):
