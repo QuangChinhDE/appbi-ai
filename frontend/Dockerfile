@@ -20,6 +20,8 @@ WORKDIR /app
 # points to the correct host endpoint (baked in at image build).
 ARG NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_AI_WS_URL=ws://localhost:8001/chat/ws
+ENV NEXT_PUBLIC_AI_WS_URL=$NEXT_PUBLIC_AI_WS_URL
 
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules

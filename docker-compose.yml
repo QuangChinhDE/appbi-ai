@@ -76,6 +76,7 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_PORT:-8000}/api/v1
+        NEXT_PUBLIC_AI_WS_URL: ws://localhost:${AI_PORT:-8001}/chat/ws
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-3000}:3000"

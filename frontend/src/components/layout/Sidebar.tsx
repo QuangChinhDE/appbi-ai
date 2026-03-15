@@ -11,6 +11,7 @@ import {
   Plug,
   ChevronLeft,
   ChevronRight,
+  MessageSquareText,
 } from 'lucide-react';
 
 interface NavItem {
@@ -39,6 +40,11 @@ const navItems: NavItem[] = [
     label: 'Dashboards',
     href: '/dashboards',
     icon: <LayoutDashboard className="h-5 w-5" />,
+  },
+  {
+    label: 'AI Chat',
+    href: '/chat',
+    icon: <MessageSquareText className="h-5 w-5" />,
   },
 ];
 

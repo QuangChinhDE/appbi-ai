@@ -1,0 +1,53 @@
+version: "3.8"
+
+# AI Chat Agent service — deploy independently alongside the BI stack.
+#
+# Usage:
+#   # Start BI stack first (or it should already be running):
+#   docker compose up -d
+#
+#   # Start AI service:
+#   docker compose -f docker-compose.ai.yml up -d
+#
+#   # Stop AI only (BI keeps running):
+#   docker compose -f docker-compose.ai.yml down
+#
+#   # Start both together:
+#   docker compose -f docker-compose.yml -f docker-compose.ai.yml up -d --build
+
+services:
+  ai-service:
+    build:
+      context: .
+      dockerfile: ai-service/Dockerfile
+    container_name: appbi-ai
+    ports:
+      - "${AI_PORT:-8001}:8001"
+    environment:
+      # BI Backend reachable via internal Docker network
+      BI_API_URL: "http://backend:8000/api/v1"
+      # LLM config — all driven by .env, no rebuilds needed when switching model
+      LLM_PROVIDER: "${LLM_PROVIDER:-openai}"
+      LLM_MODEL: "${LLM_MODEL:-gpt-4o-mini}"
+      LLM_FALLBACK_CHAIN: "${LLM_FALLBACK_CHAIN:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # Session / behaviour
+      AI_SESSION_TTL_MINUTES: "${AI_SESSION_TTL_MINUTES:-30}"
+      AI_MAX_TOOL_CALLS: "${AI_MAX_TOOL_CALLS:-8}"
+      AI_WORKSPACE_TABLE_LIMIT: "${AI_WORKSPACE_TABLE_LIMIT:-50}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+    networks:
+      - appbi-net   # same bridge network as BI backend
+    depends_on:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  appbi-net:
+    external: true   # must already exist — created by docker-compose.yml
