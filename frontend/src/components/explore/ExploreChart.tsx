@@ -12,6 +12,8 @@ import {
 } from 'recharts';
 import type { ChartRoleConfig, MetricConfig, AggFn } from './ExploreChartConfig';
 import { metricKey, metricLabel } from './ExploreChartConfig';
+import { applyFiltersToRows } from '@/lib/filters';
+import type { BaseFilter } from '@/lib/filters';
 
 const PALETTE = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 
@@ -92,9 +94,11 @@ export interface ExploreChartProps {
   type: string;
   data: Record<string, any>[];
   roleConfig: ChartRoleConfig;
+  /** Post-aggregation (HAVING) filters — applied after group-by+agg */
+  havingFilters?: BaseFilter[];
 }
 
-export function ExploreChart({ type, data, roleConfig }: ExploreChartProps) {
+export function ExploreChart({ type, data, roleConfig, havingFilters = [] }: ExploreChartProps) {
   const { dimension, metrics, breakdown, timeField, scatterX, scatterY } = roleConfig;
   const xField = type === 'TIME_SERIES' ? (timeField || dimension) : dimension;
 
@@ -102,8 +106,12 @@ export function ExploreChart({ type, data, roleConfig }: ExploreChartProps) {
   const aggData = useMemo(() => {
     if (!xField || metrics.length === 0) return data;
     if (['SCATTER', 'KPI', 'TABLE'].includes(type)) return data;
-    return applyGroupByAgg(data, xField, metrics);
-  }, [data, type, xField, metrics]);
+    let agg = applyGroupByAgg(data, xField, metrics);
+    if (havingFilters.length > 0) {
+      agg = applyFiltersToRows(agg, havingFilters);
+    }
+    return agg;
+  }, [data, type, xField, metrics, havingFilters]);
 
   // Pivot for breakdown-based charts
   const breakdownResult = useMemo(() => {

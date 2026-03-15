@@ -1,13 +1,15 @@
 'use client';
 
 import React, { useMemo, useState, useRef, useEffect } from 'react';
-import { X, Loader2, Pencil, Check } from 'lucide-react';
+import { X, Loader2, Pencil, Check, SlidersHorizontal, Plus } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { applyFilters } from '@/lib/explore-utils';
-import type { ChartRoleConfig, AggFn } from '@/components/explore/ExploreChartConfig';
+import type { ChartRoleConfig, AggFn, MetricConfig } from '@/components/explore/ExploreChartConfig';
+import { metricKey, metricLabel } from '@/components/explore/ExploreChartConfig';
 import { DashboardFilter, applyFiltersToRows } from '@/lib/filters';
+import type { BaseFilter, FilterOperator } from '@/lib/filters';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -20,7 +22,8 @@ interface ChartTileProps {
   onRemove: (dashboardChartId: number) => void;
   isRemoving?: boolean;
   dashboardFilters?: DashboardFilter[];
-  onDataLoaded?: (datasetId: number, data: any[]) => void;
+  globalFilters?: BaseFilter[];
+  onDataLoaded?: (chartId: number, data: any[], meta: { dimensionFields: string[] }) => void;
   instanceParameters?: Record<string, any>;
 }
 
@@ -33,6 +36,7 @@ export function ChartTile({
   onRemove, 
   isRemoving,
   dashboardFilters = [],
+  globalFilters = [],
   onDataLoaded,
   instanceParameters,
 }: ChartTileProps) {
@@ -45,6 +49,13 @@ export function ChartTile({
   const [titleInput, setTitleInput] = useState('');
   const [isSavingTitle, setIsSavingTitle] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
+
+  // Per-tile HAVING filter state (post-aggregation)
+  const [havingFilters, setHavingFilters] = useState<BaseFilter[]>([]);
+  const [isHavingOpen, setIsHavingOpen] = useState(false);
+  const [draftHavingField, setDraftHavingField] = useState('');
+  const [draftHavingOp, setDraftHavingOp] = useState<FilterOperator>('gt');
+  const [draftHavingValue, setDraftHavingValue] = useState('');
 
   const customTitle: string | undefined = currentLayout?.custom_title;
   const displayTitle = customTitle ?? chart?.name ?? '';
@@ -87,12 +98,15 @@ export function ChartTile({
     if (e.key === 'Escape') setIsEditingTitle(false);
   };
 
-  // Notify parent when data is loaded (for filter dropdown options)
+  // Notify parent when data is loaded — report dimension fields for global filter bar
   React.useEffect(() => {
-    if (chartData?.data && onDataLoaded && datasetId) {
-      onDataLoaded(datasetId, chartData.data);
+    if (chartData?.data?.length && onDataLoaded) {
+      const rc = (chart?.config as any)?.roleConfig as ChartRoleConfig | undefined;
+      const dimensionFields = [rc?.dimension, rc?.breakdown, rc?.timeField]
+        .filter((f): f is string => !!f);
+      onDataLoaded(chartId, chartData.data, { dimensionFields });
     }
-  }, [chartData?.data, onDataLoaded, datasetId]);
+  }, [chartData?.data, onDataLoaded, chartId, chart?.config]);
 
   const rawRows: Record<string, any>[] = chartData?.data ?? [];
 
@@ -118,8 +132,44 @@ export function ChartTile({
       const forThisChart = dashboardFilters.filter(f => f.datasetId === datasetId);
       rows = applyFiltersToRows(rows, forThisChart);
     }
+    // Apply global dashboard filters to ALL chart types.
+    // Only apply a filter if its field actually exists in this chart's data.
+    if (globalFilters.length > 0 && rows.length > 0) {
+      const applicable = globalFilters.filter(f => f.field in rows[0]);
+      if (applicable.length > 0) {
+        rows = applyFiltersToRows(rows, applicable);
+      }
+    }
     return rows;
-  }, [rawRows, exploreConfig, dashboardFilters, datasetId]);
+  }, [rawRows, exploreConfig, dashboardFilters, datasetId, globalFilters]);
+
+  // Available metric keys for HAVING filter
+  const havingOptions = useMemo(() =>
+    exploreConfig?.roleConfig.metrics.map(m => ({
+      key: metricKey(m),
+      label: metricLabel(m),
+    })) ?? [],
+  [exploreConfig]);
+
+  // Initialize draftHavingField when options become available
+  React.useEffect(() => {
+    if (havingOptions.length > 0 && !draftHavingField) {
+      setDraftHavingField(havingOptions[0].key);
+    }
+  }, [havingOptions, draftHavingField]);
+
+  const confirmHaving = () => {
+    const field = draftHavingField || havingOptions[0]?.key;
+    if (!field || draftHavingValue === '') return;
+    setHavingFilters(prev => [...prev, {
+      id: `hv-${Date.now()}`,
+      field,
+      type: 'number',
+      operator: draftHavingOp,
+      value: Number(draftHavingValue),
+    }]);
+    setDraftHavingValue('');
+  };
 
   // Legacy ChartPreview config (only used for non-Explore charts)
   const legacyChartConfig = useMemo(() => {
@@ -190,6 +240,23 @@ export function ChartTile({
         ) : (
           <>
             <h3 className="text-sm font-semibold truncate flex-1">{displayTitle}</h3>
+            {exploreConfig && havingOptions.length > 0 && (
+              <button
+                onMouseDown={e => e.stopPropagation()}
+                onClick={() => setIsHavingOpen(v => !v)}
+                className={`relative flex-shrink-0 transition-opacity ${
+                  isHavingOpen || havingFilters.length > 0
+                    ? 'opacity-100 text-indigo-600'
+                    : 'opacity-0 group-hover:opacity-100 text-gray-400 hover:text-indigo-600'
+                }`}
+                title="Per-chart filters (HAVING)"
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                {havingFilters.length > 0 && (
+                  <span className="absolute -top-1 -right-1 w-2 h-2 bg-indigo-500 rounded-full" />
+                )}
+              </button>
+            )}
             <button
               onMouseDown={e => e.stopPropagation()}
               onClick={startEditingTitle}
@@ -215,6 +282,79 @@ export function ChartTile({
             ))}
           </div>
         )}
+        {/* HAVING filter chips */}
+        {havingFilters.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {havingFilters.map(f => (
+              <span key={f.id} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs rounded">
+                <span className="font-mono opacity-60 text-[0.6rem] uppercase">having</span>
+                {havingOptions.find(o => o.key === f.field)?.label ?? f.field}
+                {` ${f.operator} ${f.value}`}
+                <button
+                  onMouseDown={e => e.stopPropagation()}
+                  onClick={() => setHavingFilters(prev => prev.filter(x => x.id !== f.id))}
+                  className="text-indigo-400 hover:text-indigo-700"
+                >
+                  <X className="w-2.5 h-2.5" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        {/* HAVING filter editor panel */}
+        {isHavingOpen && exploreConfig && havingOptions.length > 0 && (
+          <div
+            className="border border-indigo-100 bg-indigo-50/50 rounded p-2 flex flex-wrap items-center gap-1.5"
+            onMouseDown={e => e.stopPropagation()}
+          >
+            <select
+              value={draftHavingField}
+              onChange={e => setDraftHavingField(e.target.value)}
+              className="text-xs border border-gray-300 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-400 bg-white"
+            >
+              {havingOptions.map(o => (
+                <option key={o.key} value={o.key}>{o.label}</option>
+              ))}
+            </select>
+            <select
+              value={draftHavingOp}
+              onChange={e => setDraftHavingOp(e.target.value as FilterOperator)}
+              className="text-xs border border-gray-300 rounded px-1.5 py-0.5 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-400"
+            >
+              <option value="gt">&gt; greater than</option>
+              <option value="gte">≥ greater or equal</option>
+              <option value="lt">&lt; less than</option>
+              <option value="lte">≤ less or equal</option>
+              <option value="eq">= equals</option>
+              <option value="neq">≠ not equals</option>
+            </select>
+            <input
+              type="number"
+              value={draftHavingValue}
+              onChange={e => setDraftHavingValue(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') confirmHaving();
+                if (e.key === 'Escape') setIsHavingOpen(false);
+              }}
+              placeholder="value"
+              className="text-xs border border-gray-300 rounded px-1.5 py-0.5 w-20 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+            />
+            <button
+              onClick={confirmHaving}
+              className="text-xs px-2 py-0.5 bg-indigo-500 text-white rounded hover:bg-indigo-600"
+            >
+              Apply
+            </button>
+            {havingFilters.length > 0 && (
+              <button
+                onClick={() => setHavingFilters([])}
+                className="text-xs text-gray-400 hover:text-gray-600"
+              >
+                Clear all
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Chart visualization */}
@@ -224,6 +364,7 @@ export function ChartTile({
             type={exploreConfig.chartType}
             data={filteredData}
             roleConfig={exploreConfig.roleConfig}
+            havingFilters={havingFilters}
           />
         ) : (
           <ChartPreview

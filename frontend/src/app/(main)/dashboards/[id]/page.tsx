@@ -15,7 +15,10 @@ import {
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { AddChartModal } from '@/components/dashboards/AddChartModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { DashboardChartLayout } from '@/types/api';
+import type { BaseFilter, ColumnInfo } from '@/lib/filters';
+import { inferColumnTypeFromData } from '@/lib/filters';
 import { toast } from 'sonner';
 
 // Debounce utility
@@ -48,6 +51,11 @@ export default function DashboardDetailPage() {
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState('');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [globalFilters, setGlobalFilters] = useState<BaseFilter[]>([]);
+  const [availableColumns, setAvailableColumns] = useState<ColumnInfo[]>([]);
+  // columnChartCount: how many distinct chartIds have each column
+  const columnChartCountRef = React.useRef<Map<string, Set<number>>>(new Map());
+  const [columnChartCount, setColumnChartCount] = useState<Map<string, number>>(new Map());
 
   const { data: dashboard, isLoading: isLoadingDashboard } = useDashboard(dashboardId);
   const updateDashboardMutation = useUpdateDashboard();
@@ -158,6 +166,38 @@ export default function DashboardDetailPage() {
     setEditedName('');
   };
 
+  // Collect typed column info from chart data as charts load
+  // Only dimension/breakdown fields are eligible for the global filter bar
+  const handleChartDataLoaded = useCallback((
+    chartId: number,
+    data: Record<string, any>[],
+    meta: { dimensionFields: string[] },
+  ) => {
+    if (!data.length) return;
+    // If we have explicit dimension fields, only expose those to the global bar
+    const fields = meta.dimensionFields.length > 0
+      ? meta.dimensionFields.filter(f => f in data[0])
+      : Object.keys(data[0]);
+    const incoming: ColumnInfo[] = fields.map(name => ({
+      name,
+      type: inferColumnTypeFromData(name, data),
+    }));
+    // Update per-column chart counts
+    const tracker = columnChartCountRef.current;
+    incoming.forEach(c => {
+      if (!tracker.has(c.name)) tracker.set(c.name, new Set());
+      tracker.get(c.name)!.add(chartId);
+    });
+    setColumnChartCount(new Map(Array.from(tracker.entries()).map(([k, s]) => [k, s.size])));
+    setAvailableColumns(prev => {
+      const map = new Map(prev.map(c => [c.name, c]));
+      incoming.forEach(c => { if (!map.has(c.name)) map.set(c.name, c); });
+      const merged = Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+      if (merged.length === prev.length) return prev;
+      return merged;
+    });
+  }, []);
+
   if (isLoadingDashboard) {
     return (
       <div className="min-h-screen bg-gray-50">
@@ -267,6 +307,14 @@ export default function DashboardDetailPage() {
           </div>
         </div>
 
+        {/* Dashboard Filter Bar */}
+        <DashboardFilterBar
+          columns={availableColumns}
+          columnChartCount={columnChartCount}
+          filters={globalFilters}
+          onFiltersChange={setGlobalFilters}
+        />
+
         {/* Dashboard Grid */}
         <DashboardGrid
           dashboardId={dashboardId}
@@ -274,6 +322,8 @@ export default function DashboardDetailPage() {
           onLayoutChange={handleLayoutChange}
           onRemoveChart={handleRemoveChart}
           removingChartId={removingChartId}
+          globalFilters={globalFilters}
+          onChartDataLoaded={handleChartDataLoaded}
         />
 
         {/* Add Chart Modal */}

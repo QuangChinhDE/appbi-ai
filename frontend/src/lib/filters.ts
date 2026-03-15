@@ -39,6 +39,45 @@ export interface DashboardFilter extends BaseFilter {
 }
 
 /**
+ * Infer FilterType by sampling actual values in the data rows.
+ * Returns 'date' | 'number' | 'text'.
+ */
+export function inferColumnTypeFromData(
+  field: string,
+  rows: Record<string, any>[]
+): FilterType {
+  for (const row of rows) {
+    const val = row[field];
+    if (val === null || val === undefined) continue;
+
+    // JS Date object
+    if (val instanceof Date) return 'date';
+
+    // Number
+    if (typeof val === 'number') return 'number';
+
+    // String heuristics
+    if (typeof val === 'string') {
+      // ISO date patterns: YYYY-MM-DD or YYYY-MM-DDTHH:mm
+      if (/^\d{4}-\d{2}-\d{2}(T|$)/.test(val)) return 'date';
+      // Looks like a number string
+      if (val.trim() !== '' && !isNaN(Number(val))) return 'number';
+      return 'text';
+    }
+    break;
+  }
+  return 'text';
+}
+
+/**
+ * Column name + inferred type, used by DashboardFilterBar
+ */
+export interface ColumnInfo {
+  name: string;
+  type: FilterType;
+}
+
+/**
  * Helper to detect filter type from column type
  */
 export function getFilterTypeForColumn(columnType: string): FilterType {
@@ -90,11 +129,24 @@ export function applyFiltersToRows(
 
       switch (f.type) {
         case 'date': {
-          const [start, end] = f.value ?? [];
-          const v = String(val).slice(0, 10); // 'YYYY-MM-DD'
-          if (start && v < start) return false;
-          if (end && v > end) return false;
-          return true;
+          // Normalise both sides to comparable YYYY-MM-DD strings
+          const strVal = String(val).slice(0, 10);
+          const filterVal = String(f.value ?? '').slice(0, 10);
+          switch (f.operator) {
+            case 'eq':  return strVal === filterVal;
+            case 'neq': return strVal !== filterVal;
+            case 'gt':  return strVal > filterVal;
+            case 'gte': return strVal >= filterVal;
+            case 'lt':  return strVal < filterVal;
+            case 'lte': return strVal <= filterVal;
+            case 'between': {
+              const [start, end] = Array.isArray(f.value) ? f.value : [];
+              if (start && strVal < String(start).slice(0, 10)) return false;
+              if (end   && strVal > String(end).slice(0, 10))   return false;
+              return true;
+            }
+            default: return true;
+          }
         }
         
         case 'dropdown': {
