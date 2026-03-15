@@ -58,7 +58,7 @@ class DataSource(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     
     # Relationships
-    datasets = relationship("Dataset", back_populates="data_source", cascade="all, delete-orphan")
+    datasets = relationship("Dataset", back_populates="data_source")
 
 
 class Dataset(Base):
@@ -97,7 +97,7 @@ class Dataset(Base):
     
     # Relationships
     data_source = relationship("DataSource", back_populates="datasets")
-    charts = relationship("Chart", back_populates="dataset", cascade="all, delete-orphan")
+    charts = relationship("Chart", back_populates="dataset")
     semantic_views = relationship("SemanticView", back_populates="dataset")
 
 
@@ -136,6 +136,8 @@ class Chart(Base):
     dataset = relationship("Dataset", back_populates="charts")
     workspace_table = relationship("DatasetWorkspaceTable", foreign_keys=[workspace_table_id])
     dashboard_charts = relationship("DashboardChart", back_populates="chart", cascade="all, delete-orphan")
+    chart_meta = relationship("ChartMetadata", back_populates="chart", uselist=False, cascade="all, delete-orphan")
+    parameters = relationship("ChartParameter", back_populates="chart", cascade="all, delete-orphan")
 
 
 class Dashboard(Base):
@@ -176,6 +178,80 @@ class DashboardChart(Base):
     # Format: {x: 0, y: 0, w: 6, h: 4}
     layout = Column(JSON, nullable=False)
     
+    # Runtime parameter values for this chart instance in this dashboard
+    # Format: {"date_range": "last_30_days", "region": "VN"}
+    parameters = Column(JSON, nullable=True, default=dict)
+    
     # Relationships
     dashboard = relationship("Dashboard", back_populates="dashboard_charts")
     chart = relationship("Chart", back_populates="dashboard_charts")
+
+
+class ChartMetadata(Base):
+    """
+    Semantic metadata for a chart (business meaning layer).
+    Separate from chart config — does not affect rendering or execution.
+    """
+    __tablename__ = "chart_metadata"
+
+    id = Column(Integer, primary_key=True, index=True)
+    chart_id = Column(Integer, ForeignKey("charts.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+
+    # Business domain: sales / marketing / finance / operations / hr
+    domain = Column(String(100), nullable=True)
+
+    # Analysis intent: trend / comparison / ranking / summary / distribution
+    intent = Column(String(100), nullable=True)
+
+    # Business metric names (semantic labels, NOT technical column names)
+    # Example: ["revenue", "order_count"]
+    metrics = Column(JSON, nullable=True, default=list)
+
+    # Business dimension names (semantic labels)
+    # Example: ["month", "region"]
+    dimensions = Column(JSON, nullable=True, default=list)
+
+    # Free-form tags for search and classification
+    # Example: ["sales", "performance", "q1"]
+    tags = Column(JSON, nullable=True, default=list)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    # Relationships
+    chart = relationship("Chart", back_populates="chart_meta")
+
+
+class ChartParameter(Base):
+    """
+    Parameter definition for a chart template.
+    Declares what parameters the chart can accept; does NOT store values.
+    Values live in DashboardChart.parameters at runtime.
+    """
+    __tablename__ = "chart_parameters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    chart_id = Column(Integer, ForeignKey("charts.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # Parameter name: date_range, region, product_category
+    parameter_name = Column(String(100), nullable=False)
+
+    # Parameter type: time_range, dimension, measure
+    parameter_type = Column(String(50), nullable=False)
+
+    # Column mapping JSON: {"column": "order_date", "type": "date"}
+    # Tells the system which dataset column this parameter maps to
+    column_mapping = Column(JSON, nullable=True)
+
+    # Default value used when no override is supplied
+    default_value = Column(String(255), nullable=True)
+
+    # Human-readable description of the parameter
+    description = Column(Text, nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Relationships
+    chart = relationship("Chart", back_populates="parameters")

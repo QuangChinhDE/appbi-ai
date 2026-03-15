@@ -7,6 +7,10 @@ import {
   ChartCreate,
   ChartUpdate,
   ChartDataResponse,
+  ChartMetadata,
+  ChartMetadataUpsert,
+  ChartParameter,
+  ChartParameterCreate,
 } from '@/types/api';
 
 export const chartApi = {
@@ -37,5 +41,30 @@ export const chartApi = {
   getData: async (id: number): Promise<ChartDataResponse> => {
     const response = await apiClient.get(`/charts/${id}/data`);
     return response.data;
+  },
+
+  // --- Metadata ---
+  upsertMetadata: async (id: number, data: ChartMetadataUpsert): Promise<ChartMetadata> => {
+    const response = await apiClient.put(`/charts/${id}/metadata`, data);
+    return response.data;
+  },
+
+  deleteMetadata: async (id: number): Promise<void> => {
+    await apiClient.delete(`/charts/${id}/metadata`);
+  },
+
+  // --- Parameters ---
+  replaceParameters: async (id: number, params: ChartParameterCreate[]): Promise<ChartParameter[]> => {
+    const response = await apiClient.put(`/charts/${id}/parameters`, params);
+    return response.data;
+  },
+
+  addParameter: async (id: number, param: ChartParameterCreate): Promise<ChartParameter> => {
+    const response = await apiClient.post(`/charts/${id}/parameters`, param);
+    return response.data;
+  },
+
+  deleteParameter: async (id: number, paramId: number): Promise<void> => {
+    await apiClient.delete(`/charts/${id}/parameters/${paramId}`);
   },
 };

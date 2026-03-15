@@ -65,11 +65,13 @@ export const useAddChartToDashboard = () => {
       dashboardId,
       chartId,
       layout,
+      parameters,
     }: {
       dashboardId: number;
       chartId: number;
       layout: DashboardChartLayout;
-    }) => dashboardApi.addChart(dashboardId, chartId, layout),
+      parameters?: Record<string, any>;
+    }) => dashboardApi.addChart(dashboardId, chartId, layout, parameters),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['dashboards'] });
       queryClient.invalidateQueries({ queryKey: ['dashboards', variables.dashboardId] });
@@ -81,8 +83,8 @@ export const useRemoveChartFromDashboard = () => {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: ({ dashboardId, dashboardChartId }: { dashboardId: number; dashboardChartId: number }) =>
-      dashboardApi.removeChart(dashboardId, dashboardChartId),
+    mutationFn: ({ dashboardId, chartId }: { dashboardId: number; chartId: number }) =>
+      dashboardApi.removeChart(dashboardId, chartId),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['dashboards'] });
       queryClient.invalidateQueries({ queryKey: ['dashboards', variables.dashboardId] });

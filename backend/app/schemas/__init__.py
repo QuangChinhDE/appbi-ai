@@ -28,6 +28,11 @@ from app.schemas.schemas import (
     ChartUpdate,
     ChartResponse,
     ChartDataResponse,
+    ChartMetadataUpsert,
+    ChartMetadataResponse,
+    ChartParameterCreate,
+    ChartParameterUpdate,
+    ChartParameterResponse,
     
     # Dashboard
     DashboardChartLayout,
@@ -122,6 +127,11 @@ __all__ = [
     "ChartUpdate",
     "ChartResponse",
     "ChartDataResponse",
+    "ChartMetadataUpsert",
+    "ChartMetadataResponse",
+    "ChartParameterCreate",
+    "ChartParameterUpdate",
+    "ChartParameterResponse",
     
     # Dashboard
     "DashboardChartLayout",

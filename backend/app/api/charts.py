@@ -6,11 +6,17 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app.core import get_db
+from app.models.models import Chart, DashboardChart, Dashboard
 from app.schemas import (
     ChartCreate,
     ChartUpdate,
     ChartResponse,
     ChartDataResponse,
+    ChartMetadataUpsert,
+    ChartMetadataResponse,
+    ChartParameterCreate,
+    ChartParameterUpdate,
+    ChartParameterResponse,
 )
 from app.services import ChartService
 from app.core.logging import get_logger
@@ -71,7 +77,33 @@ def update_chart(
 
 @router.delete("/{chart_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_chart(chart_id: int, db: Session = Depends(get_db)):
-    """Delete a chart."""
+    """Delete a chart, blocked if it is used in any dashboard."""
+    chart = db.query(Chart).filter(Chart.id == chart_id).first()
+    if not chart:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chart with ID {chart_id} not found"
+        )
+
+    blocking_links = (
+        db.query(DashboardChart)
+        .filter(DashboardChart.chart_id == chart_id)
+        .all()
+    )
+    if blocking_links:
+        dashboard_ids = {lnk.dashboard_id for lnk in blocking_links}
+        dashboards = db.query(Dashboard).filter(Dashboard.id.in_(dashboard_ids)).all()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": f"Chart \"{chart.name}\" đang được sử dụng trong {len(dashboards)} dashboard và không thể xóa.",
+                "constraints": [
+                    {"type": "dashboard", "id": d.id, "name": d.name}
+                    for d in dashboards
+                ],
+            },
+        )
+
     success = ChartService.delete(db, chart_id)
     if not success:
         raise HTTPException(
@@ -97,3 +129,99 @@ def get_chart_data(chart_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get chart data: {str(e)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Metadata endpoints
+# ---------------------------------------------------------------------------
+
+@router.put("/{chart_id}/metadata", response_model=ChartMetadataResponse)
+def upsert_chart_metadata(
+    chart_id: int,
+    data: ChartMetadataUpsert,
+    db: Session = Depends(get_db),
+):
+    """Create or replace semantic metadata for a chart."""
+    chart = ChartService.get_by_id(db, chart_id)
+    if not chart:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart {chart_id} not found")
+    return ChartService.upsert_metadata(db, chart_id, data)
+
+
+@router.get("/{chart_id}/metadata", response_model=ChartMetadataResponse)
+def get_chart_metadata(chart_id: int, db: Session = Depends(get_db)):
+    """Get semantic metadata for a chart."""
+    chart = ChartService.get_by_id(db, chart_id)
+    if not chart:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart {chart_id} not found")
+    meta = ChartService.get_metadata(db, chart_id)
+    if not meta:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No metadata found for this chart")
+    return meta
+
+
+@router.delete("/{chart_id}/metadata", status_code=status.HTTP_204_NO_CONTENT)
+def delete_chart_metadata(chart_id: int, db: Session = Depends(get_db)):
+    """Delete semantic metadata for a chart."""
+    if not ChartService.delete_metadata(db, chart_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No metadata found for this chart")
+
+
+# ---------------------------------------------------------------------------
+# Parameter definition endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/{chart_id}/parameters", response_model=List[ChartParameterResponse])
+def list_chart_parameters(chart_id: int, db: Session = Depends(get_db)):
+    """List all parameter definitions for a chart."""
+    chart = ChartService.get_by_id(db, chart_id)
+    if not chart:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart {chart_id} not found")
+    return ChartService.get_parameters(db, chart_id)
+
+
+@router.put("/{chart_id}/parameters", response_model=List[ChartParameterResponse])
+def replace_chart_parameters(
+    chart_id: int,
+    params: List[ChartParameterCreate],
+    db: Session = Depends(get_db),
+):
+    """Replace all parameter definitions for a chart (bulk replace)."""
+    chart = ChartService.get_by_id(db, chart_id)
+    if not chart:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart {chart_id} not found")
+    return ChartService.replace_parameters(db, chart_id, params)
+
+
+@router.post("/{chart_id}/parameters", response_model=ChartParameterResponse, status_code=status.HTTP_201_CREATED)
+def add_chart_parameter(
+    chart_id: int,
+    data: ChartParameterCreate,
+    db: Session = Depends(get_db),
+):
+    """Add a single parameter definition to a chart."""
+    chart = ChartService.get_by_id(db, chart_id)
+    if not chart:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart {chart_id} not found")
+    return ChartService.add_parameter(db, chart_id, data)
+
+
+@router.put("/{chart_id}/parameters/{param_id}", response_model=ChartParameterResponse)
+def update_chart_parameter(
+    chart_id: int,
+    param_id: int,
+    data: ChartParameterUpdate,
+    db: Session = Depends(get_db),
+):
+    """Update a parameter definition."""
+    param = ChartService.update_parameter(db, chart_id, param_id, data)
+    if not param:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Parameter {param_id} not found")
+    return param
+
+
+@router.delete("/{chart_id}/parameters/{param_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_chart_parameter(chart_id: int, param_id: int, db: Session = Depends(get_db)):
+    """Delete a parameter definition."""
+    if not ChartService.delete_parameter(db, chart_id, param_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Parameter {param_id} not found")

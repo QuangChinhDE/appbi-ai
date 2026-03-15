@@ -6,8 +6,11 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
-import { ArrowLeft, Plus, X, AlertCircle } from 'lucide-react';
+import { Plus, X, AlertCircle, Loader2, FileText, Clock, Edit, Trash2, Play, Search } from 'lucide-react';
+import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
+import { PageListLayout } from '@/components/common/PageListLayout';
+import { toast } from 'sonner';
+import type { Dataset as DatasetType } from '@/types/api';
 import {
   useDatasets,
   useCreateDataset,
@@ -28,6 +31,9 @@ export default function DatasetsPage() {
   const [currentView, setCurrentView] = useState<View>('list');
   const [editingDataset, setEditingDataset] = useState<Dataset | null>(null);
   const [previewingDataset, setPreviewingDataset] = useState<Dataset | null>(null);
+  const [datasetToDelete, setDatasetToDelete] = useState<DatasetType | null>(null);
+  const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
+  const [isDeletingDataset, setIsDeletingDataset] = useState(false);
   const [previewResult, setPreviewResult] = useState<any>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
@@ -48,7 +54,7 @@ export default function DatasetsPage() {
       setPreviewResult(null);
       setPreviewError(null);
     } catch (error: any) {
-      alert(`Failed to create dataset: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to create dataset: ${error.response?.data?.detail || error.message}`);
     }
   };
 
@@ -64,16 +70,31 @@ export default function DatasetsPage() {
       setPreviewResult(null);
       setPreviewError(null);
     } catch (error: any) {
-      alert(`Failed to update dataset: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to update dataset: ${error.response?.data?.detail || error.message}`);
     }
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this dataset?')) return;
+  const handleDelete = (id: number) => {
+    const dataset = datasets.find((d) => d.id === id);
+    if (dataset) { setDatasetToDelete(dataset); setDeleteConstraints(null); }
+  };
+
+  const confirmDeleteDataset = async () => {
+    if (!datasetToDelete) return;
+    setIsDeletingDataset(true);
     try {
-      await deleteMutation.mutateAsync(id);
+      await deleteMutation.mutateAsync(datasetToDelete.id);
+      setDatasetToDelete(null);
     } catch (error: any) {
-      alert(`Failed to delete dataset: ${error.response?.data?.detail || error.message}`);
+      const detail = error.response?.data?.detail;
+      if (detail?.constraints) {
+        setDeleteConstraints(detail.constraints);
+      } else {
+        alert(`Failed to delete dataset: ${detail || error.message}`);
+        setDatasetToDelete(null);
+      }
+    } finally {
+      setIsDeletingDataset(false);
     }
   };
 
@@ -246,58 +267,164 @@ export default function DatasetsPage() {
       );
     }
 
-    // Default: list view
-    return (
-      <div className="space-y-6">
-        <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h2 className="text-2xl font-bold">Datasets</h2>
-              <p className="text-gray-600 mt-1">
-                {datasets.length} dataset{datasets.length !== 1 ? 's' : ''} configured
-              </p>
-            </div>
-            <button
-              onClick={() => setCurrentView('create')}
-              className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors flex items-center gap-2"
-            >
-              <Plus className="w-4 h-4" />
-              New Dataset
-            </button>
-          </div>
+    // List view is handled directly in the page return
+    return null;
+  };
 
-          {isLoading ? (
-            <div className="text-center py-12">
-              <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-              <p className="text-gray-500 mt-2">Loading...</p>
-            </div>
-          ) : (
-            <DatasetList
-              datasets={datasets}
-              dataSources={dataSources.map((ds) => ({ id: ds.id, name: ds.name }))}
-              onEdit={handleEdit}
-              onDelete={handleDelete}
-              onExecute={handleExecute}
-              isDeleting={deleteMutation.isPending ? deleteMutation.variables : null}
-            />
-          )}
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin text-blue-600 mx-auto mb-3" />
+          <p className="text-gray-600">Loading datasets...</p>
         </div>
       </div>
     );
-  };
+  }
 
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="container mx-auto px-4 py-8">
-        <div className="mb-6">
-          <Link href="/" className="inline-flex items-center text-blue-600 hover:text-blue-700">
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back to Home
-          </Link>
-        </div>
-
+  // Sub-views (create / edit / preview)
+  if (currentView !== 'list') {
+    return (
+      <div className="p-8">
         {renderContent()}
+        {datasetToDelete && (
+          <DeleteConstraintModal
+            itemName={datasetToDelete.name}
+            itemTypeLabel="dataset"
+            constraints={deleteConstraints}
+            isDeleting={isDeletingDataset}
+            onConfirm={confirmDeleteDataset}
+            onClose={() => { setDatasetToDelete(null); setDeleteConstraints(null); }}
+          />
+        )}
       </div>
-    </div>
+    );
+  }
+
+  // List view via standard template
+  return (
+    <>
+      <PageListLayout
+        title="Datasets"
+        description={`${datasets.length} dataset${datasets.length !== 1 ? 's' : ''} configured`}
+        action={
+          <button
+            onClick={() => setCurrentView('create')}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            New Dataset
+          </button>
+        }
+        searchPlaceholder="Search datasets…"
+        defaultView="list"
+      >
+        {({ viewMode, filterText }) => {
+          const filtered = datasets.filter(d =>
+            d.name.toLowerCase().includes(filterText.toLowerCase())
+          );
+          const dataSourceMap = Object.fromEntries(dataSources.map(ds => [ds.id, ds.name]));
+
+          if (datasets.length === 0) {
+            return (
+              <DatasetList
+                datasets={[]}
+                dataSources={dataSources.map((ds) => ({ id: ds.id, name: ds.name }))}
+                onEdit={handleEdit}
+                onDelete={handleDelete}
+                onExecute={handleExecute}
+              />
+            );
+          }
+
+          if (filtered.length === 0) {
+            return (
+              <div className="flex flex-col items-center justify-center h-48 text-center">
+                <Search className="w-8 h-8 text-gray-300 mb-2" />
+                <p className="text-sm text-gray-500">No datasets matching "<strong>{filterText}</strong>"</p>
+              </div>
+            );
+          }
+
+          if (viewMode === 'list') {
+            return (
+              <DatasetList
+                datasets={filtered}
+                dataSources={dataSources.map((ds) => ({ id: ds.id, name: ds.name }))}
+                onEdit={handleEdit}
+                onDelete={handleDelete}
+                onExecute={handleExecute}
+                isDeleting={deleteMutation.isPending ? deleteMutation.variables : null}
+              />
+            );
+          }
+
+          // Grid view
+          return (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {filtered.map(dataset => {
+                const dsName = dataSourceMap[dataset.data_source_id] ?? `ID: ${dataset.data_source_id}`;
+                const createdAt = new Date(dataset.created_at).toLocaleDateString('vi-VN', {
+                  day: '2-digit', month: '2-digit', year: 'numeric',
+                });
+                return (
+                  <div key={dataset.id} className="bg-white rounded-lg border border-gray-200 p-5 hover:shadow-md transition-all">
+                    <div className="flex items-start gap-3 mb-3">
+                      <div className="w-10 h-10 rounded-lg bg-indigo-50 flex items-center justify-center flex-shrink-0">
+                        <FileText className="w-5 h-5 text-indigo-600" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="font-semibold text-gray-900 text-sm truncate">{dataset.name}</h3>
+                        <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-800 rounded-full font-medium">
+                          {dsName}
+                        </span>
+                      </div>
+                    </div>
+                    {dataset.description && (
+                      <p className="text-xs text-gray-500 mb-3 line-clamp-2">{dataset.description}</p>
+                    )}
+                    <div className="text-xs text-gray-400 mb-4 flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      {createdAt}
+                    </div>
+                    <div className="flex items-center gap-1 pt-3 border-t border-gray-100">
+                      <button
+                        onClick={() => handleExecute(dataset)}
+                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs text-gray-600 hover:text-green-600 hover:bg-green-50 rounded transition-colors"
+                      >
+                        <Play className="w-3.5 h-3.5" /> Run
+                      </button>
+                      <button
+                        onClick={() => handleEdit(dataset)}
+                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                      >
+                        <Edit className="w-3.5 h-3.5" /> Edit
+                      </button>
+                      <button
+                        onClick={() => handleDelete(dataset.id)}
+                        className="flex items-center justify-center p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        }}
+      </PageListLayout>
+
+      {datasetToDelete && (
+        <DeleteConstraintModal
+          itemName={datasetToDelete.name}
+          itemTypeLabel="dataset"
+          constraints={deleteConstraints}
+          isDeleting={isDeletingDataset}
+          onConfirm={confirmDeleteDataset}
+          onClose={() => { setDatasetToDelete(null); setDeleteConstraints(null); }}
+        />
+      )}
+    </>
   );
 }

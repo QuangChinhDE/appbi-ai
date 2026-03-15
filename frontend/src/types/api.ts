@@ -253,6 +253,8 @@ export interface Chart {
   config: ChartConfig;
   created_at: string;
   updated_at: string;
+  metadata?: ChartMetadata | null;
+  parameters?: ChartParameter[];
 }
 
 export interface ChartCreate {
@@ -267,7 +269,7 @@ export interface ChartCreate {
 
 export interface ChartUpdate {
   name?: string;
-  description?: string;
+  description?: string | null;
   chart_type?: ChartType;
   config?: ChartConfig;
   dataset_id?: number | null;
@@ -287,6 +289,55 @@ export interface DashboardChart {
   chart_id: number;
   layout: Record<string, number>;
   chart: Chart;
+  parameters?: Record<string, any> | null;
+}
+
+// --- Chart Metadata (semantic/business layer) ---
+export interface ChartMetadata {
+  id: number;
+  chart_id: number;
+  domain?: string | null;     // sales / marketing / finance / operations
+  intent?: string | null;     // trend / comparison / ranking / summary
+  metrics?: string[];         // business metric names (semantic labels)
+  dimensions?: string[];      // business dimension names
+  tags?: string[];            // free-form tags
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChartMetadataUpsert {
+  domain?: string | null;
+  intent?: string | null;
+  metrics?: string[];
+  dimensions?: string[];
+  tags?: string[];
+}
+
+// --- Chart Parameters (template capability definitions) ---
+export type ChartParameterType = 'time_range' | 'dimension' | 'measure';
+
+export interface ChartParameterColumnMapping {
+  column: string;   // actual dataset column name
+  type: string;     // 'date' | 'string' | 'number'
+}
+
+export interface ChartParameter {
+  id: number;
+  chart_id: number;
+  parameter_name: string;     // e.g. 'date_range', 'region'
+  parameter_type: ChartParameterType;
+  column_mapping?: ChartParameterColumnMapping | null;
+  default_value?: string | null;
+  description?: string | null;
+  created_at: string;
+}
+
+export interface ChartParameterCreate {
+  parameter_name: string;
+  parameter_type: ChartParameterType;
+  column_mapping?: ChartParameterColumnMapping | null;
+  default_value?: string | null;
+  description?: string | null;
 }
 
 export interface Dashboard {
@@ -305,6 +356,7 @@ export interface DashboardCreate {
   charts?: Array<{
     chart_id: number;
     layout: DashboardChartLayout;
+    parameters?: Record<string, any>;
   }>;
 }
 

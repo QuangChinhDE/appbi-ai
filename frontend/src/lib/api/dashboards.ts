@@ -37,11 +37,13 @@ export const dashboardApi = {
   addChart: async (
     dashboardId: number,
     chartId: number,
-    layout: DashboardChartLayout
+    layout: DashboardChartLayout,
+    parameters?: Record<string, any>,
   ): Promise<Dashboard> => {
     const response = await apiClient.post(`/dashboards/${dashboardId}/charts`, {
       chart_id: chartId,
       layout,
+      parameters: parameters ?? {},
     });
     return response.data;
   },

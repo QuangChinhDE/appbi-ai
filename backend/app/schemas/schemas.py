@@ -192,6 +192,10 @@ class ChartBase(BaseModel):
     chart_type: ChartTypeSchema
     config: Dict[str, Any] = Field(..., description="Chart configuration")
 
+
+class ChartCreate(ChartBase):
+    """Schema for creating a chart."""
+
     @model_validator(mode='after')
     def validate_source(self):
         """Exactly one of dataset_id or workspace_table_id must be set."""
@@ -200,11 +204,6 @@ class ChartBase(BaseModel):
         if self.dataset_id is not None and self.workspace_table_id is not None:
             raise ValueError("Only one of dataset_id or workspace_table_id can be set")
         return self
-
-
-class ChartCreate(ChartBase):
-    """Schema for creating a chart."""
-    pass
 
 
 class ChartUpdate(BaseModel):
@@ -217,13 +216,69 @@ class ChartUpdate(BaseModel):
     dataset_id: Optional[int] = None
 
 
+# ─── Chart Metadata Schemas ────────────────────────────────────────────────────
+
+class ChartMetadataUpsert(BaseModel):
+    """Schema for creating or replacing chart semantic metadata."""
+    domain: Optional[str] = Field(None, max_length=100, description="Business domain: sales / marketing / finance")
+    intent: Optional[str] = Field(None, max_length=100, description="Analysis intent: trend / comparison / ranking / summary")
+    metrics: Optional[List[str]] = Field(default_factory=list, description="Business metric names (semantic labels)")
+    dimensions: Optional[List[str]] = Field(default_factory=list, description="Business dimension names (semantic labels)")
+    tags: Optional[List[str]] = Field(default_factory=list, description="Free-form tags for search")
+
+
+class ChartMetadataResponse(ChartMetadataUpsert):
+    """Schema for chart metadata response."""
+    id: int
+    chart_id: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ─── Chart Parameter Schemas ────────────────────────────────────────────────────
+
+class ChartParameterCreate(BaseModel):
+    """Schema for creating a chart parameter definition."""
+    parameter_name: str = Field(..., min_length=1, max_length=100, description="e.g. date_range, region")
+    parameter_type: str = Field(..., min_length=1, max_length=50, description="time_range / dimension / measure")
+    column_mapping: Optional[Dict[str, Any]] = Field(
+        None, description='e.g. {"column": "order_date", "type": "date"}'
+    )
+    default_value: Optional[str] = Field(None, max_length=255)
+    description: Optional[str] = None
+
+
+class ChartParameterUpdate(BaseModel):
+    """Schema for updating a chart parameter definition."""
+    parameter_type: Optional[str] = Field(None, max_length=50)
+    column_mapping: Optional[Dict[str, Any]] = None
+    default_value: Optional[str] = Field(None, max_length=255)
+    description: Optional[str] = None
+
+
+class ChartParameterResponse(ChartParameterCreate):
+    """Schema for chart parameter response."""
+    id: int
+    chart_id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ─── Chart Response (extended) ──────────────────────────────────────────────────
+
 class ChartResponse(ChartBase):
     """Schema for chart response."""
     id: int
     created_at: datetime
     updated_at: datetime
+    # validation_alias reads from ORM attr 'chart_meta'; serialized as 'metadata' in JSON
+    metadata: Optional[ChartMetadataResponse] = Field(default=None, validation_alias="chart_meta")
+    parameters: List[ChartParameterResponse] = Field(default_factory=list)
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class ChartDataResponse(BaseModel):
@@ -261,6 +316,7 @@ class DashboardChartResponse(BaseModel):
     chart_id: int
     chart: Optional['ChartResponse'] = None  # Include full chart data
     layout: Dict[str, Any]  # Changed from Dict[str, int] to allow None values
+    parameters: Optional[Dict[str, Any]] = None  # Runtime parameter values for this instance
     
     model_config = ConfigDict(from_attributes=True)
 
@@ -280,6 +336,9 @@ class DashboardAddChartRequest(BaseModel):
     """Schema for adding a chart to a dashboard."""
     chart_id: int
     layout: DashboardChartLayout
+    parameters: Optional[Dict[str, Any]] = Field(
+        None, description="Runtime parameter values for this chart instance"
+    )
 
 
 class DashboardUpdateLayoutRequest(BaseModel):

@@ -109,7 +109,8 @@ class DashboardService:
         db: Session,
         dashboard_id: int,
         chart_id: int,
-        layout: DashboardChartLayout
+        layout: DashboardChartLayout,
+        parameters: Optional[dict] = None,
     ) -> Optional[Dashboard]:
         """Add a chart to a dashboard."""
         db_dashboard = DashboardService.get_by_id(db, dashboard_id)
@@ -133,7 +134,8 @@ class DashboardService:
         db_dashboard_chart = DashboardChart(
             dashboard_id=dashboard_id,
             chart_id=chart_id,
-            layout=layout.model_dump()
+            layout=layout.model_dump(),
+            parameters=parameters or {},
         )
         db.add(db_dashboard_chart)
         db.commit()

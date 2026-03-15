@@ -5,8 +5,9 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
-from app.models import Chart, ChartType
+from app.models import Chart, ChartType, ChartMetadata, ChartParameter
 from app.schemas import ChartCreate, ChartUpdate
+from app.schemas import ChartMetadataUpsert, ChartParameterCreate, ChartParameterUpdate
 from app.services.dataset_service import DatasetService
 from app.core.logging import get_logger
 
@@ -182,3 +183,121 @@ class ChartService:
             raise ValueError("Chart has no data source configured")
         dataset_result = DatasetService.execute(db, db_chart.dataset_id)
         return {"chart": db_chart, "data": dataset_result["data"]}
+
+    # -----------------------------------------------------------------------
+    # Metadata CRUD
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def upsert_metadata(db: Session, chart_id: int, data: ChartMetadataUpsert) -> ChartMetadata:
+        """Create or replace semantic metadata for a chart."""
+        existing = db.query(ChartMetadata).filter(ChartMetadata.chart_id == chart_id).first()
+        if existing:
+            for field, value in data.model_dump(exclude_unset=False).items():
+                setattr(existing, field, value)
+            db.commit()
+            db.refresh(existing)
+            return existing
+        new_meta = ChartMetadata(
+            chart_id=chart_id,
+            domain=data.domain,
+            intent=data.intent,
+            metrics=data.metrics or [],
+            dimensions=data.dimensions or [],
+            tags=data.tags or [],
+        )
+        db.add(new_meta)
+        db.commit()
+        db.refresh(new_meta)
+        return new_meta
+
+    @staticmethod
+    def get_metadata(db: Session, chart_id: int) -> Optional[ChartMetadata]:
+        """Get metadata for a chart."""
+        return db.query(ChartMetadata).filter(ChartMetadata.chart_id == chart_id).first()
+
+    @staticmethod
+    def delete_metadata(db: Session, chart_id: int) -> bool:
+        """Delete metadata for a chart."""
+        existing = db.query(ChartMetadata).filter(ChartMetadata.chart_id == chart_id).first()
+        if not existing:
+            return False
+        db.delete(existing)
+        db.commit()
+        return True
+
+    # -----------------------------------------------------------------------
+    # Parameter CRUD
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def get_parameters(db: Session, chart_id: int) -> List[ChartParameter]:
+        """Get all parameter definitions for a chart."""
+        return db.query(ChartParameter).filter(ChartParameter.chart_id == chart_id).all()
+
+    @staticmethod
+    def replace_parameters(db: Session, chart_id: int, params: List[ChartParameterCreate]) -> List[ChartParameter]:
+        """Replace all parameter definitions for a chart (bulk upsert)."""
+        db.query(ChartParameter).filter(ChartParameter.chart_id == chart_id).delete()
+        new_params = [
+            ChartParameter(
+                chart_id=chart_id,
+                parameter_name=p.parameter_name,
+                parameter_type=p.parameter_type,
+                column_mapping=p.column_mapping,
+                default_value=p.default_value,
+                description=p.description,
+            )
+            for p in params
+        ]
+        db.add_all(new_params)
+        db.commit()
+        for p in new_params:
+            db.refresh(p)
+        return new_params
+
+    @staticmethod
+    def add_parameter(db: Session, chart_id: int, data: ChartParameterCreate) -> ChartParameter:
+        """Add a single parameter definition to a chart."""
+        param = ChartParameter(
+            chart_id=chart_id,
+            parameter_name=data.parameter_name,
+            parameter_type=data.parameter_type,
+            column_mapping=data.column_mapping,
+            default_value=data.default_value,
+            description=data.description,
+        )
+        db.add(param)
+        db.commit()
+        db.refresh(param)
+        return param
+
+    @staticmethod
+    def update_parameter(
+        db: Session, chart_id: int, param_id: int, data: ChartParameterUpdate
+    ) -> Optional[ChartParameter]:
+        """Update a parameter definition."""
+        param = db.query(ChartParameter).filter(
+            ChartParameter.id == param_id,
+            ChartParameter.chart_id == chart_id,
+        ).first()
+        if not param:
+            return None
+        for field, value in data.model_dump(exclude_unset=True).items():
+            setattr(param, field, value)
+        db.commit()
+        db.refresh(param)
+        return param
+
+    @staticmethod
+    def delete_parameter(db: Session, chart_id: int, param_id: int) -> bool:
+        """Delete a parameter definition."""
+        param = db.query(ChartParameter).filter(
+            ChartParameter.id == param_id,
+            ChartParameter.chart_id == chart_id,
+        ).first()
+        if not param:
+            return False
+        db.delete(param)
+        db.commit()
+        return True

@@ -7,6 +7,7 @@ from typing import List
 import os
 
 from app.core import get_db
+from app.models.models import Chart, Dataset
 from app.schemas import (
     DatasetCreate,
     DatasetUpdate,
@@ -78,7 +79,28 @@ def update_dataset(
 
 @router.delete("/{dataset_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_dataset(dataset_id: int, db: Session = Depends(get_db)):
-    """Delete a dataset."""
+    """Delete a dataset, blocked if any charts still reference it."""
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Dataset with ID {dataset_id} not found"
+        )
+
+    blocking_charts = db.query(Chart).filter(Chart.dataset_id == dataset_id).all()
+    if blocking_charts:
+        names = ", ".join(f'"{c.name}"' for c in blocking_charts)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": f"Dataset \"{dataset.name}\" đang được sử dụng bởi {len(blocking_charts)} chart và không thể xóa.",
+                "constraints": [
+                    {"type": "chart", "id": c.id, "name": c.name}
+                    for c in blocking_charts
+                ],
+            },
+        )
+
     success = DatasetService.delete(db, dataset_id)
     if not success:
         raise HTTPException(

@@ -21,6 +21,7 @@ interface ChartTileProps {
   isRemoving?: boolean;
   dashboardFilters?: DashboardFilter[];
   onDataLoaded?: (datasetId: number, data: any[]) => void;
+  instanceParameters?: Record<string, any>;
 }
 
 export function ChartTile({ 
@@ -33,6 +34,7 @@ export function ChartTile({
   isRemoving,
   dashboardFilters = [],
   onDataLoaded,
+  instanceParameters,
 }: ChartTileProps) {
   const queryClient = useQueryClient();
   const { data: chart, isLoading: isLoadingChart } = useChart(chartId);
@@ -162,8 +164,10 @@ export function ChartTile({
         )}
       </button>
 
-      {/* Drag handle + editable title */}
-      <div className="drag-handle mb-2 flex items-center gap-1.5 min-h-[1.5rem] pr-8 cursor-grab active:cursor-grabbing">
+      {/* Drag handle + editable title + parameter chips */}
+      <div className="drag-handle mb-2 flex flex-col gap-1 cursor-grab active:cursor-grabbing pr-8">
+        {/* Title row */}
+        <div className="flex items-center gap-1.5 min-h-[1.5rem]">
         {isEditingTitle ? (
           <>
             <input
@@ -195,6 +199,21 @@ export function ChartTile({
               <Pencil className="h-3.5 w-3.5" />
             </button>
           </>
+        )}
+        </div>
+        {/* Parameter chips */}
+        {instanceParameters && Object.keys(instanceParameters).length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {Object.entries(instanceParameters).map(([key, val]) => (
+              <span
+                key={key}
+                title={key}
+                className="inline-flex items-center px-1.5 py-0.5 bg-purple-50 border border-purple-200 text-purple-700 rounded text-xs font-mono"
+              >
+                {String(val)}
+              </span>
+            ))}
+          </div>
         )}
       </div>
 

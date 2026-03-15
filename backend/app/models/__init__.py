@@ -9,6 +9,8 @@ from app.models.models import (
     ChartType,
     Dashboard,
     DashboardChart,
+    ChartMetadata,
+    ChartParameter,
 )
 from app.models.semantic import (
     SemanticView,
@@ -38,11 +40,12 @@ __all__ = [
     "ChartType",
     "Dashboard",
     "DashboardChart",
+    "ChartMetadata",
+    "ChartParameter",
     "SemanticView",
     "SemanticModel",
     "DatasetModelTable",
     "DatasetWorkspace",
     "DatasetWorkspaceTable",
     "SemanticExplore",
-    # "DashboardFilter",  # Commented out - using filters_config JSON field
 ]

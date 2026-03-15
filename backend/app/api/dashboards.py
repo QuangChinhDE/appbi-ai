@@ -100,7 +100,8 @@ def add_chart_to_dashboard(
             db,
             dashboard_id,
             request.chart_id,
-            request.layout
+            request.layout,
+            request.parameters,
         )
         if not dashboard:
             raise HTTPException(

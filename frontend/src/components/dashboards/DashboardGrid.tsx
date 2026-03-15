@@ -97,6 +97,7 @@ export function DashboardGrid({
             isRemoving={removingChartId === dc.id}
             dashboardFilters={dashboardFilters}
             onDataLoaded={onChartDataLoaded}
+            instanceParameters={dc.parameters ?? {}}
           />
         </div>
       ))}

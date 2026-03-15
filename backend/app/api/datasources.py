@@ -8,6 +8,7 @@ import io
 import csv as csv_module
 
 from app.core import get_db
+from app.models import DataSource, Dataset, DatasetWorkspace
 from app.schemas import (
     DataSourceCreate,
     DataSourceUpdate,
@@ -192,7 +193,41 @@ def update_data_source(
 
 @router.delete("/{data_source_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_data_source(data_source_id: int, db: Session = Depends(get_db)):
-    """Delete a data source."""
+    """Delete a data source, blocked if any datasets or workspaces still reference it."""
+    datasource = db.query(DataSource).filter(DataSource.id == data_source_id).first()
+    if not datasource:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Data source with ID {data_source_id} not found"
+        )
+
+    blocking_datasets = db.query(Dataset).filter(Dataset.data_source_id == data_source_id).all()
+    blocking_workspaces = db.query(DatasetWorkspace).filter(
+        DatasetWorkspace.id.in_(
+            db.query(DatasetWorkspace.id)
+            .join(DatasetWorkspace.tables)
+            .filter_by(datasource_id=data_source_id)
+            .distinct()
+        )
+    ).all()
+
+    constraints = [
+        {"type": "dataset", "id": d.id, "name": d.name}
+        for d in blocking_datasets
+    ] + [
+        {"type": "workspace", "id": w.id, "name": w.name}
+        for w in blocking_workspaces
+    ]
+
+    if constraints:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": f"Data source \"{datasource.name}\" đang được sử dụng và không thể xóa.",
+                "constraints": constraints,
+            },
+        )
+
     success = DataSourceCRUDService.delete(db, data_source_id)
     if not success:
         raise HTTPException(

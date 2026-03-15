@@ -14,7 +14,9 @@ import {
 } from '@/hooks/use-dashboards';
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { AddChartModal } from '@/components/dashboards/AddChartModal';
+import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { DashboardChartLayout } from '@/types/api';
+import { toast } from 'sonner';
 
 // Debounce utility
 function useDebounce<T extends (...args: any[]) => any>(
@@ -42,6 +44,7 @@ export default function DashboardDetailPage() {
 
   const [isAddChartModalOpen, setIsAddChartModalOpen] = useState(false);
   const [removingChartId, setRemovingChartId] = useState<number | undefined>();
+  const [pendingRemoveDashboardChartId, setPendingRemoveDashboardChartId] = useState<number | undefined>();
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState('');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
@@ -85,41 +88,44 @@ export default function DashboardDetailPage() {
     debouncedSaveLayout(newLayout);
   };
 
-  const handleAddChart = async (chartId: number, layout: DashboardChartLayout) => {
+  const handleAddChart = async (chartId: number, layout: DashboardChartLayout, parameters?: Record<string, any>) => {
     try {
       await addChartMutation.mutateAsync({
         dashboardId,
         chartId,
         layout,
+        parameters,
       });
       setIsAddChartModalOpen(false);
     } catch (error) {
       console.error('Failed to add chart:', error);
-      alert('Failed to add chart. Please try again.');
+      toast.error('Failed to add chart. Please try again.');
     }
   };
 
-  const handleRemoveChart = async (dashboardChartId: number) => {
+  const handleRemoveChart = (dashboardChartId: number) => {
     if (!dashboard) return;
+    const dashboardChart = dashboard.dashboard_charts?.find((dc) => dc.id === dashboardChartId);
+    if (!dashboardChart) return;
+    setPendingRemoveDashboardChartId(dashboardChartId);
+  };
 
-    // Find the chart_id from dashboard_chart_id
-    const dashboardChart = dashboard.dashboard_charts?.find(
-      (dc) => dc.id === dashboardChartId
-    );
-    
+  const confirmRemoveChart = async () => {
+    if (!dashboard || pendingRemoveDashboardChartId === undefined) return;
+    const dashboardChart = dashboard.dashboard_charts?.find((dc) => dc.id === pendingRemoveDashboardChartId);
     if (!dashboardChart) return;
 
-    if (!confirm('Remove this chart from the dashboard?')) return;
-
-    setRemovingChartId(dashboardChartId);
+    setRemovingChartId(pendingRemoveDashboardChartId);
+    setPendingRemoveDashboardChartId(undefined);
     try {
       await removeChartMutation.mutateAsync({
         dashboardId,
-        dashboardChartId,
+        chartId: dashboardChart.chart_id,
       });
+      toast.success('Chart removed from dashboard');
     } catch (error) {
       console.error('Failed to remove chart:', error);
-      alert('Failed to remove chart. Please try again.');
+      toast.error('Failed to remove chart. Please try again.');
     } finally {
       setRemovingChartId(undefined);
     }
@@ -143,7 +149,7 @@ export default function DashboardDetailPage() {
       setIsEditingName(false);
     } catch (error) {
       console.error('Failed to update dashboard name:', error);
-      alert('Failed to update name. Please try again.');
+      toast.error('Failed to update name. Please try again.');
     }
   };
 
@@ -277,6 +283,17 @@ export default function DashboardDetailPage() {
           onAdd={handleAddChart}
           existingChartIds={existingChartIds}
           isAdding={addChartMutation.isPending}
+        />
+
+        {/* Confirm Remove Chart Dialog */}
+        <ConfirmDialog
+          isOpen={pendingRemoveDashboardChartId !== undefined}
+          onClose={() => setPendingRemoveDashboardChartId(undefined)}
+          onConfirm={confirmRemoveChart}
+          title="Remove chart from dashboard?"
+          description="This will remove the chart tile from the dashboard. The chart itself will not be deleted."
+          confirmLabel="Remove"
+          variant="danger"
         />
       </div>
     </div>

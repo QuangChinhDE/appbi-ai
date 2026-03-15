@@ -5,7 +5,9 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Database, Loader2, Calendar, ChevronRight, Trash2 } from 'lucide-react';
+import { Plus, Database, Loader2, Calendar, ChevronRight, Trash2, Search } from 'lucide-react';
+import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
+import { PageListLayout } from '@/components/common/PageListLayout';
 import { 
   useWorkspaces, 
   useCreateWorkspace, 
@@ -20,6 +22,9 @@ export default function DatasetWorkspacesPage() {
   const { data: workspaces, isLoading, error } = useWorkspaces();
   const createMutation = useCreateWorkspace();
   const deleteMutation = useDeleteWorkspace();
+  const [workspaceToDelete, setWorkspaceToDelete] = useState<{ id: number; name: string } | null>(null);
+  const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
+  const [isDeletingWorkspace, setIsDeletingWorkspace] = useState(false);
 
   const handleCreateWorkspace = async (input: CreateWorkspaceInput) => {
     try {
@@ -32,30 +37,29 @@ export default function DatasetWorkspacesPage() {
     }
   };
 
-  const handleDeleteWorkspace = async (id: number, name: string) => {
-    if (!confirm(`Are you sure you want to delete workspace "${name}"? This will remove all tables from the workspace.`)) {
-      return;
-    }
-    
-    try {
-      await deleteMutation.mutateAsync(id);
-    } catch (error) {
-      console.error('Failed to delete workspace:', error);
-      alert('Failed to delete workspace. Please try again.');
-    }
+  const handleDeleteWorkspace = (id: number, name: string) => {
+    setWorkspaceToDelete({ id, name });
+    setDeleteConstraints(null);
   };
 
-  // Loading state
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-center">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-600 mx-auto mb-3" />
-          <p className="text-gray-600">Loading workspaces...</p>
-        </div>
-      </div>
-    );
-  }
+  const confirmDeleteWorkspace = async () => {
+    if (!workspaceToDelete) return;
+    setIsDeletingWorkspace(true);
+    try {
+      await deleteMutation.mutateAsync(workspaceToDelete.id);
+      setWorkspaceToDelete(null);
+    } catch (error: any) {
+      const detail = error.response?.data?.detail;
+      if (detail?.constraints) {
+        setDeleteConstraints(detail.constraints);
+      } else {
+        alert(`Failed to delete workspace: ${detail || error.message}`);
+        setWorkspaceToDelete(null);
+      }
+    } finally {
+      setIsDeletingWorkspace(false);
+    }
+  };
 
   // Error state
   if (error) {
@@ -77,11 +81,11 @@ export default function DatasetWorkspacesPage() {
   }
 
   return (
-    <div className="p-8">
-      {/* Header */}
-      <div className="mb-8">
-        <div className="flex items-center justify-between mb-2">
-          <h1 className="text-2xl font-bold text-gray-900">Dataset Workspaces</h1>
+    <>
+      <PageListLayout
+        title="Dataset Workspaces"
+        description="Table-based datasets for exploring and analyzing data from your datasources"
+        action={
           <button
             onClick={() => setIsCreateModalOpen(true)}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
@@ -89,94 +93,132 @@ export default function DatasetWorkspacesPage() {
             <Plus className="w-4 h-4" />
             New Workspace
           </button>
-        </div>
-        <p className="text-gray-600">
-          Table-based datasets for exploring and analyzing data from your datasources
-        </p>
-      </div>
+        }
+        isLoading={isLoading}
+        loadingText="Loading workspaces…"
+        searchPlaceholder="Search workspaces…"
+        defaultView="grid"
+      >
+        {({ viewMode, filterText }) => {
+          const filtered = (workspaces ?? []).filter((w: any) =>
+            w.name.toLowerCase().includes(filterText.toLowerCase())
+          );
 
-      {/* Workspaces Grid */}
-      {workspaces && workspaces.length === 0 ? (
-        // Empty state
-        <div className="text-center py-12">
-          <div className="text-gray-400 mb-4">
-            <Database className="w-16 h-16 mx-auto" />
-          </div>
-          <h2 className="text-xl font-semibold text-gray-900 mb-2">
-            No workspaces yet
-          </h2>
-          <p className="text-gray-600 mb-6">
-            Create your first dataset workspace to start exploring tables from your datasources
-          </p>
-          <button
-            onClick={() => setIsCreateModalOpen(true)}
-            className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-          >
-            <Plus className="w-5 h-5" />
-            Create Workspace
-          </button>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {workspaces?.map((workspace: any) => (
-            <div
-              key={workspace.id}
-              className="bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all group"
-            >
-              <button
-                onClick={() => router.push(`/dataset-workspaces/${workspace.id}`)}
-                className="w-full p-6 text-left"
-              >
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-blue-50 rounded-lg">
-                      <Database className="w-5 h-5 text-blue-600" />
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">
-                        {workspace.name}
-                      </h3>
-                    </div>
-                  </div>
-                  <ChevronRight className="w-5 h-5 text-gray-400 group-hover:text-blue-600 transition-colors" />
-                </div>
-
-                {workspace.description && (
-                  <p className="text-sm text-gray-600 mb-4 line-clamp-2">
-                    {workspace.description}
-                  </p>
-                )}
-
-                <div className="flex items-center gap-4 text-xs text-gray-500">
-                  <div className="flex items-center gap-1">
-                    <Calendar className="w-3 h-3" />
-                    <span>
-                      {new Date(workspace.updated_at).toLocaleDateString()}
-                    </span>
-                  </div>
-                </div>
-              </button>
-
-              {/* Actions */}
-              <div className="px-6 py-3 border-t bg-gray-50 flex items-center justify-end gap-2">
+          if (!workspaces || workspaces.length === 0) {
+            return (
+              <div className="text-center py-12">
+                <Database className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+                <h2 className="text-xl font-semibold text-gray-900 mb-2">No workspaces yet</h2>
+                <p className="text-gray-600 mb-6">
+                  Create your first dataset workspace to start exploring tables from your datasources
+                </p>
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDeleteWorkspace(workspace.id, workspace.name);
-                  }}
-                  disabled={deleteMutation.isPending}
-                  className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
-                  title="Delete workspace"
+                  onClick={() => setIsCreateModalOpen(true)}
+                  className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
                 >
-                  <Trash2 className="w-4 h-4" />
+                  <Plus className="w-5 h-5" />
+                  Create Workspace
                 </button>
               </div>
-            </div>
-          ))}
-        </div>
-      )}
+            );
+          }
 
-      {/* Create Workspace Modal */}
+          if (filtered.length === 0) {
+            return (
+              <div className="flex flex-col items-center justify-center h-48 text-center">
+                <Search className="w-8 h-8 text-gray-300 mb-2" />
+                <p className="text-sm text-gray-500">No workspaces matching "<strong>{filterText}</strong>"</p>
+              </div>
+            );
+          }
+
+          if (viewMode === 'grid') {
+            return (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {filtered.map((workspace: any) => (
+                  <div
+                    key={workspace.id}
+                    className="bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all group"
+                  >
+                    <button
+                      onClick={() => router.push(`/dataset-workspaces/${workspace.id}`)}
+                      className="w-full p-6 text-left"
+                    >
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 bg-blue-50 rounded-lg">
+                            <Database className="w-5 h-5 text-blue-600" />
+                          </div>
+                          <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">
+                            {workspace.name}
+                          </h3>
+                        </div>
+                        <ChevronRight className="w-5 h-5 text-gray-400 group-hover:text-blue-600 transition-colors" />
+                      </div>
+                      {workspace.description && (
+                        <p className="text-sm text-gray-600 mb-4 line-clamp-2">{workspace.description}</p>
+                      )}
+                      <div className="flex items-center gap-4 text-xs text-gray-500">
+                        <div className="flex items-center gap-1">
+                          <Calendar className="w-3 h-3" />
+                          <span>{new Date(workspace.updated_at).toLocaleDateString()}</span>
+                        </div>
+                      </div>
+                    </button>
+                    <div className="px-6 py-3 border-t bg-gray-50 flex items-center justify-end gap-2">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeleteWorkspace(workspace.id, workspace.name); }}
+                        disabled={deleteMutation.isPending}
+                        className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
+                        title="Delete workspace"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          }
+
+          // List view
+          return (
+            <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100">
+              {filtered.map((workspace: any) => (
+                <div key={workspace.id} className="flex items-center px-5 py-4 hover:bg-gray-50 group">
+                  <div className="p-2 bg-blue-50 rounded-lg mr-3 flex-shrink-0">
+                    <Database className="w-4 h-4 text-blue-600" />
+                  </div>
+                  <button
+                    onClick={() => router.push(`/dataset-workspaces/${workspace.id}`)}
+                    className="flex-1 text-left min-w-0"
+                  >
+                    <span className="text-sm font-medium text-gray-900 hover:text-blue-600 transition-colors">
+                      {workspace.name}
+                    </span>
+                    {workspace.description && (
+                      <p className="text-xs text-gray-500 mt-0.5 truncate">{workspace.description}</p>
+                    )}
+                  </button>
+                  <span className="text-xs text-gray-400 mr-4 flex-shrink-0 flex items-center gap-1">
+                    <Calendar className="w-3 h-3" />
+                    {new Date(workspace.updated_at).toLocaleDateString()}
+                  </span>
+                  <button
+                    onClick={() => handleDeleteWorkspace(workspace.id, workspace.name)}
+                    disabled={deleteMutation.isPending}
+                    className="opacity-0 group-hover:opacity-100 p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-all disabled:opacity-50"
+                    title="Delete workspace"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          );
+        }}
+      </PageListLayout>
+
       {isCreateModalOpen && (
         <CreateWorkspaceModal
           onClose={() => setIsCreateModalOpen(false)}
@@ -184,7 +226,18 @@ export default function DatasetWorkspacesPage() {
           isLoading={createMutation.isPending}
         />
       )}
-    </div>
+
+      {workspaceToDelete && (
+        <DeleteConstraintModal
+          itemName={workspaceToDelete.name}
+          itemTypeLabel="workspace"
+          constraints={deleteConstraints}
+          isDeleting={isDeletingWorkspace}
+          onConfirm={confirmDeleteWorkspace}
+          onClose={() => { setWorkspaceToDelete(null); setDeleteConstraints(null); }}
+        />
+      )}
+    </>
   );
 }
 

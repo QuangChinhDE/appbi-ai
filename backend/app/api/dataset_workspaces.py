@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.models import DataSource, Chart, DatasetWorkspaceTable
+from app.models import DataSource, Chart, DatasetWorkspace, DatasetWorkspaceTable
 from app.schemas import (
     WorkspaceCreate,
     WorkspaceUpdate,
@@ -162,9 +162,30 @@ def delete_workspace(
     workspace_id: int,
     db: Session = Depends(get_db)
 ):
-    """Delete a dataset workspace"""
+    """Delete a dataset workspace, blocked if any of its tables are used by charts."""
+    workspace = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    table_ids = [t.id for t in db.query(DatasetWorkspaceTable).filter(
+        DatasetWorkspaceTable.workspace_id == workspace_id
+    ).all()]
+
+    if table_ids:
+        blocking_charts = db.query(Chart).filter(Chart.workspace_table_id.in_(table_ids)).all()
+        if blocking_charts:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": f"Workspace \"{workspace.name}\" có bảng đang được sử dụng trong {len(blocking_charts)} biểu đồ và không thể xóa.",
+                    "constraints": [
+                        {"type": "chart", "id": c.id, "name": c.name}
+                        for c in blocking_charts
+                    ],
+                },
+            )
+
     success = DatasetWorkspaceCRUDService.delete_workspace(db, workspace_id)
-    
     if not success:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
