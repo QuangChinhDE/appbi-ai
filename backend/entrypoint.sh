@@ -14,5 +14,27 @@ echo "==> PostgreSQL is up"
 echo "==> Running Alembic migrations..."
 alembic upgrade head
 
+# ------------------------------------------------------------------
+# Optional demo seed (runs only on first boot, guarded by a flag file)
+# Controlled by SEED_DEMO_DATA env var (set to "true" in .env)
+# ------------------------------------------------------------------
+SEED_FLAG="/app/.appbi_seeded"
+if [ "${SEED_DEMO_DATA:-false}" = "true" ] && [ ! -f "$SEED_FLAG" ]; then
+  echo "==> SEED_DEMO_DATA=true — loading Football/FIFA demo data..."
+  # The seed script is copied into the container image (see Dockerfile COPY step)
+  if python /app/seed_demo.py; then
+    touch "$SEED_FLAG"
+    echo "==> Demo data loaded successfully."
+  else
+    echo "==> WARNING: seed script failed — continuing without demo data."
+  fi
+else
+  if [ -f "$SEED_FLAG" ]; then
+    echo "==> Demo seed already ran on a previous boot — skipping."
+  else
+    echo "==> SEED_DEMO_DATA is not 'true' — starting with empty database."
+  fi
+fi
+
 echo "==> Starting FastAPI application..."
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000

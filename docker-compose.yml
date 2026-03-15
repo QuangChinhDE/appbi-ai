@@ -42,8 +42,8 @@ services:
   # ----------------------------------------------------------
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL:      postgresql+psycopg2://${DB_USER:-appbi}:${DB_PASSWORD:-appbi}@db:5432/${DB_NAME:-appbi}
@@ -55,6 +55,7 @@ services:
       LOG_LEVEL:         ${LOG_LEVEL:-INFO}
       SECRET_KEY:        ${SECRET_KEY:-change-this-in-production}
       API_RELOAD:        "false"
+      SEED_DEMO_DATA:    ${SEED_DEMO_DATA:-false}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:

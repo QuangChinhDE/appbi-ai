@@ -167,7 +167,8 @@ class DatasetWorkspaceCRUDService:
             source_table_name=table.source_table_name,
             source_query=table.source_query,
             display_name=display_name,
-            enabled=table.enabled
+            enabled=table.enabled,
+            transformations=table.transformations or [],
         )
         
         db.add(db_table)

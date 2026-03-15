@@ -326,14 +326,14 @@ print(f"\n  -> {len(datasets)} datasets created")
 # ══════════════════════════════════════════════════════════════════════════════
 print("\n3. Creating dataset workspaces ...")
 
-def add_table(workspace_id, display_name, sql_query):
+def add_table(workspace_id, display_name, sql_query, transformations=None):
     return post(f"/dataset-workspaces/{workspace_id}/tables", {
         "datasource_id": DS_ID,
         "source_kind": "sql_query",
         "source_query": sql_query,
         "display_name": display_name,
         "enabled": True,
-        "transformations": [],
+        "transformations": transformations or [],
     })
 
 # ── Workspace 1: FIFA World Rankings ─────────────────────────────────────────
@@ -344,9 +344,42 @@ ws1 = post("/dataset-workspaces/", {
 WS1 = ws1["id"]
 
 t_full      = add_table(WS1, "Full Rankings",
-    "SELECT * FROM fifa_world_rankings_jan_2026 ORDER BY Rank")
+    "SELECT * FROM fifa_world_rankings_jan_2026 ORDER BY Rank",
+    transformations=[
+        {
+            "id": "step_rank_group",
+            "type": "js_formula",
+            "enabled": True,
+            "params": {
+                "newField": "Rank_Group",
+                "formula": 'IF([Rank]<=10,"Top 10",IF([Rank]<=25,"Top 25","Rest"))',
+            },
+        },
+        {
+            "id": "step_conf_power",
+            "type": "js_formula",
+            "enabled": True,
+            "params": {
+                "newField": "Conf_Power_Score",
+                "formula": "[Points]+[World_Cup_Titles]*50+[Continental_Titles]*10",
+            },
+        },
+    ],
+)
 t_top10     = add_table(WS1, "Top 10 Rankings",
-    "SELECT * FROM fifa_world_rankings_jan_2026 WHERE Rank <= 10 ORDER BY Rank")
+    "SELECT * FROM fifa_world_rankings_jan_2026 WHERE Rank <= 10 ORDER BY Rank",
+    transformations=[
+        {
+            "id": "step_points_label",
+            "type": "js_formula",
+            "enabled": True,
+            "params": {
+                "newField": "Points_Rating",
+                "formula": 'IF([Points]>1800,"Outstanding",IF([Points]>1700,"Excellent","Great"))',
+            },
+        },
+    ],
+)
 t_conf_agg  = add_table(WS1, "Summary by Confederation",
     "SELECT Confederation, COUNT(*) AS num_countries, "
     "ROUND(AVG(Points), 1) AS avg_points, "
@@ -369,7 +402,28 @@ WS2 = ws2["id"]
 t_history   = add_table(WS2, "WC Champions History",
     "SELECT * FROM fifa_world_cup_history ORDER BY World_Cup_Titles DESC")
 t_scorers   = add_table(WS2, "Top Scorers by Year",
-    "SELECT * FROM fifa_world_cup_top_scorers ORDER BY Year DESC")
+    "SELECT * FROM fifa_world_cup_top_scorers ORDER BY Year DESC",
+    transformations=[
+        {
+            "id": "step_scorer_tier",
+            "type": "js_formula",
+            "enabled": True,
+            "params": {
+                "newField": "Scorer_Tier",
+                "formula": 'IF([Goals]>=5,"Legend",IF([Goals]>=4,"Star","Notable"))',
+            },
+        },
+        {
+            "id": "step_goal_era",
+            "type": "js_formula",
+            "enabled": True,
+            "params": {
+                "newField": "Goal_Era",
+                "formula": 'IF([Year]<1970,"Classic (pre-70)",IF([Year]<1990,"Modern (70-90)",IF([Year]<2010,"HD Era (90-10)","Recent (2010+)")))',
+            },
+        },
+    ],
+)
 t_wc_conf   = add_table(WS2, "WC Titles by Confederation",
     "SELECT Confederation, "
     "SUM(World_Cup_Titles) AS total_wc_titles, "
@@ -394,11 +448,44 @@ t_tiers     = add_table(WS3, "Country Performance Tiers",
     "WHEN Points > 1700 THEN 'Strong' "
     "WHEN Points > 1600 THEN 'Solid' "
     "ELSE 'Average' END AS Performance_Tier "
-    "FROM fifa_world_rankings_jan_2026 ORDER BY Points DESC")
+    "FROM fifa_world_rankings_jan_2026 ORDER BY Points DESC",
+    transformations=[
+        {
+            "id": "step_title_dom",
+            "type": "js_formula",
+            "enabled": True,
+            "params": {
+                "newField": "Title_Dominance",
+                "formula": 'IF([World_Cup_Titles]>3,"Dynasty",IF([World_Cup_Titles]>1,"Champion",IF([World_Cup_Titles]>0,"Winner","No WC")))',
+            },
+        },
+        {
+            "id": "step_wc_per_conf",
+            "type": "js_formula",
+            "enabled": True,
+            "params": {
+                "newField": "Points_Per_WC",
+                "formula": 'IF([World_Cup_Titles]>0,ROUND([Points]/[World_Cup_Titles],0),0)',
+            },
+        },
+    ],
+)
 t_titles_cmp = add_table(WS3, "WC vs Continental Titles (Top 10)",
     "SELECT Country, World_Cup_Titles, Continental_Titles, "
     "World_Cup_Titles + Continental_Titles AS Total_Titles "
-    "FROM fifa_world_rankings_jan_2026 WHERE Rank <= 10 ORDER BY Total_Titles DESC")
+    "FROM fifa_world_rankings_jan_2026 WHERE Rank <= 10 ORDER BY Total_Titles DESC",
+    transformations=[
+        {
+            "id": "step_title_ratio",
+            "type": "js_formula",
+            "enabled": True,
+            "params": {
+                "newField": "WC_vs_Continental",
+                "formula": 'IF([Continental_Titles]>0,ROUND([World_Cup_Titles]/[Continental_Titles],2),"N/A")',
+            },
+        },
+    ],
+)
 t_cross     = add_table(WS3, "Cross-Sheet: Rankings + History",
     "SELECT r.Rank, r.Country, r.Points, r.Confederation, "
     "COALESCE(h.World_Cup_Titles, 0) AS WC_Titles_History "

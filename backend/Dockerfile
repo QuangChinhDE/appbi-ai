@@ -14,18 +14,23 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY requirements.txt .
+COPY backend/requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY app/ ./app/
-COPY alembic/ ./alembic/
-COPY alembic.ini .
+COPY backend/app/ ./app/
+COPY backend/alembic/ ./alembic/
+COPY backend/alembic.ini .
+
+# Copy seed script (used when SEED_DEMO_DATA=true)
+COPY seed_demo.py .
+# Copy demo data file used by seed
+COPY scope-foodball-demo.xlsx .
 
 # Copy entrypoint script
-COPY entrypoint.sh .
+COPY backend/entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
 # Expose port

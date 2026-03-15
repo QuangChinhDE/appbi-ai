@@ -162,7 +162,7 @@ class DatasetPreviewRequest(BaseModel):
 class DatasetPreviewResponse(BaseModel):
     """Schema for dataset preview result with schema info."""
     columns: List[ColumnMetadata]
-    data: List[Dict[str, Any]]
+    rows: List[Dict[str, Any]]
     row_count: int
     step_id: Optional[str] = Field(None, description="The step ID used for preview")
     compiled_sql: Optional[str] = Field(None, description="Compiled SQL (for debug)")

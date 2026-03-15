@@ -713,14 +713,21 @@ export function DatasetTableGrid({
                 return (
                   <th
                     key={column.name}
-                    className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider bg-gray-50 group relative"
-                    title={`${column.name} (${column.type})`}
+                    className={`px-4 py-3 text-left text-xs font-medium uppercase tracking-wider group relative ${
+                      isComputed
+                        ? 'bg-amber-50 text-amber-700'
+                        : 'bg-gray-50 text-gray-700'
+                    }`}
+                    title={`${column.name} (${column.type})${isComputed ? ' — cột công thức' : ''}`}
                   >
                     <div className="flex items-center justify-between gap-1">
                       {/* Column name + type badge */}
                       <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                        {isComputed && (
+                          <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
+                        )}
                         <span className="truncate">{column.name}</span>
-                        <span className={`text-[10px] font-normal normal-case shrink-0 ${hasCustomFmt && colFmt.formatType !== 'default' ? 'text-blue-500' : 'text-gray-400'}`}>
+                        <span className={`text-[10px] font-normal normal-case shrink-0 ${hasCustomFmt && colFmt.formatType !== 'default' ? 'text-blue-500' : isComputed ? 'text-amber-500' : 'text-gray-400'}`}>
                           {effectiveType}
                         </span>
                         {hasCustomFmt && (
@@ -795,12 +802,15 @@ export function DatasetTableGrid({
               <tr key={rowIndex} className="hover:bg-gray-50 transition-colors">
                 <td className="w-16 px-4 py-3 text-sm text-gray-400 border-r font-mono">{rowIndex + 1}</td>
                 {columns.map((column) => {
+                  const isComputed2 = computedColSet.has(column.name);
                   const displayValue = applyFormat(row[column.name], getFormat(column.name), column.type);
                   const isLong = displayValue.length > 50;
                   return (
                     <td
                       key={`${rowIndex}-${column.name}`}
-                      className="px-4 py-3 text-sm text-gray-900"
+                      className={`px-4 py-3 text-sm ${
+                        isComputed2 ? 'bg-amber-50 text-amber-900' : 'text-gray-900'
+                      }`}
                       title={isLong ? displayValue : undefined}
                     >
                       <div className="max-w-xs truncate">{displayValue}</div>
@@ -818,6 +828,12 @@ export function DatasetTableGrid({
         <p className="text-xs text-gray-500">
           Showing {rows.length} {rows.length === 1 ? 'row' : 'rows'}
         </p>
+        {computedColSet.size > 0 && (
+          <span className="flex items-center gap-1.5 text-xs text-amber-700">
+            <span className="inline-block w-2 h-2 rounded-full bg-amber-400" />
+            {computedColSet.size} cột công thức
+          </span>
+        )}
         {Object.keys(columnFormats).length > 0 && (
           <button
             onClick={() => setColumnFormats({})}

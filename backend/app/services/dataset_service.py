@@ -347,9 +347,18 @@ class DatasetService:
             logger.error(f"Failed to execute ad-hoc preview query: {str(e)}")
             raise ValueError(f"Failed to execute query: {str(e)}")
         
+        # Build ColumnMetadata from column names + first-row type inference
+        first = data[0] if data else {}
+        def _guess_type(val):
+            if isinstance(val, bool): return "boolean"
+            if isinstance(val, int): return "integer"
+            if isinstance(val, float): return "number"
+            return "string"
+        column_meta = [{"name": n, "type": _guess_type(first.get(n))} for n in columns]
+
         return {
-            "columns": columns,
-            "data": data,
+            "columns": column_meta,
+            "rows": data,
             "row_count": len(data),
             "compiled_sql": final_sql,
             "step_id": stop_at_step_id

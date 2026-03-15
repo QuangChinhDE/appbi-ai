@@ -56,6 +56,35 @@ const TRANSFORMATION_TYPES = [
   { value: 'custom_sql', label: 'Custom SQL' },
 ];
 
+/** Returns the set of column names that are *introduced* by transformation steps (not original source columns). */
+function getDerivedColumns(steps: TransformationStep[]): Set<string> {
+  const derived = new Set<string>();
+  for (const step of steps) {
+    if (!step.enabled) continue;
+    const p = step.params;
+    switch (step.type as string) {
+      case 'add_column':
+      case 'duplicate_column':
+      case 'merge_columns':
+      case 'extract_text':
+      case 'split_column':
+        if (p.newField) derived.add(p.newField);
+        (p.newFields as string[] | undefined)?.forEach((f) => derived.add(f));
+        break;
+      case 'rename_column':
+        if (p.newField) derived.add(p.newField);
+        else if (p.newName) derived.add(p.newName);
+        break;
+      case 'group_by':
+        (p.aggregations as { as?: string }[] | undefined)?.forEach(
+          (agg) => { if (agg.as) derived.add(agg.as); }
+        );
+        break;
+    }
+  }
+  return derived;
+}
+
 export default function DatasetDesigner({ datasetId, mode }: DatasetDesignerProps) {
   const router = useRouter();
   
@@ -159,7 +188,7 @@ export default function DatasetDesigner({ datasetId, mode }: DatasetDesignerProp
       });
 
       const data = response.data;
-      setPreviewData(data.rows || []);
+      setPreviewData(data.rows || data.data || []);
       setPreviewColumns(data.columns || []);
       setLastPreviewTime(new Date());
       setPreviewError(null);
@@ -550,44 +579,82 @@ export default function DatasetDesigner({ datasetId, mode }: DatasetDesignerProp
 
                 {!previewLoading && !previewError && previewData.length > 0 && (
                   <div className="p-4">
-                    <div className="text-sm text-gray-600 mb-3">
-                      {previewData.length} rows × {previewColumns.length} columns
+                    <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                      <span className="text-sm text-gray-600">
+                        {previewData.length} rows × {previewColumns.length} columns
+                      </span>
+                      {previewMode === 'transformed' && getDerivedColumns(transformations).size > 0 && (
+                        <span className="flex items-center gap-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                          <span className="inline-block w-2 h-2 rounded-full bg-amber-400" />
+                          Cột được thêm bằng transformation
+                        </span>
+                      )}
                     </div>
 
                     <div className="border rounded overflow-hidden">
                       <table className="min-w-full divide-y divide-gray-200">
                         <thead className="bg-gray-50">
                           <tr>
-                            {previewColumns.map((col) => (
-                              <th
-                                key={col.name}
-                                className="px-3 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wider"
-                              >
-                                <div>{col.name}</div>
-                                <div className="text-gray-500 normal-case font-normal">
-                                  {col.type}
-                                </div>
-                              </th>
-                            ))}
+                            {(() => {
+                              const derived = previewMode === 'transformed'
+                                ? getDerivedColumns(transformations)
+                                : new Set<string>();
+                              return previewColumns.map((col) => {
+                                const isDerived = derived.has(col.name);
+                                return (
+                                  <th
+                                    key={col.name}
+                                    className={`px-3 py-2 text-left text-xs font-medium uppercase tracking-wider ${
+                                      isDerived
+                                        ? 'bg-amber-50 text-amber-700'
+                                        : 'text-gray-700'
+                                    }`}
+                                    title={isDerived ? 'Cột được thêm bằng transformation' : undefined}
+                                  >
+                                    <div className="flex items-center gap-1">
+                                      {isDerived && (
+                                        <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
+                                      )}
+                                      {col.name}
+                                    </div>
+                                    <div className={`normal-case font-normal ${
+                                      isDerived ? 'text-amber-500' : 'text-gray-500'
+                                    }`}>
+                                      {col.type}
+                                    </div>
+                                  </th>
+                                );
+                              });
+                            })()}
                           </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-200">
-                          {previewData.slice(0, 50).map((row, i) => (
-                            <tr key={i}>
-                              {previewColumns.map((col) => (
-                                <td
-                                  key={col.name}
-                                  className="px-3 py-2 text-sm text-gray-900 whitespace-nowrap"
-                                >
-                                  {row[col.name] === null ? (
-                                    <span className="text-gray-400 italic">null</span>
-                                  ) : (
-                                    String(row[col.name])
-                                  )}
-                                </td>
-                              ))}
-                            </tr>
-                          ))}
+                          {(() => {
+                            const derived = previewMode === 'transformed'
+                              ? getDerivedColumns(transformations)
+                              : new Set<string>();
+                            return previewData.slice(0, 50).map((row, i) => (
+                              <tr key={i}>
+                                {previewColumns.map((col) => {
+                                  const isDerived = derived.has(col.name);
+                                  return (
+                                    <td
+                                      key={col.name}
+                                      className={`px-3 py-2 text-sm whitespace-nowrap ${
+                                        isDerived ? 'bg-amber-50 text-amber-900' : 'text-gray-900'
+                                      }`}
+                                    >
+                                      {row[col.name] === null ? (
+                                        <span className="text-gray-400 italic">null</span>
+                                      ) : (
+                                        String(row[col.name])
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            ));
+                          })()}
                         </tbody>
                       </table>
                     </div>
