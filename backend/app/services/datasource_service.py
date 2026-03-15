@@ -64,6 +64,11 @@ class DataSourceConnectionService:
                 password=config.get("password"),
                 connect_timeout=5
             )
+            # Apply schema search_path if specified
+            schema = config.get("schema_name") or config.get("schema")
+            if schema:
+                with conn.cursor() as cur:
+                    cur.execute(f"SET search_path TO {schema}")
             return True, "Connection successful"
         except Exception as e:
             return False, str(e)
@@ -197,6 +202,11 @@ class DataSourceConnectionService:
             
             # Set statement timeout
             cursor.execute(f"SET statement_timeout = {timeout_seconds * 1000}")
+            
+            # Apply schema search_path if specified
+            schema = config.get("schema_name") or config.get("schema")
+            if schema:
+                cursor.execute(f"SET search_path TO {schema}")
             
             # Apply limit if specified
             query = sql_query

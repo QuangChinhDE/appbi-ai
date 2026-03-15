@@ -4,9 +4,9 @@
  */
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { DataSourceType, DataSourceCreate } from '@/types/api';
-import { Loader2, UploadCloud, FileSpreadsheet, X, CheckCircle, AlertCircle } from 'lucide-react';
+import { Loader2, UploadCloud, FileSpreadsheet, X, CheckCircle, AlertCircle, Radio, WifiOff } from 'lucide-react';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api/v1';
 
@@ -62,6 +62,39 @@ export default function DataSourceForm({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Connection test state (for DB types)
+  type TestState = 'idle' | 'testing' | 'ok' | 'fail';
+  const [testState, setTestState] = useState<TestState>('idle');
+  const [testMessage, setTestMessage] = useState('');
+
+  // Reset test state whenever config fields change
+  useEffect(() => { setTestState('idle'); setTestMessage(''); }, [config]);
+
+  const isDbType = type === DataSourceType.POSTGRESQL || type === DataSourceType.MYSQL;
+
+  const handleTestConnection = useCallback(async () => {
+    setTestState('testing');
+    setTestMessage('');
+    try {
+      const res = await fetch(`${API_BASE}/datasources/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, config }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setTestState('ok');
+        setTestMessage(data.message ?? 'Connection successful');
+      } else {
+        setTestState('fail');
+        setTestMessage(data.message ?? 'Connection failed');
+      }
+    } catch (e: any) {
+      setTestState('fail');
+      setTestMessage(e.message ?? 'Network error');
+    }
+  }, [type, config]);
+
   const handleFileImport = async (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase();
     if (!['csv', 'xlsx', 'xls'].includes(ext ?? '')) {
@@ -97,7 +130,7 @@ export default function DataSourceForm({
     if (!initialData) {
       setImportPreview(null);
       if (type === DataSourceType.POSTGRESQL) {
-        setConfig({ host: 'localhost', port: 5432, database: '', username: '', password: '' });
+        setConfig({ host: 'localhost', port: 5432, database: '', username: '', password: '', schema_name: '' });
       } else if (type === DataSourceType.MYSQL) {
         setConfig({ host: 'localhost', port: 3306, database: '', username: '', password: '' });
       } else if (type === DataSourceType.BIGQUERY) {
@@ -116,6 +149,8 @@ export default function DataSourceForm({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    // For DB types, require a successful test before creating (not when editing)
+    if (!initialData && isDbType && testState !== 'ok') return;
     onSubmit({
       name,
       type,
@@ -157,18 +192,35 @@ export default function DataSourceForm({
             </div>
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Database
-            </label>
-            <input
-              type="text"
-              value={config.database || ''}
-              onChange={(e) => handleConfigChange('database', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="my_database"
-              required
-            />
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Database <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={config.database || ''}
+                onChange={(e) => handleConfigChange('database', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="my_database"
+                required
+              />
+            </div>
+            {type === DataSourceType.POSTGRESQL && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Schema <span className="text-gray-400 font-normal">(optional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={config.schema_name || ''}
+                  onChange={(e) => handleConfigChange('schema_name', e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="public"
+                />
+                <p className="text-xs text-gray-400 mt-0.5">Leave empty to use default (public)</p>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -502,6 +554,36 @@ export default function DataSourceForm({
         <div className="space-y-4">{renderConfigFields()}</div>
       </div>
 
+      {/* Test connection button + result — only for DB types */}
+      {isDbType && (
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={handleTestConnection}
+            disabled={testState === 'testing'}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2 border border-blue-400 text-blue-700 rounded-md hover:bg-blue-50 transition-colors disabled:opacity-50"
+          >
+            {testState === 'testing' ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Testing connection...</>
+            ) : (
+              <><Radio className="w-4 h-4" /> Test Connection</>
+            )}
+          </button>
+          {testState === 'ok' && (
+            <div className="flex items-center gap-2 p-2.5 bg-green-50 border border-green-200 rounded-md">
+              <CheckCircle className="w-4 h-4 text-green-600 flex-shrink-0" />
+              <span className="text-sm text-green-700">{testMessage}</span>
+            </div>
+          )}
+          {testState === 'fail' && (
+            <div className="flex items-start gap-2 p-2.5 bg-red-50 border border-red-200 rounded-md">
+              <WifiOff className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+              <span className="text-sm text-red-700">{testMessage}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="flex gap-3 pt-4 border-t">
         <button
           type="button"
@@ -514,7 +596,8 @@ export default function DataSourceForm({
         <button
           type="submit"
           className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-          disabled={isLoading}
+          disabled={isLoading || (!initialData && isDbType && testState !== 'ok')}
+          title={!initialData && isDbType && testState !== 'ok' ? 'Test the connection first' : undefined}
         >
           {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
           {initialData ? 'Update' : 'Create'}

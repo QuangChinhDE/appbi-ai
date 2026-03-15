@@ -12,6 +12,7 @@ class PostgreSQLConfig(BaseModel):
     database: str = Field(..., description="Database name")
     username: str = Field(..., description="Database username")
     password: str = Field(..., description="Database password")
+    schema_name: Optional[str] = Field(None, description="Default schema (default: public)")
     
     @field_validator('host')
     @classmethod
