@@ -11,7 +11,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { ArrowLeft, Bot, Sparkles } from 'lucide-react';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
-import type { ChatMessageData, ChartPayload, ToolCallBadge } from './types';
+import type { ActivityStep, ChatMessageData, ChartPayload, MessageMetrics, MessageFeedback } from './types';
 
 const AI_WS_URL = process.env.NEXT_PUBLIC_AI_WS_URL || 'ws://localhost:8001/chat/ws';
 const AI_HTTP_URL = AI_WS_URL.replace(/^ws/, 'http').replace('/chat/ws', '');
@@ -73,12 +73,15 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       const data = await res.json();
       setSessionTitle(data.title ?? 'New Conversation');
       const restored: ChatMessageData[] = (data.messages ?? []).map(
-        (m: { role: string; content: string }) => ({
+        (m: { role: string; content: string; message_id?: string; metrics?: MessageMetrics; feedback?: MessageFeedback }) => ({
           id: uuidv4(),
           role: m.role as 'user' | 'assistant',
           text: m.content,
           toolCalls: [],
           charts: [],
+          messageId: m.message_id,
+          metrics: m.metrics,
+          feedback: m.feedback,
         })
       );
       setMessages(restored);
@@ -107,34 +110,60 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   function handleWsEvent(event: Record<string, any>) {
     switch (event.type as string) {
       case 'thinking':
-        upsertCurrentAiMsg(msg => ({ ...msg, isThinking: true, thinkingContent: event.content }));
+        upsertCurrentAiMsg(msg => {
+          // Mark previous running thinking steps done, then add new one
+          const prev = (msg.activitySteps ?? []).map(s =>
+            s.status === 'running' && s.type === 'thinking' ? { ...s, status: 'done' as const } : s
+          );
+          return {
+            ...msg,
+            isThinking: true,
+            activitySteps: [...prev, {
+              id: uuidv4(), type: 'thinking' as const,
+              label: event.content, status: 'running' as const,
+            }],
+          };
+        });
         break;
 
       case 'tool_call': {
-        const badge: ToolCallBadge = { label: formatToolLabel(event.tool, event.args), done: false };
-        upsertCurrentAiMsg(msg => ({
-          ...msg, isThinking: false, thinkingContent: undefined,
-          toolCalls: [...(msg.toolCalls ?? []), badge],
-        }));
+        upsertCurrentAiMsg(msg => {
+          // Mark any running thinking step done
+          const prev = (msg.activitySteps ?? []).map(s =>
+            s.status === 'running' && s.type === 'thinking' ? { ...s, status: 'done' as const } : s
+          );
+          return {
+            ...msg,
+            isThinking: true,
+            activitySteps: [...prev, {
+              id: uuidv4(), type: 'tool' as const,
+              label: formatToolLabel(event.tool, event.args),
+              status: 'running' as const,
+            }],
+          };
+        });
         break;
       }
 
       case 'tool_result':
         upsertCurrentAiMsg(msg => {
-          const toolCalls = (msg.toolCalls ?? []).map(tc => {
-            const base = formatToolLabel(event.tool, {}).split('(')[0];
-            if (!tc.done && tc.label.startsWith(base)) {
-              return { ...tc, label: `${tc.label} — ${event.summary}`, done: true };
+          // Update the last running tool step with the result summary
+          let updated = false;
+          const steps = (msg.activitySteps ?? []).map(s => {
+            if (!updated && s.status === 'running' && s.type === 'tool') {
+              updated = true;
+              return { ...s, detail: event.summary, status: 'done' as const };
             }
-            return tc;
+            return s;
           });
-          return { ...msg, toolCalls };
+          return { ...msg, activitySteps: steps };
         });
         break;
 
       case 'text':
         upsertCurrentAiMsg(msg => ({
-          ...msg, isThinking: false, thinkingContent: undefined,
+          ...msg,
+          isThinking: false,
           text: (msg.text ?? '') + event.content,
         }));
         break;
@@ -148,10 +177,22 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         break;
       }
 
+      case 'metrics':
+        upsertCurrentAiMsg(msg => ({
+          ...msg,
+          messageId: event.message_id,
+          metrics: event as MessageMetrics,
+        }));
+        break;
+
       case 'done':
         setLoading(false);
+        upsertCurrentAiMsg(msg => ({
+          ...msg,
+          isThinking: false,
+          activitySteps: (msg.activitySteps ?? []).map(s => ({ ...s, status: 'done' as const })),
+        }));
         currentAiMsgIdRef.current = null;
-        upsertCurrentAiMsg(msg => ({ ...msg, isThinking: false, thinkingContent: undefined }));
         setMessages(prev => {
           const first = prev.find(m => m.role === 'user');
           if (first?.text && sessionTitle === 'New Conversation') {
@@ -163,8 +204,10 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
       case 'error':
         upsertCurrentAiMsg(msg => ({
-          ...msg, isThinking: false,
+          ...msg,
+          isThinking: false,
           text: (msg.text ?? '') + `\n\n⚠️ ${event.content}`,
+          activitySteps: (msg.activitySteps ?? []).map(s => ({ ...s, status: 'done' as const })),
         }));
         setLoading(false);
         currentAiMsgIdRef.current = null;
@@ -176,9 +219,9 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   }
 
   function upsertCurrentAiMsg(updater: (prev: ChatMessageData) => ChatMessageData) {
+    const id = currentAiMsgIdRef.current;
+    if (!id) return;
     setMessages(prev => {
-      if (!currentAiMsgIdRef.current) return prev;
-      const id = currentAiMsgIdRef.current;
       const idx = prev.findIndex(m => m.id === id);
       if (idx === -1) return prev;
       const updated = [...prev];
@@ -186,6 +229,37 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       return updated;
     });
   }
+
+  const sendStop = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'cancel' }));
+    }
+    setLoading(false);
+    upsertCurrentAiMsg(msg => ({
+      ...msg,
+      isThinking: false,
+      activitySteps: (msg.activitySteps ?? []).map(s => ({ ...s, status: 'done' as const })),
+      text: (msg.text ?? '').trim() || '_(đã dừng)_',
+    }));
+    currentAiMsgIdRef.current = null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleFeedback = useCallback(async (msgId: string, messageId: string, rating: 'up' | 'down') => {
+    try {
+      const res = await fetch(
+        `${AI_HTTP_URL}/chat/sessions/${sessionId}/messages/${messageId}/feedback`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rating }) },
+      );
+      if (res.ok) {
+        setMessages(prev => prev.map(m =>
+          m.id === msgId ? { ...m, feedback: { rating } } : m
+        ));
+      }
+    } catch {
+      // ignore
+    }
+  }, [sessionId]);
 
   const sendMessage = useCallback((text: string) => {
     if (!text.trim() || loading) return;
@@ -200,7 +274,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     currentAiMsgIdRef.current = aiMsgId;
     setMessages(prev => [...prev, {
       id: aiMsgId, role: 'assistant',
-      isThinking: true, thinkingContent: '', toolCalls: [], charts: [], text: '',
+      isThinking: true, activitySteps: [], charts: [], text: '',
     }]);
     setLoading(true);
     setInput('');
@@ -270,7 +344,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
           </div>
         )}
         {messages.map(msg => (
-          <ChatMessage key={msg.id} message={msg} />
+          <ChatMessage key={msg.id} message={msg} onFeedback={handleFeedback} />
         ))}
       </div>
 
@@ -279,6 +353,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         value={input}
         onChange={setInput}
         onSend={() => sendMessage(input)}
+        onStop={sendStop}
         disabled={!wsConnected}
         loading={loading}
       />
