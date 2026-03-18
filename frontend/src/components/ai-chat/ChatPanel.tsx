@@ -48,9 +48,21 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   }, [messages]);
 
   useEffect(() => {
+    let cancelled = false;
+
     loadHistory();
-    connectWs();
-    return () => wsRef.current?.close();
+
+    // Delay slightly so that React Strict Mode's double-invoke cleanup
+    // can cancel the first mount before we open the WebSocket.
+    const tid = setTimeout(() => {
+      if (!cancelled) connectWs();
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(tid);
+      wsRef.current?.close();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 

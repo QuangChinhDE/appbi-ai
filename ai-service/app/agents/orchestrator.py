@@ -5,6 +5,7 @@ Supports OpenAI and Anthropic through a unified interface.
 Falls back through LLM_FALLBACK_CHAIN when a provider/model fails.
 Streams events via an async generator.
 """
+import asyncio
 import json
 import logging
 import uuid
@@ -236,13 +237,14 @@ async def run_agent(
 
     provider_chain = _build_provider_chain()
     tool_calls_made = 0
-    
+
     # Track chart data collected during this turn so we can embed charts
     chart_data_cache: Dict[int, Dict] = {}
 
     for attempt, provider_info in enumerate(provider_chain):
         provider = provider_info["provider"]
         model = provider_info["model"]
+        is_last = attempt == len(provider_chain) - 1
         try:
             async for event in _run_with_provider(
                 provider=provider,
@@ -252,15 +254,37 @@ async def run_agent(
                 chart_data_cache=chart_data_cache,
             ):
                 yield event
-            # If we reach here without exception, we're done
             return
-        except Exception as e:
-            logger.warning(f"Provider {provider}:{model} failed (attempt {attempt+1}): {e}")
-            if attempt < len(provider_chain) - 1:
-                yield ThinkingEvent(content=f"Switching to fallback model...").model_dump()
-                continue
+
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Provider {provider}:{model} timed out "
+                f"(attempt {attempt + 1}/{len(provider_chain)})"
+            )
+            if not is_last:
+                next_p = provider_chain[attempt + 1]
+                yield ThinkingEvent(
+                    content=f"{provider.capitalize()} không phản hồi, "
+                            f"đang chuyển sang {next_p['provider'].capitalize()} ({next_p['model']})…"
+                ).model_dump()
             else:
-                yield ErrorEvent(content=f"All LLM providers failed. Last error: {str(e)}").model_dump()
+                yield ErrorEvent(
+                    content="Tất cả model đều không phản hồi. Vui lòng thử lại sau."
+                ).model_dump()
+                return
+
+        except Exception as e:
+            logger.warning(f"Provider {provider}:{model} failed (attempt {attempt + 1}): {e}")
+            if not is_last:
+                next_p = provider_chain[attempt + 1]
+                yield ThinkingEvent(
+                    content=f"{provider.capitalize()} gặp lỗi, đang chuyển sang "
+                            f"{next_p['provider'].capitalize()} ({next_p['model']})…"
+                ).model_dump()
+            else:
+                yield ErrorEvent(
+                    content=f"Tất cả LLM provider đều thất bại. Lỗi cuối: {str(e)}"
+                ).model_dump()
                 return
 
 
@@ -303,6 +327,8 @@ async def _openai_loop(
 ) -> AsyncGenerator[Dict, None]:
     from openai import AsyncOpenAI
 
+    LLM_TIMEOUT = 45  # seconds per LLM call
+
     while tool_calls_made <= settings.ai_max_tool_calls:
         llm_messages = _to_llm_messages(session)
 
@@ -310,14 +336,17 @@ async def _openai_loop(
         collected_content = ""
         collected_tool_calls: List[Dict] = []
 
-        response = await client.chat.completions.create(
-            model=model,
-            messages=llm_messages,
-            tools=TOOL_SCHEMAS,
-            tool_choice="auto",
-            stream=True,
-            temperature=0.2,
-            max_tokens=2048,
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=model,
+                messages=llm_messages,
+                tools=TOOL_SCHEMAS,
+                tool_choice="auto",
+                stream=True,
+                temperature=0.2,
+                max_tokens=2048,
+            ),
+            timeout=LLM_TIMEOUT,
         )
 
         # current tool_call being streamed
@@ -438,14 +467,19 @@ async def _anthropic_loop(
                     "content": [{"type": "tool_result", "tool_use_id": m.tool_call_id or "", "content": m.content}],
                 })
 
+        LLM_TIMEOUT = 45  # seconds per LLM call
+
         # Non-streaming call for Anthropic (simpler for tool-call handling)
-        response = await client.messages.create(
-            model=model,
-            max_tokens=2048,
-            system=SYSTEM_PROMPT,
-            messages=anthropic_messages,
-            tools=anthropic_tools,
-            temperature=0.2,
+        response = await asyncio.wait_for(
+            client.messages.create(
+                model=model,
+                max_tokens=2048,
+                system=SYSTEM_PROMPT,
+                messages=anthropic_messages,
+                tools=anthropic_tools,
+                temperature=0.2,
+            ),
+            timeout=LLM_TIMEOUT,
         )
 
         text_content = ""
@@ -531,8 +565,13 @@ async def _gemini_loop(
     # current_msg is either the initial user text or a list of FunctionResponse Parts
     current_msg: Any = current_user_msg
 
+    LLM_TIMEOUT = 45  # seconds per LLM call
+
     while tool_calls_made <= settings.ai_max_tool_calls:
-        response = await chat.send_message_async(current_msg)
+        response = await asyncio.wait_for(
+            chat.send_message_async(current_msg),
+            timeout=LLM_TIMEOUT,
+        )
 
         text_content = ""
         function_calls_found = []
@@ -588,9 +627,12 @@ async def _gemini_loop(
         if tool_calls_made >= settings.ai_max_tool_calls:
             # Send all function responses then force a final answer
             try:
-                await chat.send_message_async(response_parts)
-                final_resp = await chat.send_message_async(
-                    "You have reached the tool call limit. Please provide your final analysis based on the data collected so far."
+                await asyncio.wait_for(chat.send_message_async(response_parts), timeout=LLM_TIMEOUT)
+                final_resp = await asyncio.wait_for(
+                    chat.send_message_async(
+                        "You have reached the tool call limit. Please provide your final analysis based on the data collected so far."
+                    ),
+                    timeout=LLM_TIMEOUT,
                 )
                 final_text = "".join(
                     p.text for p in final_resp.parts if hasattr(p, "text") and p.text
