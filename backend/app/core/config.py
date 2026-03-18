@@ -1,8 +1,12 @@
 """
 Configuration management using Pydantic Settings.
 """
+import pathlib
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
+
+# Root .env is 4 levels up from backend/app/core/config.py
+_ROOT_ENV = str(pathlib.Path(__file__).resolve().parent.parent.parent.parent / ".env")
 
 
 class Settings(BaseSettings):
@@ -26,7 +30,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "dev-secret-key-change-in-production"
     
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ROOT_ENV,
         case_sensitive=True,
         extra="ignore"
     )

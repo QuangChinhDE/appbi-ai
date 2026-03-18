@@ -1,6 +1,8 @@
 # AppBI — Business Intelligence Dashboard
 
-A self-hosted BI platform for connecting data sources, building datasets with transformation pipelines, exploring data without SQL, and composing interactive dashboards. Separate Frontend / Backend / Database architecture, deployed with a single Docker Compose command.
+A self-hosted BI platform with an integrated AI chat agent. Connect data sources, build datasets with transformation pipelines, explore data without SQL, compose interactive dashboards — and ask data questions in natural language via the AI Chat interface.
+
+Three-service architecture (Frontend / Backend / AI Service + PostgreSQL), deployed with Docker Compose.
 
 ---
 
@@ -14,6 +16,7 @@ A self-hosted BI platform for connecting data sources, building datasets with tr
 | **Charts** | Save Explore configurations as reusable charts. Supports Bar, Line, Area, Pie, Scatter, Grouped Bar, Stacked Bar, Table, KPI, and Time Series. |
 | **Dashboards** | Compose multiple charts into a grid dashboard with drag-and-drop layout (react-grid-layout). **Global filter bar** (pre-aggregation, dimension fields). **Per-tile HAVING filter** (post-aggregation, metric fields). Inline tile rename. |
 | **Dataset Workspaces** | Workspace environment combining multiple tables from one or more data sources. Add `js_formula` computed columns using Excel-style formulas (e.g. `IF([Points]>1800,"Elite","Other")`). Computed columns are highlighted in amber throughout the UI. |
+| **AI Chat Agent** | Natural-language data Q&A. The agent autonomously calls `search_charts`, `run_chart`, `execute_sql`, and `query_table` tools, streams the response token-by-token, embeds live charts in the chat, and shows per-message quality metrics + thumbs feedback. Supports OpenAI, Anthropic, Gemini, and OpenRouter with a configurable fallback chain. |
 
 ---
 
@@ -23,8 +26,9 @@ A self-hosted BI platform for connecting data sources, building datasets with tr
 |---|---|
 | **Frontend** | Next.js 14 (App Router) · TypeScript · Tailwind CSS · Recharts · TanStack Query v5 · react-grid-layout · Sonner |
 | **Backend** | FastAPI · SQLAlchemy 2.0 · Alembic · Pydantic v2 · Python 3.10+ · DuckDB |
+| **AI Service** | FastAPI · WebSocket streaming · LLM tool-calling (OpenAI / Anthropic / Gemini / OpenRouter) · in-memory session store |
 | **Database** | PostgreSQL 16 (metadata: datasources, datasets, charts, dashboards) |
-| **Infrastructure** | Docker · Docker Compose |
+| **Infrastructure** | Docker · Docker Compose (2 compose files: BI stack + AI stack) |
 
 ---
 
@@ -45,47 +49,86 @@ cd Dashboard-App
 cp .env.docker.example .env
 ```
 
-Edit `.env` if needed (defaults work out of the box):
+Edit `.env` as needed. Key variables:
 
 ```env
+# Database
 DB_USER=appbi
 DB_PASSWORD=appbi
 DB_NAME=appbi
 
+# Backend
 SECRET_KEY=change-this-in-production
 LOG_LEVEL=INFO
 
-# Change if these ports are already in use on your machine
+# Host port mapping (change if these ports are in use)
 FRONTEND_PORT=3000
 BACKEND_PORT=8000
 
-# Load Football/FIFA demo data on first container start (optional)
+# Demo data — set true to auto-load Football/FIFA demo on first start
 SEED_DEMO_DATA=false
+
+# ── AI Service (used by docker-compose.ai.yml) ──────────────────
+AI_PORT=8001
+
+# LLM provider: openai | anthropic | gemini | openrouter
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o-mini
+
+# Optional fallback chain: "openai:gpt-4o-mini,anthropic:claude-3-5-haiku-20241022"
+LLM_FALLBACK_CHAIN=
+
+# Fill in key(s) for the provider(s) you use
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+GEMINI_API_KEY=
+OPENROUTER_API_KEY=
+
+# Optional advanced limits
+AI_SESSION_TTL_MINUTES=30
+AI_MAX_TOOL_CALLS=8
+AI_WORKSPACE_TABLE_LIMIT=50
 ```
 
-> **Note:** The PostgreSQL port is **not** exposed to the host — it only exists inside the Docker network. It will not conflict with a locally running Postgres instance.
+> **Note:** The PostgreSQL port is **not** exposed to the host — it only exists inside the Docker network.
 
-### 3. Build and start
+### 3. Start the BI stack
 
 ```bash
 docker compose up --build -d
 ```
 
-The first build takes a few minutes. Subsequent starts: `docker compose up -d`.
+### 4. Start the AI Chat service (optional)
 
-### 4. Open the app
+The AI service runs in a separate compose file so the BI stack is never blocked by LLM connectivity issues.
+
+```bash
+docker compose -f docker-compose.ai.yml up --build -d
+```
+
+Or start everything at once:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ai.yml up --build -d
+```
+
+### 5. Open the app
 
 | URL | Description |
 |---|---|
 | `http://localhost:3000` | Frontend UI |
-| `http://localhost:8000/api/v1/docs` | Swagger API docs |
-| `http://localhost:8000/health` | Backend health check |
+| `http://localhost:3000/chat` | AI Chat interface |
+| `http://localhost:8000/api/v1/docs` | Swagger API docs (BI Backend) |
+| `http://localhost:8001/docs` | Swagger API docs (AI Service) |
+| `http://localhost:8000/health` | BI Backend health check |
+| `http://localhost:8001/health` | AI Service health check |
 
-### 5. Stop
+### 6. Stop
 
 ```bash
-docker compose down        # stop, keep database data
-docker compose down -v     # stop and delete all database data
+docker compose down                                      # stop BI stack, keep data
+docker compose -f docker-compose.ai.yml down             # stop AI service only
+docker compose down -v                                   # stop BI stack + delete DB data
 ```
 
 ---
@@ -143,9 +186,7 @@ python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-# Create environment file
-cp .env.example .env            # or create manually
-
+cp .env.example .env            # minimum: set DATABASE_URL
 alembic upgrade head            # initialise DB schema
 uvicorn app.main:app --reload --port 8000
 ```
@@ -161,8 +202,22 @@ DATABASE_URL=postgresql+psycopg2://user:password@localhost:5432/appbi_metadata
 cd frontend
 npm install
 echo "NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1" > .env.local
+echo "NEXT_PUBLIC_AI_WS_URL=ws://localhost:8001/chat/ws" >> .env.local
 npm run dev
 ```
+
+### AI Service
+
+```bash
+cd ai-service
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+# Variables are read from the root .env
+uvicorn app.main:app --reload --port 8001
+```
+
+The AI service reads all config from the **root `.env`** file automatically (via `pydantic-settings`). No separate env file needed.
 
 ---
 
@@ -170,38 +225,65 @@ npm run dev
 
 ```
 Dashboard-App/
-├── backend/
+├── backend/                       # BI Backend — FastAPI + SQLAlchemy
 │   ├── app/
-│   │   ├── api/              # FastAPI routers (datasources, datasets, charts, dashboards…)
-│   │   ├── models/           # SQLAlchemy ORM models
-│   │   ├── schemas/          # Pydantic v2 request/response schemas
-│   │   └── services/         # Business logic, query engine, connector classes
-│   ├── alembic/              # Database migrations
+│   │   ├── api/                   # Routers: datasources, datasets, charts, dashboards
+│   │   ├── models/                # SQLAlchemy ORM models
+│   │   ├── schemas/               # Pydantic v2 request/response schemas
+│   │   └── services/              # Business logic, query engine, connector classes
+│   ├── alembic/                   # Database migrations
+│   ├── entrypoint.sh              # Wait for DB → alembic upgrade head → optional seed → uvicorn
 │   ├── Dockerfile
-│   ├── entrypoint.sh         # Wait for DB → alembic upgrade head → optional seed → uvicorn
 │   └── requirements.txt
-├── frontend/
+├── ai-service/                    # AI Chat Agent — separate FastAPI microservice
+│   ├── app/
+│   │   ├── agents/
+│   │   │   ├── orchestrator.py    # LLM conversation loop, streaming, metrics emission
+│   │   │   └── tools.py           # Tool schemas + execute() coroutines
+│   │   ├── clients/
+│   │   │   └── bi_client.py       # HTTP client calling BI Backend API
+│   │   ├── routers/
+│   │   │   └── chat.py            # WebSocket /chat/ws + REST /chat/stream + feedback API
+│   │   ├── schemas/
+│   │   │   └── chat.py            # All streaming event types + session models
+│   │   ├── config.py              # pydantic-settings — reads root .env
+│   │   └── main.py                # FastAPI app, health endpoint
+│   └── requirements.txt
+├── frontend/                      # Next.js 14 App Router frontend
 │   ├── src/
-│   │   ├── app/(main)/       # Next.js App Router pages
-│   │   │   ├── datasources/  # Data source list, create, edit
-│   │   │   ├── datasets/     # Dataset management + transformation designer
-│   │   │   ├── explore/      # Point-and-click data exploration
-│   │   │   ├── dashboards/   # Dashboard grid + filter bar
-│   │   │   └── dataset-workspaces/ # Workspace + formula columns
-│   │   ├── components/       # Shared React components
-│   │   ├── hooks/            # TanStack Query data hooks
-│   │   └── lib/api/          # Axios API client
+│   │   ├── app/(main)/            # Page routes
+│   │   │   ├── datasources/
+│   │   │   ├── datasets/
+│   │   │   ├── explore/
+│   │   │   ├── dashboards/
+│   │   │   ├── dataset-workspaces/
+│   │   │   └── chat/              # AI Chat route
+│   │   ├── components/
+│   │   │   └── ai-chat/           # Chat UI components
+│   │   │       ├── ChatPanel.tsx  # WebSocket state machine, event handler
+│   │   │       ├── ChatMessage.tsx # Bubble + metrics bar + feedback buttons
+│   │   │       ├── ChatInput.tsx
+│   │   │       ├── ChatSessionList.tsx
+│   │   │       ├── EmbeddedChart.tsx  # Live chart renderer inside chat bubble
+│   │   │       ├── ThinkingIndicator.tsx
+│   │   │       └── types.ts       # Shared TypeScript types
+│   │   ├── hooks/                 # TanStack Query data hooks
+│   │   └── lib/api/               # Axios API client
 │   └── Dockerfile
-├── docs/
-│   ├── API.md                # Full REST API reference
-│   ├── ARCHITECTURE.md       # System architecture
-│   ├── DOCKER.md             # Docker configuration details
-│   └── SETUP.md              # Development setup guide
-├── seed_demo.py              # Demo data seed script (Football / FIFA)
-├── scope-foodball-demo.xlsx  # Source data file for seed
-├── docker-compose.yml        # Production Docker Compose
-├── docker-compose.dev.yml    # Development Docker Compose
-├── .env.docker.example       # Environment template
+├── docs/                          # Extended design & implementation docs
+│   ├── AI_CHAT_AGENT_DESIGN.md    # Agent design, tool logic, decision flow
+│   ├── ARCHITECTURE.md            # Full folder structure & component map
+│   ├── API.md                     # REST API reference
+│   ├── CHART_STORAGE_AND_REUSE.md # Chart caching strategy
+│   ├── IMPLEMENTATION_NOTES.md    # Day-by-day implementation notes & known issues
+│   ├── DOCKER.md                  # Docker configuration details
+│   └── SETUP.md                   # Development setup guide
+├── seed_demo.py                   # Demo data seed script (Football / FIFA)
+├── scope-foodball-demo.xlsx       # Source data file for seed
+├── docker-compose.yml             # BI stack (backend + frontend + db)
+├── docker-compose.ai.yml          # AI service (overlays onto BI stack network)
+├── docker-compose.dev.yml         # Development overrides
+├── .env.docker.example            # Environment template — copy to .env
 └── README.md
 ```
 
@@ -212,17 +294,90 @@ Dashboard-App/
 ```
 Browser
   │
-  ├─► Frontend :3000  (Next.js — Node runtime)
-  │       │
-  │       └─► Backend :8000  (FastAPI / uvicorn)  ────── appbi-net (Docker bridge)
-  │                   │
-  │                   └─► Database :5432  (PostgreSQL — NOT exposed to host)
+  ├─► :3000  Frontend (Next.js)
+  │       │  REST calls → /api/v1/*
+  │       │  WebSocket  → ws://localhost:8001/chat/ws
+  │       ▼
+  │   :8000  BI Backend (FastAPI)          ─────────────────────┐
+  │                │                                            │ appbi-net
+  │                └─► :5432  PostgreSQL (not exposed to host)  │
+  │                                                             │
+  └─► :8001  AI Service (FastAPI)  ────────────────────────────┘
+                  │  calls BI Backend API (internal Docker network)
+                  └─► http://backend:8000/api/v1/*
 ```
 
+- All services share the internal Docker network `appbi-net`
 - PostgreSQL has **no host port binding** — no conflict with a local Postgres instance
-- All services communicate through internal Docker network `appbi-net`
-- **Migrations** run automatically in `entrypoint.sh` on every backend start
-- **Database data** is stored in named volume `db_data` — survives container restarts
+- AI Service is **optional** — the BI stack runs fully without it
+- Alembic migrations run automatically in `entrypoint.sh` on every backend start
+- Database data is persisted in named volume `db_data`
+
+---
+
+## AI Chat Agent
+
+The AI Chat feature is a separate FastAPI microservice (`ai-service/`) that connects to the BI Backend over the internal Docker network and answers data questions in natural language.
+
+### How it works
+
+1. User sends a question via WebSocket from `/chat` page.
+2. The orchestrator builds a conversation with the LLM (OpenAI / Anthropic / Gemini / OpenRouter).
+3. The LLM autonomously calls one or more **tools** to fetch real data.
+4. Results are streamed token-by-token back to the browser.
+5. Charts referenced in tool results are auto-rendered inline in the chat bubble.
+6. After the response is complete, a **MetricsEvent** is sent with latency, tool call count, data rows analyzed, and model info.
+7. Users can give thumbs up/down feedback per message — stored in the in-memory session.
+
+### Tools available to the LLM
+
+| Tool | Description |
+|---|---|
+| `search_charts(query)` | Semantic search across all saved charts. Returns the top match's data rows immediately — avoiding a second round-trip in most cases. |
+| `run_chart(chart_id)` | Execute a specific chart by ID and stream its data + rendered chart to the user. |
+| `execute_sql(datasource_id, sql)` | Run a raw SELECT query against any connected datasource. Restricted to SELECT only. |
+| `query_table(workspace_id, table_id, ...)` | Point-and-click aggregation query against a Dataset Workspace table. |
+
+### LLM providers & fallback chain
+
+Set `LLM_PROVIDER` + `LLM_MODEL` in `.env`.  
+Optionally set `LLM_FALLBACK_CHAIN` to try other providers automatically on failure:
+
+```env
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o-mini
+LLM_FALLBACK_CHAIN=anthropic:claude-3-5-haiku-20241022,gemini:gemini-2.0-flash
+```
+
+Supported providers: `openai`, `anthropic`, `gemini`, `openrouter`.
+
+### Quality metrics per message
+
+Every AI response shows a metrics bar with:
+- **Latency** — total response time in ms
+- **Tools** — number of tool calls made
+- **Rows** — total data rows read from tool results
+- **Chart** badge — if a chart was embedded
+- **Model** — short model name used
+- Warning badges — if no tool was called (answer from LLM memory) or tool errors occurred
+
+### Session management
+
+- Sessions are stored **in memory** in the AI service process (not in PostgreSQL).
+- Default TTL: 30 minutes of inactivity (`AI_SESSION_TTL_MINUTES`).
+- Sessions are restored from the AI service on page reload (`GET /chat/sessions/{id}`).
+- WebSocket cancel: send `{"type": "cancel"}` to abort the in-progress response.
+
+### Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `WS` | `/chat/ws` | WebSocket streaming (preferred) |
+| `POST` | `/chat/stream` | SSE/streaming HTTP fallback |
+| `GET` | `/chat/sessions` | List all active sessions |
+| `GET` | `/chat/sessions/{id}` | Get full session with message history |
+| `POST` | `/chat/sessions/{id}/messages/{msg_id}/feedback` | Submit thumbs feedback |
+| `GET` | `/health` | AI service health check |
 
 ---
 
@@ -230,9 +385,39 @@ Browser
 
 Full REST API documentation is in [docs/API.md](docs/API.md).
 
-Interactive Swagger UI is available at `http://localhost:8000/api/v1/docs` while the app is running.
+Interactive Swagger UI:
+- BI Backend: `http://localhost:8000/api/v1/docs`
+- AI Service: `http://localhost:8001/docs`
 
 ---
+
+## Data Sources hỗ trợ
+
+| Loại | Ghi chú |
+|---|---|
+| **PostgreSQL** | Host · Port · Database · Username · Password · Schema (tuỳ chọn, đặt search_path) |
+| **MySQL** | Host · Port · Database · Username · Password |
+| **Google BigQuery** | Project ID + Service Account JSON |
+| **Google Sheets** | Service Account JSON + Spreadsheet ID (snapshot toàn bộ sheet khi kết nối) |
+| **Manual (File Import)** | Upload CSV hoặc Excel `.xlsx/.xls` — tất cả sheet được import, xem preview trước khi lưu |
+
+> Với PostgreSQL và MySQL: bắt buộc nhấn **Test Connection** thành công trước khi nút Create được kích hoạt.
+
+---
+
+## Filter Architecture (Dashboards)
+
+| Loại | Phạm vi | Khi nào áp dụng | Field hợp lệ |
+|---|---|---|---|
+| **Global Filter Bar** | Toàn dashboard | Trước aggregation (pre-agg) | Dimension / breakdown fields |
+| **Per-tile HAVING** | Từng chart tile | Sau aggregation (post-agg) | Metric keys (e.g. `sum__point`) |
+
+---
+
+## License
+
+MIT
+
 
 ## Data Sources hỗ trợ
 

@@ -2,9 +2,13 @@
 AI Service configuration.
 All settings driven by environment variables — no hard-coded LLM provider.
 """
+import pathlib
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from typing import List
+
+# Root .env is 3 levels up from ai-service/app/config.py
+_ROOT_ENV = str(pathlib.Path(__file__).resolve().parent.parent.parent / ".env")
 
 
 class Settings(BaseSettings):
@@ -12,7 +16,7 @@ class Settings(BaseSettings):
     bi_api_url: str = Field("http://localhost:8000/api/v1", alias="BI_API_URL")
 
     # Primary LLM
-    llm_provider: str = Field("openai", alias="LLM_PROVIDER")   # openai | anthropic | gemini
+    llm_provider: str = Field("openai", alias="LLM_PROVIDER")   # openai | anthropic | gemini | openrouter
     llm_model: str = Field("gpt-4o-mini", alias="LLM_MODEL")
 
     # Fallback chain — comma-separated "provider:model" pairs
@@ -23,6 +27,7 @@ class Settings(BaseSettings):
     openai_api_key: str = Field("", alias="OPENAI_API_KEY")
     anthropic_api_key: str = Field("", alias="ANTHROPIC_API_KEY")
     gemini_api_key: str = Field("", alias="GEMINI_API_KEY")
+    openrouter_api_key: str = Field("", alias="OPENROUTER_API_KEY")
 
     # Session
     ai_session_ttl_minutes: int = Field(30, alias="AI_SESSION_TTL_MINUTES")
@@ -46,7 +51,7 @@ class Settings(BaseSettings):
         return result
 
     class Config:
-        env_file = ".env"
+        env_file = _ROOT_ENV
         populate_by_name = True
         extra = "ignore"
 

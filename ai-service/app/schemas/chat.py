@@ -58,13 +58,40 @@ class DoneEvent(BaseModel):
     session_id: str
 
 
+class MetricsEvent(BaseModel):
+    type: Literal["metrics"] = "metrics"
+    message_id: str
+    latency_ms: int
+    model: str
+    provider: str
+    tool_calls: List[str] = []         # tool names called in order
+    tool_call_count: int = 0
+    tool_errors: int = 0
+    has_chart: bool = False
+    has_data_backing: bool = False      # answer backed by tool data
+    data_rows_analyzed: int = 0         # total rows from tool results
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+
+
+# ── User feedback ──────────────────────────────────────────────────────────────
+
+class FeedbackRequest(BaseModel):
+    rating: Literal["up", "down"]
+    comment: Optional[str] = Field(None, max_length=500)
+
+
 # ── Conversation memory ────────────────────────────────────────────────────────
 
 class Message(BaseModel):
     role: str                     # "user" | "assistant" | "tool"
     content: Any
+    message_id: Optional[str] = None  # unique ID for this message (assistant only)
     tool_call_id: Optional[str] = None
     name: Optional[str] = None   # tool name (for tool messages)
+    tool_calls: Optional[List[Dict[str, Any]]] = None  # assistant tool_calls (OpenAI format)
+    metrics: Optional[Dict[str, Any]] = None   # quality metrics (assistant only)
+    feedback: Optional[Dict[str, Any]] = None  # user feedback {rating, comment}
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -73,6 +100,7 @@ class ConversationSession(BaseModel):
     title: str = "New Conversation"
     messages: List[Message] = []
     context: Dict[str, Any] = {}
+    db_context: str = ""   # Schema injected once per session
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_active: datetime = Field(default_factory=datetime.utcnow)
 

@@ -148,11 +148,18 @@ class FilterCondition(BaseModel):
     value: str
 
 
+class OrderBySpec(BaseModel):
+    """Order by specification"""
+    field: str
+    direction: str = Field(default="DESC", pattern="^(ASC|DESC)$")
+
+
 class ExecuteQueryRequest(BaseModel):
     """Request schema for executing query with aggregations"""
     dimensions: Optional[List[str]] = None
     measures: Optional[List[AggregationSpec]] = None
     filters: Optional[List[FilterCondition]] = None
+    order_by: Optional[List[OrderBySpec]] = None
     limit: int = Field(default=1000, ge=1, le=10000)
 
 

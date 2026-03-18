@@ -96,6 +96,7 @@ from app.schemas.dataset_workspace import (
     ExecuteQueryResponse,
     AggregationSpec,
     FilterCondition,
+    OrderBySpec,
     ColumnMetadata as WorkspaceColumnMetadata,
     DatasourceTable,
 )

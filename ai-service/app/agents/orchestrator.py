@@ -8,6 +8,7 @@ Streams events via an async generator.
 import asyncio
 import json
 import logging
+import time
 import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -18,6 +19,7 @@ from app.schemas.chat import (
     DoneEvent,
     ErrorEvent,
     Message,
+    MetricsEvent,
     TextEvent,
     ThinkingEvent,
     ToolCallEvent,
@@ -27,24 +29,69 @@ from app.agents.tools import TOOL_SCHEMAS, execute_tool
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are an AI data analyst assistant for AppBI, a Business Intelligence platform.
-The system contains charts, workspace tables, and dashboards built from real business data.
+SYSTEM_PROMPT = """You are a BI data analyst inside AppBI. Your job: answer data questions using real numbers from tools. Be direct, precise, never waste words.
 
-When the user asks a data question:
-1. Use search_charts to find relevant charts (search by keywords from the user question)
-2. Use run_chart to execute charts and get actual data
-3. Analyze the data and answer with specific numbers and facts
-4. Always include the chart_id in your final analysis so the frontend can display it visually
+━━━ WHAT EACH TOOL RETURNS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Guidelines:
-- Respond in the SAME LANGUAGE as the user (Vietnamese if they write in Vietnamese, English if English)
-- Always cite specific numbers from the data (e.g., "Argentina has 1947 points")
-- If no chart matches, try list_workspace_tables then run_workspace_table
-- After getting data, provide a clear insightful analysis — not just a list
-- Keep tool calls efficient: prefer run_chart over run_workspace_table when a chart exists
+search_charts(query)
+  → charts[]:       list of matching charts (id, name, type)
+  → top_chart_data: { chart_id, chart_name, rows:[...], row_count }
+                    ↑ THIS IS REAL DATA. Read rows[] to answer the question.
+                    ↑ The chart is ALREADY rendered on the user's screen.
 
-Format for embedding a chart in your response: [CHART:chart_id]
-Example: The top performers are shown below. [CHART:5]
+run_chart(chart_id)
+  → rows:[...], row_count   ← real data rows. Chart auto-rendered on screen.
+
+execute_sql(datasource_id, sql_query)
+  → data:[...], columns, row_count   ← real data rows
+
+query_table(workspace_id, table_id, dimensions, measures, ...)
+  → rows:[...], row_count   ← pre-aggregated data
+
+━━━ DECISION FLOW ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Step 1 — Call search_charts(query).
+  • top_chart_data.rows exists?
+    YES → The chart is already displayed. READ top_chart_data.rows → go to Step 3.
+         BUT if the user asks "most/highest/top/best" or "least/lowest/worst",
+         the chart rows may be sorted by a DIFFERENT column (e.g. by year, not by value).
+         In that case → also call execute_sql with ORDER BY to get correctly ranked data.
+    NO  → go to Step 2.
+
+Step 2 — No chart found. Query raw data.
+  • Call execute_sql with a tight SELECT:
+      SELECT <dim>, <agg>(<metric>) AS value
+      FROM <table>
+      GROUP BY <dim> ORDER BY value DESC LIMIT 15
+  • Use exact table/column names from DATA SCHEMA below.
+  • READ data[] rows → go to Step 3.
+
+Step 3 — Write analysis using ONLY numbers from the rows you just read.
+  ⚠ IMPORTANT: Chart rows may NOT be sorted by the metric the user asked about.
+    For "most/highest/top" questions → scan ALL rows, find the actual MAX value.
+    For "least/lowest/bottom" questions → scan ALL rows, find the actual MIN value.
+    Do NOT assume the first or last row is the answer — VERIFY by comparing values.
+
+━━━ RESPONSE FORMAT (always follow this structure) ━━━━━━━━━━
+
+**[Direct answer — 1 sentence with the #1 result and its exact value]**
+
+• [Row 1 label]: [exact value] — [short note]
+• [Row 2 label]: [exact value] — [short note]
+• [Row 3 label]: [exact value] — [short note]
+(list top 3–7 items from data)
+
+[Insight: 1–2 sentences on a pattern, gap, or contrast in the data]
+
+━━━ ABSOLUTE RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✗ NEVER answer from memory — ALWAYS call a tool first (search_charts or execute_sql).
+✗ NEVER ask "Do you want to see a chart?" — charts render automatically.
+✗ NEVER say "I can show you..." or "Shall I display..." — just analyze.
+✗ NEVER write [CHART:id] in text — the system handles chart display.
+✗ NEVER fabricate numbers — every value MUST come from actual rows[].
+✓ Always respond in the SAME LANGUAGE as the user.
+✓ If a tool fails, say so and try execute_sql as fallback.
 """
 
 
@@ -52,6 +99,21 @@ def _make_openai_client():
     try:
         from openai import AsyncOpenAI
         return AsyncOpenAI(api_key=settings.openai_api_key)
+    except ImportError:
+        raise RuntimeError("openai package not installed")
+
+
+def _make_openrouter_client():
+    try:
+        from openai import AsyncOpenAI
+        return AsyncOpenAI(
+            api_key=settings.openrouter_api_key,
+            base_url="https://openrouter.ai/api/v1",
+            default_headers={
+                "HTTP-Referer": "http://localhost:3000",
+                "X-Title": "AppBI AI Chat",
+            },
+        )
     except ImportError:
         raise RuntimeError("openai package not installed")
 
@@ -204,16 +266,63 @@ def _trim_history(messages: List[Message], max_messages: int = 20) -> List[Messa
 
 
 def _to_llm_messages(session: ConversationSession) -> List[Dict]:
-    """Convert session messages to OpenAI API format."""
-    result = [{"role": "system", "content": SYSTEM_PROMPT}]
+    """Convert session messages to OpenAI API format, injecting schema context."""
+    # Merge schema context into system prompt (once loaded it stays in session)
+    system = SYSTEM_PROMPT
+    if session.db_context:
+        system += "\n\n" + session.db_context
+    result = [{"role": "system", "content": system}]
     for m in _trim_history(session.messages):
         msg: Dict[str, Any] = {"role": m.role, "content": m.content}
         if m.tool_call_id:
             msg["tool_call_id"] = m.tool_call_id
         if m.name:
             msg["name"] = m.name
+        if m.tool_calls:
+            msg["tool_calls"] = m.tool_calls
         result.append(msg)
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Schema loader — builds DB context string injected into system prompt
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _load_db_context() -> str:
+    """
+    Fetch datasource info + tables + sample rows and build a schema reference
+    string that is injected into every system prompt for the session.
+    This eliminates the need for the AI to call list_workspace_tables.
+    """
+    from app.clients.bi_client import bi_client as _client
+    lines = ["## DATA SCHEMA\n"]
+    try:
+        datasources = await _client.list_datasources()
+        for ds in datasources:
+            lines.append(f"Datasource: **{ds['name']}** (id={ds['id']}, type={ds['type']})")
+            try:
+                tables = await _client.list_datasource_tables(ds["id"])
+                for tbl in tables:
+                    tname = tbl["name"]
+                    try:
+                        result = await _client.execute_datasource_sql(
+                            ds["id"], f'SELECT * FROM "{tname}" LIMIT 2', limit=2
+                        )
+                        cols = result.get("columns", [])
+                        sample = result.get("data", [])
+                        lines.append(f"\nTable: `{tname}`")
+                        lines.append(f"  Columns: {', '.join(cols)}")
+                        if sample:
+                            # One compact sample row as key-value
+                            row0 = {k: v for k, v in list(sample[0].items())[:6]}
+                            lines.append(f"  Sample: {row0}")
+                    except Exception:
+                        lines.append(f"\nTable: `{tname}` (schema unavailable)")
+            except Exception:
+                lines.append("  (tables unavailable)")
+    except Exception:
+        return ""
+    return "\n".join(lines)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -228,6 +337,10 @@ async def run_agent(
     Drive one conversation turn.
     Yields serialised event dicts ready to be sent over WebSocket.
     """
+    # Load DB schema once per session (injected into every system prompt)
+    if not session.db_context:
+        session.db_context = await _load_db_context()
+
     # Append user message
     session.messages.append(Message(role="user", content=user_message))
 
@@ -236,24 +349,68 @@ async def run_agent(
         session.title = user_message[:60] + ("…" if len(user_message) > 60 else "")
 
     provider_chain = _build_provider_chain()
-    tool_calls_made = 0
 
     # Track chart data collected during this turn so we can embed charts
     chart_data_cache: Dict[int, Dict] = {}
 
+    # ── Metrics collector for this turn ──
+    message_id = str(uuid.uuid4())[:12]
+    t_start = time.monotonic()
+    metrics_ctx: Dict[str, Any] = {
+        "tool_calls": [],      # tool names in call order
+        "tool_errors": 0,
+        "has_chart": False,
+        "has_data_backing": False,
+        "data_rows_analyzed": 0,
+        "input_tokens": None,
+        "output_tokens": None,
+        "provider": "",
+        "model": "",
+    }
+
     for attempt, provider_info in enumerate(provider_chain):
         provider = provider_info["provider"]
         model = provider_info["model"]
+        metrics_ctx["provider"] = provider
+        metrics_ctx["model"] = model
         is_last = attempt == len(provider_chain) - 1
         try:
             async for event in _run_with_provider(
                 provider=provider,
                 model=model,
                 session=session,
-                tool_calls_made=tool_calls_made,
+                tool_calls_made=0,
                 chart_data_cache=chart_data_cache,
+                metrics_ctx=metrics_ctx,
+                message_id=message_id,
             ):
                 yield event
+
+            # ── Emit metrics event before done ──
+            latency_ms = int((time.monotonic() - t_start) * 1000)
+            metrics_event = MetricsEvent(
+                message_id=message_id,
+                latency_ms=latency_ms,
+                model=metrics_ctx["model"],
+                provider=metrics_ctx["provider"],
+                tool_calls=metrics_ctx["tool_calls"],
+                tool_call_count=len(metrics_ctx["tool_calls"]),
+                tool_errors=metrics_ctx["tool_errors"],
+                has_chart=metrics_ctx["has_chart"],
+                has_data_backing=metrics_ctx["has_data_backing"],
+                data_rows_analyzed=metrics_ctx["data_rows_analyzed"],
+                input_tokens=metrics_ctx["input_tokens"],
+                output_tokens=metrics_ctx["output_tokens"],
+            )
+            yield metrics_event.model_dump()
+
+            # Store metrics on the last assistant message
+            for m in reversed(session.messages):
+                if m.role == "assistant" and m.content:
+                    m.message_id = message_id
+                    m.metrics = metrics_event.model_dump(exclude={"type"})
+                    break
+
             return
 
         except asyncio.TimeoutError:
@@ -294,23 +451,30 @@ async def _run_with_provider(
     session: ConversationSession,
     tool_calls_made: int,
     chart_data_cache: Dict[int, Dict],
+    metrics_ctx: Dict[str, Any],
+    message_id: str,
 ) -> AsyncGenerator[Dict, None]:
     """Run the tool-calling loop for a single provider."""
 
     if provider == "openai":
         client = _make_openai_client()
         yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-        async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache):
+        async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx):
             yield event
     elif provider == "anthropic":
         client = _make_anthropic_client()
         yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-        async for event in _anthropic_loop(client, model, session, tool_calls_made, chart_data_cache):
+        async for event in _anthropic_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx):
             yield event
     elif provider == "gemini":
         gemini_model = _make_gemini_model(model)
         yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-        async for event in _gemini_loop(gemini_model, session, tool_calls_made, chart_data_cache):
+        async for event in _gemini_loop(gemini_model, session, tool_calls_made, chart_data_cache, metrics_ctx):
+            yield event
+    elif provider == "openrouter":
+        client = _make_openrouter_client()
+        yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
+        async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx):
             yield event
     else:
         raise ValueError(f"Unknown provider: {provider}")
@@ -324,6 +488,7 @@ async def _openai_loop(
     session: ConversationSession,
     tool_calls_made: int,
     chart_data_cache: Dict[int, Dict],
+    metrics_ctx: Dict[str, Any],
 ) -> AsyncGenerator[Dict, None]:
     from openai import AsyncOpenAI
 
@@ -336,12 +501,17 @@ async def _openai_loop(
         collected_content = ""
         collected_tool_calls: List[Dict] = []
 
+        # Force a tool call on the first turn so model doesn't answer from memory
+        force_tool = "auto"
+        if tool_calls_made == 0:
+            force_tool = "required"
+
         response = await asyncio.wait_for(
             client.chat.completions.create(
                 model=model,
                 messages=llm_messages,
                 tools=TOOL_SCHEMAS,
-                tool_choice="auto",
+                tool_choice=force_tool,
                 stream=True,
                 temperature=0.2,
                 max_tokens=2048,
@@ -378,10 +548,9 @@ async def _openai_loop(
                             collected_tool_calls[idx]["function"]["arguments"] += tc_delta.function.arguments
 
         # --- After streaming ---
-        if collected_content:
-            # Append assistant message to session
+        if collected_content and not collected_tool_calls:
+            # Pure text response — append and finish
             session.messages.append(Message(role="assistant", content=collected_content))
-            # Process [CHART:id] markers in the final text
             async for chart_event in _emit_chart_events(collected_content, chart_data_cache):
                 yield chart_event
 
@@ -389,10 +558,15 @@ async def _openai_loop(
             # No tool calls → done
             break
 
-        # Append assistant message with tool calls
+        # Append assistant message with tool calls (must include tool_calls for valid history)
+        tc_records = [
+            {"id": tc["id"], "type": "function", "function": {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}}
+            for tc in collected_tool_calls
+        ]
         session.messages.append(Message(
             role="assistant",
-            content=None,
+            content=collected_content or None,
+            tool_calls=tc_records,
         ))
 
         # Execute each tool call
@@ -408,16 +582,49 @@ async def _openai_loop(
             tool_result = await execute_tool(fn_name, fn_args)
             tool_calls_made += 1
 
+            # ── Metrics: track tool usage ──
+            metrics_ctx["tool_calls"].append(fn_name)
+            metrics_ctx["has_data_backing"] = True
+            if "error" in tool_result:
+                metrics_ctx["tool_errors"] += 1
+            # Count data rows from tool results
+            for key in ("rows", "data"):
+                rows = tool_result.get(key)
+                if isinstance(rows, list):
+                    metrics_ctx["data_rows_analyzed"] += len(rows)
+                    break
+            top_data = tool_result.get("top_chart_data")
+            if isinstance(top_data, dict):
+                td_rows = top_data.get("rows")
+                if isinstance(td_rows, list):
+                    metrics_ctx["data_rows_analyzed"] += len(td_rows)
+
+            # Auto-emit chart when search_charts found one (model reliability fix)
+            if fn_name == "search_charts":
+                async for ev in _emit_auto_chart(tool_result, chart_data_cache):
+                    metrics_ctx["has_chart"] = True
+                    yield ev
+
             # Cache chart data for embedding
             if fn_name == "run_chart" and "chart_id" in tool_result:
                 chart_data_cache[tool_result["chart_id"]] = tool_result
+                metrics_ctx["has_chart"] = True
+                # Emit chart immediately so frontend renders it right away
+                yield ChartEvent(
+                    chart_id=tool_result["chart_id"],
+                    chart_name=tool_result.get("chart_name", ""),
+                    chart_type=tool_result.get("chart_type", ""),
+                    data=tool_result.get("rows", []),
+                    role_config=tool_result.get("role_config"),
+                ).model_dump()
 
             # Build summary for stream event
             summary = _tool_summary(fn_name, tool_result)
             yield ToolResultEvent(tool=fn_name, summary=summary).model_dump()
 
-            # Append tool result to session
-            result_str = json.dumps(tool_result, ensure_ascii=False, default=str)
+            # Append tool result to session (strip auto_chart from stored message to save tokens)
+            stored = {k: v for k, v in tool_result.items() if k != "auto_chart"}
+            result_str = json.dumps(stored, ensure_ascii=False, default=str)
             session.messages.append(Message(
                 role="tool",
                 content=result_str,
@@ -441,6 +648,7 @@ async def _anthropic_loop(
     session: ConversationSession,
     tool_calls_made: int,
     chart_data_cache: Dict[int, Dict],
+    metrics_ctx: Dict[str, Any],
 ) -> AsyncGenerator[Dict, None]:
 
     # Convert schemas for Anthropic
@@ -460,7 +668,21 @@ async def _anthropic_loop(
             if m.role == "user":
                 anthropic_messages.append({"role": "user", "content": m.content})
             elif m.role == "assistant":
-                anthropic_messages.append({"role": "assistant", "content": m.content or ""})
+                # Rebuild content blocks for Anthropic format
+                blocks = []
+                if m.content:
+                    blocks.append({"type": "text", "text": m.content})
+                if m.tool_calls:
+                    for tc in m.tool_calls:
+                        fn = tc.get("function", {})
+                        try:
+                            inp = json.loads(fn.get("arguments", "{}"))
+                        except (json.JSONDecodeError, TypeError):
+                            inp = {}
+                        blocks.append({"type": "tool_use", "id": tc.get("id", ""), "name": fn.get("name", ""), "input": inp})
+                if not blocks:
+                    blocks.append({"type": "text", "text": ""})
+                anthropic_messages.append({"role": "assistant", "content": blocks})
             elif m.role == "tool":
                 anthropic_messages.append({
                     "role": "user",
@@ -494,7 +716,7 @@ async def _anthropic_loop(
             elif block.type == "tool_use":
                 tool_uses.append(block)
 
-        if text_content:
+        if text_content and not tool_uses:
             session.messages.append(Message(role="assistant", content=text_content))
             async for chart_event in _emit_chart_events(text_content, chart_data_cache):
                 yield chart_event
@@ -502,8 +724,16 @@ async def _anthropic_loop(
         if not tool_uses or response.stop_reason == "end_turn":
             break
 
-        # Append assistant message with tool uses
-        session.messages.append(Message(role="assistant", content=text_content or "[tool calls]"))
+        # Append assistant message with tool uses (store tool_calls for history)
+        tc_records = [
+            {"id": tu.id, "type": "function", "function": {"name": tu.name, "arguments": json.dumps(tu.input or {})}}
+            for tu in tool_uses
+        ]
+        session.messages.append(Message(
+            role="assistant",
+            content=text_content or None,
+            tool_calls=tc_records,
+        ))
 
         # Execute each tool use
         for tu in tool_uses:
@@ -515,13 +745,44 @@ async def _anthropic_loop(
             tool_result = await execute_tool(fn_name, fn_args)
             tool_calls_made += 1
 
+            # ── Metrics: track tool usage ──
+            metrics_ctx["tool_calls"].append(fn_name)
+            metrics_ctx["has_data_backing"] = True
+            if "error" in tool_result:
+                metrics_ctx["tool_errors"] += 1
+            for key in ("rows", "data"):
+                rows = tool_result.get(key)
+                if isinstance(rows, list):
+                    metrics_ctx["data_rows_analyzed"] += len(rows)
+                    break
+            top_data = tool_result.get("top_chart_data")
+            if isinstance(top_data, dict):
+                td_rows = top_data.get("rows")
+                if isinstance(td_rows, list):
+                    metrics_ctx["data_rows_analyzed"] += len(td_rows)
+
+            if fn_name == "search_charts":
+                async for ev in _emit_auto_chart(tool_result, chart_data_cache):
+                    metrics_ctx["has_chart"] = True
+                    yield ev
+
             if fn_name == "run_chart" and "chart_id" in tool_result:
                 chart_data_cache[tool_result["chart_id"]] = tool_result
+                metrics_ctx["has_chart"] = True
+                # Emit chart immediately so frontend renders it right away
+                yield ChartEvent(
+                    chart_id=tool_result["chart_id"],
+                    chart_name=tool_result.get("chart_name", ""),
+                    chart_type=tool_result.get("chart_type", ""),
+                    data=tool_result.get("rows", []),
+                    role_config=tool_result.get("role_config"),
+                ).model_dump()
 
             summary = _tool_summary(fn_name, tool_result)
             yield ToolResultEvent(tool=fn_name, summary=summary).model_dump()
 
-            result_str = json.dumps(tool_result, ensure_ascii=False, default=str)
+            stored = {k: v for k, v in tool_result.items() if k != "auto_chart"}
+            result_str = json.dumps(stored, ensure_ascii=False, default=str)
             session.messages.append(Message(
                 role="tool",
                 content=result_str,
@@ -539,6 +800,7 @@ async def _gemini_loop(
     session: ConversationSession,
     tool_calls_made: int,
     chart_data_cache: Dict[int, Dict],
+    metrics_ctx: Dict[str, Any],
 ) -> AsyncGenerator[Dict, None]:
     try:
         import google.generativeai.protos as protos
@@ -585,12 +847,24 @@ async def _gemini_loop(
         if text_content:
             for word in text_content.split():
                 yield TextEvent(content=word + " ").model_dump()
-            session.messages.append(Message(role="assistant", content=text_content))
-            async for chart_event in _emit_chart_events(text_content, chart_data_cache):
-                yield chart_event
 
         if not function_calls_found:
+            if text_content:
+                session.messages.append(Message(role="assistant", content=text_content))
+            async for chart_event in _emit_chart_events(text_content, chart_data_cache):
+                yield chart_event
             break  # No more tool calls — conversation turn complete
+
+        # Save assistant message with tool_calls for history consistency
+        tc_records = [
+            {"id": fc.name, "type": "function", "function": {"name": fc.name, "arguments": json.dumps({k: v for k, v in fc.args.items()} if fc.args else {})}}
+            for fc in function_calls_found
+        ]
+        session.messages.append(Message(
+            role="assistant",
+            content=text_content or None,
+            tool_calls=tc_records,
+        ))
 
         # Execute all tool calls and collect FunctionResponse parts
         response_parts = []
@@ -603,13 +877,44 @@ async def _gemini_loop(
             tool_result = await execute_tool(fn_name, fn_args)
             tool_calls_made += 1
 
+            # ── Metrics: track tool usage ──
+            metrics_ctx["tool_calls"].append(fn_name)
+            metrics_ctx["has_data_backing"] = True
+            if "error" in tool_result:
+                metrics_ctx["tool_errors"] += 1
+            for key in ("rows", "data"):
+                rows = tool_result.get(key)
+                if isinstance(rows, list):
+                    metrics_ctx["data_rows_analyzed"] += len(rows)
+                    break
+            top_data = tool_result.get("top_chart_data")
+            if isinstance(top_data, dict):
+                td_rows = top_data.get("rows")
+                if isinstance(td_rows, list):
+                    metrics_ctx["data_rows_analyzed"] += len(td_rows)
+
+            if fn_name == "search_charts":
+                async for ev in _emit_auto_chart(tool_result, chart_data_cache):
+                    metrics_ctx["has_chart"] = True
+                    yield ev
+
             if fn_name == "run_chart" and "chart_id" in tool_result:
                 chart_data_cache[tool_result["chart_id"]] = tool_result
+                metrics_ctx["has_chart"] = True
+                # Emit chart immediately so frontend renders it right away
+                yield ChartEvent(
+                    chart_id=tool_result["chart_id"],
+                    chart_name=tool_result.get("chart_name", ""),
+                    chart_type=tool_result.get("chart_type", ""),
+                    data=tool_result.get("rows", []),
+                    role_config=tool_result.get("role_config"),
+                ).model_dump()
 
             summary = _tool_summary(fn_name, tool_result)
             yield ToolResultEvent(tool=fn_name, summary=summary).model_dump()
 
-            result_str = json.dumps(tool_result, ensure_ascii=False, default=str)
+            stored = {k: v for k, v in tool_result.items() if k != "auto_chart"}
+            result_str = json.dumps(stored, ensure_ascii=False, default=str)
             session.messages.append(Message(
                 role="tool",
                 content=result_str,
@@ -652,18 +957,46 @@ async def _gemini_loop(
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+async def _emit_auto_chart(
+    search_result: Dict, chart_data_cache: Dict[int, Dict]
+):
+    """Emit a ChartEvent for the auto-executed top chart returned by search_charts.
+
+    This ensures a chart renders immediately even when the LLM forgets to call
+    run_chart after search_charts.
+    """
+    auto = search_result.get("auto_chart")
+    if not auto:
+        return
+    chart_id = auto.get("chart_id")
+    if not chart_id:
+        return
+    chart_data_cache[chart_id] = auto
+    yield ChartEvent(
+        chart_id=chart_id,
+        chart_name=auto.get("chart_name", ""),
+        chart_type=auto.get("chart_type", ""),
+        data=auto.get("rows", []),
+        role_config=auto.get("role_config"),
+    ).model_dump()
+
+
 def _tool_summary(tool_name: str, result: Dict) -> str:
     """Build a short human-readable summary of a tool result."""
     if tool_name == "search_charts":
         return f"Found {result.get('count', 0)} chart(s)"
     elif tool_name == "run_chart":
         return f"Chart '{result.get('chart_name', '')}': {result.get('row_count', 0)} rows"
+    elif tool_name == "execute_sql":
+        return f"{result.get('row_count', 0)} rows ({result.get('execution_time_ms', 0):.0f}ms)"
     elif tool_name == "search_dashboards":
         return f"Found {result.get('count', 0)} dashboard(s)"
     elif tool_name == "list_workspace_tables":
         ws_count = len(result.get("workspaces", []))
         table_count = sum(len(ws["tables"]) for ws in result.get("workspaces", []))
         return f"{ws_count} workspace(s), {table_count} table(s)"
+    elif tool_name == "query_table":
+        return f"{result.get('row_count', 0)} rows (aggregated)"
     elif tool_name == "run_workspace_table":
         return f"{result.get('row_count', 0)} rows loaded"
     return "Done"

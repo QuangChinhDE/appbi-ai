@@ -1,8 +1,15 @@
 # AI Chat Agent — Design Document
 
-> **Version**: 1.0 — Draft for Review  
-> **Date**: March 15, 2026  
-> **Status**: Pre-implementation review
+> **Version**: 2.0 — Implementation Complete  
+> **Date updated**: March 19, 2026  
+> **Status**: Fully implemented & in production
+
+**Changelog v2.0 (March 19, 2026):**
+- ✅ Quality metrics system: `MetricsEvent` emitted after every response
+- ✅ Feedback API: thumbs up/down + optional comment per message
+- ✅ Metrics bar UI in `ChatMessage.tsx`
+- ✅ Bug fix: race condition in `done` handler causing metrics to not render on chart responses
+- ✅ `ThinkingIndicator` rewritten with collapsible activity panel
 
 ---
 

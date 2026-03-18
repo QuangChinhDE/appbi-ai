@@ -562,7 +562,15 @@ def execute_workspace_table_query(
     if execute_request.dimensions and execute_request.measures:
         group_by_clause = ", ".join(execute_request.dimensions)
         query += f" GROUP BY {group_by_clause}"
-    
+
+    # Add ORDER BY
+    if execute_request.order_by:
+        order_parts = []
+        for ob in execute_request.order_by:
+            direction = ob.direction.upper() if ob.direction.upper() in ("ASC", "DESC") else "DESC"
+            order_parts.append(f"{ob.field} {direction}")
+        query += " ORDER BY " + ", ".join(order_parts)
+
     # Add LIMIT
     if execute_request.limit:
         query += f" LIMIT {execute_request.limit}"
