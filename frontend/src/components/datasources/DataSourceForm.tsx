@@ -313,21 +313,16 @@ export default function DataSourceForm({
                 {showCredentials ? <><EyeOff className="w-3.5 h-3.5" /> Hide</> : <><Eye className="w-3.5 h-3.5" /> Show</>}
               </button>
             </div>
-            {showCredentials ? (
-              <textarea
-                value={config.credentials_json || ''}
-                onChange={(e) => handleConfigChange('credentials_json', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-                placeholder={initialData ? '(stored — paste new JSON to replace)' : '{"type": "service_account", ...}'}
-                rows={6}
-                required={!initialData || !config.credentials_json}
-              />
-            ) : (
-              <div className="w-full px-3 py-3 bg-gray-50 border border-gray-200 rounded-md min-h-[80px] flex items-center gap-2">
-                <span className="font-mono text-gray-400 tracking-widest text-sm">{'•'.repeat(32)}</span>
-                {config.credentials_json && <span className="text-xs text-gray-400 ml-1">credentials stored</span>}
-              </div>
-            )}
+            <textarea
+              value={config.credentials_json || ''}
+              onChange={(e) => handleConfigChange('credentials_json', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              style={!showCredentials ? { WebkitTextSecurity: 'disc' } as any : undefined}
+              placeholder={showCredentials ? (initialData ? '(stored — paste new JSON to replace)' : '{"type": "service_account", ...}') : 'Paste Service Account JSON here'}
+              rows={6}
+              required={!initialData || !config.credentials_json}
+            />
             <p className="text-xs text-gray-500 mt-1">
               Paste the entire JSON key file content
             </p>
@@ -363,21 +358,16 @@ export default function DataSourceForm({
                 {showCredentials ? <><EyeOff className="w-3.5 h-3.5" /> Hide</> : <><Eye className="w-3.5 h-3.5" /> Show</>}
               </button>
             </div>
-            {showCredentials ? (
-              <textarea
-                value={config.credentials_json || ''}
-                onChange={(e) => handleConfigChange('credentials_json', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-                placeholder={initialData ? '(stored — paste new JSON to replace)' : '{"type": "service_account", "project_id": "...", ...}'}
-                rows={8}
-                required={!initialData || !config.credentials_json}
-              />
-            ) : (
-              <div className="w-full px-3 py-3 bg-gray-50 border border-gray-200 rounded-md min-h-[80px] flex items-center gap-2">
-                <span className="font-mono text-gray-400 tracking-widest text-sm">{'•'.repeat(32)}</span>
-                {config.credentials_json && <span className="text-xs text-gray-400 ml-1">credentials stored</span>}
-              </div>
-            )}
+            <textarea
+              value={config.credentials_json || ''}
+              onChange={(e) => handleConfigChange('credentials_json', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              style={!showCredentials ? { WebkitTextSecurity: 'disc' } as any : undefined}
+              placeholder={showCredentials ? (initialData ? '(stored — paste new JSON to replace)' : '{"type": "service_account", "project_id": "...", ...}') : 'Paste Service Account JSON here'}
+              rows={4}
+              required={!initialData || !config.credentials_json}
+            />
             <p className="text-xs text-gray-500 mt-1">
               Paste your Google Service Account JSON credentials
             </p>
@@ -385,18 +375,23 @@ export default function DataSourceForm({
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Spreadsheet ID
+              Spreadsheet URL hoặc ID
             </label>
             <input
               type="text"
               value={config.spreadsheet_id || ''}
-              onChange={(e) => handleConfigChange('spreadsheet_id', e.target.value)}
+              onChange={(e) => {
+                // Accept full URL or bare ID — extract ID automatically
+                const val = e.target.value.trim();
+                const match = val.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+                handleConfigChange('spreadsheet_id', match ? match[1] : val);
+              }}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
+              placeholder="Dán link Google Sheets hoặc Spreadsheet ID"
               required
             />
             <p className="text-xs text-gray-500 mt-1">
-              Found in the URL: docs.google.com/spreadsheets/d/<strong>SPREADSHEET_ID</strong>/edit
+              Dán toàn bộ link Google Sheets — ID sẽ được tự động trích xuất
             </p>
           </div>
 
