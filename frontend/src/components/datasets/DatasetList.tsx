@@ -5,7 +5,32 @@
 'use client';
 
 import { Dataset } from '@/types/api';
-import { FileText, Edit, Trash2, Play } from 'lucide-react';
+import { FileText, Edit, Trash2, Play, RefreshCw, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
+
+function SyncBadge({ syncConfig, materialization }: { syncConfig?: Dataset['sync_config']; materialization?: Dataset['materialization'] }) {
+  const mode = materialization?.mode;
+  if (mode === 'parquet') {
+    const scheduleEnabled = syncConfig?.schedule?.enabled;
+    return (
+      <span className="px-2 py-0.5 inline-flex items-center gap-1 text-xs rounded-full bg-emerald-100 text-emerald-700">
+        <RefreshCw className="w-3 h-3" />
+        {scheduleEnabled ? 'Auto sync' : 'Manual sync'}
+      </span>
+    );
+  }
+  if (mode === 'view' || mode === 'table') {
+    return (
+      <span className="px-2 py-0.5 inline-flex text-xs rounded-full bg-purple-100 text-purple-700">
+        {mode}
+      </span>
+    );
+  }
+  return (
+    <span className="px-2 py-0.5 inline-flex text-xs rounded-full bg-gray-100 text-gray-500">
+      live
+    </span>
+  );
+}
 
 interface DatasetListProps {
   datasets: Dataset[];
@@ -54,6 +79,9 @@ export default function DatasetList({
               Description
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Storage
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
               Created
             </th>
             <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -79,6 +107,9 @@ export default function DatasetList({
                 <div className="text-sm text-gray-500 max-w-xs truncate">
                   {dataset.description || '—'}
                 </div>
+              </td>
+              <td className="px-6 py-4 whitespace-nowrap">
+                <SyncBadge syncConfig={dataset.sync_config} materialization={dataset.materialization} />
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                 {new Date(dataset.created_at).toLocaleDateString()}

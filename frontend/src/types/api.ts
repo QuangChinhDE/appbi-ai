@@ -84,6 +84,105 @@ export interface DataSourceUpdate {
   config?: Record<string, any>;
 }
 
+// ── Schema Browser ─────────────────────────────────────────────────────────
+
+export interface SchemaTableEntry {
+  name: string;
+  type: 'table' | 'view' | 'materialized_view' | 'other';
+  row_count: number | null;
+  size_bytes: number | null;
+}
+
+export interface SchemaEntry {
+  schema: string;
+  tables: SchemaTableEntry[];
+}
+
+export interface SchemaResponse {
+  schemas: SchemaEntry[];
+}
+
+export interface TableColumn {
+  name: string;
+  type: string;
+  nullable: boolean;
+  is_primary_key: boolean;
+  is_foreign_key: boolean;
+  has_index: boolean;
+}
+
+export interface TableDetail {
+  schema: string;
+  name: string;
+  type: string;
+  row_count: number | null;
+  size_bytes: number | null;
+  columns: TableColumn[];
+  preview: Record<string, any>[];
+}
+
+export interface WatermarkColumn {
+  name: string;
+  type: string;
+}
+
+// ── Sync Config ────────────────────────────────────────────────────────────
+
+export type SyncStrategyType = 'full_refresh' | 'incremental' | 'append_only' | 'manual';
+export type ScheduleType = 'interval' | 'daily' | 'custom_cron';
+
+export interface SyncScheduleConfig {
+  enabled: boolean;
+  type: ScheduleType;
+  interval_hours?: number;
+  interval_seconds?: number;
+  time?: string;       // "HH:MM" for daily
+  timezone?: string;
+  cron?: string;
+  cron_expression?: string;
+}
+
+export interface SyncTableConfig {
+  strategy: SyncStrategyType;
+  watermark_column?: string;
+  rows_cached?: number;
+}
+
+export interface SyncRetryConfig {
+  max_attempts: number;
+  backoff_interval: string; // "5m" | "15m" | "30m" | "1h"
+}
+
+export interface SyncNotificationConfig {
+  email_on_failure: boolean;
+  webhook_url?: string;
+}
+
+export interface SyncConfig {
+  mode?: 'full_refresh' | 'incremental' | 'append_only' | 'manual';
+  schedule?: SyncScheduleConfig;
+  tables?: Record<string, SyncTableConfig>;   // key = "schema.table"
+  retry?: SyncRetryConfig;
+  notification?: SyncNotificationConfig;
+  watermark_column?: string;
+  incremental?: Record<string, any>;
+}
+
+// ── Sync Jobs ──────────────────────────────────────────────────────────────
+
+export interface SyncJob {
+  id: number;
+  status: 'running' | 'success' | 'failed' | 'timeout';
+  mode: string;
+  started_at: string;
+  finished_at: string | null;
+  duration_seconds: number | null;
+  rows_synced: number | null;
+  rows_failed: number | null;
+  error_message: string | null;
+  triggered_by: string | null;
+}
+
 export interface ColumnMetadata {
   name: string;
   type: string;
@@ -135,7 +234,7 @@ export interface TransformationStep {
 
 // Materialization configuration
 export interface MaterializationConfig {
-  mode: 'none' | 'view' | 'table';
+  mode: 'none' | 'view' | 'table' | 'parquet';
   name?: string;
   schema?: string;
   refresh?: {
@@ -148,6 +247,17 @@ export interface MaterializationConfig {
   error?: string;
 }
 
+export interface SyncJobRun {
+  id: number;
+  mode: string;
+  status: 'running' | 'success' | 'failed';
+  rows_pulled?: number;
+  duration_seconds?: number;
+  error?: string;
+  started_at?: string;
+  finished_at?: string;
+}
+
 export interface Dataset {
   id: number;
   name: string;
@@ -158,6 +268,7 @@ export interface Dataset {
   transformations?: TransformationStep[];
   transformation_version?: number;
   materialization?: MaterializationConfig;
+  sync_config?: SyncConfig;
   created_at: string;
   updated_at: string;
 }

@@ -69,9 +69,11 @@ class DataSourceCRUDService:
     def create(db: Session, data_source: DataSourceCreate) -> DataSource:
         """Create a new data source."""
         try:
+            from app.core.crypto import encrypt_config
             config = data_source.config
             if data_source.type.value == 'google_sheets':
                 config = _snapshot_google_sheets(config)
+            config = encrypt_config(config)
 
             db_data_source = DataSource(
                 name=data_source.name,
@@ -106,13 +108,30 @@ class DataSourceCRUDService:
             # Track whether config actually changed so we know to invalidate workspace caches.
             config_refreshed = False
             if 'config' in update_data:
+                from app.core.crypto import encrypt_config, MASKED_PLACEHOLDER, _SENSITIVE_FIELDS
                 ds_type = db_data_source.type.value
+
+                # Restore existing encrypted values for any sensitive field that the
+                # frontend sent back as "__stored__" (masked placeholder) or as empty
+                # string (user didn't type a new value).
+                existing_config = dict(db_data_source.config or {})
+                new_cfg = dict(update_data['config'])
+                for field in _SENSITIVE_FIELDS:
+                    val = new_cfg.get(field, None)
+                    if val == MASKED_PLACEHOLDER or val == "":
+                        if field in existing_config and existing_config[field]:
+                            new_cfg[field] = existing_config[field]  # keep encrypted value
+                        else:
+                            new_cfg.pop(field, None)  # field didn't exist before
+                update_data['config'] = new_cfg
+
                 if ds_type == 'google_sheets':
                     update_data['config'] = _snapshot_google_sheets(update_data['config'])
                     config_refreshed = True
                 elif ds_type == 'manual':
                     # Manual type: config is already the new snapshot (uploaded by user)
                     config_refreshed = True
+                update_data['config'] = encrypt_config(update_data['config'])
 
             for field, value in update_data.items():
                 setattr(db_data_source, field, value)

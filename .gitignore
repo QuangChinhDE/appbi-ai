@@ -16,6 +16,9 @@ node_modules/
 .next/
 out/
 
+# Data (DuckDB + Parquet)
+.data/
+
 # Misc
 .DS_Store
 *.log

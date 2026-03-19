@@ -45,4 +45,29 @@ export const datasetApi = {
     });
     return response.data;
   },
+
+  // ── Sync endpoints ────────────────────────────────────────────────────
+
+  triggerSync: async (id: number, mode?: string) => {
+    const params = mode ? `?mode=${mode}` : '';
+    const response = await apiClient.post(`/datasets/${id}/sync/trigger${params}`);
+    return response.data;
+  },
+
+  getSyncStatus: async (id: number) => {
+    const response = await apiClient.get(`/datasets/${id}/sync/status`);
+    return response.data;
+  },
+
+  getSyncHistory: async (id: number, skip = 0, limit = 20) => {
+    const response = await apiClient.get(`/datasets/${id}/sync/history`, {
+      params: { skip, limit },
+    });
+    return response.data;
+  },
+
+  updateSyncConfig: async (id: number, config: Record<string, unknown>) => {
+    const response = await apiClient.put(`/datasets/${id}/sync-config`, config);
+    return response.data;
+  },
 };

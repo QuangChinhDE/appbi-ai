@@ -6,7 +6,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { DataSourceType, DataSourceCreate } from '@/types/api';
-import { Loader2, UploadCloud, FileSpreadsheet, X, CheckCircle, AlertCircle, Radio, WifiOff } from 'lucide-react';
+import { Loader2, UploadCloud, FileSpreadsheet, X, CheckCircle, AlertCircle, Radio, WifiOff, Eye, EyeOff } from 'lucide-react';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api/v1';
 
@@ -26,6 +26,17 @@ interface DataSourceFormProps {
   isLoading?: boolean;
 }
 
+const SENSITIVE_FIELDS = ['password', 'credentials_json', 'api_key', 'token', 'access_token', 'secret_key', 'private_key', 'client_secret', 'service_account_json'];
+
+/** Strip the server's "__stored__" sentinel so form fields appear empty (not leaking masked values). */
+function sanitizeConfigForForm(cfg: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(cfg)) {
+    out[k] = SENSITIVE_FIELDS.includes(k) && v === '__stored__' ? '' : v;
+  }
+  return out;
+}
+
 export default function DataSourceForm({
   initialData,
   onSubmit,
@@ -38,7 +49,7 @@ export default function DataSourceForm({
   );
   const [description, setDescription] = useState(initialData?.description || '');
   const [config, setConfig] = useState<Record<string, any>>(
-    initialData?.config || {}
+    initialData?.config ? sanitizeConfigForForm(initialData.config) : {}
   );
 
   // Multi-sheet import preview state
@@ -70,6 +81,12 @@ export default function DataSourceForm({
   // Track if config was actually changed by the user (matters for edit mode with Manual Table)
   // New datasource: always true. Edit: starts false, becomes true when user re-uploads data.
   const [configModified, setConfigModified] = useState(!initialData);
+
+  // Show/hide sensitive credential fields (credentials_json, private_key, etc.)
+  // Always hidden by default — user must click Show to reveal
+  const [showCredentials, setShowCredentials] = useState(false);
+  // Show/hide password field for DB connections
+  const [showPassword, setShowPassword] = useState(false);
 
   // Reset test state whenever config fields change
   useEffect(() => { setTestState('idle'); setTestMessage(''); }, [config]);
@@ -242,16 +259,25 @@ export default function DataSourceForm({
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Password
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-sm font-medium text-gray-700">
+                  Password
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(v => !v)}
+                  className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 transition-colors"
+                >
+                  {showPassword ? <><EyeOff className="w-3.5 h-3.5" /> Hide</> : <><Eye className="w-3.5 h-3.5" /> Show</>}
+                </button>
+              </div>
               <input
-                type="password"
+                type={showPassword ? 'text' : 'password'}
                 value={config.password || ''}
                 onChange={(e) => handleConfigChange('password', e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="••••••••"
-                required
+                placeholder={initialData ? '(stored — leave blank to keep)' : '••••••••'}
+                required={!initialData}
               />
             </div>
           </div>
@@ -275,17 +301,33 @@ export default function DataSourceForm({
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Service Account JSON
-            </label>
-            <textarea
-              value={config.credentials_json || ''}
-              onChange={(e) => handleConfigChange('credentials_json', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-              placeholder='{"type": "service_account", ...}'
-              rows={6}
-              required
-            />
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-sm font-medium text-gray-700">
+                Service Account JSON
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowCredentials(v => !v)}
+                className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 transition-colors"
+              >
+                {showCredentials ? <><EyeOff className="w-3.5 h-3.5" /> Hide</> : <><Eye className="w-3.5 h-3.5" /> Show</>}
+              </button>
+            </div>
+            {showCredentials ? (
+              <textarea
+                value={config.credentials_json || ''}
+                onChange={(e) => handleConfigChange('credentials_json', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                placeholder={initialData ? '(stored — paste new JSON to replace)' : '{"type": "service_account", ...}'}
+                rows={6}
+                required={!initialData || !config.credentials_json}
+              />
+            ) : (
+              <div className="w-full px-3 py-3 bg-gray-50 border border-gray-200 rounded-md min-h-[80px] flex items-center gap-2">
+                <span className="font-mono text-gray-400 tracking-widest text-sm">{'•'.repeat(32)}</span>
+                {config.credentials_json && <span className="text-xs text-gray-400 ml-1">credentials stored</span>}
+              </div>
+            )}
             <p className="text-xs text-gray-500 mt-1">
               Paste the entire JSON key file content
             </p>
@@ -309,17 +351,33 @@ export default function DataSourceForm({
       return (
         <>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Service Account JSON
-            </label>
-            <textarea
-              value={config.credentials_json || ''}
-              onChange={(e) => handleConfigChange('credentials_json', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-              placeholder='{"type": "service_account", "project_id": "...", ...}'
-              rows={8}
-              required
-            />
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-sm font-medium text-gray-700">
+                Service Account JSON
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowCredentials(v => !v)}
+                className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 transition-colors"
+              >
+                {showCredentials ? <><EyeOff className="w-3.5 h-3.5" /> Hide</> : <><Eye className="w-3.5 h-3.5" /> Show</>}
+              </button>
+            </div>
+            {showCredentials ? (
+              <textarea
+                value={config.credentials_json || ''}
+                onChange={(e) => handleConfigChange('credentials_json', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                placeholder={initialData ? '(stored — paste new JSON to replace)' : '{"type": "service_account", "project_id": "...", ...}'}
+                rows={8}
+                required={!initialData || !config.credentials_json}
+              />
+            ) : (
+              <div className="w-full px-3 py-3 bg-gray-50 border border-gray-200 rounded-md min-h-[80px] flex items-center gap-2">
+                <span className="font-mono text-gray-400 tracking-widest text-sm">{'•'.repeat(32)}</span>
+                {config.credentials_json && <span className="text-xs text-gray-400 ml-1">credentials stored</span>}
+              </div>
+            )}
             <p className="text-xs text-gray-500 mt-1">
               Paste your Google Service Account JSON credentials
             </p>

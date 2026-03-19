@@ -11,6 +11,8 @@ from app.models.models import (
     DashboardChart,
     ChartMetadata,
     ChartParameter,
+    SyncJob,
+    SyncJobRun,
 )
 from app.models.semantic import (
     SemanticView,
@@ -48,4 +50,5 @@ __all__ = [
     "DatasetWorkspace",
     "DatasetWorkspaceTable",
     "SemanticExplore",
+    "SyncJob",
 ]

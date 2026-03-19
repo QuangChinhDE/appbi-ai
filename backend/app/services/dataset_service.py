@@ -215,41 +215,54 @@ class DatasetService:
         timeout_seconds: int = 30,
         apply_transformations: bool = True
     ):
-        """Execute a dataset query and return results with optional transformations."""
+        """Execute a dataset query and return results with optional transformations.
+
+        Query routing:
+          1. If materialization.mode == "parquet" and Parquet file exists → DuckDB
+          2. If materialization.mode in ("view", "table") → live source (materialized object)
+          3. Otherwise → live source with compiled SQL
+        """
         db_dataset = DatasetService.get_by_id(db, dataset_id)
         if not db_dataset:
             raise ValueError(f"Dataset with ID {dataset_id} not found")
         
         data_source = db_dataset.data_source
-        
-        # Determine final SQL query
+        mat = db_dataset.materialization or {}
+
+        # ── Route 1: DuckDB Parquet ──────────────────────────────────────────
+        if mat.get("mode") == "parquet" and mat.get("storage_path"):
+            from app.services.ingestion_engine import DATA_DIR
+            parquet_path = DATA_DIR / mat["storage_path"]
+            if parquet_path.exists():
+                try:
+                    from app.services.duckdb_engine import DuckDBEngine
+                    view_name = f"dataset_{dataset_id}"
+                    if not DuckDBEngine.has_view(dataset_id):
+                        DuckDBEngine.register_dataset(dataset_id, str(parquet_path))
+                    sql = f"SELECT * FROM {view_name}"
+                    if limit:
+                        sql += f" LIMIT {limit}"
+                    rows = DuckDBEngine.query_to_dicts(sql)
+                    columns = list(rows[0].keys()) if rows else []
+                    logger.info(f"DuckDB query for dataset {dataset_id}: {len(rows)} rows")
+                    return {"columns": columns, "data": rows, "row_count": len(rows)}
+                except Exception as e:
+                    logger.warning(f"DuckDB query failed, falling back to live source: {e}")
+
+        # ── Route 2 & 3: Live source ─────────────────────────────────────────
         final_sql = db_dataset.sql_query
         
         # Check if materialized view/table exists and should be used
-        if db_dataset.materialization:
-            mat = db_dataset.materialization
-            if mat.get('mode') in ('view', 'table') and mat.get('name'):
-                # Use materialized object instead of compiling
-                schema = mat.get('schema', '')
-                mat_name = mat['name']
-                
-                if schema:
-                    final_sql = f"SELECT * FROM {schema}.{mat_name}"
-                else:
-                    final_sql = f"SELECT * FROM {mat_name}"
-                
-                logger.info(f"Using materialized {mat['mode']}: {mat_name}")
+        if mat.get('mode') in ('view', 'table') and mat.get('name'):
+            schema = mat.get('schema', '')
+            mat_name = mat['name']
+            if schema:
+                final_sql = f"SELECT * FROM {schema}.{mat_name}"
             else:
-                # No valid materialization, compile normally
-                if apply_transformations and db_dataset.transformations:
-                    try:
-                        final_sql = compile_transformed_sql(db, db_dataset)
-                        logger.info(f"Applied {len(db_dataset.transformations)} transformations to dataset {dataset_id}")
-                    except Exception as e:
-                        logger.error(f"Failed to compile transformations: {str(e)}")
-                        final_sql = db_dataset.sql_query
+                final_sql = f"SELECT * FROM {mat_name}"
+            logger.info(f"Using materialized {mat['mode']}: {mat_name}")
         else:
-            # No materialization, compile with transformations if enabled
+            # Compile with transformations
             if apply_transformations and db_dataset.transformations:
                 try:
                     final_sql = compile_transformed_sql(db, db_dataset)

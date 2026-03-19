@@ -54,7 +54,7 @@ export default function EditDataSourcePage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="container mx-auto px-4 py-8">
+      <div className="w-full px-8 py-6">
         <div className="mb-6">
           <Link href="/datasources" className="inline-flex items-center text-blue-600 hover:text-blue-700">
             <ArrowLeft className="w-4 h-4 mr-2" />

@@ -79,3 +79,48 @@ export const useExecuteDataset = () => {
       datasetApi.execute(id, limit, apply_transformations),
   });
 };
+
+// ── Sync hooks ───────────────────────────────────────────────────────────
+
+export const useSyncStatus = (datasetId: number) => {
+  return useQuery({
+    queryKey: ['datasets', datasetId, 'sync-status'],
+    queryFn: () => datasetApi.getSyncStatus(datasetId),
+    enabled: !!datasetId,
+    refetchInterval: (query) => {
+      const data = query.state.data as { sync?: { status?: string } } | undefined;
+      return data?.sync?.status === 'running' ? 3000 : false;
+    },
+  });
+};
+
+export const useSyncHistory = (datasetId: number, skip = 0, limit = 20) => {
+  return useQuery({
+    queryKey: ['datasets', datasetId, 'sync-history', skip, limit],
+    queryFn: () => datasetApi.getSyncHistory(datasetId, skip, limit),
+    enabled: !!datasetId,
+  });
+};
+
+export const useTriggerSync = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, mode }: { id: number; mode?: string }) =>
+      datasetApi.triggerSync(id, mode),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['datasets', variables.id, 'sync-status'] });
+      queryClient.invalidateQueries({ queryKey: ['datasets', variables.id, 'sync-history'] });
+    },
+  });
+};
+
+export const useUpdateSyncConfig = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, config }: { id: number; config: Record<string, unknown> }) =>
+      datasetApi.updateSyncConfig(id, config),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['datasets', variables.id] });
+    },
+  });
+};

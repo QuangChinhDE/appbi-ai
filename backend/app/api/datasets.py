@@ -1,13 +1,13 @@
 """
 API router for dataset endpoints.
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import Any, Dict, List, Optional
 import os
 
 from app.core import get_db
-from app.models.models import Chart, Dataset
+from app.models.models import Chart, Dataset, SyncJobRun
 from app.schemas import (
     DatasetCreate,
     DatasetUpdate,
@@ -402,3 +402,133 @@ def dematerialize_dataset_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Dematerialization failed: {str(e)}"
         )
+
+
+# ── Dataset Sync endpoints ──────────────────────────────────────────────────
+
+
+@router.post("/{dataset_id}/sync/trigger")
+def trigger_sync(
+    dataset_id: int,
+    mode: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Manually trigger a dataset sync.
+    Optional query param ?mode=full_refresh|incremental|append_only
+    to override the configured mode.
+    """
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    from app.services.dataset_sync_engine import trigger_dataset_sync
+    try:
+        job_run_id = trigger_dataset_sync(
+            dataset_id, db, triggered_by="api", mode_override=mode
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    return {"job_run_id": job_run_id, "status": "running"}
+
+
+@router.get("/{dataset_id}/sync/status")
+def sync_status(dataset_id: int, db: Session = Depends(get_db)):
+    """Return the latest sync job run for the dataset."""
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    latest = (
+        db.query(SyncJobRun)
+        .filter(SyncJobRun.dataset_id == dataset_id)
+        .order_by(SyncJobRun.started_at.desc())
+        .first()
+    )
+    if not latest:
+        return {"sync": None}
+
+    return {
+        "sync": {
+            "id": latest.id,
+            "mode": latest.mode,
+            "status": latest.status,
+            "rows_pulled": latest.rows_pulled,
+            "duration_seconds": latest.duration_seconds,
+            "error": latest.error,
+            "started_at": latest.started_at.isoformat() if latest.started_at else None,
+            "finished_at": latest.finished_at.isoformat() if latest.finished_at else None,
+        }
+    }
+
+
+@router.get("/{dataset_id}/sync/history")
+def sync_history(
+    dataset_id: int,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Return paginated sync job run history for the dataset."""
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    total = db.query(SyncJobRun).filter(SyncJobRun.dataset_id == dataset_id).count()
+    runs = (
+        db.query(SyncJobRun)
+        .filter(SyncJobRun.dataset_id == dataset_id)
+        .order_by(SyncJobRun.started_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "total": total,
+        "items": [
+            {
+                "id": r.id,
+                "mode": r.mode,
+                "status": r.status,
+                "rows_pulled": r.rows_pulled,
+                "duration_seconds": r.duration_seconds,
+                "error": r.error,
+                "started_at": r.started_at.isoformat() if r.started_at else None,
+                "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+            }
+            for r in runs
+        ],
+    }
+
+
+@router.put("/{dataset_id}/sync-config")
+def update_sync_config(
+    dataset_id: int,
+    body: Dict[str, Any],
+    db: Session = Depends(get_db),
+):
+    """
+    Save sync_config on a dataset and update the scheduler.
+
+    Expected body example:
+    {
+      "mode": "full_refresh",
+      "schedule": {"enabled": true, "type": "interval", "interval_hours": 6},
+      "watermark_column": null
+    }
+    """
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    dataset.sync_config = body
+    db.commit()
+    db.refresh(dataset)
+
+    # Update scheduler
+    from app.services.dataset_sync_scheduler import register_dataset
+    register_dataset(dataset_id, body)
+
+    return {"sync_config": dataset.sync_config}

@@ -4,8 +4,9 @@
  */
 'use client';
 
+import Link from 'next/link';
 import { DataSource } from '@/types/api';
-import { Database, Edit, Trash2, TestTube } from 'lucide-react';
+import { Database, Settings, Trash2, TestTube } from 'lucide-react';
 
 interface DataSourceListProps {
   dataSources: DataSource[];
@@ -94,7 +95,12 @@ export default function DataSourceList({
               <td className="px-6 py-4 whitespace-nowrap">
                 <div className="flex items-center">
                   <Database className="w-5 h-5 text-gray-400 mr-3" />
-                  <div className="text-sm font-medium text-gray-900">{ds.name}</div>
+                  <Link
+                    href={`/datasources/${ds.id}`}
+                    className="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
+                  >
+                    {ds.name}
+                  </Link>
                 </div>
               </td>
               <td className="px-6 py-4 whitespace-nowrap">
@@ -123,13 +129,13 @@ export default function DataSourceList({
                   >
                     <TestTube className="w-4 h-4" />
                   </button>
-                  <button
-                    onClick={() => onEdit(ds)}
-                    className="text-blue-600 hover:text-blue-900 p-1 rounded hover:bg-blue-50"
-                    title="Edit"
+                  <Link
+                    href={`/datasources/${ds.id}`}
+                    className="text-blue-600 hover:text-blue-900 p-1 rounded hover:bg-blue-50 inline-flex"
+                    title="View / Edit"
                   >
-                    <Edit className="w-4 h-4" />
-                  </button>
+                    <Settings className="w-4 h-4" />
+                  </Link>
                   <button
                     onClick={() => onDelete(ds.id)}
                     disabled={isDeleting === ds.id}

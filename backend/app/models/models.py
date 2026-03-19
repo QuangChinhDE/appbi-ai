@@ -2,7 +2,7 @@
 SQLAlchemy models for the BI application.
 """
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, ForeignKey, JSON, Boolean, Enum
+    Column, Integer, String, Text, DateTime, ForeignKey, JSON, Boolean, Enum, Float
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -52,13 +52,18 @@ class DataSource(Base):
     # PostgreSQL/MySQL: {host, port, database, username, password}
     # BigQuery: {project_id, credentials_json, dataset}
     config = Column(JSON, nullable=False)
-    
+
+    # Sync configuration (schedule + per-table strategies + retry + notification)
+    # Format: {schedule: {...}, tables: {...}, retry: {...}, notification: {...}}
+    sync_config = Column(JSON, nullable=True)
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-    
+
     # Relationships
     datasets = relationship("Dataset", back_populates="data_source")
+    sync_jobs = relationship("SyncJob", back_populates="data_source", cascade="all, delete-orphan")
 
 
 class Dataset(Base):
@@ -88,9 +93,19 @@ class Dataset(Base):
     transformation_version = Column(Integer, nullable=True, default=2)
     
     # Materialization configuration (v2)
-    # Format: {"mode": "none|view|table", "name": "...", "schema": "...", "refresh": {...}, "last_refreshed_at": "...", "status": "...", "error": "..."}
+    # Format: {"mode": "none|view|table|parquet", "name": "...", "schema": "...", "refresh": {...},
+    #          "storage_path": "...", "row_count": N, "size_bytes": N,
+    #          "last_refreshed_at": "...", "last_duration_seconds": N,
+    #          "status": "idle|running|success|failed", "error": "...",
+    #          "columns_schema": [...], "incremental_watermark": "..."}
     materialization = Column(JSON, nullable=True)
-    
+
+    # Sync configuration (schedule + mode) — only on Dataset, NOT on DataSource
+    # Format: {mode, schedule: {type, cron, interval_seconds, timezone, enabled},
+    #          incremental: {watermark_column, watermark_type, lookback_minutes},
+    #          retry: {max_attempts, backoff_seconds}}
+    sync_config = Column(JSON, nullable=True)
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -99,6 +114,7 @@ class Dataset(Base):
     data_source = relationship("DataSource", back_populates="datasets")
     charts = relationship("Chart", back_populates="dataset")
     semantic_views = relationship("SemanticView", back_populates="dataset")
+    sync_job_runs = relationship("SyncJobRun", back_populates="dataset", cascade="all, delete-orphan")
 
 
 class Chart(Base):
@@ -255,3 +271,67 @@ class ChartParameter(Base):
 
     # Relationships
     chart = relationship("Chart", back_populates="parameters")
+
+
+class SyncJob(Base):
+    """
+    Record of a single sync job execution for a data source.
+    Tracks status, timing, rows affected, and errors.
+    """
+    __tablename__ = "sync_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    data_source_id = Column(Integer, ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # "running" | "success" | "failed" | "timeout"
+    status = Column(String(20), nullable=False, default="running")
+
+    # "full_refresh" | "incremental" | "append_only" | "manual"
+    mode = Column(String(30), nullable=False)
+
+    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Rows affected in this run
+    rows_synced = Column(Integer, nullable=True)
+    rows_failed = Column(Integer, nullable=True)
+
+    error_message = Column(Text, nullable=True)
+
+    # "schedule" | "manual"
+    triggered_by = Column(String(50), nullable=True, default="manual")
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Relationships
+    data_source = relationship("DataSource", back_populates="sync_jobs")
+
+
+class SyncJobRun(Base):
+    """
+    Record of a single sync job execution for a dataset (not datasource).
+    Tracks status, timing, rows affected, and errors.
+    """
+    __tablename__ = "sync_job_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # "scheduler" | "manual" | "api"
+    triggered_by = Column(String(50), nullable=True, default="manual")
+
+    # "full_refresh" | "incremental" | "append_only"
+    mode = Column(String(50), nullable=False)
+
+    # "running" | "success" | "failed"
+    status = Column(String(20), nullable=False, default="running")
+
+    rows_pulled = Column(Integer, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    error = Column(Text, nullable=True)
+
+    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    dataset = relationship("Dataset", back_populates="sync_job_runs")

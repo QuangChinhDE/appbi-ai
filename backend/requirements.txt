@@ -3,6 +3,9 @@ fastapi==0.109.0
 uvicorn[standard]==0.27.0
 python-multipart==0.0.6
 
+# Task scheduling
+apscheduler==3.10.4
+
 # Database
 sqlalchemy==2.0.25
 alembic==1.13.1
@@ -16,6 +19,13 @@ google-auth==2.25.2
 google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
 cryptography==41.0.7
+
+# Columnar storage & analytics
+duckdb==1.2.1
+pyarrow==18.1.0
+
+# SQL validation
+sqlglot==26.16.2
 
 # File parsing (Manual Table: CSV / Excel import)
 openpyxl==3.1.5

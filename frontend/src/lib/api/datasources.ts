@@ -8,6 +8,11 @@ import {
   DataSourceUpdate,
   QueryExecuteRequest,
   QueryExecuteResponse,
+  SchemaResponse,
+  TableDetail,
+  WatermarkColumn,
+  SyncConfig,
+  SyncJob,
 } from '@/types/api';
 
 export const dataSourceApi = {
@@ -42,6 +47,65 @@ export const dataSourceApi = {
 
   executeQuery: async (request: QueryExecuteRequest): Promise<QueryExecuteResponse> => {
     const response = await apiClient.post('/datasources/query', request);
+    return response.data;
+  },
+
+  // ── Schema Browser ──────────────────────────────────────────────────────
+
+  getSchema: async (id: number): Promise<SchemaResponse> => {
+    const response = await apiClient.get(`/datasources/${id}/schema`);
+    return response.data;
+  },
+
+  getTableDetail: async (
+    id: number,
+    schemaName: string,
+    tableName: string,
+    previewRows = 5,
+  ): Promise<TableDetail> => {
+    const response = await apiClient.get(
+      `/datasources/${id}/tables/${schemaName}/${tableName}`,
+      { params: { preview_rows: previewRows } },
+    );
+    return response.data;
+  },
+
+  getWatermarkCandidates: async (
+    id: number,
+    schemaName: string,
+    tableName: string,
+  ): Promise<{ columns: WatermarkColumn[] }> => {
+    const response = await apiClient.get(
+      `/datasources/${id}/tables/${schemaName}/${tableName}/watermarks`,
+    );
+    return response.data;
+  },
+
+  // ── Sync Config ─────────────────────────────────────────────────────────
+
+  getSyncConfig: async (id: number): Promise<{ sync_config: SyncConfig }> => {
+    const response = await apiClient.get(`/datasources/${id}/sync-config`);
+    return response.data;
+  },
+
+  saveSyncConfig: async (id: number, config: SyncConfig): Promise<{ sync_config: SyncConfig }> => {
+    const response = await apiClient.put(`/datasources/${id}/sync-config`, {
+      sync_config: config,
+    });
+    return response.data;
+  },
+
+  // ── Sync Jobs ────────────────────────────────────────────────────────────
+
+  getSyncJobs: async (id: number, limit = 10): Promise<{ jobs: SyncJob[] }> => {
+    const response = await apiClient.get(`/datasources/${id}/sync-jobs`, {
+      params: { limit },
+    });
+    return response.data;
+  },
+
+  triggerSync: async (id: number): Promise<{ job_id: number; status: string; message: string }> => {
+    const response = await apiClient.post(`/datasources/${id}/sync`);
     return response.data;
   },
 };

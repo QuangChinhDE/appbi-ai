@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # Database (Metadata Store)
     DATABASE_URL: str
     
+    # Storage (Parquet + DuckDB)
+    DATA_DIR: str = ".data"
+
     # CORS
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002"
     
@@ -28,6 +31,7 @@ class Settings(BaseSettings):
     
     # Security
     SECRET_KEY: str = "dev-secret-key-change-in-production"
+    DATASOURCE_ENCRYPTION_KEY: str = ""
     
     model_config = SettingsConfigDict(
         env_file=_ROOT_ENV,

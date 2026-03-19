@@ -511,77 +511,109 @@ def execute_workspace_table_query(
         if not db_table.source_table_name:
             raise HTTPException(status_code=400, detail="Table has source_kind='physical_table' but source_table_name is NULL")
         base_table = db_table.source_table_name
-    
+
+    # --- Security: build column whitelist from columns_cache ---
+    # columns_cache is populated by the preview endpoint; if missing we skip whitelist validation
+    # (SELECT * path below still avoids injection since we only quote identifiers).
+    allowed_columns: set | None = None
+    if db_table.columns_cache:
+        raw_cols = db_table.columns_cache
+        if isinstance(raw_cols, dict) and "columns" in raw_cols:
+            raw_cols = raw_cols["columns"]
+        allowed_columns = {
+            c["name"] if isinstance(c, dict) else str(c)
+            for c in raw_cols
+        }
+
+    def _validate_column(col_name: str, context: str) -> str:
+        """Raise 400 if col_name is not in whitelist, return double-quoted identifier."""
+        if allowed_columns is not None and col_name not in allowed_columns:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid {context}: '{col_name}' is not a column of this table"
+            )
+        # Quote identifier to prevent injection even when whitelist is unavailable
+        return '"' + col_name.replace('"', '""') + '"'
+
     # Build SELECT clause with dimensions and measures
     select_parts = []
-    
+
     # Add dimensions
     if execute_request.dimensions:
         for dim in execute_request.dimensions:
-            select_parts.append(dim)
-    
+            select_parts.append(_validate_column(dim, "dimension"))
+
     # Add measures (aggregations)
     if execute_request.measures:
         for measure in execute_request.measures:
+            quoted_col = _validate_column(measure.field, "measure field")
+            # measure.function is already validated by Pydantic pattern constraint
             agg_func = measure.function.upper()
+            alias = '"' + f"{measure.field}_{measure.function}".replace('"', '""') + '"'
             if agg_func == 'COUNT_DISTINCT':
-                agg_func = 'COUNT(DISTINCT'
-                select_parts.append(f"{agg_func} {measure.field}) AS {measure.field}_{measure.function}")
+                select_parts.append(f"COUNT(DISTINCT {quoted_col}) AS {alias}")
             else:
-                select_parts.append(f"{agg_func}({measure.field}) AS {measure.field}_{measure.function}")
-    
+                select_parts.append(f"{agg_func}({quoted_col}) AS {alias}")
+
     if not select_parts:
         select_parts.append("*")
-    
+
     select_clause = ", ".join(select_parts)
-    
-    # Build query
+
+    # Build query — use parameterized values for filter values
     query = f"SELECT {select_clause} FROM {base_table}"
-    
-    # Add WHERE clause for filters
+    query_params: list = []
+
+    # Add WHERE clause for filters — identifiers quoted, values parameterized
     if execute_request.filters:
         where_conditions = []
         for filter_cond in execute_request.filters:
-            if filter_cond.operator == 'LIKE':
-                where_conditions.append(f"{filter_cond.field} LIKE '%{filter_cond.value}%'")
-            elif filter_cond.operator == 'IN':
-                values = filter_cond.value.split(',')
-                quoted_values = [f"'{v.strip()}'" for v in values]
-                where_conditions.append(f"{filter_cond.field} IN ({','.join(quoted_values)})")
+            quoted_field = _validate_column(filter_cond.field, "filter field")
+            # operator is validated by Pydantic pattern: only = != > < >= <= LIKE IN
+            op = filter_cond.operator.upper()
+            if op == 'LIKE':
+                where_conditions.append(f"{quoted_field} LIKE %s")
+                query_params.append(f"%{filter_cond.value}%")
+            elif op == 'IN':
+                values = [v.strip() for v in filter_cond.value.split(',') if v.strip()]
+                if not values:
+                    continue
+                placeholders = ", ".join(["%s"] * len(values))
+                where_conditions.append(f"{quoted_field} IN ({placeholders})")
+                query_params.extend(values)
             else:
-                # For string values, add quotes
-                if isinstance(filter_cond.value, str):
-                    where_conditions.append(f"{filter_cond.field} {filter_cond.operator} '{filter_cond.value}'")
-                else:
-                    where_conditions.append(f"{filter_cond.field} {filter_cond.operator} {filter_cond.value}")
-        
+                where_conditions.append(f"{quoted_field} {filter_cond.operator} %s")
+                query_params.append(filter_cond.value)
+
         if where_conditions:
             query += " WHERE " + " AND ".join(where_conditions)
-    
+
     # Add GROUP BY for dimensions
     if execute_request.dimensions and execute_request.measures:
-        group_by_clause = ", ".join(execute_request.dimensions)
-        query += f" GROUP BY {group_by_clause}"
+        # dimensions are already validated + quoted above; rebuild the list
+        quoted_dims = [_validate_column(d, "dimension") for d in execute_request.dimensions]
+        query += f" GROUP BY {', '.join(quoted_dims)}"
 
-    # Add ORDER BY
+    # Add ORDER BY — field validated + quoted, direction constrained by Pydantic
     if execute_request.order_by:
         order_parts = []
         for ob in execute_request.order_by:
+            quoted_col = _validate_column(ob.field, "order_by field")
             direction = ob.direction.upper() if ob.direction.upper() in ("ASC", "DESC") else "DESC"
-            order_parts.append(f"{ob.field} {direction}")
+            order_parts.append(f"{quoted_col} {direction}")
         query += " ORDER BY " + ", ".join(order_parts)
 
-    # Add LIMIT
-    if execute_request.limit:
-        query += f" LIMIT {execute_request.limit}"
-    
+    # Add LIMIT — integer, already constrained by Pydantic (ge=1, le=10000)
+    query += f" LIMIT {execute_request.limit}"
+
     try:
-        # Execute query
+        # Execute query — pass params for parameterized filter values
         columns, rows, _ = DataSourceConnectionService.execute_query(
             datasource.type,
             datasource.config,
             query,
-            limit=None  # Already in query
+            limit=None,  # Already in query
+            query_params=query_params if query_params else None,
         )
         
         # Infer column types

@@ -9,6 +9,7 @@ import {
   DataSourceCreate,
   DataSourceUpdate,
   QueryExecuteRequest,
+  SyncConfig,
 } from '@/types/api';
 
 export const useDataSources = () => {
@@ -28,7 +29,6 @@ export const useDataSource = (id: number) => {
 
 export const useCreateDataSource = () => {
   const queryClient = useQueryClient();
-  
   return useMutation({
     mutationFn: (data: DataSourceCreate) => dataSourceApi.create(data),
     onSuccess: () => {
@@ -39,7 +39,6 @@ export const useCreateDataSource = () => {
 
 export const useUpdateDataSource = () => {
   const queryClient = useQueryClient();
-  
   return useMutation({
     mutationFn: ({ id, data }: { id: number; data: DataSourceUpdate }) =>
       dataSourceApi.update(id, data),
@@ -52,7 +51,6 @@ export const useUpdateDataSource = () => {
 
 export const useDeleteDataSource = () => {
   const queryClient = useQueryClient();
-  
   return useMutation({
     mutationFn: (id: number) => dataSourceApi.delete(id),
     onSuccess: () => {
@@ -71,5 +69,85 @@ export const useTestDataSource = () => {
 export const useExecuteQuery = () => {
   return useMutation({
     mutationFn: (request: QueryExecuteRequest) => dataSourceApi.executeQuery(request),
+  });
+};
+
+// ── Schema Browser hooks ──────────────────────────────────────────────────────
+
+export const useDataSourceSchema = (id: number, enabled = true) => {
+  return useQuery({
+    queryKey: ['datasources', id, 'schema'],
+    queryFn: () => dataSourceApi.getSchema(id),
+    enabled: !!id && enabled,
+    staleTime: 30_000,
+  });
+};
+
+export const useTableDetail = (
+  id: number,
+  schemaName: string,
+  tableName: string,
+  previewRows = 5,
+) => {
+  return useQuery({
+    queryKey: ['datasources', id, 'table', schemaName, tableName],
+    queryFn: () => dataSourceApi.getTableDetail(id, schemaName, tableName, previewRows),
+    enabled: !!id && !!schemaName && !!tableName,
+    staleTime: 15_000,
+  });
+};
+
+export const useWatermarkCandidates = (
+  id: number,
+  schemaName: string,
+  tableName: string,
+) => {
+  return useQuery({
+    queryKey: ['datasources', id, 'watermarks', schemaName, tableName],
+    queryFn: () => dataSourceApi.getWatermarkCandidates(id, schemaName, tableName),
+    enabled: !!id && !!schemaName && !!tableName,
+    staleTime: 30_000,
+  });
+};
+
+// ── Sync Config hooks ─────────────────────────────────────────────────────────
+
+export const useSyncConfig = (id: number) => {
+  return useQuery({
+    queryKey: ['datasources', id, 'sync-config'],
+    queryFn: () => dataSourceApi.getSyncConfig(id),
+    enabled: !!id,
+  });
+};
+
+export const useSaveSyncConfig = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, config }: { id: number; config: SyncConfig }) =>
+      dataSourceApi.saveSyncConfig(id, config),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['datasources', variables.id, 'sync-config'] });
+    },
+  });
+};
+
+// ── Sync Jobs hooks ───────────────────────────────────────────────────────────
+
+export const useSyncJobs = (id: number, limit = 10) => {
+  return useQuery({
+    queryKey: ['datasources', id, 'sync-jobs', limit],
+    queryFn: () => dataSourceApi.getSyncJobs(id, limit),
+    enabled: !!id,
+    refetchInterval: 10_000, // poll while running jobs may update
+  });
+};
+
+export const useTriggerSync = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => dataSourceApi.triggerSync(id),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ['datasources', id, 'sync-jobs'] });
+    },
   });
 };

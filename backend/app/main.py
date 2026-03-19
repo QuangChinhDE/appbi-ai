@@ -1,6 +1,8 @@
 """
 Main FastAPI application.
 """
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -10,11 +12,38 @@ from app.api import api_router
 # Setup logging
 setup_logging()
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ── Startup ──────────────────────────────────────────────────────────────
+    # Legacy DataSource-level scheduler (kept for backward compat)
+    from app.services.sync_scheduler import startup as ds_scheduler_startup
+    ds_scheduler_startup()
+
+    # New Dataset-level sync scheduler
+    from app.services.dataset_sync_scheduler import startup as dataset_scheduler_startup
+    dataset_scheduler_startup()
+
+    yield
+
+    # ── Shutdown ─────────────────────────────────────────────────────────────
+    from app.services.dataset_sync_scheduler import shutdown as dataset_scheduler_shutdown
+    dataset_scheduler_shutdown()
+
+    from app.services.sync_scheduler import shutdown as ds_scheduler_shutdown
+    ds_scheduler_shutdown()
+
+    # Shutdown DuckDB engine
+    from app.services.duckdb_engine import DuckDBEngine
+    DuckDBEngine.shutdown()
+
+
 # Create FastAPI application
 app = FastAPI(
     title="AppBI - Modern BI Tool",
     description="Open-source Business Intelligence tool with SQL data source support",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # Configure CORS

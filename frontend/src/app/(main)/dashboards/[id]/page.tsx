@@ -201,7 +201,7 @@ export default function DashboardDetailPage() {
   if (isLoadingDashboard) {
     return (
       <div className="min-h-screen bg-gray-50">
-        <div className="container mx-auto px-4 py-8">
+        <div className="w-full px-8 py-6">
           <div className="flex items-center justify-center py-12">
             <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
             <span className="ml-2">Loading dashboard...</span>
@@ -214,7 +214,7 @@ export default function DashboardDetailPage() {
   if (!dashboard) {
     return (
       <div className="min-h-screen bg-gray-50">
-        <div className="container mx-auto px-4 py-8">
+        <div className="w-full px-8 py-6">
           <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
             <p className="text-gray-500">Dashboard not found</p>
             <Link
@@ -234,7 +234,7 @@ export default function DashboardDetailPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="container mx-auto px-4 py-8">
+      <div className="w-full px-8 py-6">
         {/* Navigation */}
         <div className="mb-6">
           <Link href="/dashboards" className="inline-flex items-center text-blue-600 hover:text-blue-700">

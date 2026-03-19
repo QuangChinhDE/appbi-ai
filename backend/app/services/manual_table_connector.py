@@ -78,7 +78,7 @@ def extract_sheet_name_from_sql(sql: str) -> str:
       SELECT * FROM "Sheet1" LIMIT 100
     """
     match = re.search(
-        r"""\bFROM\s+(?:\w+\.)?(?:`([^`]+)`|"([^"]+)"|'([^']+)'|(\w+))""",
+        r"""\bFROM\s+(?:(?:"\w+"|\w+)\.)?(?:`([^`]+)`|"([^"]+)"|'([^']+)'|(\w+))""",
         sql.strip(),
         re.IGNORECASE,
     )

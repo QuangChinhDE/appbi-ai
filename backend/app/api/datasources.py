@@ -277,3 +277,182 @@ def execute_query(request: QueryExecuteRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Query execution failed: {str(e)}"
         )
+
+
+# ── Schema Browser ────────────────────────────────────────────────────────────
+
+@router.get("/{data_source_id}/schema")
+def get_schema_browser(data_source_id: int, db: Session = Depends(get_db)):
+    """Return schema tree: schemas → tables/views with row count estimates."""
+    ds = DataSourceCRUDService.get_by_id(db, data_source_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Data source not found")
+    try:
+        schemas = DataSourceConnectionService.get_schema_browser(ds.type.value, ds.config)
+        return {"schemas": schemas}
+    except Exception as e:
+        logger.error(f"Schema browser failed for ds {data_source_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{data_source_id}/tables/{schema_name}/{table_name}")
+def get_table_detail(
+    data_source_id: int,
+    schema_name: str,
+    table_name: str,
+    preview_rows: int = 5,
+    db: Session = Depends(get_db),
+):
+    """Return column metadata (with PK/FK/IDX) and quick preview for a table."""
+    ds = DataSourceCRUDService.get_by_id(db, data_source_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Data source not found")
+    try:
+        detail = DataSourceConnectionService.get_table_detail(
+            ds.type.value, ds.config, schema_name, table_name, preview_rows
+        )
+        return detail
+    except Exception as e:
+        logger.error(f"Table detail failed for {schema_name}.{table_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{data_source_id}/tables/{schema_name}/{table_name}/watermarks")
+def get_watermark_candidates(
+    data_source_id: int,
+    schema_name: str,
+    table_name: str,
+    db: Session = Depends(get_db),
+):
+    """List columns usable as watermark (timestamp/date/integer) for incremental sync."""
+    ds = DataSourceCRUDService.get_by_id(db, data_source_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Data source not found")
+    try:
+        candidates = DataSourceConnectionService.get_watermark_candidates(
+            ds.type.value, ds.config, schema_name, table_name
+        )
+        return {"columns": candidates}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Sync Config ───────────────────────────────────────────────────────────────
+
+@router.get("/{data_source_id}/sync-config")
+def get_sync_config(data_source_id: int, db: Session = Depends(get_db)):
+    """Return stored sync configuration for the data source."""
+    ds = DataSourceCRUDService.get_by_id(db, data_source_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Data source not found")
+    return {"sync_config": ds.sync_config or {}}
+
+
+@router.put("/{data_source_id}/sync-config")
+def save_sync_config(
+    data_source_id: int,
+    body: Dict[str, Any],
+    db: Session = Depends(get_db),
+):
+    """Persist sync configuration for the data source and update the scheduler."""
+    from sqlalchemy import update as sa_update
+    from app.models import DataSource as DSModel
+    ds = DataSourceCRUDService.get_by_id(db, data_source_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Data source not found")
+    sync_config = body.get("sync_config", body)  # accept both {sync_config: {...}} and raw
+    ds.sync_config = sync_config
+    db.commit()
+    db.refresh(ds)
+    # Notify scheduler so the new schedule takes effect immediately
+    try:
+        from app.services.sync_scheduler import register_datasource
+        register_datasource(data_source_id, ds.sync_config or {})
+    except Exception as e:
+        logger.warning(f"Scheduler update skipped: {e}")
+    return {"sync_config": ds.sync_config}
+
+
+# ── Sync Jobs ─────────────────────────────────────────────────────────────────
+
+@router.get("/{data_source_id}/sync-jobs")
+def list_sync_jobs(
+    data_source_id: int,
+    limit: int = 10,
+    db: Session = Depends(get_db),
+):
+    """List recent sync job history for a data source."""
+    from app.models import SyncJob
+    ds = DataSourceCRUDService.get_by_id(db, data_source_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Data source not found")
+    jobs = (
+        db.query(SyncJob)
+        .filter(SyncJob.data_source_id == data_source_id)
+        .order_by(SyncJob.started_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return {
+        "jobs": [
+            {
+                "id": j.id,
+                "status": j.status,
+                "mode": j.mode,
+                "started_at": j.started_at.isoformat() if j.started_at else None,
+                "finished_at": j.finished_at.isoformat() if j.finished_at else None,
+                "duration_seconds": (
+                    (j.finished_at - j.started_at).total_seconds()
+                    if j.finished_at and j.started_at else None
+                ),
+                "rows_synced": j.rows_synced,
+                "rows_failed": j.rows_failed,
+                "error_message": j.error_message,
+                "triggered_by": j.triggered_by,
+            }
+            for j in jobs
+        ]
+    }
+
+
+@router.post("/{data_source_id}/sync", status_code=202)
+def trigger_sync(
+    data_source_id: int,
+    db: Session = Depends(get_db),
+):
+    """Trigger an immediate manual sync for a data source."""
+    from app.models import SyncJob
+    from app.services.sync_engine import trigger_sync as run_sync
+    from datetime import datetime, timezone
+
+    ds = DataSourceCRUDService.get_by_id(db, data_source_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Data source not found")
+
+    # Reject if a job is already running
+    running = (
+        db.query(SyncJob)
+        .filter(SyncJob.data_source_id == data_source_id, SyncJob.status == "running")
+        .first()
+    )
+    if running:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A sync job is already running (job #{running.id}). Wait for it to finish.",
+        )
+
+    job = SyncJob(
+        data_source_id=data_source_id,
+        status="running",
+        mode="manual",
+        triggered_by="manual",
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    # Fire and forget — runs in a daemon thread
+    run_sync(data_source_id, job.id)
+    logger.info(f"Manual sync triggered for datasource {data_source_id}, job_id={job.id}")
+    return {"job_id": job.id, "status": "running", "message": "Sync started"}

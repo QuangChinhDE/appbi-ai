@@ -34,6 +34,8 @@ class DataSourceConnectionService:
         Returns:
             Tuple of (success: bool, message: str)
         """
+        from app.core.crypto import decrypt_config
+        config = decrypt_config(config)
         try:
             if ds_type == DataSourceType.POSTGRESQL.value:
                 return DataSourceConnectionService._test_postgresql(config)
@@ -135,7 +137,8 @@ class DataSourceConnectionService:
         config: Dict[str, Any],
         sql_query: str,
         limit: int = None,
-        timeout_seconds: int = 30
+        timeout_seconds: int = 30,
+        query_params: list = None,
     ) -> Tuple[List[str], List[Dict[str, Any]], float]:
         """
         Execute a SQL query against a data source.
@@ -146,6 +149,7 @@ class DataSourceConnectionService:
             sql_query: SQL query to execute
             limit: Optional row limit
             timeout_seconds: Query timeout in seconds (default: 30)
+            query_params: Optional list of parameter values for %s placeholders
             
         Returns:
             Tuple of (columns, data, execution_time_ms)
@@ -155,14 +159,17 @@ class DataSourceConnectionService:
         """
         # Validate SQL query for safety
         validate_select_only(sql_query)
-        
+
+        from app.core.crypto import decrypt_config
+        config = decrypt_config(config)
+
         start_time = time.time()
         
         try:
             if ds_type == DataSourceType.POSTGRESQL.value:
-                result = DataSourceConnectionService._execute_postgresql(config, sql_query, limit, timeout_seconds)
+                result = DataSourceConnectionService._execute_postgresql(config, sql_query, limit, timeout_seconds, query_params)
             elif ds_type == DataSourceType.MYSQL.value:
-                result = DataSourceConnectionService._execute_mysql(config, sql_query, limit, timeout_seconds)
+                result = DataSourceConnectionService._execute_mysql(config, sql_query, limit, timeout_seconds, query_params)
             elif ds_type == DataSourceType.BIGQUERY.value:
                 result = DataSourceConnectionService._execute_bigquery(config, sql_query, limit, timeout_seconds)
             elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
@@ -184,7 +191,8 @@ class DataSourceConnectionService:
         config: Dict[str, Any],
         sql_query: str,
         limit: int = None,
-        timeout_seconds: int = 30
+        timeout_seconds: int = 30,
+        query_params: list = None,
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
         """Execute query against PostgreSQL."""
         conn = None
@@ -213,7 +221,7 @@ class DataSourceConnectionService:
             if limit:
                 query = f"{sql_query.rstrip(';')} LIMIT {limit}"
             
-            cursor.execute(query)
+            cursor.execute(query, query_params)
             
             # Get column names
             columns = [desc[0] for desc in cursor.description]
@@ -235,7 +243,8 @@ class DataSourceConnectionService:
         config: Dict[str, Any],
         sql_query: str,
         limit: int = None,
-        timeout_seconds: int = 30
+        timeout_seconds: int = 30,
+        query_params: list = None,
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
         """Execute query against MySQL."""
         conn = None
@@ -258,7 +267,7 @@ class DataSourceConnectionService:
             if limit:
                 query = f"{sql_query.rstrip(';')} LIMIT {limit}"
             
-            cursor.execute(query)
+            cursor.execute(query, query_params)
             
             # Get column names
             columns = [desc[0] for desc in cursor.description]
@@ -266,8 +275,6 @@ class DataSourceConnectionService:
             # Fetch data
             rows = cursor.fetchall()
             data = [dict(zip(columns, row)) for row in rows]
-            
-            return columns, data
             
         finally:
             if cursor:
@@ -542,6 +549,8 @@ class DataSourceConnectionService:
         Returns:
             List of table dicts with 'name', 'schema', and 'type' keys
         """
+        from app.core.crypto import decrypt_config
+        config = decrypt_config(config)
         try:
             if ds_type == DataSourceType.POSTGRESQL.value:
                 return DataSourceConnectionService._list_postgresql_tables(config, search_query)
@@ -857,46 +866,49 @@ class DataSourceConnectionService:
             # ── Try DuckDB first (full SQL support) ──────────────────────────
             try:
                 import duckdb
-                import pandas as pd
+                import pyarrow as pa
 
                 con = duckdb.connect(database=":memory:")
 
-                # Register every sheet as a DuckDB view
+                # Create a "manual" schema so queries like "manual"."table" work
+                con.execute("CREATE SCHEMA IF NOT EXISTS manual")
+
+                # Register every sheet as a DuckDB table via PyArrow
                 for sheet_name in connector.list_sheets():
                     sheet_data = connector.get_sheet_data(sheet_name)
                     rows = sheet_data.get("rows", [])
+                    col_defs = sheet_data.get("columns", [])
+                    col_names = [c["name"] for c in col_defs]
+
                     if rows:
-                        df = pd.DataFrame(rows)
+                        # Build columnar arrays from row-oriented data
+                        arrays = []
+                        for c in col_names:
+                            arrays.append(pa.array([r.get(c) for r in rows]))
+                        table = pa.table(dict(zip(col_names, arrays)))
                     else:
-                        cols = [c["name"] for c in sheet_data.get("columns", [])]
-                        df = pd.DataFrame(columns=cols)
-                    # Register with both the exact sheet name and a sanitised alias
+                        table = pa.table({c: pa.array([], type=pa.string()) for c in col_names})
+
                     safe_name = sheet_name.replace(" ", "_")
-                    con.register(safe_name, df)
+                    # Register in main schema (default)
+                    con.register(safe_name, table)
                     if safe_name != sheet_name:
-                        con.register(sheet_name, df)
+                        con.register(sheet_name, table)
+                    # Also register in manual schema for "manual"."table" queries
+                    con.execute(f'CREATE OR REPLACE VIEW manual."{safe_name}" AS SELECT * FROM "{safe_name}"')
+                    if safe_name != sheet_name:
+                        con.execute(f'CREATE OR REPLACE VIEW manual."{sheet_name}" AS SELECT * FROM "{safe_name}"')
 
                 final_sql = sql_query
                 if limit:
                     final_sql = f"SELECT * FROM ({sql_query}) _lim LIMIT {limit}"
 
-                result_df = con.execute(final_sql).df()
+                result = con.execute(final_sql)
+                columns = [desc[0] for desc in result.description]
+                raw_rows = result.fetchall()
                 con.close()
 
-                columns = list(result_df.columns)
-                # Convert to list of dicts, coercing numpy types to native Python
-                rows = []
-                for _, row in result_df.iterrows():
-                    row_dict = {}
-                    for col in columns:
-                        val = row[col]
-                        if hasattr(val, "item"):          # numpy scalar → Python
-                            val = val.item()
-                        elif val != val:                  # NaN → None
-                            val = None
-                        row_dict[col] = val
-                    rows.append(row_dict)
-
+                rows = [dict(zip(columns, row)) for row in raw_rows]
                 logger.info(f"DuckDB executed manual query: {len(rows)} rows")
                 return columns, rows
 
@@ -918,3 +930,244 @@ class DataSourceConnectionService:
         except Exception as e:
             logger.error(f"Manual table query failed: {str(e)}")
             raise
+
+    # ── Schema Browser ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def get_schema_browser(ds_type: str, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Return a schema-browser tree: list of schemas, each with tables/views + row counts.
+        Currently implemented for PostgreSQL; other types delegate to list_tables().
+        """
+        from app.core.crypto import decrypt_config
+        config = decrypt_config(config)
+        if ds_type == DataSourceType.POSTGRESQL.value:
+            return DataSourceConnectionService._pg_schema_browser(config)
+        # Fallback: wrap list_tables() result into generic schema tree
+        tables = DataSourceConnectionService.list_tables(ds_type, config)
+        schema_map: Dict[str, List] = {}
+        for t in tables:
+            s = t.get("schema", "default")
+            schema_map.setdefault(s, []).append({
+                "name": t["name"].split(".")[-1],
+                "type": t.get("type", "table"),
+                "row_count": None,
+            })
+        return [{"schema": s, "tables": tbls} for s, tbls in schema_map.items()]
+
+    @staticmethod
+    def _pg_schema_browser(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Rich schema browser for PostgreSQL: uses pg_class for row estimates + size."""
+        conn = None
+        cursor = None
+        try:
+            conn = psycopg2.connect(
+                host=config.get("host"),
+                port=config.get("port", 5432),
+                database=config.get("database"),
+                user=config.get("username"),
+                password=config.get("password"),
+                connect_timeout=10,
+            )
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    n.nspname                        AS schema,
+                    c.relname                        AS table_name,
+                    CASE c.relkind
+                        WHEN 'r' THEN 'table'
+                        WHEN 'v' THEN 'view'
+                        WHEN 'm' THEN 'materialized_view'
+                        ELSE 'other'
+                    END                              AS table_type,
+                    GREATEST(c.reltuples::bigint, 0) AS row_count_estimate,
+                    pg_total_relation_size(c.oid)    AS size_bytes
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.relkind IN ('r', 'v', 'm')
+                  AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                ORDER BY n.nspname, c.relname
+            """)
+            rows = cursor.fetchall()
+            schema_map: Dict[str, Dict] = {}
+            for schema, name, ttype, row_count, size_bytes in rows:
+                if schema not in schema_map:
+                    schema_map[schema] = {"schema": schema, "tables": []}
+                schema_map[schema]["tables"].append({
+                    "name": name,
+                    "type": ttype,
+                    "row_count": row_count,
+                    "size_bytes": size_bytes,
+                })
+            return list(schema_map.values())
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+
+    @staticmethod
+    def get_table_detail(
+        ds_type: str,
+        config: Dict[str, Any],
+        schema_name: str,
+        table_name: str,
+        preview_rows: int = 5,
+    ) -> Dict[str, Any]:
+        """
+        Return detailed metadata for a single table: columns with PK/FK/IDX flags
+        and a small preview dataset.
+        """
+        if ds_type == DataSourceType.POSTGRESQL.value:
+            return DataSourceConnectionService._pg_table_detail(
+                config, schema_name, table_name, preview_rows
+            )
+        # Generic fallback using execute_query
+        full_name = f'"{schema_name}"."{table_name}"'
+        try:
+            cols, data, _ = DataSourceConnectionService.execute_query(
+                ds_type, config, f"SELECT * FROM {full_name}", limit=preview_rows
+            )
+            columns = [{"name": c, "type": "unknown", "nullable": True,
+                        "is_primary_key": False, "is_foreign_key": False,
+                        "has_index": False} for c in cols]
+            return {"schema": schema_name, "name": table_name, "type": "table",
+                    "row_count": None, "columns": columns, "preview": data}
+        except Exception as e:
+            raise ValueError(f"Cannot fetch table detail: {e}")
+
+    @staticmethod
+    def _pg_table_detail(
+        config: Dict[str, Any],
+        schema_name: str,
+        table_name: str,
+        preview_rows: int = 5,
+    ) -> Dict[str, Any]:
+        conn = None
+        cursor = None
+        try:
+            conn = psycopg2.connect(
+                host=config.get("host"),
+                port=config.get("port", 5432),
+                database=config.get("database"),
+                user=config.get("username"),
+                password=config.get("password"),
+                connect_timeout=10,
+            )
+            cursor = conn.cursor()
+
+            # 1. Column metadata with PK / FK / index flags
+            cursor.execute("""
+                SELECT
+                    a.attname                                                    AS column_name,
+                    pg_catalog.format_type(a.atttypid, a.atttypmod)             AS data_type,
+                    NOT a.attnotnull                                             AS is_nullable,
+                    COALESCE((
+                        SELECT TRUE FROM pg_constraint c
+                        WHERE c.conrelid = a.attrelid AND c.contype = 'p'
+                          AND a.attnum = ANY(c.conkey)
+                    ), FALSE)                                                    AS is_pk,
+                    COALESCE((
+                        SELECT TRUE FROM pg_constraint c
+                        WHERE c.conrelid = a.attrelid AND c.contype = 'f'
+                          AND a.attnum = ANY(c.conkey)
+                    ), FALSE)                                                    AS is_fk,
+                    COALESCE((
+                        SELECT TRUE FROM pg_index i
+                        WHERE i.indrelid = a.attrelid AND a.attnum = ANY(i.indkey)
+                          AND NOT i.indisprimary
+                    ), FALSE)                                                    AS has_idx
+                FROM pg_attribute a
+                JOIN pg_class     cl ON cl.oid = a.attrelid
+                JOIN pg_namespace n  ON n.oid  = cl.relnamespace
+                WHERE n.nspname = %s
+                  AND cl.relname = %s
+                  AND a.attnum > 0
+                  AND NOT a.attisdropped
+                ORDER BY a.attnum
+            """, (schema_name, table_name))
+            col_rows = cursor.fetchall()
+            columns = [
+                {
+                    "name": cname,
+                    "type": dtype,
+                    "nullable": bool(nullable),
+                    "is_primary_key": bool(is_pk),
+                    "is_foreign_key": bool(is_fk),
+                    "has_index": bool(has_idx),
+                }
+                for cname, dtype, nullable, is_pk, is_fk, has_idx in col_rows
+            ]
+
+            # 2. Row count estimate from pg_class
+            cursor.execute("""
+                SELECT GREATEST(c.reltuples::bigint, 0),
+                       pg_total_relation_size(c.oid)
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = %s AND c.relname = %s
+            """, (schema_name, table_name))
+            meta_row = cursor.fetchone()
+            row_count = meta_row[0] if meta_row else None
+            size_bytes = meta_row[1] if meta_row else None
+
+            # 3. Determine table type
+            cursor.execute("""
+                SELECT CASE c.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view'
+                                      WHEN 'm' THEN 'materialized_view' ELSE 'other' END
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = %s AND c.relname = %s
+            """, (schema_name, table_name))
+            type_row = cursor.fetchone()
+            table_type = type_row[0] if type_row else "table"
+
+            # 4. Preview rows — safe identifier quoting
+            import psycopg2.extensions as _ext
+            safe_schema = _ext.quote_ident(schema_name, conn)
+            safe_table = _ext.quote_ident(table_name, conn)
+            cursor.execute(f"SELECT * FROM {safe_schema}.{safe_table} LIMIT %s", (preview_rows,))
+            preview_cols = [desc[0] for desc in cursor.description]
+            preview_data = []
+            for row in cursor.fetchall():
+                preview_data.append({
+                    preview_cols[i]: (str(v) if not isinstance(v, (int, float, bool, type(None))) else v)
+                    for i, v in enumerate(row)
+                })
+
+            return {
+                "schema": schema_name,
+                "name": table_name,
+                "type": table_type,
+                "row_count": row_count,
+                "size_bytes": size_bytes,
+                "columns": columns,
+                "preview": preview_data,
+            }
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+
+    @staticmethod
+    def get_watermark_candidates(
+        ds_type: str,
+        config: Dict[str, Any],
+        schema_name: str,
+        table_name: str,
+    ) -> List[Dict[str, str]]:
+        """Return columns suitable as watermark (timestamp/date/integer types)."""
+        if ds_type != DataSourceType.POSTGRESQL.value:
+            return []
+        detail = DataSourceConnectionService._pg_table_detail(config, schema_name, table_name, preview_rows=0)
+        watermark_types = {
+            "timestamp", "timestamptz", "timestamp with time zone",
+            "timestamp without time zone", "date", "integer", "bigint",
+            "int4", "int8",
+        }
+        return [
+            {"name": c["name"], "type": c["type"]}
+            for c in detail["columns"]
+            if any(wt in c["type"].lower() for wt in watermark_types)
+        ]

@@ -244,6 +244,33 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_dataset",
+            "description": (
+                "Execute a saved dataset and return its data rows. "
+                "Datasets may be backed by DuckDB (Parquet) for fast analytics or by live source. "
+                "Use list_workspace_tables to discover available datasets/tables first, "
+                "then use this to fetch data from a specific dataset by ID."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dataset_id": {
+                        "type": "integer",
+                        "description": "ID of the dataset to execute"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 50,
+                        "description": "Max rows to return (default 50, max 200)"
+                    }
+                },
+                "required": ["dataset_id"]
+            }
+        }
+    },
 ]
 
 
@@ -532,6 +559,21 @@ async def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             "columns": result.get("columns", []),
             "rows": result.get("rows", []),
             "row_count": result.get("row_count", 0),
+        }
+
+    # ── query_dataset ──────────────────────────────────────────────────────────
+    elif name == "query_dataset":
+        dataset_id = int(args["dataset_id"])
+        limit = min(int(args.get("limit", 50)), 200)
+        result = await bi_client.execute_dataset(dataset_id, limit=limit)
+        columns = result.get("columns", [])
+        data = result.get("data", [])
+        return {
+            "dataset_id": dataset_id,
+            "columns": [c.get("name", c) if isinstance(c, dict) else c for c in columns],
+            "rows": data,
+            "row_count": len(data),
+            "execution_time_ms": result.get("execution_time_ms"),
         }
 
     else:

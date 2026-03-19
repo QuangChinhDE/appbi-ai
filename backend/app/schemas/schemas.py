@@ -1,7 +1,7 @@
 """
 Pydantic schemas for request/response validation.
 """
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from pydantic import BaseModel, Field, ConfigDict, model_validator, field_serializer
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -73,8 +73,14 @@ class DataSourceResponse(DataSourceBase):
     id: int
     created_at: datetime
     updated_at: datetime
-    
+
     model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer('config')
+    def mask_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Mask sensitive credential fields before returning in API response."""
+        from app.core.crypto import mask_config_for_response
+        return mask_config_for_response(config)
 
 
 class DataSourceTestRequest(BaseModel):

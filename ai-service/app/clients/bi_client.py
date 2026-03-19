@@ -143,6 +143,19 @@ class BIClient:
         r.raise_for_status()
         return r.json()
 
+    async def execute_dataset(
+        self,
+        dataset_id: int,
+        limit: int = 200,
+    ) -> Dict[str, Any]:
+        """Execute a dataset (routes through DuckDB if Parquet-backed)."""
+        r = await self._http.post(
+            f"{self._base}/datasets/{dataset_id}/execute",
+            json={"limit": limit, "apply_transformations": True},
+        )
+        r.raise_for_status()
+        return r.json()
+
     async def close(self):
         await self._http.aclose()
 
