@@ -1,5 +1,5 @@
 /**
- * Home page - redirect to explore
+ * Home page - redirect to dashboards
  */
 'use client';
 
@@ -10,14 +10,14 @@ export default function Home() {
   const router = useRouter();
 
   useEffect(() => {
-    router.push('/explore');
+    router.push('/dashboards');
   }, [router]);
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center">
       <div className="text-center">
         <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-        <p className="text-gray-600 mt-4">Redirecting to Explore...</p>
+        <p className="text-gray-600 mt-4">Loading…</p>
       </div>
     </div>
   );

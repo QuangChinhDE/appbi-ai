@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { Filter, X } from 'lucide-react';
-import { Dataset } from '@/types/api';
+import type { ColumnMetadata } from '@/types/api';
 
 export interface SimpleFilter {
   field: string;
@@ -11,19 +11,19 @@ export interface SimpleFilter {
 }
 
 interface FilterPanelProps {
-  dataset: Dataset | undefined;
+  columns?: ColumnMetadata[];
   filters: SimpleFilter[];
   onFiltersChange: (filters: SimpleFilter[]) => void;
 }
 
 export function FilterPanel({
-  dataset,
+  columns = [],
   filters,
   onFiltersChange,
 }: FilterPanelProps) {
   const [selectedField, setSelectedField] = React.useState<string>('');
 
-  const fields = dataset?.columns?.map(col => col.name) || [];
+  const fields = columns.map(col => col.name);
 
   const addFilter = () => {
     if (selectedField && !filters.find(f => f.field === selectedField)) {
@@ -46,7 +46,7 @@ export function FilterPanel({
   };
 
   const getFieldType = (fieldName: string): string => {
-    const col = dataset?.columns?.find(c => c.name === fieldName);
+    const col = columns.find(c => c.name === fieldName);
     return col?.type || 'string';
   };
 

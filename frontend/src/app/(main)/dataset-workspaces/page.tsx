@@ -7,6 +7,8 @@ import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Plus, Database, Loader2, Calendar, ChevronRight, Trash2, Search } from 'lucide-react';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
+import { usePermissions, hasPermission } from '@/hooks/use-permissions';
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { 
   useWorkspaces, 
@@ -20,6 +22,8 @@ export default function DatasetWorkspacesPage() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   
   const { data: workspaces, isLoading, error } = useWorkspaces();
+  const { data: permData } = usePermissions();
+  const canEdit = hasPermission(permData?.permissions, 'workspaces', 'edit');
   const createMutation = useCreateWorkspace();
   const deleteMutation = useDeleteWorkspace();
   const [workspaceToDelete, setWorkspaceToDelete] = useState<{ id: number; name: string } | null>(null);
@@ -85,7 +89,7 @@ export default function DatasetWorkspacesPage() {
       <PageListLayout
         title="Dataset Workspaces"
         description="Table-based datasets for exploring and analyzing data from your datasources"
-        action={
+        action={canEdit ? (
           <button
             onClick={() => setIsCreateModalOpen(true)}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
@@ -93,7 +97,7 @@ export default function DatasetWorkspacesPage() {
             <Plus className="w-4 h-4" />
             New Workspace
           </button>
-        }
+        ) : undefined}
         isLoading={isLoading}
         loadingText="Loading workspaces…"
         searchPlaceholder="Search workspaces…"
@@ -166,6 +170,7 @@ export default function DatasetWorkspacesPage() {
                       </div>
                     </button>
                     <div className="px-6 py-3 border-t bg-gray-50 flex items-center justify-end gap-2">
+                      {getResourcePermissions(workspace.user_permission).canDelete && (
                       <button
                         onClick={(e) => { e.stopPropagation(); handleDeleteWorkspace(workspace.id, workspace.name); }}
                         disabled={deleteMutation.isPending}
@@ -174,6 +179,7 @@ export default function DatasetWorkspacesPage() {
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -204,6 +210,7 @@ export default function DatasetWorkspacesPage() {
                     <Calendar className="w-3 h-3" />
                     {new Date(workspace.updated_at).toLocaleDateString()}
                   </span>
+                  {getResourcePermissions(workspace.user_permission).canDelete && (
                   <button
                     onClick={() => handleDeleteWorkspace(workspace.id, workspace.name)}
                     disabled={deleteMutation.isPending}
@@ -212,6 +219,7 @@ export default function DatasetWorkspacesPage() {
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
+                  )}
                 </div>
               ))}
             </div>

@@ -8,6 +8,8 @@ import { DashboardList } from '@/components/dashboards/DashboardList';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { toast } from 'sonner';
+import { usePermissions, hasPermission } from '@/hooks/use-permissions';
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 
 export default function DashboardsPage() {
   const router = useRouter();
@@ -19,6 +21,8 @@ export default function DashboardsPage() {
   const [isDeletingDashboard, setIsDeletingDashboard] = useState(false);
 
   const { data: dashboards, isLoading } = useDashboards();
+  const { data: permData } = usePermissions();
+  const canEdit = hasPermission(permData?.permissions, 'dashboards', 'edit');
   const createMutation = useCreateDashboard();
   const deleteMutation = useDeleteDashboard();
 
@@ -68,7 +72,7 @@ export default function DashboardsPage() {
       <PageListLayout
         title="Dashboards"
         description={`${dashboards?.length ?? 0} dashboard${dashboards?.length !== 1 ? 's' : ''}`}
-        action={
+        action={canEdit ? (
           <button
             onClick={() => setIsCreating(true)}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
@@ -76,7 +80,7 @@ export default function DashboardsPage() {
             <Plus className="w-4 h-4" />
             New Dashboard
           </button>
-        }
+        ) : undefined}
         isLoading={isLoading}
         loadingText="Loading dashboards…"
         searchPlaceholder="Search dashboards…"
@@ -119,12 +123,14 @@ export default function DashboardsPage() {
                           <div className="w-10 h-10 rounded-lg bg-purple-50 flex items-center justify-center flex-shrink-0">
                             <LayoutDashboard className="w-5 h-5 text-purple-600" />
                           </div>
+                          {getResourcePermissions(dashboard.user_permission).canDelete && (
                           <button
                             onClick={() => handleDelete(dashboard.id)}
                             className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 transition-all p-1 rounded"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
+                          )}
                         </div>
                         <h3 className="font-semibold text-gray-900 text-sm truncate mb-1">{dashboard.name}</h3>
                         {dashboard.description && (
@@ -158,7 +164,7 @@ export default function DashboardsPage() {
           return (
             <DashboardList
               dashboards={filtered}
-              onDelete={handleDelete}
+              onDelete={canEdit ? handleDelete : undefined}
               deletingId={isDeletingDashboard ? dashboardToDelete?.id : undefined}
             />
           );

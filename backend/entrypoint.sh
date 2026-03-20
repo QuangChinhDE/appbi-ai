@@ -42,12 +42,44 @@ echo "==> Starting FastAPI application..."
 export DATA_DIR="${DATA_DIR:-/app/.data}"
 
 # Create all required data subdirectories so storage is ready on first boot.
-# These are created by the app on startup too, but doing it here guarantees
-# they exist even if the volume is brand-new (e.g. after a fresh clone + docker up).
 mkdir -p \
   "${DATA_DIR}/synced" \
   "${DATA_DIR}/datasets" \
   "${DATA_DIR}/workspaces"
 echo "==> Data directory: ${DATA_DIR} (subdirs ready)"
+
+# ── Seed admin user on first boot ──────────────────────────────────────────
+# Reads ADMIN_EMAIL / ADMIN_PASSWORD / ADMIN_NAME from env.
+# Only inserts if the users table has 0 rows (idempotent).
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@appbi.io}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-change-me-on-first-login}"
+ADMIN_NAME="${ADMIN_NAME:-Admin}"
+
+python - <<'PYEOF'
+import os, sys
+from sqlalchemy import create_engine, text
+from passlib.context import CryptContext
+
+db_url = os.environ["DATABASE_URL"]
+engine = create_engine(db_url)
+pwd = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
+
+email    = os.environ.get("ADMIN_EMAIL", "admin@appbi.io")
+password = os.environ.get("ADMIN_PASSWORD", "change-me-on-first-login")
+name     = os.environ.get("ADMIN_NAME", "Admin")
+
+with engine.connect() as conn:
+    count = conn.execute(text("SELECT COUNT(*) FROM users")).scalar()
+    if count == 0:
+        hashed = pwd.hash(password)
+        conn.execute(text(
+            "INSERT INTO users (email, password_hash, full_name, role, status) "
+            "VALUES (:email, :pw, :name, 'admin', 'active')"
+        ), {"email": email, "pw": hashed, "name": name})
+        conn.commit()
+        print(f"==> Admin user created: {email}")
+    else:
+        print(f"==> Users table already has rows — skipping admin seed.")
+PYEOF
 
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000

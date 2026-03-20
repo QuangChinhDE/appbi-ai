@@ -4,10 +4,11 @@ import React from 'react';
 import { useRouter } from 'next/navigation';
 import { Eye, Trash2, LayoutDashboard, Loader2 } from 'lucide-react';
 import { Dashboard } from '@/types/api';
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 
 interface DashboardListProps {
   dashboards: Dashboard[];
-  onDelete: (id: number) => void;
+  onDelete?: (id: number) => void;
   deletingId?: number;
 }
 
@@ -71,6 +72,7 @@ export function DashboardList({ dashboards, onDelete, deletingId }: DashboardLis
                   >
                     <Eye className="h-5 w-5" />
                   </button>
+                  {onDelete && getResourcePermissions(dashboard.user_permission).canDelete && (
                   <button
                     onClick={() => onDelete(dashboard.id)}
                     disabled={deletingId === dashboard.id}
@@ -83,6 +85,7 @@ export function DashboardList({ dashboards, onDelete, deletingId }: DashboardLis
                       <Trash2 className="h-5 w-5" />
                     )}
                   </button>
+                  )}
                 </div>
               </td>
             </tr>

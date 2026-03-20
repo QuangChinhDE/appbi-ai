@@ -17,7 +17,6 @@ class SemanticView(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, nullable=False, index=True)
     sql_table_name = Column(String, nullable=True)  # Direct table name
-    dataset_id = Column(Integer, ForeignKey("datasets.id"), nullable=True)  # Or reference to dataset
     dimensions = Column(JSON, nullable=False, default=list)  # List of dimension definitions
     measures = Column(JSON, nullable=False, default=list)  # List of measure definitions
     description = Column(String, nullable=True)
@@ -25,7 +24,6 @@ class SemanticView(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
     # Relationships
-    dataset = relationship("Dataset", back_populates="semantic_views")
     explores = relationship("SemanticExplore", back_populates="base_view_obj", foreign_keys="SemanticExplore.base_view_id")
 
 

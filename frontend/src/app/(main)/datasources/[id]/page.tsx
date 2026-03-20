@@ -3,14 +3,14 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useParams, useSearchParams } from 'next/navigation';
-import { ArrowLeft, Loader2, Settings, Table2, RefreshCw, Pencil } from 'lucide-react';
+import { ArrowLeft, Loader2, Settings, RefreshCw, Pencil } from 'lucide-react';
 import { useDataSource, useUpdateDataSource } from '@/hooks/use-datasources';
 import DataSourceForm from '@/components/datasources/DataSourceForm';
-import TablesTab from '@/components/datasources/TablesTab';
 import SyncSettingsTab from '@/components/datasources/SyncSettingsTab';
 import type { DataSourceCreate } from '@/types/api';
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 
-type Tab = 'connection' | 'tables' | 'sync';
+type Tab = 'connection' | 'sync';
 
 const TYPE_LABELS: Record<string, string> = {
   postgresql: 'PostgreSQL',
@@ -36,6 +36,7 @@ export default function DataSourceDetailPage() {
 
   const { data: dataSource, isLoading } = useDataSource(datasourceId);
   const updateMutation = useUpdateDataSource();
+  const resPerms = getResourcePermissions(dataSource?.user_permission);
 
   // Read initial tab from ?tab= query param (e.g. after redirect from /new)
   const initialTab = (searchParams.get('tab') as Tab) ?? 'connection';
@@ -91,11 +92,6 @@ export default function DataSourceDetailPage() {
       icon: <Settings className="w-3.5 h-3.5" />,
     },
     {
-      id: 'tables',
-      label: 'Tables',
-      icon: <Table2 className="w-3.5 h-3.5" />,
-    },
-    {
       id: 'sync',
       label: 'Sync settings',
       icon: <RefreshCw className="w-3.5 h-3.5" />,
@@ -125,6 +121,7 @@ export default function DataSourceDetailPage() {
               <span className="text-sm text-gray-400">{dataSource.description}</span>
             )}
           </div>
+          {resPerms.canEdit && (
           <Link
             href={`/datasources/${datasourceId}/edit`}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50 text-gray-600 bg-white"
@@ -132,6 +129,7 @@ export default function DataSourceDetailPage() {
             <Pencil className="w-3.5 h-3.5" />
             Edit
           </Link>
+          )}
         </div>
       </div>
 
@@ -166,10 +164,6 @@ export default function DataSourceDetailPage() {
                 isLoading={updateMutation.isPending}
               />
             </div>
-          )}
-
-          {activeTab === 'tables' && (
-            <TablesTab datasourceId={datasourceId} />
           )}
 
           {activeTab === 'sync' && (

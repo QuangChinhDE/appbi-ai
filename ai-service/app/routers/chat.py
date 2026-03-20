@@ -7,36 +7,51 @@ import logging
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from jose import JWTError, jwt
 
+from app.config import settings
 from app.schemas.chat import ChatRequest, ConversationSession, DoneEvent, ErrorEvent, FeedbackRequest, SessionSummary
 from app.agents.orchestrator import get_or_create_session, run_agent, cleanup_expired_sessions, _sessions
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
+_ALGORITHM = "HS256"
+
+
+def _decode_ws_token(token: str | None) -> dict | None:
+    """Decode and validate a JWT token. Returns payload or None on failure."""
+    if not token:
+        return None
+    try:
+        return jwt.decode(token, settings.secret_key, algorithms=[_ALGORITHM])
+    except JWTError:
+        return None
+
 
 # ── WebSocket ──────────────────────────────────────────────────────────────────
 
 @router.websocket("/ws")
-async def websocket_chat(ws: WebSocket):
+async def websocket_chat(
+    ws: WebSocket,
+    token: str | None = Query(default=None),
+):
     """
     WebSocket endpoint for streaming AI chat.
-
-    Client sends:
-        {"session_id": "...", "message": "...", "context": {...}}
-        {"type": "cancel"} — cancels the in-progress response
-
-    Server streams JSON event objects:
-        {"type": "thinking",    "content": "..."}
-        {"type": "tool_call",   "tool": "...", "args": {...}}
-        {"type": "tool_result", "tool": "...", "summary": "..."}
-        {"type": "text",        "content": "..."}
-        {"type": "chart",       "chart_id": 1, ...}
-        {"type": "done",        "session_id": "...", "cancelled": true|false}
-        {"type": "error",       "content": "..."}
+    Auth: pass JWT as ?token=<jwt> query parameter.
+    Viewer role cannot use execute_sql tool.
     """
+    # ── Auth check ────────────────────────────────────────────────────────────
+    payload = _decode_ws_token(token)
+    if payload is None:
+        await ws.close(code=4001, reason="Unauthorized — provide ?token=<jwt>")
+        return
+
+    user_role: str = payload.get("role", "viewer")
+    user_id: str = payload.get("sub", "")
+
     await ws.accept()
     agent_task: Optional[asyncio.Task] = None
 
@@ -83,6 +98,9 @@ async def websocket_chat(ws: WebSocket):
 
             session_id = payload.get("session_id")
             context = payload.get("context") or {}
+            # Inject user role so orchestrator can restrict execute_sql for viewers
+            context["user_role"] = user_role
+            context["user_id"] = user_id
             session = get_or_create_session(session_id, context)
 
             agent_task = asyncio.create_task(_run_and_send(session, message))

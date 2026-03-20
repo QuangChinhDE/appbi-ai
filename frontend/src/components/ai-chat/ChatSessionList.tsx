@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
-import { MessageSquareText, Trash2, Clock, Loader2, ExternalLink } from 'lucide-react';
+import { MessageSquareText, Trash2, Clock, Loader2, ExternalLink, Share2 } from 'lucide-react';
 import type { ViewMode } from '@/components/common/PageListLayout';
 
 export interface SessionSummary {
@@ -18,6 +18,7 @@ interface ChatSessionListProps {
   sessions: SessionSummary[];
   viewMode: ViewMode;
   onDelete: (id: string) => void;
+  onShare?: (session: SessionSummary) => void;
   deletingId: string | null;
 }
 
@@ -31,7 +32,7 @@ function timeAgo(iso: string) {
   return `${Math.floor(hrs / 24)} ngày trước`;
 }
 
-export function ChatSessionList({ sessions, viewMode, onDelete, deletingId }: ChatSessionListProps) {
+export function ChatSessionList({ sessions, viewMode, onDelete, onShare, deletingId }: ChatSessionListProps) {
   const router = useRouter();
 
   if (sessions.length === 0) {
@@ -97,6 +98,15 @@ export function ChatSessionList({ sessions, viewMode, onDelete, deletingId }: Ch
                     >
                       <ExternalLink className="h-5 w-5" />
                     </button>
+                    {onShare && (
+                      <button
+                        onClick={() => onShare(s)}
+                        className="text-purple-600 hover:text-purple-900"
+                        title="Chia sẻ"
+                      >
+                        <Share2 className="h-5 w-5" />
+                      </button>
+                    )}
                     <button
                       onClick={() => onDelete(s.session_id)}
                       disabled={deletingId === s.session_id}
@@ -149,16 +159,27 @@ export function ChatSessionList({ sessions, viewMode, onDelete, deletingId }: Ch
           {/* Footer */}
           <div className="flex items-center justify-between pt-2 border-t border-gray-100">
             <span className="text-xs text-gray-400">{s.message_count} tin nhắn</span>
-            <button
-              onClick={(e) => { e.stopPropagation(); onDelete(s.session_id); }}
-              disabled={deletingId === s.session_id}
-              className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50"
-              title="Xóa"
-            >
+            <div className="flex items-center gap-1">
+              {onShare && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onShare(s); }}
+                  className="p-1 rounded text-gray-400 hover:text-purple-500 hover:bg-purple-50 opacity-0 group-hover:opacity-100 transition-all"
+                  title="Chia sẻ"
+                >
+                  <Share2 className="h-4 w-4" />
+                </button>
+              )}
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete(s.session_id); }}
+                disabled={deletingId === s.session_id}
+                className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50"
+                title="Xóa"
+              >
               {deletingId === s.session_id
                 ? <Loader2 className="h-4 w-4 animate-spin" />
                 : <Trash2 className="h-4 w-4" />}
             </button>
+            </div>
           </div>
         </div>
       ))}

@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   Loader2,
   ExternalLink,
+  Table2,
 } from 'lucide-react';
 import {
   useSyncConfig,
@@ -20,6 +21,7 @@ import {
   useDataSourceSchema,
   useWatermarkCandidates,
 } from '@/hooks/use-datasources';
+import TableDetailModal from './TableDetailModal';
 import type {
   SyncConfig,
   SyncScheduleConfig,
@@ -187,6 +189,7 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
 
   const [cfg, setCfg] = useState<SyncConfig>(defaultSyncConfig());
   const [saved, setSaved] = useState(false);
+  const [tableModal, setTableModal] = useState<{ schema: string; name: string } | null>(null);
 
   // Load stored config into state
   useEffect(() => {
@@ -219,7 +222,7 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
         ...c,
         tables: {
           ...c.tables,
-          [key]: { ...(c.tables?.[key] ?? { strategy: 'full_refresh' }), ...patch },
+          [key]: { ...(c.tables?.[key] ?? { enabled: true, strategy: 'full_refresh' }), ...patch },
         },
       })),
     [],
@@ -403,10 +406,42 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
       {/* ── Section 2: Sync strategy per table ─────────────────────────── */}
       <section className="bg-white border border-gray-100 rounded-lg overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-100">
-          <h3 className="text-sm font-semibold text-gray-800">Sync strategy per table</h3>
-          <p className="text-xs text-gray-400 mt-0.5">
-            Full, Incremental hoặc Append Only cho từng bảng
-          </p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-800">Sync strategy per table</h3>
+              <p className="text-xs text-gray-400 mt-0.5">
+                Bật/tắt và chọn strategy cho từng bảng muốn sync
+              </p>
+            </div>
+            {/* Select all / Deselect all */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  allTables.forEach(({ schema, name }) => {
+                    const key = tableKey(schema, name);
+                    updateTableConfig(key, { enabled: true });
+                  });
+                }}
+                className="text-xs text-blue-600 hover:underline"
+              >
+                Select all
+              </button>
+              <span className="text-gray-300">|</span>
+              <button
+                type="button"
+                onClick={() => {
+                  allTables.forEach(({ schema, name }) => {
+                    const key = tableKey(schema, name);
+                    updateTableConfig(key, { enabled: false });
+                  });
+                }}
+                className="text-xs text-gray-500 hover:underline"
+              >
+                Deselect all
+              </button>
+            </div>
+          </div>
         </div>
 
         {allTables.length === 0 ? (
@@ -418,6 +453,9 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 bg-gray-50">
+                  <th className="text-center px-3 py-2.5 text-xs font-medium text-gray-500 uppercase tracking-wide w-12">
+                    Sync
+                  </th>
                   <th className="text-left px-5 py-2.5 text-xs font-medium text-gray-500 uppercase tracking-wide">
                     Table
                   </th>
@@ -436,17 +474,32 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
                 {allTables.map(({ schema, name }) => {
                   const key = tableKey(schema, name);
                   const tc: SyncTableConfig = cfg.tables?.[key] ?? {
+                    enabled: true,
                     strategy: 'full_refresh',
                   };
+                  const isEnabled = tc.enabled !== false;
                   const needsWatermark = tc.strategy === 'incremental';
 
                   return (
-                    <tr key={key} className="hover:bg-gray-50">
+                    <tr key={key} className={`hover:bg-gray-50 ${!isEnabled ? 'opacity-50' : ''}`}>
+                      <td className="px-3 py-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={isEnabled}
+                          onChange={(e) => updateTableConfig(key, { enabled: e.target.checked })}
+                          className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-4 h-4"
+                        />
+                      </td>
                       <td className="px-5 py-3">
-                        <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setTableModal({ schema, name })}
+                          className="flex items-center gap-1.5 group text-left hover:text-blue-600 transition-colors"
+                        >
+                          <Table2 className="w-3.5 h-3.5 text-gray-400 group-hover:text-blue-500 flex-shrink-0" />
                           <span className="font-mono text-xs text-gray-400">{schema}.</span>
-                          <span className="font-medium text-gray-800">{name}</span>
-                        </div>
+                          <span className="font-medium text-gray-800 group-hover:text-blue-600 underline-offset-2 group-hover:underline">{name}</span>
+                        </button>
                       </td>
                       <td className="px-4 py-3">
                         <select
@@ -457,7 +510,8 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
                               watermark_column: undefined,
                             })
                           }
-                          className="border border-gray-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          disabled={!isEnabled}
+                          className="border border-gray-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
                         >
                           {STRATEGY_OPTIONS.map((o) => (
                             <option key={o.value} value={o.value}>
@@ -492,8 +546,8 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
 
         <div className="px-5 py-3 border-t border-gray-50 bg-gray-50">
           <p className="text-xs text-gray-400">
-            Watermark column chỉ hiện khi chọn Incremental hoặc Append Only. Chỉ hiển thị các
-            column có type timestamp/date/integer.
+            Bật/tắt checkbox để chọn bảng muốn sync. Watermark column chỉ hiện khi chọn Incremental.
+            Chỉ các column timestamp/date/integer được hiển thị.
           </p>
         </div>
       </section>
@@ -703,6 +757,15 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
           {saved ? 'Saved!' : 'Save settings'}
         </button>
       </div>
+      {/* ── Table Detail Modal ─────────────────────────────────────── */}
+      {tableModal && (
+        <TableDetailModal
+          datasourceId={datasourceId}
+          schema={tableModal.schema}
+          table={tableModal.name}
+          onClose={() => setTableModal(null)}
+        />
+      )}
     </div>
   );
 }

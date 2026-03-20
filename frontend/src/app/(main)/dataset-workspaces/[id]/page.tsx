@@ -22,6 +22,7 @@ import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
 import { AddTableModal } from '@/components/datasets/AddTableModalV2';
 import { ManageColumnsDrawer } from '@/components/datasets/ManageColumnsDrawer';
 import { AddColumnModal, buildFNS } from '@/components/datasets/AddColumnModal';
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import type { Transformation } from '@/hooks/use-dataset-workspaces';
 
 // Inline Excel formula evaluator (mirrors AddColumnModal's evalExcelFormula)
@@ -88,6 +89,8 @@ export default function WorkspaceDetailPage() {
     error: workspaceError,
     refetch: refetchWorkspace,
   } = useWorkspace(workspaceId);
+
+  const resPerms = getResourcePermissions(workspace?.user_permission);
 
   // Fetch table preview
   const {
@@ -440,6 +443,7 @@ export default function WorkspaceDetailPage() {
                       </div>
                     )}
                   </div>
+                  {resPerms.canDelete && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -454,6 +458,7 @@ export default function WorkspaceDetailPage() {
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -462,6 +467,7 @@ export default function WorkspaceDetailPage() {
 
         {/* Add Table Button */}
         <div className="p-4 border-t">
+          {resPerms.canEdit && (
           <button
             onClick={() => setIsAddTableModalOpen(true)}
             className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
@@ -469,6 +475,7 @@ export default function WorkspaceDetailPage() {
             <Plus className="w-4 h-4" />
             Add Table
           </button>
+          )}
         </div>
       </div>
 
@@ -487,6 +494,7 @@ export default function WorkspaceDetailPage() {
               <p className="text-gray-600 mb-6">
                 Add a table from your datasources to get started with this workspace
               </p>
+              {resPerms.canEdit && (
               <button
                 onClick={() => setIsAddTableModalOpen(true)}
                 className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
@@ -494,6 +502,7 @@ export default function WorkspaceDetailPage() {
                 <Plus className="w-5 h-5" />
                 Add Table
               </button>
+              )}
             </div>
           </div>
         ) : selectedTable ? (
@@ -511,6 +520,7 @@ export default function WorkspaceDetailPage() {
                 </div>
                 
                 <div className="flex items-center gap-3">
+                  {resPerms.canEdit && (
                   <button
                     onClick={() => setIsManageColumnsOpen(true)}
                     className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded transition-colors"
@@ -518,7 +528,9 @@ export default function WorkspaceDetailPage() {
                     <Columns className="w-4 h-4" />
                     Columns
                   </button>
+                  )}
                   
+                  {resPerms.canEdit && (
                   <button
                     onClick={() => setIsAddColumnModalOpen(true)}
                     className="flex items-center gap-2 px-3 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors"
@@ -526,6 +538,7 @@ export default function WorkspaceDetailPage() {
                     <Plus className="w-4 h-4" />
                     Add Column
                   </button>
+                  )}
                   
                   <div className="w-px h-6 bg-gray-300" />
                   
@@ -564,9 +577,9 @@ export default function WorkspaceDetailPage() {
                 isLoading={loadingPreview}
                 error={previewError instanceof Error ? previewError.message : null}
                 onRetry={() => refetchPreview()}
-                onAddColumn={() => setIsAddColumnModalOpen(true)}
-                onDeleteColumn={handleDeleteColumn}
-                onEditColumn={handleEditColumn}
+                onAddColumn={resPerms.canEdit ? () => setIsAddColumnModalOpen(true) : undefined}
+                onDeleteColumn={resPerms.canEdit ? handleDeleteColumn : undefined}
+                onEditColumn={resPerms.canEdit ? handleEditColumn : undefined}
                 computedColumns={computedColumnNames}
                 typeOverrides={(selectedTable as any)?.type_overrides}
                 onTypeOverride={handleTypeOverride}

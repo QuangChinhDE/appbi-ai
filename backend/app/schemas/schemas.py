@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, ConfigDict, model_validator, field_serial
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
+from uuid import UUID
 
 from app.schemas.datasource_config import validate_datasource_config
 from app.schemas.chart_config import ChartConfigBase, DashboardChartLayout, DashboardChartItem, DashboardLayoutUpdate
@@ -71,6 +72,8 @@ class DataSourceUpdate(BaseModel):
 class DataSourceResponse(DataSourceBase):
     """Schema for data source response."""
     id: int
+    owner_id: Optional[UUID] = None
+    user_permission: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -87,6 +90,9 @@ class DataSourceTestRequest(BaseModel):
     """Schema for testing a data source connection."""
     type: DataSourceTypeSchema
     config: Dict[str, Any]
+    # When editing an existing datasource, frontend can pass ID so backend
+    # can fill in any sensitive fields the user left blank (masked as '').
+    data_source_id: int | None = None
 
 
 class DataSourceTestResponse(BaseModel):
@@ -95,106 +101,12 @@ class DataSourceTestResponse(BaseModel):
     message: str
 
 
-# Dataset Schemas
-class ColumnMetadata(BaseModel):
-    """Schema for column metadata."""
-    name: str
-    type: str  # SQL type as string
-
-
-class DatasetBase(BaseModel):
-    """Base schema for dataset."""
-    name: str = Field(..., min_length=1, max_length=255)
-    description: Optional[str] = None
-    data_source_id: int
-    sql_query: str = Field(..., min_length=1)
-    transformations: Optional[List[dict]] = Field(default_factory=list, description="Transformation steps pipeline")
-    transformation_version: Optional[int] = Field(default=2, description="Version of transformation format")
-    materialization: Optional[Dict[str, Any]] = Field(default=None, description="Materialization configuration (v2)")
-
-
-class DatasetCreate(DatasetBase):
-    """Schema for creating a dataset."""
-    pass
-
-
-class DatasetUpdate(BaseModel):
-    """Schema for updating a dataset."""
-    name: Optional[str] = Field(None, min_length=1, max_length=255)
-    description: Optional[str] = None
-    sql_query: Optional[str] = Field(None, min_length=1)
-    transformations: Optional[List[dict]] = None
-    transformation_version: Optional[int] = None
-    materialization: Optional[Dict[str, Any]] = None
-
-
-class DatasetResponse(DatasetBase):
-    """Schema for dataset response."""
-    id: int
-    columns: Optional[List[ColumnMetadata]] = None
-    created_at: datetime
-    updated_at: datetime
-    
-    model_config = ConfigDict(from_attributes=True)
-
-
-class DatasetExecuteRequest(BaseModel):
-    """Schema for executing a dataset query."""
-    limit: Optional[int] = Field(None, ge=1, le=10000)
-    timeout_seconds: Optional[int] = Field(30, ge=1, le=300, description="Query timeout in seconds")
-    apply_transformations: bool = Field(default=True, description="Whether to apply dataset transformations")
-
-
-class DatasetExecuteResponse(BaseModel):
-    """Schema for dataset execution result."""
-    columns: List[str]
-    data: List[Dict[str, Any]]
-    row_count: int
-
-
-class DatasetPreviewRequest(BaseModel):
-    """Schema for previewing dataset with transformations."""
-    # Optional fields for ad-hoc preview (without saved dataset)
-    data_source_id: Optional[int] = Field(None, description="Data source ID for ad-hoc preview")
-    sql_query: Optional[str] = Field(None, description="SQL query for ad-hoc preview")
-    transformations: Optional[List[Dict[str, Any]]] = Field(None, description="Transformations for ad-hoc preview")
-    
-    # Standard preview options
-    limit: Optional[int] = Field(500, ge=1, le=10000)
-    stop_at_step_id: Optional[str] = Field(None, description="Stop at specific transformation step for preview")
-    apply_transformations: bool = Field(default=True, description="Whether to apply transformations")
-
-
-class DatasetPreviewResponse(BaseModel):
-    """Schema for dataset preview result with schema info."""
-    columns: List[ColumnMetadata]
-    rows: List[Dict[str, Any]]
-    row_count: int
-    step_id: Optional[str] = Field(None, description="The step ID used for preview")
-    compiled_sql: Optional[str] = Field(None, description="Compiled SQL (for debug)")
-
-
-class DatasetMaterializeRequest(BaseModel):
-    """Schema for materializing dataset."""
-    mode: str = Field(..., description="Materialization mode: none, view, or table")
-    name: Optional[str] = Field(None, description="Custom name for materialized object")
-    schema: Optional[str] = Field(None, description="Schema/dataset for materialized object")
-
-
-class DatasetMaterializeResponse(BaseModel):
-    """Schema for materialization result."""
-    success: bool
-    message: str
-    materialization: Dict[str, Any]
-
-
 # Chart Schemas
 class ChartBase(BaseModel):
     """Base schema for chart."""
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    dataset_id: Optional[int] = Field(None, description="Dataset source (mutually exclusive with workspace_table_id)")
-    workspace_table_id: Optional[int] = Field(None, description="Workspace table source (mutually exclusive with dataset_id)")
+    workspace_table_id: Optional[int] = Field(None, description="Workspace table source")
     chart_type: ChartTypeSchema
     config: Dict[str, Any] = Field(..., description="Chart configuration")
 
@@ -204,11 +116,9 @@ class ChartCreate(ChartBase):
 
     @model_validator(mode='after')
     def validate_source(self):
-        """Exactly one of dataset_id or workspace_table_id must be set."""
-        if self.dataset_id is None and self.workspace_table_id is None:
-            raise ValueError("Either dataset_id or workspace_table_id must be provided")
-        if self.dataset_id is not None and self.workspace_table_id is not None:
-            raise ValueError("Only one of dataset_id or workspace_table_id can be set")
+        """workspace_table_id must be set."""
+        if self.workspace_table_id is None:
+            raise ValueError("workspace_table_id must be provided")
         return self
 
 
@@ -219,7 +129,6 @@ class ChartUpdate(BaseModel):
     chart_type: Optional[ChartTypeSchema] = None
     config: Optional[Dict[str, Any]] = None
     workspace_table_id: Optional[int] = None
-    dataset_id: Optional[int] = None
 
 
 # ─── Chart Metadata Schemas ────────────────────────────────────────────────────
@@ -278,6 +187,8 @@ class ChartParameterResponse(ChartParameterCreate):
 class ChartResponse(ChartBase):
     """Schema for chart response."""
     id: int
+    owner_id: Optional[UUID] = None
+    user_permission: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     # validation_alias reads from ORM attr 'chart_meta'; serialized as 'metadata' in JSON
@@ -330,6 +241,8 @@ class DashboardChartResponse(BaseModel):
 class DashboardResponse(DashboardBase):
     """Schema for dashboard response."""
     id: int
+    owner_id: Optional[UUID] = None
+    user_permission: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     dashboard_charts: List[DashboardChartResponse] = []

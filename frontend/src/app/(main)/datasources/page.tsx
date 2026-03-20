@@ -5,10 +5,14 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Plus, Database, Edit, TestTube, Trash2, Clock, Search } from 'lucide-react';
+import { ArrowLeft, Plus, Database, Edit, TestTube, Trash2, Clock, Search, Share2 } from 'lucide-react';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
+import { ShareDialog } from '@/components/common/ShareDialog';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { toast } from 'sonner';
+import { useCurrentUser } from '@/hooks/use-current-user';
+import { usePermissions, hasPermission } from '@/hooks/use-permissions';
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import {
   useDataSources,
   useDeleteDataSource,
@@ -39,6 +43,12 @@ export default function DataSourcesPage() {
   const [isDeletingSource, setIsDeletingSource] = useState(false);
   const [queryResult, setQueryResult] = useState<QueryExecuteResponse | null>(null);
   const [queryError, setQueryError] = useState<string | null>(null);
+  const [shareSource, setShareSource] = useState<DataSource | null>(null);
+
+  const { data: currentUser } = useCurrentUser();
+  const { data: permData } = usePermissions();
+  const canEdit = hasPermission(permData?.permissions, 'data_sources', 'full');
+  const canShare = hasPermission(permData?.permissions, 'data_sources', 'full');
 
   const { data: dataSources = [], isLoading } = useDataSources();
   const deleteMutation = useDeleteDataSource();
@@ -137,7 +147,7 @@ export default function DataSourcesPage() {
       <PageListLayout
         title="Data Sources"
         description={`${dataSources.length} connection${dataSources.length !== 1 ? 's' : ''} configured`}
-        action={
+        action={canEdit ? (
           <button
             onClick={() => router.push('/datasources/new')}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
@@ -145,7 +155,7 @@ export default function DataSourcesPage() {
             <Plus className="w-4 h-4" />
             New Data Source
           </button>
-        }
+        ) : undefined}
         isLoading={isLoading}
         loadingText="Loading data sources…"
         searchPlaceholder="Search by name or type…"
@@ -181,9 +191,10 @@ export default function DataSourcesPage() {
             return (
               <DataSourceList
                 dataSources={filtered}
-                onEdit={handleEdit}
-                onDelete={handleDelete}
+                onEdit={canEdit ? handleEdit : undefined}
+                onDelete={canEdit ? handleDelete : undefined}
                 onTest={handleTest}
+                onShare={canShare ? (ds) => setShareSource(ds) : undefined}
                 isDeleting={deleteMutation.isPending ? deleteMutation.variables : null}
               />
             );
@@ -198,6 +209,7 @@ export default function DataSourcesPage() {
                 const createdAt = new Date(ds.created_at).toLocaleDateString('vi-VN', {
                   day: '2-digit', month: '2-digit', year: 'numeric',
                 });
+                const itemPerms = getResourcePermissions(ds.user_permission);
                 return (
                   <div key={ds.id} className="bg-white rounded-lg border border-gray-200 p-5 hover:shadow-md transition-all">
                     <div className="flex items-start gap-3 mb-3">
@@ -219,12 +231,14 @@ export default function DataSourcesPage() {
                       {createdAt}
                     </div>
                     <div className="flex items-center gap-1 pt-3 border-t border-gray-100">
+                      {itemPerms.canEdit && (
                       <button
                         onClick={() => handleEdit(ds)}
                         className="flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
                       >
                         <Edit className="w-3.5 h-3.5" /> Edit
                       </button>
+                      )}
                       <button
                         onClick={() => handleTest(ds)}
                         disabled={testMutation.isPending}
@@ -232,12 +246,23 @@ export default function DataSourcesPage() {
                       >
                         <TestTube className="w-3.5 h-3.5" /> Test
                       </button>
+                      {itemPerms.canShare && (
+                        <button
+                          onClick={() => setShareSource(ds)}
+                          className="flex items-center justify-center p-1.5 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded transition-colors"
+                          title="Share"
+                        >
+                          <Share2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      {itemPerms.canDelete && (
                       <button
                         onClick={() => handleDelete(ds.id)}
                         className="flex items-center justify-center p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -255,6 +280,14 @@ export default function DataSourcesPage() {
           isDeleting={isDeletingSource}
           onConfirm={confirmDeleteSource}
           onClose={() => { setSourceToDelete(null); setDeleteConstraints(null); }}
+        />
+      )}
+      {shareSource && (
+        <ShareDialog
+          resourceType="datasource"
+          resourceId={shareSource.id}
+          resourceName={shareSource.name}
+          onClose={() => setShareSource(null)}
         />
       )}
     </>

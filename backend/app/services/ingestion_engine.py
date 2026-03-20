@@ -6,23 +6,20 @@ O(BATCH_SIZE) regardless of total row count.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.services.datasource_service import DataSourceConnectionService
 
 logger = get_logger(__name__)
 
-# Resolve relative to project root (parent of backend/)
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-DATA_DIR = Path(os.environ.get("DATA_DIR", ".data"))
-if not DATA_DIR.is_absolute():
-    DATA_DIR = _PROJECT_ROOT / DATA_DIR
+# Single source of truth — resolved by config.py
+DATA_DIR = settings.data_dir_path
 BATCH_SIZE = 10_000
 
 

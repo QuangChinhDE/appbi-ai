@@ -10,6 +10,8 @@ export interface DatasetWorkspace {
   id: number;
   name: string;
   description?: string;
+  owner_id?: string;
+  user_permission?: 'none' | 'view' | 'edit' | 'full';
   created_at: string;
   updated_at: string;
 }

@@ -42,7 +42,6 @@ class JoinDefinition(BaseModel):
 class SemanticViewBase(BaseModel):
     name: str
     sql_table_name: Optional[str] = None
-    dataset_id: Optional[int] = None
     dimensions: List[DimensionDefinition] = []
     measures: List[MeasureDefinition] = []
     description: Optional[str] = None
@@ -55,7 +54,6 @@ class SemanticViewCreate(SemanticViewBase):
 class SemanticViewUpdate(BaseModel):
     name: Optional[str] = None
     sql_table_name: Optional[str] = None
-    dataset_id: Optional[int] = None
     dimensions: Optional[List[DimensionDefinition]] = None
     measures: Optional[List[MeasureDefinition]] = None
     description: Optional[str] = None

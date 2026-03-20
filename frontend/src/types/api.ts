@@ -67,6 +67,8 @@ export interface DataSource {
   type: DataSourceType;
   description?: string;
   config: Record<string, any>;
+  owner_id?: string;
+  user_permission?: 'none' | 'view' | 'edit' | 'full';
   created_at: string;
   updated_at: string;
 }
@@ -143,6 +145,7 @@ export interface SyncScheduleConfig {
 }
 
 export interface SyncTableConfig {
+  enabled: boolean;
   strategy: SyncStrategyType;
   watermark_column?: string;
   rows_cached?: number;
@@ -258,68 +261,6 @@ export interface SyncJobRun {
   finished_at?: string;
 }
 
-export interface Dataset {
-  id: number;
-  name: string;
-  description?: string;
-  data_source_id: number;
-  sql_query: string;
-  columns?: ColumnMetadata[];
-  transformations?: TransformationStep[];
-  transformation_version?: number;
-  materialization?: MaterializationConfig;
-  sync_config?: SyncConfig;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface DatasetCreate {
-  name: string;
-  description?: string;
-  data_source_id: number;
-  sql_query: string;
-  transformations?: TransformationStep[];
-  transformation_version?: number;
-  materialization?: MaterializationConfig;
-}
-
-export interface DatasetUpdate {
-  name?: string;
-  description?: string;
-  sql_query?: string;
-  transformations?: TransformationStep[];
-  transformation_version?: number;
-  materialization?: MaterializationConfig;
-}
-
-// Preview request/response
-export interface DatasetPreviewRequest {
-  limit?: number;
-  stop_at_step_id?: string;
-  apply_transformations?: boolean;
-}
-
-export interface DatasetPreviewResponse {
-  columns: ColumnMetadata[];
-  data: Record<string, any>[];
-  row_count: number;
-  step_id?: string;
-  compiled_sql?: string;
-}
-
-// Materialization request/response
-export interface DatasetMaterializeRequest {
-  mode: 'none' | 'view' | 'table';
-  name?: string;
-  schema?: string;
-}
-
-export interface DatasetMaterializeResponse {
-  success: boolean;
-  message: string;
-  materialization: MaterializationConfig;
-}
-
 export interface ChartConfig {
   // Legacy field arrays (backward compatibility)
   dimensions?: string[];
@@ -358,10 +299,11 @@ export interface Chart {
   id: number;
   name: string;
   description?: string;
-  dataset_id?: number | null;
   workspace_table_id?: number | null;
   chart_type: ChartType;
   config: ChartConfig;
+  owner_id?: string;
+  user_permission?: 'none' | 'view' | 'edit' | 'full';
   created_at: string;
   updated_at: string;
   metadata?: ChartMetadata | null;
@@ -371,8 +313,6 @@ export interface Chart {
 export interface ChartCreate {
   name: string;
   description?: string;
-  /** Exactly one of dataset_id or workspace_table_id must be set */
-  dataset_id?: number | null;
   workspace_table_id?: number | null;
   chart_type: ChartType;
   config: ChartConfig;
@@ -383,7 +323,6 @@ export interface ChartUpdate {
   description?: string | null;
   chart_type?: ChartType;
   config?: ChartConfig;
-  dataset_id?: number | null;
   workspace_table_id?: number | null;
 }
 
@@ -455,6 +394,8 @@ export interface Dashboard {
   id: number;
   name: string;
   description?: string;
+  owner_id?: string;
+  user_permission?: 'none' | 'view' | 'edit' | 'full';
   created_at: string;
   updated_at: string;
   dashboard_charts: DashboardChart[];
@@ -489,18 +430,11 @@ export interface QueryExecuteResponse {
   execution_time_ms: number;
 }
 
-export interface DatasetExecuteResponse {
-  columns: ColumnMetadata[];
-  data: Record<string, any>[];
-  row_count: number;
-}
-
 export interface ChartDataResponse {
   chart: Chart;
   data: Record<string, any>[];
   meta?: {
     row_count?: number;
     execution_time_ms?: number;
-    dataset_name?: string;
   };
 }

@@ -100,7 +100,7 @@ export default function DataSourceForm({
       const res = await fetch(`${API_BASE}/datasources/test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type, config }),
+        body: JSON.stringify({ type, config, data_source_id: initialData?.id ?? null }),
       });
       const data = await res.json();
       if (data.success) {
@@ -172,8 +172,8 @@ export default function DataSourceForm({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    // For DB types, require a successful test before creating (not when editing)
-    if (!initialData && isDbType && testState !== 'ok') return;
+    // For non-manual types, require a successful test before saving
+    if (type !== DataSourceType.MANUAL && testState !== 'ok') return;
     onSubmit(
       { name, type, description: description || undefined, config },
       { configModified },
@@ -611,8 +611,8 @@ export default function DataSourceForm({
         <div className="space-y-4">{renderConfigFields()}</div>
       </div>
 
-      {/* Test connection button + result — only for DB types */}
-      {isDbType && (
+      {/* Test connection button + result — for all non-manual types */}
+      {type !== DataSourceType.MANUAL && (
         <div className="space-y-2">
           <button
             type="button"
@@ -653,8 +653,8 @@ export default function DataSourceForm({
         <button
           type="submit"
           className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-          disabled={isLoading || (!initialData && isDbType && testState !== 'ok')}
-          title={!initialData && isDbType && testState !== 'ok' ? 'Test the connection first' : undefined}
+          disabled={isLoading || (type !== DataSourceType.MANUAL && testState !== 'ok')}
+          title={type !== DataSourceType.MANUAL && testState !== 'ok' ? 'Test the connection first' : undefined}
         >
           {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
           {initialData ? 'Update' : 'Create'}

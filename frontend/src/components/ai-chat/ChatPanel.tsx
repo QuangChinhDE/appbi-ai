@@ -8,9 +8,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { v4 as uuidv4 } from 'uuid';
-import { ArrowLeft, Bot, Sparkles } from 'lucide-react';
+import { ArrowLeft, Bot, Sparkles, Share2 } from 'lucide-react';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
+import { ShareDialog } from '@/components/common/ShareDialog';
+import { useCurrentUser } from '@/hooks/use-current-user';
+import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import type { ActivityStep, ChatMessageData, ChartPayload, MessageMetrics, MessageFeedback } from './types';
 
 const AI_WS_URL = process.env.NEXT_PUBLIC_AI_WS_URL || 'ws://localhost:8001/chat/ws';
@@ -38,6 +41,11 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const [wsError, setWsError] = useState<string | null>(null);
   const [sessionTitle, setSessionTitle] = useState('New Conversation');
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [isShareOpen, setIsShareOpen] = useState(false);
+
+  const { data: currentUser } = useCurrentUser();
+  const { data: permData } = usePermissions();
+  const canShare = hasPermission(permData?.permissions, 'ai_chat', 'edit');
 
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -306,6 +314,15 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
               : <span className="text-red-500">● Disconnected</span>}
           </p>
         </div>
+        {canShare && (
+          <button
+            onClick={() => setIsShareOpen(true)}
+            className="p-1.5 rounded-lg text-gray-400 hover:text-purple-600 hover:bg-purple-50 transition-colors"
+            title="Chia sẻ cuộc hội thoại"
+          >
+            <Share2 className="h-4 w-4" />
+          </button>
+        )}
       </div>
 
       {/* Connection error banner */}
@@ -357,6 +374,15 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         disabled={!wsConnected}
         loading={loading}
       />
+
+      {isShareOpen && (
+        <ShareDialog
+          resourceType="chat_session"
+          resourceId={sessionId}
+          resourceName={sessionTitle}
+          onClose={() => setIsShareOpen(false)}
+        />
+      )}
     </div>
   );
 }

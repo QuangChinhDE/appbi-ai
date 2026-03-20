@@ -71,6 +71,10 @@ services:
       SECRET_KEY:        ${SECRET_KEY:-change-this-in-production}
       API_RELOAD:        "false"
       SEED_DEMO_DATA:    ${SEED_DEMO_DATA:-false}
+      # Admin user created on first boot (if no users exist)
+      ADMIN_EMAIL:       ${ADMIN_EMAIL:-admin@appbi.io}
+      ADMIN_PASSWORD:    ${ADMIN_PASSWORD:-change-me-on-first-login}
+      ADMIN_NAME:        ${ADMIN_NAME:-Admin}
       # Parquet + DuckDB storage (absolute path inside container)
       DATA_DIR:          /app/.data
       DATASOURCE_ENCRYPTION_KEY: ${DATASOURCE_ENCRYPTION_KEY:-}
@@ -125,6 +129,8 @@ services:
     environment:
       # BI backend reachable via internal Docker network
       BI_API_URL:               "http://backend:8000/api/v1"
+      # Shared JWT secret — must match backend SECRET_KEY
+      SECRET_KEY:               ${SECRET_KEY:-change-this-in-production}
       # LLM provider config
       LLM_PROVIDER:             ${LLM_PROVIDER:-openai}
       LLM_MODEL:                ${LLM_MODEL:-gpt-4o-mini}

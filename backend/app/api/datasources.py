@@ -8,7 +8,9 @@ import io
 import csv as csv_module
 
 from app.core import get_db
-from app.models import DataSource, Dataset, DatasetWorkspace
+from app.core.dependencies import get_current_user, require_permission, require_edit_access, require_full_access, get_effective_permission
+from app.models import DataSource, DatasetWorkspace
+from app.models.user import User
 from app.schemas import (
     DataSourceCreate,
     DataSourceUpdate,
@@ -145,14 +147,26 @@ async def parse_manual_file(file: UploadFile = File(...)):
 def list_data_sources(
     skip: int = 0,
     limit: int = 50,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """List all data sources with pagination."""
-    return DataSourceCRUDService.get_all(db, skip=skip, limit=limit)
+    """List data sources — filtered by module permission matrix."""
+    from app.core.permissions import get_user_module_permission
+    perm = get_user_module_permission(current_user, "data_sources")
+    if perm == "none":
+        return []
+    sources = DataSourceCRUDService.get_all(db, skip=skip, limit=limit)
+    for s in sources:
+        s.user_permission = get_effective_permission(db, current_user, s, "data_sources")
+    return sources
 
 
 @router.get("/{data_source_id}", response_model=DataSourceResponse)
-def get_data_source(data_source_id: int, db: Session = Depends(get_db)):
+def get_data_source(
+    data_source_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Get a data source by ID."""
     data_source = DataSourceCRUDService.get_by_id(db, data_source_id)
     if not data_source:
@@ -160,11 +174,16 @@ def get_data_source(data_source_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Data source with ID {data_source_id} not found"
         )
+    data_source.user_permission = get_effective_permission(db, current_user, data_source, "data_sources")
     return data_source
 
 
 @router.post("/", response_model=DataSourceResponse, status_code=status.HTTP_201_CREATED)
-def create_data_source(data_source: DataSourceCreate, db: Session = Depends(get_db)):
+def create_data_source(
+    data_source: DataSourceCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("data_sources", "edit")),
+):
     """Create a new data source."""
     try:
         return DataSourceCRUDService.create(db, data_source)
@@ -176,23 +195,27 @@ def create_data_source(data_source: DataSourceCreate, db: Session = Depends(get_
 def update_data_source(
     data_source_id: int,
     data_source_update: DataSourceUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Update a data source."""
+    ds = db.query(DataSource).filter(DataSource.id == data_source_id).first()
+    if not ds:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Data source with ID {data_source_id} not found")
+    require_edit_access(db, current_user, ds, "data_sources")
     try:
         data_source = DataSourceCRUDService.update(db, data_source_id, data_source_update)
-        if not data_source:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Data source with ID {data_source_id} not found"
-            )
         return data_source
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 @router.delete("/{data_source_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_data_source(data_source_id: int, db: Session = Depends(get_db)):
+def delete_data_source(
+    data_source_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Delete a data source, blocked if any datasets or workspaces still reference it."""
     datasource = db.query(DataSource).filter(DataSource.id == data_source_id).first()
     if not datasource:
@@ -200,8 +223,8 @@ def delete_data_source(data_source_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Data source with ID {data_source_id} not found"
         )
+    require_full_access(db, current_user, datasource, "data_sources")
 
-    blocking_datasets = db.query(Dataset).filter(Dataset.data_source_id == data_source_id).all()
     blocking_workspaces = db.query(DatasetWorkspace).filter(
         DatasetWorkspace.id.in_(
             db.query(DatasetWorkspace.id)
@@ -212,9 +235,6 @@ def delete_data_source(data_source_id: int, db: Session = Depends(get_db)):
     ).all()
 
     constraints = [
-        {"type": "dataset", "id": d.id, "name": d.name}
-        for d in blocking_datasets
-    ] + [
         {"type": "workspace", "id": w.id, "name": w.name}
         for w in blocking_workspaces
     ]
@@ -237,17 +257,40 @@ def delete_data_source(data_source_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/test", response_model=DataSourceTestResponse)
-def test_data_source_connection(request: DataSourceTestRequest):
+def test_data_source_connection(
+    request: DataSourceTestRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("data_sources", "view")),
+):
     """Test a data source connection."""
+    config = dict(request.config)
+
+    # When editing an existing datasource, sensitive fields are cleared to ''
+    # by the frontend (sanitizeConfigForForm strips the '__stored__' sentinel).
+    # Re-fill them from the DB so the real (encrypted) credentials are used.
+    if request.data_source_id is not None:
+        from app.core.crypto import _SENSITIVE_FIELDS, MASKED_PLACEHOLDER
+        db_ds = DataSourceCRUDService.get_by_id(db, request.data_source_id)
+        if db_ds and db_ds.config:
+            stored = dict(db_ds.config)
+            for field in _SENSITIVE_FIELDS:
+                if config.get(field, None) in ('', None, MASKED_PLACEHOLDER):
+                    if stored.get(field):
+                        config[field] = stored[field]  # keep encrypted value from DB
+
     success, message = DataSourceConnectionService.test_connection(
         request.type.value,
-        request.config
+        config
     )
     return DataSourceTestResponse(success=success, message=message)
 
 
 @router.post("/query", response_model=QueryExecuteResponse)
-def execute_query(request: QueryExecuteRequest, db: Session = Depends(get_db)):
+def execute_query(
+    request: QueryExecuteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("data_sources", "view")),
+):
     """Execute an ad-hoc SQL query against a data source."""
     data_source = DataSourceCRUDService.get_by_id(db, request.data_source_id)
     if not data_source:
@@ -353,6 +396,7 @@ def save_sync_config(
     data_source_id: int,
     body: Dict[str, Any],
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Persist sync configuration for the data source and update the scheduler."""
     from sqlalchemy import update as sa_update
@@ -360,6 +404,7 @@ def save_sync_config(
     ds = DataSourceCRUDService.get_by_id(db, data_source_id)
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
+    require_edit_access(db, current_user, ds, "data_sources")
     sync_config = body.get("sync_config", body)  # accept both {sync_config: {...}} and raw
     ds.sync_config = sync_config
     db.commit()
@@ -419,6 +464,7 @@ def list_sync_jobs(
 def trigger_sync(
     data_source_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Trigger an immediate manual sync for a data source."""
     from app.models import SyncJob

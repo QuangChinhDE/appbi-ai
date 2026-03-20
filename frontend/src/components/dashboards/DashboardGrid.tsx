@@ -14,8 +14,8 @@ const ResponsiveGridLayout = WidthProvider(Responsive);
 interface DashboardGridProps {
   dashboardId: number;
   dashboardCharts: DashboardChart[];
-  onLayoutChange: (layouts: Layout[]) => void;
-  onRemoveChart: (dashboardChartId: number) => void;
+  onLayoutChange?: (layouts: Layout[]) => void;
+  onRemoveChart?: (dashboardChartId: number) => void;
   removingChartId?: number;
   dashboardFilters?: DashboardFilter[];
   globalFilters?: BaseFilter[];
@@ -59,7 +59,7 @@ export function DashboardGrid({
       );
     });
 
-    if (hasChanged) {
+    if (hasChanged && onLayoutChange) {
       onLayoutChange(newLayout);
     }
   };
@@ -83,8 +83,8 @@ export function DashboardGrid({
       rowHeight={80}
       onLayoutChange={handleLayoutChange}
       draggableHandle=".drag-handle"
-      isDraggable={true}
-      isResizable={true}
+      isDraggable={!!onLayoutChange}
+      isResizable={!!onLayoutChange}
       compactType="vertical"
       preventCollision={false}
     >
@@ -95,7 +95,6 @@ export function DashboardGrid({
             dashboardChartId={dc.id}
             dashboardId={dashboardId}
             currentLayout={dc.layout as Record<string, any>}
-            datasetId={dc.chart?.dataset_id || 0}
             onRemove={onRemoveChart}
             isRemoving={removingChartId === dc.id}
             dashboardFilters={dashboardFilters}

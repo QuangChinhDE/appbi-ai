@@ -4,6 +4,7 @@ SQLAlchemy models for the BI application.
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, ForeignKey, JSON, Boolean, Enum, Float
 )
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from datetime import datetime
@@ -57,64 +58,15 @@ class DataSource(Base):
     # Format: {schedule: {...}, tables: {...}, retry: {...}, notification: {...}}
     sync_config = Column(JSON, nullable=True)
 
+    # Ownership
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     # Relationships
-    datasets = relationship("Dataset", back_populates="data_source")
     sync_jobs = relationship("SyncJob", back_populates="data_source", cascade="all, delete-orphan")
-
-
-class Dataset(Base):
-    """
-    Saved query definition with metadata.
-    Represents a reusable data view from a data source.
-    """
-    __tablename__ = "datasets"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(255), unique=True, nullable=False, index=True)
-    description = Column(Text, nullable=True)
-    
-    # Foreign key to data source
-    data_source_id = Column(Integer, ForeignKey("data_sources.id"), nullable=False)
-    
-    # SQL query
-    sql_query = Column(Text, nullable=False)
-    
-    # Column metadata stored as JSON
-    # Format: [{"name": "col1", "type": "integer"}, {"name": "col2", "type": "string"}, ...]
-    columns = Column(JSON, nullable=True)
-    
-    # Transformations pipeline (Power Query-style)
-    # Format: [{"id": "uuid", "type": "filter_rows", "enabled": true, "params": {...}}, ...]
-    transformations = Column(JSON, nullable=True, default=list)
-    transformation_version = Column(Integer, nullable=True, default=2)
-    
-    # Materialization configuration (v2)
-    # Format: {"mode": "none|view|table|parquet", "name": "...", "schema": "...", "refresh": {...},
-    #          "storage_path": "...", "row_count": N, "size_bytes": N,
-    #          "last_refreshed_at": "...", "last_duration_seconds": N,
-    #          "status": "idle|running|success|failed", "error": "...",
-    #          "columns_schema": [...], "incremental_watermark": "..."}
-    materialization = Column(JSON, nullable=True)
-
-    # Sync configuration (schedule + mode) — only on Dataset, NOT on DataSource
-    # Format: {mode, schedule: {type, cron, interval_seconds, timezone, enabled},
-    #          incremental: {watermark_column, watermark_type, lookback_minutes},
-    #          retry: {max_attempts, backoff_seconds}}
-    sync_config = Column(JSON, nullable=True)
-
-    # Timestamps
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-    
-    # Relationships
-    data_source = relationship("DataSource", back_populates="datasets")
-    charts = relationship("Chart", back_populates="dataset")
-    semantic_views = relationship("SemanticView", back_populates="dataset")
-    sync_job_runs = relationship("SyncJobRun", back_populates="dataset", cascade="all, delete-orphan")
 
 
 class Chart(Base):
@@ -127,9 +79,6 @@ class Chart(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), unique=True, nullable=False, index=True)
     description = Column(Text, nullable=True)
-    
-    # Foreign key to dataset (nullable — chart can use dataset OR workspace table)
-    dataset_id = Column(Integer, ForeignKey("datasets.id"), nullable=True)
     
     # Foreign key to workspace table (alternative source to dataset)
     workspace_table_id = Column(Integer, ForeignKey("dataset_workspace_tables.id", ondelete="SET NULL"), nullable=True)
@@ -144,12 +93,14 @@ class Chart(Base):
     # Time Series: {time_column: "column_name", value_column: "column_name", ...}
     config = Column(JSON, nullable=False)
     
+    # Ownership
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     
     # Relationships
-    dataset = relationship("Dataset", back_populates="charts")
     workspace_table = relationship("DatasetWorkspaceTable", foreign_keys=[workspace_table_id])
     dashboard_charts = relationship("DashboardChart", back_populates="chart", cascade="all, delete-orphan")
     chart_meta = relationship("ChartMetadata", back_populates="chart", uselist=False, cascade="all, delete-orphan")
@@ -170,6 +121,9 @@ class Dashboard(Base):
     # Structure: [{"id": "uuid", "datasetId": 1, "field": "country", "type": "dropdown", "operator": "in", "value": ["US"]}]
     filters_config = Column(JSON, nullable=True, default=list)
     
+    # Ownership
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -305,33 +259,3 @@ class SyncJob(Base):
 
     # Relationships
     data_source = relationship("DataSource", back_populates="sync_jobs")
-
-
-class SyncJobRun(Base):
-    """
-    Record of a single sync job execution for a dataset (not datasource).
-    Tracks status, timing, rows affected, and errors.
-    """
-    __tablename__ = "sync_job_runs"
-
-    id = Column(Integer, primary_key=True, index=True)
-    dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
-
-    # "scheduler" | "manual" | "api"
-    triggered_by = Column(String(50), nullable=True, default="manual")
-
-    # "full_refresh" | "incremental" | "append_only"
-    mode = Column(String(50), nullable=False)
-
-    # "running" | "success" | "failed"
-    status = Column(String(20), nullable=False, default="running")
-
-    rows_pulled = Column(Integer, nullable=True)
-    duration_seconds = Column(Float, nullable=True)
-    error = Column(Text, nullable=True)
-
-    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    finished_at = Column(DateTime(timezone=True), nullable=True)
-
-    # Relationships
-    dataset = relationship("Dataset", back_populates="sync_job_runs")

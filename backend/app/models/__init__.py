@@ -1,10 +1,11 @@
 """
 Models package initialization.
 """
+from app.models.user import User, UserStatus
+from app.models.resource_share import ResourceShare, ResourceType, SharePermission
 from app.models.models import (
     DataSource,
     DataSourceType,
-    Dataset,
     Chart,
     ChartType,
     Dashboard,
@@ -12,20 +13,11 @@ from app.models.models import (
     ChartMetadata,
     ChartParameter,
     SyncJob,
-    SyncJobRun,
 )
 from app.models.semantic import (
     SemanticView,
     SemanticModel,
     SemanticExplore,
-)
-from app.models.dataset_model import (
-    DatasetModel,
-    DatasetTable as DatasetModelTable,
-    DatasetRelationship,
-    DatasetCalculatedColumn,
-    TableRole,
-    JoinType,
 )
 from app.models.dataset_workspace import (
     DatasetWorkspace,
@@ -35,9 +27,13 @@ from app.models.dataset_workspace import (
 # from app.models.dashboard_filter import DashboardFilter
 
 __all__ = [
+    "User",
+    "UserStatus",
+    "ResourceShare",
+    "ResourceType",
+    "SharePermission",
     "DataSource",
     "DataSourceType",
-    "Dataset",
     "Chart",
     "ChartType",
     "Dashboard",
@@ -46,7 +42,6 @@ __all__ = [
     "ChartParameter",
     "SemanticView",
     "SemanticModel",
-    "DatasetModelTable",
     "DatasetWorkspace",
     "DatasetWorkspaceTable",
     "SemanticExplore",

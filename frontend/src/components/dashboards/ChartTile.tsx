@@ -18,8 +18,7 @@ interface ChartTileProps {
   dashboardChartId: number;
   dashboardId: number;
   currentLayout: Record<string, any>;
-  datasetId: number;
-  onRemove: (dashboardChartId: number) => void;
+  onRemove?: (dashboardChartId: number) => void;
   isRemoving?: boolean;
   dashboardFilters?: DashboardFilter[];
   globalFilters?: BaseFilter[];
@@ -32,7 +31,6 @@ export function ChartTile({
   dashboardChartId,
   dashboardId,
   currentLayout,
-  datasetId,
   onRemove, 
   isRemoving,
   dashboardFilters = [],
@@ -129,8 +127,7 @@ export function ChartTile({
       ? applyFilters(rawRows, exploreConfig.filters)
       : rawRows;
     if (!exploreConfig && dashboardFilters.length > 0) {
-      const forThisChart = dashboardFilters.filter(f => f.datasetId === datasetId);
-      rows = applyFiltersToRows(rows, forThisChart);
+      rows = applyFiltersToRows(rows, dashboardFilters);
     }
     // Apply global dashboard filters to ALL chart types.
     // Only apply a filter if its field actually exists in this chart's data.
@@ -141,11 +138,11 @@ export function ChartTile({
       }
     }
     return rows;
-  }, [rawRows, exploreConfig, dashboardFilters, datasetId, globalFilters]);
+  }, [rawRows, exploreConfig, dashboardFilters, globalFilters]);
 
   // Available metric keys for HAVING filter
   const havingOptions = useMemo(() =>
-    exploreConfig?.roleConfig.metrics.map(m => ({
+    exploreConfig?.roleConfig.metrics?.map(m => ({
       key: metricKey(m),
       label: metricLabel(m),
     })) ?? [],
@@ -200,6 +197,7 @@ export function ChartTile({
   return (
     <div className="h-full bg-white rounded-lg border border-gray-200 p-3 overflow-hidden relative group flex flex-col">
       {/* Remove button — outside drag handle so clicks always register */}
+      {onRemove && (
       <button
         onMouseDown={e => e.stopPropagation()}
         onClick={() => onRemove(dashboardChartId)}
@@ -213,6 +211,7 @@ export function ChartTile({
           <X className="h-4 w-4 text-red-600" />
         )}
       </button>
+      )}
 
       {/* Drag handle + editable title + parameter chips */}
       <div className="drag-handle mb-2 flex flex-col gap-1 cursor-grab active:cursor-grabbing pr-8">

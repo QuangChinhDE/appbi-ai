@@ -40,11 +40,11 @@ def create_view(view: SemanticViewCreate, db: Session = Depends(get_db)):
             detail=f"View with name '{view.name}' already exists"
         )
     
-    # Validate that either sql_table_name or dataset_id is provided
-    if not view.sql_table_name and not view.dataset_id:
+    # Validate that sql_table_name is provided
+    if not view.sql_table_name:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Either sql_table_name or dataset_id must be provided"
+            detail="sql_table_name must be provided"
         )
     
     # Convert Pydantic models to dicts for JSON storage
@@ -54,7 +54,6 @@ def create_view(view: SemanticViewCreate, db: Session = Depends(get_db)):
     db_view = SemanticView(
         name=view.name,
         sql_table_name=view.sql_table_name,
-        dataset_id=view.dataset_id,
         dimensions=dimensions_data,
         measures=measures_data,
         description=view.description,
@@ -308,15 +307,8 @@ def execute_semantic_query(query_request: SemanticQueryRequest, db: Session = De
             SemanticView.id == explore.base_view_id
         ).first()
         
-        if base_view and base_view.dataset_id:
-            from app.models.models import Dataset
-            dataset = db.query(Dataset).filter(Dataset.id == base_view.dataset_id).first()
-            if dataset:
-                from app.models.models import DataSource
-                ds = db.query(DataSource).filter(DataSource.id == dataset.data_source_id).first()
-                db_type = ds.type if ds else "postgresql"
-            else:
-                db_type = "postgresql"
+        if base_view and base_view.sql_table_name:
+            db_type = "postgresql"
         else:
             db_type = "postgresql"
         
@@ -338,20 +330,12 @@ def execute_semantic_query(query_request: SemanticQueryRequest, db: Session = De
             top_n=query_request.top_n.model_dump() if query_request.top_n else None
         )
         
-        # Determine data source (already have explore and base_view from above)
-        if base_view.dataset_id:
-            from app.models.models import Dataset
-            dataset = db.query(Dataset).filter(Dataset.id == base_view.dataset_id).first()
-            if not dataset:
-                raise HTTPException(status_code=404, detail="Dataset not found")
-            data_source_id = dataset.data_source_id
-        else:
-            # For now, assume first data source (in production, need better logic)
-            from app.models.models import DataSource
-            data_source = db.query(DataSource).first()
-            if not data_source:
-                raise HTTPException(status_code=404, detail="No data source available")
-            data_source_id = data_source.id
+        # Determine data source (use first available)
+        from app.models.models import DataSource
+        data_source = db.query(DataSource).first()
+        if not data_source:
+            raise HTTPException(status_code=404, detail="No data source available")
+        data_source_id = data_source.id
         
         # Get data source details
         from app.models.models import DataSource

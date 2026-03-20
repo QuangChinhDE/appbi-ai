@@ -7,7 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.dependencies import get_current_user, require_permission, require_edit_access, require_full_access, get_effective_permission
+from app.core.permissions import _owned_or_shared
 from app.models import DataSource, Chart, DatasetWorkspace, DatasetWorkspaceTable
+from app.models.resource_share import ResourceType
+from app.models.user import User
 from app.schemas import (
     WorkspaceCreate,
     WorkspaceUpdate,
@@ -107,27 +111,37 @@ def _infer_column_type(col: str, col_index: int, rows: list) -> str:
 def list_workspaces(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """List all dataset workspaces"""
-    workspaces = DatasetWorkspaceCRUDService.get_all_workspaces(db, skip, limit)
-    return workspaces
+    """List dataset workspaces visible to the current user."""
+    items = (
+        _owned_or_shared(db, DatasetWorkspace, ResourceType.WORKSPACE, current_user)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    for item in items:
+        item.user_permission = get_effective_permission(db, current_user, item, "workspaces")
+    return items
 
 
 @router.post("/", response_model=WorkspaceResponse, status_code=201)
 def create_workspace(
     workspace: WorkspaceCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("workspaces", "edit")),
 ):
     """Create a new dataset workspace"""
-    db_workspace = DatasetWorkspaceCRUDService.create_workspace(db, workspace)
+    db_workspace = DatasetWorkspaceCRUDService.create_workspace(db, workspace, owner_id=current_user.id)
     return db_workspace
 
 
 @router.get("/{workspace_id}", response_model=WorkspaceWithTables)
 def get_workspace(
     workspace_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Get a dataset workspace by ID with its tables"""
     workspace = DatasetWorkspaceCRUDService.get_workspace_by_id(
@@ -137,6 +151,7 @@ def get_workspace(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
     
+    workspace.user_permission = get_effective_permission(db, current_user, workspace, "workspaces")
     return workspace
 
 
@@ -144,28 +159,31 @@ def get_workspace(
 def update_workspace(
     workspace_id: int,
     workspace: WorkspaceUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Update a dataset workspace"""
+    ws = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    require_edit_access(db, current_user, ws, "workspaces")
     db_workspace = DatasetWorkspaceCRUDService.update_workspace(
         db, workspace_id, workspace
     )
-    
-    if not db_workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    
     return db_workspace
 
 
 @router.delete("/{workspace_id}", status_code=204)
 def delete_workspace(
     workspace_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Delete a dataset workspace, blocked if any of its tables are used by charts."""
     workspace = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
+    require_full_access(db, current_user, workspace, "workspaces")
 
     table_ids = [t.id for t in db.query(DatasetWorkspaceTable).filter(
         DatasetWorkspaceTable.workspace_id == workspace_id
@@ -211,10 +229,16 @@ def list_workspace_tables(
 def add_table_to_workspace(
     workspace_id: int,
     table: TableCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Add a table to a workspace"""
     try:
+        ws = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
+        if not ws:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        require_edit_access(db, current_user, ws, "workspaces")
+
         # Validate datasource exists
         datasource = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
         if not datasource:
@@ -265,9 +289,14 @@ def update_workspace_table(
     workspace_id: int,
     table_id: int,
     table_update: TableUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Update a table in a workspace"""
+    ws = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    require_edit_access(db, current_user, ws, "workspaces")
     # Verify table belongs to workspace
     db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.workspace_id != workspace_id:
@@ -284,9 +313,14 @@ def update_workspace_table(
 def remove_table_from_workspace(
     workspace_id: int,
     table_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Remove a table from a workspace, after checking for chart/formula dependencies"""
+    ws = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    require_edit_access(db, current_user, ws, "workspaces")
     # Verify table belongs to workspace
     db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.workspace_id != workspace_id:

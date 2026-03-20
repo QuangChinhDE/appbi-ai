@@ -3,14 +3,20 @@ Main FastAPI application.
 """
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from app.core import settings, setup_logging
 from app.api import api_router
 
 # Setup logging
 setup_logging()
+
+limiter = Limiter(key_func=get_remote_address)
 
 
 @asynccontextmanager
@@ -20,26 +26,19 @@ async def lifespan(app: FastAPI):
     # This runs on EVERY startup so the folder structure is always correct
     # regardless of which machine the project is cloned to.
     data_root = settings.data_dir_path
-    for sub in ("synced", "datasets", "workspaces"):
+    for sub in ("synced", "workspaces"):
         (data_root / sub).mkdir(parents=True, exist_ok=True)
 
     import logging
     logging.getLogger(__name__).info("Data directory: %s", data_root)
 
-    # Legacy DataSource-level scheduler (kept for backward compat)
+    # DataSource-level sync scheduler
     from app.services.sync_scheduler import startup as ds_scheduler_startup
     ds_scheduler_startup()
-
-    # New Dataset-level sync scheduler
-    from app.services.dataset_sync_scheduler import startup as dataset_scheduler_startup
-    dataset_scheduler_startup()
 
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
-    from app.services.dataset_sync_scheduler import shutdown as dataset_scheduler_shutdown
-    dataset_scheduler_shutdown()
-
     from app.services.sync_scheduler import shutdown as ds_scheduler_shutdown
     ds_scheduler_shutdown()
 
@@ -66,6 +65,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 print("DEBUG: CORS middleware added")
+
+# Rate limiting
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Include API router
 app.include_router(api_router, prefix="/api/v1")

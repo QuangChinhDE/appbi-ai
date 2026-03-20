@@ -3,7 +3,7 @@
 import React, { useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Plus, Save, Loader2, Edit2, Check, X } from 'lucide-react';
+import { ArrowLeft, Plus, Save, Loader2, Edit2, Check, X, Share2 } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import {
   useDashboard,
@@ -15,10 +15,14 @@ import {
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { AddChartModal } from '@/components/dashboards/AddChartModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { ShareDialog } from '@/components/common/ShareDialog';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { DashboardChartLayout } from '@/types/api';
 import type { BaseFilter, ColumnInfo } from '@/lib/filters';
 import { inferColumnTypeFromData } from '@/lib/filters';
+import { useCurrentUser } from '@/hooks/use-current-user';
+import { usePermissions, hasPermission } from '@/hooks/use-permissions';
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { toast } from 'sonner';
 
 // Debounce utility
@@ -53,11 +57,17 @@ export default function DashboardDetailPage() {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [globalFilters, setGlobalFilters] = useState<BaseFilter[]>([]);
   const [availableColumns, setAvailableColumns] = useState<ColumnInfo[]>([]);
+  const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   // columnChartCount: how many distinct chartIds have each column
   const columnChartCountRef = React.useRef<Map<string, Set<number>>>(new Map());
   const [columnChartCount, setColumnChartCount] = useState<Map<string, number>>(new Map());
 
   const { data: dashboard, isLoading: isLoadingDashboard } = useDashboard(dashboardId);
+  const { data: currentUser } = useCurrentUser();
+  const { data: permData } = usePermissions();
+  const resPerms = getResourcePermissions(dashboard?.user_permission);
+  const canShare = resPerms.canShare;
+  const canEditResource = resPerms.canEdit;
   const updateDashboardMutation = useUpdateDashboard();
   const addChartMutation = useAddChartToDashboard();
   const removeChartMutation = useRemoveChartFromDashboard();
@@ -275,6 +285,7 @@ export default function DashboardDetailPage() {
               ) : (
                 <div className="flex items-center space-x-3">
                   <h1 className="text-2xl font-bold">{dashboard.name}</h1>
+                  {canEditResource && (
                   <button
                     onClick={handleStartEditName}
                     className="p-1 text-gray-400 hover:text-gray-600"
@@ -282,6 +293,7 @@ export default function DashboardDetailPage() {
                   >
                     <Edit2 className="h-4 w-4" />
                   </button>
+                  )}
                 </div>
               )}
               {dashboard.description && (
@@ -296,6 +308,16 @@ export default function DashboardDetailPage() {
                   Saving...
                 </span>
               )}
+              {canShare && (
+                <button
+                  onClick={() => setIsShareDialogOpen(true)}
+                  className="flex items-center px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
+                >
+                  <Share2 className="h-4 w-4 mr-2" />
+                  Share
+                </button>
+              )}
+              {canEditResource && (
               <button
                 onClick={() => setIsAddChartModalOpen(true)}
                 className="flex items-center px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600"
@@ -303,6 +325,7 @@ export default function DashboardDetailPage() {
                 <Plus className="h-5 w-5 mr-2" />
                 Add Chart
               </button>
+              )}
             </div>
           </div>
         </div>
@@ -319,8 +342,8 @@ export default function DashboardDetailPage() {
         <DashboardGrid
           dashboardId={dashboardId}
           dashboardCharts={dashboard.dashboard_charts || []}
-          onLayoutChange={handleLayoutChange}
-          onRemoveChart={handleRemoveChart}
+          onLayoutChange={canEditResource ? handleLayoutChange : undefined}
+          onRemoveChart={canEditResource ? handleRemoveChart : undefined}
           removingChartId={removingChartId}
           globalFilters={globalFilters}
           onChartDataLoaded={handleChartDataLoaded}
@@ -345,6 +368,16 @@ export default function DashboardDetailPage() {
           confirmLabel="Remove"
           variant="danger"
         />
+
+        {/* Share Dialog */}
+        {isShareDialogOpen && dashboard && (
+          <ShareDialog
+            resourceType="dashboard"
+            resourceId={dashboardId}
+            resourceName={dashboard.name}
+            onClose={() => setIsShareDialogOpen(false)}
+          />
+        )}
       </div>
     </div>
   );

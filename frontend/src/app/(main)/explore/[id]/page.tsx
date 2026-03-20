@@ -15,6 +15,7 @@ import { useChart, useCreateChart, useUpdateChart, useUpsertChartMetadata, useRe
 import { applyFilters } from '@/lib/explore-utils';
 import { ExploreChartConfig, type ExploreChartType, type ChartRoleConfig, type AggFn } from '@/components/explore/ExploreChartConfig';
 import { toast } from 'sonner';
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import type { ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
 
 type ChartType = ExploreChartType;
@@ -70,6 +71,7 @@ export default function ExploreDetailPage() {
 
   const { data: chart, isLoading: isChartLoading } = useChart(chartId ?? 0);
   const { data: workspace } = useWorkspace(selectedWorkspaceId);
+  const resPerms = getResourcePermissions(isNew ? 'full' : chart?.user_permission);
 
   // Load existing chart config into editor state on first data arrival
   useEffect(() => {
@@ -312,12 +314,14 @@ export default function ExploreDetailPage() {
                   <h1 className="text-lg font-semibold text-gray-900">
                     {chartNameInput || (chartId ? 'Chart' : 'New Chart')}
                   </h1>
+                  {resPerms.canEdit && (
                   <button
                     onClick={() => setIsEditingName(true)}
                     className="opacity-0 group-hover/name:opacity-100 text-gray-400 hover:text-gray-600 transition-opacity"
                   >
                     <Pencil className="w-3.5 h-3.5" />
                   </button>
+                  )}
                 </div>
               )}
             </div>
@@ -348,21 +352,28 @@ export default function ExploreDetailPage() {
                   className="text-xs text-gray-600 border-b border-blue-400 bg-transparent outline-none px-0.5 w-80"
                 />
               ) : (
-                <div
-                  onClick={() => setIsEditingDesc(true)}
-                  className="group/desc flex items-center gap-1 cursor-text"
-                >
-                  {chartDescInput ? (
+                resPerms.canEdit ? (
+                  <div
+                    onClick={() => setIsEditingDesc(true)}
+                    className="group/desc flex items-center gap-1 cursor-text"
+                  >
+                    {chartDescInput ? (
+                      <span className="text-xs text-gray-500">{chartDescInput}</span>
+                    ) : (
+                      <span className="text-xs text-gray-300 italic">Add a description…</span>
+                    )}
+                    <Pencil className="w-3 h-3 text-gray-300 opacity-0 group-hover/desc:opacity-100 transition-opacity" />
+                  </div>
+                ) : (
+                  chartDescInput ? (
                     <span className="text-xs text-gray-500">{chartDescInput}</span>
-                  ) : (
-                    <span className="text-xs text-gray-300 italic">Add a description…</span>
-                  )}
-                  <Pencil className="w-3 h-3 text-gray-300 opacity-0 group-hover/desc:opacity-100 transition-opacity" />
-                </div>
+                  ) : null
+                )
               )}
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {resPerms.canEdit && (
             <button
               onClick={handleSaveLook}
               disabled={!selectedTableId}
@@ -371,6 +382,7 @@ export default function ExploreDetailPage() {
               <Save className="w-4 h-4" />
               {chartId ? 'Update Chart' : 'Save Chart'}
             </button>
+            )}
           </div>
         </div>
       </div>
@@ -614,9 +626,11 @@ export default function ExploreDetailPage() {
                             placeholder="param_name"
                             className="flex-1 px-2 py-1 border border-gray-200 rounded text-xs"
                           />
+                          {resPerms.canEdit && (
                           <button type="button" onClick={() => removeParamRow(row._key)} className="text-gray-400 hover:text-red-500 p-0.5">
                             <Trash2 className="w-3 h-3" />
                           </button>
+                          )}
                         </div>
                         <select
                           value={row.parameter_type}
@@ -639,6 +653,7 @@ export default function ExploreDetailPage() {
                         />
                       </div>
                     ))}
+                    {resPerms.canEdit && (
                     <button
                       type="button"
                       onClick={addParamRow}
@@ -646,6 +661,7 @@ export default function ExploreDetailPage() {
                     >
                       <Plus className="w-3 h-3" /> Add Parameter
                     </button>
+                    )}
                     {!isNew && (
                       <p className="text-xs text-gray-400 italic">Saved automatically on "Update Chart"</p>
                     )}

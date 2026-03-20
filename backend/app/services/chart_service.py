@@ -8,7 +8,6 @@ from sqlalchemy.exc import IntegrityError
 from app.models import Chart, ChartType, ChartMetadata, ChartParameter
 from app.schemas import ChartCreate, ChartUpdate
 from app.schemas import ChartMetadataUpsert, ChartParameterCreate, ChartParameterUpdate
-from app.services.dataset_service import DatasetService
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -33,14 +32,9 @@ class ChartService:
         return db.query(Chart).filter(Chart.name == name).first()
     
     @staticmethod
-    def create(db: Session, chart: ChartCreate) -> Chart:
+    def create(db: Session, chart: ChartCreate, owner_id=None) -> Chart:
         """Create a new chart."""
-        if chart.dataset_id is not None:
-            # Verify dataset exists
-            dataset = DatasetService.get_by_id(db, chart.dataset_id)
-            if not dataset:
-                raise ValueError(f"Dataset with ID {chart.dataset_id} not found")
-        elif chart.workspace_table_id is not None:
+        if chart.workspace_table_id is not None:
             # Verify workspace table exists
             from app.services.dataset_workspace_crud import DatasetWorkspaceCRUDService
             table = DatasetWorkspaceCRUDService.get_table_by_id(db, chart.workspace_table_id)
@@ -51,10 +45,10 @@ class ChartService:
             db_chart = Chart(
                 name=chart.name,
                 description=chart.description,
-                dataset_id=chart.dataset_id,
                 workspace_table_id=chart.workspace_table_id,
                 chart_type=ChartType(chart.chart_type.value),
-                config=chart.config
+                config=chart.config,
+                owner_id=owner_id,
             )
             db.add(db_chart)
             db.commit()
@@ -178,11 +172,7 @@ class ChartService:
             )
             return {"chart": db_chart, "data": rows}
 
-        # Standard: execute the underlying dataset query
-        if db_chart.dataset_id is None:
-            raise ValueError("Chart has no data source configured")
-        dataset_result = DatasetService.execute(db, db_chart.dataset_id)
-        return {"chart": db_chart, "data": dataset_result["data"]}
+        raise ValueError("Chart has no data source configured")
 
     # -----------------------------------------------------------------------
     # Metadata CRUD

@@ -10,6 +10,8 @@ import { useCharts, useDeleteChart } from '@/hooks/use-charts';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { toast } from 'sonner';
+import { usePermissions, hasPermission } from '@/hooks/use-permissions';
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import type { Chart } from '@/types/api';
 
 const CHART_TYPE_LABELS: Record<string, string> = {
@@ -21,6 +23,8 @@ const CHART_TYPE_LABELS: Record<string, string> = {
 export default function ExplorePage() {
   const router = useRouter();
   const { data: charts, isLoading } = useCharts();
+  const { data: permData } = usePermissions();
+  const canEdit = hasPermission(permData?.permissions, 'explore_charts', 'edit');
   const deleteChart = useDeleteChart();
   const [chartToDelete, setChartToDelete] = useState<Chart | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
@@ -56,7 +60,7 @@ export default function ExplorePage() {
     <PageListLayout
       title="Explore"
       description={`${charts?.length ?? 0} saved chart${charts?.length !== 1 ? 's' : ''}`}
-      action={
+      action={canEdit ? (
         <button
           onClick={() => router.push('/explore/new')}
           className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
@@ -64,7 +68,7 @@ export default function ExplorePage() {
           <Plus className="w-4 h-4" />
           New Chart
         </button>
-      }
+      ) : undefined}
       isLoading={isLoading}
       loadingText="Loading charts…"
     >
@@ -136,12 +140,14 @@ export default function ExplorePage() {
                       <Clock className="w-3 h-3" />
                       {createdAt}
                     </span>
+                    {getResourcePermissions(chart.user_permission).canDelete && (
                     <button
                       onClick={(e) => { e.stopPropagation(); handleDeleteChart(chart); }}
                       className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 transition-all p-1 rounded flex-shrink-0"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
+                    )}
                   </div>
                 );
               })}
@@ -168,12 +174,14 @@ export default function ExplorePage() {
                     <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
                       <BarChart3 className="w-5 h-5 text-blue-600" />
                     </div>
+                    {getResourcePermissions(chart.user_permission).canDelete && (
                     <button
                       onClick={(e) => { e.stopPropagation(); handleDeleteChart(chart); }}
                       className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 transition-all p-1 rounded"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
+                    )}
                   </div>
 
                   <div className="flex-1 min-w-0">

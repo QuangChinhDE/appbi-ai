@@ -29,6 +29,19 @@ from app.agents.tools import TOOL_SCHEMAS, execute_tool
 
 logger = logging.getLogger(__name__)
 
+_VIEWER_BLOCKED_TOOLS = {"execute_sql"}
+
+
+async def _execute_tool_rbac(fn_name: str, fn_args: dict, user_role: str) -> dict:
+    """Wrap execute_tool with role-based access control.
+
+    Viewers may not call execute_sql directly — they can only consume
+    pre-built charts / query_table results on resources shared with them.
+    """
+    if user_role == "viewer" and fn_name in _VIEWER_BLOCKED_TOOLS:
+        return {"error": f"Permission denied: viewers cannot call '{fn_name}'."}
+    return await execute_tool(fn_name, fn_args)
+
 SYSTEM_PROMPT = """You are a BI data analyst inside AppBI. Your job: answer data questions using real numbers from tools. Be direct, precise, never waste words.
 
 ━━━ WHAT EACH TOOL RETURNS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -579,7 +592,7 @@ async def _openai_loop(
 
             yield ToolCallEvent(tool=fn_name, args=fn_args).model_dump()
 
-            tool_result = await execute_tool(fn_name, fn_args)
+            tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"))
             tool_calls_made += 1
 
             # ── Metrics: track tool usage ──
@@ -742,7 +755,7 @@ async def _anthropic_loop(
 
             yield ToolCallEvent(tool=fn_name, args=fn_args).model_dump()
 
-            tool_result = await execute_tool(fn_name, fn_args)
+            tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"))
             tool_calls_made += 1
 
             # ── Metrics: track tool usage ──
@@ -874,7 +887,7 @@ async def _gemini_loop(
 
             yield ToolCallEvent(tool=fn_name, args=fn_args).model_dump()
 
-            tool_result = await execute_tool(fn_name, fn_args)
+            tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"))
             tool_calls_made += 1
 
             # ── Metrics: track tool usage ──

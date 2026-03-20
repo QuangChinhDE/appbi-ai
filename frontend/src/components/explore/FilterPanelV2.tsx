@@ -2,26 +2,26 @@
 
 import React, { useState } from 'react';
 import { Filter, X, Plus } from 'lucide-react';
-import { Dataset } from '@/types/api';
+import type { ColumnMetadata } from '@/types/api';
 import { ExploreFilter, FilterType, getFilterTypeForColumn, getDistinctValues } from '@/types/filters';
 import { v4 as uuidv4 } from 'uuid';
 
 interface FilterPanelV2Props {
-  dataset: Dataset | undefined;
+  columns?: ColumnMetadata[];
   filters: ExploreFilter[];
   onChange: (filters: ExploreFilter[]) => void;
   latestDataSample?: Record<string, any>[];
 }
 
 export function FilterPanelV2({
-  dataset,
+  columns = [],
   filters,
   onChange,
   latestDataSample = [],
 }: FilterPanelV2Props) {
   const [selectedField, setSelectedField] = useState<string>('');
 
-  const availableFields = dataset?.columns || [];
+  const availableFields = columns;
 
   const handleAddFilter = () => {
     if (!selectedField) return;

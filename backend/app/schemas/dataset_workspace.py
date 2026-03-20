@@ -2,6 +2,7 @@
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, model_validator
+from uuid import UUID
 
 
 # ===== Workspace Schemas =====
@@ -26,6 +27,8 @@ class WorkspaceUpdate(BaseModel):
 class WorkspaceResponse(WorkspaceBase):
     """Schema for workspace response"""
     id: int
+    owner_id: Optional[UUID] = None
+    user_permission: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

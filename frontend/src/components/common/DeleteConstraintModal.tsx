@@ -26,7 +26,6 @@ interface DeleteConstraintModalProps {
 const TYPE_LABELS: Record<string, { label: string; cls: string }> = {
   chart:     { label: 'Biểu đồ',   cls: 'bg-blue-100 text-blue-700' },
   dashboard: { label: 'Dashboard', cls: 'bg-purple-100 text-purple-700' },
-  dataset:   { label: 'Dataset',   cls: 'bg-green-100 text-green-700' },
   workspace: { label: 'Workspace', cls: 'bg-orange-100 text-orange-700' },
   lookup:    { label: 'LOOKUP',    cls: 'bg-amber-100 text-amber-700' },
 };

@@ -35,12 +35,13 @@ class DashboardService:
         return db.query(Dashboard).filter(Dashboard.name == name).first()
     
     @staticmethod
-    def create(db: Session, dashboard: DashboardCreate) -> Dashboard:
+    def create(db: Session, dashboard: DashboardCreate, owner_id=None) -> Dashboard:
         """Create a new dashboard."""
         try:
             db_dashboard = Dashboard(
                 name=dashboard.name,
-                description=dashboard.description
+                description=dashboard.description,
+                owner_id=owner_id,
             )
             db.add(db_dashboard)
             db.flush()  # Get the ID without committing

@@ -27,15 +27,13 @@ from typing import Any, Dict, List, Optional
 
 import duckdb
 
+from app.core.config import settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Resolve relative to project root (parent of backend/)
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-DATA_DIR = Path(os.environ.get("DATA_DIR", ".data"))
-if not DATA_DIR.is_absolute():
-    DATA_DIR = _PROJECT_ROOT / DATA_DIR
+# Single source of truth — resolved by config.py
+DATA_DIR = settings.data_dir_path
 DUCKDB_PATH = DATA_DIR / "duckdb.duckdb"
 READ_POOL_SIZE = int(os.environ.get("DUCKDB_READ_POOL_SIZE", "4"))
 

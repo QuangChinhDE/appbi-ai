@@ -47,12 +47,14 @@ class DatasetWorkspaceCRUDService:
     @staticmethod
     def create_workspace(
         db: Session,
-        workspace: WorkspaceCreate
+        workspace: WorkspaceCreate,
+        owner_id=None,
     ) -> DatasetWorkspace:
         """Create a new workspace"""
         db_workspace = DatasetWorkspace(
             name=workspace.name,
-            description=workspace.description
+            description=workspace.description,
+            owner_id=owner_id,
         )
         db.add(db_workspace)
         db.commit()

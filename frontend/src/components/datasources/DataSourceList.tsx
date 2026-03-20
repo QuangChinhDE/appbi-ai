@@ -6,13 +6,15 @@
 
 import Link from 'next/link';
 import { DataSource } from '@/types/api';
-import { Database, Settings, Trash2, TestTube } from 'lucide-react';
+import { Database, Settings, Trash2, TestTube, Share2 } from 'lucide-react';
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 
 interface DataSourceListProps {
   dataSources: DataSource[];
-  onEdit: (dataSource: DataSource) => void;
-  onDelete: (id: number) => void;
+  onEdit?: (dataSource: DataSource) => void;
+  onDelete?: (id: number) => void;
   onTest: (dataSource: DataSource) => void;
+  onShare?: (dataSource: DataSource) => void;
   isDeleting?: number | null;
 }
 
@@ -21,6 +23,7 @@ export default function DataSourceList({
   onEdit,
   onDelete,
   onTest,
+  onShare,
   isDeleting,
 }: DataSourceListProps) {
   if (dataSources.length === 0) {
@@ -129,6 +132,16 @@ export default function DataSourceList({
                   >
                     <TestTube className="w-4 h-4" />
                   </button>
+                  {onShare && getResourcePermissions(ds.user_permission).canShare && (
+                    <button
+                      onClick={() => onShare(ds)}
+                      className="text-purple-600 hover:text-purple-900 p-1 rounded hover:bg-purple-50"
+                      title="Share"
+                    >
+                      <Share2 className="w-4 h-4" />
+                    </button>
+                  )}
+                  {getResourcePermissions(ds.user_permission).canEdit && (
                   <Link
                     href={`/datasources/${ds.id}`}
                     className="text-blue-600 hover:text-blue-900 p-1 rounded hover:bg-blue-50 inline-flex"
@@ -136,6 +149,8 @@ export default function DataSourceList({
                   >
                     <Settings className="w-4 h-4" />
                   </Link>
+                  )}
+                  {onDelete && getResourcePermissions(ds.user_permission).canDelete && (
                   <button
                     onClick={() => onDelete(ds.id)}
                     disabled={isDeleting === ds.id}
@@ -144,6 +159,7 @@ export default function DataSourceList({
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
+                  )}
                 </div>
               </td>
             </tr>

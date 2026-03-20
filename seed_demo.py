@@ -1,762 +1,417 @@
+#!/usr/bin/env python3
 """
-Demo seed script — full end-to-end data flow:
+seed_demo.py — Xoá dữ liệu cũ, tạo lại dữ liệu demo cho 3 tài khoản chính:
 
-  1. Upload scope-foodball-demo.xlsx → create Manual datasource
-  2. Create Datasets (with rich transformation pipelines)
-  3. Create Dataset Workspaces + SQL-query workspace tables
-  4. Create Charts in Explore (mix of dataset_id and workspace_table_id)
-  5. Create Dashboards (with filters_config pre-applied)
+  admin@appbi.io   / 123456  → full toàn bộ module
+  edit@appbi.io    / 123456  → view: data_sources; edit: datasets/workspaces/charts/dashboards/ai_chat; none: settings
+  viewer@appbi.io  / 123456  → view: tất cả trừ settings (none)
 
-Usage:
-    python seed_demo.py
+Kịch bản phân quyền được tạo sẵn để test:
+  [DS]  1 DataSource "Football Analytics"        — admin tạo  (mọi user view+ đều thấy)
+
+  [D1]  Dataset "Bảng xếp hạng FIFA"             — admin tạo  | KHÔNG share
+  [D2]  Dataset "Lịch sử World Cup"              — admin tạo  | share → edit (edit)
+  [D3]  Dataset "Thống kê liên đoàn"             — edit  tạo  | KHÔNG share
+  [D4]  Dataset "Top Scorers FIFA"               — edit  tạo  | share → viewer (view)
+
+  [W1]  Workspace "Rankings Workspace"          — admin tạo  | share → edit (edit)
+  [W2]  Workspace "World Cup Workspace"         — edit  tạo  | share → viewer (view)
+
+  [C1]  Chart "Điểm FIFA Top 20" (BAR)          — admin | dùng W1.T1 | KHÔNG share
+  [C2]  Chart "Phân bố liên đoàn" (PIE)         — admin | dùng W1.T1 | share → edit (edit)
+  [C3]  Chart "Top 10 Rankings" (TABLE)         — admin | dùng W1.T2 | share → edit (edit)
+  [C4]  Chart "WC Champions" (BAR)              — admin | dùng W2.T1 | share → viewer (view)
+  [C5]  Chart "Top Scorers Bar" (BAR)           — edit  | dùng W2.T2 | KHÔNG share
+  [C6]  Chart "Scorers by Confederation" (PIE)  — edit  | dùng W2.T2 | share → viewer (view)
+  [C7]  Chart "WC History Table" (TABLE)        — edit  | dùng W2.T1 | KHÔNG share
+
+  [DB1] Dashboard "Admin Riêng"                 — admin | C1+C2      | KHÔNG share → chỉ admin
+  [DB2] Dashboard "Chia sẻ cho Edit"            — admin | C2+C3      | share → edit (edit) → admin+edit
+  [DB3] Dashboard "Chia sẻ cho Viewer"          — admin | C3+C4      | share → viewer (view) → admin+viewer
+  [DB4] Dashboard "Toàn Đội"                    — admin | C1+C4      | share all team → tất cả
+  [DB5] Dashboard "Edit Riêng"                  — edit  | C5+C6      | KHÔNG share → edit+admin(full)
+  [DB6] Dashboard "Edit → Chia Viewer"          — edit  | C6+C7      | share → viewer (view) → edit+viewer+admin
 """
-import os, sys, requests
+import os, sys, uuid, warnings, requests
+warnings.filterwarnings("ignore")
+
+sys.path.insert(0, "/home/appbi/AppBI/Dashboard-App/backend")
+os.environ["DATABASE_URL"]  = "postgresql+psycopg2://appbi:appbi@localhost:5432/appbi"
+os.environ["SECRET_KEY"]    = "dev-secret-key-change-in-production"
+
+from sqlalchemy import text
+from app.core.database import SessionLocal
+from app.models.user import User, UserStatus
+from app.models.models import (DataSource, Dataset, Chart, Dashboard,
+                                DashboardChart, ChartType)
+from app.models.dataset_workspace import DatasetWorkspace, DatasetWorkspaceTable
+from app.models.resource_share import ResourceShare, ResourceType, SharePermission
+from app.api.auth import hash_password
 import psycopg2
 
 BASE      = "http://localhost:8000/api/v1"
-XLSX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scope-foodball-demo.xlsx")
-DB_URL    = os.environ.get("DB_URL", "postgresql://appbi:appbi@localhost:5432/appbi")
+XLSX_PATH = "/home/appbi/AppBI/Dashboard-App/scope-foodball-demo.xlsx"
+DB_DSN    = "dbname=appbi user=appbi password=appbi host=localhost"
 
-# ─── truncate all tables and reset sequences ──────────────────────────────────
+GREEN="\033[92m"; YELLOW="\033[93m"; RED="\033[91m"; BOLD="\033[1m"; RESET="\033[0m"
+def ok(m):      print(f"  {GREEN}✓{RESET} {m}")
+def info(m):    print(f"  {YELLOW}→{RESET} {m}")
+def section(t): print(f"\n{BOLD}{'─'*60}\n  {t}\n{'─'*60}{RESET}")
 
-def reset_db():
-    print("0. Truncating tables & resetting ID sequences ...")
-    tables = [
-        "dashboard_charts",
-        "dashboards",
-        "charts",
-        "dataset_workspace_tables",
-        "dataset_workspaces",
-        "datasets",
-        "data_sources",
-    ]
-    conn = psycopg2.connect(DB_URL)
-    conn.autocommit = True
-    cur = conn.cursor()
-    for tbl in tables:
-        try:
-            cur.execute(f'TRUNCATE TABLE "{tbl}" RESTART IDENTITY CASCADE;')
-            print(f"  + TRUNCATE {tbl}")
-        except Exception as e:
-            print(f"  ! {tbl}: {e}")
-    cur.close()
-    conn.close()
-    print("  -> Done\n")
+# ═══════════════════════════════════════════════════════════
+#  BƯỚC 0 — XOÁ DỮ LIỆU CŨ
+# ═══════════════════════════════════════════════════════════
+section("0. Xoá dữ liệu cũ")
+db = SessionLocal()
+try:
+    db.execute(text("""
+        TRUNCATE TABLE
+            resource_shares, dashboard_charts, dashboards, charts,
+            dataset_workspace_tables, dataset_workspaces,
+            datasets, data_sources
+        RESTART IDENTITY CASCADE
+    """))
+    db.execute(text(
+        "DELETE FROM users WHERE email NOT IN "
+        "('admin@appbi.io','edit@appbi.io','viewer@appbi.io')"
+    ))
+    db.commit()
+    ok("Đã xoá toàn bộ dữ liệu cũ (trữ lại 3 tài khoản chính)")
+finally:
+    db.close()
 
-reset_db()
+# ═══════════════════════════════════════════════════════════
+#  BƯỚC 1 — TẠO / CẬP NHẬT USERS
+# ═══════════════════════════════════════════════════════════
+section("1. Tạo / cập nhật users")
 
-# ─── helpers ──────────────────────────────────────────────────────────────────
+PERM_ADMIN  = dict(data_sources="full", datasets="full",    workspaces="full",
+                   explore_charts="full",  dashboards="full",  ai_chat="full",  settings="full")
+PERM_EDIT   = dict(data_sources="view",  datasets="edit",   workspaces="edit",
+                   explore_charts="edit",  dashboards="edit",  ai_chat="edit",  settings="none")
+PERM_VIEWER = dict(data_sources="view",  datasets="view",   workspaces="view",
+                   explore_charts="view",  dashboards="view",  ai_chat="view",  settings="none")
 
-def post(path, body):
-    r = requests.post(f"{BASE}{path}", json=body, timeout=30)
-    if not r.ok:
-        print(f"  ERROR {r.status_code} POST {path}: {r.text[:500]}")
-        sys.exit(1)
-    return r.json()
+ACCOUNTS = [
+    ("admin@appbi.io",  "Admin AppBI",  PERM_ADMIN),
+    ("edit@appbi.io",   "Edit User",    PERM_EDIT),
+    ("viewer@appbi.io", "Viewer User",  PERM_VIEWER),
+]
 
-def put(path, body):
-    r = requests.put(f"{BASE}{path}", json=body, timeout=30)
-    if not r.ok:
-        print(f"  ERROR {r.status_code} PUT {path}: {r.text[:300]}")
-        sys.exit(1)
-    return r.json()
+uids = {}
+db = SessionLocal()
+try:
+    for email, full_name, perms in ACCOUNTS:
+        u = db.query(User).filter(User.email == email).first()
+        if u:
+            u.permissions = perms
+            u.status = UserStatus.ACTIVE
+            u.password_hash = hash_password("123456")
+            ok(f"Cập nhật: {email}")
+        else:
+            u = User(id=uuid.uuid4(), email=email,
+                     password_hash=hash_password("123456"),
+                     full_name=full_name, status=UserStatus.ACTIVE,
+                     permissions=perms)
+            db.add(u)
+            ok(f"Tạo:      {email}")
+    db.commit()
+    for email, _, _ in ACCOUNTS:
+        uids[email] = db.query(User.id).filter(User.email == email).scalar()
+    info(f"admin_id  = {uids['admin@appbi.io']}")
+    info(f"edit_id   = {uids['edit@appbi.io']}")
+    info(f"viewer_id = {uids['viewer@appbi.io']}")
+finally:
+    db.close()
 
-def get(path):
-    r = requests.get(f"{BASE}{path}", timeout=15)
-    r.raise_for_status()
-    return r.json()
+# ═══════════════════════════════════════════════════════════
+#  BƯỚC 2 — PARSE XLSX + TẠO DATASOURCE
+# ═══════════════════════════════════════════════════════════
+section("2. Parse xlsx & tạo DataSource")
 
-def explore_config(workspace_id, chart_type, dimension, metrics, breakdown=None, filters=None):
-    rc = {"dimension": dimension, "metrics": metrics}
-    if breakdown:
-        rc["breakdown"] = breakdown
-    return {"workspace_id": workspace_id, "chartType": chart_type, "roleConfig": rc, "filters": filters or []}
-
-def make_dashboard(name, description, chart_list, filters_config=None):
-    """chart_list = [(chart_id, x, y, w, h), ...]"""
-    dash = post("/dashboards/", {
-        "name": name,
-        "description": description,
-        "charts": [],
-        "filters_config": filters_config or [],
-    })
-    did = dash["id"]
-    for chart_id, x, y, w, h in chart_list:
-        post(f"/dashboards/{did}/charts", {
-            "chart_id": chart_id,
-            "layout": {"x": x, "y": y, "w": w, "h": h},
-        })
-    return did
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 1 — Parse xlsx and create Manual datasource
-# ══════════════════════════════════════════════════════════════════════════════
-print("1. Uploading scope-foodball-demo.xlsx ...")
 if not os.path.exists(XLSX_PATH):
-    print(f"  x File not found: {XLSX_PATH}")
-    sys.exit(1)
+    print(f"{RED}✗ Không tìm thấy {XLSX_PATH}{RESET}"); sys.exit(1)
 
-with open(XLSX_PATH, "rb") as fh:
-    parse_resp = requests.post(
+with open(XLSX_PATH, "rb") as f:
+    resp = requests.post(
         f"{BASE}/datasources/manual/parse-file",
-        files={"file": ("scope-foodball-demo.xlsx", fh,
+        files={"file": ("scope-foodball-demo.xlsx", f,
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-        timeout=30,
+        timeout=60,
     )
-if not parse_resp.ok:
-    print(f"  x Parse failed {parse_resp.status_code}: {parse_resp.text[:300]}")
-    sys.exit(1)
+if resp.status_code != 200:
+    print(f"{RED}✗ Parse xlsx thất bại: {resp.status_code} {resp.text[:200]}{RESET}"); sys.exit(1)
 
-parsed     = parse_resp.json()
-sheets     = parsed["sheets"]
-sheet_names = list(sheets.keys())
-print(f"  + Parsed {len(sheet_names)} sheets: {sheet_names}")
+sheets = resp.json()["sheets"]
+ok(f"Parse xlsx OK — {len(sheets)} sheets: {list(sheets.keys())}")
 
-ds = post("/datasources/", {
-    "name": "Football Demo",
-    "type": "manual",
-    "description": "Du lieu bong da FIFA tu file scope-foodball-demo.xlsx (3 sheets)",
-    "config": {"sheets": sheets},
-})
-DS_ID = ds["id"]
-print(f"  + Datasource created  id={DS_ID}")
+db = SessionLocal()
+try:
+    ds = DataSource(
+        name="Football Analytics",
+        type="manual",
+        description="Dữ liệu bóng đá FIFA từ scope-foodball-demo.xlsx (3 sheets)",
+        config={"sheets": sheets},
+        owner_id=uids["admin@appbi.io"],
+    )
+    db.add(ds); db.commit(); db.refresh(ds)
+    DS_ID = ds.id
+    ok(f"DataSource id={DS_ID} (owner=admin)")
+finally:
+    db.close()
 
+# ═══════════════════════════════════════════════════════════
+#  BƯỚC 3 — TẠO WORKSPACES & TABLES
+# ═══════════════════════════════════════════════════════════
+section("3. Tạo Workspaces & Workspace Tables")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 2 — Datasets (base SQL + rich transformation pipelines)
-# ══════════════════════════════════════════════════════════════════════════════
-print("\n2. Creating datasets with transformations ...")
-datasets = {}
+db = SessionLocal()
+try:
+    # W1 — Rankings Workspace (admin)
+    w1 = DatasetWorkspace(
+        name="Rankings Workspace",
+        description="Bảng xếp hạng FIFA — do admin quản lý",
+        owner_id=uids["admin@appbi.io"],
+    )
+    db.add(w1); db.flush()
+    t1 = DatasetWorkspaceTable(
+        workspace_id=w1.id, datasource_id=DS_ID, source_kind="sql_query",
+        source_query='SELECT * FROM fifa_world_rankings_jan_2026',
+        display_name="Rankings Full", enabled=True, transformations=[],
+    )
+    t2 = DatasetWorkspaceTable(
+        workspace_id=w1.id, datasource_id=DS_ID, source_kind="sql_query",
+        source_query='SELECT "Rank","Country","Confederation","Points" FROM fifa_world_rankings_jan_2026 ORDER BY "Rank" LIMIT 10',
+        display_name="Top 10 Rankings", enabled=True, transformations=[],
+    )
+    db.add_all([t1, t2]); db.flush()
+    W1_ID, T1_ID, T2_ID = w1.id, t1.id, t2.id
+    ok(f"W1 id={W1_ID} (owner=admin)  → T1={T1_ID} Rankings Full  | T2={T2_ID} Top 10")
 
-# ── 2a. Raw World Rankings (base — no transforms) ────────────────────────────
-d = post("/datasets/", {
-    "name": "FIFA World Rankings (Jan 2026)",
-    "description": "Bang xep hang FIFA thang 1/2026 — day du, khong loc",
-    "data_source_id": DS_ID,
-    "sql_query": "SELECT * FROM fifa_world_rankings_jan_2026",
-    "transformations": [],
-    "transformation_version": 2,
-})
-datasets["rankings"] = d["id"]
-print(f"  + Rankings (raw)  id={d['id']}")
+    # W2 — World Cup Workspace (edit@)
+    w2 = DatasetWorkspace(
+        name="World Cup Workspace",
+        description="Lịch sử World Cup & Top Scorers — do edit quản lý",
+        owner_id=uids["edit@appbi.io"],
+    )
+    db.add(w2); db.flush()
+    t3 = DatasetWorkspaceTable(
+        workspace_id=w2.id, datasource_id=DS_ID, source_kind="sql_query",
+        source_query='SELECT * FROM fifa_world_cup_history',
+        display_name="WC History", enabled=True, transformations=[],
+    )
+    t4 = DatasetWorkspaceTable(
+        workspace_id=w2.id, datasource_id=DS_ID, source_kind="sql_query",
+        source_query='SELECT * FROM fifa_world_cup_top_scorers',
+        display_name="Top Scorers", enabled=True, transformations=[],
+    )
+    db.add_all([t3, t4]); db.flush()
+    W2_ID, T3_ID, T4_ID = w2.id, t3.id, t4.id
+    ok(f"W2 id={W2_ID} (owner=edit)   → T3={T3_ID} WC History     | T4={T4_ID} Top Scorers")
+    db.commit()
+finally:
+    db.close()
 
-# ── 2b. Rankings — add_column + filter_rows + sort ───────────────────────────
-# Demonstrates: add_column (CASE expression), filter_rows, sort
-d = post("/datasets/", {
-    "name": "Rankings — Performance Tier & Elite Filter",
-    "description": "Them cot Performance_Tier bang CASE WHEN, loc lay Elite+Strong, sap xep giam dan",
-    "data_source_id": DS_ID,
-    "sql_query": "SELECT * FROM fifa_world_rankings_jan_2026",
-    "transformation_version": 2,
-    "transformations": [
-        {
-            "id": "step_add_tier",
-            "type": "add_column",
-            "enabled": True,
-            "params": {
-                "newField": "Performance_Tier",
-                "expression": (
-                    "CASE WHEN Points > 1800 THEN 'Elite' "
-                    "WHEN Points > 1700 THEN 'Strong' "
-                    "WHEN Points > 1600 THEN 'Solid' "
-                    "ELSE 'Average' END"
-                ),
-            },
-        },
-        {
-            "id": "step_filter_elite",
-            "type": "filter_rows",
-            "enabled": True,
-            "params": {
-                "conditions": [
-                    {"field": "Performance_Tier", "operator": "in",
-                     "value": ["Elite", "Strong"]},
-                ],
-                "logic": "AND",
-            },
-        },
-        {
-            "id": "step_sort",
-            "type": "sort",
-            "enabled": True,
-            "params": {"by": [{"field": "Points", "direction": "desc"}]},
-        },
-    ],
-})
-datasets["rankings_elite"] = d["id"]
-print(f"  + Rankings Elite+Strong (add_column+filter+sort)  id={d['id']}")
+# ═══════════════════════════════════════════════════════════
+#  BƯỚC 4 — TẠO DATASETS
+# ═══════════════════════════════════════════════════════════
+section("4. Tạo Datasets")
 
-# ── 2c. Rankings — group_by ───────────────────────────────────────────────────
-# Demonstrates: group_by with multiple aggregations
-d = post("/datasets/", {
-    "name": "Rankings by Confederation (Aggregated)",
-    "description": "Nhom theo lien doan — dem quoc gia, TB diem, tong WC titles, max continental titles",
-    "data_source_id": DS_ID,
-    "sql_query": "SELECT * FROM fifa_world_rankings_jan_2026",
-    "transformation_version": 2,
-    "transformations": [
-        {
-            "id": "step_group",
-            "type": "group_by",
-            "enabled": True,
-            "params": {
-                "by": ["Confederation"],
-                "aggregations": [
-                    {"field": "*",                  "agg": "count",  "as": "num_countries"},
-                    {"field": "Points",             "agg": "avg",    "as": "avg_points"},
-                    {"field": "World_Cup_Titles",   "agg": "sum",    "as": "total_wc_titles"},
-                    {"field": "Continental_Titles", "agg": "max",    "as": "max_continental"},
-                ],
-            },
-        },
-        {
-            "id": "step_sort_conf",
-            "type": "sort",
-            "enabled": True,
-            "params": {"by": [{"field": "avg_points", "direction": "desc"}]},
-        },
-    ],
-})
-datasets["by_confederation"] = d["id"]
-print(f"  + By Confederation (group_by+sort)  id={d['id']}")
+db = SessionLocal()
+try:
+    datasets_data = [
+        ("Bảng xếp hạng FIFA",
+         "Bảng xếp hạng FIFA tháng 1/2026 — do admin quản lý, CHƯA share",
+         'SELECT * FROM fifa_world_rankings_jan_2026',
+         "admin@appbi.io"),
+        ("Lịch sử World Cup",
+         "Toàn bộ lịch sử WC — do admin quản lý, share cho edit (edit)",
+         'SELECT * FROM fifa_world_cup_history',
+         "admin@appbi.io"),
+        ("Thống kê liên đoàn",
+         "Tổng hợp theo confederation — do edit tạo, CHƯA share",
+         'SELECT "Confederation", COUNT(*) as "Teams", ROUND(AVG(CAST("Points" AS NUMERIC)),1) as "Avg_Points" FROM fifa_world_rankings_jan_2026 GROUP BY "Confederation" ORDER BY "Avg_Points" DESC',
+         "edit@appbi.io"),
+        ("Top Scorers FIFA",
+         "Danh sách cầu thủ ghi nhiều bàn WC — do edit tạo, share cho viewer (view)",
+         'SELECT * FROM fifa_world_cup_top_scorers',
+         "edit@appbi.io"),
+    ]
+    dataset_ids = []
+    for name, desc, sql, owner_email in datasets_data:
+        d = Dataset(
+            name=name, description=desc,
+            data_source_id=DS_ID, sql_query=sql,
+            transformations=[], transformation_version=2,
+            owner_id=uids[owner_email],
+        )
+        db.add(d); db.flush()
+        dataset_ids.append(d.id)
+        ok(f"Dataset id={d.id} '{name}' (owner={'admin' if 'admin' in owner_email else 'edit'})")
+    db.commit()
+    D1_ID, D2_ID, D3_ID, D4_ID = dataset_ids
+finally:
+    db.close()
 
-# ── 2d. Rankings — duplicate_column + merge_columns ──────────────────────────
-d = post("/datasets/", {
-    "name": "Rankings — Country & Confederation Label",
-    "description": "Nhan doi cot, gop cot Country+Confederation thanh 1 nhan hien thi",
-    "data_source_id": DS_ID,
-    "sql_query": "SELECT Rank, Country, Confederation, Points, World_Cup_Titles FROM fifa_world_rankings_jan_2026",
-    "transformation_version": 2,
-    "transformations": [
-        {
-            "id": "step_dup",
-            "type": "duplicate_column",
-            "enabled": True,
-            "params": {"field": "Country", "newField": "Country_Copy"},
-        },
-        {
-            "id": "step_merge",
-            "type": "merge_columns",
-            "enabled": True,
-            "params": {
-                "fields": ["Country", "Confederation"],
-                "separator": " / ",
-                "newField": "Country_Conf_Label",
-            },
-        },
-        {
-            "id": "step_limit",
-            "type": "limit",
-            "enabled": True,
-            "params": {"count": 20},
-        },
-    ],
-})
-datasets["label_merged"] = d["id"]
-print(f"  + Label Merged (duplicate+merge+limit)  id={d['id']}")
+# ═══════════════════════════════════════════════════════════
+#  BƯỚC 5 — TẠO CHARTS
+# ═══════════════════════════════════════════════════════════
+section("5. Tạo Charts")
 
-# ── 2e. WC History — filter_rows + group_by ──────────────────────────────────
-d = post("/datasets/", {
-    "name": "WC Champions — Multi-Title Countries",
-    "description": "Loc cac quoc gia co >= 2 chuc vo dich WC, nhom theo lien doan",
-    "data_source_id": DS_ID,
-    "sql_query": "SELECT * FROM fifa_world_cup_history",
-    "transformation_version": 2,
-    "transformations": [
-        {
-            "id": "step_filter_multi",
-            "type": "filter_rows",
-            "enabled": True,
-            "params": {
-                "conditions": [
-                    {"field": "World_Cup_Titles", "operator": "gte", "value": 2}
-                ],
-                "logic": "AND",
-            },
-        },
-        {
-            "id": "step_sort_wc",
-            "type": "sort",
-            "enabled": True,
-            "params": {"by": [{"field": "World_Cup_Titles", "direction": "desc"}]},
-        },
-    ],
-})
-datasets["wc_multi"] = d["id"]
-print(f"  + WC Multi-Title (filter+sort)  id={d['id']}")
+def bar_cfg(ws_id, dim, metric, agg="sum"):
+    return {"workspace_id": ws_id, "chartType": "BAR",
+            "roleConfig": {"dimension": dim, "metrics": [{"field": metric, "agg": agg}],
+                           "breakdown": None, "sort": None, "limit": 20},
+            "filters": []}
 
-# ── 2f. Top Scorers — fill_null + add_column ─────────────────────────────────
-d = post("/datasets/", {
-    "name": "Top Scorers — Enriched",
-    "description": "Them cot Goal_Era bang CASE, fill NULL trong cot Player neu co",
-    "data_source_id": DS_ID,
-    "sql_query": "SELECT * FROM fifa_world_cup_top_scorers",
-    "transformation_version": 2,
-    "transformations": [
-        {
-            "id": "step_fill_player",
-            "type": "fill_null",
-            "enabled": True,
-            "params": {"field": "Player", "value": "Unknown"},
-        },
-        {
-            "id": "step_add_era",
-            "type": "add_column",
-            "enabled": True,
-            "params": {
-                "newField": "Goal_Era",
-                "expression": (
-                    "CASE WHEN Year < 1970 THEN 'Classic (pre-1970)' "
-                    "WHEN Year < 1994 THEN 'Modern (1970-1993)' "
-                    "ELSE 'Contemporary (1994+)' END"
-                ),
-            },
-        },
-    ],
-})
-datasets["scorers_enriched"] = d["id"]
-print(f"  + Scorers Enriched (fill_null+add_column)  id={d['id']}")
+def pie_cfg(ws_id, dim, metric, agg="count"):
+    return {"workspace_id": ws_id, "chartType": "PIE",
+            "roleConfig": {"dimension": dim, "metrics": [{"field": metric, "agg": agg}]},
+            "filters": []}
 
-print(f"\n  -> {len(datasets)} datasets created")
+def table_cfg(ws_id):
+    return {"workspace_id": ws_id, "chartType": "TABLE",
+            "roleConfig": {"columns": [], "sort": None, "limit": 50},
+            "filters": []}
 
+db = SessionLocal()
+try:
+    charts_spec = [
+        # name                        desc                                           wt_id  chart_type        config                                        owner
+        ("Điểm FIFA Top 20",         "BAR: Top 20 quốc gia theo điểm FIFA — admin",  T1_ID, ChartType.BAR,   bar_cfg(W1_ID,"Country","Points"),          "admin@appbi.io"),
+        ("Phân bố liên đoàn",        "PIE: Số đội theo confederation — admin",       T1_ID, ChartType.PIE,   pie_cfg(W1_ID,"Confederation","Rank"),       "admin@appbi.io"),
+        ("Top 10 Rankings",          "TABLE: Bảng top 10 — admin",                   T2_ID, ChartType.TABLE, table_cfg(W1_ID),                            "admin@appbi.io"),
+        ("WC Champions Overview",    "BAR: Số lần vô địch theo quốc gia — admin",    T3_ID, ChartType.BAR,   bar_cfg(W2_ID,"Champion","Year","count"),     "admin@appbi.io"),
+        ("Top Scorers Bar",          "BAR: Số bàn thắng WC theo cầu thủ — edit",     T4_ID, ChartType.BAR,   bar_cfg(W2_ID,"Player","Goals"),             "edit@appbi.io"),
+        ("Scorers by Confederation", "PIE: Số bàn theo liên đoàn — edit",            T4_ID, ChartType.PIE,   pie_cfg(W2_ID,"Confederation","Goals"),      "edit@appbi.io"),
+        ("WC History Table",         "TABLE: Bảng lịch sử World Cup — edit",         T3_ID, ChartType.TABLE, table_cfg(W2_ID),                            "edit@appbi.io"),
+    ]
+    chart_ids = []
+    for name, desc, wt_id, ct, cfg, owner_email in charts_spec:
+        c = Chart(name=name, description=desc, workspace_table_id=wt_id,
+                  chart_type=ct, config=cfg, owner_id=uids[owner_email])
+        db.add(c); db.flush()
+        chart_ids.append(c.id)
+        ok(f"C{len(chart_ids)}={c.id} '{name}' (owner={'admin' if 'admin' in owner_email else 'edit'})")
+    db.commit()
+    C1, C2, C3, C4, C5, C6, C7 = chart_ids
+finally:
+    db.close()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 3 — Dataset Workspaces + Tables (SQL-query, uses DuckDB on manual DS)
-# ══════════════════════════════════════════════════════════════════════════════
-print("\n3. Creating dataset workspaces ...")
+# ═══════════════════════════════════════════════════════════
+#  BƯỚC 6 — TẠO DASHBOARDS
+# ═══════════════════════════════════════════════════════════
+section("6. Tạo Dashboards")
 
-def add_table(workspace_id, display_name, sql_query, transformations=None):
-    return post(f"/dataset-workspaces/{workspace_id}/tables", {
-        "datasource_id": DS_ID,
-        "source_kind": "sql_query",
-        "source_query": sql_query,
-        "display_name": display_name,
-        "enabled": True,
-        "transformations": transformations or [],
-    })
+db = SessionLocal()
+try:
+    dashboards_spec = [
+        ("Admin Riêng",           "Private — chỉ admin thấy",                            "admin@appbi.io",  [(C1,0,0),(C2,6,0)]),
+        ("Chia sẻ cho Edit",      "Admin share cho edit@ (edit perm) — admin+edit thấy", "admin@appbi.io",  [(C2,0,0),(C3,6,0)]),
+        ("Chia sẻ cho Viewer",    "Admin share cho viewer@ (view) — admin+viewer thấy",  "admin@appbi.io",  [(C3,0,0),(C4,6,0)]),
+        ("Toàn Đội",              "Admin share toàn đội — mọi người thấy",               "admin@appbi.io",  [(C1,0,0),(C4,6,0)]),
+        ("Edit Riêng",            "edit tạo, private — edit+admin(full) thấy",           "edit@appbi.io",   [(C5,0,0),(C6,6,0)]),
+        ("Edit → Chia Viewer",    "Edit share cho viewer@ (view) — edit+viewer+admin",   "edit@appbi.io",   [(C6,0,0),(C7,6,0)]),
+    ]
+    dash_ids = []
+    for name, desc, owner_email, charts_layout in dashboards_spec:
+        d = Dashboard(name=name, description=desc,
+                      owner_id=uids[owner_email], filters_config=[])
+        db.add(d); db.flush()
+        for cid, x, y in charts_layout:
+            db.add(DashboardChart(dashboard_id=d.id, chart_id=cid,
+                                  layout={"x":x,"y":y,"w":6,"h":4}, parameters={}))
+        db.flush()
+        dash_ids.append(d.id)
+        ok(f"DB{len(dash_ids)}={d.id} '{name}' (owner={'admin' if 'admin' in owner_email else 'edit'})")
+    db.commit()
+    DB1, DB2, DB3, DB4, DB5, DB6 = dash_ids
+finally:
+    db.close()
 
-# ── Workspace 1: FIFA World Rankings ─────────────────────────────────────────
-ws1 = post("/dataset-workspaces/", {
-    "name": "FIFA World Rankings",
-    "description": "Bang xep hang FIFA thang 1/2026 — day du, top 10, phan tich lien doan",
-})
-WS1 = ws1["id"]
+# ═══════════════════════════════════════════════════════════
+#  BƯỚC 7 — TẠO RESOURCE SHARES
+# ═══════════════════════════════════════════════════════════
+section("7. Tạo Resource Shares")
 
-t_full      = add_table(WS1, "Full Rankings",
-    "SELECT * FROM fifa_world_rankings_jan_2026 ORDER BY Rank",
-    transformations=[
-        {
-            "id": "step_rank_group",
-            "type": "js_formula",
-            "enabled": True,
-            "params": {
-                "newField": "Rank_Group",
-                "formula": 'IF([Rank]<=10,"Top 10",IF([Rank]<=25,"Top 25","Rest"))',
-            },
-        },
-        {
-            "id": "step_conf_power",
-            "type": "js_formula",
-            "enabled": True,
-            "params": {
-                "newField": "Conf_Power_Score",
-                "formula": "[Points]+[World_Cup_Titles]*50+[Continental_Titles]*10",
-            },
-        },
-    ],
-)
-t_top10     = add_table(WS1, "Top 10 Rankings",
-    "SELECT * FROM fifa_world_rankings_jan_2026 WHERE Rank <= 10 ORDER BY Rank",
-    transformations=[
-        {
-            "id": "step_points_label",
-            "type": "js_formula",
-            "enabled": True,
-            "params": {
-                "newField": "Points_Rating",
-                "formula": 'IF([Points]>1800,"Outstanding",IF([Points]>1700,"Excellent","Great"))',
-            },
-        },
-    ],
-)
-t_conf_agg  = add_table(WS1, "Summary by Confederation",
-    "SELECT Confederation, COUNT(*) AS num_countries, "
-    "ROUND(AVG(Points), 1) AS avg_points, "
-    "SUM(World_Cup_Titles) AS total_wc_titles, "
-    "SUM(Continental_Titles) AS total_continental "
-    "FROM fifa_world_rankings_jan_2026 "
-    "GROUP BY Confederation ORDER BY avg_points DESC")
-T_FULL     = t_full["id"]
-T_TOP10    = t_top10["id"]
-T_CONF_AGG = t_conf_agg["id"]
-print(f"  + Workspace 1 'FIFA World Rankings'  id={WS1}  tables: {T_FULL}, {T_TOP10}, {T_CONF_AGG}")
+conn = psycopg2.connect(DB_DSN)
 
-# ── Workspace 2: World Cup Analysis ──────────────────────────────────────────
-ws2 = post("/dataset-workspaces/", {
-    "name": "World Cup Analysis",
-    "description": "Lich su va phan tich World Cup tu 1930 den 2022",
-})
-WS2 = ws2["id"]
+def share(rtype, rid, uid, perm, shared_by):
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO resource_shares (resource_type, resource_id, user_id, permission, shared_by)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT ON CONSTRAINT uq_resource_shares DO UPDATE
+              SET permission=EXCLUDED.permission, shared_by=EXCLUDED.shared_by
+        """, (rtype, str(rid), str(uid), perm, str(shared_by)))
 
-t_history   = add_table(WS2, "WC Champions History",
-    "SELECT * FROM fifa_world_cup_history ORDER BY World_Cup_Titles DESC")
-t_scorers   = add_table(WS2, "Top Scorers by Year",
-    "SELECT * FROM fifa_world_cup_top_scorers ORDER BY Year DESC",
-    transformations=[
-        {
-            "id": "step_scorer_tier",
-            "type": "js_formula",
-            "enabled": True,
-            "params": {
-                "newField": "Scorer_Tier",
-                "formula": 'IF([Goals]>=5,"Legend",IF([Goals]>=4,"Star","Notable"))',
-            },
-        },
-        {
-            "id": "step_goal_era",
-            "type": "js_formula",
-            "enabled": True,
-            "params": {
-                "newField": "Goal_Era",
-                "formula": 'IF([Year]<1970,"Classic (pre-70)",IF([Year]<1990,"Modern (70-90)",IF([Year]<2010,"HD Era (90-10)","Recent (2010+)")))',
-            },
-        },
-    ],
-)
-t_wc_conf   = add_table(WS2, "WC Titles by Confederation",
-    "SELECT Confederation, "
-    "SUM(World_Cup_Titles) AS total_wc_titles, "
-    "COUNT(*) AS num_countries "
-    "FROM fifa_world_cup_history "
-    "GROUP BY Confederation ORDER BY total_wc_titles DESC")
-T_HISTORY  = t_history["id"]
-T_SCORERS  = t_scorers["id"]
-T_WC_CONF  = t_wc_conf["id"]
-print(f"  + Workspace 2 'World Cup Analysis'  id={WS2}  tables: {T_HISTORY}, {T_SCORERS}, {T_WC_CONF}")
+try:
+    A = uids["admin@appbi.io"]
+    E = uids["edit@appbi.io"]
+    V = uids["viewer@appbi.io"]
 
-# ── Workspace 3: Football Analytics Hub ──────────────────────────────────────
-ws3 = post("/dataset-workspaces/", {
-    "name": "Football Analytics Hub",
-    "description": "Phan tich nang cao — phan tang suc manh, so sanh da chieu, cross-sheet",
-})
-WS3 = ws3["id"]
+    # Datasets
+    share("dataset", D2_ID, E, "edit", A);   ok(f"Dataset  D2={D2_ID}: admin → edit (edit)")
+    share("dataset", D4_ID, V, "view", E);   ok(f"Dataset  D4={D4_ID}: edit  → viewer (view)")
 
-t_tiers     = add_table(WS3, "Country Performance Tiers",
-    "SELECT Country, Points, World_Cup_Titles, Continental_Titles, "
-    "CASE WHEN Points > 1800 THEN 'Elite' "
-    "WHEN Points > 1700 THEN 'Strong' "
-    "WHEN Points > 1600 THEN 'Solid' "
-    "ELSE 'Average' END AS Performance_Tier "
-    "FROM fifa_world_rankings_jan_2026 ORDER BY Points DESC",
-    transformations=[
-        {
-            "id": "step_title_dom",
-            "type": "js_formula",
-            "enabled": True,
-            "params": {
-                "newField": "Title_Dominance",
-                "formula": 'IF([World_Cup_Titles]>3,"Dynasty",IF([World_Cup_Titles]>1,"Champion",IF([World_Cup_Titles]>0,"Winner","No WC")))',
-            },
-        },
-        {
-            "id": "step_wc_per_conf",
-            "type": "js_formula",
-            "enabled": True,
-            "params": {
-                "newField": "Points_Per_WC",
-                "formula": 'IF([World_Cup_Titles]>0,ROUND([Points]/[World_Cup_Titles],0),0)',
-            },
-        },
-    ],
-)
-t_titles_cmp = add_table(WS3, "WC vs Continental Titles (Top 10)",
-    "SELECT Country, World_Cup_Titles, Continental_Titles, "
-    "World_Cup_Titles + Continental_Titles AS Total_Titles "
-    "FROM fifa_world_rankings_jan_2026 WHERE Rank <= 10 ORDER BY Total_Titles DESC",
-    transformations=[
-        {
-            "id": "step_title_ratio",
-            "type": "js_formula",
-            "enabled": True,
-            "params": {
-                "newField": "WC_vs_Continental",
-                "formula": 'IF([Continental_Titles]>0,ROUND([World_Cup_Titles]/[Continental_Titles],2),"N/A")',
-            },
-        },
-    ],
-)
-t_cross     = add_table(WS3, "Cross-Sheet: Rankings + History",
-    "SELECT r.Rank, r.Country, r.Points, r.Confederation, "
-    "COALESCE(h.World_Cup_Titles, 0) AS WC_Titles_History "
-    "FROM fifa_world_rankings_jan_2026 r "
-    "LEFT JOIN fifa_world_cup_history h ON r.Country = h.Country "
-    "ORDER BY r.Rank LIMIT 15")
-T_TIERS      = t_tiers["id"]
-T_TITLES_CMP = t_titles_cmp["id"]
-T_CROSS      = t_cross["id"]
-print(f"  + Workspace 3 'Football Analytics Hub'  id={WS3}  tables: {T_TIERS}, {T_TITLES_CMP}, {T_CROSS}")
+    # Workspaces
+    share("workspace", W1_ID, E, "edit", A); ok(f"Workspace W1={W1_ID}: admin → edit  (edit)")
+    share("workspace", W2_ID, V, "view", E); ok(f"Workspace W2={W2_ID}: edit  → viewer (view)")
 
+    # Charts
+    share("chart", C2, E, "edit", A);        ok(f"Chart    C2={C2}: admin → edit (edit)")
+    share("chart", C3, E, "edit", A);        ok(f"Chart    C3={C3}: admin → edit (edit)")
+    share("chart", C4, V, "view", A);        ok(f"Chart    C4={C4}: admin → viewer (view)")
+    share("chart", C6, V, "view", E);        ok(f"Chart    C6={C6}: edit  → viewer (view)")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 4 — Charts (all via workspace_table_id so Explore editor loads correctly)
-# ══════════════════════════════════════════════════════════════════════════════
-print("\n4. Creating charts ...")
-charts = {}
+    # Dashboards
+    share("dashboard", DB2, E, "edit", A);   ok(f"Dashboard DB2={DB2}: admin → edit (edit)")
+    share("dashboard", DB3, V, "view", A);   ok(f"Dashboard DB3={DB3}: admin → viewer (view)")
+    share("dashboard", DB4, E, "view", A);   ok(f"Dashboard DB4={DB4}: admin → edit (view) [all team]")
+    share("dashboard", DB4, V, "view", A);   ok(f"Dashboard DB4={DB4}: admin → viewer (view) [all team]")
+    share("dashboard", DB6, V, "view", E);   ok(f"Dashboard DB6={DB6}: edit  → viewer (view)")
 
-def ws_chart(name, description, workspace_id, table_id, chart_type, dimension, metrics,
-             breakdown=None, filters=None):
-    return post("/charts/", {
-        "name": name,
-        "description": description,
-        "workspace_table_id": table_id,
-        "chart_type": chart_type,
-        "config": explore_config(workspace_id, chart_type, dimension, metrics,
-                                  breakdown=breakdown, filters=filters),
-    })
+    conn.commit()
+finally:
+    conn.close()
 
-# ── WS1: FIFA World Rankings ──────────────────────────────────────────────────
-c = ws_chart("Total Countries in Rankings",
-    "Tong so quoc gia xep hang FIFA thang 1/2026",
-    WS1, T_FULL, "KPI",
-    "dummy",
-    [{"field": "Rank", "agg": "count"}])
-charts["kpi_total"] = c["id"]
-print(f"  + KPI Total Nations  id={c['id']}")
-
-c = ws_chart("Full FIFA Rankings — TABLE",
-    "Bang xep hang day du — tat ca cac truong",
-    WS1, T_FULL, "TABLE",
-    "Country",
-    [{"field": "Points", "agg": "sum"}, {"field": "Rank", "agg": "sum"}])
-charts["table_rankings"] = c["id"]
-print(f"  + TABLE Full Rankings  id={c['id']}")
-
-c = ws_chart("Top 10 Points — BAR",
-    "Diem FIFA top 10 quoc gia xep hang cao nhat",
-    WS1, T_TOP10, "BAR",
-    "Country",
-    [{"field": "Points", "agg": "sum"}])
-charts["bar_top10_pts"] = c["id"]
-print(f"  + BAR Top 10 Points  id={c['id']}")
-
-c = ws_chart("WC Champions in Top 10 — PIE",
-    "Phan bo chuc vo dich WC trong top 10 quoc gia hang dau",
-    WS1, T_TOP10, "PIE",
-    "Confederation",
-    [{"field": "Country", "agg": "count"}])
-charts["pie_top10_conf"] = c["id"]
-print(f"  + PIE Top 10 Confederation  id={c['id']}")
-
-c = ws_chart("Countries per Confederation — PIE",
-    "Phan bo so quoc gia trong tung lien doan FIFA",
-    WS1, T_CONF_AGG, "PIE",
-    "Confederation",
-    [{"field": "num_countries", "agg": "sum"}])
-charts["pie_confederation"] = c["id"]
-print(f"  + PIE Confederation Distribution  id={c['id']}")
-
-c = ws_chart("Avg FIFA Points by Confederation — BAR",
-    "Diem FIFA trung binh moi lien doan (GROUP BY workspace table)",
-    WS1, T_CONF_AGG, "BAR",
-    "Confederation",
-    [{"field": "avg_points", "agg": "sum"}])
-charts["bar_avg_pts_conf"] = c["id"]
-print(f"  + BAR Avg Points by Confederation  id={c['id']}")
-
-# ── WS2: World Cup Analysis ────────────────────────────────────────────────────
-c = ws_chart("WC Titles by Country — BAR",
-    "So chuc vo dich World Cup theo quoc gia",
-    WS2, T_HISTORY, "BAR",
-    "Country",
-    [{"field": "World_Cup_Titles", "agg": "sum"}])
-charts["bar_wc_titles"] = c["id"]
-print(f"  + BAR WC Titles by Country  id={c['id']}")
-
-c = ws_chart("WC Champions — Full History TABLE",
-    "Lich su day du cac doi vo dich World Cup qua cac the he",
-    WS2, T_HISTORY, "TABLE",
-    "Country",
-    [{"field": "World_Cup_Titles", "agg": "sum"}, {"field": "Continental_Titles", "agg": "sum"}])
-charts["table_wc_history"] = c["id"]
-print(f"  + TABLE WC History  id={c['id']}")
-
-c = ws_chart("Total WC Editions — KPI",
-    "Tong so lan to chuc World Cup trong lich su",
-    WS2, T_SCORERS, "KPI",
-    "dummy",
-    [{"field": "Year", "agg": "count"}])
-charts["kpi_wc_editions"] = c["id"]
-print(f"  + KPI WC Editions  id={c['id']}")
-
-c = ws_chart("Top Goals by WC Year — BAR",
-    "So ban thang nhieu nhat cua vua pha luoi qua tung ky World Cup",
-    WS2, T_SCORERS, "BAR",
-    "Year",
-    [{"field": "Goals", "agg": "max"}])
-charts["bar_scorer_goals"] = c["id"]
-print(f"  + BAR Scorer Goals by Year  id={c['id']}")
-
-c = ws_chart("WC Titles by Confederation — BAR",
-    "Tong so lan vo dich WC cua moi lien doan",
-    WS2, T_WC_CONF, "BAR",
-    "Confederation",
-    [{"field": "total_wc_titles", "agg": "sum"}])
-charts["bar_ws_wc_conf"] = c["id"]
-print(f"  + BAR WC Titles by Confederation  id={c['id']}")
-
-c = ws_chart("WC Titles Confederation Share — PIE",
-    "Phan bo chuc vo dich WC theo lien doan",
-    WS2, T_WC_CONF, "PIE",
-    "Confederation",
-    [{"field": "total_wc_titles", "agg": "sum"}])
-charts["pie_goal_era"] = c["id"]
-print(f"  + PIE WC Confederation Share  id={c['id']}")
-
-# ── WS3: Football Analytics Hub ───────────────────────────────────────────────
-c = ws_chart("Performance Tier Distribution — PIE",
-    "Phan tang cac doi tuyen theo muc diem: Elite/Strong/Solid/Average (CASE WHEN)",
-    WS3, T_TIERS, "PIE",
-    "Performance_Tier",
-    [{"field": "Country", "agg": "count"}])
-charts["pie_ws_tiers"] = c["id"]
-print(f"  + PIE Performance Tiers  id={c['id']}")
-
-c = ws_chart("Performance Tiers — TABLE",
-    "Bang day du phan tang cac doi tuyen voi Performance_Tier (CASE WHEN trong SQL)",
-    WS3, T_TIERS, "TABLE",
-    "Country",
-    [{"field": "Points", "agg": "sum"}, {"field": "Performance_Tier", "agg": "count"}])
-charts["table_tiers"] = c["id"]
-print(f"  + TABLE Performance Tiers  id={c['id']}")
-
-c = ws_chart("WC vs Continental Titles — GROUPED BAR",
-    "So sanh chuc vo dich WC va luc dia cua top 10 quoc gia (hai series tren 1 bieu do)",
-    WS3, T_TITLES_CMP, "GROUPED_BAR",
-    "Country",
-    [{"field": "World_Cup_Titles", "agg": "sum"},
-     {"field": "Continental_Titles", "agg": "sum"}])
-charts["grouped_ws_titles"] = c["id"]
-print(f"  + GROUPED_BAR WC vs Continental Titles  id={c['id']}")
-
-c = ws_chart("Total Titles Top 10 — BAR",
-    "Tong danh hieu WC + Luc dia top 10 (cot tinh toan = WC + Continental)",
-    WS3, T_TITLES_CMP, "BAR",
-    "Country",
-    [{"field": "Total_Titles", "agg": "sum"}])
-charts["bar_ws_total_titles"] = c["id"]
-print(f"  + BAR Total Titles Top 10  id={c['id']}")
-
-c = ws_chart("Rankings + WC History — TABLE",
-    "Ket hop bang xep hang FIFA + lich su WC qua LEFT JOIN 2 sheets (cross-sheet)",
-    WS3, T_CROSS, "TABLE",
-    "Country",
-    [{"field": "Points", "agg": "sum"}, {"field": "WC_Titles_History", "agg": "sum"}])
-charts["table_ws_cross"] = c["id"]
-print(f"  + TABLE Cross-Sheet Rankings+History  id={c['id']}")
-
-c = ws_chart("FIFA Rankings + WC Data — BAR",
-    "Diem FIFA cua cac nuoc co du lieu cross-sheet (JOIN giua hai sheets)",
-    WS3, T_CROSS, "BAR",
-    "Country",
-    [{"field": "Points", "agg": "sum"}])
-charts["bar_cross_pts"] = c["id"]
-print(f"  + BAR Cross-Sheet Points  id={c['id']}")
-
-print(f"\n  -> {len(charts)} charts total")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 5 — Dashboards (with filters_config pre-applied)
-# ══════════════════════════════════════════════════════════════════════════════
-print("\n5. Creating dashboards ...")
-
-# ── Dashboard 1: FIFA World Rankings Overview ─────────────────────────────────
-d1 = make_dashboard(
-    name="FIFA World Rankings Overview",
-    description="Tong quan bang xep hang FIFA thang 1/2026 — KPI, top 10, phan bo lien doan",
-    chart_list=[
-        (charts["kpi_total"],         0,  0,  3, 4),
-        (charts["pie_confederation"],  3,  0,  4, 4),
-        (charts["bar_avg_pts_conf"],   7,  0,  5, 4),
-        (charts["bar_top10_pts"],      0,  4,  6, 5),
-        (charts["pie_top10_conf"],     6,  4,  6, 5),
-        (charts["table_rankings"],     0,  9, 12, 5),
-    ],
-    filters_config=[
-        {
-            "field": "Confederation",
-            "label": "Confederation",
-            "operator": "eq",
-            "value": "UEFA",
-            "type": "string",
-        }
-    ],
-)
-print(f"  + Dashboard 1 'FIFA World Rankings Overview'  id={d1}  [filter: Confederation=UEFA]")
-
-# ── Dashboard 2: World Cup History & Analysis ─────────────────────────────────
-d2 = make_dashboard(
-    name="World Cup History & Champions",
-    description="Phan tich lich su World Cup — chuc vo dich, lien doan, vua pha luoi qua cac ky",
-    chart_list=[
-        (charts["kpi_wc_editions"],    0,  0,  3, 4),
-        (charts["bar_ws_wc_conf"],     3,  0,  9, 4),
-        (charts["bar_wc_titles"],      0,  4,  6, 5),
-        (charts["table_wc_history"],   6,  4,  6, 5),
-        (charts["bar_scorer_goals"],   0,  9,  6, 5),
-        (charts["pie_goal_era"],       6,  9,  6, 5),
-    ],
-    filters_config=[
-        {
-            "field": "World_Cup_Titles",
-            "label": "Min WC Titles",
-            "operator": "gte",
-            "value": 1,
-            "type": "number",
-        }
-    ],
-)
-print(f"  + Dashboard 2 'World Cup History'  id={d2}  [filter: WC_Titles>=1]")
-
-# ── Dashboard 3: Football Analytics Hub ───────────────────────────────────────
-d3 = make_dashboard(
-    name="Football Analytics Hub",
-    description="Phan tich nang cao — phan tang suc manh, so sanh da chieu, cross-sheet join",
-    chart_list=[
-        (charts["pie_ws_tiers"],        0,  0,  4, 5),
-        (charts["bar_ws_total_titles"], 4,  0,  8, 5),
-        (charts["grouped_ws_titles"],   0,  5, 12, 5),
-        (charts["table_ws_cross"],      0, 10, 12, 5),
-    ],
-    filters_config=[
-        {
-            "field": "Points",
-            "label": "Min Points",
-            "operator": "gte",
-            "value": 1600,
-            "type": "number",
-        }
-    ],
-)
-print(f"  + Dashboard 3 'Football Analytics Hub'  id={d3}  [filter: Points>=1600]")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
+#  TỔNG KẾT
+# ═══════════════════════════════════════════════════════════
+section("✅  HOÀN THÀNH")
 print(f"""
-+================================================================+
-|  SEED COMPLETE                                                 |
-+================================================================+
-|  1 Datasource    Manual (Football Demo, 3 sheets)             |
-|  6 Datasets      — transformation pipelines:                  |
-|                    add_column, filter_rows, group_by,          |
-|                    sort, limit, duplicate_column,              |
-|                    merge_columns, fill_null                    |
-|  3 Workspaces    FIFA Rankings / WC Analysis / Analytics Hub  |
-|  9 Workspace Tables (GROUP BY, CASE WHEN, cross-join)         |
-| {len(charts):2d} Charts        all via workspace_table_id (Explore-ready)  |
-|  3 Dashboards    (each with pre-applied filters_config)        |
-+================================================================+
-|  http://localhost:3000                                         |
-+================================================================+
+{BOLD}Tài khoản:{RESET}
+  admin@appbi.io   / 123456   (full access)
+  edit@appbi.io    / 123456   (edit charts/dash/datasets/ws, view source, no settings)
+  viewer@appbi.io  / 123456   (view only, no settings)
+
+{BOLD}Kịch bản phân quyền để test:{RESET}
+
+  {YELLOW}[Data Sources]{RESET}
+    → Tất cả 3 user đều thấy "Football Analytics" (shared infra, view+)
+
+  {YELLOW}[Datasets] (4 datasets){RESET}
+    admin  → thấy D1+D2+D3+D4  (full access, thấy hết)
+    edit   → thấy D2(share edit)+D3(own)+D4(own)   ← KHÔNG thấy D1 (admin private)
+    viewer → thấy D4(share view)                   ← KHÔNG thấy D1, D2, D3
+
+  {YELLOW}[Workspaces] (2 workspaces){RESET}
+    admin  → thấy W1+W2
+    edit   → thấy W1(share edit)+W2(own)
+    viewer → thấy W2(share view)   ← KHÔNG thấy W1
+
+  {YELLOW}[Charts / Explore] (7 charts){RESET}
+    admin  → thấy C1..C7  (full)
+    edit   → thấy C2+C3(share edit)+C5+C6+C7(own)   5 charts, KHÔNG thấy C1, C4
+    viewer → thấy C4+C6(share view)                  2 charts, KHÔNG thấy C1,C2,C3,C5,C7
+
+  {YELLOW}[Dashboards] (6 dashboards){RESET}
+    admin  → thấy DB1..DB6  (full)
+    edit   → thấy DB2(share edit)+DB4(all team)+DB5(own)+DB6(own)   4 dashboards
+    viewer → thấy DB3(share view)+DB4(all team)+DB6(share view)     3 dashboards
+
+  {YELLOW}[Settings / Users]{RESET}
+    admin  → vào được Settings, quản lý users & permissions
+    edit   → KHÔNG vào được Settings (403)
+    viewer → KHÔNG vào được Settings (403)
 """)

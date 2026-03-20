@@ -22,6 +22,7 @@
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
     "formulajs": "^1.0.8",
+    "jose": "^5.10.0",
     "lucide-react": "^0.309.0",
     "next": "^14.1.0",
     "papaparse": "^5.5.3",

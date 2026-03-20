@@ -6,6 +6,11 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app.core import get_db
+from app.core.dependencies import get_current_user, require_permission, require_edit_access, require_full_access, get_effective_permission
+from app.core.permissions import _owned_or_shared
+from app.models.models import Chart, DashboardChart, Dashboard
+from app.models.resource_share import ResourceType
+from app.models.user import User
 from app.schemas import (
     DashboardCreate,
     DashboardUpdate,
@@ -31,14 +36,27 @@ router = APIRouter(prefix="/dashboards", tags=["dashboards"])
 def list_dashboards(
     skip: int = 0,
     limit: int = 50,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """List all dashboards with pagination."""
-    return DashboardService.get_all(db, skip=skip, limit=limit)
+    """List dashboards visible to the current user."""
+    items = (
+        _owned_or_shared(db, Dashboard, ResourceType.DASHBOARD, current_user)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    for item in items:
+        item.user_permission = get_effective_permission(db, current_user, item, "dashboards")
+    return items
 
 
 @router.get("/{dashboard_id}", response_model=DashboardResponse)
-def get_dashboard(dashboard_id: int, db: Session = Depends(get_db)):
+def get_dashboard(
+    dashboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Get a dashboard by ID."""
     dashboard = DashboardService.get_by_id(db, dashboard_id)
     if not dashboard:
@@ -46,14 +64,19 @@ def get_dashboard(dashboard_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Dashboard with ID {dashboard_id} not found"
         )
+    dashboard.user_permission = get_effective_permission(db, current_user, dashboard, "dashboards")
     return dashboard
 
 
 @router.post("/", response_model=DashboardResponse, status_code=status.HTTP_201_CREATED)
-def create_dashboard(dashboard: DashboardCreate, db: Session = Depends(get_db)):
+def create_dashboard(
+    dashboard: DashboardCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("dashboards", "edit")),
+):
     """Create a new dashboard."""
     try:
-        return DashboardService.create(db, dashboard)
+        return DashboardService.create(db, dashboard, owner_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -62,39 +85,49 @@ def create_dashboard(dashboard: DashboardCreate, db: Session = Depends(get_db)):
 def update_dashboard(
     dashboard_id: int,
     dashboard_update: DashboardUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Update a dashboard."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_edit_access(db, current_user, dash, "dashboards")
     try:
         dashboard = DashboardService.update(db, dashboard_id, dashboard_update)
-        if not dashboard:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Dashboard with ID {dashboard_id} not found"
-            )
         return dashboard
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 @router.delete("/{dashboard_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_dashboard(dashboard_id: int, db: Session = Depends(get_db)):
+def delete_dashboard(
+    dashboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Delete a dashboard."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_full_access(db, current_user, dash, "dashboards")
     success = DashboardService.delete(db, dashboard_id)
     if not success:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Dashboard with ID {dashboard_id} not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
 
 
 @router.post("/{dashboard_id}/charts", response_model=DashboardResponse)
 def add_chart_to_dashboard(
     dashboard_id: int,
     request: DashboardAddChartRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Add a chart to a dashboard."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_edit_access(db, current_user, dash, "dashboards")
     try:
         dashboard = DashboardService.add_chart(
             db,
@@ -103,11 +136,6 @@ def add_chart_to_dashboard(
             request.layout,
             request.parameters,
         )
-        if not dashboard:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Dashboard with ID {dashboard_id} not found"
-            )
         return dashboard
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -117,16 +145,16 @@ def add_chart_to_dashboard(
 def remove_chart_from_dashboard(
     dashboard_id: int,
     chart_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Remove a chart from a dashboard."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_edit_access(db, current_user, dash, "dashboards")
     try:
         dashboard = DashboardService.remove_chart(db, dashboard_id, chart_id)
-        if not dashboard:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Dashboard with ID {dashboard_id} not found"
-            )
         return dashboard
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -136,19 +164,19 @@ def remove_chart_from_dashboard(
 def update_dashboard_layout(
     dashboard_id: int,
     request: DashboardUpdateLayoutRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Update the layout of charts in a dashboard."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_edit_access(db, current_user, dash, "dashboards")
     dashboard = DashboardService.update_layout(
         db,
         dashboard_id,
         request.chart_layouts
     )
-    if not dashboard:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Dashboard with ID {dashboard_id} not found"
-        )
     return dashboard
 
 

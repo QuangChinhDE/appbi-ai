@@ -32,6 +32,8 @@ services:
       # Mount source code for hot reload
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic
+      # Parquet + DuckDB storage
+      - appbi_data_dev:/app/.data
     environment:
       DATABASE_URL: postgresql+psycopg2://appbi:appbi@db:5432/appbi
       DB_HOST: db
@@ -44,6 +46,8 @@ services:
       LOG_LEVEL: DEBUG
       SECRET_KEY: dev-secret-key
       SEED_DEMO_DATA: "false"
+      DATA_DIR: /app/.data
+      DATASOURCE_ENCRYPTION_KEY: ${DATASOURCE_ENCRYPTION_KEY:-}
     ports:
       - "8000:8000"
     depends_on:
@@ -80,6 +84,8 @@ services:
 
 volumes:
   db_data_dev:
+    driver: local
+  appbi_data_dev:
     driver: local
 
 networks:

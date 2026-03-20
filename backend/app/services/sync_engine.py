@@ -1,160 +1,133 @@
 """
 Sync engine: pulls data from a DataSource and caches it locally.
 
-Local storage: the app's own PostgreSQL, schema 'synced'.
-Table naming: ds{datasource_id}__{san_schema}__{san_table}  (all lowercase, non-alphanum → _)
+Local storage: Parquet files + DuckDB views (OLAP-friendly, no PostgreSQL overhead).
+  .data/synced/{ds_id}/{schema}__{table}/data.parquet    ← main data
+  .data/synced/{ds_id}/{schema}__{table}/delta/*.parquet ← incremental/append deltas
+
+DuckDB VIEW naming: synced_ds{id}__{schema}__{table}
 
 Strategies per table (from sync_config.tables["{schema}.{table}"].strategy):
-  full_refresh  — drop + recreate + insert everything  (default)
-  incremental   — append only rows where watermark_col > local max
-  append_only   — insert everything without truncating (keep history)
+  full_refresh  — re-pull everything → data.parquet   (default)
+  incremental   — pull WHERE watermark > last → delta/
+  append_only   — pull all → delta/ (keep history)
 """
 from __future__ import annotations
 
 import re
+import shutil
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
 
-import psycopg2
-import psycopg2.extras
+import pyarrow as pa
+import pyarrow.parquet as pq
 
-from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.logging import get_logger
 from app.models import DataSource, SyncJob
 from app.services.datasource_service import DataSourceConnectionService
+from app.services.ingestion_engine import DATA_DIR
 
 logger = get_logger(__name__)
 
-_SYNCED_SCHEMA = "synced"
+BATCH_SIZE = 10_000
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _sanitize(name: str) -> str:
-    """Convert arbitrary identifier to a safe lowercase PG identifier segment."""
+    """Convert arbitrary identifier to a safe lowercase identifier segment."""
     return re.sub(r"[^a-zA-Z0-9]", "_", name).lower()
 
 
-def _target_table(ds_id: int, schema: str, table: str) -> str:
-    return f"ds{ds_id}__{_sanitize(schema)}__{_sanitize(table)}"
+def _view_name(ds_id: int, schema: str, table: str) -> str:
+    return f"synced_ds{ds_id}__{_sanitize(schema)}__{_sanitize(table)}"
 
 
-def _local_conn() -> psycopg2.extensions.connection:
-    """Open a fresh psycopg2 connection to the local (app) PostgreSQL database."""
-    url = settings.DATABASE_URL
-    parsed = urlparse(url)
-    return psycopg2.connect(
-        host=parsed.hostname,
-        port=parsed.port or 5432,
-        dbname=parsed.path.lstrip("/"),
-        user=parsed.username,
-        password=parsed.password,
-        connect_timeout=10,
-    )
+def _parquet_dir(ds_id: int, schema: str, table: str) -> Path:
+    """Directory holding Parquet files for a synced table."""
+    return DATA_DIR / "synced" / str(ds_id) / f"{_sanitize(schema)}__{_sanitize(table)}"
 
 
-def _ensure_synced_schema(conn: psycopg2.extensions.connection) -> None:
-    with conn.cursor() as cur:
-        cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{_SYNCED_SCHEMA}"')
-    conn.commit()
+def _parquet_path(ds_id: int, schema: str, table: str) -> Path:
+    return _parquet_dir(ds_id, schema, table) / "data.parquet"
 
 
-def _table_exists(conn: psycopg2.extensions.connection, table_name: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = %s AND table_name = %s
-            )
-            """,
-            (_SYNCED_SCHEMA, table_name),
-        )
-        return bool(cur.fetchone()[0])
+def _delta_dir(ds_id: int, schema: str, table: str) -> Path:
+    return _parquet_dir(ds_id, schema, table) / "delta"
 
 
-def _source_type_to_local(pg_type: str) -> str:
-    """Map a source column type string to a safe local DDL type."""
-    t = pg_type.lower()
-    if "int" in t:
-        return "bigint"
-    if t in ("numeric", "decimal", "real", "double precision", "float4", "float8", "money"):
-        return "double precision"
-    if "bool" in t:
-        return "boolean"
-    if "timestamp" in t:
-        return "timestamp"
-    if t == "date":
-        return "date"
-    if t in ("time", "timetz"):
-        return "time"
-    if "json" in t:
-        return "jsonb"
-    return "text"
-
-
-def _create_or_replace_table(
-    conn: psycopg2.extensions.connection,
-    target_table: str,
-    columns: List[Dict[str, Any]],
-) -> None:
-    col_defs = ", ".join(
-        f'"{c["name"]}" {_source_type_to_local(c.get("type", "text"))}'
-        for c in columns
-    )
-    with conn.cursor() as cur:
-        cur.execute(f'DROP TABLE IF EXISTS "{_SYNCED_SCHEMA}"."{target_table}"')
-        cur.execute(f'CREATE TABLE "{_SYNCED_SCHEMA}"."{target_table}" ({col_defs})')
-    conn.commit()
-
-
-def _ensure_table_exists(
-    conn: psycopg2.extensions.connection,
-    target_table: str,
-    columns: List[Dict[str, Any]],
-) -> None:
-    """Create table only if it doesn't exist (used for append_only / incremental)."""
-    if not _table_exists(conn, target_table):
-        _create_or_replace_table(conn, target_table, columns)
-
-
-def _bulk_insert(
-    conn: psycopg2.extensions.connection,
-    target_table: str,
-    col_names: List[str],
-    rows: List[Dict[str, Any]],
-) -> int:
+def _write_parquet(rows: List[Dict[str, Any]], output_path: Path) -> int:
+    """Write rows to a Parquet file in batches. Returns row count."""
     if not rows:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write empty file with minimal schema
+        table = pa.table({"_empty": pa.array([], type=pa.string())})
+        pq.write_table(table, str(output_path), compression="snappy")
         return 0
-    placeholders = ", ".join(["%s"] * len(col_names))
-    col_list = ", ".join(f'"{c}"' for c in col_names)
-    sql = f'INSERT INTO "{_SYNCED_SCHEMA}"."{target_table}" ({col_list}) VALUES ({placeholders})'
-    data = [[row.get(c) for c in col_names] for row in rows]
-    with conn.cursor() as cur:
-        psycopg2.extras.execute_batch(cur, sql, data, page_size=500)
-    conn.commit()
-    return len(data)
 
-
-def _get_watermark_max(
-    conn: psycopg2.extensions.connection,
-    target_table: str,
-    watermark_col: str,
-) -> Optional[Any]:
-    if not _table_exists(conn, target_table):
-        return None
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    writer: Optional[pq.ParquetWriter] = None
+    total = 0
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                f'SELECT MAX("{watermark_col}") FROM "{_SYNCED_SCHEMA}"."{target_table}"'
-            )
-            row = cur.fetchone()
-            return row[0] if row else None
+        for start in range(0, len(rows), BATCH_SIZE):
+            batch = rows[start : start + BATCH_SIZE]
+            arrow_table = pa.Table.from_pylist(batch)
+            if writer is None:
+                writer = pq.ParquetWriter(
+                    str(output_path), arrow_table.schema, compression="snappy"
+                )
+            writer.write_table(arrow_table)
+            total += len(batch)
+    finally:
+        if writer:
+            writer.close()
+    return total
+
+
+def _register_duckdb_view(ds_id: int, schema: str, table: str) -> None:
+    """Register or refresh a DuckDB VIEW pointing at the Parquet files."""
+    from app.services.duckdb_engine import DuckDBEngine
+
+    vname = _view_name(ds_id, schema, table)
+    ppath = _parquet_path(ds_id, schema, table)
+    ddir = _delta_dir(ds_id, schema, table)
+
+    if not ppath.exists():
+        return
+
+    if ddir.exists() and any(ddir.glob("*.parquet")):
+        delta_glob = str(ddir / "*.parquet")
+        sql = (
+            f"CREATE OR REPLACE VIEW {vname} AS "
+            f"SELECT * FROM read_parquet(['{ppath}', '{delta_glob}'])"
+        )
+    else:
+        sql = (
+            f"CREATE OR REPLACE VIEW {vname} AS "
+            f"SELECT * FROM read_parquet('{ppath}')"
+        )
+
+    with DuckDBEngine.write_conn() as conn:
+        conn.execute(sql)
+    DuckDBEngine._refresh_read_pool()
+    logger.info("DuckDB VIEW registered: %s", vname)
+
+
+def _get_watermark_max(ds_id: int, schema: str, table: str, watermark_col: str) -> Optional[Any]:
+    """Read MAX(watermark_col) from DuckDB VIEW for incremental sync."""
+    from app.services.duckdb_engine import DuckDBEngine
+
+    vname = _view_name(ds_id, schema, table)
+    try:
+        rows = DuckDBEngine.query(f'SELECT MAX("{watermark_col}") AS wm FROM {vname}')
+        if rows and rows[0]["wm"] is not None:
+            return rows[0]["wm"]
     except Exception:
-        return None
+        pass
+    return None
 
 
 # ── Core sync logic ───────────────────────────────────────────────────────────
@@ -164,27 +137,17 @@ def _sync_one_table(
     schema_name: str,
     table_name: str,
     tbl_cfg: Dict[str, Any],
-    local_conn: psycopg2.extensions.connection,
 ) -> int:
     """
-    Sync a single table from the datasource into the local synced schema.
+    Sync a single table from the datasource into Parquet + DuckDB.
     Returns the number of rows synced.
     """
     strategy = tbl_cfg.get("strategy", "full_refresh")
     watermark_col: Optional[str] = tbl_cfg.get("watermark_column")
-    target = _target_table(ds.id, schema_name, table_name)
-
-    # Get column schema from source
-    detail = DataSourceConnectionService.get_table_detail(
-        ds.type, ds.config, schema_name, table_name, preview_rows=0
-    )
-    columns = detail["columns"]
-    col_names = [c["name"] for c in columns]
 
     if strategy == "incremental" and watermark_col:
-        last_max = _get_watermark_max(local_conn, target, watermark_col)
+        last_max = _get_watermark_max(ds.id, schema_name, table_name, watermark_col)
         if last_max is not None:
-            # Pull only new/updated rows
             if isinstance(last_max, datetime):
                 wm_literal = f"'{last_max.isoformat()}'"
             else:
@@ -194,38 +157,54 @@ def _sync_one_table(
                 f' WHERE "{watermark_col}" > {wm_literal}'
             )
             _, rows, _ = DataSourceConnectionService.execute_query(
-                ds.type, ds.config, sql, limit=None, timeout_seconds=120
+                ds.type, ds.config, sql, limit=None, timeout_seconds=300
             )
-            _ensure_table_exists(local_conn, target, columns)
-            return _bulk_insert(local_conn, target, col_names, rows)
+            if not rows:
+                return 0
+            # Write to delta directory
+            ddir = _delta_dir(ds.id, schema_name, table_name)
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            delta_path = ddir / f"{ts}.parquet"
+            count = _write_parquet(rows, delta_path)
+            _register_duckdb_view(ds.id, schema_name, table_name)
+            return count
         else:
-            # First run — fall through to full_refresh behaviour
+            # First run — fall through to full_refresh
             strategy = "full_refresh"
 
     if strategy == "append_only":
         sql = f'SELECT * FROM "{schema_name}"."{table_name}"'
         _, rows, _ = DataSourceConnectionService.execute_query(
-            ds.type, ds.config, sql, limit=None, timeout_seconds=120
+            ds.type, ds.config, sql, limit=None, timeout_seconds=300
         )
-        _ensure_table_exists(local_conn, target, columns)
-        return _bulk_insert(local_conn, target, col_names, rows)
+        ddir = _delta_dir(ds.id, schema_name, table_name)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        delta_path = ddir / f"{ts}.parquet"
+        count = _write_parquet(rows, delta_path)
+        _register_duckdb_view(ds.id, schema_name, table_name)
+        return count
 
     # full_refresh (default)
     sql = f'SELECT * FROM "{schema_name}"."{table_name}"'
     _, rows, _ = DataSourceConnectionService.execute_query(
-        ds.type, ds.config, sql, limit=None, timeout_seconds=120
+        ds.type, ds.config, sql, limit=None, timeout_seconds=300
     )
-    _create_or_replace_table(local_conn, target, columns)
-    return _bulk_insert(local_conn, target, col_names, rows)
+    ppath = _parquet_path(ds.id, schema_name, table_name)
+    # Clear delta directory on full refresh
+    ddir = _delta_dir(ds.id, schema_name, table_name)
+    if ddir.exists():
+        shutil.rmtree(ddir)
+    count = _write_parquet(rows, ppath)
+    _register_duckdb_view(ds.id, schema_name, table_name)
+    return count
 
 
 def _run_sync_job(data_source_id: int, job_id: int) -> None:
     """
     Core sync execution — runs in a background thread.
-    Opens its own DB session and local connection so it is safe to call from any thread.
+    Opens its own DB session so it is safe to call from any thread.
     """
     db = SessionLocal()
-    local_conn = None
     total_rows = 0
     total_failed = 0
     errors: List[str] = []
@@ -250,19 +229,22 @@ def _run_sync_job(data_source_id: int, job_id: int) -> None:
         if not schema_list:
             raise ValueError("No schemas/tables found in datasource")
 
-        local_conn = _local_conn()
-        _ensure_synced_schema(local_conn)
-
         for schema_entry in schema_list:
             schema_name: str = schema_entry["schema"]
             for table_entry in schema_entry.get("tables", []):
                 table_name: str = table_entry["name"]
                 table_key = f"{schema_name}.{table_name}"
                 tbl_cfg = table_configs.get(table_key, {})
+
+                # Skip disabled tables
+                if not tbl_cfg.get("enabled", True):
+                    logger.info(f"[sync ds={data_source_id}] {table_key} → skipped (disabled)")
+                    continue
+
                 try:
-                    count = _sync_one_table(ds, schema_name, table_name, tbl_cfg, local_conn)
+                    count = _sync_one_table(ds, schema_name, table_name, tbl_cfg)
                     total_rows += count
-                    logger.info(f"[sync ds={data_source_id}] {table_key} → {count} rows")
+                    logger.info(f"[sync ds={data_source_id}] {table_key} → {count} rows → Parquet")
                 except Exception as e:
                     errors.append(f"{table_key}: {e}")
                     total_failed += 1
@@ -293,11 +275,6 @@ def _run_sync_job(data_source_id: int, job_id: int) -> None:
             pass
     finally:
         db.close()
-        if local_conn:
-            try:
-                local_conn.close()
-            except Exception:
-                pass
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

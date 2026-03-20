@@ -4,7 +4,10 @@ import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Loader2, MessageSquareText, Plus, Search } from 'lucide-react';
 import { PageListLayout } from '@/components/common/PageListLayout';
+import { ShareDialog } from '@/components/common/ShareDialog';
 import { ChatSessionList } from '@/components/ai-chat/ChatSessionList';
+import { useCurrentUser } from '@/hooks/use-current-user';
+import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import type { SessionSummary } from '@/components/ai-chat/ChatSessionList';
 
 const AI_HTTP_URL = (process.env.NEXT_PUBLIC_AI_WS_URL || 'ws://localhost:8001/chat/ws')
@@ -17,6 +20,10 @@ export default function ChatListPage() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [shareSession, setShareSession] = useState<SessionSummary | null>(null);
+  const { data: currentUser } = useCurrentUser();
+  const { data: permData } = usePermissions();
+  const canShare = hasPermission(permData?.permissions, 'ai_chat', 'edit');
 
   useEffect(() => { fetchSessions(); }, []);
 
@@ -53,6 +60,7 @@ export default function ChatListPage() {
   }
 
   return (
+    <>
     <PageListLayout
       title="AI Chat"
       description={`${sessions.length} cuộc hội thoại`}
@@ -103,10 +111,21 @@ export default function ChatListPage() {
             sessions={filtered}
             viewMode={viewMode}
             onDelete={handleDelete}
+            onShare={canShare ? (s) => setShareSession(s) : undefined}
             deletingId={deletingId}
           />
         );
       }}
     </PageListLayout>
+
+    {shareSession && (
+      <ShareDialog
+        resourceType="chat_session"
+        resourceId={shareSession.session_id}
+        resourceName={shareSession.title}
+        onClose={() => setShareSession(null)}
+      />
+    )}
+  </>
   );
 }

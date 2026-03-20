@@ -28,7 +28,7 @@ export interface Chart {
   id: number;
   name: string;
   description?: string;
-  dataset_id: number;
+  workspace_table_id?: number | null;
   chart_type: ChartType;
   config: ChartConfig;
   created_at?: string;
@@ -39,7 +39,7 @@ export interface Chart {
 export interface ChartCreate {
   name: string;
   description?: string;
-  dataset_id: number;
+  workspace_table_id?: number | null;
   chart_type: ChartType;
   config: ChartConfig;
 }
@@ -47,7 +47,7 @@ export interface ChartCreate {
 export interface ChartUpdate {
   name?: string;
   description?: string;
-  dataset_id?: number;
+  workspace_table_id?: number | null;
   chart_type?: ChartType;
   config?: ChartConfig;
 }
@@ -59,7 +59,6 @@ export interface ChartDataResponse {
   meta?: {
     row_count?: number;
     execution_time_ms?: number;
-    dataset_name?: string;
   };
 }
 
