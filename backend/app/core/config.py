@@ -5,8 +5,44 @@ import pathlib
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 
-# Root .env is 4 levels up from backend/app/core/config.py
-_ROOT_ENV = str(pathlib.Path(__file__).resolve().parent.parent.parent.parent / ".env")
+
+def _find_project_root() -> pathlib.Path:
+    """
+    Walk up from this file to find the project root.
+    The project root is the directory that contains BOTH a '.env' (or
+    '.env.docker.example') file AND a 'backend/' subdirectory.
+    Falls back to the directory 4 levels above this file (legacy behaviour)
+    if the walk reaches the filesystem root without finding a match.
+    """
+    candidate = pathlib.Path(__file__).resolve().parent
+    for _ in range(10):  # Walk at most 10 levels up
+        if (candidate / "backend").is_dir() and (
+            (candidate / ".env").exists()
+            or (candidate / ".env.docker.example").exists()
+            or (candidate / "docker-compose.yml").exists()
+        ):
+            return candidate
+        parent = candidate.parent
+        if parent == candidate:  # Reached filesystem root
+            break
+        candidate = parent
+    # Fallback: 4 levels above config.py (works for local dev layout)
+    # In Docker the DATA_DIR env var is always set to an absolute path,
+    # so _resolve_data_dir never uses _PROJECT_ROOT.
+    return pathlib.Path(__file__).resolve().parent.parent.parent.parent
+
+
+_PROJECT_ROOT = _find_project_root()
+_ROOT_ENV = str(_PROJECT_ROOT / ".env")
+
+
+def _resolve_data_dir(raw: str) -> pathlib.Path:
+    """Resolve DATA_DIR to an absolute path relative to project root."""
+    p = pathlib.Path(raw)
+    if not p.is_absolute():
+        p = _PROJECT_ROOT / p
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 class Settings(BaseSettings):
@@ -22,6 +58,11 @@ class Settings(BaseSettings):
     
     # Storage (Parquet + DuckDB)
     DATA_DIR: str = ".data"
+
+    @property
+    def data_dir_path(self) -> pathlib.Path:
+        """Resolved absolute path for data storage."""
+        return _resolve_data_dir(self.DATA_DIR)
 
     # CORS
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002"

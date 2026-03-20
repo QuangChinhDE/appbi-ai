@@ -36,99 +36,66 @@ Three-service architecture (Frontend / Backend / AI Service + PostgreSQL), deplo
 
 > Requires: [Docker Desktop](https://www.docker.com/products/docker-desktop/) or Docker Engine + Compose plugin.
 
-### 1. Clone the repo
+### Setup — 3 commands, that's it
 
 ```bash
+# 1. Clone
 git clone https://github.com/bachbuiquang9/Dashboard-App.git
 cd Dashboard-App
-```
 
-### 2. Configure environment
-
-```bash
+# 2. Configure (copy example .env, then edit — see notes below)
 cp .env.docker.example .env
-```
 
-Edit `.env` as needed. Key variables:
-
-```env
-# Database
-DB_USER=appbi
-DB_PASSWORD=appbi
-DB_NAME=appbi
-
-# Backend
-SECRET_KEY=change-this-in-production
-LOG_LEVEL=INFO
-
-# Host port mapping (change if these ports are in use)
-FRONTEND_PORT=3000
-BACKEND_PORT=8000
-
-# Demo data — set true to auto-load Football/FIFA demo on first start
-SEED_DEMO_DATA=false
-
-# ── AI Service (used by docker-compose.ai.yml) ──────────────────
-AI_PORT=8001
-
-# LLM provider: openai | anthropic | gemini | openrouter
-LLM_PROVIDER=openai
-LLM_MODEL=gpt-4o-mini
-
-# Optional fallback chain: "openai:gpt-4o-mini,anthropic:claude-3-5-haiku-20241022"
-LLM_FALLBACK_CHAIN=
-
-# Fill in key(s) for the provider(s) you use
-OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
-GEMINI_API_KEY=
-OPENROUTER_API_KEY=
-
-# Optional advanced limits
-AI_SESSION_TTL_MINUTES=30
-AI_MAX_TOOL_CALLS=8
-AI_WORKSPACE_TABLE_LIMIT=50
-```
-
-> **Note:** The PostgreSQL port is **not** exposed to the host — it only exists inside the Docker network.
-
-### 3. Start the BI stack
-
-```bash
+# 3. Start everything
 docker compose up --build -d
 ```
 
-### 4. Start the AI Chat service (optional)
+**What happens automatically:**
+- PostgreSQL starts and applies migrations (`alembic upgrade head`)
+- `.data/` folder is created with all subdirs (`synced/`, `datasets/`, `workspaces/`)
+- BI Backend, Frontend, and AI Chat Agent all start in the correct order
+- No manual directory creation, no separate commands for AI
 
-The AI service runs in a separate compose file so the BI stack is never blocked by LLM connectivity issues.
+### Configure `.env`
 
-```bash
-docker compose -f docker-compose.ai.yml up --build -d
+Open `.env` and set the values you need:
+
+```env
+# Required for external data sources (Google Sheets, PostgreSQL, MySQL, BigQuery)
+# Generate: python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+DATASOURCE_ENCRYPTION_KEY=your-fernet-key-here
+
+# Required for AI Chat — fill in for your LLM provider
+OPENAI_API_KEY=sk-...         # OpenAI
+# ANTHROPIC_API_KEY=...       # Anthropic Claude
+# GEMINI_API_KEY=...          # Google Gemini
+
+# Optional: change ports if 3000/8000/8001 are already in use
+FRONTEND_PORT=3000
+BACKEND_PORT=8000
+AI_PORT=8001
 ```
 
-Or start everything at once:
+> All other variables have sensible defaults. The full annotated example is in `.env.docker.example`.
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.ai.yml up --build -d
-```
+### Access the app
 
-### 5. Open the app
-
-| URL | Description |
+| URL | Service |
 |---|---|
 | `http://localhost:3000` | Frontend UI |
 | `http://localhost:3000/chat` | AI Chat interface |
-| `http://localhost:8000/api/v1/docs` | Swagger API docs (BI Backend) |
-| `http://localhost:8001/docs` | Swagger API docs (AI Service) |
+| `http://localhost:8000/api/v1/docs` | BI Backend Swagger docs |
+| `http://localhost:8001/docs` | AI Service Swagger docs |
 | `http://localhost:8000/health` | BI Backend health check |
 | `http://localhost:8001/health` | AI Service health check |
 
-### 6. Stop
+### Stop / restart
 
 ```bash
-docker compose down                                      # stop BI stack, keep data
-docker compose -f docker-compose.ai.yml down             # stop AI service only
-docker compose down -v                                   # stop BI stack + delete DB data
+docker compose down              # stop all, keep data volumes
+docker compose down -v           # stop all + delete ALL data (fresh start)
+docker compose restart backend   # restart one service only
+docker compose logs -f backend   # follow logs
 ```
 
 ---
@@ -193,7 +160,14 @@ uvicorn app.main:app --reload --port 8000
 
 Minimum `backend/.env`:
 ```env
-DATABASE_URL=postgresql+psycopg2://user:password@localhost:5432/appbi_metadata
+DATABASE_URL=postgresql+psycopg2://user:password@localhost:5432/appbi
+
+# Optional: encrypt datasource credentials (highly recommended)
+# Generate: python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+DATASOURCE_ENCRYPTION_KEY=your-fernet-key-here
+
+# Storage path for Parquet + DuckDB (default: .data/ relative to project root)
+DATA_DIR=.data
 ```
 
 ### Frontend

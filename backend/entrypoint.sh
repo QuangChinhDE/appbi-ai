@@ -37,4 +37,17 @@ else
 fi
 
 echo "==> Starting FastAPI application..."
+
+# Ensure DATA_DIR is set (Parquet + DuckDB storage)
+export DATA_DIR="${DATA_DIR:-/app/.data}"
+
+# Create all required data subdirectories so storage is ready on first boot.
+# These are created by the app on startup too, but doing it here guarantees
+# they exist even if the volume is brand-new (e.g. after a fresh clone + docker up).
+mkdir -p \
+  "${DATA_DIR}/synced" \
+  "${DATA_DIR}/datasets" \
+  "${DATA_DIR}/workspaces"
+echo "==> Data directory: ${DATA_DIR} (subdirs ready)"
+
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000

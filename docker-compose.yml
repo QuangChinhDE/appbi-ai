@@ -1,23 +1,37 @@
 version: '3.8'
 
 # ============================================================
-# AppBI – Production Docker Compose
-# Usage:
-#   1. Copy .env.docker.example → .env  (or edit the .env that's already here)
-#   2. docker compose up --build -d
-#   3. App is live at http://localhost:${FRONTEND_PORT:-3000}
+# AppBI – Full Stack (BI + AI Agent)
 #
-# Port mapping is CONFIGURABLE via .env so you never clash with
-# other services already running on your machine:
-#   FRONTEND_PORT=3000   → http://localhost:3000
-#   BACKEND_PORT=8000    → http://localhost:8000  (API)
-#   DB port is NOT exposed to the host — internal use only
+# ONE command to start everything:
+#   cp .env.docker.example .env   # first time only
+#   docker compose up --build -d
+#
+# Services started:
+#   db          PostgreSQL (metadata only, NOT raw data)
+#   backend     FastAPI BI API        → http://localhost:8000
+#   frontend    Next.js UI            → http://localhost:3000
+#   ai-service  AI Chat Agent         → http://localhost:8001
+#
+# Storage:
+#   db_data     PostgreSQL data (named volume, survives restarts)
+#   appbi_data  Parquet + DuckDB files at /app/.data (named volume)
+#               subdirs created automatically on first boot:
+#                 /app/.data/synced/      ← DataSource raw sync
+#                 /app/.data/datasets/    ← Dataset Parquet cache
+#                 /app/.data/workspaces/  ← Workspace tables
+#
+# Port mapping (override in .env):
+#   FRONTEND_PORT=3000   → http://localhost:FRONTEND_PORT
+#   BACKEND_PORT=8000    → http://localhost:BACKEND_PORT/api/v1
+#   AI_PORT=8001         → http://localhost:AI_PORT
+#   DB port is NOT exposed to the host (internal network only)
 # ============================================================
 
 services:
 
   # ----------------------------------------------------------
-  # PostgreSQL – internal network only, no host port exposed
+  # PostgreSQL – metadata store only, internal network
   # ----------------------------------------------------------
   db:
     image: postgres:16-alpine
@@ -38,7 +52,8 @@ services:
       - appbi-net
 
   # ----------------------------------------------------------
-  # FastAPI Backend
+  # FastAPI Backend (BI API)
+  # entrypoint.sh: waits for DB → alembic migrate → mkdir .data/* → uvicorn
   # ----------------------------------------------------------
   backend:
     build:
@@ -51,11 +66,16 @@ services:
       POSTGRES_USER:     ${DB_USER:-appbi}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-appbi}
       POSTGRES_DB:       ${DB_NAME:-appbi}
-      CORS_ORIGINS:      http://localhost:${FRONTEND_PORT:-3000}
+      CORS_ORIGINS:      "http://localhost:${FRONTEND_PORT:-3000},http://frontend:3000"
       LOG_LEVEL:         ${LOG_LEVEL:-INFO}
       SECRET_KEY:        ${SECRET_KEY:-change-this-in-production}
       API_RELOAD:        "false"
       SEED_DEMO_DATA:    ${SEED_DEMO_DATA:-false}
+      # Parquet + DuckDB storage (absolute path inside container)
+      DATA_DIR:          /app/.data
+      DATASOURCE_ENCRYPTION_KEY: ${DATASOURCE_ENCRYPTION_KEY:-}
+    volumes:
+      - appbi_data:/app/.data
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
@@ -63,36 +83,88 @@ services:
         condition: service_healthy
     networks:
       - appbi-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
 
   # ----------------------------------------------------------
   # Next.js Frontend
-  # NEXT_PUBLIC_API_URL is baked into the JS bundle at build
-  # time, so it must point to the URL the *browser* can reach.
-  # We pass it as a build ARG using the value from .env.
+  # NEXT_PUBLIC_* vars are baked into the JS bundle at build time
+  # → they must use the URL the browser reaches (host ports)
   # ----------------------------------------------------------
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_PORT:-8000}/api/v1
-        NEXT_PUBLIC_AI_WS_URL: ws://localhost:${AI_PORT:-8001}/chat/ws
+        NEXT_PUBLIC_API_URL:    http://localhost:${BACKEND_PORT:-8000}/api/v1
+        NEXT_PUBLIC_AI_WS_URL:  ws://localhost:${AI_PORT:-8001}/chat/ws
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - appbi-net
 
+  # ----------------------------------------------------------
+  # AI Chat Agent (FastAPI + WebSocket + LLM tool-calling)
+  # Reads API keys from .env — no rebuild needed when switching model
+  # AI is OPTIONAL: if no API key is set the service still starts
+  # but chat will return an error until a key is configured.
+  # ----------------------------------------------------------
+  ai-service:
+    build:
+      context: .
+      dockerfile: ai-service/Dockerfile
+    restart: unless-stopped
+    environment:
+      # BI backend reachable via internal Docker network
+      BI_API_URL:               "http://backend:8000/api/v1"
+      # LLM provider config
+      LLM_PROVIDER:             ${LLM_PROVIDER:-openai}
+      LLM_MODEL:                ${LLM_MODEL:-gpt-4o-mini}
+      LLM_FALLBACK_CHAIN:       ${LLM_FALLBACK_CHAIN:-}
+      # API keys (leave blank if not using that provider)
+      OPENAI_API_KEY:           ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY:        ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY:           ${GEMINI_API_KEY:-}
+      OPENROUTER_API_KEY:       ${OPENROUTER_API_KEY:-}
+      # Session / behaviour tuning
+      AI_SESSION_TTL_MINUTES:   ${AI_SESSION_TTL_MINUTES:-30}
+      AI_MAX_TOOL_CALLS:        ${AI_MAX_TOOL_CALLS:-8}
+      AI_WORKSPACE_TABLE_LIMIT: ${AI_WORKSPACE_TABLE_LIMIT:-50}
+      LOG_LEVEL:                ${LOG_LEVEL:-INFO}
+    ports:
+      - "${AI_PORT:-8001}:8001"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - appbi-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
 # ----------------------------------------------------------
-# Named volume – DB data survives container restarts
+# Named volumes
+#   db_data    – PostgreSQL data (metadata: datasources, charts, etc.)
+#   appbi_data – Parquet files + DuckDB (raw synced data, datasets)
+#                Subdirectories are created by entrypoint.sh on boot.
 # ----------------------------------------------------------
 volumes:
   db_data:
+  appbi_data:
 
 # ----------------------------------------------------------
-# Isolated bridge network – containers talk by service name
+# Bridge network – all services communicate by service name
 # ----------------------------------------------------------
 networks:
   appbi-net:

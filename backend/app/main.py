@@ -16,6 +16,16 @@ setup_logging()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────────────────────
+    # Ensure all required data directories exist before any service starts.
+    # This runs on EVERY startup so the folder structure is always correct
+    # regardless of which machine the project is cloned to.
+    data_root = settings.data_dir_path
+    for sub in ("synced", "datasets", "workspaces"):
+        (data_root / sub).mkdir(parents=True, exist_ok=True)
+
+    import logging
+    logging.getLogger(__name__).info("Data directory: %s", data_root)
+
     # Legacy DataSource-level scheduler (kept for backward compat)
     from app.services.sync_scheduler import startup as ds_scheduler_startup
     ds_scheduler_startup()
