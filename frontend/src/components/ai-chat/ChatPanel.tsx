@@ -100,10 +100,23 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     }
   }
 
-  function connectWs() {
+  async function connectWs() {
     wsRef.current?.close();
     setWsError(null);
-    const ws = new WebSocket(AI_WS_URL);
+
+    // Fetch JWT token via server-side API route (httpOnly cookie not readable by JS directly)
+    let wsUrl = AI_WS_URL;
+    try {
+      const res = await fetch('/api/auth/token');
+      if (res.ok) {
+        const { token } = await res.json();
+        wsUrl = `${AI_WS_URL}?token=${encodeURIComponent(token)}`;
+      }
+    } catch {
+      // Proceed without token — server will reject with 4001
+    }
+
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
     ws.onopen = () => setWsConnected(true);
     ws.onclose = () => { setWsConnected(false); setLoading(false); };

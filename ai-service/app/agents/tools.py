@@ -285,7 +285,7 @@ def _fuzzy_score(query: str, text: str) -> int:
     return len(q_words & t_words)
 
 
-async def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict[str, Any]:
     """Dispatch tool call and return structured result dict."""
 
     # ── execute_sql ────────────────────────────────────────────────────────────
@@ -313,6 +313,7 @@ async def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             datasource_id=datasource_id,
             sql=sql,
             limit=limit,
+            token=token,
         )
         columns = result.get("columns", [])
         rows = result.get("data", [])
@@ -330,12 +331,12 @@ async def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         chart_type_filter = args.get("chart_type")
         limit = min(int(args.get("limit", 10)), 20)
 
-        charts = await bi_client.list_charts(limit=200)
+        charts = await bi_client.list_charts(limit=200, token=token)
 
         # Fetch metadata for each chart in parallel (fire-and-forget pattern)
         import asyncio
         metadata_list = await asyncio.gather(
-            *[bi_client.get_chart_metadata(c["id"]) for c in charts],
+            *[bi_client.get_chart_metadata(c["id"], token=token) for c in charts],
             return_exceptions=True,
         )
         meta_map: Dict[int, Dict] = {}
@@ -384,7 +385,7 @@ async def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             if results:
                 try:
                     top_id = results[0]["id"]
-                    cresult = await bi_client.get_chart_data(top_id)
+                    cresult = await bi_client.get_chart_data(top_id, token=token)
                     cmeta = cresult.get("chart", {})
                     cdata = cresult.get("data", [])
                     config = (cmeta.get("config") or {})
@@ -440,7 +441,7 @@ async def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     # ── run_chart ──────────────────────────────────────────────────────────────
     elif name == "run_chart":
         chart_id = int(args["chart_id"])
-        result = await bi_client.get_chart_data(chart_id)
+        result = await bi_client.get_chart_data(chart_id, token=token)
 
         chart_meta = result.get("chart", {})
         data = result.get("data", [])
@@ -462,7 +463,7 @@ async def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     # ── search_dashboards ──────────────────────────────────────────────────────
     elif name == "search_dashboards":
         query = args.get("query", "")
-        dashboards = await bi_client.list_dashboards()
+        dashboards = await bi_client.list_dashboards(token=token)
 
         scored = []
         for d in dashboards:
@@ -486,13 +487,13 @@ async def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     # ── list_workspace_tables ──────────────────────────────────────────────────
     elif name == "list_workspace_tables":
         workspace_id_filter = args.get("workspace_id")
-        workspaces = await bi_client.list_workspaces()
+        workspaces = await bi_client.list_workspaces(token=token)
 
         result = []
         for ws in workspaces:
             if workspace_id_filter and ws["id"] != workspace_id_filter:
                 continue
-            full_ws = await bi_client.get_workspace(ws["id"])
+            full_ws = await bi_client.get_workspace(ws["id"], token=token)
             tables = full_ws.get("tables", [])
             result.append({
                 "workspace_id": ws["id"],
@@ -533,6 +534,7 @@ async def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             filters=filters if filters else None,
             order_by=order_by if order_by else None,
             limit=limit,
+            token=token,
         )
 
         # Flatten column metadata to simple list for token efficiency
@@ -552,7 +554,7 @@ async def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         table_id = int(args["table_id"])
         limit = min(int(args.get("limit", settings.ai_workspace_table_limit)), settings.ai_workspace_table_limit)
 
-        result = await bi_client.preview_workspace_table(workspace_id, table_id, limit=limit)
+        result = await bi_client.preview_workspace_table(workspace_id, table_id, limit=limit, token=token)
         return {
             "workspace_id": workspace_id,
             "table_id": table_id,
@@ -565,7 +567,7 @@ async def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     elif name == "query_dataset":
         dataset_id = int(args["dataset_id"])
         limit = min(int(args.get("limit", 50)), 200)
-        result = await bi_client.execute_dataset(dataset_id, limit=limit)
+        result = await bi_client.execute_dataset(dataset_id, limit=limit, token=token)
         columns = result.get("columns", [])
         data = result.get("data", [])
         return {

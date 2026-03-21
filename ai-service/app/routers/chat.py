@@ -101,6 +101,7 @@ async def websocket_chat(
             # Inject user role so orchestrator can restrict execute_sql for viewers
             context["user_role"] = user_role
             context["user_id"] = user_id
+            context["auth_token"] = token
             session = get_or_create_session(session_id, context)
 
             agent_task = asyncio.create_task(_run_and_send(session, message))

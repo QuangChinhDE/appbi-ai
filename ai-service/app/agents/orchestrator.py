@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 _VIEWER_BLOCKED_TOOLS = {"execute_sql"}
 
 
-async def _execute_tool_rbac(fn_name: str, fn_args: dict, user_role: str) -> dict:
+async def _execute_tool_rbac(fn_name: str, fn_args: dict, user_role: str, token: str = "") -> dict:
     """Wrap execute_tool with role-based access control.
 
     Viewers may not call execute_sql directly — they can only consume
@@ -40,7 +40,7 @@ async def _execute_tool_rbac(fn_name: str, fn_args: dict, user_role: str) -> dic
     """
     if user_role == "viewer" and fn_name in _VIEWER_BLOCKED_TOOLS:
         return {"error": f"Permission denied: viewers cannot call '{fn_name}'."}
-    return await execute_tool(fn_name, fn_args)
+    return await execute_tool(fn_name, fn_args, token=token)
 
 SYSTEM_PROMPT = """You are a BI data analyst inside AppBI. Your job: answer data questions using real numbers from tools. Be direct, precise, never waste words.
 
@@ -260,6 +260,8 @@ def get_or_create_session(session_id: Optional[str], context: Dict) -> Conversat
     if session_id and session_id in _sessions:
         s = _sessions[session_id]
         s.last_active = datetime.datetime.utcnow()
+        if context:
+            s.context.update(context)
         return s
     new_id = session_id or str(uuid.uuid4())
     session = ConversationSession(
@@ -301,7 +303,7 @@ def _to_llm_messages(session: ConversationSession) -> List[Dict]:
 # Schema loader — builds DB context string injected into system prompt
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _load_db_context() -> str:
+async def _load_db_context(token: str = "") -> str:
     """
     Fetch datasource info + tables + sample rows and build a schema reference
     string that is injected into every system prompt for the session.
@@ -310,16 +312,16 @@ async def _load_db_context() -> str:
     from app.clients.bi_client import bi_client as _client
     lines = ["## DATA SCHEMA\n"]
     try:
-        datasources = await _client.list_datasources()
+        datasources = await _client.list_datasources(token=token)
         for ds in datasources:
             lines.append(f"Datasource: **{ds['name']}** (id={ds['id']}, type={ds['type']})")
             try:
-                tables = await _client.list_datasource_tables(ds["id"])
+                tables = await _client.list_datasource_tables(ds["id"], token=token)
                 for tbl in tables:
                     tname = tbl["name"]
                     try:
                         result = await _client.execute_datasource_sql(
-                            ds["id"], f'SELECT * FROM "{tname}" LIMIT 2', limit=2
+                            ds["id"], f'SELECT * FROM "{tname}" LIMIT 2', limit=2, token=token
                         )
                         cols = result.get("columns", [])
                         sample = result.get("data", [])
@@ -351,8 +353,9 @@ async def run_agent(
     Yields serialised event dicts ready to be sent over WebSocket.
     """
     # Load DB schema once per session (injected into every system prompt)
+    token: str = session.context.get("auth_token", "")
     if not session.db_context:
-        session.db_context = await _load_db_context()
+        session.db_context = await _load_db_context(token=token)
 
     # Append user message
     session.messages.append(Message(role="user", content=user_message))
@@ -396,6 +399,7 @@ async def run_agent(
                 chart_data_cache=chart_data_cache,
                 metrics_ctx=metrics_ctx,
                 message_id=message_id,
+                token=token,
             ):
                 yield event
 
@@ -466,28 +470,29 @@ async def _run_with_provider(
     chart_data_cache: Dict[int, Dict],
     metrics_ctx: Dict[str, Any],
     message_id: str,
+    token: str = "",
 ) -> AsyncGenerator[Dict, None]:
     """Run the tool-calling loop for a single provider."""
 
     if provider == "openai":
         client = _make_openai_client()
         yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-        async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx):
+        async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token):
             yield event
     elif provider == "anthropic":
         client = _make_anthropic_client()
         yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-        async for event in _anthropic_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx):
+        async for event in _anthropic_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token):
             yield event
     elif provider == "gemini":
         gemini_model = _make_gemini_model(model)
         yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-        async for event in _gemini_loop(gemini_model, session, tool_calls_made, chart_data_cache, metrics_ctx):
+        async for event in _gemini_loop(gemini_model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token):
             yield event
     elif provider == "openrouter":
         client = _make_openrouter_client()
         yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-        async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx):
+        async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token):
             yield event
     else:
         raise ValueError(f"Unknown provider: {provider}")
@@ -502,6 +507,7 @@ async def _openai_loop(
     tool_calls_made: int,
     chart_data_cache: Dict[int, Dict],
     metrics_ctx: Dict[str, Any],
+    token: str = "",
 ) -> AsyncGenerator[Dict, None]:
     from openai import AsyncOpenAI
 
@@ -592,7 +598,7 @@ async def _openai_loop(
 
             yield ToolCallEvent(tool=fn_name, args=fn_args).model_dump()
 
-            tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"))
+            tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"), token=token)
             tool_calls_made += 1
 
             # ── Metrics: track tool usage ──
@@ -662,6 +668,7 @@ async def _anthropic_loop(
     tool_calls_made: int,
     chart_data_cache: Dict[int, Dict],
     metrics_ctx: Dict[str, Any],
+    token: str = "",
 ) -> AsyncGenerator[Dict, None]:
 
     # Convert schemas for Anthropic
@@ -755,7 +762,7 @@ async def _anthropic_loop(
 
             yield ToolCallEvent(tool=fn_name, args=fn_args).model_dump()
 
-            tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"))
+            tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"), token=token)
             tool_calls_made += 1
 
             # ── Metrics: track tool usage ──
@@ -814,6 +821,7 @@ async def _gemini_loop(
     tool_calls_made: int,
     chart_data_cache: Dict[int, Dict],
     metrics_ctx: Dict[str, Any],
+    token: str = "",
 ) -> AsyncGenerator[Dict, None]:
     try:
         import google.generativeai.protos as protos
@@ -887,7 +895,7 @@ async def _gemini_loop(
 
             yield ToolCallEvent(tool=fn_name, args=fn_args).model_dump()
 
-            tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"))
+            tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"), token=token)
             tool_calls_made += 1
 
             # ── Metrics: track tool usage ──
