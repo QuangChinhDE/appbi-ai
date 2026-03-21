@@ -56,7 +56,7 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:-change-me-on-first-login}"
 ADMIN_NAME="${ADMIN_NAME:-Admin}"
 
 python - <<'PYEOF'
-import os, sys
+import os, sys, json
 from sqlalchemy import create_engine, text
 from passlib.context import CryptContext
 
@@ -68,14 +68,20 @@ email    = os.environ.get("ADMIN_EMAIL", "admin@appbi.io")
 password = os.environ.get("ADMIN_PASSWORD", "change-me-on-first-login")
 name     = os.environ.get("ADMIN_NAME", "Admin")
 
+full_perms = json.dumps({
+    "data_sources": "full", "workspaces": "full",
+    "explore_charts": "full", "dashboards": "full",
+    "ai_chat": "full", "user_management": "full", "settings": "full"
+})
+
 with engine.connect() as conn:
     count = conn.execute(text("SELECT COUNT(*) FROM users")).scalar()
     if count == 0:
         hashed = pwd.hash(password)
         conn.execute(text(
-            "INSERT INTO users (email, password_hash, full_name, role, status) "
-            "VALUES (:email, :pw, :name, 'admin', 'active')"
-        ), {"email": email, "pw": hashed, "name": name})
+            "INSERT INTO users (email, password_hash, full_name, status, permissions) "
+            "VALUES (:email, :pw, :name, 'active', cast(:perms AS jsonb))"
+        ), {"email": email, "pw": hashed, "name": name, "perms": full_perms})
         conn.commit()
         print(f"==> Admin user created: {email}")
     else:

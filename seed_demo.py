@@ -3,16 +3,11 @@
 seed_demo.py — Xoá dữ liệu cũ, tạo lại dữ liệu demo cho 3 tài khoản chính:
 
   admin@appbi.io   / 123456  → full toàn bộ module
-  edit@appbi.io    / 123456  → view: data_sources; edit: datasets/workspaces/charts/dashboards/ai_chat; none: settings
-  viewer@appbi.io  / 123456  → view: tất cả trừ settings (none)
+  edit@appbi.io    / 123456  → view: data_sources; edit: workspaces/charts/dashboards/ai_chat; none: settings/user_management
+  viewer@appbi.io  / 123456  → view: tất cả trừ settings/user_management (none)
 
 Kịch bản phân quyền được tạo sẵn để test:
   [DS]  1 DataSource "Football Analytics"        — admin tạo  (mọi user view+ đều thấy)
-
-  [D1]  Dataset "Bảng xếp hạng FIFA"             — admin tạo  | KHÔNG share
-  [D2]  Dataset "Lịch sử World Cup"              — admin tạo  | share → edit (edit)
-  [D3]  Dataset "Thống kê liên đoàn"             — edit  tạo  | KHÔNG share
-  [D4]  Dataset "Top Scorers FIFA"               — edit  tạo  | share → viewer (view)
 
   [W1]  Workspace "Rankings Workspace"          — admin tạo  | share → edit (edit)
   [W2]  Workspace "World Cup Workspace"         — edit  tạo  | share → viewer (view)
@@ -32,26 +27,45 @@ Kịch bản phân quyền được tạo sẵn để test:
   [DB5] Dashboard "Edit Riêng"                  — edit  | C5+C6      | KHÔNG share → edit+admin(full)
   [DB6] Dashboard "Edit → Chia Viewer"          — edit  | C6+C7      | share → viewer (view) → edit+viewer+admin
 """
-import os, sys, uuid, warnings, requests
+import os, sys, uuid, warnings
 warnings.filterwarnings("ignore")
 
-sys.path.insert(0, "/home/appbi/AppBI/Dashboard-App/backend")
-os.environ["DATABASE_URL"]  = "postgresql+psycopg2://appbi:appbi@localhost:5432/appbi"
-os.environ["SECRET_KEY"]    = "dev-secret-key-change-in-production"
+# Detect backend path: ./backend/ locally, /app/ inside Docker container
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+_backend_path = os.path.join(_this_dir, "backend")
+if not os.path.isdir(_backend_path):
+    _backend_path = "/app"          # Docker fallback (WORKDIR /app)
+if _backend_path not in sys.path:
+    sys.path.insert(0, _backend_path)
 
+# DB / secret — use env vars; Docker default points at 'db' service
+os.environ.setdefault("DATABASE_URL", "postgresql+psycopg2://appbi:appbi@db:5432/appbi")
+os.environ.setdefault("SECRET_KEY", "dev-secret-key-change-in-production")
+
+from urllib.parse import urlparse
 from sqlalchemy import text
 from app.core.database import SessionLocal
 from app.models.user import User, UserStatus
-from app.models.models import (DataSource, Dataset, Chart, Dashboard,
+from app.models.models import (DataSource, Chart, Dashboard,
                                 DashboardChart, ChartType)
 from app.models.dataset_workspace import DatasetWorkspace, DatasetWorkspaceTable
 from app.models.resource_share import ResourceShare, ResourceType, SharePermission
 from app.api.auth import hash_password
+from app.api.datasources import _parse_excel_bytes
 import psycopg2
 
-BASE      = "http://localhost:8000/api/v1"
-XLSX_PATH = "/home/appbi/AppBI/Dashboard-App/scope-foodball-demo.xlsx"
-DB_DSN    = "dbname=appbi user=appbi password=appbi host=localhost"
+# XLSX next to this script — works locally and inside Docker (/app/)
+XLSX_PATH = os.environ.get("XLSX_PATH", os.path.join(_this_dir, "scope-foodball-demo.xlsx"))
+
+# Build psycopg2 DSN from DATABASE_URL (works in both Docker and local dev)
+_db_url = os.environ["DATABASE_URL"]
+_parsed = urlparse(_db_url.replace("postgresql+psycopg2://", "postgres://"))
+DB_DSN = (
+    f"dbname={_parsed.path.lstrip('/')} "
+    f"user={_parsed.username} "
+    f"password={_parsed.password} "
+    f"host={_parsed.hostname}"
+)
 
 GREEN="\033[92m"; YELLOW="\033[93m"; RED="\033[91m"; BOLD="\033[1m"; RESET="\033[0m"
 def ok(m):      print(f"  {GREEN}✓{RESET} {m}")
@@ -68,7 +82,7 @@ try:
         TRUNCATE TABLE
             resource_shares, dashboard_charts, dashboards, charts,
             dataset_workspace_tables, dataset_workspaces,
-            datasets, data_sources
+            data_sources
         RESTART IDENTITY CASCADE
     """))
     db.execute(text(
@@ -85,12 +99,15 @@ finally:
 # ═══════════════════════════════════════════════════════════
 section("1. Tạo / cập nhật users")
 
-PERM_ADMIN  = dict(data_sources="full", datasets="full",    workspaces="full",
-                   explore_charts="full",  dashboards="full",  ai_chat="full",  settings="full")
-PERM_EDIT   = dict(data_sources="view",  datasets="edit",   workspaces="edit",
-                   explore_charts="edit",  dashboards="edit",  ai_chat="edit",  settings="none")
-PERM_VIEWER = dict(data_sources="view",  datasets="view",   workspaces="view",
-                   explore_charts="view",  dashboards="view",  ai_chat="view",  settings="none")
+PERM_ADMIN  = dict(data_sources="full", workspaces="full",
+                   explore_charts="full", dashboards="full",
+                   ai_chat="full", user_management="full", settings="full")
+PERM_EDIT   = dict(data_sources="view",  workspaces="edit",
+                   explore_charts="edit", dashboards="edit",
+                   ai_chat="edit",  user_management="none", settings="none")
+PERM_VIEWER = dict(data_sources="view",  workspaces="view",
+                   explore_charts="view", dashboards="view",
+                   ai_chat="view",  user_management="none", settings="none")
 
 ACCOUNTS = [
     ("admin@appbi.io",  "Admin AppBI",  PERM_ADMIN),
@@ -133,16 +150,8 @@ if not os.path.exists(XLSX_PATH):
     print(f"{RED}✗ Không tìm thấy {XLSX_PATH}{RESET}"); sys.exit(1)
 
 with open(XLSX_PATH, "rb") as f:
-    resp = requests.post(
-        f"{BASE}/datasources/manual/parse-file",
-        files={"file": ("scope-foodball-demo.xlsx", f,
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-        timeout=60,
-    )
-if resp.status_code != 200:
-    print(f"{RED}✗ Parse xlsx thất bại: {resp.status_code} {resp.text[:200]}{RESET}"); sys.exit(1)
-
-sheets = resp.json()["sheets"]
+    xlsx_bytes = f.read()
+sheets = _parse_excel_bytes(xlsx_bytes)
 ok(f"Parse xlsx OK — {len(sheets)} sheets: {list(sheets.keys())}")
 
 db = SessionLocal()
@@ -213,50 +222,9 @@ finally:
     db.close()
 
 # ═══════════════════════════════════════════════════════════
-#  BƯỚC 4 — TẠO DATASETS
+#  BƯỚC 4 — TẠO CHARTS
 # ═══════════════════════════════════════════════════════════
-section("4. Tạo Datasets")
-
-db = SessionLocal()
-try:
-    datasets_data = [
-        ("Bảng xếp hạng FIFA",
-         "Bảng xếp hạng FIFA tháng 1/2026 — do admin quản lý, CHƯA share",
-         'SELECT * FROM fifa_world_rankings_jan_2026',
-         "admin@appbi.io"),
-        ("Lịch sử World Cup",
-         "Toàn bộ lịch sử WC — do admin quản lý, share cho edit (edit)",
-         'SELECT * FROM fifa_world_cup_history',
-         "admin@appbi.io"),
-        ("Thống kê liên đoàn",
-         "Tổng hợp theo confederation — do edit tạo, CHƯA share",
-         'SELECT "Confederation", COUNT(*) as "Teams", ROUND(AVG(CAST("Points" AS NUMERIC)),1) as "Avg_Points" FROM fifa_world_rankings_jan_2026 GROUP BY "Confederation" ORDER BY "Avg_Points" DESC',
-         "edit@appbi.io"),
-        ("Top Scorers FIFA",
-         "Danh sách cầu thủ ghi nhiều bàn WC — do edit tạo, share cho viewer (view)",
-         'SELECT * FROM fifa_world_cup_top_scorers',
-         "edit@appbi.io"),
-    ]
-    dataset_ids = []
-    for name, desc, sql, owner_email in datasets_data:
-        d = Dataset(
-            name=name, description=desc,
-            data_source_id=DS_ID, sql_query=sql,
-            transformations=[], transformation_version=2,
-            owner_id=uids[owner_email],
-        )
-        db.add(d); db.flush()
-        dataset_ids.append(d.id)
-        ok(f"Dataset id={d.id} '{name}' (owner={'admin' if 'admin' in owner_email else 'edit'})")
-    db.commit()
-    D1_ID, D2_ID, D3_ID, D4_ID = dataset_ids
-finally:
-    db.close()
-
-# ═══════════════════════════════════════════════════════════
-#  BƯỚC 5 — TẠO CHARTS
-# ═══════════════════════════════════════════════════════════
-section("5. Tạo Charts")
+section("4. Tạo Charts")
 
 def bar_cfg(ws_id, dim, metric, agg="sum"):
     return {"workspace_id": ws_id, "chartType": "BAR",
@@ -299,9 +267,9 @@ finally:
     db.close()
 
 # ═══════════════════════════════════════════════════════════
-#  BƯỚC 6 — TẠO DASHBOARDS
+#  BƯỚC 5 — TẠO DASHBOARDS
 # ═══════════════════════════════════════════════════════════
-section("6. Tạo Dashboards")
+section("5. Tạo Dashboards")
 
 db = SessionLocal()
 try:
@@ -330,9 +298,9 @@ finally:
     db.close()
 
 # ═══════════════════════════════════════════════════════════
-#  BƯỚC 7 — TẠO RESOURCE SHARES
+#  BƯỚC 6 — TẠO RESOURCE SHARES
 # ═══════════════════════════════════════════════════════════
-section("7. Tạo Resource Shares")
+section("6. Tạo Resource Shares")
 
 conn = psycopg2.connect(DB_DSN)
 
@@ -349,10 +317,6 @@ try:
     A = uids["admin@appbi.io"]
     E = uids["edit@appbi.io"]
     V = uids["viewer@appbi.io"]
-
-    # Datasets
-    share("dataset", D2_ID, E, "edit", A);   ok(f"Dataset  D2={D2_ID}: admin → edit (edit)")
-    share("dataset", D4_ID, V, "view", E);   ok(f"Dataset  D4={D4_ID}: edit  → viewer (view)")
 
     # Workspaces
     share("workspace", W1_ID, E, "edit", A); ok(f"Workspace W1={W1_ID}: admin → edit  (edit)")
@@ -389,11 +353,6 @@ print(f"""
 
   {YELLOW}[Data Sources]{RESET}
     → Tất cả 3 user đều thấy "Football Analytics" (shared infra, view+)
-
-  {YELLOW}[Datasets] (4 datasets){RESET}
-    admin  → thấy D1+D2+D3+D4  (full access, thấy hết)
-    edit   → thấy D2(share edit)+D3(own)+D4(own)   ← KHÔNG thấy D1 (admin private)
-    viewer → thấy D4(share view)                   ← KHÔNG thấy D1, D2, D3
 
   {YELLOW}[Workspaces] (2 workspaces){RESET}
     admin  → thấy W1+W2
