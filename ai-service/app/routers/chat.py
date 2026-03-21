@@ -49,7 +49,10 @@ async def websocket_chat(
         await ws.close(code=4001, reason="Unauthorized — provide ?token=<jwt>")
         return
 
-    user_role: str = payload.get("role", "viewer")
+    # ai_level is embedded in JWT by backend: none/view/edit/full
+    # edit/full users can call execute_sql; view/none are restricted to pre-built charts
+    ai_level: str = payload.get("ai_level", "view")
+    user_role: str = "editor" if ai_level in ("edit", "full") else "viewer"
     user_id: str = payload.get("sub", "")
 
     await ws.accept()
@@ -190,6 +193,8 @@ async def get_session(session_id: str):
                 entry["metrics"] = m.metrics
             if m.feedback:
                 entry["feedback"] = m.feedback
+            if m.charts:
+                entry["charts"] = m.charts
         msgs.append(entry)
     return {
         "session_id": s.session_id,

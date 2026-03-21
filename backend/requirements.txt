@@ -37,6 +37,10 @@ sqlglot==26.16.2
 # File parsing (Manual Table: CSV / Excel import)
 openpyxl==3.1.5
 
+# AI / Embeddings
+google-generativeai==0.8.4
+pgvector==0.3.6
+
 # Utilities
 pydantic==2.5.3
 pydantic-settings==2.1.0

@@ -1,5 +1,5 @@
 /**
- * AddTableModal v1.5 - Add tables from physical tables or SQL queries
+ * AddTableModal v2.0 - Add or edit tables (physical or query-based)
  */
 'use client';
 
@@ -7,41 +7,50 @@ import React, { useState } from 'react';
 import { X, Database, Code, Loader2 } from 'lucide-react';
 import { PhysicalTableTab } from './PhysicalTableTab';
 import { QueryTableTab } from './QueryTableTab';
-import { useAddTableToWorkspace } from '@/hooks/use-dataset-workspaces';
-import type { AddTableInput } from '@/hooks/use-dataset-workspaces';
+import { useAddTableToWorkspace, useUpdateTable } from '@/hooks/use-dataset-workspaces';
+import type { AddTableInput, WorkspaceTable } from '@/hooks/use-dataset-workspaces';
 
 interface AddTableModalProps {
   workspaceId: number;
   isOpen: boolean;
   onClose: () => void;
   onSuccess?: () => void;
+  existingTable?: WorkspaceTable | null;
 }
 
 type TabType = 'physical' | 'query';
 
-export function AddTableModal({ workspaceId, isOpen, onClose, onSuccess }: AddTableModalProps) {
+export function AddTableModal({ workspaceId, isOpen, onClose, onSuccess, existingTable }: AddTableModalProps) {
   const [activeTab, setActiveTab] = useState<TabType>('physical');
   const addTableMutation = useAddTableToWorkspace();
+  const updateTableMutation = useUpdateTable();
+  const isEditMode = !!existingTable;
+  const isPending = addTableMutation.isPending || updateTableMutation.isPending;
 
-  // Reset state when modal closes
+  // Set tab and reset when modal opens/closes
   React.useEffect(() => {
     if (!isOpen) {
       setActiveTab('physical');
+    } else if (existingTable) {
+      setActiveTab(existingTable.source_kind === 'sql_query' ? 'query' : 'physical');
     }
-  }, [isOpen]);
+  }, [isOpen, existingTable]);
 
-  const handleAddTable = async (input: AddTableInput) => {
-    try {
-      await addTableMutation.mutateAsync({
+  const handleSaveTable = async (input: AddTableInput) => {
+    if (isEditMode && existingTable) {
+      await updateTableMutation.mutateAsync({
         workspaceId,
-        input,
+        tableId: existingTable.id,
+        input: {
+          display_name: input.display_name,
+          source_query: input.source_query,
+        },
       });
-      onSuccess?.();
-      onClose();
-    } catch (error) {
-      console.error('Failed to add table:', error);
-      throw error;
+    } else {
+      await addTableMutation.mutateAsync({ workspaceId, input });
     }
+    onSuccess?.();
+    onClose();
   };
 
   if (!isOpen) return null;
@@ -52,16 +61,16 @@ export function AddTableModal({ workspaceId, isOpen, onClose, onSuccess }: AddTa
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b">
           <div>
-            <h2 className="text-xl font-semibold text-gray-900">Add Table</h2>
+            <h2 className="text-xl font-semibold text-gray-900">
+              {isEditMode ? 'Chỉnh sửa bảng' : 'Add Table'}
+            </h2>
             <p className="text-sm text-gray-500 mt-1">
-              Add a table from a physical datasource table or custom SQL query
+              {isEditMode
+                ? `Đang chỉnh sửa: ${existingTable?.display_name || existingTable?.source_table_name}`
+                : 'Add a table from a physical datasource table or custom SQL query'}
             </p>
           </div>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 transition-colors"
-            disabled={addTableMutation.isPending}
-          >
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors" disabled={isPending}>
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -71,11 +80,9 @@ export function AddTableModal({ workspaceId, isOpen, onClose, onSuccess }: AddTa
           <button
             onClick={() => setActiveTab('physical')}
             className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${
-              activeTab === 'physical'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700'
+              activeTab === 'physical' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
             }`}
-            disabled={addTableMutation.isPending}
+            disabled={isPending || (isEditMode && existingTable?.source_kind === 'sql_query')}
           >
             <Database className="w-4 h-4" />
             <span className="font-medium">From Table</span>
@@ -83,11 +90,9 @@ export function AddTableModal({ workspaceId, isOpen, onClose, onSuccess }: AddTa
           <button
             onClick={() => setActiveTab('query')}
             className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${
-              activeTab === 'query'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700'
+              activeTab === 'query' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
             }`}
-            disabled={addTableMutation.isPending}
+            disabled={isPending || (isEditMode && existingTable?.source_kind === 'physical_table')}
           >
             <Code className="w-4 h-4" />
             <span className="font-medium">From Query</span>
@@ -98,13 +103,15 @@ export function AddTableModal({ workspaceId, isOpen, onClose, onSuccess }: AddTa
         <div className="flex-1 overflow-y-auto">
           {activeTab === 'physical' ? (
             <PhysicalTableTab
-              onAddTable={handleAddTable}
-              isLoading={addTableMutation.isPending}
+              onAddTable={handleSaveTable}
+              isLoading={isPending}
+              existingTable={isEditMode && existingTable?.source_kind === 'physical_table' ? existingTable : undefined}
             />
           ) : (
             <QueryTableTab
-              onAddTable={handleAddTable}
-              isLoading={addTableMutation.isPending}
+              onAddTable={handleSaveTable}
+              isLoading={isPending}
+              existingTable={isEditMode && existingTable?.source_kind === 'sql_query' ? existingTable : undefined}
             />
           )}
         </div>

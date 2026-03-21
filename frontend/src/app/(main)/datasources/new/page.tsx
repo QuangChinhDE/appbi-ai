@@ -3,12 +3,12 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Settings, Table2, RefreshCw, Lock } from 'lucide-react';
+import { ArrowLeft, Settings, RefreshCw, Lock } from 'lucide-react';
 import DataSourceForm from '@/components/datasources/DataSourceForm';
 import { useCreateDataSource } from '@/hooks/use-datasources';
 import type { DataSourceCreate } from '@/types/api';
 
-type Tab = 'connection' | 'tables' | 'sync';
+type Tab = 'connection' | 'sync';
 
 export default function NewDataSourcePage() {
   const router = useRouter();
@@ -19,7 +19,7 @@ export default function NewDataSourcePage() {
     try {
       const created = await createMutation.mutateAsync(data);
       // Redirect to detail page with Tables tab active so user can explore immediately
-      router.push(`/datasources/${created.id}?tab=tables`);
+      router.push(`/datasources/${created.id}?tab=sync`);
     } catch (error: any) {
       alert(`Failed to create data source: ${error.response?.data?.detail || error.message}`);
     }
@@ -31,12 +31,6 @@ export default function NewDataSourcePage() {
       label: 'Connection',
       icon: <Settings className="w-3.5 h-3.5" />,
       locked: false,
-    },
-    {
-      id: 'tables',
-      label: 'Tables',
-      icon: <Table2 className="w-3.5 h-3.5" />,
-      locked: true,
     },
     {
       id: 'sync',
@@ -103,13 +97,13 @@ export default function NewDataSourcePage() {
               </div>
             )}
 
-            {/* Locked tabs */}
-            {(activeTab === 'tables' || activeTab === 'sync') && (
+            {/* Locked sync tab */}
+            {activeTab === 'sync' && (
               <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-3">
                 <Lock className="w-8 h-8 text-gray-200" />
                 <p className="text-sm font-medium">Save connection settings first</p>
                 <p className="text-xs text-gray-400 max-w-xs text-center">
-                  Complete and save the Connection tab to unlock Tables exploration and Sync settings.
+                  Complete and save the Connection tab to unlock Sync settings.
                 </p>
                 <button
                   onClick={() => setActiveTab('connection')}

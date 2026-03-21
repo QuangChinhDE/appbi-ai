@@ -34,7 +34,7 @@ services:
   # PostgreSQL – metadata store only, internal network
   # ----------------------------------------------------------
   db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER:     ${DB_USER:-appbi}
@@ -78,6 +78,8 @@ services:
       # Parquet + DuckDB storage (absolute path inside container)
       DATA_DIR:          /app/.data
       DATASOURCE_ENCRYPTION_KEY: ${DATASOURCE_ENCRYPTION_KEY:-}
+      GEMINI_API_KEY:            ${GEMINI_API_KEY:-}
+      OPENROUTER_API_KEY:        ${OPENROUTER_API_KEY:-}
     volumes:
       - appbi_data:/app/.data
     ports:

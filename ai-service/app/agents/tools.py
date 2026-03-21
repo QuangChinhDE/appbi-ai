@@ -71,44 +71,6 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "execute_sql",
-            "description": (
-                "Execute a SELECT SQL query directly against a datasource. "
-                "Use this when no chart exists or you need custom aggregations not available via charts. "
-                "Refer to the DATABASE SCHEMA in your context for exact table/column names. "
-                "Only SELECT statements are allowed — no INSERT/UPDATE/DELETE/DROP. "
-                "Always include ORDER BY + LIMIT for ranked queries."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "datasource_id": {
-                        "type": "integer",
-                        "description": "ID of the datasource to query (see DATABASE SCHEMA)"
-                    },
-                    "sql": {
-                        "type": "string",
-                        "description": (
-                            "SELECT SQL query. Examples:\n"
-                            "  SELECT Country, Points FROM fifa_world_rankings_jan_2026 ORDER BY Points DESC LIMIT 10\n"
-                            "  SELECT Confederation, COUNT(*) as teams, ROUND(AVG(Points),2) as avg_pts "
-                            "FROM fifa_world_rankings_jan_2026 GROUP BY Confederation ORDER BY avg_pts DESC\n"
-                            "  SELECT Player, Country, Goals FROM fifa_world_cup_top_scorers ORDER BY Goals DESC LIMIT 5"
-                        )
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "default": 50,
-                        "description": "Max rows to return (default 50, max 200)"
-                    }
-                },
-                "required": ["datasource_id", "sql"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "search_dashboards",
             "description": "Search for dashboards by name or description. Useful when user asks about a dashboard or topic overview.",
             "parameters": {
@@ -247,27 +209,198 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "query_dataset",
+            "name": "create_chart",
             "description": (
-                "Execute a saved dataset and return its data rows. "
-                "Datasets may be backed by DuckDB (Parquet) for fast analytics or by live source. "
-                "Use list_workspace_tables to discover available datasets/tables first, "
-                "then use this to fetch data from a specific dataset by ID."
+                "Create a new chart visualization from a workspace table. "
+                "Use when no existing chart matches what the user needs and you have identified the right table and columns. "
+                "Call list_workspace_tables first to get workspace_id and table_id. "
+                "With save=false returns a chart preview; save=true persists the chart permanently."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "dataset_id": {
-                        "type": "integer",
-                        "description": "ID of the dataset to execute"
+                    "name": {
+                        "type": "string",
+                        "description": "Chart title (descriptive, e.g. 'Revenue by Region')"
                     },
-                    "limit": {
+                    "workspace_id": {
                         "type": "integer",
-                        "default": 50,
-                        "description": "Max rows to return (default 50, max 200)"
+                        "description": "Workspace ID (from list_workspace_tables)"
+                    },
+                    "table_id": {
+                        "type": "integer",
+                        "description": "Table ID within the workspace (from list_workspace_tables)"
+                    },
+                    "chart_type": {
+                        "type": "string",
+                        "enum": ["BAR", "LINE", "AREA", "PIE", "SCATTER", "GROUPED_BAR", "STACKED_BAR", "TABLE", "KPI", "TIME_SERIES"],
+                        "description": "Chart type"
+                    },
+                    "config": {
+                        "type": "object",
+                        "properties": {
+                            "dimensions": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Column names for X-axis / grouping (GROUP BY)"
+                            },
+                            "metrics": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "column": {"type": "string", "description": "Column to aggregate"},
+                                        "aggregation": {
+                                            "type": "string",
+                                            "enum": ["sum", "avg", "count", "min", "max", "count_distinct"],
+                                            "description": "Aggregation function"
+                                        }
+                                    },
+                                    "required": ["column", "aggregation"]
+                                },
+                                "description": "Metrics to aggregate"
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "default": 100,
+                                "description": "Max data rows for the chart"
+                            }
+                        },
+                        "description": "Chart configuration"
+                    },
+                    "save": {
+                        "type": "boolean",
+                        "description": "If true, save chart permanently to the system. Default false (preview only)."
                     }
                 },
-                "required": ["dataset_id"]
+                "required": ["name", "workspace_id", "table_id", "chart_type", "config"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "explore_data",
+            "description": (
+                "Profile a workspace table to discover patterns, distributions, and data quality. "
+                "Use when user says 'tell me about this data', 'what columns does this table have?', "
+                "'anything interesting?', or before creating charts. "
+                "Returns column stats, sample values, cardinality, null rates, and data patterns."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "workspace_id": {
+                        "type": "integer",
+                        "description": "Workspace ID (from list_workspace_tables)"
+                    },
+                    "table_id": {
+                        "type": "integer",
+                        "description": "Table ID to profile (from list_workspace_tables)"
+                    },
+                    "analysis_type": {
+                        "type": "string",
+                        "enum": ["overview", "distribution", "time_patterns"],
+                        "description": (
+                            "overview: row count, column types, top values per column. "
+                            "distribution: value counts per categorical column. "
+                            "time_patterns: trend over time for numeric columns."
+                        )
+                    },
+                    "focus_columns": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Specific columns to analyze. If empty, analyze all (up to 10)."
+                    }
+                },
+                "required": ["workspace_id", "table_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "explain_insight",
+            "description": (
+                "Drill down into a metric to find root cause of a change. "
+                "Use when user asks 'why did X change?', 'what caused the drop in Y?', 'explain this trend'. "
+                "Compares current period vs previous period and breaks down by dimension columns to find the biggest contributors."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "workspace_id": {
+                        "type": "integer",
+                        "description": "Workspace ID"
+                    },
+                    "table_id": {
+                        "type": "integer",
+                        "description": "Table ID to analyze"
+                    },
+                    "metric_column": {
+                        "type": "string",
+                        "description": "Numeric column to analyze (e.g. 'revenue', 'Points')"
+                    },
+                    "aggregation": {
+                        "type": "string",
+                        "enum": ["sum", "avg", "count", "max", "min"],
+                        "description": "Aggregation function for the metric"
+                    },
+                    "time_column": {
+                        "type": "string",
+                        "description": "Date/time column for period comparison (required for time-based comparison)"
+                    },
+                    "comparison": {
+                        "type": "string",
+                        "enum": ["week_over_week", "month_over_month", "quarter_over_quarter", "year_over_year"],
+                        "description": "Time comparison window"
+                    },
+                    "dimension_columns": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Columns to group by for drill-down analysis (e.g. ['Country', 'Confederation'])"
+                    }
+                },
+                "required": ["workspace_id", "table_id", "metric_column", "aggregation", "dimension_columns"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_dashboard",
+            "description": (
+                "Automatically generate a complete dashboard with multiple charts from workspace tables. "
+                "Use when user asks 'build me a dashboard', 'create a dashboard for X', "
+                "'I need a monitoring page'. Auto-selects chart types based on data schema."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": "Dashboard topic / business domain (e.g. 'FIFA Rankings', 'Sales Overview')"
+                    },
+                    "tables": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "workspace_id": {"type": "integer"},
+                                "table_id": {"type": "integer"},
+                                "table_name": {"type": "string"}
+                            },
+                            "required": ["workspace_id", "table_id"]
+                        },
+                        "description": "Tables to use (from list_workspace_tables). Include workspace_id + table_id."
+                    },
+                    "chart_count": {
+                        "type": "integer",
+                        "description": "Number of charts to create (4-8). Default 6.",
+                        "default": 6
+                    }
+                },
+                "required": ["topic", "tables"]
             }
         }
     },
@@ -288,96 +421,54 @@ def _fuzzy_score(query: str, text: str) -> int:
 async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict[str, Any]:
     """Dispatch tool call and return structured result dict."""
 
-    # ── execute_sql ────────────────────────────────────────────────────────────
-    if name == "execute_sql":
-        import re
-        sql = args.get("sql", "").strip()
-        datasource_id = int(args["datasource_id"])
-        limit = min(int(args.get("limit", 50)), 200)
-
-        # Security: only allow SELECT statements
-        sql_upper = re.sub(r"/\*.*?\*/", "", sql, flags=re.DOTALL)
-        sql_upper = re.sub(r"--[^\n]*", "", sql_upper)
-        first_word = sql_upper.strip().split()[0].upper() if sql_upper.strip() else ""
-        if first_word not in ("SELECT", "WITH"):
-            return {"error": "Only SELECT queries are allowed"}
-        # Block forbidden keywords regardless of position
-        forbidden = re.compile(
-            r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|EXEC|EXECUTE)\b",
-            re.IGNORECASE,
-        )
-        if forbidden.search(sql_upper):
-            return {"error": "Query contains forbidden operations"}
-
-        result = await bi_client.execute_datasource_sql(
-            datasource_id=datasource_id,
-            sql=sql,
-            limit=limit,
-            token=token,
-        )
-        columns = result.get("columns", [])
-        rows = result.get("data", [])
-        return {
-            "datasource_id": datasource_id,
-            "columns": columns,
-            "rows": rows,
-            "row_count": len(rows),
-            "execution_time_ms": result.get("execution_time_ms"),
-        }
-
     # ── search_charts ──────────────────────────────────────────────────────────
-    elif name == "search_charts":
+    if name == "search_charts":
         query = args.get("query", "")
         chart_type_filter = args.get("chart_type")
         limit = min(int(args.get("limit", 10)), 20)
 
-        charts = await bi_client.list_charts(limit=200, token=token)
+        # --- Try vector search first ---
+        vector_hits = await bi_client.search_similar_charts(query, limit=limit * 2, token=token)
+        if chart_type_filter:
+            vector_hits = [h for h in vector_hits if h.get("chart_type", "").upper() == chart_type_filter.upper()]
 
-        # Fetch metadata for each chart in parallel (fire-and-forget pattern)
-        import asyncio
-        metadata_list = await asyncio.gather(
-            *[bi_client.get_chart_metadata(c["id"], token=token) for c in charts],
-            return_exceptions=True,
-        )
-        meta_map: Dict[int, Dict] = {}
-        for c, m in zip(charts, metadata_list):
-            if isinstance(m, dict):
-                meta_map[c["id"]] = m
+        if vector_hits:
+            # Vector search succeeded — use semantic results
+            results = [
+                {
+                    "id": h["id"],
+                    "name": h["name"],
+                    "chart_type": h.get("chart_type", ""),
+                    "description": h.get("description", ""),
+                }
+                for h in vector_hits[:limit]
+            ]
+        else:
+            # --- Fallback: fuzzy keyword search on chart name only ---
+            # (metadata lookup removed — all charts return 404 until AutoTaggingService runs)
+            charts = await bi_client.list_charts(limit=200, token=token)
 
-        scored = []
-        for c in charts:
-            if chart_type_filter and c.get("chart_type", "").upper() != chart_type_filter.upper():
-                continue
-
-            # Build searchable text: name + description + metadata fields
-            search_text = " ".join(filter(None, [
-                c.get("name", ""),
-                c.get("description", ""),
-            ]))
-            meta = meta_map.get(c["id"], {})
-            if meta:
-                search_text += " " + " ".join(filter(None, [
-                    meta.get("domain", ""),
-                    meta.get("intent", ""),
-                    " ".join(meta.get("metrics", [])),
-                    " ".join(meta.get("dimensions", [])),
-                    " ".join(meta.get("tags", [])),
+            scored = []
+            for c in charts:
+                if chart_type_filter and c.get("chart_type", "").upper() != chart_type_filter.upper():
+                    continue
+                search_text = " ".join(filter(None, [
+                    c.get("name", ""),
+                    c.get("description", ""),
                 ]))
+                score = _fuzzy_score(query, search_text)
+                if score > 0:
+                    scored.append((score, c))
 
-            score = _fuzzy_score(query, search_text)
-            if score > 0:
-                scored.append((score, c, meta))
-
-        # Sort by score descending, take top N
-        scored.sort(key=lambda x: x[0], reverse=True)
-        results = []
-        for _, c, meta in scored[:limit]:
-            results.append({
-                "id": c["id"],
-                "name": c["name"],
-                "chart_type": c.get("chart_type", ""),
-                "description": c.get("description", ""),
-            })
+            scored.sort(key=lambda x: x[0], reverse=True)
+            results = []
+            for _, c in scored[:limit]:
+                results.append({
+                    "id": c["id"],
+                    "name": c["name"],
+                    "chart_type": c.get("chart_type", ""),
+                    "description": c.get("description", ""),
+                })
 
         if results:
             # Auto-run the top chart so data is always fetched
@@ -507,7 +598,9 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
                         "columns": [
                             {"name": c.get("name", c) if isinstance(c, dict) else c,
                              "type": c.get("type", "unknown") if isinstance(c, dict) else "unknown"}
-                            for c in (t.get("columns_cache") or t.get("columns") or [])
+                            for c in (
+                                lambda cc: cc.get("columns", []) if isinstance(cc, dict) else (cc or [])
+                            )(t.get("columns_cache") or t.get("columns"))
                         ],
                     }
                     for t in tables
@@ -563,19 +656,458 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
             "row_count": result.get("row_count", 0),
         }
 
-    # ── query_dataset ──────────────────────────────────────────────────────────
-    elif name == "query_dataset":
-        dataset_id = int(args["dataset_id"])
-        limit = min(int(args.get("limit", 50)), 200)
-        result = await bi_client.execute_dataset(dataset_id, limit=limit, token=token)
-        columns = result.get("columns", [])
-        data = result.get("data", [])
+    # ── create_chart ───────────────────────────────────────────────────────────
+    elif name == "create_chart":
+        import datetime as _dt
+        workspace_id = int(args["workspace_id"])
+        table_id = int(args["table_id"])
+        chart_type = args.get("chart_type", "BAR").upper()
+        config = args.get("config") or {}
+        chart_name = args.get("name", "AI Chart")
+        save = bool(args.get("save", False))
+
+        # Convert chart config metrics → execute measures
+        metrics_cfg = config.get("metrics") or []
+        measures = [
+            {"field": m["column"], "function": m.get("aggregation", "sum")}
+            for m in metrics_cfg if m.get("column")
+        ]
+        dimensions = config.get("dimensions") or []
+        limit = min(int(config.get("limit", 100)), 500)
+
+        # Execute query to get chart data
+        exec_result = await bi_client.execute_table_query(
+            workspace_id=workspace_id,
+            table_id=table_id,
+            dimensions=dimensions or None,
+            measures=measures or None,
+            limit=limit,
+            token=token,
+        )
+        rows = exec_result.get("rows", [])
+
+        chart_id = None
+        saved = False
+        if save:
+            try:
+                saved_chart = await bi_client.ai_chart_preview(
+                    workspace_table_id=table_id,
+                    chart_type=chart_type,
+                    config=config,
+                    name=chart_name,
+                    save=True,
+                    token=token,
+                )
+                chart_id = saved_chart.get("chart_id")
+                saved = saved_chart.get("saved", False)
+            except Exception as exc:
+                pass  # Preview still returned data; saving failed silently
+
         return {
-            "dataset_id": dataset_id,
-            "columns": [c.get("name", c) if isinstance(c, dict) else c for c in columns],
-            "rows": data,
-            "row_count": len(data),
-            "execution_time_ms": result.get("execution_time_ms"),
+            "chart_preview": True,  # signal orchestrator to emit chart WS event
+            "chart_name": chart_name,
+            "chart_type": chart_type,
+            "data": rows,
+            "row_count": len(rows),
+            "chart_id": chart_id,
+            "saved": saved,
+            "config": config,
+            "workspace_id": workspace_id,
+            "table_id": table_id,
+        }
+
+    # ── explore_data ───────────────────────────────────────────────────────────
+    elif name == "explore_data":
+        workspace_id = int(args["workspace_id"])
+        table_id = int(args["table_id"])
+        analysis_type = args.get("analysis_type", "overview")
+        focus_columns: List[str] = args.get("focus_columns") or []
+
+        # Step 1: get a sample to discover columns
+        sample = await bi_client.preview_workspace_table(workspace_id, table_id, limit=50, token=token)
+        columns_raw = sample.get("columns", [])
+        all_columns = [c if isinstance(c, str) else c.get("name", str(c)) for c in columns_raw]
+        rows_sample = sample.get("rows", [])
+        total_rows_in_sample = len(rows_sample)
+
+        target_cols = [c for c in all_columns if not focus_columns or c in focus_columns][:10]
+
+        if analysis_type == "overview":
+            # Compute per-column stats from sample
+            col_stats = {}
+            for col in target_cols:
+                values = [r.get(col) for r in rows_sample if r.get(col) is not None]
+                non_null_count = len(values)
+                null_count = total_rows_in_sample - non_null_count
+                unique_vals = list({str(v) for v in values[:20]})
+                numeric_vals = [v for v in values if isinstance(v, (int, float))]
+                col_stats[col] = {
+                    "non_null": non_null_count,
+                    "null_count": null_count,
+                    "unique_sample": len(set(str(v) for v in values)),
+                    "sample_values": unique_vals[:5],
+                    "is_numeric": len(numeric_vals) > 0 and len(numeric_vals) == non_null_count,
+                    "min": min(numeric_vals) if numeric_vals else None,
+                    "max": max(numeric_vals) if numeric_vals else None,
+                }
+            return {
+                "analysis_type": "overview",
+                "table_id": table_id,
+                "workspace_id": workspace_id,
+                "sample_rows": total_rows_in_sample,
+                "columns": all_columns,
+                "column_stats": col_stats,
+                "note": "Stats based on sample of up to 50 rows",
+            }
+
+        elif analysis_type == "distribution":
+            # For each categorical column, get value counts
+            results = {}
+            categorical_cols = [
+                c for c in target_cols
+                if any(not isinstance(r.get(c), (int, float)) for r in rows_sample if r.get(c) is not None)
+            ][:5]
+            for col in categorical_cols:
+                try:
+                    dist = await bi_client.execute_table_query(
+                        workspace_id=workspace_id,
+                        table_id=table_id,
+                        dimensions=[col],
+                        measures=[{"field": col, "function": "count"}],
+                        order_by=[{"field": f"{col}_count", "direction": "DESC"}],
+                        limit=20,
+                        token=token,
+                    )
+                    results[col] = dist.get("rows", [])[:10]
+                except Exception:
+                    pass
+            return {
+                "analysis_type": "distribution",
+                "distributions": results,
+                "columns_analyzed": list(results.keys()),
+            }
+
+        elif analysis_type == "time_patterns":
+            # Find date columns and numeric columns for trend analysis
+            date_cols = [
+                c for c in all_columns
+                if any(kw in c.lower() for kw in ("date", "time", "year", "month", "week", "day", "created", "updated"))
+            ]
+            numeric_cols = [
+                c for c in target_cols
+                if rows_sample and isinstance(rows_sample[0].get(c), (int, float))
+            ]
+            if not date_cols or not numeric_cols:
+                return {
+                    "analysis_type": "time_patterns",
+                    "note": "No obvious date or numeric columns found. Try 'overview' first.",
+                    "columns": all_columns,
+                }
+            time_col = date_cols[0]
+            metric_col = numeric_cols[0]
+            try:
+                trend = await bi_client.execute_table_query(
+                    workspace_id=workspace_id,
+                    table_id=table_id,
+                    dimensions=[time_col],
+                    measures=[{"field": metric_col, "function": "sum"}, {"field": metric_col, "function": "count"}],
+                    order_by=[{"field": time_col, "direction": "ASC"}],
+                    limit=100,
+                    token=token,
+                )
+                return {
+                    "analysis_type": "time_patterns",
+                    "time_column": time_col,
+                    "metric_column": metric_col,
+                    "trend_data": trend.get("rows", []),
+                    "row_count": trend.get("row_count", 0),
+                }
+            except Exception as exc:
+                return {"analysis_type": "time_patterns", "error": str(exc)}
+
+        return {"error": f"Unknown analysis_type: {analysis_type}"}
+
+    # ── explain_insight ────────────────────────────────────────────────────────
+    elif name == "explain_insight":
+        import datetime as _dt
+        workspace_id = int(args["workspace_id"])
+        table_id = int(args["table_id"])
+        metric_col = args["metric_column"]
+        agg = args.get("aggregation", "sum")
+        time_col = args.get("time_column")
+        comparison = args.get("comparison", "month_over_month")
+        dimension_cols: List[str] = args.get("dimension_columns") or []
+
+        # ── Overall metric without time filter (if no time_column) ──
+        if not time_col:
+            # Just compute overall metric per dimension
+            drill_results = []
+            for dim in dimension_cols[:5]:
+                try:
+                    res = await bi_client.execute_table_query(
+                        workspace_id=workspace_id,
+                        table_id=table_id,
+                        dimensions=[dim],
+                        measures=[{"field": metric_col, "function": agg}],
+                        order_by=[{"field": f"{metric_col}_{agg}", "direction": "DESC"}],
+                        limit=10,
+                        token=token,
+                    )
+                    drill_results.append({"dimension": dim, "data": res.get("rows", [])})
+                except Exception as exc:
+                    drill_results.append({"dimension": dim, "error": str(exc)})
+            return {
+                "type": "breakdown",
+                "metric_column": metric_col,
+                "aggregation": agg,
+                "drill_downs": drill_results,
+                "note": "No time_column provided — showing breakdown by dimension only",
+            }
+
+        # ── Compute date ranges for comparison ──
+        today = _dt.date.today()
+        if comparison == "week_over_week":
+            curr_start = today - _dt.timedelta(days=today.weekday())  # Monday this week
+            curr_end = today
+            prev_start = curr_start - _dt.timedelta(weeks=1)
+            prev_end = curr_start - _dt.timedelta(days=1)
+        elif comparison == "month_over_month":
+            curr_start = today.replace(day=1)
+            curr_end = today
+            prev_month = (curr_start - _dt.timedelta(days=1)).replace(day=1)
+            prev_start = prev_month
+            prev_end = curr_start - _dt.timedelta(days=1)
+        elif comparison == "quarter_over_quarter":
+            quarter_month = ((today.month - 1) // 3) * 3 + 1
+            curr_start = today.replace(month=quarter_month, day=1)
+            curr_end = today
+            prev_quarter_end = curr_start - _dt.timedelta(days=1)
+            prev_quarter_start_month = ((prev_quarter_end.month - 1) // 3) * 3 + 1
+            prev_start = prev_quarter_end.replace(month=prev_quarter_start_month, day=1)
+            prev_end = prev_quarter_end
+        else:  # year_over_year
+            curr_start = today.replace(month=1, day=1)
+            curr_end = today
+            prev_start = curr_start.replace(year=curr_start.year - 1)
+            prev_end = curr_start - _dt.timedelta(days=1)
+
+        curr_filters = [
+            {"field": time_col, "operator": ">=", "value": str(curr_start)},
+            {"field": time_col, "operator": "<=", "value": str(curr_end)},
+        ]
+        prev_filters = [
+            {"field": time_col, "operator": ">=", "value": str(prev_start)},
+            {"field": time_col, "operator": "<=", "value": str(prev_end)},
+        ]
+
+        # ── Overall metric current vs previous ──
+        try:
+            curr_res = await bi_client.execute_table_query(
+                workspace_id=workspace_id, table_id=table_id,
+                measures=[{"field": metric_col, "function": agg}],
+                filters=curr_filters, limit=1, token=token,
+            )
+            prev_res = await bi_client.execute_table_query(
+                workspace_id=workspace_id, table_id=table_id,
+                measures=[{"field": metric_col, "function": agg}],
+                filters=prev_filters, limit=1, token=token,
+            )
+            curr_val = float(list(curr_res.get("rows", [{}])[0].values())[0] or 0) if curr_res.get("rows") else 0
+            prev_val = float(list(prev_res.get("rows", [{}])[0].values())[0] or 0) if prev_res.get("rows") else 0
+        except Exception:
+            curr_val = prev_val = 0
+
+        change_pct = round((curr_val - prev_val) / prev_val * 100, 1) if prev_val else 0
+
+        # ── Drill down by each dimension ──
+        drill_results = []
+        for dim in dimension_cols[:5]:
+            try:
+                curr_dim = await bi_client.execute_table_query(
+                    workspace_id=workspace_id, table_id=table_id,
+                    dimensions=[dim],
+                    measures=[{"field": metric_col, "function": agg}],
+                    filters=curr_filters,
+                    order_by=[{"field": f"{metric_col}_{agg}", "direction": "DESC"}],
+                    limit=10, token=token,
+                )
+                prev_dim = await bi_client.execute_table_query(
+                    workspace_id=workspace_id, table_id=table_id,
+                    dimensions=[dim],
+                    measures=[{"field": metric_col, "function": agg}],
+                    filters=prev_filters,
+                    order_by=[{"field": f"{metric_col}_{agg}", "direction": "DESC"}],
+                    limit=10, token=token,
+                )
+                # Merge current vs previous by dimension value
+                prev_map = {}
+                metric_key = f"{metric_col}_{agg}"
+                for row in prev_dim.get("rows", []):
+                    dim_val = str(row.get(dim, ""))
+                    prev_map[dim_val] = float(row.get(metric_key, 0) or 0)
+
+                contributions = []
+                for row in curr_dim.get("rows", []):
+                    dim_val = str(row.get(dim, ""))
+                    cv = float(row.get(metric_key, 0) or 0)
+                    pv = prev_map.get(dim_val, 0)
+                    dim_change = round((cv - pv) / pv * 100, 1) if pv else 0
+                    abs_impact = round((cv - pv) / (curr_val - prev_val) * 100, 1) if (curr_val - prev_val) else 0
+                    contributions.append({
+                        "value": dim_val,
+                        "current": cv,
+                        "previous": pv,
+                        "change_pct": dim_change,
+                        "contribution_pct": abs_impact,
+                    })
+                drill_results.append({"dimension": dim, "contributions": contributions})
+            except Exception as exc:
+                drill_results.append({"dimension": dim, "error": str(exc)})
+
+        return {
+            "type": "period_comparison",
+            "metric_column": metric_col,
+            "aggregation": agg,
+            "comparison": comparison,
+            "periods": {
+                "current": {"start": str(curr_start), "end": str(curr_end), "value": curr_val},
+                "previous": {"start": str(prev_start), "end": str(prev_end), "value": prev_val},
+                "change_pct": change_pct,
+            },
+            "drill_downs": drill_results,
+        }
+
+    # ── create_dashboard ───────────────────────────────────────────────────────
+    elif name == "create_dashboard":
+        topic = args.get("topic", "Dashboard")
+        tables_arg: List[Dict] = args.get("tables") or []
+        chart_count = min(int(args.get("chart_count", 6)), 8)
+
+        if not tables_arg:
+            return {"error": "No tables provided. Call list_workspace_tables first to find table IDs."}
+
+        # Analyse first table to understand schema
+        first = tables_arg[0]
+        ws_id = int(first["workspace_id"])
+        tbl_id = int(first["table_id"])
+        tbl_name = first.get("table_name", f"table_{tbl_id}")
+
+        sample = await bi_client.preview_workspace_table(ws_id, tbl_id, limit=20, token=token)
+        all_cols = [c if isinstance(c, str) else c.get("name", str(c)) for c in sample.get("columns", [])]
+        rows_sample = sample.get("rows", [])
+
+        # Detect numeric vs categorical columns
+        numeric_cols = [
+            c for c in all_cols
+            if rows_sample and isinstance(rows_sample[0].get(c), (int, float))
+        ]
+        categorical_cols = [c for c in all_cols if c not in numeric_cols]
+        date_cols = [
+            c for c in all_cols
+            if any(kw in c.lower() for kw in ("date", "time", "year", "month", "day", "created"))
+        ]
+
+        # Dashboard template slots
+        DEFAULT_LAYOUT = [
+            {"i": "kpi-0",     "x": 0, "y": 0, "w": 3, "h": 2},
+            {"i": "kpi-1",     "x": 3, "y": 0, "w": 3, "h": 2},
+            {"i": "trend",     "x": 0, "y": 2, "w": 6, "h": 4},
+            {"i": "breakdown", "x": 0, "y": 6, "w": 4, "h": 4},
+            {"i": "pie",       "x": 4, "y": 6, "w": 2, "h": 4},
+            {"i": "table",     "x": 0, "y": 10, "w": 6, "h": 4},
+        ]
+
+        chart_specs = []
+        if numeric_cols:
+            chart_specs.append(("KPI", f"{topic} — {numeric_cols[0]} Total", {
+                "dimensions": [], "metrics": [{"column": numeric_cols[0], "aggregation": "sum"}]
+            }))
+        if len(numeric_cols) > 1:
+            chart_specs.append(("KPI", f"{topic} — {numeric_cols[1]} Avg", {
+                "dimensions": [], "metrics": [{"column": numeric_cols[1], "aggregation": "avg"}]
+            }))
+        if date_cols and numeric_cols:
+            chart_specs.append(("LINE", f"{topic} — Trend over time", {
+                "dimensions": [date_cols[0]],
+                "metrics": [{"column": numeric_cols[0], "aggregation": "sum"}],
+                "limit": 100
+            }))
+        if categorical_cols and numeric_cols:
+            chart_specs.append(("BAR", f"{topic} — {numeric_cols[0]} by {categorical_cols[0]}", {
+                "dimensions": [categorical_cols[0]],
+                "metrics": [{"column": numeric_cols[0], "aggregation": "sum"}],
+                "limit": 20
+            }))
+        if len(categorical_cols) > 1 and numeric_cols:
+            chart_specs.append(("PIE", f"{topic} — {numeric_cols[0]} by {categorical_cols[1]}", {
+                "dimensions": [categorical_cols[1]],
+                "metrics": [{"column": numeric_cols[0], "aggregation": "sum"}],
+                "limit": 10
+            }))
+        chart_specs.append(("TABLE", f"{topic} — Data Table", {
+            "dimensions": categorical_cols[:3] if categorical_cols else [],
+            "metrics": [{"column": c, "aggregation": "sum"} for c in numeric_cols[:2]],
+            "limit": 20
+        }))
+        chart_specs = chart_specs[:chart_count]
+
+        # Create charts via AI preview (save=true)
+        created_chart_ids = []
+        chart_errors = []
+        for i, (chart_type, chart_name, chart_cfg) in enumerate(chart_specs):
+            try:
+                preview = await bi_client.ai_chart_preview(
+                    workspace_table_id=tbl_id,
+                    chart_type=chart_type,
+                    config=chart_cfg,
+                    name=chart_name,
+                    save=True,
+                    token=token,
+                )
+                cid = preview.get("chart_id")
+                if cid:
+                    created_chart_ids.append((cid, DEFAULT_LAYOUT[i]["i"] if i < len(DEFAULT_LAYOUT) else f"chart-{i}"))
+            except Exception as exc:
+                chart_errors.append(f"Chart '{chart_name}': {str(exc)[:100]}")
+
+        if not created_chart_ids:
+            return {"error": "Failed to create any charts", "details": chart_errors}
+
+        # Create dashboard
+        try:
+            dash = await bi_client.create_dashboard(
+                name=f"{topic} Dashboard",
+                description=f"Auto-generated by AI Agent from table: {tbl_name}",
+                token=token,
+            )
+            dashboard_id = dash.get("id")
+        except Exception as exc:
+            return {"error": f"Failed to create dashboard: {str(exc)}"}
+
+        # Add charts to dashboard
+        for cid, slot_id in created_chart_ids:
+            try:
+                await bi_client.add_chart_to_dashboard(dashboard_id, cid, {}, token=token)
+            except Exception:
+                pass
+
+        # Update layout
+        layouts = []
+        for i, (cid, slot_id) in enumerate(created_chart_ids):
+            tmpl = DEFAULT_LAYOUT[i] if i < len(DEFAULT_LAYOUT) else {"x": 0, "y": i * 4, "w": 6, "h": 4}
+            layouts.append({"chart_id": cid, **{k: tmpl[k] for k in ("x", "y", "w", "h")}})
+        try:
+            await bi_client.update_dashboard_layout(dashboard_id, layouts, token=token)
+        except Exception:
+            pass
+
+        return {
+            "dashboard_id": dashboard_id,
+            "dashboard_name": f"{topic} Dashboard",
+            "chart_count": len(created_chart_ids),
+            "chart_ids": [cid for cid, _ in created_chart_ids],
+            "errors": chart_errors if chart_errors else None,
+            "message": f"Created dashboard '{topic} Dashboard' with {len(created_chart_ids)} charts. Navigate to /dashboards/{dashboard_id} to view it.",
         }
 
     else:

@@ -29,11 +29,16 @@ ACCESS_TOKEN_EXPIRE_HOURS = 24
 
 def create_access_token(user: User) -> str:
     now = datetime.now(timezone.utc)
+    # Embed the user's ai_chat permission level so ai-service can do RBAC
+    # without a round-trip to the backend on every message.
+    perms = user.permissions or {}
+    ai_level: str = perms.get("ai_chat", "none") if isinstance(perms, dict) else "none"
     payload = {
         "sub": str(user.id),
         "jti": str(uuid.uuid4()),
         "iat": now,
         "exp": now + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS),
+        "ai_level": ai_level,
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
 

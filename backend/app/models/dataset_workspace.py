@@ -2,7 +2,7 @@
 Dataset Workspace Models - Table-based dataset like NocoDB/Airtable
 """
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, JSON
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
@@ -54,8 +54,13 @@ class DatasetWorkspaceTable(Base):
     type_overrides = Column(JSON, nullable=True)  # {"col_name": "integer"} user-defined type overrides
     column_formats = Column(JSON, nullable=True)  # {"col_name": {formatType, decimalPlaces, ...}} full display format per column
     
+    # AI metadata — populated automatically by TableStatsService
+    column_stats = Column(JSONB, nullable=True, default=None)
+    auto_description = Column(Text, nullable=True, default=None)
+    stats_updated_at = Column(DateTime, nullable=True, default=None)
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
-    
+
     # Relationships
     workspace = relationship("DatasetWorkspace", back_populates="tables")

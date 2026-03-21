@@ -100,6 +100,7 @@ export default function DataSourceForm({
       const res = await fetch(`${API_BASE}/datasources/test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ type, config, data_source_id: initialData?.id ?? null }),
       });
       const data = await res.json();
@@ -129,6 +130,7 @@ export default function DataSourceForm({
       formData.append('file', file);
       const res = await fetch(`${API_BASE}/datasources/manual/parse-file`, {
         method: 'POST',
+        credentials: 'include',
         body: formData,
       });
       if (!res.ok) {

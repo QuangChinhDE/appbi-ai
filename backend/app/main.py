@@ -36,11 +36,18 @@ async def lifespan(app: FastAPI):
     from app.services.sync_scheduler import startup as ds_scheduler_startup
     ds_scheduler_startup()
 
+    # Anomaly detection daily scheduler (Phase 4)
+    from app.services.anomaly_scheduler import startup as anomaly_scheduler_startup
+    anomaly_scheduler_startup()
+
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
     from app.services.sync_scheduler import shutdown as ds_scheduler_shutdown
     ds_scheduler_shutdown()
+
+    from app.services.anomaly_scheduler import shutdown as anomaly_scheduler_shutdown
+    anomaly_scheduler_shutdown()
 
     # Shutdown DuckDB engine
     from app.services.duckdb_engine import DuckDBEngine

@@ -279,6 +279,142 @@ def _run_sync_job(data_source_id: int, job_id: int) -> None:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def get_synced_view(ds_id: int, source_table_name: str) -> Optional[str]:
+    """
+    Return the DuckDB view name if this physical table has been synced, else None.
+
+    source_table_name: "public.orders", "manual.sheet1", or bare "orders".
+
+    When a schema prefix is present → check that exact view.
+    When no schema prefix → search all synced views for this datasource that
+    match the table name in any schema (handles manual/sheets where schema="manual"
+    or Google Sheets where schema=spreadsheet_id).
+    """
+    from app.services.duckdb_engine import DuckDBEngine
+
+    name = source_table_name.strip('"').strip("'").strip()
+    if "." in name:
+        parts = name.split(".", 1)
+        schema = parts[0].strip('"').strip("'")
+        table = parts[1].strip('"').strip("'")
+        vname = _view_name(ds_id, schema, table)
+        try:
+            with DuckDBEngine.read_conn() as conn:
+                result = conn.execute(
+                    "SELECT COUNT(*) FROM duckdb_views() WHERE view_name = ?",
+                    [vname],
+                ).fetchone()
+                if result and result[0] > 0:
+                    return vname
+        except Exception:
+            pass
+        return None
+    else:
+        # No schema prefix — search all synced views for this datasource
+        # whose name ends with __{sanitized_table}
+        sanitized = _sanitize(name)
+        prefix = f"synced_ds{ds_id}__"
+        suffix = f"__{sanitized}"
+        try:
+            with DuckDBEngine.read_conn() as conn:
+                rows = conn.execute(
+                    "SELECT view_name FROM duckdb_views() WHERE view_name LIKE ?",
+                    [f"{prefix}%{suffix}"],
+                ).fetchall()
+            if rows:
+                return rows[0][0]
+        except Exception:
+            pass
+        return None
+
+
+def _get_synced_view_set(ds_id: int) -> set:
+    """Return the set of all DuckDB view names that have been synced for ds_id."""
+    from app.services.duckdb_engine import DuckDBEngine
+
+    prefix = f"synced_ds{ds_id}__"
+    try:
+        with DuckDBEngine.read_conn() as conn:
+            rows = conn.execute(
+                "SELECT view_name FROM duckdb_views() WHERE view_name LIKE ?",
+                [f"{prefix}%"],
+            ).fetchall()
+        return {row[0] for row in rows}
+    except Exception:
+        return set()
+
+
+def rewrite_sql_for_duckdb(ds_id: int, sql: str) -> Optional[str]:
+    """
+    Rewrite arbitrary SQL to reference DuckDB synced views instead of source tables.
+
+    Strategy (two passes):
+      1. Replace schema-qualified refs: "schema"."table" or schema.table
+         → alias.column refs (e.g. o.id) won't match any view → left unchanged, safe.
+      2. Replace bare table names after FROM/JOIN keywords (assumes default schema "public").
+         → CTE names, subquery aliases won't have views → left unchanged, safe.
+
+    Returns rewritten SQL if at least one table was substituted, else None.
+    Caller must execute in DuckDB and fall back to live query on any exception
+    (handles CTEs, unresolved aliases, or other edge cases).
+    """
+    import re
+
+    synced = _get_synced_view_set(ds_id)
+    if not synced:
+        return None
+
+    any_replaced = False
+
+    def resolve(schema: str, table: str) -> Optional[str]:
+        vn = _view_name(ds_id, schema, table)
+        return vn if vn in synced else None
+
+    # --- Pass 1: schema-qualified refs ----------------------------------------
+    def _sub_qualified(m: re.Match) -> str:
+        nonlocal any_replaced
+        if m.group(1) is not None:       # "schema"."table"
+            schema, table = m.group(1), m.group(2)
+        else:                             # schema.table
+            schema, table = m.group(3), m.group(4)
+        vn = resolve(schema, table)
+        if vn:
+            any_replaced = True
+            return vn
+        return m.group(0)
+
+    rewritten = re.sub(
+        r'"([^"]+)"\s*\.\s*"([^"]+)"|([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)',
+        _sub_qualified,
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+    # --- Pass 2: bare table names after FROM / JOIN variants ------------------
+    # Extract all schemas present in synced views (e.g. "manual", "public", "dbo")
+    prefix = f"synced_ds{ds_id}__"
+    known_schemas = {v[len(prefix):].split("__")[0] for v in synced}
+
+    def _sub_bare(m: re.Match) -> str:
+        nonlocal any_replaced
+        keyword, table = m.group(1), m.group(2)
+        # Try "public" first (default SQL schema), then all other known schemas
+        for schema in ["public"] + sorted(known_schemas - {"public"}):
+            vn = resolve(schema, table)
+            if vn:
+                any_replaced = True
+                return f"{keyword} {vn}"
+        return m.group(0)
+
+    rewritten = re.sub(
+        r'(?i)\b((?:(?:INNER|LEFT|RIGHT|FULL|CROSS)\s+)?(?:OUTER\s+)?JOIN|FROM)\s+([a-zA-Z_][a-zA-Z0-9_]*)\b',
+        _sub_bare,
+        rewritten,
+    )
+
+    return rewritten if any_replaced else None
+
+
 def trigger_sync(data_source_id: int, job_id: int) -> threading.Thread:
     """
     Start a sync job in a daemon background thread (non-blocking).

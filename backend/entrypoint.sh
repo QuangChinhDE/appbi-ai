@@ -14,6 +14,16 @@ echo "==> PostgreSQL is up"
 echo "==> Running Alembic migrations..."
 alembic upgrade head
 
+# Ensure DATA_DIR is set BEFORE seed so Parquet paths resolve correctly
+export DATA_DIR="${DATA_DIR:-/app/.data}"
+
+# Create all required data subdirectories so storage is ready on first boot.
+mkdir -p \
+  "${DATA_DIR}/synced" \
+  "${DATA_DIR}/datasets" \
+  "${DATA_DIR}/workspaces"
+echo "==> Data directory: ${DATA_DIR} (subdirs ready)"
+
 # ------------------------------------------------------------------
 # Optional demo seed (runs only on first boot, guarded by a flag file)
 # Controlled by SEED_DEMO_DATA env var (set to "true" in .env)
@@ -37,16 +47,6 @@ else
 fi
 
 echo "==> Starting FastAPI application..."
-
-# Ensure DATA_DIR is set (Parquet + DuckDB storage)
-export DATA_DIR="${DATA_DIR:-/app/.data}"
-
-# Create all required data subdirectories so storage is ready on first boot.
-mkdir -p \
-  "${DATA_DIR}/synced" \
-  "${DATA_DIR}/datasets" \
-  "${DATA_DIR}/workspaces"
-echo "==> Data directory: ${DATA_DIR} (subdirs ready)"
 
 # ── Seed admin user on first boot ──────────────────────────────────────────
 # Reads ADMIN_EMAIL / ADMIN_PASSWORD / ADMIN_NAME from env.

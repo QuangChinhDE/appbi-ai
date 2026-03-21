@@ -38,8 +38,10 @@ export default function DataSourceDetailPage() {
   const updateMutation = useUpdateDataSource();
   const resPerms = getResourcePermissions(dataSource?.user_permission);
 
-  // Read initial tab from ?tab= query param (e.g. after redirect from /new)
-  const initialTab = (searchParams.get('tab') as Tab) ?? 'connection';
+  // Read initial tab from ?tab= query param — fallback to 'connection' for unknown values
+  const validTabs: Tab[] = ['connection', 'sync'];
+  const paramTab = searchParams.get('tab') as Tab;
+  const initialTab: Tab = validTabs.includes(paramTab) ? paramTab : 'connection';
   const [activeTab, setActiveTab] = useState<Tab>(initialTab);
 
   // Keep URL in sync with active tab so refreshing lands on the correct tab

@@ -20,6 +20,7 @@ from app.schemas.chat import (
     ErrorEvent,
     Message,
     MetricsEvent,
+    SuggestionsEvent,
     TextEvent,
     ThinkingEvent,
     ToolCallEvent,
@@ -29,37 +30,43 @@ from app.agents.tools import TOOL_SCHEMAS, execute_tool
 
 logger = logging.getLogger(__name__)
 
-_VIEWER_BLOCKED_TOOLS = {"execute_sql"}
-
-
 async def _execute_tool_rbac(fn_name: str, fn_args: dict, user_role: str, token: str = "") -> dict:
     """Wrap execute_tool with role-based access control.
 
-    Viewers may not call execute_sql directly — they can only consume
-    pre-built charts / query_table results on resources shared with them.
+    Data access is enforced at the backend level (workspace permission checks).
+    Viewers can only query tables shared with them — the backend returns 403 otherwise.
     """
-    if user_role == "viewer" and fn_name in _VIEWER_BLOCKED_TOOLS:
-        return {"error": f"Permission denied: viewers cannot call '{fn_name}'."}
     return await execute_tool(fn_name, fn_args, token=token)
 
 SYSTEM_PROMPT = """You are a BI data analyst inside AppBI. Your job: answer data questions using real numbers from tools. Be direct, precise, never waste words.
 
-━━━ WHAT EACH TOOL RETURNS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You can ONLY access data that has been shared with you through Dataset Workspaces. Never attempt to access data outside of what list_workspace_tables returns.
 
-search_charts(query)
-  → charts[]:       list of matching charts (id, name, type)
-  → top_chart_data: { chart_id, chart_name, rows:[...], row_count }
-                    ↑ THIS IS REAL DATA. Read rows[] to answer the question.
-                    ↑ The chart is ALREADY rendered on the user's screen.
+━━━ TOOL REFERENCE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-run_chart(chart_id)
-  → rows:[...], row_count   ← real data rows. Chart auto-rendered on screen.
+search_charts(query)          → charts[] + top_chart_data.rows (REAL DATA, already rendered)
+run_chart(chart_id)           → rows[], chart auto-rendered
+query_table(ws, tbl, ...)     → rows[] — aggregated query on workspace table
+list_workspace_tables()       → workspace + table IDs, column names — SINGLE SOURCE OF TRUTH
+run_workspace_table(ws, tbl)  → raw sample rows
 
-execute_sql(datasource_id, sql_query)
-  → data:[...], columns, row_count   ← real data rows
+create_chart(name, workspace_id, table_id, chart_type, config, save)
+  → Renders a NEW chart from any table. Chart appears automatically on screen.
+  → config: { dimensions:[], metrics:[{column, aggregation}], limit }
+  → save=true to persist permanently. Call list_workspace_tables first.
 
-query_table(workspace_id, table_id, dimensions, measures, ...)
-  → rows:[...], row_count   ← pre-aggregated data
+explore_data(workspace_id, table_id, analysis_type)
+  → analysis_type: "overview" | "distribution" | "time_patterns"
+  → Returns column stats, value distributions, or time trends
+
+explain_insight(workspace_id, table_id, metric_column, aggregation, time_column, comparison, dimension_columns)
+  → Drill-down analysis: current vs previous period + dimension breakdown
+  → comparison: "week_over_week" | "month_over_month" | "year_over_year"
+  → Returns change_pct and top contributing dimensions
+
+create_dashboard(topic, tables:[{workspace_id, table_id}], chart_count)
+  → Auto-generates a full dashboard with multiple charts + saves it
+  → Call list_workspace_tables first to get workspace_id + table_id
 
 ━━━ DECISION FLOW ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -67,44 +74,42 @@ Step 1 — Call search_charts(query).
   • top_chart_data.rows exists?
     YES → The chart is already displayed. READ top_chart_data.rows → go to Step 3.
          BUT if the user asks "most/highest/top/best" or "least/lowest/worst",
-         the chart rows may be sorted by a DIFFERENT column (e.g. by year, not by value).
-         In that case → also call execute_sql with ORDER BY to get correctly ranked data.
+         the chart rows may be sorted by a DIFFERENT column.
+         In that case → also call query_table to get correctly ranked data.
     NO  → go to Step 2.
 
-Step 2 — No chart found. Query raw data.
-  • Call execute_sql with a tight SELECT:
-      SELECT <dim>, <agg>(<metric>) AS value
-      FROM <table>
-      GROUP BY <dim> ORDER BY value DESC LIMIT 15
-  • Use exact table/column names from DATA SCHEMA below.
-  • READ data[] rows → go to Step 3.
+Step 2 — No chart found. Choose the right approach:
+  a) "tell me about X data" / "what columns?" → explore_data(overview)
+  b) "why did X change?" / "explain drop" → explain_insight(...)
+  c) User needs a NEW chart visualization → create_chart(...)
+  d) "build me a dashboard" → create_dashboard(...)
+  e) Simple number lookup → list_workspace_tables first, then query_table
 
-Step 3 — Write analysis using ONLY numbers from the rows you just read.
-  ⚠ IMPORTANT: Chart rows may NOT be sorted by the metric the user asked about.
-    For "most/highest/top" questions → scan ALL rows, find the actual MAX value.
-    For "least/lowest/bottom" questions → scan ALL rows, find the actual MIN value.
-    Do NOT assume the first or last row is the answer — VERIFY by comparing values.
+Step 3 — Analyze data and write response using ONLY numbers from actual rows.
+  ⚠ For "most/highest/top" → scan ALL rows, find actual MAX value.
+  ⚠ Do NOT assume first row is the answer — VERIFY by comparing values.
 
-━━━ RESPONSE FORMAT (always follow this structure) ━━━━━━━━━━
+━━━ RESPONSE FORMAT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-**[Direct answer — 1 sentence with the #1 result and its exact value]**
+**[Direct answer — 1 sentence with the top result and exact value]**
 
-• [Row 1 label]: [exact value] — [short note]
-• [Row 2 label]: [exact value] — [short note]
-• [Row 3 label]: [exact value] — [short note]
+• [Item 1]: [value] — [note]
+• [Item 2]: [value] — [note]
 (list top 3–7 items from data)
 
-[Insight: 1–2 sentences on a pattern, gap, or contrast in the data]
+[Insight: 1–2 sentences on pattern, gap, or contrast]
 
 ━━━ ABSOLUTE RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-✗ NEVER answer from memory — ALWAYS call a tool first (search_charts or execute_sql).
+✗ NEVER answer from memory — ALWAYS call a tool first.
 ✗ NEVER ask "Do you want to see a chart?" — charts render automatically.
-✗ NEVER say "I can show you..." or "Shall I display..." — just analyze.
-✗ NEVER write [CHART:id] in text — the system handles chart display.
+✗ NEVER write [CHART:id] in text — system handles chart display.
 ✗ NEVER fabricate numbers — every value MUST come from actual rows[].
+✗ NEVER access datasources or raw SQL directly — only use workspace tables.
 ✓ Always respond in the SAME LANGUAGE as the user.
-✓ If a tool fails, say so and try execute_sql as fallback.
+✓ When creating a chart: call list_workspace_tables FIRST to get workspace_id + table_id.
+✓ If a tool fails, say so and try an alternative.
+✓ If user asks about data you cannot see, say "This data is not available in your shared workspaces."
 """
 
 
@@ -274,17 +279,32 @@ def get_or_create_session(session_id: Optional[str], context: Dict) -> Conversat
 
 
 def _trim_history(messages: List[Message], max_messages: int = 20) -> List[Message]:
-    """Keep last N messages to stay within context window."""
+    """
+    Keep last N messages to stay within context window.
+
+    Crucially, the trimmed list must NOT start with a 'tool' or an
+    'assistant-with-tool_calls' message, because OpenAI will reject a history
+    where a tool-result message has no preceding tool_calls.  Walk forward
+    from the naive cut point until we land on a clean 'user' message.
+    """
     if len(messages) <= max_messages:
         return messages
-    return messages[-max_messages:]
+    trimmed = messages[-max_messages:]
+    # Advance until we find a 'user' message as the first entry
+    for i, m in enumerate(trimmed):
+        if m.role == "user":
+            return trimmed[i:]
+    # Fallback: nothing safe found — return last user+rest
+    return trimmed
 
 
-def _to_llm_messages(session: ConversationSession) -> List[Dict]:
-    """Convert session messages to OpenAI API format, injecting schema context."""
-    # Merge schema context into system prompt (once loaded it stays in session)
+def _to_llm_messages(session: ConversationSession, turn_context: str = "") -> List[Dict]:
+    """Convert session messages to OpenAI API format, injecting per-turn context."""
     system = SYSTEM_PROMPT
-    if session.db_context:
+    # Per-turn context overrides the cached session context (more relevant, less noisy)
+    if turn_context:
+        system += "\n\n" + turn_context
+    elif session.db_context:
         system += "\n\n" + session.db_context
     result = [{"role": "system", "content": system}]
     for m in _trim_history(session.messages):
@@ -300,47 +320,6 @@ def _to_llm_messages(session: ConversationSession) -> List[Dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Schema loader — builds DB context string injected into system prompt
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def _load_db_context(token: str = "") -> str:
-    """
-    Fetch datasource info + tables + sample rows and build a schema reference
-    string that is injected into every system prompt for the session.
-    This eliminates the need for the AI to call list_workspace_tables.
-    """
-    from app.clients.bi_client import bi_client as _client
-    lines = ["## DATA SCHEMA\n"]
-    try:
-        datasources = await _client.list_datasources(token=token)
-        for ds in datasources:
-            lines.append(f"Datasource: **{ds['name']}** (id={ds['id']}, type={ds['type']})")
-            try:
-                tables = await _client.list_datasource_tables(ds["id"], token=token)
-                for tbl in tables:
-                    tname = tbl["name"]
-                    try:
-                        result = await _client.execute_datasource_sql(
-                            ds["id"], f'SELECT * FROM "{tname}" LIMIT 2', limit=2, token=token
-                        )
-                        cols = result.get("columns", [])
-                        sample = result.get("data", [])
-                        lines.append(f"\nTable: `{tname}`")
-                        lines.append(f"  Columns: {', '.join(cols)}")
-                        if sample:
-                            # One compact sample row as key-value
-                            row0 = {k: v for k, v in list(sample[0].items())[:6]}
-                            lines.append(f"  Sample: {row0}")
-                    except Exception:
-                        lines.append(f"\nTable: `{tname}` (schema unavailable)")
-            except Exception:
-                lines.append("  (tables unavailable)")
-    except Exception:
-        return ""
-    return "\n".join(lines)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Main streaming orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -352,10 +331,17 @@ async def run_agent(
     Drive one conversation turn.
     Yields serialised event dicts ready to be sent over WebSocket.
     """
-    # Load DB schema once per session (injected into every system prompt)
     token: str = session.context.get("auth_token", "")
-    if not session.db_context:
-        session.db_context = await _load_db_context(token=token)
+
+    # Build per-turn context: top-N relevant tables + charts via vector search.
+    # This replaces the full schema dump (_load_db_context) — much lower token cost
+    # and the context is always relevant to what the user is asking about.
+    from app.agents.context_builder import build_context
+    ctx_pkg = await build_context(user_message, token=token)
+    turn_context = ctx_pkg.to_prompt_section()
+    # Cache first turn's context as fallback for tool calls that need session.db_context
+    if turn_context and not session.db_context:
+        session.db_context = turn_context
 
     # Append user message
     session.messages.append(Message(role="user", content=user_message))
@@ -391,6 +377,7 @@ async def run_agent(
         metrics_ctx["model"] = model
         is_last = attempt == len(provider_chain) - 1
         try:
+            turn_charts: list = []  # collect chart events emitted this turn
             async for event in _run_with_provider(
                 provider=provider,
                 model=model,
@@ -400,7 +387,10 @@ async def run_agent(
                 metrics_ctx=metrics_ctx,
                 message_id=message_id,
                 token=token,
+                turn_context=turn_context,
             ):
+                if isinstance(event, dict) and event.get("type") == "chart":
+                    turn_charts.append(event)
                 yield event
 
             # ── Emit metrics event before done ──
@@ -421,12 +411,22 @@ async def run_agent(
             )
             yield metrics_event.model_dump()
 
-            # Store metrics on the last assistant message
+            # Store metrics + charts on the last assistant message
             for m in reversed(session.messages):
                 if m.role == "assistant" and m.content:
                     m.message_id = message_id
                     m.metrics = metrics_event.model_dump(exclude={"type"})
+                    if turn_charts:
+                        m.charts = turn_charts
                     break
+
+            # ── Suggest follow-up questions ──
+            try:
+                suggestions = await _generate_suggestions(provider, model, session)
+                if suggestions:
+                    yield SuggestionsEvent(suggestions=suggestions).model_dump()
+            except Exception:
+                pass  # suggestions are optional — never fail the response
 
             return
 
@@ -471,28 +471,29 @@ async def _run_with_provider(
     metrics_ctx: Dict[str, Any],
     message_id: str,
     token: str = "",
+    turn_context: str = "",
 ) -> AsyncGenerator[Dict, None]:
     """Run the tool-calling loop for a single provider."""
 
     if provider == "openai":
         client = _make_openai_client()
         yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-        async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token):
+        async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context):
             yield event
     elif provider == "anthropic":
         client = _make_anthropic_client()
         yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-        async for event in _anthropic_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token):
+        async for event in _anthropic_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context):
             yield event
     elif provider == "gemini":
         gemini_model = _make_gemini_model(model)
         yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-        async for event in _gemini_loop(gemini_model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token):
+        async for event in _gemini_loop(gemini_model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context):
             yield event
     elif provider == "openrouter":
         client = _make_openrouter_client()
         yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-        async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token):
+        async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context):
             yield event
     else:
         raise ValueError(f"Unknown provider: {provider}")
@@ -508,13 +509,14 @@ async def _openai_loop(
     chart_data_cache: Dict[int, Dict],
     metrics_ctx: Dict[str, Any],
     token: str = "",
+    turn_context: str = "",
 ) -> AsyncGenerator[Dict, None]:
     from openai import AsyncOpenAI
 
     LLM_TIMEOUT = 45  # seconds per LLM call
 
     while tool_calls_made <= settings.ai_max_tool_calls:
-        llm_messages = _to_llm_messages(session)
+        llm_messages = _to_llm_messages(session, turn_context=turn_context)
 
         # Accumulate streamed response
         collected_content = ""
@@ -598,7 +600,12 @@ async def _openai_loop(
 
             yield ToolCallEvent(tool=fn_name, args=fn_args).model_dump()
 
-            tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"), token=token)
+            try:
+                tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"), token=token)
+            except Exception as tool_exc:
+                logger.warning("Tool %s raised exception: %s", fn_name, tool_exc)
+                tool_result = {"error": f"Tool '{fn_name}' failed: {str(tool_exc)[:300]}"}
+                metrics_ctx["tool_errors"] += 1
             tool_calls_made += 1
 
             # ── Metrics: track tool usage ──
@@ -637,6 +644,17 @@ async def _openai_loop(
                     role_config=tool_result.get("role_config"),
                 ).model_dump()
 
+            # Emit chart for create_chart preview results
+            if fn_name == "create_chart" and tool_result.get("chart_preview"):
+                metrics_ctx["has_chart"] = True
+                yield ChartEvent(
+                    chart_id=tool_result.get("chart_id", 0) or 0,
+                    chart_name=tool_result.get("chart_name", "AI Chart"),
+                    chart_type=tool_result.get("chart_type", "BAR"),
+                    data=tool_result.get("data", []),
+                    role_config=None,
+                ).model_dump()
+
             # Build summary for stream event
             summary = _tool_summary(fn_name, tool_result)
             yield ToolResultEvent(tool=fn_name, summary=summary).model_dump()
@@ -669,6 +687,7 @@ async def _anthropic_loop(
     chart_data_cache: Dict[int, Dict],
     metrics_ctx: Dict[str, Any],
     token: str = "",
+    turn_context: str = "",
 ) -> AsyncGenerator[Dict, None]:
 
     # Convert schemas for Anthropic
@@ -716,7 +735,7 @@ async def _anthropic_loop(
             client.messages.create(
                 model=model,
                 max_tokens=2048,
-                system=SYSTEM_PROMPT,
+                system=SYSTEM_PROMPT + ("\n\n" + turn_context if turn_context else ""),
                 messages=anthropic_messages,
                 tools=anthropic_tools,
                 temperature=0.2,
@@ -762,7 +781,12 @@ async def _anthropic_loop(
 
             yield ToolCallEvent(tool=fn_name, args=fn_args).model_dump()
 
-            tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"), token=token)
+            try:
+                tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"), token=token)
+            except Exception as tool_exc:
+                logger.warning("Tool %s raised exception: %s", fn_name, tool_exc)
+                tool_result = {"error": f"Tool '{fn_name}' failed: {str(tool_exc)[:300]}"}
+                metrics_ctx["tool_errors"] += 1
             tool_calls_made += 1
 
             # ── Metrics: track tool usage ──
@@ -822,6 +846,7 @@ async def _gemini_loop(
     chart_data_cache: Dict[int, Dict],
     metrics_ctx: Dict[str, Any],
     token: str = "",
+    turn_context: str = "",
 ) -> AsyncGenerator[Dict, None]:
     try:
         import google.generativeai.protos as protos
@@ -844,6 +869,11 @@ async def _gemini_loop(
         # skip tool messages — Gemini needs special proto interleaving for those
 
     chat = model.start_chat(history=gemini_history)
+
+    # Prepend per-turn context to the first user message for Gemini
+    # (Gemini system_instruction is static; context is injected into the message)
+    if turn_context:
+        current_user_msg = f"{turn_context}\n\n---\n\n{current_user_msg}"
 
     # current_msg is either the initial user text or a list of FunctionResponse Parts
     current_msg: Any = current_user_msg
@@ -895,7 +925,12 @@ async def _gemini_loop(
 
             yield ToolCallEvent(tool=fn_name, args=fn_args).model_dump()
 
-            tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"), token=token)
+            try:
+                tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"), token=token)
+            except Exception as tool_exc:
+                logger.warning("Tool %s raised exception: %s", fn_name, tool_exc)
+                tool_result = {"error": f"Tool '{fn_name}' failed: {str(tool_exc)[:300]}"}
+                metrics_ctx["tool_errors"] += 1
             tool_calls_made += 1
 
             # ── Metrics: track tool usage ──
@@ -1020,6 +1055,17 @@ def _tool_summary(tool_name: str, result: Dict) -> str:
         return f"{result.get('row_count', 0)} rows (aggregated)"
     elif tool_name == "run_workspace_table":
         return f"{result.get('row_count', 0)} rows loaded"
+    elif tool_name == "create_chart":
+        saved = "(saved)" if result.get("saved") else "(preview)"
+        return f"Chart '{result.get('chart_name', '')}' {saved} — {result.get('row_count', 0)} rows"
+    elif tool_name == "explore_data":
+        atype = result.get("analysis_type", "")
+        return f"Data profile ({atype}): {len(result.get('columns', result.get('distributions', {})))} columns analyzed"
+    elif tool_name == "explain_insight":
+        ch = result.get("periods", {}).get("change_pct", "?")
+        return f"Metric change: {ch}% | {len(result.get('drill_downs', []))} dimensions analyzed"
+    elif tool_name == "create_dashboard":
+        return f"Dashboard '{result.get('dashboard_name', '')}' created with {result.get('chart_count', 0)} charts"
     return "Done"
 
 
@@ -1057,6 +1103,74 @@ async def _emit_chart_events(text: str, chart_data_cache: Dict[int, Dict]):
                 ).model_dump()
             except Exception:
                 pass
+
+
+async def _generate_suggestions(provider: str, model: str, session: ConversationSession) -> List[str]:
+    """
+    Generate 2-3 follow-up question suggestions using a lightweight LLM call.
+    Returns empty list on any error to avoid blocking the response.
+    """
+    # Collect last assistant response
+    last_response = ""
+    for m in reversed(session.messages):
+        if m.role == "assistant" and isinstance(m.content, str) and m.content.strip():
+            last_response = m.content[:600]
+            break
+    if not last_response:
+        return []
+
+    # Collect recent user messages for context
+    user_msgs = [m.content for m in session.messages if m.role == "user"]
+    last_user_msg = user_msgs[-1][:200] if user_msgs else ""
+
+    suggest_prompt = (
+        f"User asked: {last_user_msg}\n"
+        f"Assistant answered: {last_response[:400]}\n\n"
+        "Generate exactly 3 short follow-up questions the user might ask next. "
+        "Questions must be data-specific, actionable, under 10 words each. "
+        "Reply ONLY as a JSON array of 3 strings, no markdown:\n"
+        '["question1", "question2", "question3"]'
+    )
+
+    try:
+        if provider in ("openai", "openrouter"):
+            client = _make_openai_client() if provider == "openai" else _make_openrouter_client()
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": suggest_prompt}],
+                temperature=0.7,
+                max_tokens=150,
+                stream=False,
+            )
+            raw = resp.choices[0].message.content or ""
+        elif provider == "anthropic":
+            client = _make_anthropic_client()
+            resp = await client.messages.create(
+                model=model,
+                messages=[{"role": "user", "content": suggest_prompt}],
+                max_tokens=150,
+            )
+            raw = resp.content[0].text if resp.content else ""
+        elif provider == "gemini":
+            import google.generativeai as genai
+            genai.configure(api_key=settings.gemini_api_key)
+            m = genai.GenerativeModel(model, generation_config={"temperature": 0.7, "max_output_tokens": 150})
+            r = await asyncio.get_event_loop().run_in_executor(None, lambda: m.generate_content(suggest_prompt))
+            raw = r.text if r.text else ""
+        else:
+            return []
+
+        # Parse JSON array
+        import re
+        raw = raw.strip()
+        arr_match = re.search(r'\[.*\]', raw, re.DOTALL)
+        if arr_match:
+            suggestions = json.loads(arr_match.group(0))
+            if isinstance(suggestions, list):
+                return [str(s) for s in suggestions[:3] if s]
+    except Exception:
+        pass
+    return []
 
 
 # ── Session cleanup ────────────────────────────────────────────────────────────

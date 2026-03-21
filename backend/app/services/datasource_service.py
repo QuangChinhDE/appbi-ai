@@ -1171,3 +1171,137 @@ class DataSourceConnectionService:
             for c in detail["columns"]
             if any(wt in c["type"].lower() for wt in watermark_types)
         ]
+
+    @staticmethod
+    def list_columns(
+        ds_id: int,
+        ds_type: str,
+        config: Dict[str, Any],
+        table_name: str,
+    ) -> List[Dict[str, str]]:
+        """
+        Return columns for a specific table.
+        Tries DuckDB synced view first (no live call), falls back to live source.
+        Each item: {"name": str, "type": str}
+        """
+        from app.core.crypto import decrypt_config
+        from app.services.sync_engine import get_synced_view
+        from app.services.duckdb_engine import DuckDBEngine
+
+        # --- Try DuckDB synced view first ---
+        try:
+            view_name = get_synced_view(ds_id, table_name)
+            if view_name:
+                with DuckDBEngine.read_conn() as conn:
+                    rows = conn.execute(f"DESCRIBE {view_name}").fetchall()
+                return [{"name": r[0], "type": r[1]} for r in rows]
+        except Exception:
+            pass
+
+        # --- Fallback: live source (schema/metadata only, no data) ---
+        config = decrypt_config(config)
+
+        # Parse schema.table
+        if "." in table_name:
+            parts = table_name.split(".", 1)
+            schema = parts[0].strip('"').strip("'")
+            tbl = parts[1].strip('"').strip("'")
+        else:
+            schema = None
+            tbl = table_name.strip('"').strip("'")
+
+        if ds_type == DataSourceType.POSTGRESQL.value:
+            return DataSourceConnectionService._pg_list_columns(config, schema or "public", tbl)
+        elif ds_type == DataSourceType.MYSQL.value:
+            return DataSourceConnectionService._mysql_list_columns(config, schema or config.get("database", ""), tbl)
+        elif ds_type == DataSourceType.BIGQUERY.value:
+            return DataSourceConnectionService._bq_list_columns(config, table_name)
+        elif ds_type in (DataSourceType.GOOGLE_SHEETS.value, DataSourceType.MANUAL.value):
+            return DataSourceConnectionService._sheets_list_columns(config, tbl)
+        return []
+
+    @staticmethod
+    def _pg_list_columns(config: Dict[str, Any], schema: str, table: str) -> List[Dict[str, str]]:
+        conn = cursor = None
+        try:
+            conn = psycopg2.connect(
+                host=config.get("host"), port=config.get("port", 5432),
+                database=config.get("database"), user=config.get("username"),
+                password=config.get("password"),
+            )
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT column_name, data_type
+                   FROM information_schema.columns
+                   WHERE table_schema = %s AND table_name = %s
+                   ORDER BY ordinal_position""",
+                (schema, table),
+            )
+            return [{"name": r[0], "type": r[1]} for r in cursor.fetchall()]
+        finally:
+            if cursor: cursor.close()
+            if conn: conn.close()
+
+    @staticmethod
+    def _mysql_list_columns(config: Dict[str, Any], database: str, table: str) -> List[Dict[str, str]]:
+        conn = cursor = None
+        try:
+            conn = pymysql.connect(
+                host=config.get("host"), port=config.get("port", 3306),
+                user=config.get("username"), password=config.get("password"),
+            )
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT COLUMN_NAME, DATA_TYPE
+                   FROM information_schema.COLUMNS
+                   WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+                   ORDER BY ORDINAL_POSITION""",
+                (database, table),
+            )
+            return [{"name": r[0], "type": r[1]} for r in cursor.fetchall()]
+        finally:
+            if cursor: cursor.close()
+            if conn: conn.close()
+
+    @staticmethod
+    def _bq_list_columns(config: Dict[str, Any], full_table: str) -> List[Dict[str, str]]:
+        try:
+            credentials_info = json.loads(config.get("credentials_json", "{}"))
+            credentials = service_account.Credentials.from_service_account_info(credentials_info)
+            client = bigquery.Client(credentials=credentials, project=config.get("project_id"))
+            parts = full_table.split(".")
+            dataset_id = parts[0] if len(parts) >= 2 else ""
+            table_id = parts[1] if len(parts) >= 2 else full_table
+            table_ref = client.get_table(f"{dataset_id}.{table_id}")
+            return [{"name": f.name, "type": f.field_type} for f in table_ref.schema]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _sheets_list_columns(config: Dict[str, Any], sheet_name: str) -> List[Dict[str, str]]:
+        """Get column headers from Google Sheets / Manual (CSV/Excel) cached snapshot.
+        Config format: {"sheets": {sheet_name: {"columns": [{name, type}], "rows": [...]}}}
+        """
+        try:
+            cached_sheets = config.get("sheets", {})
+            sheet_data = cached_sheets.get(sheet_name) or (list(cached_sheets.values())[0] if cached_sheets else None)
+            if not sheet_data:
+                return []
+            # Format A: {"columns": [{name, type}, ...], "rows": [...]}
+            if isinstance(sheet_data, dict) and "columns" in sheet_data:
+                cols = sheet_data["columns"]
+                return [
+                    {"name": c["name"] if isinstance(c, dict) else str(c),
+                     "type": c.get("type", "string") if isinstance(c, dict) else "string"}
+                    for c in cols if c
+                ]
+            # Format B: [[header1, header2, ...], [row1...], ...]
+            if isinstance(sheet_data, list) and len(sheet_data) > 0:
+                headers = sheet_data[0]
+                if isinstance(headers, list):
+                    return [{"name": str(h), "type": "string"} for h in headers if h]
+                if isinstance(headers, dict):
+                    return [{"name": k, "type": "string"} for k in headers.keys()]
+            return []
+        except Exception:
+            return []

@@ -1,6 +1,6 @@
 """Schemas for Dataset Workspaces (Table-based Datasets)"""
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel, Field, model_validator
 from uuid import UUID
 
@@ -84,7 +84,7 @@ class TableResponse(WorkspaceTableBase):
     source_table_name: Optional[str] = None
     source_query: Optional[str] = None
     transformations: Optional[List[Dict[str, Any]]] = None
-    columns_cache: Optional[Dict[str, Any]] = None
+    columns_cache: Optional[Union[List[Any], Dict[str, Any]]] = None
     sample_cache: Optional[List[Dict[str, Any]]] = None
     type_overrides: Optional[Dict[str, str]] = None
     column_formats: Optional[Dict[str, Any]] = None

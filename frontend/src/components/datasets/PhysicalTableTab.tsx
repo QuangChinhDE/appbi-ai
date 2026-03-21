@@ -7,18 +7,28 @@ import React, { useState, useMemo } from 'react';
 import { Search, Database, CheckSquare, Square, Loader2 } from 'lucide-react';
 import { useDataSources } from '@/hooks/use-datasources';
 import { useDatasourceTables } from '@/hooks/use-dataset-workspaces';
-import type { DatasourceTable, AddTableInput } from '@/hooks/use-dataset-workspaces';
+import type { DatasourceTable, AddTableInput, WorkspaceTable } from '@/hooks/use-dataset-workspaces';
 
 interface PhysicalTableTabProps {
   onAddTable: (input: AddTableInput) => Promise<void>;
   isLoading: boolean;
+  existingTable?: WorkspaceTable | null;
 }
 
-export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProps) {
+export function PhysicalTableTab({ onAddTable, isLoading, existingTable }: PhysicalTableTabProps) {
   const [selectedDatasourceId, setSelectedDatasourceId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState('');
+
+  // Pre-fill when editing existing physical table
+  React.useEffect(() => {
+    if (existingTable) {
+      setSelectedDatasourceId(existingTable.datasource_id);
+      setSelectedTable(existingTable.source_table_name ?? null);
+      setDisplayName(existingTable.display_name);
+    }
+  }, [existingTable]);
 
   const { data: datasources, isLoading: loadingDatasources } = useDataSources();
   const { data: tables, isLoading: loadingTables } = useDatasourceTables(
@@ -78,7 +88,7 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
             setDisplayName('');
           }}
           className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-          disabled={loadingDatasources || isLoading}
+          disabled={loadingDatasources || isLoading || !!existingTable}
         >
           <option value="">Choose a datasource...</option>
           {datasources?.map((ds) => (
@@ -180,7 +190,7 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
           className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
         >
           {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-          Add Table
+          {existingTable ? 'Lưu thay đổi' : 'Add Table'}
         </button>
       </div>
     </div>

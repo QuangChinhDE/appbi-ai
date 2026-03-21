@@ -16,6 +16,30 @@ import { useCurrentUser } from '@/hooks/use-current-user';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import type { ActivityStep, ChatMessageData, ChartPayload, MessageMetrics, MessageFeedback } from './types';
 
+interface SuggestionChipsProps {
+  suggestions: string[];
+  onSelect: (s: string) => void;
+  disabled: boolean;
+}
+
+function SuggestionChips({ suggestions, onSelect, disabled }: SuggestionChipsProps) {
+  if (!suggestions || suggestions.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-2 px-4 py-2">
+      {suggestions.map((s, i) => (
+        <button
+          key={i}
+          onClick={() => onSelect(s)}
+          disabled={disabled}
+          className="text-xs px-3 py-1.5 bg-purple-50 border border-purple-200 text-purple-700 rounded-full hover:bg-purple-100 hover:border-purple-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+        >
+          {s}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 const AI_WS_URL = process.env.NEXT_PUBLIC_AI_WS_URL || 'ws://localhost:8001/chat/ws';
 const AI_HTTP_URL = AI_WS_URL.replace(/^ws/, 'http').replace('/chat/ws', '');
 
@@ -42,6 +66,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const [sessionTitle, setSessionTitle] = useState('New Conversation');
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [isShareOpen, setIsShareOpen] = useState(false);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
 
   const { data: currentUser } = useCurrentUser();
   const { data: permData } = usePermissions();
@@ -81,12 +106,12 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       const data = await res.json();
       setSessionTitle(data.title ?? 'New Conversation');
       const restored: ChatMessageData[] = (data.messages ?? []).map(
-        (m: { role: string; content: string; message_id?: string; metrics?: MessageMetrics; feedback?: MessageFeedback }) => ({
+        (m: { role: string; content: string; message_id?: string; metrics?: MessageMetrics; feedback?: MessageFeedback; charts?: ChartPayload[] }) => ({
           id: uuidv4(),
           role: m.role as 'user' | 'assistant',
           text: m.content,
           toolCalls: [],
-          charts: [],
+          charts: m.charts ?? [],
           messageId: m.message_id,
           metrics: m.metrics,
           feedback: m.feedback,
@@ -198,6 +223,12 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         break;
       }
 
+      case 'suggestions':
+        if (Array.isArray(event.suggestions) && event.suggestions.length > 0) {
+          setSuggestions(event.suggestions);
+        }
+        break;
+
       case 'metrics':
         upsertCurrentAiMsg(msg => ({
           ...msg,
@@ -289,6 +320,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       connectWs();
       return;
     }
+    setSuggestions([]); // clear previous suggestions
     const userMsgId = uuidv4();
     setMessages(prev => [...prev, { id: userMsgId, role: 'user', text }]);
     const aiMsgId = uuidv4();
@@ -378,6 +410,15 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         ))}
       </div>
 
+      {/* Suggestion chips (appear after AI response) */}
+      {!loading && suggestions.length > 0 && (
+        <SuggestionChips
+          suggestions={suggestions}
+          onSelect={(s) => sendMessage(s)}
+          disabled={!wsConnected || loading}
+        />
+      )}
+
       {/* Input */}
       <ChatInput
         value={input}
@@ -407,10 +448,21 @@ function formatToolLabel(toolName: string, args: Record<string, any>): string {
     search_dashboards: '🔍 Tìm dashboard',
     list_workspace_tables: '📋 Liệt kê bảng',
     run_workspace_table: '▶ Lấy dữ liệu bảng',
+    query_table: '⚡ Truy vấn bảng',
+    execute_sql: '🗄 Thực thi SQL',
+    create_chart: '📊 Tạo biểu đồ',
+    explore_data: '🔬 Khám phá dữ liệu',
+    explain_insight: '💡 Phân tích chuyên sâu',
+    create_dashboard: '🚀 Tạo dashboard',
+    query_dataset: '📂 Truy vấn dataset',
   };
   const base = labels[toolName] ?? toolName;
   if (toolName === 'search_charts' && args.query) return `${base} "${args.query}"`;
   if (toolName === 'run_chart' && args.chart_id) return `${base} #${args.chart_id}`;
   if (toolName === 'search_dashboards' && args.query) return `${base} "${args.query}"`;
+  if (toolName === 'create_chart' && args.name) return `${base}: "${args.name}"`;
+  if (toolName === 'explore_data') return `${base} (${args.analysis_type || 'overview'})`;
+  if (toolName === 'explain_insight' && args.metric_column) return `${base}: ${args.metric_column}`;
+  if (toolName === 'create_dashboard' && args.topic) return `${base}: "${args.topic}"`;
   return base;
 }

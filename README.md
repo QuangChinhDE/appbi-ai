@@ -186,12 +186,21 @@ Natural-language data Q&A powered by LLM tool-calling.
 
 ### Tools Available to the LLM
 
+The AI agent only accesses data shared with the requesting user through Dataset Workspaces — never raw datasource SQL.
+
 | Tool | Description |
 |------|-------------|
-| `search_charts(query)` | Semantic search across saved charts, returns top match data |
+| `search_charts(query)` | Semantic search across the user's accessible saved charts |
 | `run_chart(chart_id)` | Execute a chart and stream its data + rendered chart |
-| `execute_sql(datasource_id, sql)` | Run SELECT query against a datasource |
+| `search_dashboards(query)` | Semantic search across the user's dashboards |
+| `list_workspace_tables()` | List all workspace tables (+ column schemas) the user can access |
 | `query_table(workspace_id, table_id, ...)` | Aggregation query on a workspace table |
+| `run_workspace_table(workspace_id, table_id)` | Preview raw rows from a workspace table |
+| `create_chart(...)` | Generate and optionally save a new chart from a workspace table |
+| `create_dashboard(name, chart_ids)` | Create a new dashboard with specified charts |
+| `explore_data(workspace_id, table_id)` | Profile a table — distributions, top values, nulls |
+| `explain_insight(chart_id)` | Natural-language explanation of a chart's data |
+| `suggest_next(context)` | Suggest follow-up questions or analyses |
 
 ### LLM Providers & Fallback Chain
 
@@ -202,6 +211,26 @@ LLM_FALLBACK_CHAIN=anthropic:claude-3-5-haiku-20241022,gemini:gemini-2.0-flash
 ```
 
 Supported: `openai`, `anthropic`, `gemini`, `openrouter`
+
+---
+
+## Testing
+
+```bash
+source venv/bin/activate   # from project root after backend setup
+
+# Permission system — 41 tests
+python test_permissions.py
+
+# Deep end-to-end — 19 sections, 140+ assertions
+python test_deep.py
+```
+
+`test_permissions.py` — module gates, ownership visibility, share/revoke, cascade share, cross-user isolation.
+
+`test_deep.py` — full system coverage: auth flow, permission levels (view/edit/full differences), workspace table auth enforcement, execute query security (SQL injection / schema validation), chart & dashboard lifecycle, resource sharing (view/edit/revoke/cascade), admin-only operations, 404 handling, AI chat permission gate, permission presets.
+
+Both scripts require the backend running at `http://localhost:8000` and at least the admin account (`admin@appbi.io`). Demo data (`SEED_DEMO_DATA=true`) is recommended for data-access tests.
 
 ---
 

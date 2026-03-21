@@ -74,6 +74,11 @@ class MetricsEvent(BaseModel):
     output_tokens: Optional[int] = None
 
 
+class SuggestionsEvent(BaseModel):
+    type: Literal["suggestions"] = "suggestions"
+    suggestions: List[str]             # 2-3 clickable follow-up questions
+
+
 # ── User feedback ──────────────────────────────────────────────────────────────
 
 class FeedbackRequest(BaseModel):
@@ -92,6 +97,7 @@ class Message(BaseModel):
     tool_calls: Optional[List[Dict[str, Any]]] = None  # assistant tool_calls (OpenAI format)
     metrics: Optional[Dict[str, Any]] = None   # quality metrics (assistant only)
     feedback: Optional[Dict[str, Any]] = None  # user feedback {rating, comment}
+    charts: Optional[List[Dict[str, Any]]] = None  # chart events emitted for this message
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

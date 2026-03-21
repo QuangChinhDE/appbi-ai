@@ -1,9 +1,11 @@
 """
 API router for chart endpoints.
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel
 
 from app.core import get_db
 from app.core.dependencies import get_current_user, require_permission, require_edit_access, require_full_access, get_effective_permission
@@ -22,8 +24,18 @@ from app.schemas import (
     ChartParameterUpdate,
     ChartParameterResponse,
 )
-from app.services import ChartService
+from app.services import ChartService, EmbeddingService, AutoTaggingService
 from app.core.logging import get_logger
+
+
+class AIChartPreviewRequest(BaseModel):
+    """Request body for AI chart preview/create."""
+    workspace_table_id: int
+    chart_type: str
+    config: Dict[str, Any] = {}
+    name: str = "AI Chart"
+    description: Optional[str] = None
+    save: bool = False
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/charts", tags=["charts"])
@@ -48,6 +60,132 @@ def list_charts(
     return items
 
 
+@router.get("/search", response_model=List[dict])
+def search_charts_vector(
+    q: str,
+    limit: int = 10,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Vector similarity search for charts. Falls back to empty list if embeddings unavailable."""
+    from app.services.embedding_service import EmbeddingService
+    limit = min(limit, 20)
+    hits = EmbeddingService.search_similar(db, q, resource_type="chart", limit=limit, user_id=current_user.id)
+    if not hits:
+        return []
+    # Enrich with chart details
+    chart_ids = [h["resource_id"] for h in hits]
+    charts = db.query(Chart).filter(Chart.id.in_(chart_ids)).all()
+    chart_map = {c.id: c for c in charts}
+    results = []
+    for h in hits:
+        c = chart_map.get(h["resource_id"])
+        if c:
+            results.append({
+                "id": c.id,
+                "name": c.name,
+                "chart_type": c.chart_type,
+                "similarity": round(h["similarity"], 4),
+            })
+    return results
+
+
+@router.post("/ai-preview")
+def ai_chart_preview(
+    payload: AIChartPreviewRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ai_chat", "view")),
+):
+    """
+    Execute a chart from AI config and optionally save it permanently.
+    Used by the AI agent's create_chart tool.
+    Requires ai_chat >= view permission.
+    """
+    from app.services.dataset_workspace_crud import DatasetWorkspaceCRUDService
+    from app.models.models import DataSource
+    from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
+    from app.services.duckdb_engine import DuckDBEngine
+
+    db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, payload.workspace_table_id)
+    if not db_table:
+        raise HTTPException(status_code=404, detail="Workspace table not found")
+
+    datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+    if not datasource:
+        raise HTTPException(status_code=404, detail="Datasource not found")
+
+    # Resolve DuckDB base table
+    if db_table.source_kind == "sql_query":
+        rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query or "")
+        if rewritten is None:
+            raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
+        base_table = f"({rewritten}) AS base_table"
+    else:
+        view_name = get_synced_view(datasource.id, db_table.source_table_name or "")
+        if view_name is None:
+            raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
+        base_table = view_name
+
+    # Build and execute aggregation query
+    config = payload.config or {}
+    dimensions = config.get("dimensions") or []
+    metrics = config.get("metrics") or []
+    limit = min(int(config.get("limit", 500)), 2000)
+
+    select_parts = [f'"{d}"' for d in dimensions]
+    for m in metrics:
+        col = m.get("column", "")
+        agg = m.get("aggregation", "sum").upper()
+        alias = f"{col}_{agg.lower()}"
+        select_parts.append(f'{agg}("{col}") AS "{alias}"')
+
+    if not select_parts:
+        sql = f"SELECT * FROM {base_table} LIMIT {limit}"
+    elif dimensions:
+        group_by = ", ".join(f'"{d}"' for d in dimensions)
+        sql = f"SELECT {', '.join(select_parts)} FROM {base_table} GROUP BY {group_by} LIMIT {limit}"
+    else:
+        sql = f"SELECT {', '.join(select_parts)} FROM {base_table} LIMIT {limit}"
+
+    try:
+        data = DuckDBEngine.query(sql)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Query failed: {str(exc)}")
+
+    response: Dict[str, Any] = {
+        "chart_type": payload.chart_type,
+        "config": config,
+        "data": data,
+        "row_count": len(data),
+        "saved": False,
+        "chart_id": None,
+    }
+
+    if payload.save:
+        from app.schemas import ChartCreate
+        from app.schemas.schemas import ChartTypeSchema
+        chart_type_val = payload.chart_type.upper()
+        try:
+            ct = ChartTypeSchema(chart_type_val)
+        except ValueError:
+            ct = ChartTypeSchema.BAR
+        chart_create = ChartCreate(
+            name=payload.name,
+            description=payload.description,
+            workspace_table_id=payload.workspace_table_id,
+            chart_type=ct,
+            config=config,
+        )
+        new_chart = ChartService.create(db, chart_create, owner_id=current_user.id)
+        background_tasks.add_task(EmbeddingService.embed_chart, db, new_chart.id)
+        response["saved"] = True
+        response["chart_id"] = new_chart.id
+        response["chart_name"] = new_chart.name
+
+    return response
+
+
 @router.get("/{chart_id}", response_model=ChartResponse)
 def get_chart(
     chart_id: int,
@@ -68,12 +206,16 @@ def get_chart(
 @router.post("/", response_model=ChartResponse, status_code=status.HTTP_201_CREATED)
 def create_chart(
     chart: ChartCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("explore_charts", "edit")),
 ):
     """Create a new chart."""
     try:
-        return ChartService.create(db, chart, owner_id=current_user.id)
+        new_chart = ChartService.create(db, chart, owner_id=current_user.id)
+        background_tasks.add_task(AutoTaggingService.tag_chart, db, new_chart.id)
+        background_tasks.add_task(EmbeddingService.embed_chart, db, new_chart.id)
+        return new_chart
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -82,6 +224,7 @@ def create_chart(
 def update_chart(
     chart_id: int,
     chart_update: ChartUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -92,6 +235,8 @@ def update_chart(
     require_edit_access(db, current_user, chart_obj, "explore_charts")
     try:
         chart = ChartService.update(db, chart_id, chart_update)
+        background_tasks.add_task(AutoTaggingService.tag_chart, db, chart_id)
+        background_tasks.add_task(EmbeddingService.embed_chart, db, chart_id)
         return chart
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -131,6 +276,7 @@ def delete_chart(
             },
         )
 
+    EmbeddingService.delete_embedding(db, "chart", chart_id)
     success = ChartService.delete(db, chart_id)
     if not success:
         raise HTTPException(

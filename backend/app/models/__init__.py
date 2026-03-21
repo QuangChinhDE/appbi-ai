@@ -23,6 +23,10 @@ from app.models.dataset_workspace import (
     DatasetWorkspace,
     DatasetWorkspaceTable,
 )
+from app.models.anomaly import (
+    MonitoredMetric,
+    AnomalyAlert,
+)
 # Commented out - using hybrid approach with filters_config JSON field instead
 # from app.models.dashboard_filter import DashboardFilter
 
@@ -46,4 +50,6 @@ __all__ = [
     "DatasetWorkspaceTable",
     "SemanticExplore",
     "SyncJob",
+    "MonitoredMetric",
+    "AnomalyAlert",
 ]

@@ -119,13 +119,31 @@ class ChartService:
             if not datasource:
                 raise ValueError("Data source not found")
 
+            from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
+            from app.services.duckdb_engine import DuckDBEngine
+
             if db_table.source_kind == "sql_query":
                 if not db_table.source_query:
                     raise ValueError("Table has no SQL query")
+                # Rewrite to DuckDB views if datasource has been synced
+                rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
+                if rewritten:
+                    try:
+                        rows = DuckDBEngine.query(
+                            f"SELECT * FROM ({rewritten}) AS _q LIMIT 1000"
+                        )
+                        return {"chart": db_chart, "data": rows}
+                    except Exception:
+                        pass  # fall through to live query
                 sql = db_table.source_query
             elif db_table.source_kind == "physical_table":
                 if not db_table.source_table_name:
                     raise ValueError("Table has no physical table name")
+                # Use DuckDB synced cache if available — avoids live source round-trip
+                view_name = get_synced_view(datasource.id, db_table.source_table_name)
+                if view_name:
+                    rows = DuckDBEngine.query(f"SELECT * FROM {view_name} LIMIT 1000")
+                    return {"chart": db_chart, "data": rows}
                 sql = f'SELECT * FROM {db_table.source_table_name}'
             else:
                 raise ValueError(f"Unsupported source_kind: {db_table.source_kind}")
@@ -156,13 +174,31 @@ class ChartService:
             if not datasource:
                 raise ValueError("Data source not found")
 
+            from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
+            from app.services.duckdb_engine import DuckDBEngine
+
             if db_table.source_kind == "sql_query":
                 if not db_table.source_query:
                     raise ValueError("Table has no SQL query")
+                # Rewrite to DuckDB views if datasource has been synced
+                rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
+                if rewritten:
+                    try:
+                        rows = DuckDBEngine.query(
+                            f"SELECT * FROM ({rewritten}) AS _q LIMIT 1000"
+                        )
+                        return {"chart": db_chart, "data": rows}
+                    except Exception:
+                        pass  # fall through to live query
                 sql = db_table.source_query
             elif db_table.source_kind == "physical_table":
                 if not db_table.source_table_name:
                     raise ValueError("Table has no physical table")
+                # Use DuckDB synced cache if available — avoids live source round-trip
+                view_name = get_synced_view(datasource.id, db_table.source_table_name)
+                if view_name:
+                    rows = DuckDBEngine.query(f"SELECT * FROM {view_name} LIMIT 1000")
+                    return {"chart": db_chart, "data": rows}
                 sql = f'SELECT * FROM {db_table.source_table_name}'
             else:
                 raise ValueError(f"Unsupported source_kind: {db_table.source_kind}")

@@ -38,6 +38,40 @@ class BIClient:
         r.raise_for_status()
         return r.json()
 
+    async def search_similar_charts(
+        self, query: str, limit: int = 10, token: str = ""
+    ) -> List[Dict[str, Any]]:
+        """Vector similarity search. Returns list of {id, name, chart_type, similarity}."""
+        try:
+            r = await self._http.get(
+                f"{self._base}/charts/search",
+                params={"q": query, "limit": limit},
+                headers=self._auth_headers(token),
+            )
+            if r.status_code in (404, 422, 500):
+                return []
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return []
+
+    async def search_similar_tables(
+        self, query: str, limit: int = 5, token: str = ""
+    ) -> List[Dict[str, Any]]:
+        """Vector similarity search over workspace tables. Returns list of {id, workspace_id, display_name, columns, similarity}."""
+        try:
+            r = await self._http.get(
+                f"{self._base}/dataset-workspaces/tables/search",
+                params={"q": query, "limit": limit},
+                headers=self._auth_headers(token),
+            )
+            if r.status_code in (404, 422, 500):
+                return []
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return []
+
     async def get_chart_metadata(self, chart_id: int, token: str = "") -> Optional[Dict[str, Any]]:
         """Returns chart semantic metadata (domain/intent/metrics/tags) or None."""
         try:
@@ -118,53 +152,99 @@ class BIClient:
         r.raise_for_status()
         return r.json()
 
-    # ── Datasets ───────────────────────────────────────────────────────────────
+    # ── AI chart / dashboard creation ──────────────────────────────────────────
 
-    async def list_datasets(self, token: str = "") -> List[Dict[str, Any]]:
-        r = await self._http.get(f"{self._base}/datasets/", headers=self._auth_headers(token))
-        r.raise_for_status()
-        return r.json()
-
-    async def list_datasources(self, token: str = "") -> List[Dict[str, Any]]:
-        r = await self._http.get(f"{self._base}/datasources/", headers=self._auth_headers(token))
-        r.raise_for_status()
-        return r.json()
-
-    async def list_datasource_tables(self, datasource_id: int, token: str = "") -> List[Dict[str, Any]]:
-        """List raw tables/sheets available in a datasource."""
-        r = await self._http.get(
-            f"{self._base}/dataset-workspaces/datasources/{datasource_id}/tables",
+    async def ai_chart_preview(
+        self,
+        workspace_table_id: int,
+        chart_type: str,
+        config: Dict[str, Any],
+        name: str = "AI Chart",
+        description: Optional[str] = None,
+        save: bool = False,
+        token: str = "",
+    ) -> Dict[str, Any]:
+        """Execute AI chart config and optionally save. Returns {data, chart_type, config, chart_id?, saved}."""
+        r = await self._http.post(
+            f"{self._base}/charts/ai-preview",
+            json={
+                "workspace_table_id": workspace_table_id,
+                "chart_type": chart_type,
+                "config": config,
+                "name": name,
+                "description": description,
+                "save": save,
+            },
             headers=self._auth_headers(token),
         )
         r.raise_for_status()
         return r.json()
 
-    async def execute_datasource_sql(
+    async def create_chart(
         self,
-        datasource_id: int,
-        sql: str,
-        limit: int = 200,
+        name: str,
+        workspace_table_id: int,
+        chart_type: str,
+        config: Dict[str, Any],
+        description: Optional[str] = None,
         token: str = "",
     ) -> Dict[str, Any]:
-        """Execute a SELECT SQL against a datasource. Returns {columns, data, row_count}."""
+        """Create a saved chart. Returns ChartResponse."""
         r = await self._http.post(
-            f"{self._base}/datasources/query",
-            json={"data_source_id": datasource_id, "sql_query": sql, "limit": limit},
+            f"{self._base}/charts/",
+            json={
+                "name": name,
+                "workspace_table_id": workspace_table_id,
+                "chart_type": chart_type.upper(),
+                "config": config,
+                "description": description,
+            },
             headers=self._auth_headers(token),
         )
         r.raise_for_status()
         return r.json()
 
-    async def execute_dataset(
+    async def create_dashboard(
         self,
-        dataset_id: int,
-        limit: int = 200,
+        name: str,
+        description: Optional[str] = None,
         token: str = "",
     ) -> Dict[str, Any]:
-        """Execute a dataset (routes through DuckDB if Parquet-backed)."""
+        """Create a new dashboard. Returns DashboardResponse."""
         r = await self._http.post(
-            f"{self._base}/datasets/{dataset_id}/execute",
-            json={"limit": limit, "apply_transformations": True},
+            f"{self._base}/dashboards/",
+            json={"name": name, "description": description or ""},
+            headers=self._auth_headers(token),
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def add_chart_to_dashboard(
+        self,
+        dashboard_id: int,
+        chart_id: int,
+        layout: Optional[Dict[str, Any]] = None,
+        token: str = "",
+    ) -> Dict[str, Any]:
+        """Add chart to dashboard. Returns updated DashboardResponse."""
+        r = await self._http.post(
+            f"{self._base}/dashboards/{dashboard_id}/charts",
+            json={"chart_id": chart_id, "layout": layout or {}},
+            headers=self._auth_headers(token),
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def update_dashboard_layout(
+        self,
+        dashboard_id: int,
+        layouts: List[Dict[str, Any]],
+        token: str = "",
+    ) -> Dict[str, Any]:
+        """Update dashboard chart layout grid. Returns DashboardResponse."""
+        r = await self._http.put(
+            f"{self._base}/dashboards/{dashboard_id}/layout",
+            json={"layouts": layouts},
             headers=self._auth_headers(token),
         )
         r.raise_for_status()

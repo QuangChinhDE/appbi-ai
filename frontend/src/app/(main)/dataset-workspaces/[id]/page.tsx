@@ -5,17 +5,20 @@
 
 import React, { useState, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { 
-  Plus, 
-  Search, 
-  Database, 
-  RefreshCw, 
+import {
+  Plus,
+  Search,
+  Database,
+  RefreshCw,
   ChevronLeft,
   Loader2,
   Columns,
   Trash2,
   AlertTriangle,
   X,
+  Pencil,
+  ChevronLeft as ChevronLeftPag,
+  ChevronRight,
 } from 'lucide-react';
 import { useWorkspace, useTablePreview, useUpdateTable, useRemoveTable } from '@/hooks/use-dataset-workspaces';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
@@ -73,6 +76,8 @@ export default function WorkspaceDetailPage() {
   
   const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
   const [previewLimit, setPreviewLimit] = useState(200);
+  const [page, setPage] = useState(1);
+  const [editingTable, setEditingTable] = useState<any | null>(null);
   const [isAddTableModalOpen, setIsAddTableModalOpen] = useState(false);
   const [isManageColumnsOpen, setIsManageColumnsOpen] = useState(false);
   const [isAddColumnModalOpen, setIsAddColumnModalOpen] = useState(false);
@@ -93,12 +98,13 @@ export default function WorkspaceDetailPage() {
   const resPerms = getResourcePermissions(workspace?.user_permission);
 
   // Fetch table preview
+  const previewOffset = (page - 1) * previewLimit;
   const {
     data: previewData,
     isLoading: loadingPreview,
     error: previewError,
     refetch: refetchPreview,
-  } = useTablePreview(workspaceId, selectedTableId, { limit: previewLimit });
+  } = useTablePreview(workspaceId, selectedTableId, { limit: previewLimit, offset: previewOffset });
 
   // Filter tables by search
   const filteredTables = useMemo(() => {
@@ -118,6 +124,11 @@ export default function WorkspaceDetailPage() {
       setSelectedTableId(workspace.tables[0].id);
     }
   }, [workspace?.tables, selectedTableId]);
+
+  // Reset to page 1 when switching table or changing page size
+  React.useEffect(() => {
+    setPage(1);
+  }, [selectedTableId, previewLimit]);
 
   // Update table mutation
   const updateTableMutation = useUpdateTable();
@@ -443,6 +454,19 @@ export default function WorkspaceDetailPage() {
                       </div>
                     )}
                   </div>
+                  {resPerms.canEdit && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEditingTable(table);
+                      setIsAddTableModalOpen(true);
+                    }}
+                    className="p-1 hover:bg-blue-100 rounded opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-blue-600"
+                    title="Chỉnh sửa bảng"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  )}
                   {resPerms.canDelete && (
                   <button
                     onClick={(e) => {
@@ -546,9 +570,10 @@ export default function WorkspaceDetailPage() {
                     Limit:
                     <select
                       value={previewLimit}
-                      onChange={(e) => setPreviewLimit(Number(e.target.value))}
+                      onChange={(e) => { setPreviewLimit(Number(e.target.value)); setPage(1); }}
                       className="px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                     >
+                      <option value={10}>10</option>
                       <option value={50}>50</option>
                       <option value={100}>100</option>
                       <option value={200}>200</option>
@@ -571,22 +596,64 @@ export default function WorkspaceDetailPage() {
 
             {/* Grid Body */}
             <div className="flex-1 overflow-auto p-6">
-              <DatasetTableGrid
-                columns={computedPreviewData?.columns || []}
-                rows={computedPreviewData?.rows || []}
-                isLoading={loadingPreview}
-                error={previewError instanceof Error ? previewError.message : null}
-                onRetry={() => refetchPreview()}
-                onAddColumn={resPerms.canEdit ? () => setIsAddColumnModalOpen(true) : undefined}
-                onDeleteColumn={resPerms.canEdit ? handleDeleteColumn : undefined}
-                onEditColumn={resPerms.canEdit ? handleEditColumn : undefined}
-                computedColumns={computedColumnNames}
-                typeOverrides={(selectedTable as any)?.type_overrides}
-                onTypeOverride={handleTypeOverride}
-                columnFormatsDb={(selectedTable as any)?.column_formats}
-                onColumnFormatChange={handleColumnFormatChange}
-              />
+              {previewError && (previewError as any)?.response?.status === 422 ? (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-center max-w-sm">
+                    <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto mb-3" />
+                    <h3 className="text-base font-semibold text-gray-900 mb-1">Chưa sync</h3>
+                    <p className="text-sm text-gray-600">
+                      Bảng này chưa được đồng bộ vào DuckDB. Hãy vào trang Datasource và chạy Sync trước khi xem dữ liệu.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <DatasetTableGrid
+                  columns={computedPreviewData?.columns || []}
+                  rows={computedPreviewData?.rows || []}
+                  isLoading={loadingPreview}
+                  error={previewError instanceof Error ? previewError.message : null}
+                  onRetry={() => refetchPreview()}
+                  onAddColumn={resPerms.canEdit ? () => setIsAddColumnModalOpen(true) : undefined}
+                  onDeleteColumn={resPerms.canEdit ? handleDeleteColumn : undefined}
+                  onEditColumn={resPerms.canEdit ? handleEditColumn : undefined}
+                  computedColumns={computedColumnNames}
+                  typeOverrides={(selectedTable as any)?.type_overrides}
+                  onTypeOverride={handleTypeOverride}
+                  columnFormatsDb={(selectedTable as any)?.column_formats}
+                  onColumnFormatChange={handleColumnFormatChange}
+                />
+              )}
             </div>
+
+            {/* Pagination Bar */}
+            {!loadingPreview && previewData && !((previewError as any)?.response?.status === 422) && (
+              <div className="bg-white border-t px-6 py-3 flex items-center justify-between text-sm text-gray-600 flex-shrink-0">
+                <span>
+                  {previewData.rows.length === 0
+                    ? 'Không có dữ liệu'
+                    : `Dòng ${previewOffset + 1}–${previewOffset + previewData.rows.length}`}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page === 1}
+                    className="p-1.5 border rounded disabled:opacity-40 hover:bg-gray-50 transition-colors"
+                    title="Trang trước"
+                  >
+                    <ChevronLeftPag className="w-4 h-4" />
+                  </button>
+                  <span className="px-2 font-medium">Trang {page}</span>
+                  <button
+                    onClick={() => setPage((p) => p + 1)}
+                    disabled={!previewData.has_more}
+                    className="p-1.5 border rounded disabled:opacity-40 hover:bg-gray-50 transition-colors"
+                    title="Trang tiếp"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
           </>
         ) : null}
       </div>
@@ -595,8 +662,9 @@ export default function WorkspaceDetailPage() {
       <AddTableModal
         workspaceId={workspaceId!}
         isOpen={isAddTableModalOpen}
-        onClose={() => setIsAddTableModalOpen(false)}
+        onClose={() => { setIsAddTableModalOpen(false); setEditingTable(null); }}
         onSuccess={handleTableAddSuccess}
+        existingTable={editingTable}
       />
 
       {/* Manage Columns Drawer */}

@@ -3,7 +3,7 @@ from typing import List, Optional
 from decimal import Decimal
 import re
 from datetime import datetime, date
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -30,6 +30,9 @@ from app.schemas import (
 from app.services import (
     DatasetWorkspaceCRUDService,
     DataSourceConnectionService,
+    TableStatsService,
+    EmbeddingService,
+    AutoTaggingService,
 )
 
 router = APIRouter()
@@ -103,6 +106,58 @@ def _infer_column_type(col: str, col_index: int, rows: list) -> str:
         return "date"
 
     return "string"
+
+
+# ===== Table Vector Search (must be before /{workspace_id} routes) =====
+
+@router.get("/tables/search", response_model=List[dict])
+def search_tables_vector(
+    q: str,
+    limit: int = Query(10, ge=1, le=20),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Vector similarity search across workspace tables accessible to the user."""
+    from app.services.embedding_service import EmbeddingService
+    from app.models.dataset_workspace import DatasetWorkspaceTable
+
+    # Build set of workspace IDs the user is allowed to see
+    accessible_ws_ids = {
+        ws.id
+        for ws in _owned_or_shared(db, DatasetWorkspace, ResourceType.WORKSPACE, current_user).all()
+    }
+
+    hits = EmbeddingService.search_similar(
+        db, q, resource_type="workspace_table", limit=limit
+    )
+    if not hits:
+        return []
+    table_ids = [h["resource_id"] for h in hits]
+    tables = db.query(DatasetWorkspaceTable).filter(
+        DatasetWorkspaceTable.id.in_(table_ids)
+    ).all()
+    table_map = {t.id: t for t in tables}
+    results = []
+    for h in hits:
+        t = table_map.get(h["resource_id"])
+        if t and t.workspace_id in accessible_ws_ids:
+            cols = []
+            if t.column_stats:
+                cols = list(t.column_stats.keys())
+            elif t.columns_cache:
+                cc = t.columns_cache
+                if isinstance(cc, dict):
+                    cc = cc.get("columns", [])
+                cols = [c.get("name", c) if isinstance(c, dict) else c for c in cc]
+            results.append({
+                "id": t.id,
+                "workspace_id": t.workspace_id,
+                "display_name": t.display_name,
+                "auto_description": t.auto_description,
+                "columns": cols,
+                "similarity": round(h["similarity"], 4),
+            })
+    return results
 
 
 # ===== Workspace Endpoints =====
@@ -213,14 +268,17 @@ def delete_workspace(
 @router.get("/{workspace_id}/tables", response_model=List[TableResponse])
 def list_workspace_tables(
     workspace_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """List all tables in a workspace"""
-    # Check if workspace exists
     workspace = DatasetWorkspaceCRUDService.get_workspace_by_id(db, workspace_id)
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
-    
+    perm = get_effective_permission(db, current_user, workspace, "workspaces")
+    if perm == "none":
+        raise HTTPException(status_code=403, detail="Access denied")
+
     tables = DatasetWorkspaceCRUDService.get_workspace_tables(db, workspace_id)
     return tables
 
@@ -229,6 +287,7 @@ def list_workspace_tables(
 def add_table_to_workspace(
     workspace_id: int,
     table: TableCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -259,7 +318,12 @@ def add_table_to_workspace(
         
         if not db_table:
             raise HTTPException(status_code=404, detail="Workspace not found")
-        
+
+        # Compute column stats, auto-description, and embeddings in background
+        background_tasks.add_task(TableStatsService.update_table_stats, db, db_table.id)
+        background_tasks.add_task(AutoTaggingService.describe_table, db, db_table.id)
+        background_tasks.add_task(EmbeddingService.embed_table, db, db_table.id)
+
         # Return plain dict instead of model to avoid serialization issues
         return {
             "id": db_table.id,
@@ -289,6 +353,7 @@ def update_workspace_table(
     workspace_id: int,
     table_id: int,
     table_update: TableUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -301,11 +366,16 @@ def update_workspace_table(
     db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.workspace_id != workspace_id:
         raise HTTPException(status_code=404, detail="Table not found in this workspace")
-    
+
     updated_table = DatasetWorkspaceCRUDService.update_table(
         db, table_id, table_update
     )
-    
+
+    # Recompute stats, auto-description, and embeddings when table definition changes
+    background_tasks.add_task(TableStatsService.update_table_stats, db, table_id)
+    background_tasks.add_task(AutoTaggingService.describe_table, db, table_id)
+    background_tasks.add_task(EmbeddingService.embed_table, db, table_id)
+
     return updated_table
 
 
@@ -381,6 +451,7 @@ def remove_table_from_workspace(
             },
         )
 
+    EmbeddingService.delete_embedding(db, "workspace_table", table_id)
     success = DatasetWorkspaceCRUDService.delete_table(db, table_id)
 
     if not success:
@@ -395,10 +466,17 @@ def preview_workspace_table(
     workspace_id: int,
     table_id: int,
     preview_request: TablePreviewRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Preview data from a workspace table with transformations"""
-    # Get table
+    workspace = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    perm = get_effective_permission(db, current_user, workspace, "workspaces")
+    if perm == "none":
+        raise HTTPException(status_code=403, detail="Access denied")
+
     db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.workspace_id != workspace_id:
         raise HTTPException(status_code=404, detail="Table not found in this workspace")
@@ -408,51 +486,55 @@ def preview_workspace_table(
     if not datasource:
         raise HTTPException(status_code=404, detail="Datasource not found")
     
-    # Build base query based on source_kind
+    # Build base query — always from DuckDB synced cache, never call live source
+    from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
+    from app.services.duckdb_engine import DuckDBEngine
+    from app.services.transformation_compiler import TransformationCompiler
+
+    _not_synced = HTTPException(
+        status_code=422,
+        detail={
+            "code": "NOT_SYNCED",
+            "message": "Bảng chưa được sync vào DuckDB. Hãy chạy sync datasource trước khi xem dữ liệu.",
+        },
+    )
+
     if db_table.source_kind == "sql_query":
-        # Use custom SQL query as subquery
         if not db_table.source_query:
             raise HTTPException(status_code=400, detail="Table has source_kind='sql_query' but source_query is NULL")
-        base_query = f"SELECT * FROM ({db_table.source_query}) AS custom_query"
+        rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
+        if rewritten is None:
+            raise _not_synced
+        base_query = f"SELECT * FROM ({rewritten}) AS _base"
     else:
-        # Use physical table
         if not db_table.source_table_name:
             raise HTTPException(status_code=400, detail="Table has source_kind='physical_table' but source_table_name is NULL")
-        # Quote sheet name with double-quotes for MANUAL sources (handles spaces/special chars)
-        if datasource.type == "manual":
-            base_query = f'SELECT * FROM "{db_table.source_table_name}"'
-        else:
-            base_query = f"SELECT * FROM {db_table.source_table_name}"
-    
-    # Apply transformations if any
-    from app.services.transformation_compiler import TransformationCompiler
-    
+        view_name = get_synced_view(datasource.id, db_table.source_table_name)
+        if view_name is None:
+            raise _not_synced
+        base_query = f"SELECT * FROM {view_name}"
+
+    # Apply transformations (TransformationCompiler generates standard SQL — DuckDB compatible)
     if db_table.transformations:
-        # transformations is stored as JSON array
         transformations = db_table.transformations if isinstance(db_table.transformations, list) else []
         query, _ = TransformationCompiler.compile_transformations(
-            base_query,
-            transformations,
-            dialect=datasource.type
+            base_query, transformations, dialect="duckdb"
         )
     else:
         query = base_query
-    
-    # Add limit and offset
+
     if preview_request.limit:
         query += f" LIMIT {preview_request.limit}"
-    
     if preview_request.offset:
         query += f" OFFSET {preview_request.offset}"
-    
+
     try:
-        # Execute query
-        columns, rows, _ = DataSourceConnectionService.execute_query(
-            datasource.type,
-            datasource.config,
-            query,
-            limit=None  # Already in query
-        )
+        with DuckDBEngine.read_conn() as _conn:
+            _result = _conn.execute(query)
+            col_names = [d[0] for d in _result.description] if _result.description else []
+            raw_rows = _result.fetchall()
+        rows = [dict(zip(col_names, r)) for r in raw_rows]
+        columns = col_names
         
         # Infer column types
         column_metadata = []
@@ -523,28 +605,52 @@ def execute_workspace_table_query(
     workspace_id: int,
     table_id: int,
     execute_request: ExecuteQueryRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Execute query on workspace table with dimensions, measures, and filters"""
-    # Get table
+    workspace = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    perm = get_effective_permission(db, current_user, workspace, "workspaces")
+    if perm == "none":
+        raise HTTPException(status_code=403, detail="Access denied")
+
     db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.workspace_id != workspace_id:
         raise HTTPException(status_code=404, detail="Table not found in this workspace")
-    
+
     # Get datasource
     datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
     if not datasource:
         raise HTTPException(status_code=404, detail="Datasource not found")
     
-    # Build base query
+    # Build base_table — always from DuckDB synced cache, never call live source
+    from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
+    from app.services.duckdb_engine import DuckDBEngine
+
+    _not_synced_exec = HTTPException(
+        status_code=422,
+        detail={
+            "code": "NOT_SYNCED",
+            "message": "Bảng chưa được sync vào DuckDB. Hãy chạy sync datasource trước khi thực thi query.",
+        },
+    )
+
     if db_table.source_kind == "sql_query":
         if not db_table.source_query:
             raise HTTPException(status_code=400, detail="Table has source_kind='sql_query' but source_query is NULL")
-        base_table = f"({db_table.source_query}) AS base_table"
+        rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
+        if rewritten is None:
+            raise _not_synced_exec
+        base_table = f"({rewritten}) AS base_table"
     else:
         if not db_table.source_table_name:
             raise HTTPException(status_code=400, detail="Table has source_kind='physical_table' but source_table_name is NULL")
-        base_table = db_table.source_table_name
+        view_name = get_synced_view(datasource.id, db_table.source_table_name)
+        if view_name is None:
+            raise _not_synced_exec
+        base_table = view_name
 
     # --- Security: build column whitelist from columns_cache ---
     # columns_cache is populated by the preview endpoint; if missing we skip whitelist validation
@@ -594,30 +700,33 @@ def execute_workspace_table_query(
 
     select_clause = ", ".join(select_parts)
 
-    # Build query — use parameterized values for filter values
-    query = f"SELECT {select_clause} FROM {base_table}"
-    query_params: list = []
+    # Build query — inline values with SQL-safe escaping (single-quote doubling).
+    # DuckDB does not support psycopg2-style %s placeholders; column names are
+    # already injection-safe (validated whitelist + double-quoted identifiers).
+    def _quote_value(v: str) -> str:
+        """Wrap a string value in single quotes, escaping internal single quotes."""
+        return "'" + str(v).replace("'", "''") + "'"
 
-    # Add WHERE clause for filters — identifiers quoted, values parameterized
+    query = f"SELECT {select_clause} FROM {base_table}"
+
+    # Add WHERE clause
     if execute_request.filters:
         where_conditions = []
         for filter_cond in execute_request.filters:
             quoted_field = _validate_column(filter_cond.field, "filter field")
-            # operator is validated by Pydantic pattern: only = != > < >= <= LIKE IN
+            # operator validated by Pydantic enum: = != > < >= <= LIKE IN
             op = filter_cond.operator.upper()
             if op == 'LIKE':
-                where_conditions.append(f"{quoted_field} LIKE %s")
-                query_params.append(f"%{filter_cond.value}%")
+                safe_val = filter_cond.value.replace("'", "''")
+                where_conditions.append(f"{quoted_field} LIKE '%{safe_val}%'")
             elif op == 'IN':
                 values = [v.strip() for v in filter_cond.value.split(',') if v.strip()]
                 if not values:
                     continue
-                placeholders = ", ".join(["%s"] * len(values))
-                where_conditions.append(f"{quoted_field} IN ({placeholders})")
-                query_params.extend(values)
+                quoted_values = ", ".join(_quote_value(v) for v in values)
+                where_conditions.append(f"{quoted_field} IN ({quoted_values})")
             else:
-                where_conditions.append(f"{quoted_field} {filter_cond.operator} %s")
-                query_params.append(filter_cond.value)
+                where_conditions.append(f"{quoted_field} {filter_cond.operator} {_quote_value(filter_cond.value)}")
 
         if where_conditions:
             query += " WHERE " + " AND ".join(where_conditions)
@@ -641,14 +750,12 @@ def execute_workspace_table_query(
     query += f" LIMIT {execute_request.limit}"
 
     try:
-        # Execute query — pass params for parameterized filter values
-        columns, rows, _ = DataSourceConnectionService.execute_query(
-            datasource.type,
-            datasource.config,
-            query,
-            limit=None,  # Already in query
-            query_params=query_params if query_params else None,
-        )
+        with DuckDBEngine.read_conn() as _conn:
+            _result = _conn.execute(query)
+            col_names = [d[0] for d in _result.description] if _result.description else []
+            raw_rows = _result.fetchall()
+        rows = [dict(zip(col_names, r)) for r in raw_rows]
+        columns = col_names
         
         # Infer column types
         column_metadata = []
@@ -724,3 +831,33 @@ def list_datasource_tables(
             status_code=500,
             detail=f"Failed to list tables: {str(e)}"
         )
+
+
+# ===== Datasource Table Columns Endpoint =====
+
+@router.get(
+    "/datasources/{datasource_id}/tables/columns",
+    tags=["datasources"]
+)
+def list_datasource_table_columns(
+    datasource_id: int,
+    table: str = Query(..., description="Table name (e.g. public.orders or orders)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Return columns for a specific table.
+    Tries DuckDB synced view first; falls back to live source schema query.
+    """
+    datasource = db.query(DataSource).filter(DataSource.id == datasource_id).first()
+    if not datasource:
+        raise HTTPException(status_code=404, detail="Datasource not found")
+    try:
+        columns = DataSourceConnectionService.list_columns(
+            ds_id=datasource.id,
+            ds_type=datasource.type,
+            config=datasource.config,
+            table_name=table,
+        )
+        return {"columns": columns}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list columns: {str(e)}")

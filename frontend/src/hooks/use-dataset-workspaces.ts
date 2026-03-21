@@ -66,6 +66,7 @@ export interface AddTableInput {
 
 export interface UpdateTableInput {
   display_name?: string;
+  source_query?: string;
   enabled?: boolean;
   transformations?: Transformation[];
   type_overrides?: Record<string, string>;
@@ -119,6 +120,11 @@ export interface DatasourceTable {
   name: string;
   schema?: string;
   table_type: string;
+}
+
+export interface DatasourceColumn {
+  name: string;
+  type: string;
 }
 
 // ===== Query Keys =====
@@ -322,7 +328,7 @@ export function useTablePreview(
   request: TablePreviewRequest = {}
 ) {
   return useQuery({
-    queryKey: workspaceKeys.tablePreview(workspaceId!, tableId!),
+    queryKey: [...workspaceKeys.tablePreview(workspaceId!, tableId!), request],
     queryFn: async () => {
       const response = await api.post<TablePreviewResponse>(
         `/dataset-workspaces/${workspaceId}/tables/${tableId}/preview`,
@@ -331,6 +337,22 @@ export function useTablePreview(
       return response.data;
     },
     enabled: workspaceId !== null && tableId !== null,
+  });
+}
+
+/**
+ * List columns for a specific table in a datasource
+ */
+export function useDatasourceTableColumns(datasourceId: number | null, tableName: string | null) {
+  return useQuery({
+    queryKey: ['datasource-columns', datasourceId, tableName],
+    queryFn: async () => {
+      const response = await api.get<{ columns: DatasourceColumn[] }>(
+        `/dataset-workspaces/datasources/${datasourceId}/tables/columns?table=${encodeURIComponent(tableName!)}`
+      );
+      return response.data.columns;
+    },
+    enabled: datasourceId !== null && !!tableName,
   });
 }
 

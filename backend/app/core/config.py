@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = "dev-secret-key-change-in-production"
     DATASOURCE_ENCRYPTION_KEY: str = ""
+
+    # AI / Embedding
+    GEMINI_API_KEY: str = ""
+    OPENAI_API_KEY: str = ""       # optional fallback for embeddings
+    OPENROUTER_API_KEY: str = ""   # used by auto-tagging LLM calls
     
     model_config = SettingsConfigDict(
         env_file=_ROOT_ENV,
