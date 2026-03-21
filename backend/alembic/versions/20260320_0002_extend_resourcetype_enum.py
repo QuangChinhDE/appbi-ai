@@ -14,9 +14,9 @@ depends_on = None
 
 
 def upgrade():
-    # ALTER TYPE ADD VALUE must run outside a transaction in PostgreSQL.
+    # ALTER TYPE ADD VALUE IF NOT EXISTS is fully supported inside a transaction
+    # on PostgreSQL 12+ (which includes our PostgreSQL 16 Alpine image).
     connection = op.get_bind()
-    connection.execution_options(isolation_level="AUTOCOMMIT")
     connection.execute(text("ALTER TYPE resourcetype ADD VALUE IF NOT EXISTS 'datasource'"))
     connection.execute(text("ALTER TYPE resourcetype ADD VALUE IF NOT EXISTS 'chat_session'"))
 

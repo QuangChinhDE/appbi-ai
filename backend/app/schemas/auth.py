@@ -19,18 +19,9 @@ class LoginRequest(BaseModel):
     password: str = Field(..., min_length=1)
 
 
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user: "UserResponse"
-
-
-class ChangePasswordRequest(BaseModel):
-    old_password: str = Field(..., min_length=1)
-    new_password: str = Field(..., min_length=8)
-
-
 # ── Users ─────────────────────────────────────────────────────────────────────
+# Defined before TokenResponse so Pydantic v2 can resolve the annotation
+# immediately at class-definition time (no forward-ref needed).
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -54,6 +45,17 @@ class UserResponse(BaseModel):
     last_login_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8)
 
 
 # ── Shares ────────────────────────────────────────────────────────────────────

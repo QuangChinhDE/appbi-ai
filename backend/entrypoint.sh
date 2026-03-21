@@ -52,7 +52,7 @@ echo "==> Data directory: ${DATA_DIR} (subdirs ready)"
 # Reads ADMIN_EMAIL / ADMIN_PASSWORD / ADMIN_NAME from env.
 # Only inserts if the users table has 0 rows (idempotent).
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@appbi.io}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-change-me-on-first-login}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-123456}"
 ADMIN_NAME="${ADMIN_NAME:-Admin}"
 
 python - <<'PYEOF'
@@ -65,7 +65,7 @@ engine = create_engine(db_url)
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
 
 email    = os.environ.get("ADMIN_EMAIL", "admin@appbi.io")
-password = os.environ.get("ADMIN_PASSWORD", "change-me-on-first-login")
+password = os.environ.get("ADMIN_PASSWORD", "123456")
 name     = os.environ.get("ADMIN_NAME", "Admin")
 
 full_perms = json.dumps({

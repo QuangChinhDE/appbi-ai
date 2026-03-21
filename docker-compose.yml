@@ -73,7 +73,7 @@ services:
       SEED_DEMO_DATA:    ${SEED_DEMO_DATA:-false}
       # Admin user created on first boot (if no users exist)
       ADMIN_EMAIL:       ${ADMIN_EMAIL:-admin@appbi.io}
-      ADMIN_PASSWORD:    ${ADMIN_PASSWORD:-change-me-on-first-login}
+      ADMIN_PASSWORD:    ${ADMIN_PASSWORD:-123456}
       ADMIN_NAME:        ${ADMIN_NAME:-Admin}
       # Parquet + DuckDB storage (absolute path inside container)
       DATA_DIR:          /app/.data
@@ -88,7 +88,7 @@ services:
     networks:
       - appbi-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -107,6 +107,11 @@ services:
         NEXT_PUBLIC_API_URL:    http://localhost:${BACKEND_PORT:-8000}/api/v1
         NEXT_PUBLIC_AI_WS_URL:  ws://localhost:${AI_PORT:-8001}/chat/ws
     restart: unless-stopped
+    environment:
+      # Server-side proxy URL (Next.js API routes → backend, inside Docker network)
+      BACKEND_URL: http://backend:8000/api/v1
+      # Must match backend SECRET_KEY so Edge middleware can verify JWTs
+      SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
