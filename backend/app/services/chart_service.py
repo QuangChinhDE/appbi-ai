@@ -125,7 +125,7 @@ class ChartService:
             if db_table.source_kind == "sql_query":
                 if not db_table.source_query:
                     raise ValueError("Table has no SQL query")
-                # Rewrite to DuckDB views if datasource has been synced
+                # Try DuckDB synced cache first
                 rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
                 if rewritten:
                     try:
@@ -135,7 +135,11 @@ class ChartService:
                         return {"chart": db_chart, "data": rows}
                     except Exception:
                         pass  # fall through to live query
-                sql = db_table.source_query
+                # Live fallback: execute SQL directly against the datasource
+                _, rows, _ = DataSourceConnectionService.execute_query(
+                    datasource.type, datasource.config, db_table.source_query, limit=1000
+                )
+                return {"chart": db_chart, "data": rows}
             elif db_table.source_kind == "physical_table":
                 if not db_table.source_table_name:
                     raise ValueError("Table has no physical table name")
@@ -186,7 +190,7 @@ class ChartService:
             if db_table.source_kind == "sql_query":
                 if not db_table.source_query:
                     raise ValueError("Table has no SQL query")
-                # Rewrite to DuckDB views if datasource has been synced
+                # Try DuckDB synced cache first
                 rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
                 if rewritten:
                     try:
@@ -196,7 +200,11 @@ class ChartService:
                         return {"chart": db_chart, "data": rows}
                     except Exception:
                         pass  # fall through to live query
-                sql = db_table.source_query
+                # Live fallback: execute SQL directly against the datasource
+                _, rows, _ = DataSourceConnectionService.execute_query(
+                    datasource.type, datasource.config, db_table.source_query, limit=1000
+                )
+                return {"chart": db_chart, "data": rows}
             elif db_table.source_kind == "physical_table":
                 if not db_table.source_table_name:
                     raise ValueError("Table has no physical table")

@@ -286,8 +286,18 @@ def delete_chart(
 
 
 @router.get("/{chart_id}/data", response_model=ChartDataResponse)
-def get_chart_data(chart_id: int, db: Session = Depends(get_db)):
+def get_chart_data(
+    chart_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Get chart configuration with data."""
+    chart = ChartService.get_by_id(db, chart_id)
+    if not chart:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chart not found")
+    perm = get_effective_permission(db, current_user, chart, "explore_charts")
+    if perm == "none":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     try:
         result = ChartService.get_chart_data(db, chart_id)
         return ChartDataResponse(**result)
@@ -324,11 +334,18 @@ def upsert_chart_metadata(
 
 
 @router.get("/{chart_id}/metadata", response_model=ChartMetadataResponse)
-def get_chart_metadata(chart_id: int, db: Session = Depends(get_db)):
+def get_chart_metadata(
+    chart_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Get semantic metadata for a chart."""
     chart = ChartService.get_by_id(db, chart_id)
     if not chart:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart {chart_id} not found")
+    perm = get_effective_permission(db, current_user, chart, "explore_charts")
+    if perm == "none":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     meta = ChartService.get_metadata(db, chart_id)
     if not meta:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No metadata found for this chart")
