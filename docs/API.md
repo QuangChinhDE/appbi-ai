@@ -29,12 +29,14 @@ All request/response bodies are **JSON**. Protected endpoints require a JWT toke
 
 Login and receive a JWT token.
 
+> Rate-limited: **5 requests/minute** per IP.
+
 **Request body**
 ```json
 { "email": "admin@appbi.io", "password": "your-password" }
 ```
 
-**Response 200**
+**Response 200** — also sets `Set-Cookie: access_token=<token>; HttpOnly; Max-Age=86400; SameSite=lax`
 ```json
 {
   "access_token": "eyJhbGci...",
@@ -80,13 +82,14 @@ Change current user's password.
 ```
 
 **Response 200** — `{ "message": "Password changed successfully" }`
-**Error 400** — old password incorrect
+**Error 401** — old password incorrect
+**Error 422** — `new_password` must be at least 8 characters
 
 ---
 
 ### `POST /auth/logout`
 
-Invalidate the current session (clears httpOnly cookie).
+Invalidate the current session. Sets `Set-Cookie: access_token=""; Max-Age=0` to clear the cookie.
 
 **Response 200** — `{ "message": "Logged out" }`
 
@@ -121,7 +124,7 @@ List all users.
 
 ### `GET /users/shareable`
 
-List users that resources can be shared with (excludes current user).
+List all users available for resource sharing.
 
 **Response 200** — array of `{ id, email, full_name }`
 
@@ -199,17 +202,27 @@ Get current user's module permissions.
 ```json
 {
   "permissions": {
+    "data_sources": "full",
+    "datasets": "none",
+    "workspaces": "full",
+    "explore_charts": "full",
     "dashboards": "full",
-    "explore_charts": "edit",
-    "workspaces": "view",
-    "data_sources": "none"
+    "ai_chat": "full",
+    "settings": "full"
   },
   "module_levels": {
-    "dashboards": ["none", "view", "edit", "full"],
-    "explore_charts": ["none", "view", "edit", "full"]
+    "data_sources":    ["none", "view", "full"],
+    "datasets":        ["none", "view", "edit", "full"],
+    "workspaces":      ["none", "view", "edit", "full"],
+    "explore_charts":  ["none", "view", "edit", "full"],
+    "dashboards":      ["none", "view", "edit", "full"],
+    "ai_chat":         ["none", "view", "edit"],
+    "settings":        ["none", "full"]
   }
 }
 ```
+
+> Note: `module_levels` shows the valid levels for each module — not all modules support all levels. `data_sources` has no `edit`; `ai_chat` has no `full`; `settings` is either `none` or `full` only.
 
 ---
 
@@ -221,12 +234,15 @@ List available permission presets.
 ```json
 {
   "presets": {
-    "admin": { "dashboards": "full", "explore_charts": "full", ... },
-    "editor": { "dashboards": "edit", "explore_charts": "edit", ... },
-    "viewer": { "dashboards": "view", "explore_charts": "view", ... }
+    "admin":   { "data_sources": "full",  "datasets": "full",  "workspaces": "full",  "explore_charts": "full",  "dashboards": "full",  "ai_chat": "edit", "settings": "full" },
+    "editor":  { "data_sources": "view",  "datasets": "edit",  "workspaces": "edit",  "explore_charts": "edit",  "dashboards": "edit",  "ai_chat": "edit", "settings": "none" },
+    "viewer":  { "data_sources": "view",  "datasets": "view",  "workspaces": "view",  "explore_charts": "view",  "dashboards": "view",  "ai_chat": "view", "settings": "none" },
+    "minimal": { "data_sources": "none",  "datasets": "none",  "workspaces": "none",  "explore_charts": "none",  "dashboards": "view",  "ai_chat": "none", "settings": "none" }
   }
 }
 ```
+
+Preset names: `admin` · `editor` · `viewer` · `minimal`
 
 ---
 
@@ -234,7 +250,21 @@ List available permission presets.
 
 Get permissions for all users (admin view).
 
-**Response 200** — `{ modules: string[], module_levels: {...}, users: [...] }`
+**Response 200**
+```json
+{
+  "modules": ["data_sources", "datasets", "workspaces", "explore_charts", "dashboards", "ai_chat", "settings"],
+  "module_levels": { "data_sources": ["none","view","full"], "dashboards": ["none","view","edit","full"], ... },
+  "users": [
+    {
+      "user_id": "uuid",
+      "email": "user@company.com",
+      "full_name": "Name",
+      "permissions": { "dashboards": "edit", "workspaces": "view", ... }
+    }
+  ]
+}
+```
 
 ---
 
@@ -246,24 +276,31 @@ Set module permissions for a user.
 ```json
 {
   "permissions": {
-    "dashboards": "edit",
-    "explore_charts": "view",
-    "workspaces": "edit",
-    "data_sources": "none",
-    "ai_chat": "view",
-    "user_management": "none",
-    "settings": "none"
+    "data_sources":   "view",
+    "datasets":       "none",
+    "workspaces":     "edit",
+    "explore_charts": "edit",
+    "dashboards":     "edit",
+    "ai_chat":        "view",
+    "settings":       "none"
   }
 }
 ```
+
+**Response 200** — `{ "status": "ok", "updated": 7, "permissions": { ... } }`
+
+> Only include the modules you want to change. Any module not in the body retains its current value.
 
 ---
 
 ### `PUT /permissions/{user_id}/preset`
 
-Apply a preset to a user.
+Apply a permission preset to a user.
 
 **Request body** — `{ "preset": "editor" }`
+
+**Response 200** — `{ "status": "ok", "preset": "editor", "permissions": { ... } }`
+**Error 400** — invalid preset name
 
 ---
 
@@ -291,7 +328,7 @@ List all shares for a resource.
     "permission": "view",
     "shared_by": "uuid",
     "created_at": "2026-03-22T10:00:00Z",
-    "user": { "id": "uuid", "email": "user@co.com", "full_name": "Jane" }
+    "user": { "id": "uuid", "email": "user@co.com", "full_name": "Jane", "status": "active", "permissions": {}, "last_login_at": null, "created_at": "...", "updated_at": "..." }
   }
 ]
 ```
@@ -317,11 +354,15 @@ Update share permission.
 
 **Request body** — `{ "permission": "edit" }`
 
+**Response 200** — updated `ShareResponse`
+
 ---
 
 ### `DELETE /shares/{resource_type}/{resource_id}/{user_id}`
 
 Remove a share.
+
+**Response 204** — no body
 
 ---
 
@@ -330,6 +371,8 @@ Remove a share.
 Share with all users on the team at once.
 
 **Request body** — `{ "permission": "view" }`
+
+**Response 204** — no body
 
 ---
 
@@ -350,7 +393,6 @@ List all datasources (owned + shared).
     "type": "postgresql",
     "description": null,
     "config": { "host": "db.internal", "port": 5432, "database": "prod" },
-    "sync_config": null,
     "owner_id": "uuid",
     "user_permission": "full",
     "created_at": "2026-03-01T00:00:00Z",
@@ -359,7 +401,7 @@ List all datasources (owned + shared).
 ]
 ```
 
-> Credentials are never returned — `config` only contains non-sensitive fields.
+> Credential fields (e.g. `password`, `credentials_json`) are returned as `"__stored__"` — the actual value is never exposed.
 
 ---
 
@@ -485,9 +527,10 @@ Execute an ad-hoc SQL query against a datasource.
 **Response 200**
 ```json
 {
-  "columns": [{"name": "COUNT(*)", "type": "integer"}],
-  "rows": [{"COUNT(*)": 42381}],
-  "row_count": 1
+  "columns": ["col1", "col2"],
+  "data": [{"col1": "value", "col2": 42}],
+  "row_count": 1,
+  "execution_time_ms": 120
 }
 ```
 
@@ -497,7 +540,14 @@ Execute an ad-hoc SQL query against a datasource.
 
 List all tables/sheets available in the datasource.
 
-**Response 200** — array of `{ name, schema, row_count?, columns? }`
+**Response 200**
+```json
+{
+  "schemas": [
+    { "schema": "public", "tables": ["orders", "customers"] }
+  ]
+}
+```
 
 ---
 
@@ -811,12 +861,12 @@ Preview table data (runs via DuckDB if synced, otherwise live source).
 ```json
 {
   "columns": [
-    {"name": "order_id", "type": "integer", "nullable": false},
+    {"name": "order_id", "type": "string", "nullable": true},
     {"name": "amount", "type": "number", "nullable": true}
   ],
-  "rows": [{"order_id": 1, "amount": 99.9}],
-  "row_count": 200,
-  "total_rows": 37422
+  "rows": [{"order_id": "abc", "amount": 99.9}],
+  "total": 37422,
+  "has_more": true
 }
 ```
 
@@ -826,23 +876,82 @@ Preview table data (runs via DuckDB if synced, otherwise live source).
 
 ### `POST /dataset-workspaces/{workspace_id}/tables/{table_id}/execute`
 
-Execute table query without row limit (returns all rows).
+Execute a structured aggregation query against the table.
 
-**Response 200** — same shape as preview
+**Request body**
+```json
+{
+  "dimensions": ["project_id", "status"],
+  "measures": [
+    {"field": "revenue", "function": "sum", "alias": "total_revenue"},
+    {"field": "id",      "function": "count", "alias": "record_count"}
+  ],
+  "filters": [],
+  "order_by": [],
+  "limit": 1000
+}
+```
+
+> Field name is `function` (not `agg`). Supported functions: `sum`, `count`, `avg`, `min`, `max`, `count_distinct`.
+> If `alias` is omitted, the column name is `{field}_{function}` (e.g. `revenue_sum`).
+
+**Response 200**
+```json
+{
+  "columns": [{"name": "project_id", "type": "string", "nullable": true}, {"name": "total_revenue", "type": "number", "nullable": true}],
+  "rows": [{"project_id": "base-datateam", "total_revenue": 16099}]
+}
+```
 
 ---
 
 ### `GET /dataset-workspaces/tables/search`
 
-Search tables across all workspaces.
+Search tables across all workspaces by name similarity.
 
-**Query params** — `?q=<search_term>`
+**Query params** — `?q=<search_term>&limit=10`
+
+**Response 200**
+```json
+[
+  {
+    "id": 2,
+    "workspace_id": 1,
+    "display_name": "Data Lake Segment",
+    "auto_description": "AI-generated table description...",
+    "columns": [{"name": "key", "type": "string", "nullable": true}],
+    "similarity": 0.87
+  }
+]
+```
 
 ---
 
 ### `GET /dataset-workspaces/datasources/{datasource_id}/tables`
 
-List physical tables available from a datasource (used by AddTableModal).
+List physical tables available from a datasource.
+
+**Response 200** — `[{ "name": "table_name", "schema": "public", "table_type": "table" }]`
+
+---
+
+### `GET /dataset-workspaces/datasources/{datasource_id}/tables/columns`
+
+Get column metadata for a specific table in a datasource.
+
+**Query params** — `?table=<table_name>` (required)
+
+**Response 200**
+```json
+{
+  "columns": [
+    {"name": "key", "type": "VARCHAR"},
+    {"name": "amount", "type": "DOUBLE"}
+  ]
+}
+```
+
+> Column `type` here is the raw SQL/connector type (e.g. `VARCHAR`, `DOUBLE`, `TIMESTAMP`), not the normalized AppBI type.
 
 ---
 
@@ -853,6 +962,8 @@ Charts are saved Explore configurations — chart type, data source, field mappi
 ### `GET /charts/`
 
 List all charts (owned + shared).
+
+**Query params** — `?skip=0&limit=50`
 
 **Response 200** — array of `ChartResponse`
 ```json
@@ -894,9 +1005,80 @@ List all charts (owned + shared).
 
 ### `GET /charts/search`
 
-Search charts by name.
+Search charts by name similarity.
 
-**Query params** — `?q=<term>&workspace_table_id=<id>`
+**Query params** — `?q=<term>&limit=10` (max 20)
+
+**Response 200** — `[{ "id": 4, "name": "Records by Project", "chart_type": "BAR", "similarity": 0.63 }]`
+
+---
+
+### `POST /charts/ai-preview`
+
+Execute a chart from an AI-generated config and optionally save it. Used by the AI agent's `create_chart` tool.
+
+> Requires `ai_chat >= view` permission.
+
+**Request body**
+```json
+{
+  "workspace_table_id": 2,
+  "chart_type": "BAR",
+  "config": {
+    "dimensions": ["region"],
+    "metrics": [
+      { "column": "revenue", "aggregation": "sum" }
+    ],
+    "limit": 500
+  },
+  "name": "Revenue by Region",
+  "description": "Optional description",
+  "save": false
+}
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `workspace_table_id` | int | Yes | Source workspace table |
+| `chart_type` | string | Yes | Any `ChartType` value (case-insensitive) |
+| `config.dimensions` | string[] | No | Column names to GROUP BY |
+| `config.metrics` | object[] | No | `{ column, aggregation }` — agg defaults to `"sum"` |
+| `config.limit` | int | No | Max rows, default 500, capped at 2000 |
+| `name` | string | No | Chart name if saving, default `"AI Chart"` |
+| `description` | string | No | Optional description |
+| `save` | bool | No | If `true`, persists as a real chart and triggers embedding |
+
+**Response 200** — preview only (`save: false`)
+```json
+{
+  "chart_type": "BAR",
+  "config": { "dimensions": ["region"], "metrics": [...], "limit": 500 },
+  "data": [{ "region": "Asia", "revenue_sum": 12000 }],
+  "row_count": 1,
+  "saved": false,
+  "chart_id": null
+}
+```
+
+**Response 200** — with save (`save: true`) — adds `saved`, `chart_id`, `chart_name`
+```json
+{
+  "chart_type": "BAR",
+  "config": {...},
+  "data": [...],
+  "row_count": 1,
+  "saved": true,
+  "chart_id": 7,
+  "chart_name": "Revenue by Region"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Success (preview or saved) |
+| 403 | Insufficient permission (`ai_chat < view`) |
+| 404 | `workspace_table_id` not found |
+| 422 | Table not synced to DuckDB, or query execution failed |
 
 ---
 
@@ -1015,7 +1197,25 @@ Update chart name, type, config, or workspace_table_id.
 
 ### `DELETE /charts/{chart_id}`
 
-Delete a chart. Returns `409` if chart is used in dashboards.
+Delete a chart.
+
+> Requires `explore_charts = full`.
+
+**Response 204** — no body
+
+**Response 409** — chart is still in one or more dashboards:
+```json
+{
+  "detail": {
+    "message": "Chart \"Revenue by Region\" is used in 2 dashboards and cannot be deleted.",
+    "constraints": [
+      { "type": "dashboard", "id": 1, "name": "Q1 Overview" }
+    ]
+  }
+}
+```
+
+> Remove the chart from all dashboards first, then retry.
 
 ---
 
@@ -1045,6 +1245,20 @@ Execute the chart query and return aggregated chart-ready data.
 ```
 {agg}__{field}   →   sum__revenue, count__orders, avg__price, min__qty, max__qty, count_distinct__user_id
 ```
+
+**Row limits by chart type:**
+
+| Chart type | Limit | Reason |
+|---|---|---|
+| `TABLE` | **500 rows** | Prevents large JSON payloads over HTTP; UI displays at most 50–200 rows |
+| `SCATTER` | 5,000 rows | Raw points — enough for density representation |
+| All aggregated types (`BAR`, `LINE`, `KPI`, etc.) | No limit | GROUP BY result sets are inherently small |
+| Live fallback (no DuckDB) | 1,000 rows | Safety cap when querying live source directly |
+
+> `TABLE` charts apply `add_column` / `select_columns` transformations before the LIMIT, so computed columns are always available.
+
+**Computed columns in aggregation:**
+Columns added via `add_column` workspace table transformations (server-side SQL expressions) are fully supported in `GROUP BY` and `WHERE` clauses. `js_formula` columns (client-side Excel-syntax formulas) are evaluated in the browser and are not available for server-side aggregation.
 
 **Error 422** `{ "code": "NOT_SYNCED" }` — table not yet synced to DuckDB and live fallback unavailable.
 
@@ -1098,26 +1312,29 @@ List parameters.
     "chart_id": 4,
     "parameter_name": "start_date",
     "parameter_type": "time_range",
-    "column_mapping": "order_date",
+    "column_mapping": { "column": "order_date", "type": "date" },
     "default_value": "2026-01-01",
-    "description": "Filter start date"
+    "description": "Filter start date",
+    "created_at": "2026-03-01T00:00:00Z"
   }
 ]
 ```
 
+> `column_mapping` is a **JSON object** (e.g. `{"column": "order_date", "type": "date"}`), not a plain string.
+
 #### `PUT /charts/{chart_id}/parameters`
 
-Replace all parameters (bulk).
+Replace all parameters (bulk). Returns `200` with the new array.
 
 **Request body** — array of `ChartParameterCreate`
 ```json
 [
   {
-    "parameter_name": "min_revenue",
-    "parameter_type": "measure",
-    "column_mapping": "revenue",
-    "default_value": "0",
-    "description": "Minimum revenue threshold"
+    "parameter_name": "region_filter",
+    "parameter_type": "dimension",
+    "column_mapping": { "column": "region", "type": "string" },
+    "default_value": null,
+    "description": "Filter by region"
   }
 ]
 ```
@@ -1150,13 +1367,17 @@ Dashboards compose multiple charts in a drag-and-drop grid layout.
 
 List all dashboards (owned + shared).
 
-**Response 200** — array of `DashboardResponse`
+**Query params** — `?skip=0&limit=50`
+
+**Response 200** — array of `DashboardResponse` (each includes full `dashboard_charts` array)
 
 ---
 
 ### `POST /dashboards/`
 
-Create a dashboard.
+Create a dashboard. Can optionally include charts at creation time.
+
+> Requires `dashboards >= edit`.
 
 **Request body**
 ```json
@@ -1167,15 +1388,20 @@ Create a dashboard.
     {
       "id": "f1",
       "field": "region",
-      "operator": "eq",
-      "value": "APAC",
-      "label": "Region"
+      "op": "eq",
+      "value": "APAC"
     }
-  ]
+  ],
+  "charts": []
 }
 ```
 
-`filters_config` — optional pre-set global filters applied to all charts.
+| Field | Type | Notes |
+|-------|------|-------|
+| `name` | string | Required, 1–255 chars |
+| `description` | string | Optional |
+| `filters_config` | array | Optional global filter definitions (client-side applied) |
+| `charts` | array of `DashboardChartItem` | Optional, add charts at creation; each item has `{chart_id, layout}` |
 
 **Response 201** — `DashboardResponse`
 
@@ -1194,18 +1420,17 @@ Get dashboard with all chart tiles, layout, and filter config.
   "owner_id": "uuid",
   "user_permission": "full",
   "filters_config": [],
-  "charts": [
+  "dashboard_charts": [
     {
       "id": 10,
       "chart_id": 4,
-      "dashboard_id": 1,
       "layout": {
         "i": "4",
         "x": 0, "y": 0,
         "w": 6, "h": 4
       },
       "parameters": null,
-      "chart": { ... }
+      "chart": { "...ChartResponse..." }
     }
   ],
   "created_at": "2026-03-01T00:00:00Z",
@@ -1213,23 +1438,43 @@ Get dashboard with all chart tiles, layout, and filter config.
 }
 ```
 
+> `dashboard_charts[].id` is the `DashboardChart` join-table ID (used in layout updates).
+> `dashboard_charts[].chart_id` is the actual `Chart.id`.
+
 ---
 
 ### `PUT /dashboards/{dashboard_id}`
 
 Update name, description, or filters_config.
 
+**Request body** — all fields optional
+```json
+{
+  "name": "Updated Name",
+  "description": "New desc",
+  "filters_config": []
+}
+```
+
+**Response 200** — updated `DashboardResponse`
+
 ---
 
 ### `DELETE /dashboards/{dashboard_id}`
 
-Delete dashboard (charts are NOT deleted, only removed from dashboard).
+Delete dashboard. Charts are NOT deleted, only unlinked.
+
+> Requires `dashboards = full`.
+
+**Response 204** — no body
 
 ---
 
 ### `POST /dashboards/{dashboard_id}/charts`
 
 Add a chart to a dashboard.
+
+> Requires `dashboards >= edit`.
 
 **Request body**
 ```json
@@ -1242,13 +1487,14 @@ Add a chart to a dashboard.
 
 | `layout` field | Type | Range | Description |
 |---|---|---|---|
-| `x` | int | 0–11 | Column position |
-| `y` | int | ≥ 0 | Row position |
+| `x` | int | 0–11 | Column position (grid is 12 columns wide) |
+| `y` | int | ≥ 0 | Row position (each row = 80px) |
 | `w` | int | 1–12 | Width in grid columns |
 | `h` | int | ≥ 1 | Height in grid rows |
-| `i` | string | optional | Identifier (auto-set to chart ID string) |
 
-**Response 200** — updated `DashboardResponse`
+> **Grid dimensions**: 12-column grid, row height = 80px. A tile with `w=6, h=4` is 50% wide × 320px tall.
+
+**Response 200** — updated `DashboardResponse` (full dashboard with all charts)
 
 ---
 
@@ -1256,11 +1502,19 @@ Add a chart to a dashboard.
 
 Remove a chart from a dashboard.
 
+> `{chart_id}` is the **Chart ID** (not the DashboardChart join-table ID).
+
+> Requires `dashboards >= edit`.
+
+**Response 200** — updated `DashboardResponse`
+
 ---
 
 ### `PUT /dashboards/{dashboard_id}/layout`
 
-Update chart positions after drag-and-drop.
+Bulk-update chart positions after drag-and-drop. Saves the new layout for all tiles.
+
+> Requires `dashboards >= edit`.
 
 **Request body**
 ```json
@@ -1278,36 +1532,295 @@ Update chart positions after drag-and-drop.
 }
 ```
 
-> `id` here is the `DashboardChart.id` (join table), NOT `chart_id`.
+> `id` is `DashboardChart.id` (the join-table row ID from `dashboard_charts[].id`), **NOT** the `chart_id`.
 
 **Response 200** — updated `DashboardResponse`
 
 ---
 
-## 9. Semantic Views
+## 9. Semantic Layer
 
-Semantic views map workspace tables to named business concepts for AI search.
+A LookML-style semantic layer for AI-driven query generation. Three resource types: **Views** (table mappings), **Models** (groupings), and **Explores** (query contexts with joins).
 
-### `GET /semantic/views`
+> **Note**: These endpoints do **not** require authentication — they are internal infrastructure for AI and query engine use.
 
-List semantic views.
+---
 
-### `POST /semantic/views`
+### Semantic Views
+
+A View maps a database table to named dimensions and measures with LookML-style SQL expressions.
+
+#### `GET /semantic/views`
+
+List all views. Query params: `?skip=0&limit=100`
+
+**Response 200** — array of `SemanticView`
+
+#### `POST /semantic/views`
 
 Create a semantic view.
 
 **Request body**
 ```json
 {
-  "name": "Monthly Revenue",
-  "sql_table_name": "revenue_monthly",
-  "workspace_table_id": 2,
-  "columns": [
-    {"name": "month", "type": "date", "description": "Month of revenue"},
-    {"name": "amount", "type": "number", "description": "Total revenue"}
+  "name": "players_view",
+  "sql_table_name": "players_data",
+  "description": "FIFA players data",
+  "dimensions": [
+    {
+      "name": "nationality",
+      "type": "string",
+      "sql": "nationality_name",
+      "label": "Nationality",
+      "description": null,
+      "hidden": false
+    }
+  ],
+  "measures": [
+    {
+      "name": "total_value",
+      "type": "sum",
+      "sql": "value_eur",
+      "label": "Total Value EUR"
+    },
+    {
+      "name": "player_count",
+      "type": "count",
+      "label": "Player Count"
+    }
   ]
 }
 ```
+
+| Dimension/Measure field | Type | Notes |
+|---|---|---|
+| `name` | string | Field identifier (used in queries as `view.name`) |
+| `type` (dimension) | `string` · `number` · `date` · `datetime` · `yesno` | Column data type |
+| `type` (measure) | `count` · `sum` · `avg` · `min` · `max` · `count_distinct` · `percent_of_total` | Aggregation function |
+| `sql` | string | SQL expression, can use `${TABLE}.column` syntax |
+| `label` | string | Display label |
+| `hidden` | bool | Hide from UI, default `false` |
+
+**Response 201** — `SemanticView`
+```json
+{
+  "id": 1,
+  "name": "players_view",
+  "sql_table_name": "players_data",
+  "description": "FIFA players data",
+  "dimensions": [ { "name": "nationality", "type": "string", "sql": "nationality_name", "label": "Nationality", "description": null, "hidden": false } ],
+  "measures": [ { "name": "total_value", "type": "sum", "sql": "value_eur", "label": "Total Value EUR", "description": null, "hidden": false } ],
+  "created_at": "2026-03-22T13:08:37.411940",
+  "updated_at": "2026-03-22T13:08:37.411940"
+}
+```
+
+> Error `400` if a view with the same `name` already exists, or if `sql_table_name` is missing.
+
+#### `GET /semantic/views/{view_id}`
+
+Get a single view by ID. **Response 200** — `SemanticView`. **404** if not found.
+
+#### `PUT /semantic/views/{view_id}`
+
+Update a view. All fields optional. **Response 200** — updated `SemanticView`.
+
+#### `DELETE /semantic/views/{view_id}`
+
+Delete a view. **Response 204** — no body.
+
+---
+
+### Semantic Models
+
+A Model groups multiple Explores under a logical namespace.
+
+#### `GET /semantic/models`
+
+List all models. Query params: `?skip=0&limit=100`
+
+**Response 200** — array of `SemanticModel` (each includes `explores` array)
+
+#### `POST /semantic/models`
+
+Create a model.
+
+**Request body**
+```json
+{ "name": "football_model", "description": "FIFA football analytics" }
+```
+
+**Response 201** — `SemanticModel`
+```json
+{
+  "id": 1,
+  "name": "football_model",
+  "description": "FIFA football analytics",
+  "explores": [],
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+> Error `400` if `name` already exists.
+
+#### `GET /semantic/models/{model_id}`
+
+Get model by ID. **Response 200** — `SemanticModel`. **404** if not found.
+
+#### `PUT /semantic/models/{model_id}`
+
+Update model name/description. **Response 200** — updated `SemanticModel`.
+
+#### `DELETE /semantic/models/{model_id}`
+
+Delete model. **Response 204** — no body.
+
+---
+
+### Semantic Explores
+
+An Explore defines a query context: a base view plus optional joins. Queries reference explores by name.
+
+#### `GET /semantic/explores`
+
+List all explores. Query params: `?skip=0&limit=100`
+
+**Response 200** — array of `SemanticExplore`
+
+#### `POST /semantic/explores`
+
+Create an explore.
+
+**Request body**
+```json
+{
+  "name": "players_explore",
+  "model_id": 1,
+  "base_view_id": 1,
+  "base_view_name": "players_view",
+  "joins": [
+    {
+      "name": "clubs",
+      "view": "clubs_view",
+      "type": "left",
+      "sql_on": "${players_view.club_id} = ${clubs_view.id}",
+      "relationship": "many_to_one"
+    }
+  ],
+  "default_filters": {},
+  "description": "Players explore"
+}
+```
+
+| `joins[]` field | Type | Notes |
+|---|---|---|
+| `name` | string | Join alias |
+| `view` | string | Name of the view to join |
+| `type` | `left` · `inner` · `right` · `full` | Join type, default `left` |
+| `sql_on` | string | Join condition with `${view.field}` placeholders |
+| `relationship` | `one_to_one` · `one_to_many` · `many_to_one` · `many_to_many` | Optional cardinality |
+
+**Response 201** — `SemanticExplore`
+```json
+{
+  "id": 1,
+  "name": "players_explore",
+  "model_id": 1,
+  "base_view_id": 1,
+  "base_view_name": "players_view",
+  "joins": [],
+  "default_filters": {},
+  "description": "Players explore",
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+> Errors: `404` if `model_id` or `base_view_id` not found.
+
+#### `GET /semantic/explores/{explore_id}`
+
+Get explore by ID. **Response 200** — `SemanticExplore`.
+
+#### `GET /semantic/explores/by-name/{explore_name}`
+
+Get explore by name (used by AI query engine). **Response 200** — `SemanticExplore`. **404** if not found.
+
+#### `PUT /semantic/explores/{explore_id}`
+
+Update an explore. All fields optional. **Response 200** — updated `SemanticExplore`.
+
+#### `DELETE /semantic/explores/{explore_id}`
+
+Delete an explore. **Response 204** — no body.
+
+---
+
+### Semantic Query Execution
+
+#### `POST /semantic/query`
+
+Execute a semantic query. Generates SQL from semantic definitions and runs it against the configured datasource.
+
+**Request body**
+```json
+{
+  "explore": "players_explore",
+  "dimensions": ["players_view.nationality", "players_view.league"],
+  "measures": ["players_view.total_value", "players_view.player_count"],
+  "filters": {
+    "players_view.nationality": { "operator": "eq", "value": "France" }
+  },
+  "sorts": [
+    { "field": "players_view.total_value", "direction": "desc" }
+  ],
+  "limit": 100,
+  "pivots": [],
+  "window_functions": [],
+  "calculated_fields": [],
+  "time_grains": {},
+  "top_n": null
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `explore` | string | Explore name (required) |
+| `dimensions` | string[] | Qualified field names: `"view.field"` |
+| `measures` | string[] | Qualified field names: `"view.measure"` |
+| `filters` | object | Keys are qualified field names; values are `{ operator, value }` |
+| `sorts` | object[] | `{ field, direction: "asc"/"desc" }` |
+| `limit` | int | 1–10000, default 500 |
+| `pivots` | string[] | Dimensions to pivot (max 1) |
+| `window_functions` | object[] | Running totals, ranks — see schema |
+| `calculated_fields` | object[] | Ad-hoc SQL expressions — see schema |
+| `time_grains` | object | `{ "view.date_dim": "month" }` — truncate dates |
+| `top_n` | object | `{ field, n }` — filter to top N by field |
+
+**Filter operators**: `eq` · `ne` · `gt` · `gte` · `lt` · `lte` · `in` · `not_in` · `contains` · `starts_with` · `ends_with`
+
+**Response 200**
+```json
+{
+  "sql": "SELECT nationality_name, COUNT(*) AS player_count FROM players_data GROUP BY nationality_name ORDER BY player_count DESC LIMIT 100",
+  "columns": ["nationality_name", "player_count"],
+  "data": [
+    { "nationality_name": "France", "player_count": 1200 }
+  ],
+  "row_count": 1,
+  "execution_time_ms": 42.5,
+  "pivoted_columns": [],
+  "warnings": []
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Success |
+| 400 | Invalid semantic reference or filter |
+| 404 | Explore not found, or no datasource available |
+| 500 | SQL generation or execution failed |
 
 ---
 

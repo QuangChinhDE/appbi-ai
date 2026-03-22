@@ -105,11 +105,11 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
     const usesDimensionColoring = dimensionColorMap && config.color_by_dimension === config.xField;
     
     return (
-      <div className="w-full">
+      <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
-        <ResponsiveContainer width="100%" height={400}>
+        <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis dataKey={config.xField} />
@@ -144,11 +144,11 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
   // Render Line Chart
   if (chartType === ChartType.LINE && config.xField && config.yFields) {
     return (
-      <div className="w-full">
+      <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
-        <ResponsiveContainer width="100%" height={400}>
+        <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis dataKey={config.xField} />
@@ -173,11 +173,11 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
   // Render Area Chart
   if (chartType === ChartType.AREA && config.xField && config.yFields) {
     return (
-      <div className="w-full">
+      <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
-        <ResponsiveContainer width="100%" height={400}>
+        <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis dataKey={config.xField} />
@@ -205,11 +205,11 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
     const usesDimensionColoring = dimensionColorMap && config.color_by_dimension === config.xField;
     
     return (
-      <div className="w-full">
+      <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
-        <ResponsiveContainer width="100%" height={400}>
+        <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis dataKey={config.xField} />
@@ -243,11 +243,11 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
   if (chartType === ChartType.STACKED_BAR && config.xField && config.yFields) {
     // For stacked bar, dimension coloring applies to the series (not individual bars)
     return (
-      <div className="w-full">
+      <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
-        <ResponsiveContainer width="100%" height={400}>
+        <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis dataKey={config.xField} />
@@ -273,11 +273,11 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
     const usesDimensionColoring = dimensionColorMap && config.color_by_dimension;
     
     return (
-      <div className="w-full">
+      <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
-        <ResponsiveContainer width="100%" height={400}>
+        <ResponsiveContainer width="100%" height="100%">
           <ScatterChart>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis dataKey={config.xField} name={config.xField} />
@@ -316,11 +316,11 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
     const usesDimensionColoring = dimensionColorMap && config.color_by_dimension;
     
     return (
-      <div className="w-full">
+      <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
-        <ResponsiveContainer width="100%" height={400}>
+        <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie
               data={data}
@@ -355,11 +355,11 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
   // Render Time Series Chart
   if (chartType === ChartType.TIME_SERIES && config.timeField && config.valueField) {
     return (
-      <div className="w-full">
+      <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
-        <ResponsiveContainer width="100%" height={400}>
+        <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis
@@ -394,7 +394,7 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
   if (chartType === ChartType.TABLE) {
     const columns = data.length > 0 ? Object.keys(data[0]) : [];
     return (
-      <div className="w-full">
+      <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}

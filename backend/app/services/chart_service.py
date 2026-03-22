@@ -66,6 +66,29 @@ def _build_where_clause(filters) -> str:
     return ' AND '.join(parts)
 
 
+def _apply_transformations(view_name: str, transformations) -> str:
+    """
+    Wrap a DuckDB view name in a CTE that applies server-side transformations
+    (add_column, select_columns, rename_columns).  js_formula columns are
+    evaluated client-side and are skipped here.
+
+    Returns either the original view_name (no-op) or a subquery string suitable
+    for use as a FROM clause, e.g. '(WITH base AS (...) SELECT ...) AS _t'.
+    """
+    server_transforms = [
+        t for t in (transformations or [])
+        if t.get('enabled', True) and t.get('type') not in ('js_formula',)
+    ]
+    if not server_transforms:
+        return view_name
+
+    from app.services.transformation_compiler import TransformationCompiler
+    compiled_sql, _ = TransformationCompiler.compile_transformations(
+        f'SELECT * FROM {view_name}', server_transforms, dialect='duckdb'
+    )
+    return f'({compiled_sql}) AS _t'
+
+
 def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filters: list):
     """
     Build a DuckDB GROUP BY query from chart roleConfig.
@@ -87,10 +110,11 @@ def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filter
     where_clause = _build_where_clause(filters)
     where_sql = f' WHERE {where_clause}' if where_clause else ''
 
-    # TABLE: all rows, optional column selection — no LIMIT
+    # TABLE: optional column selection, capped at 500 rows for HTTP delivery.
+    # UI shows at most 50-200 rows; 500 gives headroom without sending MBs of JSON.
     if ctype == 'TABLE':
         cols = ', '.join(f'"{c}"' for c in selected_cols) if selected_cols else '*'
-        return f'SELECT {cols} FROM {base_table}{where_sql}', True
+        return f'SELECT {cols} FROM {base_table}{where_sql} LIMIT 500', True
 
     # SCATTER: raw points up to 5 000
     if ctype == 'SCATTER':
@@ -277,7 +301,8 @@ class ChartService:
                 # Use DuckDB synced cache if available — avoids live source round-trip
                 view_name = get_synced_view(datasource.id, db_table.source_table_name)
                 if view_name:
-                    agg_sql, pre_agg = _build_agg_query(view_name, db_chart.chart_type, role_config, filters)
+                    base_table = _apply_transformations(view_name, db_table.transformations)
+                    agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, filters)
                     rows = DuckDBEngine.query(agg_sql)
                     return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
                 # Live fallback: use fetch_table_data so table names with spaces work
@@ -346,7 +371,8 @@ class ChartService:
                 # Use DuckDB synced cache if available — avoids live source round-trip
                 view_name = get_synced_view(datasource.id, db_table.source_table_name)
                 if view_name:
-                    agg_sql, pre_agg = _build_agg_query(view_name, db_chart.chart_type, role_config, filters)
+                    base_table = _apply_transformations(view_name, db_table.transformations)
+                    agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, filters)
                     rows = DuckDBEngine.query(agg_sql)
                     return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
                 # Live fallback: use fetch_table_data so table names with spaces work

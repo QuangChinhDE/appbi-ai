@@ -5,6 +5,7 @@ import { Responsive, WidthProvider, Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { ChartTile } from './ChartTile';
+import { ChartErrorBoundary } from './ChartErrorBoundary';
 import { DashboardChart } from '@/types/api';
 import { DashboardFilter } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
@@ -90,18 +91,20 @@ export function DashboardGrid({
     >
       {dashboardCharts.map((dc) => (
         <div key={dc.id.toString()}>
-          <ChartTile
-            chartId={dc.chart_id}
-            dashboardChartId={dc.id}
-            dashboardId={dashboardId}
-            currentLayout={dc.layout as Record<string, any>}
-            onRemove={onRemoveChart}
-            isRemoving={removingChartId === dc.id}
-            dashboardFilters={dashboardFilters}
-            globalFilters={globalFilters}
-            onDataLoaded={onChartDataLoaded}
-            instanceParameters={dc.parameters ?? {}}
-          />
+          <ChartErrorBoundary chartId={dc.chart_id}>
+            <ChartTile
+              chartId={dc.chart_id}
+              dashboardChartId={dc.id}
+              dashboardId={dashboardId}
+              currentLayout={dc.layout as Record<string, any>}
+              onRemove={onRemoveChart}
+              isRemoving={removingChartId === dc.id}
+              dashboardFilters={dashboardFilters}
+              globalFilters={globalFilters}
+              onDataLoaded={onChartDataLoaded}
+              instanceParameters={dc.parameters ?? {}}
+            />
+          </ChartErrorBoundary>
         </div>
       ))}
     </ResponsiveGridLayout>
