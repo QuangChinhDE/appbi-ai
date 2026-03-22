@@ -144,14 +144,20 @@ class ChartService:
                 if view_name:
                     rows = DuckDBEngine.query(f"SELECT * FROM {view_name} LIMIT 1000")
                     return {"chart": db_chart, "data": rows}
-                sql = f'SELECT * FROM {db_table.source_table_name}'
+                # Live fallback: use fetch_table_data so table names with spaces work
+                stn = db_table.source_table_name.strip().strip('"').strip("'")
+                if "." in stn:
+                    _schema, _table = stn.split(".", 1)
+                    _schema = _schema.strip('"').strip("'")
+                    _table = _table.strip('"').strip("'")
+                else:
+                    _schema, _table = "default", stn
+                _, rows = DataSourceConnectionService.fetch_table_data(
+                    datasource.type, datasource.config, _schema, _table, limit=1000
+                )
+                return {"chart": db_chart, "data": rows}
             else:
                 raise ValueError(f"Unsupported source_kind: {db_table.source_kind}")
-
-            columns, rows, _ = DataSourceConnectionService.execute_query(
-                datasource.type, datasource.config, sql, limit=1000
-            )
-            return {"chart": db_chart, "data": rows}
 
         # Fallback: check config for legacy workspace_table source
         config = db_chart.config or {}
@@ -199,14 +205,20 @@ class ChartService:
                 if view_name:
                     rows = DuckDBEngine.query(f"SELECT * FROM {view_name} LIMIT 1000")
                     return {"chart": db_chart, "data": rows}
-                sql = f'SELECT * FROM {db_table.source_table_name}'
+                # Live fallback: use fetch_table_data so table names with spaces work
+                stn = db_table.source_table_name.strip().strip('"').strip("'")
+                if "." in stn:
+                    _schema, _table = stn.split(".", 1)
+                    _schema = _schema.strip('"').strip("'")
+                    _table = _table.strip('"').strip("'")
+                else:
+                    _schema, _table = "default", stn
+                _, rows = DataSourceConnectionService.fetch_table_data(
+                    datasource.type, datasource.config, _schema, _table, limit=1000
+                )
+                return {"chart": db_chart, "data": rows}
             else:
                 raise ValueError(f"Unsupported source_kind: {db_table.source_kind}")
-
-            columns, rows, _ = DataSourceConnectionService.execute_query(
-                datasource.type, datasource.config, sql, limit=1000
-            )
-            return {"chart": db_chart, "data": rows}
 
         raise ValueError("Chart has no data source configured")
 

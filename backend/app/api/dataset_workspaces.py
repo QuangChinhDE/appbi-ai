@@ -38,6 +38,7 @@ from app.services import (
 router = APIRouter()
 
 
+
 # ISO date/datetime patterns for string-based detection
 _ISO_DATETIME_RE = re.compile(
     r'^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?'
@@ -367,6 +368,14 @@ def update_workspace_table(
     if not db_table or db_table.workspace_id != workspace_id:
         raise HTTPException(status_code=404, detail="Table not found in this workspace")
 
+    # Validate SQL query if source_query is being updated
+    if table_update.source_query is not None:
+        from app.services.query_validator import QueryValidator, QueryValidationError
+        try:
+            table_update.source_query = QueryValidator.validate_and_clean(table_update.source_query)
+        except QueryValidationError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid SQL query: {str(e)}")
+
     updated_table = DatasetWorkspaceCRUDService.update_table(
         db, table_id, table_update
     )
@@ -486,53 +495,45 @@ def preview_workspace_table(
     if not datasource:
         raise HTTPException(status_code=404, detail="Datasource not found")
     
-    # Build base query — always from DuckDB synced cache, never call live source
+    # Build base query — requires DuckDB synced view (raises 422 NOT_SYNCED if not synced)
     from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
     from app.services.duckdb_engine import DuckDBEngine
     from app.services.transformation_compiler import TransformationCompiler
 
-    _not_synced = HTTPException(
-        status_code=422,
-        detail={
-            "code": "NOT_SYNCED",
-            "message": "Bảng chưa được sync vào DuckDB. Hãy chạy sync datasource trước khi xem dữ liệu.",
-        },
-    )
-
-    if db_table.source_kind == "sql_query":
-        if not db_table.source_query:
-            raise HTTPException(status_code=400, detail="Table has source_kind='sql_query' but source_query is NULL")
-        rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
-        if rewritten is None:
-            raise _not_synced
-        base_query = f"SELECT * FROM ({rewritten}) AS _base"
-    else:
-        if not db_table.source_table_name:
-            raise HTTPException(status_code=400, detail="Table has source_kind='physical_table' but source_table_name is NULL")
-        view_name = get_synced_view(datasource.id, db_table.source_table_name)
-        if view_name is None:
-            raise _not_synced
-        base_query = f"SELECT * FROM {view_name}"
-
-    # Apply transformations (TransformationCompiler generates standard SQL — DuckDB compatible)
-    if db_table.transformations:
-        transformations = db_table.transformations if isinstance(db_table.transformations, list) else []
-        query, _ = TransformationCompiler.compile_transformations(
-            base_query, transformations, dialect="duckdb"
-        )
-    else:
-        query = base_query
-
-    if preview_request.limit:
-        query += f" LIMIT {preview_request.limit}"
-    if preview_request.offset:
-        query += f" OFFSET {preview_request.offset}"
-
     try:
+        if db_table.source_kind == "sql_query":
+            if not db_table.source_query:
+                raise HTTPException(status_code=400, detail="Table has source_kind='sql_query' but source_query is NULL")
+            rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
+            if rewritten is None:
+                raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
+            base_query = f"SELECT * FROM ({rewritten}) AS _base"
+        else:
+            if not db_table.source_table_name:
+                raise HTTPException(status_code=400, detail="Table has source_kind='physical_table' but source_table_name is NULL")
+            view_name = get_synced_view(datasource.id, db_table.source_table_name)
+            if view_name is None:
+                raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
+            base_query = f"SELECT * FROM {view_name}"
+
+        # Apply transformations (TransformationCompiler generates DuckDB-compatible SQL)
+        if db_table.transformations:
+            transformations = db_table.transformations if isinstance(db_table.transformations, list) else []
+            query, _ = TransformationCompiler.compile_transformations(
+                base_query, transformations, dialect="duckdb"
+            )
+        else:
+            query = base_query
+
+        if preview_request.limit:
+            query += f" LIMIT {preview_request.limit}"
+        if preview_request.offset:
+            query += f" OFFSET {preview_request.offset}"
+
         with DuckDBEngine.read_conn() as _conn:
             _result = _conn.execute(query)
-            col_names = [d[0] for d in _result.description] if _result.description else []
-            raw_rows = _result.fetchall()
+        col_names = [d[0] for d in _result.description] if _result.description else []
+        raw_rows = _result.fetchall()
         rows = [dict(zip(col_names, r)) for r in raw_rows]
         columns = col_names
         
@@ -589,7 +590,9 @@ def preview_workspace_table(
             total=total,
             has_more=has_more
         )
-    
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -625,31 +628,23 @@ def execute_workspace_table_query(
     if not datasource:
         raise HTTPException(status_code=404, detail="Datasource not found")
     
-    # Build base_table — always from DuckDB synced cache, never call live source
+    # Build base_table — requires synced DuckDB view
     from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
     from app.services.duckdb_engine import DuckDBEngine
-
-    _not_synced_exec = HTTPException(
-        status_code=422,
-        detail={
-            "code": "NOT_SYNCED",
-            "message": "Bảng chưa được sync vào DuckDB. Hãy chạy sync datasource trước khi thực thi query.",
-        },
-    )
 
     if db_table.source_kind == "sql_query":
         if not db_table.source_query:
             raise HTTPException(status_code=400, detail="Table has source_kind='sql_query' but source_query is NULL")
         rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
         if rewritten is None:
-            raise _not_synced_exec
+            raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
         base_table = f"({rewritten}) AS base_table"
     else:
         if not db_table.source_table_name:
             raise HTTPException(status_code=400, detail="Table has source_kind='physical_table' but source_table_name is NULL")
         view_name = get_synced_view(datasource.id, db_table.source_table_name)
         if view_name is None:
-            raise _not_synced_exec
+            raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
         base_table = view_name
 
     # --- Security: build column whitelist from columns_cache ---
@@ -752,11 +747,11 @@ def execute_workspace_table_query(
     try:
         with DuckDBEngine.read_conn() as _conn:
             _result = _conn.execute(query)
-            col_names = [d[0] for d in _result.description] if _result.description else []
-            raw_rows = _result.fetchall()
+        col_names = [d[0] for d in _result.description] if _result.description else []
+        raw_rows = _result.fetchall()
         rows = [dict(zip(col_names, r)) for r in raw_rows]
         columns = col_names
-        
+
         # Infer column types
         column_metadata = []
         for i, col in enumerate(columns):
@@ -766,12 +761,12 @@ def execute_workspace_table_query(
                     val = rows[0].get(col)
                 else:
                     val = rows[0][i] if i < len(rows[0]) else None
-                
+
                 if isinstance(val, bool):
                     col_type = "boolean"
                 elif isinstance(val, (int, float, Decimal)):
                     col_type = "number"
-            
+
             column_metadata.append(
                 WorkspaceColumnMetadata(
                     name=col,
@@ -779,12 +774,14 @@ def execute_workspace_table_query(
                     nullable=True
                 )
             )
-        
+
         return ExecuteQueryResponse(
             columns=column_metadata,
             rows=rows
         )
-    
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,

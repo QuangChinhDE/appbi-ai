@@ -255,6 +255,10 @@ def delete_data_source(
             detail=f"Data source with ID {data_source_id} not found"
         )
 
+    # Clean up parquet files and DuckDB views for the deleted datasource
+    from app.services.sync_engine import cleanup_datasource_data
+    cleanup_datasource_data(data_source_id)
+
 
 @router.post("/test", response_model=DataSourceTestResponse)
 def test_data_source_connection(

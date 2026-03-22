@@ -76,9 +76,14 @@ def extract_sheet_name_from_sql(sql: str) -> str:
       SELECT * FROM "Sales Data"
       SELECT * FROM `Sheet1`
       SELECT * FROM "Sheet1" LIMIT 100
+      SELECT * FROM "spreadsheet-id-with-hyphens"."Sheet1"
+
+    The optional schema prefix uses "[^"]+" (any chars) instead of "\\w+"
+    so spreadsheet IDs that contain hyphens (valid base64url) are consumed
+    correctly and the table name is always captured in the groups.
     """
     match = re.search(
-        r"""\bFROM\s+(?:(?:"\w+"|\w+)\.)?(?:`([^`]+)`|"([^"]+)"|'([^']+)'|(\w+))""",
+        r"""\bFROM\s+(?:(?:"[^"]+"|\w+)\.)?(?:`([^`]+)`|"([^"]+)"|'([^']+)'|(\w+))""",
         sql.strip(),
         re.IGNORECASE,
     )

@@ -111,7 +111,6 @@ class TableStatsService:
         """
         from app.models.dataset_workspace import DatasetWorkspaceTable
         from app.models.models import DataSource
-        from app.services.datasource_service import DataSourceConnectionService
 
         try:
             table = db.query(DatasetWorkspaceTable).filter(
@@ -133,27 +132,38 @@ class TableStatsService:
                 logger.warning("TableStats: datasource not found for table %s", table_id)
                 return None
 
-            # Build base query identical to preview endpoint
+            from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
+            from app.services.duckdb_engine import DuckDBEngine
+
+            rows = None
+            cols = list(table.columns_cache) if table.columns_cache else []
+
             if table.source_kind == "sql_query":
                 if not table.source_query:
                     return None
-                base_query = f"SELECT * FROM ({table.source_query}) AS _stats_src"
+                # Only run against synced DuckDB view — skip if not yet synced
+                rewritten = rewrite_sql_for_duckdb(datasource.id, table.source_query)
+                if not rewritten:
+                    return None
+                try:
+                    rows = DuckDBEngine.query(
+                        f"SELECT * FROM ({rewritten}) AS _q LIMIT {TableStatsService.SAMPLE_LIMIT}"
+                    )
+                except Exception:
+                    return None
             else:
                 if not table.source_table_name:
                     return None
-                if datasource.type == "manual":
-                    base_query = f'SELECT * FROM "{table.source_table_name}"'
-                else:
-                    base_query = f"SELECT * FROM {table.source_table_name}"
-
-            query = f"{base_query} LIMIT {TableStatsService.SAMPLE_LIMIT}"
-
-            cols, rows, _ = DataSourceConnectionService.execute_query(
-                datasource.type,
-                datasource.config,
-                query,
-                limit=None,
-            )
+                # Only run against synced DuckDB view — skip if not yet synced
+                view_name = get_synced_view(datasource.id, table.source_table_name)
+                if not view_name:
+                    return None
+                try:
+                    rows = DuckDBEngine.query(
+                        f"SELECT * FROM {view_name} LIMIT {TableStatsService.SAMPLE_LIMIT}"
+                    )
+                except Exception:
+                    return None
 
             if not rows:
                 return None

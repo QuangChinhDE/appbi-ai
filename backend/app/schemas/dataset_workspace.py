@@ -69,6 +69,7 @@ class TableCreate(WorkspaceTableBase):
 class TableUpdate(BaseModel):
     """Schema for updating a table"""
     display_name: Optional[str] = None
+    source_query: Optional[str] = None
     enabled: Optional[bool] = None
     transformations: Optional[List[Dict[str, Any]]] = None
     type_overrides: Optional[Dict[str, str]] = Field(default=None, description="User-defined column type overrides, e.g. {'price': 'float', 'created_at': 'date'}")

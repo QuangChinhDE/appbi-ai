@@ -1,34 +1,24 @@
 /**
- * PhysicalTableTab - Select physical tables from datasources
+ * PhysicalTableTab - Select physical tables from datasources (Add mode only)
  */
 'use client';
 
 import React, { useState, useMemo } from 'react';
-import { Search, Database, CheckSquare, Square, Loader2 } from 'lucide-react';
+import { Search, Database, CheckSquare, Loader2 } from 'lucide-react';
 import { useDataSources } from '@/hooks/use-datasources';
 import { useDatasourceTables } from '@/hooks/use-dataset-workspaces';
-import type { DatasourceTable, AddTableInput, WorkspaceTable } from '@/hooks/use-dataset-workspaces';
+import type { DatasourceTable, AddTableInput } from '@/hooks/use-dataset-workspaces';
 
 interface PhysicalTableTabProps {
   onAddTable: (input: AddTableInput) => Promise<void>;
   isLoading: boolean;
-  existingTable?: WorkspaceTable | null;
 }
 
-export function PhysicalTableTab({ onAddTable, isLoading, existingTable }: PhysicalTableTabProps) {
+export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProps) {
   const [selectedDatasourceId, setSelectedDatasourceId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState('');
-
-  // Pre-fill when editing existing physical table
-  React.useEffect(() => {
-    if (existingTable) {
-      setSelectedDatasourceId(existingTable.datasource_id);
-      setSelectedTable(existingTable.source_table_name ?? null);
-      setDisplayName(existingTable.display_name);
-    }
-  }, [existingTable]);
 
   const { data: datasources, isLoading: loadingDatasources } = useDataSources();
   const { data: tables, isLoading: loadingTables } = useDatasourceTables(
@@ -36,13 +26,11 @@ export function PhysicalTableTab({ onAddTable, isLoading, existingTable }: Physi
     searchQuery || undefined
   );
 
-  // Filter tables by search
   const filteredTables = useMemo(() => {
     if (!tables) return [];
     if (!searchQuery) return tables;
-    
     const query = searchQuery.toLowerCase();
-    return tables.filter((table: DatasourceTable) => 
+    return tables.filter((table: DatasourceTable) =>
       table.name.toLowerCase().includes(query) ||
       table.schema?.toLowerCase().includes(query)
     );
@@ -50,18 +38,14 @@ export function PhysicalTableTab({ onAddTable, isLoading, existingTable }: Physi
 
   const handleSelectTable = (tableName: string) => {
     setSelectedTable(tableName);
-    
-    // Auto-generate display name if not set
     if (!displayName) {
       const shortName = tableName.split('.').pop() || tableName;
-      const generatedName = shortName.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-      setDisplayName(generatedName);
+      setDisplayName(shortName.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()));
     }
   };
 
   const handleAdd = async () => {
     if (!selectedDatasourceId || !selectedTable || !displayName.trim()) return;
-
     await onAddTable({
       datasource_id: selectedDatasourceId,
       source_kind: 'physical_table',
@@ -77,9 +61,7 @@ export function PhysicalTableTab({ onAddTable, isLoading, existingTable }: Physi
     <div className="p-6 space-y-6">
       {/* Datasource selector */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          Select Datasource *
-        </label>
+        <label className="block text-sm font-medium text-gray-700 mb-2">Select Datasource *</label>
         <select
           value={selectedDatasourceId || ''}
           onChange={(e) => {
@@ -88,7 +70,7 @@ export function PhysicalTableTab({ onAddTable, isLoading, existingTable }: Physi
             setDisplayName('');
           }}
           className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-          disabled={loadingDatasources || isLoading || !!existingTable}
+          disabled={loadingDatasources || isLoading}
         >
           <option value="">Choose a datasource...</option>
           {datasources?.map((ds) => (
@@ -102,11 +84,8 @@ export function PhysicalTableTab({ onAddTable, isLoading, existingTable }: Physi
       {/* Table search and list */}
       {selectedDatasourceId && (
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Select Table *
-          </label>
-          
-          {/* Search */}
+          <label className="block text-sm font-medium text-gray-700 mb-2">Select Table *</label>
+
           <div className="relative mb-3">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
             <input
@@ -119,7 +98,6 @@ export function PhysicalTableTab({ onAddTable, isLoading, existingTable }: Physi
             />
           </div>
 
-          {/* Table list */}
           <div className="border border-gray-300 rounded-md max-h-64 overflow-y-auto">
             {loadingTables ? (
               <div className="flex items-center justify-center py-8">
@@ -142,13 +120,9 @@ export function PhysicalTableTab({ onAddTable, isLoading, existingTable }: Physi
                     disabled={isLoading}
                   >
                     <div className="flex-1 min-w-0">
-                      <div className="font-medium text-gray-900 truncate">
-                        {table.name}
-                      </div>
+                      <div className="font-medium text-gray-900 truncate">{table.name}</div>
                       {table.schema && (
-                        <div className="text-xs text-gray-500">
-                          Schema: {table.schema}
-                        </div>
+                        <div className="text-xs text-gray-500">Schema: {table.schema}</div>
                       )}
                     </div>
                     {selectedTable === table.name && (
@@ -165,9 +139,7 @@ export function PhysicalTableTab({ onAddTable, isLoading, existingTable }: Physi
       {/* Display name */}
       {selectedTable && (
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Display Name *
-          </label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">Display Name *</label>
           <input
             type="text"
             value={displayName}
@@ -176,9 +148,7 @@ export function PhysicalTableTab({ onAddTable, isLoading, existingTable }: Physi
             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             disabled={isLoading}
           />
-          <p className="text-xs text-gray-500 mt-1">
-            This name will be shown in the workspace
-          </p>
+          <p className="text-xs text-gray-500 mt-1">This name will be shown in the workspace</p>
         </div>
       )}
 
@@ -190,7 +160,7 @@ export function PhysicalTableTab({ onAddTable, isLoading, existingTable }: Physi
           className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
         >
           {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-          {existingTable ? 'Lưu thay đổi' : 'Add Table'}
+          Add Table
         </button>
       </div>
     </div>

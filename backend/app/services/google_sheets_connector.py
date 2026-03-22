@@ -20,7 +20,22 @@ class GoogleSheetsConnector:
             credentials_json: JSON string of service account credentials
         """
         try:
-            credentials_dict = json.loads(credentials_json)
+            # Private keys in PEM format contain real newlines.  When the
+            # credentials_json string is stored inside a JSON field and later
+            # retrieved, those \n escape sequences are decoded to actual
+            # newline characters (chr 10), which are invalid inside a JSON
+            # string value.  Re-escape them before parsing.
+            if isinstance(credentials_json, dict):
+                credentials_dict = credentials_json
+            else:
+                try:
+                    credentials_dict = json.loads(credentials_json)
+                except json.JSONDecodeError:
+                    fixed = (credentials_json
+                             .replace('\r\n', '\\n')
+                             .replace('\r', '\\n')
+                             .replace('\n', '\\n'))
+                    credentials_dict = json.loads(fixed)
             self.credentials = service_account.Credentials.from_service_account_info(
                 credentials_dict,
                 scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']

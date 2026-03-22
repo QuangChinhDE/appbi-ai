@@ -4,7 +4,7 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import {
   Plus,
   Search,
@@ -72,8 +72,9 @@ function evalExcelFormulaInPage(
 export default function WorkspaceDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const workspaceId = params?.id ? Number(params.id) : null;
-  
+
   const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
   const [previewLimit, setPreviewLimit] = useState(200);
   const [page, setPage] = useState(1);
@@ -118,12 +119,15 @@ export default function WorkspaceDetailPage() {
     );
   }, [workspace?.tables, tableSearchQuery]);
 
-  // Auto-select first table when tables load
+  // Auto-select table: prefer ?table= URL param, then first table
   React.useEffect(() => {
     if (workspace?.tables && workspace.tables.length > 0 && !selectedTableId) {
-      setSelectedTableId(workspace.tables[0].id);
+      const fromUrl = searchParams.get('table');
+      const urlId = fromUrl ? Number(fromUrl) : null;
+      const match = urlId && workspace.tables.find((t: any) => t.id === urlId);
+      setSelectedTableId(match ? urlId : workspace.tables[0].id);
     }
-  }, [workspace?.tables, selectedTableId]);
+  }, [workspace?.tables, selectedTableId, searchParams]);
 
   // Reset to page 1 when switching table or changing page size
   React.useEffect(() => {
@@ -134,15 +138,13 @@ export default function WorkspaceDetailPage() {
   const updateTableMutation = useUpdateTable();
   const removeTableMutation = useRemoveTable();
 
-  // Handle table addition success
-  const handleTableAddSuccess = () => {
+  // Handle table addition success — select and surface the new table in the URL
+  const handleTableAddSuccess = (created?: { id: number }) => {
     refetchWorkspace();
-    // Auto-select newly added table (will be last in list after refetch)
-    setTimeout(() => {
-      if (workspace?.tables && workspace.tables.length > 0) {
-        setSelectedTableId(workspace.tables[workspace.tables.length - 1].id);
-      }
-    }, 500);
+    if (created?.id) {
+      setSelectedTableId(created.id);
+      router.replace(`/dataset-workspaces/${workspaceId}?table=${created.id}`, { scroll: false });
+    }
   };
 
   // Handle transformations save
@@ -441,7 +443,10 @@ export default function WorkspaceDetailPage() {
                       ? 'bg-blue-50 text-blue-900'
                       : 'hover:bg-gray-100 text-gray-900'
                   }`}
-                  onClick={() => setSelectedTableId(table.id)}
+                  onClick={() => {
+                    setSelectedTableId(table.id);
+                    router.replace(`/dataset-workspaces/${workspaceId}?table=${table.id}`, { scroll: false });
+                  }}
                 >
                   <Database className="w-4 h-4 flex-shrink-0 text-gray-400" />
                   <div className="flex-1 min-w-0">
@@ -461,7 +466,7 @@ export default function WorkspaceDetailPage() {
                       setEditingTable(table);
                       setIsAddTableModalOpen(true);
                     }}
-                    className="p-1 hover:bg-blue-100 rounded opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-blue-600"
+                    className="p-1 hover:bg-blue-100 rounded text-gray-400 hover:text-blue-600"
                     title="Chỉnh sửa bảng"
                   >
                     <Pencil className="w-3.5 h-3.5" />
@@ -477,7 +482,7 @@ export default function WorkspaceDetailPage() {
                         name: table.display_name || table.source_table_name,
                       });
                     }}
-                    className="p-1 hover:bg-red-100 rounded opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-red-600"
+                    className="p-1 hover:bg-red-100 rounded text-gray-400 hover:text-red-600"
                     title="Xóa bảng"
                   >
                     <Trash2 className="w-3.5 h-3.5" />

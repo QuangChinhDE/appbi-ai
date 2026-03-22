@@ -32,6 +32,11 @@ async def lifespan(app: FastAPI):
     import logging
     logging.getLogger(__name__).info("Data directory: %s", data_root)
 
+    # Re-register any Parquet files written by previous runs so DuckDB views
+    # are immediately available without requiring a manual re-sync.
+    from app.services.sync_engine import restore_synced_views
+    restore_synced_views()
+
     # DataSource-level sync scheduler
     from app.services.sync_scheduler import startup as ds_scheduler_startup
     ds_scheduler_startup()

@@ -187,6 +187,99 @@ class DataSourceConnectionService:
             raise
     
     @staticmethod
+    def fetch_table_data(
+        ds_type: str,
+        config: Dict[str, Any],
+        schema: str,
+        table: str,
+        limit: int = None,
+    ) -> Tuple[List[str], List[Dict[str, Any]]]:
+        """
+        Fetch rows from a single table / sheet directly — no fake SQL.
+
+        Used by the sync engine and live fallback paths so each connector uses
+        its native fetch API instead of building fake SQL that connectors then
+        have to re-parse (fragile for GSheets / Manual).
+
+        The sentinel schema value ``"default"`` is resolved to the connector's
+        actual default schema (``public`` for PostgreSQL, the configured
+        database for MySQL) so callers don't have to know the real default.
+
+        Args:
+            ds_type: DataSourceType value
+            config:  Connection config (decrypted internally)
+            schema:  Schema name, or ``"default"`` for the connector default,
+                     or spreadsheet_id for GSheets
+            table:   Table / sheet name
+            limit:   Optional row limit (None = all rows)
+
+        Returns:
+            (column_names, rows)
+        """
+        from app.core.crypto import decrypt_config
+        config = decrypt_config(config)
+
+        if ds_type == DataSourceType.POSTGRESQL.value:
+            # Resolve "default" sentinel to the configured schema or "public"
+            real_schema = schema if schema != "default" else (
+                config.get("schema_name") or config.get("schema") or "public"
+            )
+            sql = f'SELECT * FROM "{real_schema}"."{table}"'
+            if limit:
+                sql += f" LIMIT {int(limit)}"
+            cols, rows = DataSourceConnectionService._execute_postgresql(
+                config, sql, limit=None
+            )
+            return cols, rows
+
+        elif ds_type == DataSourceType.MYSQL.value:
+            # Resolve "default" sentinel to the configured database
+            real_schema = schema if schema != "default" else (
+                config.get("database") or schema
+            )
+            sql = f'SELECT * FROM `{real_schema}`.`{table}`'
+            if limit:
+                sql += f" LIMIT {int(limit)}"
+            cols, rows = DataSourceConnectionService._execute_mysql(
+                config, sql, limit=None
+            )
+            return cols, rows
+
+        elif ds_type == DataSourceType.BIGQUERY.value:
+            project_id = config.get("project_id", "")
+            sql = f"SELECT * FROM `{project_id}.{schema}.{table}`"
+            if limit:
+                sql += f" LIMIT {int(limit)}"
+            cols, rows = DataSourceConnectionService._execute_bigquery(
+                config, sql, limit=None,
+            )
+            return cols, rows
+
+        elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
+            from app.services.google_sheets_connector import create_google_sheets_connector
+            spreadsheet_id = config.get("spreadsheet_id") or schema
+            connector = create_google_sheets_connector(config)
+            data = connector.get_sheet_data(spreadsheet_id, sheet_name=table)
+            columns = [col["name"] for col in data.get("columns", [])]
+            rows = data.get("rows", [])
+            if limit:
+                rows = rows[:limit]
+            return columns, rows
+
+        elif ds_type == DataSourceType.MANUAL.value:
+            from app.services.manual_table_connector import create_manual_table_connector
+            connector = create_manual_table_connector(config)
+            data = connector.get_sheet_data(table)
+            columns = [col["name"] for col in data.get("columns", [])]
+            rows = data.get("rows", [])
+            if limit:
+                rows = rows[:limit]
+            return columns, rows
+
+        else:
+            raise ValueError(f"fetch_table_data: unsupported datasource type {ds_type!r}")
+
+    @staticmethod
     def _execute_postgresql(
         config: Dict[str, Any],
         sql_query: str,
