@@ -57,8 +57,11 @@ function pivotByBreakdown(
   dimField: string,
   metric: MetricConfig,
   breakdownField: string,
+  preAggregated = false,
 ): { pivoted: Record<string, any>[]; seriesKeys: string[] } {
   const seriesKeys = [...new Set(data.map(r => String(r[breakdownField] ?? '')))].slice(0, 12);
+  // When backend pre-aggregated, the metric value is in the aliased column (e.g. "sum__field")
+  const valueKey = preAggregated ? metricKey(metric) : metric.field;
 
   const map: Record<string, Record<string, any>> = {};
   for (const row of data) {
@@ -68,7 +71,7 @@ function pivotByBreakdown(
       map[dk] = { [dimField]: dk };
       seriesKeys.forEach(k => { map[dk][k] = 0; });
     }
-    const val = Number(row[metric.field]) || 0;
+    const val = Number(row[valueKey]) || 0;
     map[dk][bk] = (Number(map[dk][bk]) || 0) + val;
   }
   return { pivoted: Object.values(map), seriesKeys };
@@ -96,9 +99,11 @@ export interface ExploreChartProps {
   roleConfig: ChartRoleConfig;
   /** Post-aggregation (HAVING) filters — applied after group-by+agg */
   havingFilters?: BaseFilter[];
+  /** When true, backend already ran GROUP BY aggregation — skip client-side applyGroupByAgg */
+  preAggregated?: boolean;
 }
 
-export function ExploreChart({ type, data, roleConfig, havingFilters = [] }: ExploreChartProps) {
+export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAggregated = false }: ExploreChartProps) {
   const { dimension, metrics, breakdown, timeField, scatterX, scatterY } = roleConfig;
   const xField = type === 'TIME_SERIES' ? (timeField || dimension) : dimension;
 
@@ -106,19 +111,25 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [] }: Exp
   const aggData = useMemo(() => {
     if (!xField || metrics.length === 0) return data;
     if (['SCATTER', 'KPI', 'TABLE'].includes(type)) return data;
-    let agg = applyGroupByAgg(data, xField, metrics);
+    let agg: Record<string, any>[];
+    if (preAggregated) {
+      // Backend already did GROUP BY — rows use aliased metric columns (e.g. "sum__field")
+      agg = data;
+    } else {
+      agg = applyGroupByAgg(data, xField, metrics);
+    }
     if (havingFilters.length > 0) {
       agg = applyFiltersToRows(agg, havingFilters);
     }
     return agg;
-  }, [data, type, xField, metrics, havingFilters]);
+  }, [data, type, xField, metrics, havingFilters, preAggregated]);
 
   // Pivot for breakdown-based charts
   const breakdownResult = useMemo(() => {
     if (!breakdown || !xField || metrics.length === 0) return null;
     if (!['STACKED_BAR', 'LINE', 'AREA'].includes(type)) return null;
-    return pivotByBreakdown(data, xField, metrics[0], breakdown);
-  }, [data, type, xField, metrics, breakdown]);
+    return pivotByBreakdown(data, xField, metrics[0], breakdown, preAggregated);
+  }, [data, type, xField, metrics, breakdown, preAggregated]);
 
   if (!data || data.length === 0) {
     return <EmptyState message="No data — run the query first." />;
@@ -128,8 +139,14 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [] }: Exp
   if (type === 'KPI') {
     const m = metrics[0];
     if (!m) return <EmptyState message="Add a Value field in Field Mapping." />;
-    const total = data.reduce((s, r) => s + (Number(r[m.field]) || 0), 0);
-    const agg = m.agg === 'avg' ? total / Math.max(data.length, 1) : total;
+    let agg: number;
+    if (preAggregated) {
+      // Backend returned a single-row aggregate; value is in aliased column
+      agg = Number(data[0]?.[metricKey(m)]) || 0;
+    } else {
+      const total = data.reduce((s, r) => s + (Number(r[m.field]) || 0), 0);
+      agg = m.agg === 'avg' ? total / Math.max(data.length, 1) : total;
+    }
     const fmt =
       agg >= 1_000_000 ? `${(agg / 1_000_000).toFixed(2)}M`
       : agg >= 1_000   ? `${(agg / 1_000).toFixed(1)}K`

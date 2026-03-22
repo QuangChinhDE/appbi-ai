@@ -1,85 +1,459 @@
 # AppBI — REST API Reference
 
-Base URL (Docker / production): `http://localhost:8000/api/v1`  
-Interactive docs (Swagger UI): `http://localhost:8000/api/v1/docs`  
+Base URL: `http://localhost:8000/api/v1`
+Interactive docs (Swagger UI): `http://localhost:8000/api/v1/docs`
 OpenAPI JSON: `http://localhost:8000/openapi.json`
 
-All request/response bodies are **JSON**. No authentication is required in the default configuration.
+All request/response bodies are **JSON**. Protected endpoints require a JWT token in the `Authorization: Bearer <token>` header (obtained from `/auth/login`).
 
 ---
 
 ## Table of Contents
 
-1. [Health](#1-health)
-2. [Data Sources](#2-data-sources)
-3. [Datasets](#3-datasets)
-4. [Dataset Workspaces](#4-dataset-workspaces)
-5. [Charts](#5-charts)
-6. [Dashboards](#6-dashboards)
-7. [Common Types](#7-common-types)
+1. [Auth](#1-auth)
+2. [Users](#2-users)
+3. [Permissions](#3-permissions)
+4. [Shares](#4-shares)
+5. [Data Sources](#5-data-sources)
+6. [Dataset Workspaces](#6-dataset-workspaces)
+7. [Charts](#7-charts)
+8. [Dashboards](#8-dashboards)
+9. [Semantic Views](#9-semantic-views)
+10. [Common Types](#10-common-types)
 
 ---
 
-## 1. Health
+## 1. Auth
 
-### `GET /health`
+### `POST /auth/login`
 
-Returns application status.
+Login and receive a JWT token.
+
+**Request body**
+```json
+{ "email": "admin@appbi.io", "password": "your-password" }
+```
 
 **Response 200**
 ```json
-{ "status": "ok" }
+{
+  "access_token": "eyJhbGci...",
+  "token_type": "bearer",
+  "user": {
+    "id": "uuid",
+    "email": "admin@appbi.io",
+    "full_name": "Admin",
+    "status": "active",
+    "permissions": {
+      "dashboards": "full",
+      "explore_charts": "full",
+      "workspaces": "full",
+      "data_sources": "full",
+      "ai_chat": "full",
+      "user_management": "full",
+      "settings": "full"
+    },
+    "last_login_at": "2026-03-22T10:00:00Z",
+    "created_at": "2026-03-01T00:00:00Z",
+    "updated_at": "2026-03-22T10:00:00Z"
+  }
+}
 ```
 
 ---
 
-## 2. Data Sources
+### `GET /auth/me`
 
-### `GET /api/v1/datasources/`
+Get current user profile.
 
-List all data sources.
-
-**Response 200** — array of `DataSourceResponse`
+**Response 200** — `UserResponse` (see [Users](#2-users))
 
 ---
 
-### `POST /api/v1/datasources/`
+### `POST /auth/change-password`
 
-Create a new data source.
+Change current user's password.
+
+**Request body**
+```json
+{ "old_password": "current", "new_password": "newpassword123" }
+```
+
+**Response 200** — `{ "message": "Password changed successfully" }`
+**Error 400** — old password incorrect
+
+---
+
+### `POST /auth/logout`
+
+Invalidate the current session (clears httpOnly cookie).
+
+**Response 200** — `{ "message": "Logged out" }`
+
+---
+
+## 2. Users
+
+> Requires module permission `user_management >= view`. Write operations require `full`.
+
+### `GET /users/`
+
+List all users.
+
+**Response 200** — array of `UserResponse`
+
+```json
+[
+  {
+    "id": "b8dcae67-119c-46ac-94cb-c70e7394bcbc",
+    "email": "admin@appbi.io",
+    "full_name": "Admin",
+    "status": "active",
+    "permissions": { "dashboards": "full", "explore_charts": "full" },
+    "last_login_at": "2026-03-22T10:00:00Z",
+    "created_at": "2026-03-01T00:00:00Z",
+    "updated_at": "2026-03-22T10:00:00Z"
+  }
+]
+```
+
+---
+
+### `GET /users/shareable`
+
+List users that resources can be shared with (excludes current user).
+
+**Response 200** — array of `{ id, email, full_name }`
+
+---
+
+### `POST /users/`
+
+Create a user (admin only).
 
 **Request body**
 ```json
 {
-  "name": "My Postgres",
-  "source_type": "postgresql",
-  "connection_config": {
+  "email": "user@company.com",
+  "full_name": "Jane Doe",
+  "password": "secure123"
+}
+```
+
+**Response 201** — `UserResponse`
+**Error 409** — email already exists
+
+---
+
+### `GET /users/{user_id}`
+
+Get a single user.
+
+---
+
+### `PUT /users/{user_id}`
+
+Update user's name or status.
+
+**Request body** (all fields optional)
+```json
+{
+  "full_name": "Jane Smith",
+  "status": "active"
+}
+```
+
+`status` values: `active` · `deactivated`
+
+---
+
+### `DELETE /users/{user_id}`
+
+Delete a user. Cannot delete yourself.
+
+---
+
+## 3. Permissions
+
+Module-level access control. Each user has a permission level per module.
+
+| Module key | Controls |
+|---|---|
+| `dashboards` | Dashboard list, create, edit, delete |
+| `explore_charts` | Chart/explore builder |
+| `workspaces` | Dataset workspaces |
+| `data_sources` | DataSource connections |
+| `ai_chat` | AI chat agent |
+| `user_management` | User admin panel |
+| `settings` | System settings |
+
+Permission levels: `none` → `view` → `edit` → `full`
+
+---
+
+### `GET /permissions/me`
+
+Get current user's module permissions.
+
+**Response 200**
+```json
+{
+  "permissions": {
+    "dashboards": "full",
+    "explore_charts": "edit",
+    "workspaces": "view",
+    "data_sources": "none"
+  },
+  "module_levels": {
+    "dashboards": ["none", "view", "edit", "full"],
+    "explore_charts": ["none", "view", "edit", "full"]
+  }
+}
+```
+
+---
+
+### `GET /permissions/presets`
+
+List available permission presets.
+
+**Response 200**
+```json
+{
+  "presets": {
+    "admin": { "dashboards": "full", "explore_charts": "full", ... },
+    "editor": { "dashboards": "edit", "explore_charts": "edit", ... },
+    "viewer": { "dashboards": "view", "explore_charts": "view", ... }
+  }
+}
+```
+
+---
+
+### `GET /permissions/matrix`
+
+Get permissions for all users (admin view).
+
+**Response 200** — `{ modules: string[], module_levels: {...}, users: [...] }`
+
+---
+
+### `PUT /permissions/{user_id}`
+
+Set module permissions for a user.
+
+**Request body**
+```json
+{
+  "permissions": {
+    "dashboards": "edit",
+    "explore_charts": "view",
+    "workspaces": "edit",
+    "data_sources": "none",
+    "ai_chat": "view",
+    "user_management": "none",
+    "settings": "none"
+  }
+}
+```
+
+---
+
+### `PUT /permissions/{user_id}/preset`
+
+Apply a preset to a user.
+
+**Request body** — `{ "preset": "editor" }`
+
+---
+
+## 4. Shares
+
+Resource-level sharing between users.
+
+`resource_type` values: `dashboard` · `chart` · `workspace` · `datasource` · `chat_session`
+`permission` values: `view` · `edit`
+
+---
+
+### `GET /shares/{resource_type}/{resource_id}`
+
+List all shares for a resource.
+
+**Response 200** — array of `ShareResponse`
+```json
+[
+  {
+    "id": 1,
+    "resource_type": "dashboard",
+    "resource_id": 5,
+    "user_id": "uuid",
+    "permission": "view",
+    "shared_by": "uuid",
+    "created_at": "2026-03-22T10:00:00Z",
+    "user": { "id": "uuid", "email": "user@co.com", "full_name": "Jane" }
+  }
+]
+```
+
+---
+
+### `POST /shares/{resource_type}/{resource_id}`
+
+Share a resource with a user.
+
+**Request body**
+```json
+{ "user_id": "uuid", "permission": "view" }
+```
+
+**Response 201** — `ShareResponse`
+
+---
+
+### `PUT /shares/{resource_type}/{resource_id}/{user_id}`
+
+Update share permission.
+
+**Request body** — `{ "permission": "edit" }`
+
+---
+
+### `DELETE /shares/{resource_type}/{resource_id}/{user_id}`
+
+Remove a share.
+
+---
+
+### `POST /shares/{resource_type}/{resource_id}/all-team`
+
+Share with all users on the team at once.
+
+**Request body** — `{ "permission": "view" }`
+
+---
+
+## 5. Data Sources
+
+Connections to external databases/files. Credentials are encrypted at rest.
+
+### `GET /datasources/`
+
+List all datasources (owned + shared).
+
+**Response 200** — array of `DataSourceResponse`
+```json
+[
+  {
+    "id": 1,
+    "name": "Production DB",
+    "type": "postgresql",
+    "description": null,
+    "config": { "host": "db.internal", "port": 5432, "database": "prod" },
+    "sync_config": null,
+    "owner_id": "uuid",
+    "user_permission": "full",
+    "created_at": "2026-03-01T00:00:00Z",
+    "updated_at": "2026-03-22T00:00:00Z"
+  }
+]
+```
+
+> Credentials are never returned — `config` only contains non-sensitive fields.
+
+---
+
+### `POST /datasources/`
+
+Create a datasource.
+
+**Request body**
+```json
+{
+  "name": "My Datasource",
+  "type": "postgresql",
+  "description": "Optional",
+  "config": { ... }
+}
+```
+
+**`type` and required `config` fields:**
+
+| `type` | Required `config` fields |
+|---|---|
+| `postgresql` | `host`, `port` (int), `database`, `username`, `password`, `schema` (optional, default `public`) |
+| `mysql` | `host`, `port` (int), `database`, `username`, `password` |
+| `bigquery` | `project_id`, `credentials_json` (Service Account JSON as string), `default_dataset` (optional) |
+| `google_sheets` | `credentials_json` (Service Account JSON as string), `spreadsheet_id`, `sheet_name` (optional) |
+| `manual` | *(no config — upload file via `/manual/parse-file` first)* |
+
+**PostgreSQL example**
+```json
+{
+  "name": "Production DB",
+  "type": "postgresql",
+  "config": {
     "host": "localhost",
     "port": 5432,
     "database": "mydb",
-    "username": "user",
+    "username": "appbi_user",
     "password": "secret",
     "schema": "public"
   }
 }
 ```
 
-| `source_type` | Required connection_config fields |
-|---|---|
-| `postgresql` | `host`, `port`, `database`, `username`, `password`, `schema` (optional) |
-| `mysql` | `host`, `port`, `database`, `username`, `password` |
-| `bigquery` | `project_id`, `credentials_json` (Service Account JSON string) |
-| `google_sheets` | `credentials_json`, `spreadsheet_id` |
-| `manual` | *(no config — upload file separately via `/parse-file`)* |
+**Google Sheets example**
+```json
+{
+  "name": "Sales Sheet",
+  "type": "google_sheets",
+  "config": {
+    "credentials_json": "{\"type\":\"service_account\",\"project_id\":\"...\",\"private_key\":\"...\",\"client_email\":\"...\"}",
+    "spreadsheet_id": "1BaEOS27NFTDQzM3aK3QF_qWpMs0TnbU_d6E1qDsWs1I",
+    "sheet_name": "Sheet1"
+  }
+}
+```
 
 **Response 201** — `DataSourceResponse`
+**Error 400** — invalid config for the given type
 
 ---
 
-### `POST /api/v1/datasources/test`
+### `GET /datasources/{data_source_id}`
 
-Test a connection **without** saving it (used before create/update).
+Get a single datasource.
 
-**Request body** — same schema as create  
+---
+
+### `PUT /datasources/{data_source_id}`
+
+Update name, description, or config.
+
+**Request body** (all fields optional)
+```json
+{
+  "name": "New Name",
+  "description": "Updated",
+  "config": { "host": "new-host" }
+}
+```
+
+---
+
+### `DELETE /datasources/{data_source_id}`
+
+Delete a datasource. Returns `409` if workspace tables depend on it.
+
+---
+
+### `POST /datasources/test`
+
+Test a connection **without saving**.
+
+**Request body** — same as create (name + type + config)
+
 **Response 200**
 ```json
 { "success": true, "message": "Connection successful" }
@@ -87,12 +461,126 @@ Test a connection **without** saving it (used before create/update).
 
 ---
 
-### `POST /api/v1/datasources/manual/parse-file`
+### `POST /datasources/query`
+
+Execute an ad-hoc SQL query against a datasource.
+
+**Request body**
+```json
+{
+  "data_source_id": 1,
+  "sql_query": "SELECT COUNT(*) FROM orders",
+  "limit": 100,
+  "timeout_seconds": 30
+}
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `data_source_id` | int | required | Target datasource |
+| `sql_query` | string | required | SQL to execute |
+| `limit` | int (1–10000) | null | Optional row cap |
+| `timeout_seconds` | int (1–300) | 30 | Query timeout |
+
+**Response 200**
+```json
+{
+  "columns": [{"name": "COUNT(*)", "type": "integer"}],
+  "rows": [{"COUNT(*)": 42381}],
+  "row_count": 1
+}
+```
+
+---
+
+### `GET /datasources/{data_source_id}/schema`
+
+List all tables/sheets available in the datasource.
+
+**Response 200** — array of `{ name, schema, row_count?, columns? }`
+
+---
+
+### `GET /datasources/{data_source_id}/tables/{schema_name}/{table_name}`
+
+Get column metadata for a specific table.
+
+**Response 200** — `{ columns: [{ name, type, nullable }], row_count? }`
+
+---
+
+### `GET /datasources/{data_source_id}/tables/{schema_name}/{table_name}/watermarks`
+
+Get sync watermarks (incremental sync state) for a table.
+
+---
+
+### `GET /datasources/{data_source_id}/sync-config`
+
+Get the sync schedule configuration.
+
+---
+
+### `PUT /datasources/{data_source_id}/sync-config`
+
+Update sync schedule.
+
+**Request body**
+```json
+{
+  "schedule": "hourly",
+  "enabled": true,
+  "tables": ["orders", "customers"]
+}
+```
+
+---
+
+### `POST /datasources/{data_source_id}/sync`
+
+Trigger a manual sync (async — returns immediately).
+
+**Response 202**
+```json
+{ "job_id": 1, "status": "running", "message": "Sync started" }
+```
+
+---
+
+### `GET /datasources/{data_source_id}/sync-jobs`
+
+List sync job history.
+
+**Response 200**
+```json
+{
+  "jobs": [
+    {
+      "id": 1,
+      "status": "success",
+      "mode": "manual",
+      "started_at": "2026-03-22T10:44:33Z",
+      "finished_at": "2026-03-22T10:44:45Z",
+      "duration_seconds": 12.07,
+      "rows_synced": 37422,
+      "rows_failed": 0,
+      "error_message": null,
+      "triggered_by": "manual"
+    }
+  ]
+}
+```
+
+`status` values: `running` · `success` · `failed` · `partial`
+
+---
+
+### `POST /datasources/manual/parse-file`
 
 Upload a CSV or Excel file for a `manual` datasource.
 
-**Request** — `multipart/form-data`
-- `file`: the file (`.csv`, `.xlsx`, `.xls`)
+**Request** — `multipart/form-data`, field name: `file`
+Accepted: `.csv`, `.xlsx`, `.xls` (max 50 MB)
 
 **Response 200**
 ```json
@@ -108,283 +596,78 @@ Upload a CSV or Excel file for a `manual` datasource.
 }
 ```
 
-After parsing, create the datasource with `source_type: "manual"` and include the parsed data in `connection_config.sheets`.
+After parsing, create the datasource with `type: "manual"` and include the sheet data in `config.sheets`.
 
 ---
 
-### `POST /api/v1/datasources/query`
+## 6. Dataset Workspaces
 
-Execute a raw SQL query against an existing data source.
+Workspaces group multiple tables from different datasources into a single virtual schema. Charts are built on top of workspace tables.
 
-**Request body**
-```json
-{
-  "data_source_id": 1,
-  "query": "SELECT * FROM my_table LIMIT 10"
-}
-```
+### `GET /dataset-workspaces/`
 
-**Response 200**
-```json
-{
-  "columns": [{"name": "col1", "type": "string"}],
-  "rows": [{"col1": "val"}],
-  "row_count": 1
-}
-```
-
----
-
-### `GET /api/v1/datasources/{data_source_id}`
-
-Get a single data source by ID.
-
----
-
-### `PUT /api/v1/datasources/{data_source_id}`
-
-Update name and/or connection config of an existing data source.
-
-**Request body** — partial update (any fields from create body)
-
----
-
-### `DELETE /api/v1/datasources/{data_source_id}`
-
-Delete a data source. Fails with `409` if datasets or workspace tables depend on it.
-
----
-
-## 3. Datasets
-
-Datasets are saved SQL queries with optional **transformation pipelines** (v2). Columns are inferred by executing the pipeline.
-
-### `GET /api/v1/datasets/`
-
-List all datasets.
+List all workspaces (owned + shared).
 
 **Response 200**
 ```json
 [
   {
     "id": 1,
-    "name": "FIFA Rankings",
-    "description": "...",
-    "data_source_id": 1,
-    "sql_query": "SELECT * FROM fifa_world_rankings_jan_2026",
-    "transformation_version": 2,
-    "transformations": [],
-    "columns": [{"name": "Rank", "type": "integer"}, {"name": "Country", "type": "string"}],
-    "created_at": "2026-03-15T10:00:00",
-    "updated_at": "2026-03-15T10:00:00"
+    "name": "Sales Analytics",
+    "description": "Sales data from CRM + sheets",
+    "owner_id": "uuid",
+    "user_permission": "full",
+    "created_at": "2026-03-01T00:00:00Z",
+    "updated_at": "2026-03-22T00:00:00Z"
   }
 ]
 ```
 
 ---
 
-### `POST /api/v1/datasets/`
-
-Create a dataset. Columns are automatically inferred from the SQL + transformations.
-
-**Request body**
-```json
-{
-  "name": "Rankings Elite",
-  "description": "Top countries with Performance_Tier column",
-  "data_source_id": 1,
-  "sql_query": "SELECT * FROM fifa_world_rankings_jan_2026",
-  "transformation_version": 2,
-  "transformations": [
-    {
-      "id": "step_add_tier",
-      "type": "add_column",
-      "enabled": true,
-      "params": {
-        "newField": "Performance_Tier",
-        "expression": "CASE WHEN Points > 1800 THEN 'Elite' WHEN Points > 1700 THEN 'Strong' ELSE 'Average' END"
-      }
-    },
-    {
-      "id": "step_filter",
-      "type": "filter_rows",
-      "enabled": true,
-      "params": {
-        "conditions": [{"field": "Performance_Tier", "operator": "in", "value": ["Elite", "Strong"]}],
-        "logic": "AND"
-      }
-    },
-    {
-      "id": "step_sort",
-      "type": "sort",
-      "enabled": true,
-      "params": {"by": [{"field": "Points", "direction": "desc"}]}
-    }
-  ]
-}
-```
-
-**Supported transformation types**
-
-| type | params keys | Description |
-|---|---|---|
-| `add_column` | `newField`, `expression` (SQL expr) | Adds a new column via CASE/expression |
-| `filter_rows` | `conditions[]` {field, operator, value}, `logic` AND\|OR | WHERE filter |
-| `group_by` | `by[]`, `aggregations[]` {field, agg, as} | GROUP BY with aggregations |
-| `sort` | `by[]` {field, direction asc\|desc} | ORDER BY |
-| `limit` | `count` | LIMIT rows |
-| `select_columns` | `columns[]` | Keep only specified columns |
-| `remove_column` | `field` | DROP column |
-| `rename_column` | `field`, `newField` | Rename column |
-| `duplicate_column` | `field`, `newField` | Copy column |
-| `merge_columns` | `fields[]`, `separator`, `newField` | Concatenate columns |
-| `fill_null` | `field`, `value` | COALESCE null values |
-| `cast_column` | `field`, `targetType` | CAST column type |
-| `distinct` | *(no params)* | SELECT DISTINCT |
-| `custom_sql` | `sql` | Raw SQL CTE wrapping |
-
-**Response 201** — `DatasetResponse`
-
----
-
-### `POST /api/v1/datasets/preview`
-
-Ad-hoc preview — runs SQL + transformations without saving.
-
-**Request body**
-```json
-{
-  "data_source_id": 1,
-  "sql_query": "SELECT * FROM my_table",
-  "transformations": [],
-  "stop_at_step_id": null,
-  "limit": 50
-}
-```
-
-**Response 200**
-```json
-{
-  "columns": [{"name": "col", "type": "string"}],
-  "rows": [{"col": "val"}],
-  "row_count": 1,
-  "compiled_sql": "SELECT * FROM my_table LIMIT 50",
-  "step_id": null
-}
-```
-
----
-
-### `GET /api/v1/datasets/{dataset_id}`
-
-Get a single dataset.
-
----
-
-### `PUT /api/v1/datasets/{dataset_id}`
-
-Update dataset name, query, or transformations. Columns are re-inferred.
-
----
-
-### `DELETE /api/v1/datasets/{dataset_id}`
-
-Delete a dataset.
-
----
-
-### `POST /api/v1/datasets/{dataset_id}/execute`
-
-Execute the dataset and return all rows (no limit).
-
-**Response 200**
-```json
-{
-  "columns": [{"name": "col", "type": "string"}],
-  "rows": [{"col": "val"}],
-  "row_count": 42
-}
-```
-
----
-
-### `POST /api/v1/datasets/{dataset_id}/preview`
-
-Preview the saved dataset (runs the SQL + transformations, returns up to 200 rows).
-
----
-
----
-
-## 4. Dataset Workspaces
-
-Workspaces are collections of **workspace tables**. Each table is either a physical table from a datasource, or a custom SQL query. Tables can have `js_formula` transformation steps that add computed columns evaluated client-side with an Excel-style formula engine.
-
-### `GET /api/v1/dataset-workspaces/`
-
-List all workspaces (without tables).
-
-**Response 200**
-```json
-[
-  {
-    "id": 1,
-    "name": "FIFA World Rankings",
-    "description": "...",
-    "created_at": "2026-03-15T10:00:00"
-  }
-]
-```
-
----
-
-### `POST /api/v1/dataset-workspaces/`
+### `POST /dataset-workspaces/`
 
 Create a workspace.
 
 **Request body**
 ```json
-{
-  "name": "My Workspace",
-  "description": "Optional description"
-}
+{ "name": "My Workspace", "description": "Optional" }
 ```
 
 **Response 201** — `WorkspaceResponse`
 
 ---
 
-### `GET /api/v1/dataset-workspaces/{workspace_id}`
+### `GET /dataset-workspaces/{workspace_id}`
 
-Get a workspace with all its tables (including `transformations`, `column_formats`, `type_overrides`).
+Get workspace with all its tables.
 
 **Response 200**
 ```json
 {
   "id": 1,
-  "name": "FIFA World Rankings",
+  "name": "Sales Analytics",
   "tables": [
     {
-      "id": 1,
+      "id": 2,
       "workspace_id": 1,
-      "display_name": "Full Rankings",
-      "source_kind": "sql_query",
-      "source_query": "SELECT * FROM fifa_world_rankings_jan_2026 ORDER BY Rank",
       "datasource_id": 1,
+      "display_name": "Orders",
+      "source_kind": "physical_table",
+      "source_table_name": "orders",
+      "source_query": null,
       "enabled": true,
-      "transformations": [
-        {
-          "id": "step_rank_group",
-          "type": "js_formula",
-          "enabled": true,
-          "params": {
-            "newField": "Rank_Group",
-            "formula": "IF([Rank]<=10,\"Top 10\",IF([Rank]<=25,\"Top 25\",\"Rest\"))"
-          }
-        }
-      ],
-      "column_formats": {},
-      "type_overrides": {}
+      "transformations": [],
+      "type_overrides": null,
+      "column_formats": null,
+      "columns_cache": {
+        "columns": [
+          {"name": "order_id", "type": "integer", "nullable": false},
+          {"name": "amount", "type": "number", "nullable": true}
+        ]
+      },
+      "created_at": "2026-03-01T00:00:00Z",
+      "updated_at": "2026-03-22T00:00:00Z"
     }
   ]
 }
@@ -392,25 +675,30 @@ Get a workspace with all its tables (including `transformations`, `column_format
 
 ---
 
-### `PUT /api/v1/dataset-workspaces/{workspace_id}`
+### `PUT /dataset-workspaces/{workspace_id}`
 
-Update workspace name/description.
+Update workspace name or description.
+
+**Request body** (all optional)
+```json
+{ "name": "New Name", "description": "Updated" }
+```
 
 ---
 
-### `DELETE /api/v1/dataset-workspaces/{workspace_id}`
+### `DELETE /dataset-workspaces/{workspace_id}`
 
 Delete workspace and all its tables.
 
 ---
 
-### `GET /api/v1/dataset-workspaces/{workspace_id}/tables`
+### `GET /dataset-workspaces/{workspace_id}/tables`
 
 List tables for a workspace.
 
 ---
 
-### `POST /api/v1/dataset-workspaces/{workspace_id}/tables`
+### `POST /dataset-workspaces/{workspace_id}/tables`
 
 Add a table to a workspace.
 
@@ -418,437 +706,670 @@ Add a table to a workspace.
 ```json
 {
   "datasource_id": 1,
-  "source_kind": "sql_query",
-  "source_query": "SELECT * FROM my_table",
-  "display_name": "My Table",
+  "source_kind": "physical_table",
+  "source_table_name": "orders",
+  "display_name": "Orders",
   "enabled": true,
-  "transformations": [
-    {
-      "id": "step_formula1",
-      "type": "js_formula",
-      "enabled": true,
-      "params": {
-        "newField": "MyComputedCol",
-        "formula": "IF([Points]>1800,\"Elite\",\"Other\")"
-      }
-    }
-  ]
+  "transformations": []
 }
 ```
 
-For `source_kind: "physical_table"`, use `source_table_name` instead of `source_query`.
+For `source_kind: "sql_query"`, use `source_query` instead of `source_table_name`:
+```json
+{
+  "datasource_id": 1,
+  "source_kind": "sql_query",
+  "source_query": "SELECT * FROM orders WHERE status = 'completed'",
+  "display_name": "Completed Orders",
+  "enabled": true
+}
+```
 
-**`js_formula` params**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `datasource_id` | int | ✓ | Source datasource |
+| `source_kind` | `"physical_table"` \| `"sql_query"` | ✓ | Table type |
+| `source_table_name` | string | if physical | Full table name (e.g. `"schema.table"`) |
+| `source_query` | string | if sql_query | SQL SELECT query |
+| `display_name` | string | ✓ | Name shown in UI |
+| `enabled` | bool | default `true` | Whether table is active |
+| `transformations` | array | optional | List of transformation steps (see below) |
 
-| Key | Type | Description |
+**Transformation steps (`transformations` array)**
+
+| `type` | `params` | Description |
 |---|---|---|
-| `newField` | string | Name of the new column |
-| `formula` | string | Excel-style formula. Reference columns with `[ColumnName]`. Supports: `IF`, `AND`, `OR`, `ROUND`, `ABS`, `LEN`, `LEFT`, `RIGHT`, `MID`, `UPPER`, `LOWER`, `TRIM`, `CONCAT`, `TEXT`, `VALUE`, `TODAY`, `NOW`, `YEAR`, `MONTH`, `DAY`, `DATEDIF`, `VLOOKUP`, `LOOKUP`, `IFERROR`, `ISBLANK`, arithmetic (`+`, `-`, `*`, `/`, `^`), comparison (`=`, `<>`, `<`, `>`, `<=`, `>=`), text concat (`&`) |
-| `code` | string | Raw JavaScript expression (alternative to `formula`) — row is `$row`, index is `$index` |
+| `add_column` | `newField`, `expression` (SQL expr) | Add computed column via SQL CASE/expression |
+| `select_columns` | `columns[]` | Keep only specified columns |
+| `rename_columns` | `mapping` `{old: new}` | Rename columns |
+| `js_formula` | `newField`, `formula` OR `code` | Add computed column evaluated client-side (Excel formula engine) |
 
-**Excel formula examples**
+**`js_formula` — Excel-style formula examples:**
 ```
-IF([Points]>1800,"Elite","Other")
-ROUND([Points]/[World_Cup_Titles],2)
-[Country]&" ("&[Confederation]&")"
-IF([Goals]>=5,"Legend",IF([Goals]>=4,"Star","Notable"))
+IF([status]="active", 1, 0)
+ROUND([amount]/[qty], 2)
+LEFT([last_update], 4)
+[country]&" ("&[region]&")"
 ```
+
+Supported functions: `IF`, `AND`, `OR`, `NOT`, `ROUND`, `ABS`, `LEN`, `LEFT`, `RIGHT`, `MID`, `UPPER`, `LOWER`, `TRIM`, `CONCAT`, `TEXT`, `VALUE`, `TODAY`, `NOW`, `YEAR`, `MONTH`, `DAY`, `DATEDIF`, `VLOOKUP`, `IFERROR`, `ISBLANK`, plus arithmetic, comparison, and `&` string concat.
 
 **Response 201** — `TableResponse`
 
 ---
 
-### `PUT /api/v1/dataset-workspaces/{workspace_id}/tables/{table_id}`
+### `PUT /dataset-workspaces/{workspace_id}/tables/{table_id}`
 
-Update a workspace table — change SQL, display name, transformations, column formats, or type overrides.
+Update a workspace table.
 
 **Request body** (all fields optional)
 ```json
 {
   "display_name": "Renamed Table",
-  "source_query": "SELECT * FROM new_query",
+  "source_query": "SELECT * FROM orders WHERE year = 2026",
   "enabled": true,
-  "transformations": [],
-  "type_overrides": {"price": "currency", "created_at": "date"},
+  "transformations": [
+    {
+      "type": "add_column",
+      "enabled": true,
+      "params": {
+        "newField": "is_active_flag",
+        "expression": "CASE WHEN is_active = 'active' THEN 1 ELSE 0 END"
+      }
+    }
+  ],
+  "type_overrides": {
+    "amount": "currency",
+    "created_at": "date"
+  },
   "column_formats": {
-    "Points": {"formatType": "number", "decimals": 1, "thousandsSep": true}
+    "amount": { "formatType": "currency", "decimals": 2, "thousandsSep": true }
   }
 }
 ```
 
----
-
-### `DELETE /api/v1/dataset-workspaces/{workspace_id}/tables/{table_id}`
-
-Remove a table from the workspace. Returns `409` with constraint details if charts depend on this table.
+> When `source_query` is updated, the backend validates the SQL before saving.
 
 ---
 
-### `POST /api/v1/dataset-workspaces/{workspace_id}/tables/{table_id}/preview`
+### `DELETE /dataset-workspaces/{workspace_id}/tables/{table_id}`
 
-Preview the table data (SQL + server-side transformations). `js_formula` steps are evaluated client-side by the frontend.
+Remove a table. Returns `409` with constraint details if charts depend on it.
+
+---
+
+### `POST /dataset-workspaces/{workspace_id}/tables/{table_id}/preview`
+
+Preview table data (runs via DuckDB if synced, otherwise live source).
 
 **Request body**
 ```json
-{ "limit": 200 }
+{ "limit": 200, "offset": 0 }
 ```
 
 **Response 200**
 ```json
 {
-  "columns": [{"name": "Rank", "type": "integer"}, {"name": "Country", "type": "string"}],
-  "rows": [{"Rank": 1, "Country": "Argentina"}],
-  "row_count": 1,
-  "total_rows": 210
+  "columns": [
+    {"name": "order_id", "type": "integer", "nullable": false},
+    {"name": "amount", "type": "number", "nullable": true}
+  ],
+  "rows": [{"order_id": 1, "amount": 99.9}],
+  "row_count": 200,
+  "total_rows": 37422
 }
 ```
 
----
-
-### `POST /api/v1/dataset-workspaces/{workspace_id}/tables/{table_id}/execute`
-
-Execute table query without limit (returns all rows).
+**Error 422** `{ "code": "NOT_SYNCED", "message": "Table not synced to DuckDB" }` — table exists but hasn't been synced yet.
 
 ---
 
-### `GET /api/v1/dataset-workspaces/datasources/{datasource_id}/tables`
+### `POST /dataset-workspaces/{workspace_id}/tables/{table_id}/execute`
 
-List available physical tables from a datasource (used in AddTableModal to pick a table).
+Execute table query without row limit (returns all rows).
+
+**Response 200** — same shape as preview
 
 ---
 
-## 5. Charts
+### `GET /dataset-workspaces/tables/search`
 
-Charts store the Explore configuration (data source, chart type, axis mapping, filters).
+Search tables across all workspaces.
 
-### `GET /api/v1/charts/`
+**Query params** — `?q=<search_term>`
 
-List all charts.
+---
 
-**Response 200**
+### `GET /dataset-workspaces/datasources/{datasource_id}/tables`
+
+List physical tables available from a datasource (used by AddTableModal).
+
+---
+
+## 7. Charts
+
+Charts are saved Explore configurations — chart type, data source, field mapping, and filters.
+
+### `GET /charts/`
+
+List all charts (owned + shared).
+
+**Response 200** — array of `ChartResponse`
 ```json
 [
   {
-    "id": 1,
-    "name": "Top 10 Points",
-    "description": "Bar chart of top 10 FIFA points",
-    "chart_type": "bar",
-    "workspace_table_id": 3,
-    "explore_config": {
+    "id": 4,
+    "name": "Records by Project",
+    "description": null,
+    "chart_type": "BAR",
+    "workspace_table_id": 2,
+    "config": {
       "workspace_id": 1,
-      "chartType": "bar",
+      "chartType": "BAR",
       "roleConfig": {
-        "dimension": "Country",
-        "metrics": ["Points"]
+        "dimension": "project_id",
+        "metrics": [{"field": "key", "agg": "count"}],
+        "breakdown": null,
+        "timeField": null
       },
       "filters": []
     },
-    "created_at": "2026-03-15T10:00:00"
+    "owner_id": "uuid",
+    "user_permission": "full",
+    "metadata": {
+      "domain": "operations",
+      "intent": "distribution",
+      "metrics": ["Records"],
+      "dimensions": ["Project"],
+      "tags": ["records", "projects"]
+    },
+    "parameters": [],
+    "created_at": "2026-03-22T10:00:00Z",
+    "updated_at": "2026-03-22T10:00:00Z"
   }
 ]
 ```
 
 ---
 
-### `POST /api/v1/charts/`
+### `GET /charts/search`
 
-Create a chart (save an Explore configuration).
+Search charts by name.
+
+**Query params** — `?q=<term>&workspace_table_id=<id>`
+
+---
+
+### `POST /charts/`
+
+Create a chart.
 
 **Request body**
 ```json
 {
-  "name": "Avg Points by Confederation",
-  "description": "Bar chart grouping by Confederation",
-  "chart_type": "bar",
-  "workspace_table_id": 3,
-  "explore_config": {
+  "name": "Revenue by Region",
+  "description": "Optional",
+  "chart_type": "BAR",
+  "workspace_table_id": 2,
+  "config": {
     "workspace_id": 1,
-    "chartType": "bar",
+    "chartType": "BAR",
     "roleConfig": {
-      "dimension": "Confederation",
-      "metrics": ["avg_points"]
+      "dimension": "region",
+      "metrics": [
+        {"field": "revenue", "agg": "sum"},
+        {"field": "orders", "agg": "count"}
+      ],
+      "breakdown": null,
+      "timeField": null
     },
     "filters": [
-      {"field": "Confederation", "operator": "=", "value": "UEFA"}
+      {"field": "status", "operator": "eq", "value": "completed"}
     ]
   }
 }
 ```
 
-**Supported `chart_type` values**
+**`chart_type` values (uppercase):**
+`BAR` · `LINE` · `AREA` · `PIE` · `SCATTER` · `GROUPED_BAR` · `STACKED_BAR` · `TABLE` · `KPI` · `TIME_SERIES` · `COMBO`
 
-| Value | Description |
-|---|---|
-| `bar` | Vertical bar chart |
-| `line` | Line chart |
-| `area` | Area chart |
-| `pie` | Pie / Donut chart |
-| `scatter` | Scatter / Bubble chart |
-| `grouped_bar` | Grouped bar (multiple metrics side-by-side) |
-| `stacked_bar` | Stacked bar chart |
-| `table` | Tabular data view |
-| `kpi` | Single-value KPI tile |
-| `time_series` | Time series line chart |
+**`config` structure:**
 
-**`explore_config` structure**
+| Field | Type | Description |
+|---|---|---|
+| `workspace_id` | int | Workspace that owns the table (used by explore builder to restore state) |
+| `chartType` | string | Same as `chart_type` but uppercase string |
+| `roleConfig` | object | Field mapping (see below) |
+| `filters` | array | Pre-aggregation filters applied in backend SQL |
 
+**`roleConfig` fields:**
+
+| Field | Type | Chart types | Description |
+|---|---|---|---|
+| `dimension` | string | BAR, LINE, AREA, PIE, GROUPED_BAR, STACKED_BAR | X-axis / group-by field |
+| `timeField` | string | TIME_SERIES | Date/time field for X-axis |
+| `metrics` | `MetricConfig[]` | all except TABLE | Y-axis aggregations |
+| `breakdown` | string | STACKED_BAR, LINE, AREA | Second grouping dimension (creates series) |
+| `scatterX` | string | SCATTER | X-axis field |
+| `scatterY` | string | SCATTER | Y-axis field |
+| `selectedColumns` | string[] | TABLE | Columns to display (undefined = show all) |
+
+**`MetricConfig` object:**
 ```json
-{
-  "workspace_id": 1,
-  "chartType": "bar",
-  "roleConfig": {
-    "dimension": "Country",       // X-axis / group-by field
-    "metrics": ["Points"],        // Y-axis fields
-    "breakdown": "Confederation"  // Optional second group dimension
-  },
-  "filters": [
-    {
-      "field": "Confederation",
-      "operator": "=",
-      "value": "UEFA"
-    }
-  ],
-  "parameters": {}
-}
+{ "field": "revenue", "agg": "sum" }
 ```
+
+| `agg` value | SQL |
+|---|---|
+| `sum` | `SUM(field)` |
+| `avg` | `AVG(field)` |
+| `count` | `COUNT(field)` |
+| `count_distinct` | `COUNT(DISTINCT field)` |
+| `min` | `MIN(field)` |
+| `max` | `MAX(field)` |
+
+**`filters` item:**
+```json
+{ "field": "status", "operator": "eq", "value": "completed" }
+```
+
+| `operator` | SQL equivalent |
+|---|---|
+| `eq` | `= value` |
+| `neq` | `!= value` |
+| `gt` | `> value` |
+| `gte` | `>= value` |
+| `lt` | `< value` |
+| `lte` | `<= value` |
+| `in` | `IN (value[])` |
+| `not_in` | `NOT IN (value[])` |
+| `contains` | `LIKE '%value%'` |
+| `is_null` | `IS NULL` |
+| `is_not_null` | `IS NOT NULL` |
 
 **Response 201** — `ChartResponse`
 
 ---
 
-### `GET /api/v1/charts/{chart_id}`
+### `GET /charts/{chart_id}`
 
 Get a single chart.
 
 ---
 
-### `PUT /api/v1/charts/{chart_id}`
+### `PUT /charts/{chart_id}`
 
-Update a chart's name, config, or explore_config.
+Update chart name, type, config, or workspace_table_id.
 
----
-
-### `DELETE /api/v1/charts/{chart_id}`
-
-Delete a chart. Also removes it from any dashboards.
-
----
-
-### `GET /api/v1/charts/{chart_id}/data`
-
-Execute the chart's Explore query and return chart-ready data.
-
-**Response 200**
+**Request body** (all fields optional)
 ```json
 {
-  "chart_type": "bar",
-  "data": [
-    {"Country": "Argentina", "Points": 1947},
-    {"Country": "France", "Points": 1866}
-  ],
-  "columns": [{"name": "Country", "type": "string"}, {"name": "Points", "type": "number"}],
-  "row_count": 10
+  "name": "Updated Name",
+  "chart_type": "LINE",
+  "workspace_table_id": 3,
+  "config": { ... }
 }
 ```
 
 ---
 
+### `DELETE /charts/{chart_id}`
+
+Delete a chart. Returns `409` if chart is used in dashboards.
+
+---
+
+### `GET /charts/{chart_id}/data`
+
+Execute the chart query and return aggregated chart-ready data.
+
+> **Auth required.** Returns `403` if user has no access to this chart.
+
+**Response 200**
+```json
+{
+  "chart": { ... },
+  "data": [
+    {"project_id": "base-datateam", "count__key": 16099},
+    {"project_id": "other-project", "count__key": 423}
+  ],
+  "pre_aggregated": true
+}
+```
+
+**`pre_aggregated` flag:**
+- `true` — backend ran `GROUP BY` aggregation in DuckDB; data rows use aliased metric column names (e.g. `"sum__revenue"`, `"count__key"`, `"avg__price"`)
+- `false` — live source fallback; raw rows returned, client-side aggregation applies
+
+**Aggregated column naming convention:**
+```
+{agg}__{field}   →   sum__revenue, count__orders, avg__price, min__qty, max__qty, count_distinct__user_id
+```
+
+**Error 422** `{ "code": "NOT_SYNCED" }` — table not yet synced to DuckDB and live fallback unavailable.
+
+---
+
 ### Chart Metadata
 
-#### `PUT /api/v1/charts/{chart_id}/metadata`
-#### `GET /api/v1/charts/{chart_id}/metadata`
-#### `DELETE /api/v1/charts/{chart_id}/metadata`
+Semantic metadata for AI search and categorization.
 
-Store arbitrary JSON metadata on a chart (tile settings, custom labels, etc.).
+#### `PUT /charts/{chart_id}/metadata`
 
-**Request body (PUT)**
+**Request body**
 ```json
-{ "title_override": "My Custom Title", "color_scheme": "blue" }
+{
+  "domain": "sales",
+  "intent": "comparison",
+  "metrics": ["Revenue", "Orders"],
+  "dimensions": ["Region", "Product"],
+  "tags": ["revenue", "quarterly", "regional"]
+}
 ```
+
+| Field | Values |
+|---|---|
+| `domain` | `sales` · `marketing` · `finance` · `operations` · `hr` · `product` · `logistics` · `other` |
+| `intent` | `trend` · `comparison` · `ranking` · `summary` · `distribution` · `composition` |
+
+#### `GET /charts/{chart_id}/metadata`
+
+Returns `ChartMetadataResponse`.
+
+#### `DELETE /charts/{chart_id}/metadata`
+
+Remove metadata.
 
 ---
 
 ### Chart Parameters
 
-Parameters allow dynamic filtering in dashboards.
+Parameters enable dynamic filtering when a chart is placed in a dashboard.
 
-#### `GET /api/v1/charts/{chart_id}/parameters`
+#### `GET /charts/{chart_id}/parameters`
 
-List parameters for a chart.
+List parameters.
 
-#### `PUT /api/v1/charts/{chart_id}/parameters`
-
-Replace all parameters.
-
-**Request body**
+**Response 200** — array of `ChartParameterResponse`
 ```json
 [
   {
-    "name": "min_points",
-    "label": "Minimum Points",
-    "type": "number",
-    "default_value": 1600
+    "id": 1,
+    "chart_id": 4,
+    "parameter_name": "start_date",
+    "parameter_type": "time_range",
+    "column_mapping": "order_date",
+    "default_value": "2026-01-01",
+    "description": "Filter start date"
   }
 ]
 ```
 
-#### `POST /api/v1/charts/{chart_id}/parameters`
+#### `PUT /charts/{chart_id}/parameters`
+
+Replace all parameters (bulk).
+
+**Request body** — array of `ChartParameterCreate`
+```json
+[
+  {
+    "parameter_name": "min_revenue",
+    "parameter_type": "measure",
+    "column_mapping": "revenue",
+    "default_value": "0",
+    "description": "Minimum revenue threshold"
+  }
+]
+```
+
+| `parameter_type` | Description |
+|---|---|
+| `time_range` | Date/time filter |
+| `dimension` | Categorical filter |
+| `measure` | Numeric threshold |
+
+#### `POST /charts/{chart_id}/parameters`
 
 Add a single parameter.
 
-#### `PUT /api/v1/charts/{chart_id}/parameters/{param_id}`
+#### `PUT /charts/{chart_id}/parameters/{param_id}`
 
 Update a parameter.
 
-#### `DELETE /api/v1/charts/{chart_id}/parameters/{param_id}`
+#### `DELETE /charts/{chart_id}/parameters/{param_id}`
 
 Delete a parameter.
 
 ---
 
-## 6. Dashboards
+## 8. Dashboards
 
-Dashboards compose multiple charts into a grid layout with optional filter bars.
+Dashboards compose multiple charts in a drag-and-drop grid layout.
 
-### `GET /api/v1/dashboards/`
+### `GET /dashboards/`
 
-List all dashboards.
+List all dashboards (owned + shared).
+
+**Response 200** — array of `DashboardResponse`
 
 ---
 
-### `POST /api/v1/dashboards/`
+### `POST /dashboards/`
 
 Create a dashboard.
 
 **Request body**
 ```json
 {
-  "name": "FIFA World Rankings Overview",
-  "description": "Overview of FIFA rankings with Confederation filter",
+  "name": "Sales Overview",
+  "description": "Optional",
   "filters_config": [
     {
-      "field": "Confederation",
-      "operator": "=",
-      "value": "UEFA",
-      "label": "Confederation"
+      "id": "f1",
+      "field": "region",
+      "operator": "eq",
+      "value": "APAC",
+      "label": "Region"
     }
   ]
 }
 ```
 
-**`filters_config`** — pre-applied global filters (dimension / pre-aggregation). These are passed to all chart queries in the dashboard.
+`filters_config` — optional pre-set global filters applied to all charts.
 
 **Response 201** — `DashboardResponse`
 
 ---
 
-### `GET /api/v1/dashboards/{dashboard_id}`
+### `GET /dashboards/{dashboard_id}`
 
-Get dashboard with all chart tiles (includes `layout`, `charts`, `filters_config`).
+Get dashboard with all chart tiles, layout, and filter config.
 
 **Response 200**
 ```json
 {
   "id": 1,
-  "name": "FIFA World Rankings Overview",
+  "name": "Sales Overview",
+  "description": null,
+  "owner_id": "uuid",
+  "user_permission": "full",
+  "filters_config": [],
   "charts": [
     {
-      "chart_id": 1,
-      "position": {"x": 0, "y": 0, "w": 6, "h": 4},
-      "title_override": null,
-      "having_filters": []
+      "id": 10,
+      "chart_id": 4,
+      "dashboard_id": 1,
+      "layout": {
+        "i": "4",
+        "x": 0, "y": 0,
+        "w": 6, "h": 4
+      },
+      "parameters": null,
+      "chart": { ... }
     }
   ],
-  "layout": [],
-  "filters_config": [{"field": "Confederation", "operator": "=", "value": "UEFA"}]
+  "created_at": "2026-03-01T00:00:00Z",
+  "updated_at": "2026-03-22T00:00:00Z"
 }
 ```
 
 ---
 
-### `PUT /api/v1/dashboards/{dashboard_id}`
+### `PUT /dashboards/{dashboard_id}`
 
-Update dashboard name, description, or `filters_config`.
-
----
-
-### `DELETE /api/v1/dashboards/{dashboard_id}`
-
-Delete a dashboard (charts are not deleted, only removed from the dashboard).
+Update name, description, or filters_config.
 
 ---
 
-### `POST /api/v1/dashboards/{dashboard_id}/charts`
+### `DELETE /dashboards/{dashboard_id}`
+
+Delete dashboard (charts are NOT deleted, only removed from dashboard).
+
+---
+
+### `POST /dashboards/{dashboard_id}/charts`
 
 Add a chart to a dashboard.
 
 **Request body**
 ```json
 {
-  "chart_id": 5,
-  "position": {"x": 0, "y": 0, "w": 6, "h": 4}
+  "chart_id": 4,
+  "layout": { "x": 0, "y": 0, "w": 6, "h": 4 },
+  "parameters": { "min_revenue": "1000" }
 }
 ```
 
-**Response 200** — updated dashboard
+| `layout` field | Type | Range | Description |
+|---|---|---|---|
+| `x` | int | 0–11 | Column position |
+| `y` | int | ≥ 0 | Row position |
+| `w` | int | 1–12 | Width in grid columns |
+| `h` | int | ≥ 1 | Height in grid rows |
+| `i` | string | optional | Identifier (auto-set to chart ID string) |
+
+**Response 200** — updated `DashboardResponse`
 
 ---
 
-### `DELETE /api/v1/dashboards/{dashboard_id}/charts/{chart_id}`
+### `DELETE /dashboards/{dashboard_id}/charts/{chart_id}`
 
 Remove a chart from a dashboard.
 
 ---
 
-### `PUT /api/v1/dashboards/{dashboard_id}/layout`
+### `PUT /dashboards/{dashboard_id}/layout`
 
-Update the full grid layout of a dashboard (called after drag-and-drop).
+Update chart positions after drag-and-drop.
 
 **Request body**
 ```json
-[
-  {"chart_id": 1, "x": 0, "y": 0, "w": 6, "h": 4},
-  {"chart_id": 2, "x": 6, "y": 0, "w": 6, "h": 4}
-]
+{
+  "chart_layouts": [
+    {
+      "id": 10,
+      "layout": { "x": 0, "y": 0, "w": 6, "h": 4 }
+    },
+    {
+      "id": 11,
+      "layout": { "x": 6, "y": 0, "w": 6, "h": 4 }
+    }
+  ]
+}
+```
+
+> `id` here is the `DashboardChart.id` (join table), NOT `chart_id`.
+
+**Response 200** — updated `DashboardResponse`
+
+---
+
+## 9. Semantic Views
+
+Semantic views map workspace tables to named business concepts for AI search.
+
+### `GET /semantic/views`
+
+List semantic views.
+
+### `POST /semantic/views`
+
+Create a semantic view.
+
+**Request body**
+```json
+{
+  "name": "Monthly Revenue",
+  "sql_table_name": "revenue_monthly",
+  "workspace_table_id": 2,
+  "columns": [
+    {"name": "month", "type": "date", "description": "Month of revenue"},
+    {"name": "amount", "type": "number", "description": "Total revenue"}
+  ]
+}
 ```
 
 ---
 
-## 7. Common Types
-
-### `ColumnMetadata`
-```json
-{ "name": "Country", "type": "string", "nullable": true }
-```
+## 10. Common Types
 
 ### Column types
 `string` · `integer` · `number` (float) · `boolean` · `date` · `datetime` · `unknown`
 
-### Filter operators
-`=` · `!=` · `<` · `<=` · `>` · `>=` · `in` · `not_in` · `like` · `is_null` · `is_not_null`
+### UserStatus
+`active` · `deactivated`
 
-### Aggregation functions (group_by)
-`count` · `sum` · `avg` · `min` · `max` · `count_distinct`
+### Permission levels
+`none` · `view` · `edit` · `full`
+
+### ResourceType (for shares)
+`dashboard` · `chart` · `workspace` · `datasource` · `chat_session`
+
+### SharePermission
+`view` · `edit`
+
+### Aggregation functions (metrics)
+`sum` · `avg` · `count` · `count_distinct` · `min` · `max`
+
+### Filter operators
+`eq` · `neq` · `gt` · `gte` · `lt` · `lte` · `in` · `not_in` · `contains` · `is_null` · `is_not_null`
 
 ---
 
-## Seed Demo Data (API automation)
+## Error Responses
 
-The file `seed_demo.py` at the repo root is a reference implementation showing the full automated flow:
+| Status | Meaning |
+|---|---|
+| `400` | Bad request — invalid input |
+| `401` | Unauthorized — missing or invalid token |
+| `403` | Forbidden — insufficient permission |
+| `404` | Not found |
+| `409` | Conflict — dependency constraint (e.g. cannot delete datasource used by tables) |
+| `422` | Unprocessable — validation error or `NOT_SYNCED` |
+| `500` | Internal server error |
+
+Error body format:
+```json
+{ "detail": "Human-readable error message" }
+```
+
+Or for `NOT_SYNCED`:
+```json
+{ "detail": { "code": "NOT_SYNCED", "message": "Table not synced to DuckDB" } }
+```
+
+---
+
+## Full Create Flow (Automation Reference)
 
 ```
-1. POST /api/v1/datasources/manual/parse-file   → upload Excel file
-2. POST /api/v1/datasources/                     → create Manual datasource
-3. POST /api/v1/datasets/            (×6)        → create datasets with transformations
-4. POST /api/v1/dataset-workspaces/  (×3)        → create workspaces
-5. POST /api/v1/dataset-workspaces/{id}/tables   → add tables with js_formula steps
-6. POST /api/v1/charts/              (×18)       → create charts via workspace_table_id
-7. POST /api/v1/dashboards/          (×3)        → create dashboards with filters_config
-8. POST /api/v1/dashboards/{id}/charts           → attach charts to dashboards
-```
-
-Run it against any running AppBI instance:
-
-```bash
-BASE_URL=http://localhost:8000/api/v1 python3 seed_demo.py
+1. POST /auth/login                                  → get token
+2. POST /datasources/                                → create datasource
+3. POST /datasources/{id}/sync                       → sync data to DuckDB
+4. POST /dataset-workspaces/                         → create workspace
+5. POST /dataset-workspaces/{id}/tables              → add table (physical or sql_query)
+6. POST /charts/                                     → create chart with roleConfig
+7. GET  /charts/{id}/data                            → verify aggregated data
+8. POST /dashboards/                                 → create dashboard
+9. POST /dashboards/{id}/charts                      → add chart to dashboard
 ```

@@ -107,6 +107,7 @@ export function ChartTile({
   }, [chartData?.data, onDataLoaded, chartId, chart?.config]);
 
   const rawRows: Record<string, any>[] = chartData?.data ?? [];
+  const preAggregated = chartData?.pre_aggregated ?? false;
 
   // Detect whether this is an Explore-format chart (has roleConfig)
   const exploreConfig = useMemo(() => {
@@ -123,7 +124,8 @@ export function ChartTile({
   // Apply Explore-style filters (from stored config) then dashboard filters client-side
   const filteredData = useMemo(() => {
     if (rawRows.length === 0) return rawRows;
-    let rows = exploreConfig?.filters?.length
+    // When backend pre-aggregated, it already applied stored filters in SQL — skip client-side re-apply
+    let rows = (!preAggregated && exploreConfig?.filters?.length)
       ? applyFilters(rawRows, exploreConfig.filters)
       : rawRows;
     if (!exploreConfig && dashboardFilters.length > 0) {
@@ -138,7 +140,7 @@ export function ChartTile({
       }
     }
     return rows;
-  }, [rawRows, exploreConfig, dashboardFilters, globalFilters]);
+  }, [rawRows, exploreConfig, dashboardFilters, globalFilters, preAggregated]);
 
   // Available metric keys for HAVING filter
   const havingOptions = useMemo(() =>
@@ -364,6 +366,7 @@ export function ChartTile({
             data={filteredData}
             roleConfig={exploreConfig.roleConfig}
             havingFilters={havingFilters}
+            preAggregated={preAggregated}
           />
         ) : (
           <ChartPreview

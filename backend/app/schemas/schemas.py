@@ -202,6 +202,7 @@ class ChartDataResponse(BaseModel):
     """Schema for chart data response."""
     chart: ChartResponse
     data: List[Dict[str, Any]]
+    pre_aggregated: bool = False
 
 
 # Dashboard Schemas

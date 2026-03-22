@@ -10,19 +10,15 @@ import { useWorkspaces, useWorkspace } from '@/hooks/use-dataset-workspaces';
 interface ExploreSourceSelectorProps {
   selectedWorkspaceId: number | null;
   selectedTableId: number | null;
-  previewLimit: number;
   onWorkspaceChange: (workspaceId: number | null) => void;
   onTableChange: (tableId: number | null) => void;
-  onLimitChange: (limit: number) => void;
 }
 
 export function ExploreSourceSelector({
   selectedWorkspaceId,
   selectedTableId,
-  previewLimit,
   onWorkspaceChange,
   onTableChange,
-  onLimitChange,
 }: ExploreSourceSelectorProps) {
   const { data: workspaces = [], isLoading: loadingWorkspaces } = useWorkspaces();
   const { data: workspace } = useWorkspace(selectedWorkspaceId);
@@ -95,25 +91,6 @@ export function ExploreSourceSelector({
         </div>
       )}
 
-      {/* Preview Limit */}
-      {selectedTableId && (
-        <div>
-          <label className="block text-xs font-medium text-gray-700 mb-2">
-            Preview Limit
-          </label>
-          <select
-            value={previewLimit}
-            onChange={(e) => onLimitChange(Number(e.target.value))}
-            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-          >
-            <option value={100}>100 rows</option>
-            <option value={200}>200 rows</option>
-            <option value={500}>500 rows</option>
-            <option value={1000}>1000 rows</option>
-            <option value={5000}>5000 rows</option>
-          </select>
-        </div>
-      )}
     </div>
   );
 }

@@ -433,6 +433,7 @@ export interface QueryExecuteResponse {
 export interface ChartDataResponse {
   chart: Chart;
   data: Record<string, any>[];
+  pre_aggregated?: boolean;
   meta?: {
     row_count?: number;
     execution_time_ms?: number;

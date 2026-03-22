@@ -36,7 +36,6 @@ export default function ExploreDetailPage() {
 
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number | null>(null);
   const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
-  const [previewLimit, setPreviewLimit] = useState(500);
   const [filters, setFilters] = useState<Filter[]>([]);
   const [chartType, setChartType] = useState<ChartType>('TABLE');
   const [chartRoleConfig, setChartRoleConfig] = useState<ChartRoleConfig>({ metrics: [] });
@@ -124,7 +123,7 @@ export default function ExploreDetailPage() {
     isLoading,
     error,
     refetch,
-  } = useTablePreview(selectedWorkspaceId, selectedTableId, { limit: previewLimit });
+  } = useTablePreview(selectedWorkspaceId, selectedTableId, {});
 
   const displayData = useMemo(() => {
     if (!previewData) return previewData;
@@ -407,10 +406,8 @@ export default function ExploreDetailPage() {
                 <ExploreSourceSelector
                   selectedWorkspaceId={selectedWorkspaceId}
                   selectedTableId={selectedTableId}
-                  previewLimit={previewLimit}
                   onWorkspaceChange={setSelectedWorkspaceId}
                   onTableChange={setSelectedTableId}
-                  onLimitChange={setPreviewLimit}
                 />
               </div>
             )}

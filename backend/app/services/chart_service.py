@@ -13,6 +13,134 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+# ── Aggregation push-down helpers ─────────────────────────────────────────────
+
+def _sql_literal(value) -> str:
+    """Safely escape a Python value as a SQL literal."""
+    if value is None:
+        return 'NULL'
+    if isinstance(value, bool):
+        return 'TRUE' if value else 'FALSE'
+    if isinstance(value, (int, float)):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _build_where_clause(filters) -> str:
+    """Build a SQL WHERE clause from a list of {field, operator, value} dicts."""
+    if not filters:
+        return ''
+    parts = []
+    for f in (filters or []):
+        field = f.get('field', '')
+        op = (f.get('operator') or 'eq').lower()
+        value = f.get('value')
+        if not field:
+            continue
+        qf = f'"{field}"'
+        if op == 'eq':
+            parts.append(f'{qf} = {_sql_literal(value)}')
+        elif op == 'neq':
+            parts.append(f'{qf} != {_sql_literal(value)}')
+        elif op == 'gt':
+            parts.append(f'{qf} > {_sql_literal(value)}')
+        elif op == 'gte':
+            parts.append(f'{qf} >= {_sql_literal(value)}')
+        elif op == 'lt':
+            parts.append(f'{qf} < {_sql_literal(value)}')
+        elif op == 'lte':
+            parts.append(f'{qf} <= {_sql_literal(value)}')
+        elif op == 'in' and isinstance(value, list):
+            vals = ', '.join(_sql_literal(v) for v in value)
+            parts.append(f'{qf} IN ({vals})')
+        elif op == 'not_in' and isinstance(value, list):
+            vals = ', '.join(_sql_literal(v) for v in value)
+            parts.append(f'{qf} NOT IN ({vals})')
+        elif op == 'contains' and value is not None:
+            esc = str(value).replace("'", "''")
+            parts.append(f"{qf} LIKE '%{esc}%'")
+        elif op == 'is_null':
+            parts.append(f'{qf} IS NULL')
+        elif op == 'is_not_null':
+            parts.append(f'{qf} IS NOT NULL')
+    return ' AND '.join(parts)
+
+
+def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filters: list):
+    """
+    Build a DuckDB GROUP BY query from chart roleConfig.
+
+    Returns (sql, pre_aggregated):
+      pre_aggregated=True  → backend handled aggregation; frontend must skip applyGroupByAgg()
+      pre_aggregated=False → fallback SELECT *, frontend does its own aggregation
+    """
+    if not role_config:
+        return f'SELECT * FROM {base_table} LIMIT 1000', False
+
+    ctype = str(getattr(chart_type, 'value', chart_type) or '').upper()
+    dimension = role_config.get('dimension')
+    time_field = role_config.get('timeField')
+    metrics = role_config.get('metrics') or []
+    breakdown = role_config.get('breakdown')
+    selected_cols = role_config.get('selectedColumns')
+
+    where_clause = _build_where_clause(filters)
+    where_sql = f' WHERE {where_clause}' if where_clause else ''
+
+    # TABLE: all rows, optional column selection — no LIMIT
+    if ctype == 'TABLE':
+        cols = ', '.join(f'"{c}"' for c in selected_cols) if selected_cols else '*'
+        return f'SELECT {cols} FROM {base_table}{where_sql}', True
+
+    # SCATTER: raw points up to 5 000
+    if ctype == 'SCATTER':
+        sx, sy = role_config.get('scatterX'), role_config.get('scatterY')
+        if sx and sy:
+            return f'SELECT "{sx}", "{sy}" FROM {base_table}{where_sql} LIMIT 5000', True
+        return f'SELECT * FROM {base_table}{where_sql} LIMIT 5000', True
+
+    # All other chart types: GROUP BY aggregation
+    group_field = dimension or time_field
+    if not metrics:
+        return f'SELECT * FROM {base_table}{where_sql} LIMIT 1000', False
+
+    select_parts = []
+    group_by_parts = []
+
+    if group_field:
+        select_parts.append(f'"{group_field}"')
+        group_by_parts.append(f'"{group_field}"')
+    if breakdown:
+        select_parts.append(f'"{breakdown}"')
+        group_by_parts.append(f'"{breakdown}"')
+
+    for m in metrics:
+        field = m.get('field', '')
+        agg = (m.get('agg') or 'sum').upper().replace(' ', '_')
+        if not field:
+            continue
+        if agg == 'COUNT_DISTINCT':
+            select_parts.append(f'COUNT(DISTINCT "{field}") AS "count_distinct__{field}"')
+        elif agg == 'COUNT':
+            select_parts.append(f'COUNT("{field}") AS "count__{field}"')
+        elif agg == 'AVG':
+            select_parts.append(f'AVG("{field}") AS "avg__{field}"')
+        elif agg == 'MIN':
+            select_parts.append(f'MIN("{field}") AS "min__{field}"')
+        elif agg == 'MAX':
+            select_parts.append(f'MAX("{field}") AS "max__{field}"')
+        else:  # SUM (default)
+            select_parts.append(f'SUM("{field}") AS "sum__{field}"')
+
+    if not select_parts:
+        return f'SELECT * FROM {base_table}{where_sql} LIMIT 1000', False
+
+    sql = f"SELECT {', '.join(select_parts)} FROM {base_table}{where_sql}"
+    if group_by_parts:
+        sql += f" GROUP BY {', '.join(group_by_parts)}"
+    return sql, True
+
+
 class ChartService:
     """Service for chart operations."""
     
@@ -122,6 +250,9 @@ class ChartService:
             from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
             from app.services.duckdb_engine import DuckDBEngine
 
+            role_config = (db_chart.config or {}).get('roleConfig', {})
+            filters = (db_chart.config or {}).get('filters', [])
+
             if db_table.source_kind == "sql_query":
                 if not db_table.source_query:
                     raise ValueError("Table has no SQL query")
@@ -129,25 +260,26 @@ class ChartService:
                 rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
                 if rewritten:
                     try:
-                        rows = DuckDBEngine.query(
-                            f"SELECT * FROM ({rewritten}) AS _q LIMIT 1000"
-                        )
-                        return {"chart": db_chart, "data": rows}
+                        base_table = f"({rewritten}) AS _q"
+                        agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, filters)
+                        rows = DuckDBEngine.query(agg_sql)
+                        return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
                     except Exception:
                         pass  # fall through to live query
                 # Live fallback: execute SQL directly against the datasource
                 _, rows, _ = DataSourceConnectionService.execute_query(
                     datasource.type, datasource.config, db_table.source_query, limit=1000
                 )
-                return {"chart": db_chart, "data": rows}
+                return {"chart": db_chart, "data": rows, "pre_aggregated": False}
             elif db_table.source_kind == "physical_table":
                 if not db_table.source_table_name:
                     raise ValueError("Table has no physical table name")
                 # Use DuckDB synced cache if available — avoids live source round-trip
                 view_name = get_synced_view(datasource.id, db_table.source_table_name)
                 if view_name:
-                    rows = DuckDBEngine.query(f"SELECT * FROM {view_name} LIMIT 1000")
-                    return {"chart": db_chart, "data": rows}
+                    agg_sql, pre_agg = _build_agg_query(view_name, db_chart.chart_type, role_config, filters)
+                    rows = DuckDBEngine.query(agg_sql)
+                    return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
                 # Live fallback: use fetch_table_data so table names with spaces work
                 stn = db_table.source_table_name.strip().strip('"').strip("'")
                 if "." in stn:
@@ -159,7 +291,7 @@ class ChartService:
                 _, rows = DataSourceConnectionService.fetch_table_data(
                     datasource.type, datasource.config, _schema, _table, limit=1000
                 )
-                return {"chart": db_chart, "data": rows}
+                return {"chart": db_chart, "data": rows, "pre_aggregated": False}
             else:
                 raise ValueError(f"Unsupported source_kind: {db_table.source_kind}")
 
@@ -187,6 +319,9 @@ class ChartService:
             from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
             from app.services.duckdb_engine import DuckDBEngine
 
+            role_config = (db_chart.config or {}).get('roleConfig', {})
+            filters = (db_chart.config or {}).get('filters', [])
+
             if db_table.source_kind == "sql_query":
                 if not db_table.source_query:
                     raise ValueError("Table has no SQL query")
@@ -194,25 +329,26 @@ class ChartService:
                 rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
                 if rewritten:
                     try:
-                        rows = DuckDBEngine.query(
-                            f"SELECT * FROM ({rewritten}) AS _q LIMIT 1000"
-                        )
-                        return {"chart": db_chart, "data": rows}
+                        base_table = f"({rewritten}) AS _q"
+                        agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, filters)
+                        rows = DuckDBEngine.query(agg_sql)
+                        return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
                     except Exception:
                         pass  # fall through to live query
                 # Live fallback: execute SQL directly against the datasource
                 _, rows, _ = DataSourceConnectionService.execute_query(
                     datasource.type, datasource.config, db_table.source_query, limit=1000
                 )
-                return {"chart": db_chart, "data": rows}
+                return {"chart": db_chart, "data": rows, "pre_aggregated": False}
             elif db_table.source_kind == "physical_table":
                 if not db_table.source_table_name:
                     raise ValueError("Table has no physical table")
                 # Use DuckDB synced cache if available — avoids live source round-trip
                 view_name = get_synced_view(datasource.id, db_table.source_table_name)
                 if view_name:
-                    rows = DuckDBEngine.query(f"SELECT * FROM {view_name} LIMIT 1000")
-                    return {"chart": db_chart, "data": rows}
+                    agg_sql, pre_agg = _build_agg_query(view_name, db_chart.chart_type, role_config, filters)
+                    rows = DuckDBEngine.query(agg_sql)
+                    return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
                 # Live fallback: use fetch_table_data so table names with spaces work
                 stn = db_table.source_table_name.strip().strip('"').strip("'")
                 if "." in stn:
@@ -224,7 +360,7 @@ class ChartService:
                 _, rows = DataSourceConnectionService.fetch_table_data(
                     datasource.type, datasource.config, _schema, _table, limit=1000
                 )
-                return {"chart": db_chart, "data": rows}
+                return {"chart": db_chart, "data": rows, "pre_aggregated": False}
             else:
                 raise ValueError(f"Unsupported source_kind: {db_table.source_kind}")
 
