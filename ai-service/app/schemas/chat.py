@@ -103,6 +103,7 @@ class Message(BaseModel):
 
 class ConversationSession(BaseModel):
     session_id: str
+    owner_user_id: str = ""    # user sub from JWT — used for ownership checks
     title: str = "New Conversation"
     messages: List[Message] = []
     context: Dict[str, Any] = {}

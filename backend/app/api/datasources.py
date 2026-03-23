@@ -9,7 +9,9 @@ import csv as csv_module
 
 from app.core import get_db
 from app.core.dependencies import get_current_user, require_permission, require_edit_access, require_full_access, get_effective_permission
+from app.core.permissions import _owned_or_shared
 from app.models import DataSource, DatasetWorkspace
+from app.models.resource_share import ResourceType
 from app.models.user import User
 from app.schemas import (
     DataSourceCreate,
@@ -150,12 +152,13 @@ def list_data_sources(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List data sources — filtered by module permission matrix."""
-    from app.core.permissions import get_user_module_permission
-    perm = get_user_module_permission(current_user, "data_sources")
-    if perm == "none":
-        return []
-    sources = DataSourceCRUDService.get_all(db, skip=skip, limit=limit)
+    """List data sources — filtered by ownership and shares."""
+    sources = (
+        _owned_or_shared(db, DataSource, ResourceType.DATASOURCE, current_user)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
     for s in sources:
         s.user_permission = get_effective_permission(db, current_user, s, "data_sources")
     return sources

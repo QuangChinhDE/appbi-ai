@@ -667,7 +667,6 @@ export default function ExploreDetailPage() {
                   </div>
                 )}
               </div>
-            </div>
 
               {/* ── AI Description panel ───────────────────────────────── */}
               {!isNew && chartId && (

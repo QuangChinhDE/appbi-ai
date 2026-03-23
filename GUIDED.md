@@ -17,6 +17,7 @@
 9. [Quản trị hệ thống (Admin)](#9-quản-trị-hệ-thống-admin)
 10. [Luồng đầy đủ từ A đến Z](#10-luồng-đầy-đủ-từ-a-đến-z)
 11. [Câu hỏi thường gặp](#11-câu-hỏi-thường-gặp)
+12. [Ghi chú kỹ thuật & Các sửa lỗi](#12-ghi-chú-kỹ-thuật--các-sửa-lỗi-technical-notes)
 
 ---
 
@@ -126,6 +127,10 @@ Sau khi tạo xong, bạn có thể cấu hình lịch đồng bộ dữ liệu 
 ### 3.3 Đồng bộ dữ liệu (Sync)
 
 Sau khi tạo datasource, bấm vào datasource đó → bấm nút **Sync Now** để kéo dữ liệu về. Trạng thái sync sẽ hiển thị trong mục **Sync Jobs**.
+
+> **Google Sheets — Lưu ý quan trọng:** Khi sync Google Sheets, hệ thống đồng bộ **tất cả các sheet** trong spreadsheet (không chỉ sheet được cấu hình). Mỗi sheet tạo ra một DuckDB VIEW riêng biệt với slug, ví dụ: `synced_ds1__schema__data_lake____segment`.
+>
+> Khi thêm bảng vào Workspace từ Google Sheets, bạn **phải** điền `source_table_name` là tên sheet GỐC (ví dụ: `"Data Lake - Segment"`), KHÔNG dùng slug DuckDB. Hệ thống sẽ tự tìm VIEW phù hợp thông qua tên gốc.
 
 ### 3.4 Chạy thử truy vấn SQL
 
@@ -433,6 +438,34 @@ Phía trên ô input có các gợi ý câu hỏi nhanh — bấm để điền 
 
 Tất cả cuộc hội thoại được lưu lại. Bấm vào session cũ trong danh sách để xem lại.
 
+### 7.7 Kết nối WebSocket (cho developer)
+
+AI Chat sử dụng WebSocket để streaming real-time:
+
+```
+ws://localhost:8001/chat/ws?token=<JWT_TOKEN>
+```
+
+**Event schema nhận được:**
+
+| `type` | Trường kèm theo | Ý nghĩa |
+|--------|-----------------|---------|
+| `thinking` | `content` | AI đang suy nghĩ (bước nội bộ) |
+| `tool_call` | `tool`, `args` | AI đang gọi một tool |
+| `tool_result` | `tool`, `summary`, `data` | Kết quả tool trả về |
+| `text` | `content` | Tin nhắn văn bản cuối của AI |
+| `suggestions` | `suggestions` (list) | Gợi ý câu hỏi tiếp theo |
+| `metrics` | `tokens`, `latency_ms` | Thống kê thực thi |
+| `done` | `session_id` | Hoàn thành, kèm session ID |
+
+**Gửi tin nhắn:**
+```json
+{
+  "message": "Show me sales by region",
+  "session_id": "optional-existing-session-uuid"
+}
+```
+
 ---
 
 ## 8. Chia sẻ & Phân quyền
@@ -487,6 +520,27 @@ Sidebar → **Settings** → tab **Users**
 Sidebar → **Settings** → tab **Permission Matrix**
 
 Hiển thị bảng grid: **người dùng × module**. Click vào ô để thay đổi quyền.
+
+**API — Đặt quyền cho user (cho developer/admin):**
+```http
+PUT /api/v1/permissions/{user_id}
+Content-Type: application/json
+Authorization: Bearer <admin_token>
+
+{
+  "permissions": {
+    "dashboards": "view",
+    "explore_charts": "view",
+    "workspaces": "view",
+    "data_sources": "view",
+    "ai_chat": "view",
+    "datasets": "none",
+    "settings": "none"
+  }
+}
+```
+
+> **Lưu ý:** User mới được tạo sẽ có `permissions: {}` (tất cả module = `none`). Admin cần cấp quyền module trước khi user có thể truy cập bất kỳ tính năng nào.
 
 **Modules và quyền:**
 
@@ -594,6 +648,71 @@ Bước 6 — Phân tích AI (tuỳ chọn)
 
 **Q: Tôi muốn đổi mật khẩu?**
 > Bấm vào tên/avatar của bạn ở góc trái dưới sidebar → **Change Password** → nhập mật khẩu cũ và mới.
+
+---
+
+## 12. Ghi chú kỹ thuật & Các sửa lỗi (Technical Notes)
+
+> Phần này dành cho developer và admin muốn hiểu sâu hơn về cơ chế hoạt động.
+
+### 12.1 Google Sheets — Cơ chế DuckDB View
+
+Khi sync Google Sheets, hệ thống:
+1. Đọc tất cả các sheet trong spreadsheet
+2. Lưu mỗi sheet thành file Parquet tại `.data/synced/`
+3. Đăng ký DuckDB VIEW với tên theo format: `synced_ds{id}__{schema}__{table_slug}`
+
+Ví dụ sheet tên `"Data Lake - Segment"` sẽ có DuckDB view là:
+```
+synced_ds1__data_dictionary__data_lake____segment
+```
+
+**Khi tạo workspace table từ GSheets physical table:**
+- `source_table_name` = tên sheet GỐC: `"Data Lake - Segment"` ✅
+- `source_table_name` = DuckDB slug: `"synced_ds1__...__data_lake____segment"` ❌
+
+### 12.2 Auto-tagging và Embedding
+
+Mỗi khi tạo mới hoặc cập nhật workspace table / chart, hệ thống tự động:
+- **AutoTaggingService**: tạo mô tả và câu hỏi gợi ý cho bảng/biểu đồ (dùng LLM)
+- **EmbeddingService**: tạo vector embedding 768 chiều để AI search tìm tài nguyên phù hợp
+
+Kết quả lưu vào trường `auto_description` và bảng `resource_embeddings`.
+
+### 12.3 Chart Type Enum
+
+Chart type phải viết HOA:
+
+```
+TABLE · BAR · LINE · AREA · PIE · SCATTER
+GROUPED_BAR · STACKED_BAR · KPI · TIME_SERIES · COMBO
+```
+
+### 12.4 Datasource Visibility Security
+
+Kể từ bản vá (2026-03-23), endpoint `GET /api/v1/datasources` chỉ trả về datasource mà người dùng:
+- **Sở hữu** (owner_id = user.id), hoặc
+- **Được chia sẻ** rõ ràng (ResourceShare)
+
+User có module permission `data_sources: view` sẽ chỉ thấy datasource của mình hoặc datasource được share. User `full` thấy tất cả.
+
+### 12.5 WebSocket Session Ownership
+
+AI Chat WebSocket (`ws://backend:8001/chat/ws?token=<JWT>`): session mới tạo qua WebSocket sẽ có `owner_user_id` được gán đúng từ JWT token. Các session này hiển thị trong REST API `GET /chat/sessions`.
+
+### 12.6 Chart Data Response Format
+
+`GET /api/v1/charts/{id}/data` trả về:
+
+```json
+{
+  "chart": { ... },
+  "data": [ { "col1": val1, ... }, ... ],
+  "pre_aggregated": false
+}
+```
+
+Dữ liệu là mảng dict trực tiếp ở `body["data"]`, KHÔNG phải `body["rows"]`.
 
 ---
 

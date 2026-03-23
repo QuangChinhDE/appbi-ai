@@ -379,3 +379,40 @@ Nhấn biểu tượng **AI Chat** trên sidebar (hoặc nút chat nổi ở gó
 
 **Q: Làm thế nào để thay đổi mật khẩu?**
 - Nhấn avatar/tên của bạn ở góc trên phải → **Change Password**
+
+---
+
+## Ghi chú kỹ thuật (Technical Notes)
+
+### API phân quyền module — Format đúng
+
+```http
+PUT /api/v1/permissions/{user_id}
+{ "permissions": { "dashboards": "view", "explore_charts": "view", ... } }
+```
+
+Wrapper `"permissions"` là bắt buộc. User mới mặc định có `{}` (tất cả `none`).
+
+### Google Sheets — source_table_name phải là tên gốc
+
+Khi thêm bảng GSheets vào workspace, dùng tên sheet GỐC, không dùng DuckDB slug:
+- ✅ `"Data Lake - Segment"` (tên sheet thực tế)
+- ❌ `"synced_ds1__schema__data_lake____segment"` (DuckDB VIEW slug)
+
+### Chart data response format
+
+```json
+{ "chart": {...}, "data": [{...}, ...], "pre_aggregated": false }
+```
+
+Data rows ở `body["data"]` (là list), không phải `body["rows"]`.
+
+### AI Chat WebSocket
+
+Endpoint: `ws://localhost:8001/chat/ws?token=<JWT>`
+
+Event types: `thinking`, `tool_call` (fields: `tool`, `args`), `tool_result` (fields: `tool`, `summary`, `data`), `text` (field: `content`), `suggestions`, `metrics`, `done` (field: `session_id`).
+
+### Datasource visibility (đã sửa 2026-03-23)
+
+`GET /api/v1/datasources` chỉ trả về datasource của mình hoặc được share. User `full` thấy tất cả.

@@ -1192,6 +1192,23 @@ Create a chart.
 
 **Response 201** — `ChartResponse`
 
+> **⚠️ Common mistake — `config` thiếu `workspace_id` và `chartType`**
+>
+> Nếu chỉ gửi `roleConfig` mà thiếu hai field bên ngoài, chart vẫn được tạo và **data API hoạt động đúng** (backend chỉ đọc `roleConfig` để aggregate). Tuy nhiên **Explore UI sẽ bị lỗi**: workspace selector hiển thị trống, dropdown dimension/metrics rỗng, chart type bị reset về TABLE.
+>
+> **Luôn luôn** truyền đủ 4 field trong `config`:
+> ```json
+> {
+>   "workspace_id": 1,
+>   "chartType": "BAR",
+>   "roleConfig": { ... },
+>   "filters": []
+> }
+> ```
+> - `workspace_id`: ID của workspace (cha của workspace_table_id), dùng để Explore builder restore state
+> - `chartType`: phải khớp với `chart_type` ở ngoài (uppercase), dùng để Explore builder chọn đúng tab chart type
+> - Thiếu một trong hai → Explore editor load chart sẽ mất toàn bộ cấu hình visual
+
 ---
 
 ### `GET /charts/{chart_id}`

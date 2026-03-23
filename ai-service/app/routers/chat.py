@@ -7,8 +7,9 @@ import logging
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Query, Depends, Request
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 
 from app.config import settings
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 _ALGORITHM = "HS256"
+_bearer = HTTPBearer(auto_error=False)
 
 
 def _decode_ws_token(token: str | None) -> dict | None:
@@ -29,6 +31,27 @@ def _decode_ws_token(token: str | None) -> dict | None:
         return jwt.decode(token, settings.secret_key, algorithms=[_ALGORITHM])
     except JWTError:
         return None
+
+
+def _require_auth(credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> dict:
+    """FastAPI dependency — validate Bearer token, return JWT payload or raise 401."""
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    payload = _decode_ws_token(credentials.credentials)
+    if payload is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return payload
+
+
+def _check_session_owner(session_id: str, user_id: str) -> ConversationSession:
+    """Return session if it exists and belongs to user, else raise 404/403."""
+    if session_id not in _sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    s = _sessions[session_id]
+    # Sessions created before this fix have owner_user_id="" — allow access
+    if s.owner_user_id and s.owner_user_id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    return s
 
 
 # ── WebSocket ──────────────────────────────────────────────────────────────────
@@ -106,6 +129,9 @@ async def websocket_chat(
             context["user_id"] = user_id
             context["auth_token"] = token
             session = get_or_create_session(session_id, context)
+            # Bind session to this user so REST endpoints can enforce ownership
+            if session.owner_user_id == "":
+                session.owner_user_id = user_id
 
             agent_task = asyncio.create_task(_run_and_send(session, message))
 
@@ -120,12 +146,22 @@ async def websocket_chat(
 # ── REST streaming (SSE-compatible) ───────────────────────────────────────────
 
 @router.post("/stream")
-async def chat_stream(req: ChatRequest):
+async def chat_stream(req: ChatRequest, auth: dict = Depends(_require_auth)):
     """
     POST endpoint that streams NDJSON events (one per line).
     Useful for clients that cannot use WebSocket (e.g. curl, Postman).
+    Requires Authorization: Bearer <jwt> header.
     """
-    session = get_or_create_session(req.session_id, req.context or {})
+    user_id: str = auth.get("sub", "")
+    ai_level: str = auth.get("ai_level", "view")
+    user_role: str = "editor" if ai_level in ("edit", "full") else "viewer"
+
+    context = req.context or {}
+    context["user_role"] = user_role
+    context["user_id"] = user_id
+    session = get_or_create_session(req.session_id, context)
+    if session.owner_user_id == "":
+        session.owner_user_id = user_id
 
     async def generate():
         try:
@@ -141,10 +177,14 @@ async def chat_stream(req: ChatRequest):
 # ── Session management ─────────────────────────────────────────────────────────
 
 @router.get("/sessions", response_model=List[SessionSummary])
-async def list_sessions():
-    """List all active sessions, newest first."""
+async def list_sessions(auth: dict = Depends(_require_auth)):
+    """List active sessions belonging to the authenticated user, newest first."""
+    user_id: str = auth.get("sub", "")
     result = []
     for s in sorted(_sessions.values(), key=lambda x: x.last_active, reverse=True):
+        # Only return sessions owned by this user (empty owner = legacy, skip)
+        if s.owner_user_id != user_id:
+            continue
         last_msg = None
         for m in reversed(s.messages):
             if m.role in ("user", "assistant") and isinstance(m.content, str):
@@ -162,20 +202,20 @@ async def list_sessions():
 
 
 @router.post("/sessions", status_code=201)
-async def create_session():
+async def create_session(auth: dict = Depends(_require_auth)):
     """Create a new empty session and return its ID."""
+    user_id: str = auth.get("sub", "")
     new_id = str(uuid.uuid4())
-    session = ConversationSession(session_id=new_id)
+    session = ConversationSession(session_id=new_id, owner_user_id=user_id)
     _sessions[new_id] = session
     return {"session_id": new_id}
 
 
 @router.get("/sessions/{session_id}")
-async def get_session(session_id: str):
+async def get_session(session_id: str, auth: dict = Depends(_require_auth)):
     """Get session detail including message history (for restore on page load)."""
-    if session_id not in _sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-    s = _sessions[session_id]
+    user_id: str = auth.get("sub", "")
+    s = _check_session_owner(session_id, user_id)
     msgs = []
     for m in s.messages:
         if m.role not in ("user", "assistant"):
@@ -206,17 +246,18 @@ async def get_session(session_id: str):
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
-async def delete_session(session_id: str):
-    """Delete a conversation session."""
+async def delete_session(session_id: str, auth: dict = Depends(_require_auth)):
+    """Delete a conversation session (owner only)."""
+    user_id: str = auth.get("sub", "")
+    _check_session_owner(session_id, user_id)  # raises 404/403 if not allowed
     _sessions.pop(session_id, None)
 
 
 @router.post("/sessions/{session_id}/messages/{message_id}/feedback")
-async def submit_feedback(session_id: str, message_id: str, req: FeedbackRequest):
-    """Submit thumbs-up/down feedback for a specific AI message."""
-    if session_id not in _sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-    s = _sessions[session_id]
+async def submit_feedback(session_id: str, message_id: str, req: FeedbackRequest, auth: dict = Depends(_require_auth)):
+    """Submit thumbs-up/down feedback for a specific AI message (owner only)."""
+    user_id: str = auth.get("sub", "")
+    s = _check_session_owner(session_id, user_id)
     for m in s.messages:
         if m.role == "assistant" and m.message_id == message_id:
             m.feedback = {"rating": req.rating, "comment": req.comment}
@@ -226,7 +267,7 @@ async def submit_feedback(session_id: str, message_id: str, req: FeedbackRequest
 
 
 @router.post("/cleanup", status_code=200)
-async def cleanup_sessions():
-    """Manually trigger expired session cleanup."""
+async def cleanup_sessions(auth: dict = Depends(_require_auth)):
+    """Manually trigger expired session cleanup (any authenticated user)."""
     count = cleanup_expired_sessions()
     return {"removed": count}

@@ -307,7 +307,7 @@ class EmbeddingService:
                     JOIN charts c ON c.id = re.resource_id
                     LEFT JOIN resource_shares rs
                         ON rs.resource_type = 'chart'
-                        AND rs.resource_id = c.id
+                        AND rs.resource_id = CAST(c.id AS varchar)
                         AND rs.user_id = CAST(:uid AS uuid)
                     WHERE re.resource_type = :rtype
                       AND (c.owner_id = CAST(:uid AS uuid) OR rs.id IS NOT NULL)
