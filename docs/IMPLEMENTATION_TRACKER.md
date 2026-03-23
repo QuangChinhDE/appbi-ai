@@ -2,7 +2,7 @@
 
 > **Mục đích:** External memory cho AI agent. Đọc file này đầu mỗi session để biết chính xác đang ở đâu, đã làm gì, cần làm gì tiếp.
 > **Cập nhật:** Sau mỗi task nhỏ hoàn thành, update checklist tương ứng.
-> **Spec gốc:** `docs/AI_Agent_Feedback_Knowledge_System_Complete.md`
+> **Spec gốc:** `docs/AI_AGENT.md` (Section 11: Roadmap)
 
 ---
 

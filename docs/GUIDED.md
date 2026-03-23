@@ -371,7 +371,7 @@ Nhấn biểu tượng **AI Chat** trên sidebar (hoặc nút chat nổi ở gó
 - Nếu quyền OK, có thể là lỗi hệ thống — liên hệ admin kiểm tra server logs
 
 **Q: AI Chat báo "0 rows" dù tôi biết có dữ liệu?**
-- Đây là vấn đề đã biết với hàm `count` trong AI Agent — xem [AI_AGENT_KNOWN_ISSUES.md](AI_AGENT_KNOWN_ISSUES.md)
+- Đây là vấn đề đã biết với hàm `count` trong AI Agent — xem [AI_AGENT.md](AI_AGENT.md#9-known-issues)
 - Thử hỏi theo cách khác: "liệt kê sample data" hoặc "tổng revenue là bao nhiêu?"
 
 **Q: Tên dashboard không được chứa ký tự nào?**

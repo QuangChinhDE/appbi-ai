@@ -364,7 +364,7 @@ python seed_demo.py
 
 | File | Nội dung |
 |---|---|
-| `docs/AI_CHAT_AGENT_DESIGN.md` | Thiết kế chi tiết AI agent: tool logic, decision flow, response format |
+| `docs/AI_AGENT.md` | AI Agent: architecture, tools, embedding, knowledge system, known issues, roadmap |
 | `docs/ARCHITECTURE.md` | Sơ đồ folder structure đầy đủ |
 | `docs/API.md` | REST API reference cho BI Backend |
 | `docs/CHART_STORAGE_AND_REUSE.md` | Chiến lược chart caching và reuse |
