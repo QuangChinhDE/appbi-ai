@@ -65,20 +65,37 @@ def submit_feedback(
 
 @router.get("/feedback/stats")
 def get_feedback_stats(
+    month: Optional[str] = None,  # e.g. "2026-03"; omit for all-time
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("user_management", "view")),
 ):
-    """Get feedback statistics. Requires user_management >= view permission."""
+    """Get feedback statistics. Requires user_management >= view permission.
+    Pass ?month=YYYY-MM to filter to a specific calendar month.
+    """
     from sqlalchemy import func
     from app.models.ai_feedback import AIFeedback as FB
+    import datetime as _dt
 
-    total = db.query(func.count(FB.id)).scalar() or 0
-    positive = db.query(func.count(FB.id)).filter(FB.is_positive == True).scalar() or 0
+    base_q = db.query(FB)
+    if month:
+        try:
+            parsed = _dt.datetime.strptime(month, "%Y-%m")
+            month_start = parsed.replace(day=1, hour=0, minute=0, second=0)
+            if parsed.month == 12:
+                month_end = parsed.replace(year=parsed.year + 1, month=1, day=1)
+            else:
+                month_end = parsed.replace(month=parsed.month + 1, day=1)
+            base_q = base_q.filter(FB.created_at >= month_start, FB.created_at < month_end)
+        except ValueError:
+            pass  # invalid format — ignore filter
+
+    total = base_q.with_entities(func.count(FB.id)).scalar() or 0
+    positive = base_q.filter(FB.is_positive == True).with_entities(func.count(FB.id)).scalar() or 0
     negative = total - positive
 
-    # Top corrected workspace tables
+    # Top corrected workspace tables (respects month filter)
     top_tables = (
-        db.query(FB.correct_resource_id, func.count(FB.id).label("cnt"))
+        base_q.with_entities(FB.correct_resource_id, func.count(FB.id).label("cnt"))
         .filter(
             FB.correct_resource_type == "workspace_table",
             FB.correct_resource_id.isnot(None),
@@ -89,9 +106,9 @@ def get_feedback_stats(
         .all()
     )
 
-    # Top corrected charts
+    # Top corrected charts (respects month filter)
     top_charts = (
-        db.query(FB.correct_resource_id, func.count(FB.id).label("cnt"))
+        base_q.with_entities(FB.correct_resource_id, func.count(FB.id).label("cnt"))
         .filter(
             FB.correct_resource_type == "chart",
             FB.correct_resource_id.isnot(None),

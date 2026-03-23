@@ -594,6 +594,18 @@ def preview_workspace_table(
     except HTTPException:
         raise
     except Exception as e:
+        import re as _re
+        err = str(e)
+        _binder = _re.search(r'Referenced table "([^"]+)" not found', err)
+        if _binder:
+            tname = _binder.group(1)
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "NOT_SYNCED",
+                    "message": f"Table '{tname}' has not been synced from the datasource yet. Please sync the datasource first.",
+                }
+            )
         raise HTTPException(
             status_code=500,
             detail=f"Failed to preview table: {str(e)}"
@@ -732,11 +744,21 @@ def execute_workspace_table_query(
         quoted_dims = [_validate_column(d, "dimension") for d in execute_request.dimensions]
         query += f" GROUP BY {', '.join(quoted_dims)}"
 
+    # Build set of valid measure aliases so ORDER BY can reference them
+    measure_aliases: set = set()
+    if execute_request.measures:
+        for m in execute_request.measures:
+            measure_aliases.add(f"{m.field}_{m.function}")
+
     # Add ORDER BY — field validated + quoted, direction constrained by Pydantic
     if execute_request.order_by:
         order_parts = []
         for ob in execute_request.order_by:
-            quoted_col = _validate_column(ob.field, "order_by field")
+            if ob.field in measure_aliases:
+                # Measure alias — already safe (constructed from validated field + function)
+                quoted_col = '"' + ob.field.replace('"', '""') + '"'
+            else:
+                quoted_col = _validate_column(ob.field, "order_by field")
             direction = ob.direction.upper() if ob.direction.upper() in ("ASC", "DESC") else "DESC"
             order_parts.append(f"{quoted_col} {direction}")
         query += " ORDER BY " + ", ".join(order_parts)

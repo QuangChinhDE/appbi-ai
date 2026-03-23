@@ -434,7 +434,8 @@ def rewrite_sql_for_duckdb(ds_id: int, sql: str) -> Optional[str]:
         candidates = [v for v in synced if v.endswith(suffix)]
         if candidates:
             any_replaced = True
-            return f"{keyword} {candidates[0]}"
+            # Add AS alias so column qualifiers like "Workload"."col" still resolve
+            return f'{keyword} {candidates[0]} AS "{raw_table}"'
         return m.group(0)
 
     rewritten = re.sub(

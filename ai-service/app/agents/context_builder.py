@@ -52,7 +52,14 @@ class ContextPackage:
                     lines.append(f"  Description: {t['auto_description']}")
                 if t.get("columns"):
                     cols_preview = t["columns"][:20]
-                    lines.append(f"  Columns: {', '.join(str(c) for c in cols_preview)}")
+                    # Show column name with type if available
+                    col_strs = []
+                    for c in cols_preview:
+                        if isinstance(c, dict):
+                            col_strs.append(f"{c.get('name', c)}:{c.get('type', '?')}")
+                        else:
+                            col_strs.append(str(c))
+                    lines.append(f"  Columns: {', '.join(col_strs)}")
             lines.append("")
 
         if self.charts:
@@ -126,7 +133,7 @@ async def build_context(
                             if isinstance(cc, dict):
                                 cc = cc.get("columns", [])
                             cols = [
-                                c.get("name", c) if isinstance(c, dict) else c
+                                {"name": c.get("name", c), "type": c.get("type", "unknown")} if isinstance(c, dict) else c
                                 for c in cc
                             ]
                         pkg.tables.append({

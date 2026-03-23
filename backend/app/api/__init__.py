@@ -2,7 +2,7 @@
 API package initialization.
 """
 from fastapi import APIRouter
-from app.api import auth, datasources, charts, dashboards, dataset_workspaces, users, shares, permissions, anomaly, feedback
+from app.api import auth, datasources, charts, dashboards, dataset_workspaces, users, shares, permissions, anomaly, feedback, chat_sessions
 from app.routers import semantic
 
 # Create main API router
@@ -26,5 +26,8 @@ api_router.include_router(anomaly.router)
 
 # Phase 5: Feedback-Driven Knowledge System
 api_router.include_router(feedback.router)
+
+# AI Chat session persistence
+api_router.include_router(chat_sessions.router)
 
 __all__ = ["api_router"]

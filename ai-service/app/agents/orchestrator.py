@@ -72,18 +72,24 @@ create_dashboard(topic, tables:[{workspace_id, table_id}], chart_count)
 
 Step 1 — Call search_charts(query).
   • top_chart_data.rows exists?
-    YES → The chart is already displayed. READ top_chart_data.rows → go to Step 3.
-         BUT if the user asks "most/highest/top/best" or "least/lowest/worst",
-         the chart rows may be sorted by a DIFFERENT column.
-         In that case → also call query_table to get correctly ranked data.
+    YES → The chart is already displayed. READ top_chart_data.rows.
+         ⚠ CRITICAL: check if the ROWS contain the columns needed to answer.
+         If the chart data does NOT contain the column the user asked about
+         (e.g. user asks about "miss_deadline" but chart only has status/assignee),
+         IGNORE the chart data and go to Step 2.
+         If the data is relevant → go to Step 3.
     NO  → go to Step 2.
 
-Step 2 — No chart found. Choose the right approach:
+Step 2 — No usable chart data. Choose the right approach:
   a) "tell me about X data" / "what columns?" → explore_data(overview)
   b) "why did X change?" / "explain drop" → explain_insight(...)
   c) User needs a NEW chart visualization → create_chart(...)
   d) "build me a dashboard" → create_dashboard(...)
-  e) Simple number lookup → list_workspace_tables first, then query_table
+  e) Any data question → call list_workspace_tables, then query_table with the right column.
+     ⚠ CRITICAL — column matching:
+       • User asks about "project" → dimension = "project_name"
+       • User asks about "person/ai/who" → dimension = "assignee"
+       Never substitute one for the other.
 
 Step 3 — Analyze data and write response using ONLY numbers from actual rows.
   ⚠ For "most/highest/top" → scan ALL rows, find actual MAX value.
@@ -106,10 +112,29 @@ Step 3 — Analyze data and write response using ONLY numbers from actual rows.
 ✗ NEVER write [CHART:id] in text — system handles chart display.
 ✗ NEVER fabricate numbers — every value MUST come from actual rows[].
 ✗ NEVER access datasources or raw SQL directly — only use workspace tables.
-✓ Always respond in the SAME LANGUAGE as the user.
+✓ ALWAYS respond in Vietnamese (Tiếng Việt) — regardless of what language the user writes in.
 ✓ When creating a chart: call list_workspace_tables FIRST to get workspace_id + table_id.
 ✓ If a tool fails, say so and try an alternative.
 ✓ If user asks about data you cannot see, say "This data is not available in your shared workspaces."
+
+━━━ DATA QUALITY RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠ Columns typed "boolean" ALWAYS contain STRING values in this system: '0'=false/inactive, '1'=true/active, 'TRUE'/'FALSE' for deadline columns.
+  → NEVER use filter value = true/false/True/False.
+  → For status: filter value = '0' (incomplete) or '1' (complete).
+  → For miss_deadline: filter value = 'TRUE' (missed) or 'FALSE' (on-time).
+
+⚠ When user asks for a RATIO/PERCENTAGE ("tỷ lệ", "bao nhiêu %", "phần trăm"):
+  → Call query_table with that column as a DIMENSION (to get count per value) + task_id as measure (count).
+  → e.g. for miss_deadline ratio: dimensions=["miss_deadline"], measures=[{field:"task_id",function:"count"}]
+  → Then compute: (count where TRUE) / (total count) × 100 = percentage.
+
+⚠ READ COLUMN NAMES CAREFULLY. Match user's question to EXACT column:
+  → "project" / "dự án" → use project_name column, NEVER use assignee
+  → "person/ai/who" / "nhân viên/người" → use assignee column, NEVER use project_name
+  → When the existing chart data is about assignees but user asks about projects → IGNORE the chart, call query_table with project_name as dimension.
+
+⚠ When filtering, use the EXACT string values from data (check with explore_data if uncertain).
 """
 
 
@@ -154,13 +179,24 @@ def _make_gemini_model(model_name: str):
 
     genai.configure(api_key=settings.gemini_api_key)
 
+    def _strip_unsupported(schema):
+        """Recursively remove fields Gemini doesn't support (default, etc.)."""
+        if isinstance(schema, dict):
+            return {
+                k: _strip_unsupported(v) for k, v in schema.items()
+                if k not in ("default",)
+            }
+        if isinstance(schema, list):
+            return [_strip_unsupported(item) for item in schema]
+        return schema
+
     declarations = []
     for t in TOOL_SCHEMAS:
         fn = t["function"]
         declarations.append(FunctionDeclaration(
             name=fn["name"],
             description=fn["description"],
-            parameters=fn["parameters"],
+            parameters=_strip_unsupported(fn["parameters"]),
         ))
     gemini_tools = [GeminiTool(function_declarations=declarations)]
 
@@ -168,7 +204,7 @@ def _make_gemini_model(model_name: str):
         model_name=model_name,
         tools=gemini_tools,
         system_instruction=SYSTEM_PROMPT,
-        generation_config={"temperature": 0.2, "max_output_tokens": 2048},
+        generation_config={"temperature": 0.2, "max_output_tokens": 1024},
     )
 
 
@@ -197,7 +233,7 @@ async def _call_openai(
         tool_choice="auto",
         stream=stream,
         temperature=0.2,
-        max_tokens=2048,
+        max_tokens=1024,
     )
     if stream:
         async for chunk in response:
@@ -239,7 +275,7 @@ async def _call_anthropic(
 
     response = await client.messages.create(
         model=model,
-        max_tokens=2048,
+        max_tokens=1024,
         system=system,
         messages=anthropic_messages,
         tools=anthropic_tools,
@@ -275,6 +311,46 @@ def get_or_create_session(session_id: Optional[str], context: Dict) -> Conversat
         context=context or {},
     )
     _sessions[new_id] = session
+    return session
+
+
+async def load_session_from_db(session_id: str, token: str) -> Optional[ConversationSession]:
+    """
+    Load a session from the backend DB into memory.
+    Returns None if not found / not accessible.
+    Called when a session is requested by REST endpoints but not in _sessions.
+    """
+    from app.clients.bi_client import bi_client
+    data = await bi_client.load_chat_session(session_id, token=token)
+    if not data:
+        return None
+
+    session = ConversationSession(
+        session_id=session_id,
+        messages=[],
+        context={"auth_token": token},
+    )
+    # Seed title
+    session.title = data.get("title", "New Conversation")
+
+    # Reconstruct messages from persisted history
+    for m in data.get("messages", []):
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if not content and role == "assistant":
+            continue
+        msg = Message(role=role, content=content)
+        if role == "assistant":
+            msg.message_id = m.get("message_id")
+            msg.metrics = m.get("metrics")
+            msg.feedback = m.get("feedback")
+            msg.charts = m.get("charts")
+            # user_query stored on assistant msg for correction button
+            if m.get("user_query"):
+                msg.extra = {"user_query": m["user_query"]}
+        session.messages.append(msg)
+
+    _sessions[session_id] = session
     return session
 
 
@@ -412,13 +488,38 @@ async def run_agent(
             yield metrics_event.model_dump()
 
             # Store metrics + charts on the last assistant message
+            assistant_msg_content = ""
             for m in reversed(session.messages):
                 if m.role == "assistant" and m.content:
                     m.message_id = message_id
                     m.metrics = metrics_event.model_dump(exclude={"type"})
                     if turn_charts:
                         m.charts = turn_charts
+                    assistant_msg_content = m.content if isinstance(m.content, str) else ""
                     break
+
+            # ── Persist new messages to backend DB (best-effort, non-blocking) ──
+            try:
+                from app.clients.bi_client import bi_client
+                msgs_to_save = [
+                    {"role": "user", "content": user_message},
+                    {
+                        "role": "assistant",
+                        "content": assistant_msg_content,
+                        "message_id": message_id,
+                        "user_query": user_message,
+                        "charts": turn_charts or None,
+                        "metrics": metrics_event.model_dump(exclude={"type"}),
+                    },
+                ]
+                await bi_client.append_chat_messages(session.session_id, msgs_to_save, token=token)
+                # Also sync the title in case it was just set this turn
+                await bi_client.upsert_chat_session(
+                    session.session_id, session.title,
+                    session.owner_user_id or "", token=token
+                )
+            except Exception:
+                pass  # persistence failure never breaks the chat response
 
             # ── Suggest follow-up questions ──
             try:
@@ -535,7 +636,7 @@ async def _openai_loop(
                 tool_choice=force_tool,
                 stream=True,
                 temperature=0.2,
-                max_tokens=2048,
+                max_tokens=1024,
             ),
             timeout=LLM_TIMEOUT,
         )
@@ -734,7 +835,7 @@ async def _anthropic_loop(
         response = await asyncio.wait_for(
             client.messages.create(
                 model=model,
-                max_tokens=2048,
+                max_tokens=1024,
                 system=SYSTEM_PROMPT + ("\n\n" + turn_context if turn_context else ""),
                 messages=anthropic_messages,
                 tools=anthropic_tools,
@@ -1124,12 +1225,12 @@ async def _generate_suggestions(provider: str, model: str, session: Conversation
     last_user_msg = user_msgs[-1][:200] if user_msgs else ""
 
     suggest_prompt = (
-        f"User asked: {last_user_msg}\n"
-        f"Assistant answered: {last_response[:400]}\n\n"
-        "Generate exactly 3 short follow-up questions the user might ask next. "
-        "Questions must be data-specific, actionable, under 10 words each. "
-        "Reply ONLY as a JSON array of 3 strings, no markdown:\n"
-        '["question1", "question2", "question3"]'
+        f"Người dùng hỏi: {last_user_msg}\n"
+        f"Trợ lý trả lời: {last_response[:400]}\n\n"
+        "Tạo đúng 3 câu hỏi tiếp theo mà người dùng có thể hỏi, bằng TIẾNG VIỆT. "
+        "Câu hỏi phải liên quan đến dữ liệu, ngắn gọn (dưới 12 từ). "
+        "Trả lời DƯỚI DẠNG JSON array gồm 3 chuỗi, không có markdown:\n"
+        '["câu hỏi 1", "câu hỏi 2", "câu hỏi 3"]'
     )
 
     try:

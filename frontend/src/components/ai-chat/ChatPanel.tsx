@@ -75,6 +75,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const currentAiMsgIdRef = useRef<string | null>(null);
+  const tokenRef = useRef<string>('');
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
@@ -83,30 +84,43 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   useEffect(() => {
     let cancelled = false;
 
-    loadHistory();
+    async function init() {
+      // Fetch token once — reused for loadHistory, handleFeedback, and WebSocket
+      let token = '';
+      try {
+        const res = await fetch('/api/auth/token');
+        if (res.ok) {
+          const { token: t } = await res.json();
+          token = t;
+          tokenRef.current = t;
+        }
+      } catch { /* proceed without token */ }
 
-    // Delay slightly so that React Strict Mode's double-invoke cleanup
-    // can cancel the first mount before we open the WebSocket.
-    const tid = setTimeout(() => {
-      if (!cancelled) connectWs();
-    }, 0);
+      if (!cancelled) {
+        await loadHistory(token);
+        connectWs(token);
+      }
+    }
 
+    init();
     return () => {
       cancelled = true;
-      clearTimeout(tid);
       wsRef.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  async function loadHistory() {
+  async function loadHistory(token?: string) {
     try {
-      const res = await fetch(`${AI_HTTP_URL}/chat/sessions/${sessionId}`);
+      const headers: Record<string, string> = {};
+      const t = token ?? tokenRef.current;
+      if (t) headers['Authorization'] = `Bearer ${t}`;
+      const res = await fetch(`${AI_HTTP_URL}/chat/sessions/${sessionId}`, { headers });
       if (!res.ok) return;
       const data = await res.json();
       setSessionTitle(data.title ?? 'New Conversation');
       const restored: ChatMessageData[] = (data.messages ?? []).map(
-        (m: { role: string; content: string; message_id?: string; metrics?: MessageMetrics; feedback?: MessageFeedback; charts?: ChartPayload[] }) => ({
+        (m: { role: string; content: string; message_id?: string; metrics?: MessageMetrics; feedback?: MessageFeedback; charts?: ChartPayload[]; userQuery?: string }) => ({
           id: uuidv4(),
           role: m.role as 'user' | 'assistant',
           text: m.content,
@@ -115,6 +129,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
           messageId: m.message_id,
           metrics: m.metrics,
           feedback: m.feedback,
+          userQuery: m.userQuery,  // restored so correction button appears
         })
       );
       setMessages(restored);
@@ -125,20 +140,26 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     }
   }
 
-  async function connectWs() {
+  async function connectWs(token?: string) {
     wsRef.current?.close();
     setWsError(null);
 
-    // Fetch JWT token via server-side API route (httpOnly cookie not readable by JS directly)
+    // Use pre-fetched token if provided, otherwise fetch fresh
     let wsUrl = AI_WS_URL;
-    try {
-      const res = await fetch('/api/auth/token');
-      if (res.ok) {
-        const { token } = await res.json();
-        wsUrl = `${AI_WS_URL}?token=${encodeURIComponent(token)}`;
+    const t = token ?? tokenRef.current;
+    if (t) {
+      wsUrl = `${AI_WS_URL}?token=${encodeURIComponent(t)}`;
+    } else {
+      try {
+        const res = await fetch('/api/auth/token');
+        if (res.ok) {
+          const { token: freshToken } = await res.json();
+          tokenRef.current = freshToken;
+          wsUrl = `${AI_WS_URL}?token=${encodeURIComponent(freshToken)}`;
+        }
+      } catch {
+        // Proceed without token — server will reject with 4001
       }
-    } catch {
-      // Proceed without token — server will reject with 4001
     }
 
     const ws = new WebSocket(wsUrl);
@@ -299,9 +320,11 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
   const handleFeedback = useCallback(async (msgId: string, messageId: string, rating: 'up' | 'down') => {
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (tokenRef.current) headers['Authorization'] = `Bearer ${tokenRef.current}`;
       const res = await fetch(
         `${AI_HTTP_URL}/chat/sessions/${sessionId}/messages/${messageId}/feedback`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rating }) },
+        { method: 'POST', headers, body: JSON.stringify({ rating }) },
       );
       if (res.ok) {
         setMessages(prev => prev.map(m =>
@@ -375,7 +398,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       {wsError && (
         <div className="mx-4 mt-3 px-4 py-2.5 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex items-center justify-between">
           <span>{wsError}</span>
-          <button onClick={connectWs} className="ml-3 text-red-600 underline text-xs">Retry</button>
+          <button onClick={() => connectWs()} className="ml-3 text-red-600 underline text-xs">Retry</button>
         </div>
       )}
 

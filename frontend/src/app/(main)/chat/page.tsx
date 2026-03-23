@@ -21,16 +21,28 @@ export default function ChatListPage() {
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [shareSession, setShareSession] = useState<SessionSummary | null>(null);
+  const [authToken, setAuthToken] = useState<string>('');
   const { data: currentUser } = useCurrentUser();
   const { data: permData } = usePermissions();
   const canShare = hasPermission(permData?.permissions, 'ai_chat', 'edit');
 
-  useEffect(() => { fetchSessions(); }, []);
+  useEffect(() => {
+    fetch('/api/auth/token')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.token) setAuthToken(d.token); })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => { if (authToken) fetchSessions(); }, [authToken]);
+
+  function authHeaders(): Record<string, string> {
+    return authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+  }
 
   async function fetchSessions() {
     setLoading(true);
     try {
-      const res = await fetch(`${AI_HTTP_URL}/chat/sessions`);
+      const res = await fetch(`${AI_HTTP_URL}/chat/sessions`, { headers: authHeaders() });
       if (res.ok) setSessions(await res.json());
     } catch { /* AI service offline */ }
     finally { setLoading(false); }
@@ -39,7 +51,10 @@ export default function ChatListPage() {
   async function handleNewChat() {
     setCreating(true);
     try {
-      const res = await fetch(`${AI_HTTP_URL}/chat/sessions`, { method: 'POST' });
+      const res = await fetch(`${AI_HTTP_URL}/chat/sessions`, {
+        method: 'POST',
+        headers: authHeaders(),
+      });
       if (!res.ok) throw new Error();
       const { session_id } = await res.json();
       router.push(`/chat/${session_id}`);
@@ -53,7 +68,10 @@ export default function ChatListPage() {
   async function handleDelete(id: string) {
     setDeletingId(id);
     try {
-      await fetch(`${AI_HTTP_URL}/chat/sessions/${id}`, { method: 'DELETE' });
+      await fetch(`${AI_HTTP_URL}/chat/sessions/${id}`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      });
       setSessions(prev => prev.filter(s => s.session_id !== id));
     } catch { /* ignore */ }
     finally { setDeletingId(null); }

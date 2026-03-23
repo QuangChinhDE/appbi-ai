@@ -253,6 +253,88 @@ class BIClient:
     async def close(self):
         await self._http.aclose()
 
+    # ── Chat session persistence ───────────────────────────────────────────────
 
-# Module-level singleton — reused across requests
+    async def upsert_chat_session(
+        self, session_id: str, title: str, owner_user_id: str, token: str = ""
+    ) -> None:
+        """Create or update a chat session record in the backend DB."""
+        try:
+            await self._http.post(
+                f"{self._base}/chat-sessions",
+                json={"session_id": session_id, "title": title, "owner_user_id": owner_user_id},
+                headers=self._auth_headers(token),
+            )
+        except Exception:
+            pass  # persistence is best-effort — never break the chat flow
+
+    async def load_chat_session(self, session_id: str, token: str = "") -> Optional[Dict[str, Any]]:
+        """Load a persisted session from backend DB. Returns None if not found/accessible."""
+        try:
+            r = await self._http.get(
+                f"{self._base}/chat-sessions/{session_id}",
+                headers=self._auth_headers(token),
+            )
+            if r.status_code in (403, 404):
+                return None
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return None
+
+    async def list_chat_sessions(self, token: str = "") -> List[Dict[str, Any]]:
+        """List persisted sessions for the authenticated user."""
+        try:
+            r = await self._http.get(
+                f"{self._base}/chat-sessions",
+                headers=self._auth_headers(token),
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return []
+
+    async def delete_chat_session(self, session_id: str, token: str = "") -> None:
+        """Delete a persisted session from the backend DB."""
+        try:
+            await self._http.delete(
+                f"{self._base}/chat-sessions/{session_id}",
+                headers=self._auth_headers(token),
+            )
+        except Exception:
+            pass
+
+    async def append_chat_messages(
+        self, session_id: str, messages: List[Dict[str, Any]], token: str = ""
+    ) -> None:
+        """Persist a batch of new messages to the backend DB (best-effort)."""
+        if not messages:
+            return
+        try:
+            await self._http.post(
+                f"{self._base}/chat-sessions/{session_id}/messages",
+                json={"messages": messages},
+                headers=self._auth_headers(token),
+            )
+        except Exception:
+            pass
+
+    async def update_chat_feedback(
+        self,
+        session_id: str,
+        message_id: str,
+        rating: str,
+        comment: Optional[str],
+        token: str = "",
+    ) -> None:
+        """Persist thumbs up/down feedback to backend DB."""
+        try:
+            await self._http.put(
+                f"{self._base}/chat-sessions/{session_id}/messages/{message_id}/feedback",
+                json={"rating": rating, "comment": comment},
+                headers=self._auth_headers(token),
+            )
+        except Exception:
+            pass
+
 bi_client = BIClient()

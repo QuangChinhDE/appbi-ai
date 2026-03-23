@@ -98,6 +98,7 @@ class Message(BaseModel):
     metrics: Optional[Dict[str, Any]] = None   # quality metrics (assistant only)
     feedback: Optional[Dict[str, Any]] = None  # user feedback {rating, comment}
     charts: Optional[List[Dict[str, Any]]] = None  # chart events emitted for this message
+    extra: Optional[Dict[str, Any]] = None     # misc per-message metadata (e.g. user_query for correction)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

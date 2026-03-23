@@ -14,7 +14,7 @@ from jose import JWTError, jwt
 
 from app.config import settings
 from app.schemas.chat import ChatRequest, ConversationSession, DoneEvent, ErrorEvent, FeedbackRequest, SessionSummary
-from app.agents.orchestrator import get_or_create_session, run_agent, cleanup_expired_sessions, _sessions
+from app.agents.orchestrator import get_or_create_session, run_agent, cleanup_expired_sessions, _sessions, load_session_from_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -43,8 +43,23 @@ def _require_auth(credentials: HTTPAuthorizationCredentials | None = Depends(_be
     return payload
 
 
+def _require_auth_raw(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> tuple:
+    """Like _require_auth but also returns the raw token string.
+    Returns (payload_dict, raw_token_str).
+    """
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    raw = credentials.credentials
+    payload = _decode_ws_token(raw)
+    if payload is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return payload, raw
+
+
 def _check_session_owner(session_id: str, user_id: str) -> ConversationSession:
-    """Return session if it exists and belongs to user, else raise 404/403."""
+    """Return in-memory session if it exists and belongs to user, else raise 404/403."""
     if session_id not in _sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     s = _sessions[session_id]
@@ -177,45 +192,65 @@ async def chat_stream(req: ChatRequest, auth: dict = Depends(_require_auth)):
 # ── Session management ─────────────────────────────────────────────────────────
 
 @router.get("/sessions", response_model=List[SessionSummary])
-async def list_sessions(auth: dict = Depends(_require_auth)):
-    """List active sessions belonging to the authenticated user, newest first."""
+async def list_sessions(auth_ctx: tuple = Depends(_require_auth_raw)):
+    """List sessions from backend DB (persistent), newest first."""
+    auth, token = auth_ctx
     user_id: str = auth.get("sub", "")
+    from app.clients.bi_client import bi_client
+    db_sessions = await bi_client.list_chat_sessions(token=token)
     result = []
-    for s in sorted(_sessions.values(), key=lambda x: x.last_active, reverse=True):
-        # Only return sessions owned by this user (empty owner = legacy, skip)
-        if s.owner_user_id != user_id:
-            continue
+    for s in db_sessions:
+        # Prefer in-memory last_message since DB doesn't store it separately
+        mem = _sessions.get(s["session_id"])
         last_msg = None
-        for m in reversed(s.messages):
-            if m.role in ("user", "assistant") and isinstance(m.content, str):
-                last_msg = m.content[:120]
-                break
+        if mem:
+            for m in reversed(mem.messages):
+                if m.role in ("user", "assistant") and isinstance(m.content, str):
+                    last_msg = m.content[:120]
+                    break
         result.append(SessionSummary(
-            session_id=s.session_id,
-            title=s.title,
-            created_at=s.created_at,
-            last_active=s.last_active,
-            message_count=len([m for m in s.messages if m.role in ("user", "assistant")]),
+            session_id=s["session_id"],
+            title=s["title"],
+            created_at=s["created_at"],
+            last_active=s["last_active"],
+            message_count=s.get("message_count", 0),
             last_message=last_msg,
         ))
     return result
 
 
 @router.post("/sessions", status_code=201)
-async def create_session(auth: dict = Depends(_require_auth)):
-    """Create a new empty session and return its ID."""
+async def create_session(auth_ctx: tuple = Depends(_require_auth_raw)):
+    """Create a new empty session and persist it to DB."""
+    auth, token = auth_ctx
     user_id: str = auth.get("sub", "")
+    from app.clients.bi_client import bi_client
     new_id = str(uuid.uuid4())
     session = ConversationSession(session_id=new_id, owner_user_id=user_id)
     _sessions[new_id] = session
+    await bi_client.upsert_chat_session(new_id, "New Conversation", user_id, token=token)
     return {"session_id": new_id}
 
 
 @router.get("/sessions/{session_id}")
-async def get_session(session_id: str, auth: dict = Depends(_require_auth)):
-    """Get session detail including message history (for restore on page load)."""
+async def get_session(session_id: str, auth_ctx: tuple = Depends(_require_auth_raw)):
+    """Get session detail including message history.
+    Loads from DB if not in memory (handles page refresh after restart).
+    """
+    auth, token = auth_ctx
     user_id: str = auth.get("sub", "")
-    s = _check_session_owner(session_id, user_id)
+
+    # Try in-memory first
+    if session_id in _sessions:
+        s = _sessions[session_id]
+        if s.owner_user_id and s.owner_user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    else:
+        # Load from DB (includes share verification by the backend)
+        s = await load_session_from_db(session_id, token)
+        if s is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+
     msgs = []
     for m in s.messages:
         if m.role not in ("user", "assistant"):
@@ -235,6 +270,9 @@ async def get_session(session_id: str, auth: dict = Depends(_require_auth)):
                 entry["feedback"] = m.feedback
             if m.charts:
                 entry["charts"] = m.charts
+            # user_query stored via extra field when loaded from DB
+            if hasattr(m, "extra") and m.extra and m.extra.get("user_query"):
+                entry["userQuery"] = m.extra["user_query"]
         msgs.append(entry)
     return {
         "session_id": s.session_id,
@@ -246,24 +284,42 @@ async def get_session(session_id: str, auth: dict = Depends(_require_auth)):
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
-async def delete_session(session_id: str, auth: dict = Depends(_require_auth)):
-    """Delete a conversation session (owner only)."""
+async def delete_session(session_id: str, auth_ctx: tuple = Depends(_require_auth_raw)):
+    """Delete a conversation session (owner only) from memory and DB."""
+    auth, token = auth_ctx
     user_id: str = auth.get("sub", "")
-    _check_session_owner(session_id, user_id)  # raises 404/403 if not allowed
+    if session_id in _sessions:
+        _check_session_owner(session_id, user_id)
     _sessions.pop(session_id, None)
+    from app.clients.bi_client import bi_client
+    await bi_client.delete_chat_session(session_id, token=token)
 
 
 @router.post("/sessions/{session_id}/messages/{message_id}/feedback")
-async def submit_feedback(session_id: str, message_id: str, req: FeedbackRequest, auth: dict = Depends(_require_auth)):
-    """Submit thumbs-up/down feedback for a specific AI message (owner only)."""
+async def submit_feedback(
+    session_id: str,
+    message_id: str,
+    req: FeedbackRequest,
+    auth_ctx: tuple = Depends(_require_auth_raw),
+):
+    """Submit thumbs-up/down feedback. Persisted to DB + updated in memory."""
+    auth, token = auth_ctx
     user_id: str = auth.get("sub", "")
-    s = _check_session_owner(session_id, user_id)
-    for m in s.messages:
-        if m.role == "assistant" and m.message_id == message_id:
-            m.feedback = {"rating": req.rating, "comment": req.comment}
-            logger.info(f"Feedback received: session={session_id} msg={message_id} rating={req.rating}")
-            return {"status": "ok", "message_id": message_id, "rating": req.rating}
-    raise HTTPException(status_code=404, detail="Message not found")
+
+    # Update in-memory if session is loaded
+    if session_id in _sessions:
+        s = _check_session_owner(session_id, user_id)
+        for m in s.messages:
+            if m.role == "assistant" and m.message_id == message_id:
+                m.feedback = {"rating": req.rating, "comment": req.comment}
+                break
+
+    # Always persist to DB
+    from app.clients.bi_client import bi_client
+    await bi_client.update_chat_feedback(session_id, message_id, req.rating, req.comment, token=token)
+
+    logger.info(f"Feedback: session={session_id} msg={message_id} rating={req.rating}")
+    return {"status": "ok", "message_id": message_id, "rating": req.rating}
 
 
 @router.post("/cleanup", status_code=200)

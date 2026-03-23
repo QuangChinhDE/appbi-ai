@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { Save, ArrowLeft, ChevronDown, ChevronUp, Pencil, Check, Search, Plus, Trash2, Tag, Settings2, Bot } from 'lucide-react';
+import { Save, ArrowLeft, ChevronDown, ChevronUp, Pencil, Check, Search, Plus, Trash2, Tag, Settings2, Bot, X } from 'lucide-react';
 import { useWorkspace, useTablePreview } from '@/hooks/use-dataset-workspaces';
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
@@ -61,7 +61,7 @@ export default function ExploreDetailPage() {
 
   // ── Parameters state ─────────────────────────────────────────────────────
   const [isParamsOpen, setIsParamsOpen] = useState(false);
-  const [isDescOpen, setIsDescOpen] = useState(false);
+  const [isDescModalOpen, setIsDescModalOpen] = useState(false);
   type ParamRow = ChartParameterCreate & { _key: string };
   const [paramRows, setParamRows] = useState<ParamRow[]>([]);
 
@@ -374,6 +374,15 @@ export default function ExploreDetailPage() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {!isNew && chartId && (
+              <button
+                onClick={() => setIsDescModalOpen(true)}
+                className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                title="AI Mô tả"
+              >
+                <Bot className="w-4 h-4" />
+              </button>
+            )}
             {resPerms.canEdit && (
             <button
               onClick={handleSaveLook}
@@ -668,29 +677,6 @@ export default function ExploreDetailPage() {
                 )}
               </div>
 
-              {/* ── AI Description panel ───────────────────────────────── */}
-              {!isNew && chartId && (
-                <div className="border-t">
-                  <button
-                    onClick={() => setIsDescOpen((o) => !o)}
-                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors"
-                  >
-                    <div className="flex items-center gap-2">
-                      <Bot className="w-3.5 h-3.5 text-gray-400" />
-                      <span className="text-sm font-semibold text-gray-900">AI Description</span>
-                    </div>
-                    {isDescOpen ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
-                  </button>
-                  {isDescOpen && (
-                    <div className="px-4 pb-4">
-                      <ChartDescriptionPanel
-                        chartId={chartId}
-                        canEdit={resPerms.canEdit}
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           )}
         </div>
@@ -748,6 +734,33 @@ export default function ExploreDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* AI Description Modal */}
+      {isDescModalOpen && chartId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsDescModalOpen(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            {/* Modal header */}
+            <div className="flex items-center justify-between px-6 py-5 bg-gradient-to-r from-blue-600 to-violet-600 rounded-t-2xl">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-white/20 rounded-lg">
+                  <Bot className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h2 className="font-semibold text-white text-base">AI Mô tả</h2>
+                  <p className="text-xs text-blue-100 mt-0.5">Thông tin AI tự động phân tích biểu đồ</p>
+                </div>
+              </div>
+              <button onClick={() => setIsDescModalOpen(false)} className="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {/* Modal body */}
+            <div className="flex-1 overflow-y-auto p-6">
+              <ChartDescriptionPanel chartId={chartId} canEdit={resPerms.canEdit} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

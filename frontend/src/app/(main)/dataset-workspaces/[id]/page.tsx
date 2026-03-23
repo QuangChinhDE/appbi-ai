@@ -89,7 +89,7 @@ export default function WorkspaceDetailPage() {
   const [tableToDelete, setTableToDelete] = useState<{ id: number; name: string } | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingTable, setIsDeletingTable] = useState(false);
-  const [isDescriptionOpen, setIsDescriptionOpen] = useState(false);
+  const [isDescModalOpen, setIsDescModalOpen] = useState(false);
 
   // Fetch workspace with tables
   const { 
@@ -491,6 +491,17 @@ export default function WorkspaceDetailPage() {
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                   )}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedTableId(table.id);
+                      setIsDescModalOpen(true);
+                    }}
+                    className="p-1 hover:bg-blue-100 rounded text-gray-400 hover:text-blue-600"
+                    title="AI Mô tả"
+                  >
+                    <Bot className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               ))}
             </div>
@@ -600,31 +611,6 @@ export default function WorkspaceDetailPage() {
                   </button>
                 </div>
               </div>
-            </div>
-
-            {/* Description Panel (collapsible) */}
-            <div className="bg-white border-b">
-              <button
-                onClick={() => setIsDescriptionOpen((v) => !v)}
-                className="w-full flex items-center gap-2 px-6 py-2 text-sm text-gray-500 hover:bg-gray-50 text-left"
-              >
-                <Bot className="w-4 h-4" />
-                AI Description
-                {isDescriptionOpen ? (
-                  <ChevronRight className="w-3 h-3 rotate-90 ml-auto" />
-                ) : (
-                  <ChevronRight className="w-3 h-3 ml-auto" />
-                )}
-              </button>
-              {isDescriptionOpen && workspaceId && selectedTableId && (
-                <div className="px-6 pb-4">
-                  <TableDescriptionPanel
-                    workspaceId={workspaceId}
-                    tableId={selectedTableId}
-                    canEdit={resPerms.canEdit}
-                  />
-                </div>
-              )}
             </div>
 
             {/* Grid Body */}
@@ -803,6 +789,33 @@ export default function WorkspaceDetailPage() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* AI Description Modal */}
+      {isDescModalOpen && selectedTableId && workspaceId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsDescModalOpen(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            {/* Modal header */}
+            <div className="flex items-center justify-between px-6 py-5 bg-gradient-to-r from-blue-600 to-violet-600 rounded-t-2xl">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-white/20 rounded-lg">
+                  <Bot className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h2 className="font-semibold text-white text-base">AI Mô tả</h2>
+                  <p className="text-xs text-blue-100 mt-0.5">{selectedTable?.display_name || selectedTable?.source_table_name}</p>
+                </div>
+              </div>
+              <button onClick={() => setIsDescModalOpen(false)} className="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {/* Modal body */}
+            <div className="flex-1 overflow-y-auto p-6">
+              <TableDescriptionPanel workspaceId={workspaceId} tableId={selectedTableId} canEdit={resPerms.canEdit} />
+            </div>
           </div>
         </div>
       )}
