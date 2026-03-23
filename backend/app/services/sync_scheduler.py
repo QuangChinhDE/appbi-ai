@@ -113,8 +113,21 @@ def _job_id(ds_id: int) -> str:
 
 def register_datasource(ds_id: int, sync_config: dict) -> None:
     """Add or update the scheduled job for a datasource based on its sync_config."""
+    import json as _json
     scheduler = get_scheduler()
-    schedule = sync_config.get("schedule", {})
+    if isinstance(sync_config, str):
+        try:
+            sync_config = _json.loads(sync_config)
+        except Exception:
+            sync_config = {}
+    if not isinstance(sync_config, dict):
+        sync_config = {}
+    schedule = sync_config.get("schedule") or {}
+    if isinstance(schedule, str):
+        try:
+            schedule = _json.loads(schedule)
+        except Exception:
+            schedule = {}
     jid = _job_id(ds_id)
 
     if not schedule.get("enabled"):
@@ -165,7 +178,22 @@ def startup() -> None:
         count = 0
         for ds in datasources:
             cfg = ds.sync_config or {}
-            if cfg.get("schedule", {}).get("enabled"):
+            if isinstance(cfg, str):
+                import json
+                try:
+                    cfg = json.loads(cfg)
+                except Exception:
+                    cfg = {}
+            if not isinstance(cfg, dict):
+                cfg = {}
+            schedule_cfg = cfg.get("schedule") or {}
+            if isinstance(schedule_cfg, str):
+                import json
+                try:
+                    schedule_cfg = json.loads(schedule_cfg)
+                except Exception:
+                    schedule_cfg = {}
+            if schedule_cfg.get("enabled"):
                 register_datasource(ds.id, cfg)
                 count += 1
         logger.info(f"[scheduler] loaded {count} scheduled sync job(s) from DB")

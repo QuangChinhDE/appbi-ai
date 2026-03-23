@@ -2,7 +2,7 @@
 API package initialization.
 """
 from fastapi import APIRouter
-from app.api import auth, datasources, charts, dashboards, dataset_workspaces, users, shares, permissions, anomaly
+from app.api import auth, datasources, charts, dashboards, dataset_workspaces, users, shares, permissions, anomaly, feedback
 from app.routers import semantic
 
 # Create main API router
@@ -23,5 +23,8 @@ api_router.include_router(semantic.router)
 
 # Phase 4: Proactive Intelligence
 api_router.include_router(anomaly.router)
+
+# Phase 5: Feedback-Driven Knowledge System
+api_router.include_router(feedback.router)
 
 __all__ = ["api_router"]

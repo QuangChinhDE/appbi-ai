@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { Save, ArrowLeft, ChevronDown, ChevronUp, Pencil, Check, Search, Plus, Trash2, Tag, Settings2 } from 'lucide-react';
+import { Save, ArrowLeft, ChevronDown, ChevronUp, Pencil, Check, Search, Plus, Trash2, Tag, Settings2, Bot } from 'lucide-react';
 import { useWorkspace, useTablePreview } from '@/hooks/use-dataset-workspaces';
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
@@ -16,6 +16,7 @@ import { applyFilters } from '@/lib/explore-utils';
 import { ExploreChartConfig, type ExploreChartType, type ChartRoleConfig, type AggFn } from '@/components/explore/ExploreChartConfig';
 import { toast } from 'sonner';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import { ChartDescriptionPanel } from '@/components/explore/ChartDescriptionPanel';
 import type { ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
 
 type ChartType = ExploreChartType;
@@ -60,6 +61,7 @@ export default function ExploreDetailPage() {
 
   // ── Parameters state ─────────────────────────────────────────────────────
   const [isParamsOpen, setIsParamsOpen] = useState(false);
+  const [isDescOpen, setIsDescOpen] = useState(false);
   type ParamRow = ChartParameterCreate & { _key: string };
   const [paramRows, setParamRows] = useState<ParamRow[]>([]);
 
@@ -665,6 +667,31 @@ export default function ExploreDetailPage() {
                   </div>
                 )}
               </div>
+            </div>
+
+              {/* ── AI Description panel ───────────────────────────────── */}
+              {!isNew && chartId && (
+                <div className="border-t">
+                  <button
+                    onClick={() => setIsDescOpen((o) => !o)}
+                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Bot className="w-3.5 h-3.5 text-gray-400" />
+                      <span className="text-sm font-semibold text-gray-900">AI Description</span>
+                    </div>
+                    {isDescOpen ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+                  </button>
+                  {isDescOpen && (
+                    <div className="px-4 pb-4">
+                      <ChartDescriptionPanel
+                        chartId={chartId}
+                        canEdit={resPerms.canEdit}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -48,4 +48,5 @@ export interface ChatMessageData {
   metrics?: MessageMetrics;
   feedback?: MessageFeedback;
   messageId?: string;            // server-assigned message_id for feedback
+  userQuery?: string;            // The user question that prompted this AI response
 }

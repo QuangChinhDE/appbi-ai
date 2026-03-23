@@ -184,6 +184,11 @@ class TableStatsService:
                 "TableStats: updated stats for table %s (%d columns, %d sample rows)",
                 table_id, len(stats), len(rows),
             )
+
+            # Schema change detection — runs after commit so table reflects new stats
+            from app.services.schema_change_service import SchemaChangeService
+            SchemaChangeService.check_and_handle(db, table_id, stats)
+
             return stats
 
         except Exception as exc:

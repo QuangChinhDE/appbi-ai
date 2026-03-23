@@ -789,6 +789,117 @@ def execute_workspace_table_query(
         )
 
 
+# ===== Table Description Endpoints =====
+
+@router.get("/{workspace_id}/tables/{table_id}/description")
+def get_table_description(
+    workspace_id: int,
+    table_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get AI-generated description and knowledge fields for a workspace table."""
+    workspace = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    perm = get_effective_permission(db, current_user, workspace, "workspaces")
+    if perm == "none":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    table = db.query(DatasetWorkspaceTable).filter(
+        DatasetWorkspaceTable.id == table_id,
+        DatasetWorkspaceTable.workspace_id == workspace_id,
+    ).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    return {
+        "auto_description": table.auto_description,
+        "column_descriptions": table.column_descriptions,
+        "common_questions": table.common_questions,
+        "query_aliases": table.query_aliases,
+        "description_source": table.description_source,
+        "description_updated_at": table.description_updated_at.isoformat() if table.description_updated_at else None,
+        "schema_change_pending": table.schema_change_pending,
+    }
+
+
+@router.put("/{workspace_id}/tables/{table_id}/description")
+def update_table_description(
+    workspace_id: int,
+    table_id: int,
+    body: dict,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update description fields manually. Sets description_source='user' and re-embeds."""
+    ws = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    require_edit_access(db, current_user, ws, "workspaces")
+
+    table = db.query(DatasetWorkspaceTable).filter(
+        DatasetWorkspaceTable.id == table_id,
+        DatasetWorkspaceTable.workspace_id == workspace_id,
+    ).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    if "auto_description" in body:
+        table.auto_description = body["auto_description"]
+    if "column_descriptions" in body:
+        table.column_descriptions = body["column_descriptions"]
+    if "common_questions" in body:
+        table.common_questions = body["common_questions"]
+    if "query_aliases" in body:
+        table.query_aliases = body["query_aliases"]
+
+    table.description_source = "user"
+    table.description_updated_at = datetime.utcnow()
+    table.schema_change_pending = False
+    db.commit()
+
+    background_tasks.add_task(EmbeddingService.embed_table, db, table_id)
+
+    return {
+        "auto_description": table.auto_description,
+        "column_descriptions": table.column_descriptions,
+        "common_questions": table.common_questions,
+        "query_aliases": table.query_aliases,
+        "description_source": table.description_source,
+        "description_updated_at": table.description_updated_at.isoformat() if table.description_updated_at else None,
+        "schema_change_pending": table.schema_change_pending,
+    }
+
+
+@router.post("/{workspace_id}/tables/{table_id}/description/regenerate")
+def regenerate_table_description(
+    workspace_id: int,
+    table_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Force-regenerate AI description for a table, then re-embed."""
+    ws = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    require_edit_access(db, current_user, ws, "workspaces")
+
+    table = db.query(DatasetWorkspaceTable).filter(
+        DatasetWorkspaceTable.id == table_id,
+        DatasetWorkspaceTable.workspace_id == workspace_id,
+    ).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    background_tasks.add_task(AutoTaggingService.describe_table, db, table_id, True)
+    background_tasks.add_task(EmbeddingService.embed_table, db, table_id)
+
+    return {"status": "regenerating"}
+
+
 # ===== Datasource Table List Endpoint =====
 
 @router.get(

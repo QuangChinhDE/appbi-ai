@@ -59,52 +59,62 @@ Upgrade AI Agent theo 3 layers và 4 phases:
 
 ---
 
-## Implementation Status (Updated 2026-03-21)
+## Implementation Status (Updated 2026-03-22)
 
 ### Phase 1 — Foundation: Metadata Enrichment & Vector Search
 
 | Feature | Status | Notes |
 |---------|--------|-------|
 | 2.1 DB columns (`column_stats`, `auto_description`, `stats_updated_at`) | ✅ DONE | Migration applied |
-| 2.1 `TableStatsService.compute_stats()` | ❌ PENDING | Service file does not exist; `columns_cache` field (datasource metadata) is used as column name fallback |
-| 2.1 Auto-compute on sync/upload/create | ❌ PENDING | Not hooked in |
+| 2.1 `TableStatsService.compute_stats()` | ✅ DONE | `backend/app/services/table_stats_service.py` — computes per-column dtype, cardinality, null%, min/max, samples, mean/std from 500-row DuckDB sample |
+| 2.1 Auto-compute on workspace table create/update | ✅ DONE | Hooked as `BackgroundTask` in `dataset_workspaces.py` on both POST (create table) and PUT (update table) |
 | 2.2 `resource_embeddings` table + pgvector | ✅ DONE | Migration applied |
-| 2.2 `EmbeddingService` | ✅ DONE | **Model changed**: `gemini-embedding-001` (768-dim) via httpx instead of `text-embedding-3-small`; requires `GEMINI_API_KEY` |
-| 2.2 Vector search endpoints (`GET /charts/search`, `GET /dataset-workspaces/tables/search`) | ✅ DONE | Permission-aware JOIN for charts |
-| 2.2 Auto-embed on chart/table CRUD | ❌ PENDING | Deferred — will add hooks after Phase 4 review |
-| 2.3 LLM Auto-Tagging (`AutoTaggingService`) | ❌ PENDING | Not implemented |
+| 2.2 `EmbeddingService` | ✅ DONE | `gemini-embedding-001` (768-dim) via httpx; `generate_embedding`, `generate_query_embedding`, `embed_chart`, `embed_table`, `delete_embedding`, `search_similar` methods; requires `GEMINI_API_KEY` |
+| 2.2 Vector search endpoints (`GET /charts/search`, `GET /dataset-workspaces/tables/search`) | ✅ DONE | Permission-aware JOIN for charts; workspace table search filters by accessible workspace IDs |
+| 2.2 Auto-embed on chart/table CRUD | ✅ DONE | Hooked as `BackgroundTask` in `charts.py` (create + update → embed; delete → delete_embedding) and `dataset_workspaces.py` (table create + update → embed; delete → delete_embedding) |
+| 2.3 LLM Auto-Tagging (`AutoTaggingService`) | ✅ DONE | `backend/app/services/auto_tagging_service.py` — `tag_chart` (generates domain/intent/metrics/dimensions/tags) + `describe_table` (generates `auto_description`); uses `LLMClient.complete_json`; hooked on chart create/update and workspace table create/update |
 | 2.4 Permission-Aware Search | ✅ DONE | Vector search has permission JOIN; list endpoints use `filter_by_visibility()` |
+
+**Phase 1: 100% complete.**
 
 ### Phase 2 — Smart Routing: Context Compression
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| 3.1 Query Classifier (`classify_query`) | ❌ PENDING | Raw user message used for vector search instead |
-| 3.2 Context Builder — per-turn vector search | ✅ DONE | `context_builder.py` implemented; top-3 charts + top-3 tables injected into system prompt per turn |
-| 3.2 Context Builder — query classifier integration | ❌ PENDING | Classifier not implemented; direct search used |
-| 3.2 Context compression < 3K tokens | ✅ DONE | Compact `ContextPackage` format |
-| 3.2 `_trim_history` boundary safety | ✅ DONE | Advances to first `role: "user"` after cut point to avoid orphaned tool messages |
-| 3.3 Conversation Memory (`chat_sessions`, `chat_messages`) | ✅ DONE | Tables existed; WebSocket session management already present |
-| 3.3 Sliding window (last N messages) | ✅ DONE | `_trim_history` keeps last 20 messages |
+| 3.1 Query Classifier (`classify_query`) | ❌ PENDING | No `query_classifier.py` file; raw user message passed directly to vector search |
+| 3.2 Context Builder — per-turn vector search | ✅ DONE | `context_builder.py`; top-5 charts + top-5 tables (min similarity 0.3); falls back to listing all accessible tables when no embeddings |
+| 3.2 Context Builder — query classifier integration | ❌ PENDING | Classifier not built; direct message used for search |
+| 3.2 Context compression < 3K tokens | ✅ DONE | Compact `ContextPackage.to_prompt_section()` format — table names + columns + chart names only |
+| 3.2 `_trim_history` boundary safety | ✅ DONE | Advances to first `role: "user"` after cut point to avoid orphaned tool-result messages |
+| 3.3 Conversation Memory — in-memory sessions | ✅ DONE | `_sessions` dict in orchestrator; includes message history, title, charts, metrics, feedback per message |
+| 3.3 Conversation Memory — DB persistence | ❌ PENDING | No `chat_sessions`/`chat_messages` DB tables; sessions lost on service restart |
+| 3.3 Sliding window (last 20 messages) | ✅ DONE | `_trim_history` keeps last 20 messages |
 | 3.3 Old-message summarization | ❌ PENDING | Not implemented |
-| 3.4 Usage-Based Ranking (`resource_views` table) | ❌ PENDING | Not implemented |
+| 3.4 Usage-Based Ranking (`resource_views` table) | ❌ PENDING | No `resource_views` table; search results ranked by vector similarity only |
 
 ### Phase 3 — Enhanced Tools
 
-| Feature | Status |
-|---------|--------|
-| `create_chart` tool | ❌ PENDING → implementing now |
-| `explore_data` tool | ❌ PENDING → implementing now |
-| `explain_insight` tool | ❌ PENDING → implementing now |
-| `suggest_next` post-response suggestions | ❌ PENDING → implementing now |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `create_chart` tool | ✅ DONE | Calls `bi_client.ai_chart_preview(save=True)`; returns chart_id, data rows, row_count, chart_name |
+| `explore_data` tool | ✅ DONE | `analysis_type`: `overview` (per-column stats from 50-row sample), `distribution` (value counts via `execute_table_query`), `time_patterns` (trend on date × numeric columns) |
+| `explain_insight` tool | ✅ DONE | Computes current vs previous period via `execute_table_query` with date filters; supports `week_over_week`, `month_over_month`, `quarter_over_quarter`, `year_over_year`; drills down by `dimension_columns` |
+| `suggest_next` post-response suggestions | ✅ DONE | Implemented as `_generate_suggestions()` in `orchestrator.py`; fires lightweight LLM call after every response; emits `SuggestionsEvent` with 3 follow-up questions; supports all 4 providers |
+
+**Phase 3: 100% complete.**
 
 ### Phase 4 — Proactive Intelligence
 
-| Feature | Status |
-|---------|--------|
-| Anomaly Detection (`monitored_metrics` + `anomaly_alerts`) | ❌ PENDING → implementing now |
-| `create_dashboard` tool | ❌ PENDING → implementing now |
-| Data Storytelling (weekly narrative) | ❌ PENDING → implementing now |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Anomaly Detection — models (`monitored_metrics`, `anomaly_alerts`) | ✅ DONE | `backend/app/models/anomaly.py` — `MonitoredMetric` (workspace_table_id, metric_column, aggregation, time_column, dimension_columns, threshold_z_score) + `AnomalyAlert` (z_score, change_pct, severity info/warning/critical, explanation) |
+| Anomaly Detection — service | ✅ DONE | `backend/app/services/anomaly_detection.py` — `check_metric` (7-day rolling z-score on DuckDB) + `run_all_checks` + `_build_explanation`; `AnomalyDetectionService.run_all_checks(db)` |
+| Anomaly Detection — daily scheduler | ✅ DONE | `backend/app/services/anomaly_scheduler.py` — APScheduler cron daily at 02:00 UTC; hooked into `app/main.py` lifespan |
+| Anomaly Detection — REST API | ✅ DONE | `backend/app/api/anomaly.py` — CRUD for monitored metrics (`GET/POST /anomaly/metrics`, `PATCH /metrics/{id}/toggle`, `DELETE /metrics/{id}`), alerts (`GET /anomaly/alerts`, `PATCH /alerts/{id}/read`, `DELETE /alerts/read-all`), manual scan (`POST /anomaly/scan`) |
+| `create_dashboard` tool | ✅ DONE | Auto-detects numeric/categorical/date columns from 20-row sample; creates KPI/KPI/LINE/BAR/PIE/TABLE chart specs; saves via `ai_chart_preview(save=True)`; creates dashboard + adds charts + updates grid layout |
+| Data Storytelling (weekly narrative) | ❌ PENDING | No code found anywhere in the codebase |
+
+**Phase 4: Anomaly Detection fully complete. Data Storytelling not started.**
 
 ---
 

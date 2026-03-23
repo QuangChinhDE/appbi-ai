@@ -19,6 +19,7 @@ import {
   Pencil,
   ChevronLeft as ChevronLeftPag,
   ChevronRight,
+  Bot,
 } from 'lucide-react';
 import { useWorkspace, useTablePreview, useUpdateTable, useRemoveTable } from '@/hooks/use-dataset-workspaces';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
@@ -26,6 +27,7 @@ import { AddTableModal } from '@/components/datasets/AddTableModalV2';
 import { ManageColumnsDrawer } from '@/components/datasets/ManageColumnsDrawer';
 import { AddColumnModal, buildFNS } from '@/components/datasets/AddColumnModal';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import { TableDescriptionPanel } from '@/components/datasets/TableDescriptionPanel';
 import type { Transformation } from '@/hooks/use-dataset-workspaces';
 
 // Inline Excel formula evaluator (mirrors AddColumnModal's evalExcelFormula)
@@ -87,6 +89,7 @@ export default function WorkspaceDetailPage() {
   const [tableToDelete, setTableToDelete] = useState<{ id: number; name: string } | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingTable, setIsDeletingTable] = useState(false);
+  const [isDescriptionOpen, setIsDescriptionOpen] = useState(false);
 
   // Fetch workspace with tables
   const { 
@@ -597,6 +600,31 @@ export default function WorkspaceDetailPage() {
                   </button>
                 </div>
               </div>
+            </div>
+
+            {/* Description Panel (collapsible) */}
+            <div className="bg-white border-b">
+              <button
+                onClick={() => setIsDescriptionOpen((v) => !v)}
+                className="w-full flex items-center gap-2 px-6 py-2 text-sm text-gray-500 hover:bg-gray-50 text-left"
+              >
+                <Bot className="w-4 h-4" />
+                AI Description
+                {isDescriptionOpen ? (
+                  <ChevronRight className="w-3 h-3 rotate-90 ml-auto" />
+                ) : (
+                  <ChevronRight className="w-3 h-3 ml-auto" />
+                )}
+              </button>
+              {isDescriptionOpen && workspaceId && selectedTableId && (
+                <div className="px-6 pb-4">
+                  <TableDescriptionPanel
+                    workspaceId={workspaceId}
+                    tableId={selectedTableId}
+                    canEdit={resPerms.canEdit}
+                  />
+                </div>
+              )}
             </div>
 
             {/* Grid Body */}

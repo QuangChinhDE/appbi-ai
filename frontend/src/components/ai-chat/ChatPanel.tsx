@@ -328,6 +328,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     setMessages(prev => [...prev, {
       id: aiMsgId, role: 'assistant',
       isThinking: true, activitySteps: [], charts: [], text: '',
+      userQuery: text,  // remember the user's question for the FeedbackModal
     }]);
     setLoading(true);
     setInput('');
@@ -406,7 +407,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
           </div>
         )}
         {messages.map(msg => (
-          <ChatMessage key={msg.id} message={msg} onFeedback={handleFeedback} />
+          <ChatMessage key={msg.id} message={msg} sessionId={sessionId} onFeedback={handleFeedback} />
         ))}
       </div>
 

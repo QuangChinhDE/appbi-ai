@@ -10,6 +10,8 @@ from app.services.table_stats_service import TableStatsService
 from app.services.embedding_service import EmbeddingService
 from app.services.llm_client import LLMClient
 from app.services.auto_tagging_service import AutoTaggingService
+from app.services.schema_change_service import SchemaChangeService
+from app.services.feedback_processor import FeedbackProcessor
 
 __all__ = [
     "DataSourceConnectionService",
@@ -21,4 +23,6 @@ __all__ = [
     "EmbeddingService",
     "LLMClient",
     "AutoTaggingService",
+    "SchemaChangeService",
+    "FeedbackProcessor",
 ]

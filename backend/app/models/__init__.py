@@ -27,6 +27,7 @@ from app.models.anomaly import (
     MonitoredMetric,
     AnomalyAlert,
 )
+from app.models.ai_feedback import AIFeedback
 # Commented out - using hybrid approach with filters_config JSON field instead
 # from app.models.dashboard_filter import DashboardFilter
 
@@ -52,4 +53,5 @@ __all__ = [
     "SyncJob",
     "MonitoredMetric",
     "AnomalyAlert",
+    "AIFeedback",
 ]

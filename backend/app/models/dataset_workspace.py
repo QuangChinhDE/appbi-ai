@@ -59,6 +59,15 @@ class DatasetWorkspaceTable(Base):
     auto_description = Column(Text, nullable=True, default=None)
     stats_updated_at = Column(DateTime, nullable=True, default=None)
 
+    # Knowledge system fields — Feedback-Driven Knowledge System
+    column_descriptions = Column(JSONB, nullable=True, default=None)    # {"col": "description"}
+    common_questions = Column(JSONB, nullable=True, default=None)        # ["question1", ...]
+    query_aliases = Column(JSONB, nullable=True, default=None)           # ["GMV", "doanh thu"] from feedback
+    description_source = Column(String(20), nullable=True, default=None) # "auto"|"user"|"feedback"
+    description_updated_at = Column(DateTime, nullable=True, default=None)
+    schema_hash = Column(String(64), nullable=True, default=None)        # SHA256 of sorted col:dtype
+    schema_change_pending = Column(Boolean, nullable=True, default=False) # True = schema changed, user description may be stale
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
 

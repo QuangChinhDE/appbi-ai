@@ -368,6 +368,109 @@ def delete_chart_metadata(
 
 
 # ---------------------------------------------------------------------------
+# Description endpoints (knowledge system)
+# ---------------------------------------------------------------------------
+
+@router.get("/{chart_id}/description")
+def get_chart_description(
+    chart_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get AI-generated description and knowledge fields for a chart."""
+    from app.models.models import ChartMetadata
+    chart = ChartService.get_by_id(db, chart_id)
+    if not chart:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart {chart_id} not found")
+    perm = get_effective_permission(db, current_user, chart, "explore_charts")
+    if perm == "none":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    meta = db.query(ChartMetadata).filter(ChartMetadata.chart_id == chart_id).first()
+    if not meta:
+        return {
+            "auto_description": None,
+            "insight_keywords": None,
+            "common_questions": None,
+            "query_aliases": None,
+            "description_source": None,
+            "description_updated_at": None,
+        }
+    return {
+        "auto_description": meta.auto_description,
+        "insight_keywords": meta.insight_keywords,
+        "common_questions": meta.common_questions,
+        "query_aliases": meta.query_aliases,
+        "description_source": meta.description_source,
+        "description_updated_at": meta.description_updated_at.isoformat() if meta.description_updated_at else None,
+    }
+
+
+@router.put("/{chart_id}/description")
+def update_chart_description(
+    chart_id: int,
+    body: dict,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update chart description fields manually. Sets description_source='user' and re-embeds."""
+    from datetime import datetime
+    from app.models.models import ChartMetadata
+    chart = ChartService.get_by_id(db, chart_id)
+    if not chart:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart {chart_id} not found")
+    require_edit_access(db, current_user, chart, "explore_charts")
+
+    meta = db.query(ChartMetadata).filter(ChartMetadata.chart_id == chart_id).first()
+    if not meta:
+        meta = ChartMetadata(chart_id=chart_id)
+        db.add(meta)
+
+    if "auto_description" in body:
+        meta.auto_description = body["auto_description"]
+    if "insight_keywords" in body:
+        meta.insight_keywords = body["insight_keywords"]
+    if "common_questions" in body:
+        meta.common_questions = body["common_questions"]
+    if "query_aliases" in body:
+        meta.query_aliases = body["query_aliases"]
+
+    meta.description_source = "user"
+    meta.description_updated_at = datetime.utcnow()
+    db.commit()
+
+    background_tasks.add_task(EmbeddingService.embed_chart, db, chart_id)
+
+    return {
+        "auto_description": meta.auto_description,
+        "insight_keywords": meta.insight_keywords,
+        "common_questions": meta.common_questions,
+        "query_aliases": meta.query_aliases,
+        "description_source": meta.description_source,
+        "description_updated_at": meta.description_updated_at.isoformat() if meta.description_updated_at else None,
+    }
+
+
+@router.post("/{chart_id}/description/regenerate")
+def regenerate_chart_description(
+    chart_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Force-regenerate AI description for a chart, then re-embed."""
+    chart = ChartService.get_by_id(db, chart_id)
+    if not chart:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart {chart_id} not found")
+    require_edit_access(db, current_user, chart, "explore_charts")
+
+    background_tasks.add_task(AutoTaggingService.tag_chart, db, chart_id, True)
+    background_tasks.add_task(EmbeddingService.embed_chart, db, chart_id)
+
+    return {"status": "regenerating"}
+
+
+# ---------------------------------------------------------------------------
 # Parameter definition endpoints
 # ---------------------------------------------------------------------------
 

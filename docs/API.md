@@ -19,7 +19,8 @@ All request/response bodies are **JSON**. Protected endpoints require a JWT toke
 7. [Charts](#7-charts)
 8. [Dashboards](#8-dashboards)
 9. [Semantic Views](#9-semantic-views)
-10. [Common Types](#10-common-types)
+10. [AI Service](#10-ai-service)
+11. [Common Types](#11-common-types)
 
 ---
 
@@ -269,6 +270,8 @@ Get permissions for all users (admin view).
 ---
 
 ### `PUT /permissions/{user_id}`
+
+> **Note**: There is no `GET /permissions/{user_id}` endpoint. To get a single user's permissions, use `GET /permissions/matrix` and filter by `user_id`, or read the `permissions` field on `GET /users/{user_id}`.
 
 Set module permissions for a user.
 
@@ -894,6 +897,24 @@ Execute a structured aggregation query against the table.
 
 > Field name is `function` (not `agg`). Supported functions: `sum`, `count`, `avg`, `min`, `max`, `count_distinct`.
 > If `alias` is omitted, the column name is `{field}_{function}` (e.g. `revenue_sum`).
+
+**Filter item** (for the `filters` array):
+```json
+{ "field": "status", "operator": "=", "value": "active" }
+```
+
+| `operator` | Meaning |
+|---|---|
+| `=` | Equal |
+| `!=` | Not equal |
+| `>` | Greater than |
+| `<` | Less than |
+| `>=` | Greater than or equal |
+| `<=` | Less than or equal |
+| `LIKE` | SQL LIKE pattern (e.g. `"value": "%active%"`) |
+| `IN` | In a set — `value` must be a JSON string of comma-separated items |
+
+> **Important**: These are SQL literal operators, not word-form. The execute endpoint uses a **different** operator format from chart config filters (which use `eq`, `neq`, etc.).
 
 **Response 200**
 ```json
@@ -1824,7 +1845,187 @@ Execute a semantic query. Generates SQL from semantic definitions and runs it ag
 
 ---
 
-## 10. Common Types
+## 10. AI Service
+
+Base URL: `http://localhost:8001`
+
+The AI Service is a separate FastAPI process that provides a natural-language chat interface on top of the BI backend. It connects to the BI backend using the caller's JWT for all data operations.
+
+> **Auth**: All AI endpoints require the JWT token either as `Authorization: Bearer <token>` header, or as a query parameter `?token=<token>` (for WebSocket connections).
+
+---
+
+### `GET /health`
+
+Health check.
+
+**Response 200** — `{ "status": "ok" }`
+
+---
+
+### WebSocket `GET /chat/ws?token=<jwt>`
+
+Persistent real-time chat connection. Send and receive JSON messages.
+
+**Establish connection**:
+```
+ws://localhost:8001/chat/ws?token=eyJhbGci...
+```
+
+**Send a message** (client → server):
+```json
+{
+  "type": "message",
+  "content": "What tables are available?",
+  "session_id": "uuid-or-null"
+}
+```
+If `session_id` is `null` or omitted, a new session is created.
+
+**Receive streaming chunks** (server → client):
+```json
+{ "type": "chunk",    "content": "Here are the available tables..." }
+{ "type": "tool_use", "tool": "list_workspace_tables", "input": {} }
+{ "type": "tool_result", "tool": "list_workspace_tables", "result": [...] }
+{ "type": "done",     "session_id": "abc-123", "message_id": null }
+```
+
+| Event type | Description |
+|---|---|
+| `chunk` | Partial text token from the LLM |
+| `tool_use` | AI is calling a BI tool |
+| `tool_result` | Tool returned data |
+| `error` | Something went wrong |
+| `done` | Stream complete — includes `session_id` |
+
+---
+
+### `POST /chat/stream`
+
+HTTP alternative to WebSocket. Returns a **Server-Sent Events (SSE)** stream.
+
+**Request body**
+```json
+{
+  "content": "Show me revenue by region",
+  "session_id": "uuid-or-null"
+}
+```
+
+**Response** — `Content-Type: text/event-stream`, each line is a JSON object:
+```
+data: {"type": "chunk", "content": "Here is revenue by region..."}
+data: {"type": "tool_use", "tool": "query_table", "input": {...}}
+data: {"type": "tool_result", "tool": "query_table", "result": {...}}
+data: {"type": "done", "session_id": "abc-123", "message_id": null}
+```
+
+---
+
+### `GET /chat/sessions`
+
+List all chat sessions for the current user.
+
+**Response 200**
+```json
+[
+  {
+    "id": "uuid",
+    "title": "Revenue analysis",
+    "created_at": "2026-03-22T10:00:00Z",
+    "updated_at": "2026-03-22T10:05:00Z",
+    "message_count": 6
+  }
+]
+```
+
+> **Known issue**: `id` may be `null` for sessions created before session-ID persistence was implemented. These sessions cannot be resumed or used for feedback.
+
+---
+
+### `GET /chat/sessions/{session_id}`
+
+Get a single session with its full message history.
+
+**Response 200**
+```json
+{
+  "id": "uuid",
+  "title": "Revenue analysis",
+  "messages": [
+    { "id": null, "role": "user",      "content": "Show me revenue by region", "created_at": "..." },
+    { "id": null, "role": "assistant", "content": "Here is revenue by region...", "created_at": "..." }
+  ],
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+---
+
+### `DELETE /chat/sessions/{session_id}`
+
+Delete a chat session.
+
+**Response 204** — no body
+
+---
+
+### `POST /chat/feedback`
+
+Submit thumbs-up / thumbs-down feedback on a message.
+
+**Request body**
+```json
+{
+  "message_id": "uuid",
+  "rating": "up",
+  "comment": "Optional free-text comment"
+}
+```
+
+| `rating` | Meaning |
+|---|---|
+| `"up"` | Positive feedback |
+| `"down"` | Negative feedback |
+
+> **Note**: `rating` must be exactly `"up"` or `"down"`. Other values (e.g. `"thumbs_up"`) return 422.
+
+**Response 200** — `{ "status": "ok" }`
+
+---
+
+### `POST /chat/cleanup`
+
+Delete all chat sessions older than N days.
+
+**Request body** — `{ "days": 30 }`
+
+**Response 200** — `{ "deleted": 5 }`
+
+---
+
+### AI Agent Tools
+
+The AI agent has access to these BI tools during a conversation:
+
+| Tool | Description |
+|---|---|
+| `list_workspaces` | List all accessible dataset workspaces |
+| `list_workspace_tables` | List tables in a workspace |
+| `get_table_schema` | Get column names and types for a table |
+| `get_sample_data` | Fetch sample rows from a table |
+| `query_table` | Execute a structured aggregation query (dimensions + measures + filters) |
+| `search_charts` | Search existing saved charts by name/keyword |
+| `get_chart_data` | Fetch data from a saved chart by chart ID |
+| `create_chart` | Create and save a new chart from the conversation |
+| `analyze_field` | Analyze value distribution for a column |
+
+**Known limitation**: The `query_table` tool sends count queries with `agg` field instead of `function`, causing 0-row results for `count` aggregations via the execute endpoint.
+
+---
+
+## 11. Common Types
 
 ### Column types
 `string` · `integer` · `number` (float) · `boolean` · `date` · `datetime` · `unknown`

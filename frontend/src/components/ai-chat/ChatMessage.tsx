@@ -5,22 +5,25 @@
  * AI messages can contain markdown text, embedded charts, tool call badges,
  * quality metrics bar, and feedback buttons.
  */
-import React from 'react';
-import { Bot, User, ThumbsUp, ThumbsDown, Clock, Database, BarChart3, Wrench, Zap } from 'lucide-react';
+import React, { useState } from 'react';
+import { Bot, User, ThumbsUp, ThumbsDown, Clock, Database, BarChart3, Wrench, Zap, MessageSquarePlus } from 'lucide-react';
 import type { ChartRoleConfig } from '@/components/explore/ExploreChartConfig';
 import { EmbeddedChart } from './EmbeddedChart';
 import { ThinkingIndicator } from './ThinkingIndicator';
+import { FeedbackModal } from './FeedbackModal';
 import type { ChatMessageData } from './types';
 
 interface ChatMessageProps {
   message: ChatMessageData;
+  sessionId?: string;
   onFeedback?: (msgId: string, messageId: string, rating: 'up' | 'down') => void;
 }
 
-export function ChatMessage({ message, onFeedback }: ChatMessageProps) {
+export function ChatMessage({ message, sessionId, onFeedback }: ChatMessageProps) {
   const isUser = message.role === 'user';
   const metrics = message.metrics;
   const feedback = message.feedback;
+  const [isCorrectModalOpen, setIsCorrectModalOpen] = useState(false);
 
   return (
     <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
@@ -124,8 +127,26 @@ export function ChatMessage({ message, onFeedback }: ChatMessageProps) {
               >
                 <ThumbsDown className="h-3.5 w-3.5" />
               </button>
+              {message.userQuery && (
+                <button
+                  onClick={() => setIsCorrectModalOpen(true)}
+                  className="p-1 rounded transition-colors text-gray-400 hover:text-purple-600 hover:bg-purple-50"
+                  title="Correct this response"
+                >
+                  <MessageSquarePlus className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
           </div>
+        )}
+
+        {isCorrectModalOpen && message.userQuery && (
+          <FeedbackModal
+            sessionId={sessionId ?? ''}
+            messageId={message.messageId}
+            userQuery={message.userQuery}
+            onClose={() => setIsCorrectModalOpen(false)}
+          />
         )}
       </div>
     </div>

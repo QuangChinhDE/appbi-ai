@@ -223,6 +223,10 @@ def _run_sync_job(data_source_id: int, job_id: int) -> None:
 
         sync_config = ds.sync_config or {}
         table_configs: Dict[str, Dict] = sync_config.get("tables", {})
+        if not isinstance(table_configs, dict):
+            # Guard: sync_config.tables must be a dict {table_key: config}.
+            # If it's a list (malformed config), treat as empty — sync all tables with defaults.
+            table_configs = {}
 
         schema_list = DataSourceConnectionService.get_schema_browser(ds.type, ds.config)
         if not schema_list:

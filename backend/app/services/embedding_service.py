@@ -90,13 +90,17 @@ class EmbeddingService:
 
     @staticmethod
     def build_chart_text(chart, table=None) -> str:
-        """Build searchable text from chart + optional table info."""
+        """
+        Build rich searchable text from chart + optional table info.
+        Incorporates knowledge system fields: auto_description, insight_keywords,
+        query_aliases, common_questions from ChartMetadata.
+        """
         parts = [
             f"Chart: {chart.name}",
             f"Type: {chart.chart_type}",
         ]
 
-        # Chart metadata (domain, intent, metrics, tags) — relationship is chart_meta
+        # Chart metadata (domain, intent, metrics, tags, + knowledge fields)
         m = getattr(chart, "chart_meta", None)
         if m:
             if m.domain:
@@ -109,6 +113,15 @@ class EmbeddingService:
                 parts.append(f"Dimensions: {', '.join(m.dimensions)}")
             if m.tags:
                 parts.append(f"Tags: {', '.join(m.tags)}")
+            # Knowledge system fields
+            if m.auto_description:
+                parts.append(f"Description: {m.auto_description}")
+            if m.insight_keywords:
+                parts.append(f"Keywords: {', '.join(m.insight_keywords)}")
+            if m.query_aliases:
+                parts.append(f"Also searched as: {', '.join(m.query_aliases)}")
+            if m.common_questions:
+                parts.append(f"Common questions: {'; '.join(m.common_questions)}")
 
         # Chart config axes
         config = chart.config or {}
@@ -117,9 +130,11 @@ class EmbeddingService:
         if config.get("metrics"):
             parts.append(f"Y-axis: {config['metrics']}")
 
-        # Table info
+        # Table info — include table description for richer context
         if table:
             parts.append(f"Table: {table.display_name}")
+            if table.auto_description:
+                parts.append(f"Table description: {table.auto_description[:200]}")
             if table.column_stats:
                 parts.append(f"Columns: {', '.join(table.column_stats.keys())}")
             elif table.columns_cache:
@@ -131,16 +146,45 @@ class EmbeddingService:
 
     @staticmethod
     def build_table_text(table) -> str:
-        """Build searchable text for a workspace table."""
+        """
+        Build rich searchable text for a workspace table.
+        Incorporates knowledge system fields: column_descriptions, query_aliases,
+        common_questions for significantly better embedding search quality.
+        """
         parts = [f"Table: {table.display_name}"]
+
+        # Main description
         if table.auto_description:
             parts.append(f"Description: {table.auto_description}")
+
+        # Per-column descriptions (most informative for search)
+        if table.column_descriptions:
+            for col, desc in list(table.column_descriptions.items())[:20]:
+                parts.append(f"Column {col}: {desc}")
+
+        # Column names + types (fallback/supplement)
         if table.column_stats:
-            parts.append(f"Columns: {', '.join(table.column_stats.keys())}")
+            col_summary = ", ".join([
+                f"{col} ({stats.get('dtype', 'unknown')})"
+                for col, stats in list(table.column_stats.items())[:25]
+            ])
+            parts.append(f"Columns: {col_summary}")
         elif table.columns_cache:
             cols = _extract_col_names(table.columns_cache)
             if cols:
-                parts.append(f"Columns: {', '.join(cols)}")
+                parts.append(f"Columns: {', '.join(cols[:25])}")
+
+        # Query aliases from feedback loop
+        if table.query_aliases:
+            parts.append(
+                f"Also known as / commonly searched with: "
+                f"{', '.join(table.query_aliases)}"
+            )
+
+        # Common questions improve semantic search for natural language queries
+        if table.common_questions:
+            parts.append(f"Common questions: {'; '.join(table.common_questions)}")
+
         return "\n".join(parts)
 
     # ── Upsert helpers ──────────────────────────────────────────────────────

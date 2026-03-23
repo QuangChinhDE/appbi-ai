@@ -185,6 +185,14 @@ class ChartMetadata(Base):
     # Example: ["sales", "performance", "q1"]
     tags = Column(JSON, nullable=True, default=list)
 
+    # Knowledge system fields — Feedback-Driven Knowledge System
+    auto_description = Column(Text, nullable=True, default=None)          # AI-generated chart description
+    insight_keywords = Column(JSON, nullable=True, default=None)          # ["revenue by region", "doanh thu vùng"]
+    common_questions = Column(JSON, nullable=True, default=None)          # ["Drill down APAC?", ...]
+    query_aliases = Column(JSON, nullable=True, default=None)             # From feedback loop
+    description_source = Column(String(20), nullable=True, default=None)  # "auto"|"user"|"feedback"
+    description_updated_at = Column(DateTime(timezone=True), nullable=True, default=None)
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
