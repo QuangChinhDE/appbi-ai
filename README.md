@@ -1,57 +1,84 @@
-# AppBI — Business Intelligence Dashboard
+# AppBI — Business Intelligence Dashboard Platform
 
 <p align="center">
-  <strong>Self-hosted BI platform with drag-drop dashboards, AI chat, and granular permissions.</strong>
+  <strong>Nền tảng BI tự host với dashboard kéo-thả, AI chat hỏi-đáp dữ liệu, mô tả tự động bằng AI, và phân quyền chi tiết.</strong>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Next.js-14-black?style=flat-square&logo=next.js" />
+  <img src="https://img.shields.io/badge/FastAPI-0.100+-green?style=flat-square&logo=fastapi" />
+  <img src="https://img.shields.io/badge/PostgreSQL-16-blue?style=flat-square&logo=postgresql" />
+  <img src="https://img.shields.io/badge/DuckDB-analytics-yellow?style=flat-square" />
+  <img src="https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker" />
 </p>
 
 ---
 
-## Features
+## Tổng quan
 
-| Module | Description |
-|--------|-------------|
-| **Data Sources** | Connect PostgreSQL, MySQL, BigQuery, Google Sheets, or upload CSV/Excel. Test connection before saving. Auto-sync on schedule. |
-| **Workspaces** | Combine tables from multiple sources into one workspace. Add computed columns with Excel-formula syntax. |
-| **Explore** | Point-and-click chart builder — pick dimensions, metrics, filters, and chart type. Save & reuse. |
-| **Charts** | 10+ types: Bar, Line, Area, Pie, Scatter, Grouped/Stacked Bar, Table, KPI, Time Series, Combo. |
-| **Dashboards** | Drag-drop grid layout. Global filters, per-tile parameters, inline title editing. |
-| **AI Chat** | Ask questions in natural language. Agent uses tools to search charts, run queries, and build answers. |
-| **Permissions** | Module-level access control (none/view/edit/full) + resource-level sharing (view/edit). |
-| **User Management** | Admin panel for user creation, deactivation, and permission assignment. |
+AppBI là nền tảng BI full-stack gồm 3 service độc lập:
+
+| Service | Công nghệ | Port | Mục đích |
+|---------|-----------|------|----------|
+| **Backend** | FastAPI + SQLAlchemy | 8000 | BI API, kết nối dữ liệu, phân quyền |
+| **Frontend** | Next.js 14 (App Router) | 3000 | UI dashboard, chart builder, explore |
+| **AI Service** | FastAPI + WebSocket | 8001 | Chat hỏi-đáp tự nhiên, tool-calling |
+
+**Database**: PostgreSQL 16 (metadata) · DuckDB + Parquet (analytics data)
+
+---
+
+## Tính năng chính
+
+| Module | Mô tả |
+|--------|-------|
+| **Data Sources** | Kết nối PostgreSQL, MySQL, BigQuery, Google Sheets hoặc upload CSV/Excel. Test kết nối trước khi lưu. Auto-sync theo lịch. |
+| **Workspaces** | Nhóm nhiều bảng từ nhiều nguồn vào một workspace. Thêm computed columns với cú pháp công thức Excel. |
+| **Explore / Chart Builder** | Giao diện kéo-chọn dimension, metric, filter, loại chart. Lưu tái sử dụng. |
+| **Charts** | 11 loại: Bar, Line, Area, Pie, Scatter, Grouped Bar, Stacked Bar, Table, KPI, Time Series, Combo. |
+| **Dashboards** | Grid layout kéo-thả. Global filter, per-tile parameter, inline title edit. |
+| **AI Mô tả** | Tự động sinh mô tả bảng/biểu đồ, mô tả từng cột, câu hỏi mẫu bằng Tiếng Việt. Chỉnh sửa và lưu lại. |
+| **AI Chat** | Hỏi đáp bằng ngôn ngữ tự nhiên. Agent tìm kiếm chart, chạy truy vấn, tạo chart mới. Lưu lịch sử hội thoại. |
+| **Phân quyền** | Module-level (none/view/edit/full) + Resource-level sharing (view/edit). Cascade share dashboard → chart → workspace. |
+| **Quản lý người dùng** | Admin tạo/khóa user, gán quyền từng module. |
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|------------|
-| Frontend | Next.js 14 (App Router), TypeScript, Tailwind CSS, Recharts, TanStack Query, react-grid-layout |
-| Backend | FastAPI, SQLAlchemy 2.0, Alembic, Pydantic v2, DuckDB, Python 3.10+ |
-| AI Agent | FastAPI, WebSocket streaming, OpenAI / Anthropic / Gemini / OpenRouter |
-| Database | PostgreSQL 16 (metadata), DuckDB + Parquet (analytics) |
-| Infrastructure | Docker, Docker Compose |
+| Layer | Công nghệ |
+|-------|-----------|
+| **Frontend** | Next.js 14 App Router · TypeScript · Tailwind CSS · Radix UI · Recharts · TanStack Query · react-grid-layout |
+| **Backend** | FastAPI · SQLAlchemy 2.0 · Alembic · Pydantic v2 · DuckDB · Python 3.10+ |
+| **AI Service** | FastAPI · WebSocket streaming · OpenAI / Anthropic / Gemini / OpenRouter |
+| **AI Auto-tag** | LLM client (OpenAI gpt-4o-mini ưu tiên → OpenRouter fallback) tích hợp trong Backend |
+| **Database** | PostgreSQL 16 (metadata, chat sessions) · DuckDB + Parquet (analytics) |
+| **Infrastructure** | Docker · Docker Compose |
 
 ---
 
-## Quick Start
+## Khởi động nhanh
 
-### Docker (Recommended)
+### Docker (Khuyến nghị)
 
 ```bash
-git clone <repo-url> && cd Dashboard-App
+git clone <repo-url> && cd Dashboard-App-v2
 cp .env.docker.example .env
-# Edit .env — set SECRET_KEY and ADMIN_PASSWORD at minimum
+# Sửa .env — tối thiểu đặt SECRET_KEY, ADMIN_PASSWORD, OPENAI_API_KEY
 docker compose up --build -d
 ```
 
-Open http://localhost:3000 and log in with the admin credentials from `.env`.
+Truy cập **http://localhost:3000** và đăng nhập bằng `ADMIN_EMAIL` / `ADMIN_PASSWORD` trong `.env`.
 
-### Local Development
+> **Note**: AI Mô tả (auto-tagging) dùng `OPENAI_API_KEY` trực tiếp.  
+> AI Chat dùng `LLM_PROVIDER` + `LLM_MODEL`.
+
+### Development (không Docker)
 
 **Prerequisites**: Python 3.10+, Node.js 18+, PostgreSQL 16
 
 ```bash
-# 1. Database
+# 1. Tạo database
 createdb appbi
 
 # 2. Backend (terminal 1)
@@ -65,7 +92,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 cd frontend
 npm install && npm run dev
 
-# 4. AI Service — optional (terminal 3)
+# 4. AI Service — tuỳ chọn (terminal 3)
 cd ai-service
 pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
@@ -74,173 +101,200 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 | Service | URL |
 |---------|-----|
 | Frontend | http://localhost:3000 |
-| Backend API | http://localhost:8000/api/v1/docs |
-| AI Chat | http://localhost:8001 |
+| Backend API Docs | http://localhost:8000/api/v1/docs |
+| AI Chat WebSocket | http://localhost:8001 |
 
 ---
 
-## Environment Variables
+## Biến môi trường
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `DB_USER` / `DB_PASSWORD` / `DB_NAME` | Yes | `appbi` | PostgreSQL credentials |
-| `SECRET_KEY` | Yes | — | JWT signing secret (change in production) |
-| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Yes | `admin@appbi.io` | Auto-created admin account |
-| `DATASOURCE_ENCRYPTION_KEY` | For external sources | — | Fernet key for credential encryption |
-| `SEED_DEMO_DATA` | No | `false` | `true` to load demo data on first boot |
-| `LLM_PROVIDER` | For AI chat | `openai` | `openai` / `anthropic` / `gemini` / `openrouter` |
-| `LLM_MODEL` | For AI chat | `gpt-4o-mini` | Model name |
-| `OPENAI_API_KEY` | If using OpenAI | — | API key |
-| `ANTHROPIC_API_KEY` | If using Anthropic | — | API key |
-| `GEMINI_API_KEY` | If using Gemini | — | API key |
+| Biến | Bắt buộc | Mô tả |
+|------|----------|-------|
+| `DB_USER` / `DB_PASSWORD` / `DB_NAME` | ✅ | Thông tin kết nối PostgreSQL |
+| `SECRET_KEY` | ✅ | JWT signing secret (thay đổi trên production) |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | ✅ | Tài khoản admin được tạo tự động khi boot |
+| `DATASOURCE_ENCRYPTION_KEY` | Nguồn ngoài | Fernet key để mã hóa credentials (tạo bên dưới) |
+| `SEED_DEMO_DATA` | Không | `true` để nạp demo data khi boot lần đầu |
+| `OPENAI_API_KEY` | AI Mô tả + Chat | Dùng cho auto-tagging (`gpt-4o-mini`) và AI chat |
+| `OPENROUTER_API_KEY` | Fallback | OpenRouter dùng khi OpenAI không khả dụng |
+| `ANTHROPIC_API_KEY` | Chat | Dùng khi `LLM_PROVIDER=anthropic` |
+| `GEMINI_API_KEY` | Chat | Dùng khi `LLM_PROVIDER=gemini` |
+| `LLM_PROVIDER` | Chat | `openai` / `anthropic` / `gemini` / `openrouter` |
+| `LLM_MODEL` | Chat | Tên model, mặc định `gpt-4o-mini` |
 
-Generate encryption key:
+Tạo Fernet encryption key:
 ```bash
 python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Full annotated template: `.env.docker.example`
+Template đầy đủ: `.env.docker.example`
 
 ---
 
-## Architecture
+## Kiến trúc hệ thống
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
 │  Frontend    │────▶│  Backend    │◀────│  AI Service  │
 │  Next.js 14  │     │  FastAPI    │     │  FastAPI WS  │
 │  :3000       │     │  :8000      │     │  :8001       │
-└──────────────┘     └──────┬───────┘     └──────────────┘
+└──────────────┘     └──────┬──────┘     └──────────────┘
                             │
-                     ┌──────┴──────┐
-                  PostgreSQL    DuckDB
-                  (metadata)   (analytics)
+                   ┌────────┴────────┐
+              PostgreSQL          DuckDB
+              (metadata,        (analytics,
+              auth, chat)        Parquet)
 ```
 
-- **PostgreSQL** stores metadata: users, datasource configs, chart/dashboard definitions, permissions, shares.
-- **DuckDB** + **Parquet** files handle analytics queries. Synced data lives in `.data/`.
-- **AI Service** connects to the Backend API to search charts, execute queries, and answer user questions via tool-calling.
+### Luồng dữ liệu
+
+- **Metadata** (users, datasource configs, chart/dashboard definitions, permissions, chat sessions) → **PostgreSQL**
+- **Analytics data** (synced tables, query results) → **Parquet files + DuckDB engine** trong `.data/`
+- **AI Auto-tag** chạy bên trong Backend như background task — không cần AI Service
 
 ### Data Model
 
 ```
-DataSource → DatasetWorkspace → DatasetWorkspaceTable → Chart → Dashboard
+DataSource
+  └── DatasetWorkspace
+        └── DatasetWorkspaceTable
+              └── Chart
+                    └── Dashboard
 ```
 
-- **DataSource**: External database/file connection (encrypted credentials)
-- **DatasetWorkspace**: Container grouping tables from multiple sources
-- **DatasetWorkspaceTable**: Single table (SQL query or physical import) with optional computed columns
-- **Chart**: Visualization bound to one workspace table
-- **Dashboard**: Grid of charts with shared filters
+| Model | Mô tả |
+|-------|-------|
+| **DataSource** | Kết nối đến database/file ngoài. Credentials mã hóa Fernet. |
+| **DatasetWorkspace** | Nhóm nhiều bảng từ nhiều datasource. |
+| **DatasetWorkspaceTable** | Một bảng — SQL query hoặc import vật lý. Hỗ trợ computed columns, column formats, type overrides. |
+| **Chart** | Visualization gắn với một `workspace_table_id`. |
+| **Dashboard** | Grid layout các charts + global filter config. |
+| **ChatSession / ChatMessage** | Lịch sử hội thoại AI được lưu per-user. |
 
 ---
 
-## Permission System
+## Hệ thống phân quyền
 
-### Module-Level Access
+### Layer 1 — Module Permissions (quyền truy cập module)
 
-Each user has per-module access levels:
+| Level | Quyền hạn |
+|-------|-----------|
+| `none` | Module ẩn trong sidebar, API trả 403 |
+| `view` | Chỉ đọc |
+| `edit` | Tạo + sửa (không xóa) |
+| `full` | Tạo + sửa + xóa + share + quản lý quyền |
 
-| Level | Capabilities |
-|-------|-------------|
-| `none` | Module hidden, API returns 403 |
-| `view` | Read-only access |
-| `edit` | Create + update |
-| `full` | Create + update + delete + share |
+**Modules**: `dashboards` · `explore_charts` · `workspaces` · `data_sources` · `ai_chat` · `user_management` · `settings`
 
-**Modules**: `dashboards`, `explore_charts`, `workspaces`, `data_sources`, `ai_chat`, `user_management`, `settings`
+### Layer 2 — Resource Sharing (chia sẻ tài nguyên)
 
-### Resource-Level Sharing
-
-Resources can be shared with other users as `view` or `edit`. Sharing a dashboard cascades to its charts and workspaces.
+- Chia sẻ resource (chart, dashboard, workspace, datasource) với người dùng cụ thể ở mức `view` hoặc `edit`
+- Chia sẻ dashboard **cascade** tự động chia sẻ luôn các charts và workspaces liên quan
+- Owner luôn có quyền `full` trên resource của mình
 
 ---
 
-## Demo Data
+## AI Mô tả (Auto-tagging)
 
-Set `SEED_DEMO_DATA=true` in `.env` for auto-loading on first boot, or run manually:
+Tính năng tự động sinh metadata cho bảng dữ liệu và biểu đồ bằng LLM:
 
-```bash
-python seed_demo.py
-```
+| Loại | Nội dung sinh ra |
+|------|-----------------|
+| **Bảng dữ liệu** | Mô tả tổng quan · Mô tả từng cột (bắt buộc) · 3–5 câu hỏi mẫu |
+| **Biểu đồ** | Mô tả biểu đồ · Từ khóa tìm kiếm · 2–3 câu hỏi thường gặp |
 
-Creates: 1 datasource (Football/FIFA), 3 workspaces, 18 charts, 3 dashboards.
+**Cách dùng**: Nhấn icon Bot (🤖) cạnh tên bảng hoặc nút Save chart → modal AI Mô tả.
 
-### Test Accounts
+**Tính năng UI**:
+- "Tạo lại bằng AI" → overlay spinner, polling tự động, tự cập nhật khi xong
+- Khóa tất cả input trong lúc AI đang xử lý
+- Thêm/xóa câu hỏi mẫu tùy ý
+- Lưu chỉnh sửa thủ công
 
-```bash
-python seed_test_users.py
-```
-
-| Email | Password | Access Level |
-|-------|----------|-------------|
-| `admin@appbi.io` | `admin123` | Full access (all modules) |
-| `edit@appbi.io` | `edit123` | Editor (all modules) |
-| `viewer@appbi.io` | `viewer123` | Viewer (all modules) |
+**LLM**: Ưu tiên OpenAI `gpt-4o-mini` (qua `OPENAI_API_KEY`), fallback OpenRouter.  
+**Ngôn ngữ**: Toàn bộ output bằng **Tiếng Việt**.
 
 ---
 
 ## AI Chat Agent
 
-Natural-language data Q&A powered by LLM tool-calling.
+Hỏi-đáp dữ liệu bằng ngôn ngữ tự nhiên. Lịch sử hội thoại được lưu lại theo session.
 
-### Tools Available to the LLM
+### Tools của Agent
 
-The AI agent only accesses data shared with the requesting user through Dataset Workspaces — never raw datasource SQL.
+Agent chỉ truy cập dữ liệu được chia sẻ với user — không truy cập trực tiếp SQL nguồn.
 
-| Tool | Description |
-|------|-------------|
-| `search_charts(query)` | Semantic search across the user's accessible saved charts |
-| `run_chart(chart_id)` | Execute a chart and stream its data + rendered chart |
-| `search_dashboards(query)` | Semantic search across the user's dashboards |
-| `list_workspace_tables()` | List all workspace tables (+ column schemas) the user can access |
-| `query_table(workspace_id, table_id, ...)` | Aggregation query on a workspace table |
-| `run_workspace_table(workspace_id, table_id)` | Preview raw rows from a workspace table |
-| `create_chart(...)` | Generate and optionally save a new chart from a workspace table |
-| `create_dashboard(name, chart_ids)` | Create a new dashboard with specified charts |
-| `explore_data(workspace_id, table_id)` | Profile a table — distributions, top values, nulls |
-| `explain_insight(chart_id)` | Natural-language explanation of a chart's data |
-| `suggest_next(context)` | Suggest follow-up questions or analyses |
+| Tool | Mô tả |
+|------|-------|
+| `search_charts(query)` | Tìm kiếm ngữ nghĩa trong charts của user |
+| `run_chart(chart_id)` | Chạy chart và trả về data + render |
+| `search_dashboards(query)` | Tìm kiếm dashboards |
+| `list_workspace_tables()` | Liệt kê workspace tables + schema cột |
+| `query_table(workspace_id, table_id, ...)` | Truy vấn aggregation trên workspace table |
+| `run_workspace_table(workspace_id, table_id)` | Preview raw rows |
+| `create_chart(...)` | Tạo và lưu chart mới từ workspace table |
+| `create_dashboard(name, chart_ids)` | Tạo dashboard mới |
+| `explore_data(workspace_id, table_id)` | Profile bảng — phân phối, top values, nulls |
+| `explain_insight(chart_id)` | Giải thích chart bằng ngôn ngữ tự nhiên |
 
-### LLM Providers & Fallback Chain
+### LLM Providers
 
 ```env
-LLM_PROVIDER=openai
+LLM_PROVIDER=openai        # openai | anthropic | gemini | openrouter
 LLM_MODEL=gpt-4o-mini
-LLM_FALLBACK_CHAIN=anthropic:claude-3-5-haiku-20241022,gemini:gemini-2.0-flash
 ```
-
-Supported: `openai`, `anthropic`, `gemini`, `openrouter`
 
 ---
 
-## Testing
+## Demo Data
+
+Bật `SEED_DEMO_DATA=true` trong `.env` để nạp tự động khi boot lần đầu, hoặc chạy thủ công:
 
 ```bash
-source venv/bin/activate   # from project root after backend setup
-
-# Permission system — 41 tests
-python test_permissions.py
-
-# Deep end-to-end — 19 sections, 140+ assertions
-python test_deep.py
+# Từ thư mục gốc, sau khi activate venv
+python seed_demo.py
 ```
 
-`test_permissions.py` — module gates, ownership visibility, share/revoke, cascade share, cross-user isolation.
+Tạo: 1 datasource (Football/FIFA), 3 workspaces, 18 charts, 3 dashboards.
 
-`test_deep.py` — full system coverage: auth flow, permission levels (view/edit/full differences), workspace table auth enforcement, execute query security (SQL injection / schema validation), chart & dashboard lifecycle, resource sharing (view/edit/revoke/cascade), admin-only operations, 404 handling, AI chat permission gate, permission presets.
+### Tài khoản test
 
-Both scripts require the backend running at `http://localhost:8000` and at least the admin account (`admin@appbi.io`). Demo data (`SEED_DEMO_DATA=true`) is recommended for data-access tests.
+```bash
+python seed_test_users.py
+```
+
+| Email | Mật khẩu | Quyền |
+|-------|----------|-------|
+| `admin@appbi.io` | `admin123` | Full (tất cả modules) |
+| `edit@appbi.io` | `edit123` | Edit (tất cả modules) |
+| `viewer@appbi.io` | `viewer123` | View (tất cả modules) |
 
 ---
 
-## Docker Compose Files
+## Database Migration
 
-| File | Use Case |
+```bash
+cd backend
+source ../venv/bin/activate
+
+# Áp dụng migrations mới nhất
+alembic upgrade head
+
+# Tạo migration mới
+alembic revision --autogenerate -m "mô tả thay đổi"
+```
+
+Migrations nằm trong `backend/alembic/versions/`. Đặt tên theo format `YYYYMMDD_HHMM_slug.py`.
+
+---
+
+## Docker Compose
+
+| File | Dùng cho |
 |------|----------|
-| `docker-compose.yml` | Production: all services |
+| `docker-compose.yml` | Production: tất cả services |
 | `docker-compose.dev.yml` | Development: hot reload, volume mounts |
-| `docker-compose.ai.yml` | AI service standalone |
+| `docker-compose.ai.yml` | Chạy riêng AI Service |
 
 ```bash
 # Production
@@ -248,44 +302,93 @@ docker compose up --build -d
 
 # Development (hot reload)
 docker compose -f docker-compose.dev.yml up --build -d
+
+# Xem logs
+docker compose logs -f backend
+docker compose logs -f frontend
 ```
 
 ---
 
 ## API Reference
 
-Interactive docs: http://localhost:8000/api/v1/docs
+Interactive docs: **http://localhost:8000/api/v1/docs**
 
-| Endpoint | Methods | Description |
-|----------|---------|-------------|
-| `/auth/login` | POST | Authenticate, returns JWT |
-| `/auth/signup` | POST | Register new user |
-| `/datasources` | GET, POST | List / create data sources |
-| `/datasources/{id}` | GET, PUT, DELETE | Single data source |
-| `/dataset-workspaces` | GET, POST | List / create workspaces |
-| `/dataset-workspaces/{id}` | GET, PUT, DELETE | Single workspace |
-| `/charts` | GET, POST | List / create charts |
-| `/charts/{id}` | GET, PUT, DELETE | Single chart |
-| `/charts/{id}/data` | GET | Execute chart query |
-| `/dashboards` | GET, POST | List / create dashboards |
-| `/dashboards/{id}` | GET, PUT, DELETE | Single dashboard |
-| `/shares/{type}/{id}` | GET, POST, PUT, DELETE | Resource sharing |
-| `/permissions/{user_id}` | GET, PUT | User module permissions |
-| `/users` | GET | List users (admin) |
+| Endpoint | Methods | Mô tả |
+|----------|---------|-------|
+| `/auth/login` | POST | Đăng nhập, trả JWT |
+| `/auth/signup` | POST | Đăng ký user mới |
+| `/datasources` | GET, POST | Danh sách / tạo data source |
+| `/datasources/{id}` | GET, PUT, DELETE | CRUD data source |
+| `/datasources/{id}/test` | POST | Test kết nối |
+| `/dataset-workspaces` | GET, POST | Danh sách / tạo workspace |
+| `/dataset-workspaces/{id}` | GET, PUT, DELETE | CRUD workspace |
+| `/dataset-workspaces/{id}/tables` | POST | Thêm bảng vào workspace |
+| `/dataset-workspaces/{ws}/tables/{t}/description` | GET, PUT | Xem/sửa AI mô tả bảng |
+| `/dataset-workspaces/{ws}/tables/{t}/description/regenerate` | POST | Tạo lại AI mô tả bảng |
+| `/charts` | GET, POST | Danh sách / tạo chart |
+| `/charts/{id}` | GET, PUT, DELETE | CRUD chart |
+| `/charts/{id}/data` | GET | Chạy query chart |
+| `/charts/{id}/description` | GET, PUT | Xem/sửa AI mô tả chart |
+| `/charts/{id}/description/regenerate` | POST | Tạo lại AI mô tả chart |
+| `/dashboards` | GET, POST | Danh sách / tạo dashboard |
+| `/dashboards/{id}` | GET, PUT, DELETE | CRUD dashboard |
+| `/dashboards/{id}/layout` | PUT | Cập nhật vị trí chart |
+| `/shares/{type}/{id}` | GET, POST, PUT, DELETE | Quản lý chia sẻ tài nguyên |
+| `/permissions/{user_id}` | GET, PUT | Quyền module theo user |
+| `/users` | GET | Danh sách users (admin) |
+| `/chat-sessions` | GET, POST | Lịch sử chat sessions |
 
-Full API documentation: [docs/API.md](docs/API.md)
+Tài liệu API đầy đủ: [docs/API.md](docs/API.md)
 
 ---
 
-## Data Sources Supported
+## Nguồn dữ liệu hỗ trợ
 
-| Type | Details |
-|------|---------|
-| **PostgreSQL** | Host, Port, Database, Username, Password, Schema (optional) |
+| Loại | Thông tin cần |
+|------|---------------|
+| **PostgreSQL** | Host, Port, Database, Username, Password, Schema (tuỳ chọn) |
 | **MySQL** | Host, Port, Database, Username, Password |
 | **Google BigQuery** | Project ID + Service Account JSON |
 | **Google Sheets** | Service Account JSON + Spreadsheet ID |
-| **Manual (File Import)** | CSV or Excel (.xlsx/.xls) — all sheets imported with preview |
+| **CSV / Excel** | Upload file trực tiếp (.csv, .xlsx, .xls) — tất cả sheets được import |
+
+---
+
+## Cấu trúc project
+
+```
+/
+├── backend/                    # FastAPI Backend (:8000)
+│   ├── app/
+│   │   ├── api/                # Route handlers
+│   │   ├── core/               # Config, auth, database, permissions
+│   │   ├── models/             # SQLAlchemy models
+│   │   ├── schemas/            # Pydantic DTOs
+│   │   └── services/           # Business logic, LLM client, sync engine
+│   └── alembic/                # Database migrations
+│
+├── frontend/                   # Next.js 14 Frontend (:3000)
+│   └── src/
+│       ├── app/                # Pages (App Router)
+│       ├── components/         # UI components
+│       ├── hooks/              # React Query hooks
+│       ├── lib/                # API clients, utilities
+│       └── types/              # TypeScript types
+│
+├── ai-service/                 # AI Chat Agent (:8001)
+│   └── app/
+│       ├── agents/             # Orchestrator, tools, context builder
+│       ├── clients/            # BI backend client, LLM clients
+│       └── routers/            # WebSocket chat endpoint
+│
+├── docs/                       # Tài liệu kỹ thuật
+├── docker-compose.yml
+├── docker-compose.dev.yml
+├── .env.docker.example
+├── seed_demo.py                # Demo data Football/FIFA
+└── seed_test_users.py          # 3 test accounts
+```
 
 ---
 
