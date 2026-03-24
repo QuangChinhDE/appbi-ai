@@ -1,200 +1,491 @@
-# AppBI User Guide
+﻿# AppBI — Hướng Dẫn Sử Dụng
 
-This guide explains the current end-user workflow in AppBI, including the split AI features, AI Description behavior, and the latest AI Agent flow.
+> Tài liệu dành cho người dùng và admin mới bắt đầu với AppBI. Hướng dẫn này đi từ kết nối dữ liệu, xây workspace, tạo chart, lắp dashboard, dùng AI Chat, dùng AI Agent, cho đến chia sẻ và phân quyền.
 
-## Table of Contents
+---
 
-1. Sign In
-2. Connect a Data Source
-3. Sync Data
-4. Create a Workspace
-5. Use AI Description on Tables and Charts
-6. Build Charts in Explore
-7. Build Dashboards
-8. Share Resources
-9. Manage Permissions
-10. Use AI Chat
-11. Use AI Agent
-12. Typical Workflow
-13. Troubleshooting
-14. Related Docs
+## Mục Lục
 
-## 1. Sign In
+1. [AppBI là gì?](#1-appbi-là-gì)
+2. [Đăng nhập và giao diện chính](#2-đăng-nhập-và-giao-diện-chính)
+3. [Data Sources — Kết nối nguồn dữ liệu](#3-data-sources--kết-nối-nguồn-dữ-liệu)
+4. [Dataset Workspaces — Chuẩn bị dữ liệu phân tích](#4-dataset-workspaces--chuẩn-bị-dữ-liệu-phân-tích)
+5. [AI Description cho Table và Chart](#5-ai-description-cho-table-và-chart)
+6. [Explore — Xây dựng biểu đồ](#6-explore--xây-dựng-biểu-đồ)
+7. [Dashboards — Tổng hợp báo cáo](#7-dashboards--tổng-hợp-báo-cáo)
+8. [AI Chat — Trợ lý phân tích phản hồi theo câu hỏi](#8-ai-chat--trợ-lý-phân-tích-phản-hồi-theo-câu-hỏi)
+9. [AI Agent — Tự động lập kế hoạch và tạo dashboard](#9-ai-agent--tự-động-lập-kế-hoạch-và-tạo-dashboard)
+10. [Chia sẻ và phân quyền](#10-chia-sẻ-và-phân-quyền)
+11. [Quản trị hệ thống](#11-quản-trị-hệ-thống)
+12. [Luồng sử dụng đầy đủ từ A đến Z](#12-luồng-sử-dụng-đầy-đủ-từ-a-đến-z)
+13. [Câu hỏi thường gặp](#13-câu-hỏi-thường-gặp)
+14. [Ghi chú kỹ thuật và vận hành](#14-ghi-chú-kỹ-thuật-và-vận-hành)
 
-Open `http://localhost:3000` and sign in with your AppBI account.
+---
 
-What to expect:
-- the sidebar only shows modules your account can access
-- deactivated users cannot sign in
-- login is rate-limited for security
+## 1. AppBI là gì?
 
-## 2. Connect a Data Source
+**AppBI** là nền tảng BI self-hosted giúp bạn kết nối dữ liệu, chuẩn bị bảng phân tích, tạo chart, dựng dashboard, rồi khai thác AI để phân tích hoặc tạo báo cáo tự động.
 
-Use `Data Sources` to register the systems that AppBI can ingest.
+Bạn có thể dùng AppBI để:
 
-Typical flow:
-1. Open `Data Sources`.
-2. Click `New Data Source`.
-3. Choose the connector type.
-4. Fill in the connection details.
-5. Test the connection.
-6. Save.
+- kết nối nhiều loại nguồn dữ liệu như PostgreSQL, MySQL, BigQuery, Google Sheets hoặc file
+- sync dữ liệu vào lớp phân tích của hệ thống
+- tạo **workspace tables** để chuẩn hóa dữ liệu trước khi vẽ biểu đồ
+- tạo chart và ghép nhiều chart thành dashboard
+- dùng **AI Chat** để hỏi đáp và khám phá dữ liệu theo câu hỏi
+- dùng **AI Agent** để lập plan và tự động tạo một dashboard hoàn chỉnh
 
-Common connector types:
-- PostgreSQL
-- MySQL
-- BigQuery
-- Google Sheets
-- file upload
+### Kiến trúc khái niệm
 
-Good practice:
-- use readable names like `Postgres - Sales Prod`
-- verify credentials before saving
-- keep source credentials updated when upstream systems change
+```text
+Nguồn dữ liệu -> Data Source -> Workspace Table -> Chart -> Dashboard
+                                              |            |
+                                              |            +-> AI Agent build dashboard
+                                              +-> AI Chat / AI Description
+```
 
-## 3. Sync Data
+### Hai hệ AI hiện tại
 
-AppBI analyzes synced data, not the upstream source directly for every chart request.
+AppBI hiện có hai hệ AI tách biệt:
 
-What sync does:
-- pulls data from the source
-- stores it in the AppBI analysis layer
-- makes it available to workspaces, charts, dashboards, AI Chat, and AI Agent
+| Hệ AI | Vai trò | Điểm vào |
+|------|---------|----------|
+| **AI Chat** | Trả lời câu hỏi, giải thích, tạo chart lẻ khi cần | `/chat` |
+| **AI Agent** | Lập plan, tạo nhiều chart, ghép thành dashboard | `/dashboards` |
 
-Typical flow:
-1. Open a data source.
-2. Click `Sync Now`.
-3. Wait for the sync job to finish.
-4. Confirm the latest sync status.
+Ngoài ra còn có **AI Description** cho table và chart. Đây là lớp metadata AI riêng, không phải AI Chat và cũng không phải AI Agent.
 
-Important:
-- if data has not been synced, charts and AI flows may be empty or incomplete
-- scheduled sync is configured from the datasource sync settings
+---
 
-## 4. Create a Workspace
+## 2. Đăng nhập và giao diện chính
 
-A workspace is the modeling layer where analysis-ready tables are collected.
+Truy cập `http://localhost:3000`, nhập email và mật khẩu rồi bấm **Sign in**.
 
-Typical flow:
-1. Open `Workspaces`.
-2. Click `New Workspace`.
-3. Name the workspace.
-4. Add one or more workspace tables.
+Sau khi đăng nhập, bạn sẽ thấy sidebar điều hướng chính của hệ thống. Các mục trong sidebar chỉ hiện nếu tài khoản của bạn có quyền truy cập tương ứng.
 
-You can add tables in two ways:
-- physical table
-- SQL-backed table
+### Sidebar chính
 
-Good practice:
-- group tables by a clear business domain such as `Sales`, `Finance`, or `Operations`
-- only include the tables analysts really need
-- preview the data before building charts
+| Mục | Chức năng |
+|-----|-----------|
+| **Data Sources** | Tạo và quản lý kết nối tới database, file hoặc sheet |
+| **Workspaces** | Tổ chức các bảng dữ liệu phục vụ phân tích |
+| **Explore** | Tạo, lưu và chỉnh sửa biểu đồ |
+| **Dashboards** | Lắp nhiều biểu đồ thành báo cáo |
+| **AI Chat** | Hỏi đáp, phân tích dữ liệu bằng ngôn ngữ tự nhiên |
+| **Settings** | Quản lý user, phân quyền và preset role |
 
-## 5. Use AI Description on Tables and Charts
+### Lưu ý về quyền truy cập
 
-AppBI includes backend-generated AI Description for:
-- workspace tables
-- charts
+- Không thấy module trong sidebar thường có nghĩa là bạn chưa có quyền module đó.
+- Có thấy module chưa chắc đã xem được mọi tài nguyên trong module đó.
+- AppBI dùng song song **module permissions** và **resource-level sharing**.
 
-This is separate from AI Chat and AI Agent.
+---
 
-### Table AI Description
+## 3. Data Sources — Kết nối nguồn dữ liệu
 
-Use it to:
-- understand what a workspace table contains
-- inspect AI-generated summary, common questions, and related metadata
-- manually refine the description if needed
+Data Source là nơi AppBI kết nối tới hệ thống dữ liệu gốc của bạn.
 
-Current behavior:
-- AI Description generation runs through explicit states like `queued`, `processing`, `succeeded`, `failed`, and `stale`
-- the UI reflects these states more clearly than before
-- manual edits do not silently get overwritten
-- schema changes can mark a description as stale
+### 3.1 Tạo Data Source mới
 
-### Chart AI Description
+1. Vào **Data Sources**
+2. Bấm **New Data Source**
+3. Chọn loại kết nối
+4. Điền thông tin kết nối
+5. Bấm **Test Connection**
+6. Bấm **Save**
 
-Use it to:
-- understand the chart intent and logic
-- inspect AI-generated rationale and related metadata
-- regenerate the description when the chart changes significantly
+### 3.2 Các loại kết nối thường gặp
 
-Important distinction:
-- `manual chart note` and `AI Description` are different things in the UI
-- the chart page now makes that distinction more explicit
+| Loại | Khi nào dùng |
+|------|-------------|
+| **PostgreSQL** | Database PostgreSQL nội bộ hoặc cloud |
+| **MySQL** | MySQL hoặc MariaDB |
+| **BigQuery** | Google BigQuery |
+| **Google Sheets** | Dữ liệu lưu trong spreadsheet |
+| **File Upload** | CSV hoặc file dùng cho nhập nhanh |
 
-## 6. Build Charts in Explore
+### 3.3 Sync dữ liệu
 
-Charts are created from workspace tables in `Explore`.
+Sau khi tạo datasource, bạn cần sync để AppBI có dữ liệu phân tích nội bộ.
 
-Typical flow:
-1. Open `Explore`.
-2. Choose a workspace and table.
-3. Select a chart type.
-4. Configure dimensions, metrics, and filters.
-5. Preview the result.
-6. Save the chart.
+Luồng cơ bản:
 
-Common chart types:
-- bar
-- line
-- area
-- pie
-- KPI
-- table
-- time series
-- scatter
+1. Mở datasource
+2. Bấm **Sync Now**
+3. Chờ job hoàn tất
+4. Kiểm tra trạng thái sync mới nhất
 
-If a preview looks wrong:
-- verify the source table
-- verify filters
-- verify time grain
-- verify metric aggregation
+### 3.4 Sync settings
 
-## 7. Build Dashboards
+Bạn có thể chọn cách đồng bộ:
 
-Dashboards combine saved charts into a report layout.
+- `Manual`
+- `Interval`
+- `Daily`
+- `Cron`
 
-Typical flow:
-1. Open `Dashboards`.
-2. Click `New Dashboard`.
-3. Name the dashboard.
-4. Add saved charts.
-5. Arrange the layout.
-6. Save changes.
+### 3.5 Query Runner
 
-Behavior notes:
-- removing a chart from a dashboard does not delete the underlying saved chart
-- layout is stored separately from chart definitions
-- sharing a dashboard may cascade access to its dependent resources
+Ở trang chi tiết datasource, bạn có thể dùng **Query Runner** để kiểm tra nhanh dữ liệu bằng SQL trước khi tạo workspace table.
 
-## 8. Share Resources
+### 3.6 Chia sẻ datasource
 
-AppBI supports resource-level sharing on top of module permissions.
+Bạn có thể chia sẻ datasource cho người khác với quyền `view` hoặc `edit`, nếu tài khoản của bạn có đủ quyền trên tài nguyên đó.
 
-Shareable resources include:
-- data sources
-- workspaces
-- charts
-- dashboards
-- chat sessions where supported
+---
 
-Sharing rules:
-- module permission decides whether the module is available at all
-- resource sharing decides which specific objects a user can open
-- ownership and resource-level checks still apply even when a module is visible
+## 4. Dataset Workspaces — Chuẩn bị dữ liệu phân tích
 
-Typical flow:
-1. Open the resource.
-2. Click `Share`.
-3. Select a user.
-4. Grant `view` or `edit`.
-5. Save.
+Workspace là lớp mô hình dữ liệu phân tích của AppBI. Đây là nơi bạn đưa bảng vào hệ thống, preview dữ liệu, thêm cột tính toán, đổi format, và chuẩn bị nguồn cho chart.
 
-## 9. Manage Permissions
+### 4.1 Tạo workspace
 
-AppBI uses module-level permissions with object-level enforcement.
+1. Vào **Workspaces**
+2. Bấm **New Workspace**
+3. Nhập tên và mô tả
+4. Bấm **Create**
 
-Main modules:
+### 4.2 Thêm bảng vào workspace
+
+Bên trong workspace, bấm **Add Table** và chọn một trong hai kiểu:
+
+- **Physical Table**: dùng bảng thật từ datasource đã sync
+- **SQL Query**: dùng truy vấn SQL để tạo bảng phân tích riêng
+
+Khi thêm bảng, bạn thường sẽ chọn:
+
+- datasource
+- bảng hoặc câu SQL
+- display name
+
+### 4.3 Xem preview và cấu hình hiển thị
+
+Sau khi tạo workspace table, bạn có thể:
+
+- xem preview dữ liệu
+- đổi thứ tự cột
+- ẩn hoặc hiện cột
+- đổi format số, ngày, tiền tệ
+- override kiểu dữ liệu nếu cần
+
+### 4.4 Thêm cột tính toán
+
+AppBI hỗ trợ thêm cột mới bằng:
+
+- công thức kiểu Excel-like
+- biểu thức JavaScript
+- server-side transformation theo flow hệ thống hỗ trợ
+
+### 4.5 Khi nào nên dùng workspace
+
+Workspace đặc biệt phù hợp khi bạn cần:
+
+- gom dữ liệu phân tích theo domain
+- làm sạch bảng trước khi vẽ chart
+- tạo bảng chuyên cho business user
+- tách bảng raw với bảng đã chuẩn hóa cho báo cáo
+
+---
+
+## 5. AI Description cho Table và Chart
+
+AppBI có **AI Description** cho:
+
+- **workspace table**
+- **chart**
+
+Đây là lớp metadata AI dùng để giải thích tài nguyên, gợi ý câu hỏi, và hỗ trợ search/AI discovery. Nó không phải là AI Chat và cũng không phải là AI Agent.
+
+### 5.1 AI Description của Table
+
+Ở trang workspace table, bạn có thể mở modal AI Description để xem:
+
+- mô tả bảng do AI sinh ra
+- common questions
+- trạng thái generation hiện tại
+- thời điểm cập nhật gần nhất
+
+### 5.2 AI Description của Chart
+
+Ở trang chart detail, bạn có thể mở AI Description để xem:
+
+- AI summary của biểu đồ
+- reasoning hoặc semantic metadata liên quan
+- trạng thái generation hiện tại
+
+### 5.3 Trạng thái generation
+
+Hệ thống hiện dùng state rõ ràng hơn cho AI Description:
+
+- `queued`
+- `processing`
+- `succeeded`
+- `failed`
+- `stale`
+
+Điều này giúp UI phản ánh đúng tiến trình thay vì để user phải đoán xem AI có đang chạy hay không.
+
+### 5.4 AI đọc gì để mô tả Table
+
+Hiện tại AI không đọc toàn bộ bảng một cách vô hạn. Hệ thống dùng cách an toàn hơn:
+
+- đọc toàn bộ catalog cột
+- đọc metadata và column stats
+- đọc **sample data đại diện**
+- giới hạn theo token budget để tránh prompt quá lớn
+
+Điều này giúp mô tả sát dữ liệu thật hơn so với chỉ đọc header cột, nhưng vẫn kiểm soát được chi phí và tốc độ.
+
+### 5.5 Khi mô tả trở thành stale
+
+Nếu bảng hoặc chart thay đổi đáng kể, AI Description có thể được đánh dấu `stale`. Điều này có nghĩa là nội dung hiện tại có thể không còn phản ánh đúng dữ liệu hoặc cấu hình mới.
+
+### 5.6 Chỉnh tay và regenerate
+
+Bạn có thể:
+
+- chỉnh sửa mô tả bằng tay
+- yêu cầu regenerate
+- theo dõi trạng thái generation ngay trên modal
+
+Hệ thống hiện tránh việc ghi đè âm thầm khi user đã chỉnh tay.
+
+---
+
+## 6. Explore — Xây dựng biểu đồ
+
+Explore là nơi bạn tạo chart từ workspace tables.
+
+### 6.1 Tạo chart mới
+
+1. Vào **Explore**
+2. Bấm **New Chart**
+3. Chọn workspace và table
+4. Chọn chart type
+5. Cấu hình dimension, metric, filters
+6. Preview biểu đồ
+7. Bấm **Save**
+
+### 6.2 Các chart type phổ biến
+
+| Chart type | Dùng khi nào |
+|-----------|---------------|
+| **BAR** | So sánh giá trị giữa các nhóm |
+| **GROUPED BAR** | So sánh nhiều metric cùng lúc |
+| **STACKED BAR** | Thể hiện cơ cấu thành phần |
+| **LINE** | Xu hướng theo thời gian hoặc danh mục |
+| **AREA** | Xu hướng có nhấn mạnh phần diện tích |
+| **TIME SERIES** | Chuỗi thời gian |
+| **PIE** | Cơ cấu tỷ trọng |
+| **SCATTER** | Tương quan giữa hai biến |
+| **TABLE** | Hiển thị dữ liệu dạng bảng |
+| **KPI** | Một chỉ số trọng tâm |
+
+### 6.3 Role configuration
+
+Tùy loại chart, bạn sẽ cấu hình các trường như:
+
+- `dimension`
+- `metrics`
+- `breakdown`
+- `time field`
+- `x / y field`
+
+### 6.4 Filters và parameters
+
+Bạn có thể thêm filter vào chart và trong nhiều trường hợp có thể dùng parameters để dashboard override ở tầng cao hơn.
+
+### 6.5 Save và reuse
+
+Chart sau khi lưu có thể:
+
+- xuất hiện trong danh sách Explore
+- được thêm vào dashboard
+- được AI Chat hoặc AI Agent tham chiếu theo quyền truy cập của user
+
+---
+
+## 7. Dashboards — Tổng hợp báo cáo
+
+Dashboard là nơi bạn lắp nhiều chart thành một báo cáo hoàn chỉnh.
+
+### 7.1 Tạo dashboard
+
+1. Vào **Dashboards**
+2. Bấm **New Dashboard**
+3. Nhập tên và mô tả
+4. Bấm **Create**
+
+### 7.2 Thêm chart vào dashboard
+
+Bạn có thể thêm chart đã lưu từ Explore vào dashboard rồi sắp xếp trên grid layout.
+
+### 7.3 Chỉnh layout
+
+Dashboard hỗ trợ:
+
+- kéo thả vị trí chart
+- resize chart
+- lưu layout riêng với chart definitions
+
+### 7.4 Global filters
+
+Dashboard có thể có bộ lọc toàn cục để áp dụng cho nhiều chart cùng lúc.
+
+### 7.5 Share dashboard
+
+Khi chia sẻ dashboard, hệ thống có thể cascade quyền đến các chart và workspace liên quan theo policy hiện tại.
+
+### 7.6 Dashboard và AI Agent
+
+Trang **Dashboards** cũng là nơi bắt đầu flow **AI Agent**. Nghĩa là ngoài việc tạo dashboard thủ công, user có thể dùng AI để lên plan và build dashboard tự động ngay tại đây.
+
+---
+
+## 8. AI Chat — Trợ lý phân tích phản hồi theo câu hỏi
+
+**AI Chat** là hệ AI có tính chất phản hồi theo câu hỏi. Bạn hỏi, AI tìm dữ liệu phù hợp trong phạm vi bạn được quyền xem, rồi trả lời hoặc tạo chart lẻ nếu cần.
+
+### 8.1 Dùng AI Chat khi nào
+
+AI Chat phù hợp khi bạn muốn:
+
+- hỏi đáp nhanh bằng tiếng Việt hoặc tiếng Anh
+- giải thích một insight cụ thể
+- khám phá dữ liệu theo từng câu hỏi nhỏ
+- tạo một chart lẻ ngay trong cuộc trò chuyện
+
+### 8.2 Luồng sử dụng cơ bản
+
+1. Vào **AI Chat**
+2. Tạo session mới
+3. Gõ câu hỏi
+4. Xem câu trả lời, tool steps và chart nếu có
+5. Lưu chart nếu muốn dùng lại
+
+### 8.3 Đặc điểm của AI Chat
+
+- mang tính **reactive**
+- bám theo câu hỏi của user
+- có lịch sử session
+- độc lập với AI Agent
+
+### 8.4 Yêu cầu để dùng AI Chat
+
+- user cần `ai_chat >= view`
+- user cần có quyền trên tài nguyên dữ liệu nền
+- `ai-chat-service` phải đang chạy trong môi trường triển khai
+
+### 8.5 Nếu chat service đang offline
+
+Chat page vẫn có thể mở, nhưng các thao tác live chat sẽ báo trạng thái không khả dụng rõ ràng thay vì lỗi mơ hồ như trước.
+
+---
+
+## 9. AI Agent — Tự động lập kế hoạch và tạo dashboard
+
+**AI Agent** là hệ AI chủ động hơn, dùng để tạo dashboard hoàn chỉnh từ mô tả bài toán.
+
+### 9.1 AI Agent khác AI Chat ở đâu
+
+| Hệ | Input | Output |
+|----|-------|--------|
+| **AI Chat** | Câu hỏi | Câu trả lời hoặc chart lẻ |
+| **AI Agent** | Brief + selected tables | Plan + dashboard hoàn chỉnh |
+
+### 9.2 Luồng AI Agent hiện tại
+
+1. Vào **Dashboards**
+2. Mở **AI Agent**
+3. Chọn một hoặc nhiều workspace table
+4. Điền brief
+5. Yêu cầu AI tạo plan
+6. Review và chỉnh lại plan nếu cần
+7. Bấm generate để build dashboard
+8. Chuyển tới dashboard vừa tạo
+
+### 9.3 Bước Choose tables
+
+Flow chọn bảng hiện đã được tối ưu hơn cho trường hợp nhiều workspace và nhiều table:
+
+- có ô search
+- có collapse/expand theo workspace
+- có thao tác `Select shown` và `Clear shown`
+- có panel tóm tắt scope đã chọn
+- có thể bỏ nhanh từng table khỏi selection
+
+Điều này giúp user dễ kiểm soát phạm vi dữ liệu trước khi AI build report.
+
+### 9.4 Bước Write the brief
+
+Brief hiện tại tập trung vào việc tạo dashboard tốt ở lần build hiện tại. Thông thường bạn sẽ điền:
+
+- mục tiêu phân tích
+- audience
+- timeframe
+- KPI cần theo dõi
+- các câu hỏi dashboard phải trả lời
+
+### 9.5 Review plan trước khi build
+
+Trước khi build, user có thể xem lại và chỉnh plan, bao gồm những phần như:
+
+- dashboard title
+- summary
+- section title
+- section intent
+- chart title
+- chart rationale
+- bật hoặc tắt chart trước khi build
+
+### 9.6 Multi-dataset ở phiên bản hiện tại
+
+AI Agent hiện có thể nhận nhiều selected tables, nhưng theo cách:
+
+- tạo các section theo dataset hoặc table đã chọn
+- không blend hoặc join tự động giữa nhiều dataset như một semantic layer hoàn chỉnh
+
+Nói ngắn gọn: Agent vẽ dashboard từ nhiều nguồn đã chọn, nhưng chưa phải hệ hợp nhất dữ liệu đa bảng một cách sâu.
+
+### 9.7 Giới hạn hiện tại cần biết
+
+Phiên bản hiện tại của AI Agent tập trung vào **tạo dashboard output**. Hệ thống chưa có lớp **saved report spec** hoàn chỉnh để quản lý vòng đời báo cáo dài hạn như lưu brief/plan thành một thực thể độc lập có version history riêng.
+
+Điều đó có nghĩa là:
+
+- bạn có thể xem lại dashboard đã tạo
+- bạn có thể mở lại flow để tạo dashboard mới
+- nhưng khái niệm “saved report definition có thể rerun và version hóa đầy đủ” vẫn là bước phát triển tiếp theo
+
+### 9.8 Yêu cầu để dùng AI Agent
+
+User cần:
+
+- `ai_agent >= edit`
+- `dashboards >= edit`
+- `explore_charts >= edit`
+- quyền xem trên từng workspace table được chọn
+- `ai-agent-service` đang chạy
+
+---
+
+## 10. Chia sẻ và phân quyền
+
+AppBI dùng hai lớp kiểm soát truy cập.
+
+### 10.1 Module permissions
+
+Mỗi module có thể được cấp theo các mức:
+
+- `none`
+- `view`
+- `edit`
+- `full`
+
+Các module chính hiện tại gồm:
+
 - `data_sources`
 - `datasets`
 - `workspaces`
@@ -204,179 +495,183 @@ Main modules:
 - `ai_agent`
 - `settings`
 
-Permission levels:
-- `none`
-- `view`
-- `edit`
-- `full`
+### 10.2 Resource-level sharing
 
-Important notes:
-- module permission alone is not enough to open every object
-- resource ownership and sharing are enforced separately
-- AI Agent requires both module permission and view access on the selected workspace tables
+Ngoài module permissions, từng tài nguyên cụ thể còn phải được sở hữu hoặc được share cho user.
 
-## 10. Use AI Chat
+Tài nguyên được chia sẻ có thể bao gồm:
 
-AI Chat is the reactive assistant.
+- datasource
+- workspace
+- chart
+- dashboard
+- chat session trong các flow hỗ trợ
 
-Use AI Chat when you want to:
-- ask questions in natural language
-- inspect accessible data interactively
-- summarize patterns
-- generate a single chart during a conversation
-- keep a session history and reopen it later
+### 10.3 Một số nguyên tắc quan trọng
 
-Requirements:
-- `ai_chat >= view`
-- access to the underlying data
-- `ai-chat-service` must be running for live chat actions
+- Có quyền module không có nghĩa là tự động xem được mọi object trong module đó.
+- Dashboard khi được share có thể kéo theo quyền xem các chart và workspace phụ thuộc.
+- AI Agent chỉ được dùng trên các bảng mà user thực sự có quyền xem.
 
-Where it lives:
-- UI entry: `/chat`
-- service: `ai-service/`
-- default port: `8001`
+---
 
-Behavior notes:
-- the chat page still loads if the chat service is offline
-- the UI shows a clear warning when chat is unavailable
-- AI Chat is independent from AI Agent
+## 11. Quản trị hệ thống
 
-## 11. Use AI Agent
+> Phần này dành cho người dùng có quyền `settings` phù hợp, thường là admin.
 
-AI Agent is the proactive report builder.
+### 11.1 Quản lý user
 
-Use AI Agent when you want to:
-- define a business goal
-- select one or more workspace tables
-- generate a dashboard plan first
-- review and edit that plan
-- build multiple charts and a complete dashboard automatically
+Tại **Settings**, admin có thể:
 
-Requirements:
-- `ai_agent >= edit`
-- `dashboards >= edit`
-- `explore_charts >= edit`
-- view access on every selected workspace table
-- `ai-agent-service` must be running
+- xem danh sách user
+- tạo user mới
+- deactivate user
+- gán preset role hoặc chỉnh trực tiếp permission matrix
 
-Where it lives:
-- UI entry: `/dashboards`
-- service: `ai-agent-service/`
-- default port: `8002`
+### 11.2 Permission matrix
 
-### Current AI Agent flow
+AppBI có giao diện phân quyền theo module cho từng user. Admin có thể cấp `none`, `view`, `edit`, `full` tùy module.
 
-1. Open the Agent wizard from the dashboards page.
-2. Search and choose one or more workspace tables.
-3. Review the selected scope panel.
-4. Fill in the structured brief.
-5. Generate a plan.
-6. Review and edit sections and charts.
-7. Build the dashboard.
-8. Open the result.
+### 11.3 Preset roles
 
-### Choose Tables step
+Hệ thống hỗ trợ preset quyền để dùng lại nhanh khi tạo user mới hoặc chuẩn hóa nhóm vai trò.
 
-The current table selection step is designed for larger numbers of workspaces and tables than the first version.
+### 11.4 Điều cần nhớ với AI modules
 
-Current capabilities:
-- search by workspace or table name
-- expand or collapse workspaces
-- `Select shown` and `Clear shown` per workspace
-- selected scope summary on the right side
-- remove selected tables directly from the summary panel
-- workspace and table counts at the top of the step
+- `ai_chat` và `ai_agent` là hai module riêng
+- không nên giả định cấp `ai_chat` thì sẽ dùng được `ai_agent`
+- nếu user không thấy AI Agent hoặc không dùng được, hãy kiểm tra cả quyền module lẫn quyền trên workspace tables
 
-Important rule:
-- the Agent only uses the tables selected by the user
-- it does not pull extra datasets outside that scope
+---
 
-### Write the Brief step
+## 12. Luồng sử dụng đầy đủ từ A đến Z
 
-Current brief fields:
-- business goal
-- audience
-- timeframe
-- KPIs
-- questions the dashboard must answer
+Dưới đây là một ví dụ điển hình để tạo báo cáo doanh thu.
 
-This is enough for:
-- initial dashboard generation
-- one-off report creation
-- review and edit before build
+### Cách 1 — Luồng thủ công
 
-Current limitation:
-- reusable saved report specs are not implemented yet
-- if you want a new long-term report variant, you currently go through the wizard again
+1. Tạo datasource kết nối tới hệ thống bán hàng
+2. Sync dữ liệu
+3. Tạo workspace `Sales Analytics`
+4. Thêm bảng đơn hàng, sản phẩm hoặc doanh thu
+5. Tạo chart trong Explore
+6. Tạo dashboard và thêm chart vào
+7. Chia sẻ dashboard cho team
 
-### Plan review
+### Cách 2 — Luồng có AI Chat
 
-Before building, you can:
-- rename the dashboard
-- edit the dashboard summary
-- edit section titles and intents
-- rename charts
-- edit chart rationale
-- disable charts before build
-- regenerate the plan
-- reset your plan edits
+1. Chuẩn bị datasource và workspace trước
+2. Vào AI Chat
+3. Hỏi một câu như `Doanh thu theo tháng năm nay so với năm trước`
+4. Xem AI trả lời và chart tạo ra
+5. Nếu thấy hợp lý, lưu chart để tái sử dụng
 
-### Current v1 scope rules
+### Cách 3 — Luồng có AI Agent
 
-- multi-dataset means section-based composition only
-- v1 does not blend or join across selected datasets
-- build behavior follows:
-  - `docs/GUIDED_API_CHART.md`
-  - `docs/GUIDED_API_DASHBOARD.md`
-  - `docs/GUIDED_API_AI_AGENT_REPORT.md`
+1. Chuẩn bị workspace tables trước
+2. Vào Dashboards
+3. Mở AI Agent
+4. Chọn các bảng cần dùng
+5. Viết brief về bài toán cần giải
+6. Review plan do AI tạo
+7. Build dashboard hoàn chỉnh
+8. Chỉnh tay dashboard sau khi tạo nếu cần
 
-## 12. Typical Workflow
+---
 
-Typical first workflow:
-1. Connect a data source.
-2. Run sync.
-3. Create a workspace.
-4. Add workspace tables.
-5. Build charts in Explore.
-6. Create or generate a dashboard.
-7. Share the result.
-8. Use AI Chat for ad hoc analysis.
-9. Use AI Agent when you want a dashboard generated from a structured brief.
+## 13. Câu hỏi thường gặp
 
-## 13. Troubleshooting
+**Q: Tôi không thấy một module nào đó trong sidebar?**  
+A: Hãy kiểm tra quyền module tương ứng. Nếu chưa có, liên hệ admin.
 
-### Charts show no data
-- confirm the source has been synced
-- confirm the workspace table points to the expected source
-- recheck chart filters and aggregation
+**Q: Tôi thấy module nhưng mở object theo ID hoặc từ link cũ lại bị chặn?**  
+A: Điều này thường là đúng. AppBI có object-level access ngoài module permission.
 
-### A user cannot open a shared dashboard
-- confirm the user has at least `dashboards=view`
-- confirm the dashboard is actually shared to that user
-- confirm dependent resources are accessible
+**Q: AI Description của table hoặc chart không cập nhật ngay?**  
+A: Hãy kiểm tra trạng thái generation. Nếu đang `queued` hoặc `processing` thì hệ thống đang xử lý. Nếu là `stale`, bạn nên regenerate hoặc kiểm tra resource vừa thay đổi gì.
 
-### AI Chat page loads but live chat fails
-- confirm `ai-chat-service` is running
-- confirm the user has `ai_chat` permission
-- confirm the service can reach the backend
+**Q: AI Description dùng gì để hiểu table?**  
+A: Hệ thống dùng catalog cột, stats và sample data đại diện, có giới hạn theo token budget. AI không đọc vô hạn toàn bộ bảng.
 
-### AI Agent wizard opens but generation fails
-- confirm `ai-agent-service` is running
-- confirm the user has `ai_agent`, `dashboards`, and `explore_charts` permissions at the required levels
-- confirm at least one accessible workspace table is selected
+**Q: AI Chat mở được nhưng chat không chạy?**  
+A: Hãy kiểm tra `ai-chat-service` có đang chạy không và tài khoản có `ai_chat >= view` không.
 
-### AI Description stays stale or fails
-- confirm backend AI keys are configured correctly
-- check whether the table or chart was manually edited and is now marked stale
-- retry regeneration from the modal
+**Q: AI Agent không hiện hoặc không cho generate?**  
+A: Hãy kiểm tra `ai_agent`, `dashboards`, `explore_charts`, cùng quyền xem trên các workspace table đã chọn.
 
-## 14. Related Docs
+**Q: Nếu muốn phiên bản khác của báo cáo do AI Agent tạo thì sao?**  
+A: Ở phiên bản hiện tại, bạn thường sẽ mở lại flow agent và build dashboard mới. Khái niệm saved report spec có version history riêng vẫn là bước nâng cấp tiếp theo.
 
-- [README.md](../README.md)
-- [docs/DOCKER.md](./DOCKER.md)
-- [docs/SETUP.md](./SETUP.md)
-- [docs/API.md](./API.md)
-- [docs/AI_AGENT.md](./AI_AGENT.md)
-- [docs/GUIDED_API_CHART.md](./GUIDED_API_CHART.md)
-- [docs/GUIDED_API_DASHBOARD.md](./GUIDED_API_DASHBOARD.md)
-- [docs/GUIDED_API_AI_AGENT_REPORT.md](./GUIDED_API_AI_AGENT_REPORT.md)
+**Q: Xóa chart khỏi dashboard có làm mất chart gốc không?**  
+A: Không. Chart gốc vẫn nằm trong Explore.
+
+---
+
+## 14. Ghi chú kỹ thuật và vận hành
+
+### 14.1 Split AI services
+
+Kiến trúc hiện tại tách riêng:
+
+- `ai-chat-service`
+- `ai-agent-service`
+
+Hai service này có thể chạy độc lập trong Docker.
+
+### 14.2 AI Description pipeline
+
+AI Description hiện có pipeline rõ ràng hơn với state machine cho table và chart. Điều này giúp:
+
+- tránh silent skip
+- hiển thị lỗi rõ hơn
+- theo dõi được trạng thái queued, processing, failed, stale
+
+### 14.3 Dùng Docker theo các mode
+
+Một số mode triển khai thường dùng:
+
+- base stack: `docker-compose.yml`
+- chat only: `docker-compose.chat.yml`
+- agent only: `docker-compose.agent.yml`
+- full AI: `docker-compose.ai.yml`
+
+### 14.4 Khi nào AI features không hoạt động
+
+Hãy kiểm tra lần lượt:
+
+- service AI tương ứng có đang chạy không
+- tài khoản có đúng permission không
+- datasource đã sync chưa
+- workspace table có dữ liệu thật không
+- provider key hoặc cấu hình backend có hợp lệ không
+
+### 14.5 Tài liệu liên quan
+
+- `README.md`
+- `docs/DOCKER.md`
+- `docs/API.md`
+- `docs/GUIDED_API_CHART.md`
+- `docs/GUIDED_API_DASHBOARD.md`
+- `docs/GUIDED_API_AI_AGENT_REPORT.md`
+
+---
+
+## Bảng tham chiếu nhanh
+
+| Tôi muốn... | Đi đến... |
+|-------------|-----------|
+| Kết nối database mới | `Data Sources` |
+| Sync dữ liệu | `Data Sources -> datasource detail` |
+| Tạo bảng phân tích | `Workspaces` |
+| Xem AI Description của bảng | `Workspace table detail` |
+| Tạo chart mới | `Explore` |
+| Xem AI Description của chart | `Chart detail` |
+| Tạo dashboard thủ công | `Dashboards` |
+| Dùng AI Chat | `/chat` |
+| Dùng AI Agent | `/dashboards` |
+| Chia sẻ tài nguyên | nút `Share` trên resource |
+| Phân quyền cho user | `Settings` |
+
+---
+
+*AppBI — Built for analysts, with AI that stays grounded in your data.*
