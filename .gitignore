@@ -22,3 +22,17 @@ out/
 # Misc
 .DS_Store
 *.log
+
+# Test & debug scripts (local only — not for repo)
+test_*.py
+**/test_*.py
+backend/tests/
+seed_test_users.py
+
+# Exploratory / one-off scripts (local only)
+create_dashboard.py
+explore_datasets.py
+check_*.py
+fix_*.py
+add_*.py
+run.py
