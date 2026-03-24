@@ -1,18 +1,30 @@
 """
-TableStatsService — compute column-level statistics for workspace tables.
+TableStatsService - compute column-level statistics for workspace tables.
 
-Approach: fetch a sample of rows via the existing DataSourceConnectionService,
-compute stats in-memory. Works with ALL datasource types (PostgreSQL, MySQL,
-BigQuery, Google Sheets, manual CSV) without any special-casing.
+Approach: fetch a sample of rows via the synced DuckDB view, compute stats
+in-memory, and persist the latest schema snapshot. This service only updates
+table stats + schema hash; callers decide whether the AI description should be
+regenerated or marked stale.
 """
-import statistics
 import logging
+import statistics
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
+from app.services.schema_change_service import SchemaChangeService
+
 logger = logging.getLogger(__name__)
+
+
+def _normalize_columns_cache(columns_cache: Any) -> List[Any]:
+    """Support both raw lists and {"columns": [...]} cache shapes."""
+    if not columns_cache:
+        return []
+    if isinstance(columns_cache, dict):
+        return list(columns_cache.get("columns", []))
+    return list(columns_cache)
 
 
 class TableStatsService:
@@ -52,22 +64,18 @@ class TableStatsService:
             null_count = len(all_vals) - len(non_null)
             null_pct = round(null_count / len(all_vals), 4) if all_vals else 0.0
 
-            # Cardinality: distinct count of string representations
             cardinality = len({str(v) for v in non_null})
-
-            # min / max (string comparison is fine for display purposes)
             str_vals = [str(v) for v in non_null]
             min_val = min(str_vals) if str_vals else None
             max_val = max(str_vals) if str_vals else None
 
-            # Sample: up to 5 unique representative values
             seen: set = set()
             samples: List[str] = []
-            for v in non_null:
-                sv = str(v)
-                if sv not in seen:
-                    seen.add(sv)
-                    samples.append(sv)
+            for value in non_null:
+                rendered = str(value)
+                if rendered not in seen:
+                    seen.add(rendered)
+                    samples.append(rendered)
                 if len(samples) >= 5:
                     break
 
@@ -103,95 +111,117 @@ class TableStatsService:
         return stats
 
     @staticmethod
-    def update_table_stats(db: Session, table_id: int) -> Optional[Dict[str, Dict]]:
+    def update_table_stats(db: Session, table_id: int) -> Dict[str, Any]:
         """
         Compute and persist column stats for a workspace table.
-        Returns the stats dict, or None if the table cannot be reached.
-        Safe to call in a background task — all errors are caught.
+
+        Returns a structured payload:
+            {
+              "stats": {...} | None,
+              "changed": bool,
+              "added": [...],
+              "removed": [...],
+              "new_hash": str | None,
+              "reason": str | None,
+            }
+
+        Safe to call in a background task - all errors are caught.
         """
         from app.models.dataset_workspace import DatasetWorkspaceTable
         from app.models.models import DataSource
+        from app.services.duckdb_engine import DuckDBEngine
+        from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
 
         try:
             table = db.query(DatasetWorkspaceTable).filter(
                 DatasetWorkspaceTable.id == table_id
             ).first()
-
             if not table:
                 logger.warning("TableStats: table %s not found", table_id)
-                return None
+                return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": None, "reason": "table_not_found"}
 
             if not table.columns_cache:
                 logger.info("TableStats: table %s has no columns_cache yet, skipping", table_id)
-                return None
+                return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "missing_columns_cache"}
 
             datasource = db.query(DataSource).filter(
                 DataSource.id == table.datasource_id
             ).first()
             if not datasource:
                 logger.warning("TableStats: datasource not found for table %s", table_id)
-                return None
-
-            from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
-            from app.services.duckdb_engine import DuckDBEngine
+                return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "datasource_not_found"}
 
             rows = None
-            cols = list(table.columns_cache) if table.columns_cache else []
+            normalized_columns = _normalize_columns_cache(table.columns_cache)
+            cols = [
+                column.get("name", "")
+                if isinstance(column, dict)
+                else str(column)
+                for column in normalized_columns
+            ]
 
             if table.source_kind == "sql_query":
                 if not table.source_query:
-                    return None
-                # Only run against synced DuckDB view — skip if not yet synced
+                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "missing_source_query"}
                 rewritten = rewrite_sql_for_duckdb(datasource.id, table.source_query)
                 if not rewritten:
-                    return None
+                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "not_synced"}
                 try:
                     rows = DuckDBEngine.query(
                         f"SELECT * FROM ({rewritten}) AS _q LIMIT {TableStatsService.SAMPLE_LIMIT}"
                     )
                 except Exception:
-                    return None
+                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "duckdb_query_failed"}
             else:
                 if not table.source_table_name:
-                    return None
-                # Only run against synced DuckDB view — skip if not yet synced
+                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "missing_source_table_name"}
                 view_name = get_synced_view(datasource.id, table.source_table_name)
                 if not view_name:
-                    return None
+                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "not_synced"}
                 try:
                     rows = DuckDBEngine.query(
                         f"SELECT * FROM {view_name} LIMIT {TableStatsService.SAMPLE_LIMIT}"
                     )
                 except Exception:
-                    return None
+                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "duckdb_query_failed"}
 
             if not rows:
-                return None
+                return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "no_rows"}
 
-            # Convert rows to list-of-dicts if needed
             if rows and not isinstance(rows[0], dict):
                 rows = [dict(zip(cols, row)) for row in rows]
 
+            previous_column_stats = dict(table.column_stats or {})
+            previous_schema_hash = table.schema_hash
             stats = TableStatsService.compute_stats_from_sample(
-                table.columns_cache, rows
+                normalized_columns, rows
+            )
+            schema_result = SchemaChangeService.detect_change(
+                previous_column_stats,
+                previous_schema_hash,
+                stats,
             )
 
             table.column_stats = stats
             table.stats_updated_at = datetime.utcnow()
+            table.schema_hash = schema_result["new_hash"]
             db.commit()
 
             logger.info(
-                "TableStats: updated stats for table %s (%d columns, %d sample rows)",
-                table_id, len(stats), len(rows),
+                "TableStats: updated stats for table %s (%d columns, %d sample rows, schema_changed=%s)",
+                table_id, len(stats), len(rows), schema_result["changed"],
             )
 
-            # Schema change detection — runs after commit so table reflects new stats
-            from app.services.schema_change_service import SchemaChangeService
-            SchemaChangeService.check_and_handle(db, table_id, stats)
-
-            return stats
+            return {
+                "stats": stats,
+                "changed": schema_result["changed"],
+                "added": schema_result["added"],
+                "removed": schema_result["removed"],
+                "new_hash": schema_result["new_hash"],
+                "reason": None,
+            }
 
         except Exception as exc:
-            logger.warning("TableStats: failed for table %s — %s", table_id, exc)
+            logger.warning("TableStats: failed for table %s - %s", table_id, exc)
             db.rollback()
-            return None
+            return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": None, "reason": "exception"}

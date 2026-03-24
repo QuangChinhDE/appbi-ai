@@ -28,6 +28,7 @@ import { ManageColumnsDrawer } from '@/components/datasets/ManageColumnsDrawer';
 import { AddColumnModal, buildFNS } from '@/components/datasets/AddColumnModal';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { TableDescriptionPanel } from '@/components/datasets/TableDescriptionPanel';
+import { AppModalShell } from '@/components/common/AppModalShell';
 import type { Transformation } from '@/hooks/use-dataset-workspaces';
 
 // Inline Excel formula evaluator (mirrors AddColumnModal's evalExcelFormula)
@@ -498,7 +499,7 @@ export default function WorkspaceDetailPage() {
                       setIsDescModalOpen(true);
                     }}
                     className="p-1 hover:bg-blue-100 rounded text-gray-400 hover:text-blue-600"
-                    title="AI Mô tả"
+                    title="AI Description"
                   >
                     <Bot className="w-3.5 h-3.5" />
                   </button>
@@ -795,29 +796,17 @@ export default function WorkspaceDetailPage() {
 
       {/* AI Description Modal */}
       {isDescModalOpen && selectedTableId && workspaceId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsDescModalOpen(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
-            {/* Modal header */}
-            <div className="flex items-center justify-between px-6 py-5 bg-gradient-to-r from-blue-600 to-violet-600 rounded-t-2xl">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-white/20 rounded-lg">
-                  <Bot className="w-5 h-5 text-white" />
-                </div>
-                <div>
-                  <h2 className="font-semibold text-white text-base">AI Mô tả</h2>
-                  <p className="text-xs text-blue-100 mt-0.5">{selectedTable?.display_name || selectedTable?.source_table_name}</p>
-                </div>
-              </div>
-              <button onClick={() => setIsDescModalOpen(false)} className="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            {/* Modal body */}
-            <div className="flex-1 overflow-y-auto p-6">
-              <TableDescriptionPanel workspaceId={workspaceId} tableId={selectedTableId} canEdit={resPerms.canEdit} />
-            </div>
-          </div>
-        </div>
+        <AppModalShell
+          onClose={() => setIsDescModalOpen(false)}
+          title="AI Description"
+          description={selectedTable?.display_name || selectedTable?.source_table_name}
+          icon={<Bot className="h-5 w-5" />}
+          maxWidthClass="max-w-3xl"
+          panelClassName="max-h-[85vh]"
+          bodyClassName="p-6"
+        >
+          <TableDescriptionPanel workspaceId={workspaceId} tableId={selectedTableId} canEdit={resPerms.canEdit} />
+        </AppModalShell>
       )}
     </div>
   );

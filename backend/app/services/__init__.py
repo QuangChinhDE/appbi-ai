@@ -12,6 +12,7 @@ from app.services.llm_client import LLMClient
 from app.services.auto_tagging_service import AutoTaggingService
 from app.services.schema_change_service import SchemaChangeService
 from app.services.feedback_processor import FeedbackProcessor
+from app.services.description_pipeline_service import DescriptionPipelineService
 
 __all__ = [
     "DataSourceConnectionService",
@@ -25,4 +26,5 @@ __all__ = [
     "AutoTaggingService",
     "SchemaChangeService",
     "FeedbackProcessor",
+    "DescriptionPipelineService",
 ]

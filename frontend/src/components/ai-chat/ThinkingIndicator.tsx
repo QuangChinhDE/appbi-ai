@@ -92,7 +92,7 @@ export function ThinkingIndicator({ steps, isThinking, hasText }: ActivityPanelP
                 {step.status === 'running' ? (
                   step.type === 'tool'
                     ? <Loader2 className="h-3 w-3 text-blue-500 animate-spin" />
-                    : <Brain className="h-3 w-3 text-purple-400 animate-pulse" />
+                    : <Brain className="h-3 w-3 text-blue-400 animate-pulse" />
                 ) : (
                   step.type === 'tool'
                     ? <CheckCircle2 className="h-3 w-3 text-green-500" />

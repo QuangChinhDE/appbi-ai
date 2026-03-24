@@ -6,6 +6,14 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from '@/lib/api-client';
 
+export type DescriptionGenerationStatus =
+  | 'idle'
+  | 'queued'
+  | 'processing'
+  | 'succeeded'
+  | 'failed'
+  | 'stale';
+
 export interface TableDescription {
   auto_description: string | null;
   column_descriptions: Record<string, string> | null;
@@ -14,6 +22,11 @@ export interface TableDescription {
   description_source: 'auto' | 'user' | 'feedback' | null;
   description_updated_at: string | null;
   schema_change_pending: boolean | null;
+  generation_status: DescriptionGenerationStatus | null;
+  generation_error: string | null;
+  generation_requested_at: string | null;
+  generation_finished_at: string | null;
+  stale_reason: string | null;
 }
 
 export interface ChartDescription {
@@ -23,6 +36,11 @@ export interface ChartDescription {
   query_aliases: string[] | null;
   description_source: 'auto' | 'user' | 'feedback' | null;
   description_updated_at: string | null;
+  generation_status: DescriptionGenerationStatus | null;
+  generation_error: string | null;
+  generation_requested_at: string | null;
+  generation_finished_at: string | null;
+  stale_reason: string | null;
 }
 
 export function useTableDescription(workspaceId: number | null, tableId: number | null) {
@@ -35,7 +53,8 @@ export function useTableDescription(workspaceId: number | null, tableId: number 
       return res.data;
     },
     enabled: !!workspaceId && !!tableId,
-    staleTime: 60_000,
+    staleTime: 5_000,
+    refetchOnMount: 'always',
   });
 }
 
@@ -76,7 +95,8 @@ export function useChartDescription(chartId: number | null) {
       return res.data;
     },
     enabled: !!chartId,
-    staleTime: 60_000,
+    staleTime: 5_000,
+    refetchOnMount: 'always',
   });
 }
 

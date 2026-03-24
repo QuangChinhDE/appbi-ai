@@ -67,6 +67,11 @@ class DatasetWorkspaceTable(Base):
     description_updated_at = Column(DateTime, nullable=True, default=None)
     schema_hash = Column(String(64), nullable=True, default=None)        # SHA256 of sorted col:dtype
     schema_change_pending = Column(Boolean, nullable=True, default=False) # True = schema changed, user description may be stale
+    generation_status = Column(String(20), nullable=True, default="idle")  # idle|queued|processing|succeeded|failed|stale
+    generation_error = Column(Text, nullable=True, default=None)
+    generation_requested_at = Column(DateTime, nullable=True, default=None)
+    generation_finished_at = Column(DateTime, nullable=True, default=None)
+    stale_reason = Column(Text, nullable=True, default=None)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)

@@ -10,6 +10,7 @@ When a user says "the AI used the wrong table/chart", we:
 This is the core of the Feedback-Driven Knowledge System feedback loop.
 """
 import logging
+from datetime import datetime
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,11 @@ class FeedbackProcessor:
         # Only set feedback source if not user-edited
         if table.description_source != "user":
             table.description_source = "feedback"
+        table.description_updated_at = datetime.utcnow()
+        table.generation_status = "succeeded"
+        table.generation_error = None
+        table.generation_finished_at = datetime.utcnow()
+        table.stale_reason = None
 
         db.commit()
         logger.info(
@@ -80,8 +86,6 @@ class FeedbackProcessor:
     def _process_chart_feedback(db: Session, chart_id: int, user_query: str) -> None:
         from app.models.models import Chart, ChartMetadata
         from app.services.embedding_service import EmbeddingService
-        from datetime import datetime
-
         chart = db.query(Chart).filter(Chart.id == chart_id).first()
         if not chart:
             return
@@ -102,7 +106,11 @@ class FeedbackProcessor:
         # Only set feedback source if not user-edited
         if meta.description_source != "user":
             meta.description_source = "feedback"
-            meta.description_updated_at = datetime.utcnow()
+        meta.description_updated_at = datetime.utcnow()
+        meta.generation_status = "succeeded"
+        meta.generation_error = None
+        meta.generation_finished_at = datetime.utcnow()
+        meta.stale_reason = None
 
         db.commit()
         logger.info(

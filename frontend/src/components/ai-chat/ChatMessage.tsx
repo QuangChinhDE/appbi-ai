@@ -31,7 +31,7 @@ export function ChatMessage({ message, sessionId, onFeedback }: ChatMessageProps
       <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
         isUser
           ? 'bg-blue-500'
-          : 'bg-gradient-to-br from-purple-500 to-blue-500'
+          : 'bg-blue-600'
       }`}>
         {isUser
           ? <User className="h-4 w-4 text-white" />
@@ -130,7 +130,7 @@ export function ChatMessage({ message, sessionId, onFeedback }: ChatMessageProps
               {message.userQuery && (
                 <button
                   onClick={() => setIsCorrectModalOpen(true)}
-                  className="p-1 rounded transition-colors text-gray-400 hover:text-purple-600 hover:bg-purple-50"
+                  className="p-1 rounded transition-colors text-gray-400 hover:text-blue-600 hover:bg-blue-50"
                   title="Correct this response"
                 >
                   <MessageSquarePlus className="h-3.5 w-3.5" />

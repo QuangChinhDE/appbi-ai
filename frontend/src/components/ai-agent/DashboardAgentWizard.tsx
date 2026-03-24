@@ -7,13 +7,16 @@ import {
   ArrowLeft,
   Bot,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   FileText,
   LayoutDashboard,
   ListChecks,
   Loader2,
   PencilLine,
   RefreshCcw,
+  Search,
   Sparkles,
   Table2,
   Wand2,
@@ -21,6 +24,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { AppModalShell } from '@/components/common/AppModalShell';
 import { useWorkspaces, WorkspaceWithTables } from '@/hooks/use-dataset-workspaces';
 import apiClient from '@/lib/api-client';
 import { AI_AGENT_HTTP_URL } from '@/lib/ai-services';
@@ -195,6 +199,16 @@ function sectionActiveCount(section: AgentSectionPlan, charts: EditableAgentChar
   return section.chart_keys.filter((key) => enabledKeys.has(key)).length;
 }
 
+function getBuildEventBadgeClass(event: BuildEvent): string {
+  if (event.type === 'error') {
+    return 'bg-rose-50 text-rose-700 border border-rose-200';
+  }
+  if (event.type === 'done') {
+    return 'bg-emerald-50 text-emerald-700 border border-emerald-200';
+  }
+  return 'bg-blue-50 text-blue-700 border border-blue-200';
+}
+
 async function getAuthToken(): Promise<string> {
   const response = await fetch('/api/auth/token');
   if (!response.ok) {
@@ -208,6 +222,8 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
   const router = useRouter();
   const [step, setStep] = useState<WizardStep>('select');
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const [tableSearch, setTableSearch] = useState('');
+  const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<number[]>([]);
   const [goal, setGoal] = useState(INITIAL_GOAL);
   const [audience, setAudience] = useState(INITIAL_AUDIENCE);
   const [timeframe, setTimeframe] = useState(INITIAL_TIMEFRAME);
@@ -266,6 +282,55 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
     });
   }, [selectedTables, tables]);
 
+  const normalizedTableSearch = tableSearch.trim().toLowerCase();
+  const workspaceSelectionGroups = useMemo(() => {
+    return (workspaceDetailsQuery.data ?? [])
+      .map((workspace) => {
+        const workspaceMatch =
+          workspace.name.toLowerCase().includes(normalizedTableSearch) ||
+          (workspace.description ?? '').toLowerCase().includes(normalizedTableSearch);
+        const visibleTables = (workspace.tables ?? []).filter((table) => {
+          if (!normalizedTableSearch) return true;
+          return (
+            workspaceMatch ||
+            table.display_name.toLowerCase().includes(normalizedTableSearch) ||
+            table.source_kind.toLowerCase().includes(normalizedTableSearch) ||
+            (table.source_table_name ?? '').toLowerCase().includes(normalizedTableSearch)
+          );
+        });
+        const selectedCount = (workspace.tables ?? []).filter((table) =>
+          selectedKeys.includes(`${workspace.id}:${table.id}`),
+        ).length;
+        const visibleSelectedCount = visibleTables.filter((table) =>
+          selectedKeys.includes(`${workspace.id}:${table.id}`),
+        ).length;
+
+        return {
+          workspace,
+          visibleTables,
+          totalTables: workspace.tables?.length ?? 0,
+          selectedCount,
+          visibleSelectedCount,
+        };
+      })
+      .filter((group) => group.visibleTables.length > 0)
+      .sort((left, right) => {
+        if (right.selectedCount !== left.selectedCount) {
+          return right.selectedCount - left.selectedCount;
+        }
+        return left.workspace.name.localeCompare(right.workspace.name);
+      });
+  }, [normalizedTableSearch, selectedKeys, workspaceDetailsQuery.data]);
+
+  const selectedWorkspaceCount = useMemo(
+    () => new Set(selectedTables.map((item) => item.workspace_id)).size,
+    [selectedTables],
+  );
+  const visibleTableCount = useMemo(
+    () => workspaceSelectionGroups.reduce((total, group) => total + group.visibleTables.length, 0),
+    [workspaceSelectionGroups],
+  );
+
   const briefPayload = useMemo<AgentBriefRequest>(
     () => ({
       goal: goal.trim(),
@@ -290,6 +355,8 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
   useEffect(() => {
     if (!isOpen) {
       setStep('select');
+      setTableSearch('');
+      setExpandedWorkspaceIds([]);
       setGeneratedPlan(null);
       setDraftPlan(null);
       setEvents([]);
@@ -297,6 +364,21 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
       setIsBuildRunning(false);
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !workspaceDetailsQuery.data?.length) return;
+
+    setExpandedWorkspaceIds((prev) => {
+      const validIds = prev.filter((id) => workspaceDetailsQuery.data.some((workspace) => workspace.id === id));
+      if (validIds.length > 0) {
+        return validIds;
+      }
+
+      return workspaceDetailsQuery.data
+        .slice(0, 3)
+        .map((workspace) => workspace.id);
+    });
+  }, [isOpen, workspaceDetailsQuery.data]);
 
   const planMutation = useMutation({
     mutationFn: async () => {
@@ -334,6 +416,31 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
     setSelectedKeys((prev) =>
       prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key],
     );
+  }
+
+  function toggleWorkspaceExpanded(workspaceId: number) {
+    setExpandedWorkspaceIds((prev) =>
+      prev.includes(workspaceId) ? prev.filter((item) => item !== workspaceId) : [...prev, workspaceId],
+    );
+  }
+
+  function setWorkspaceTableSelection(workspaceId: number, tableIds: number[], shouldSelect: boolean) {
+    const keys = tableIds.map((tableId) => `${workspaceId}:${tableId}`);
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      keys.forEach((key) => {
+        if (shouldSelect) {
+          next.add(key);
+        } else {
+          next.delete(key);
+        }
+      });
+      return Array.from(next);
+    });
+  }
+
+  function clearSelectedTables() {
+    setSelectedKeys([]);
   }
 
   function updateSection(index: number, patch: Partial<AgentSectionPlan>) {
@@ -456,29 +563,131 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4 py-6">
-      <div className="flex h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-2xl">
-        <div className="flex items-start justify-between border-b border-slate-200 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.16),_transparent_38%),radial-gradient(circle_at_bottom_right,_rgba(14,165,233,0.14),_transparent_34%),white] px-8 py-6">
-          <div className="max-w-4xl">
-            <div className="mb-3 flex items-center gap-2 text-sky-700">
-              <Wand2 className="h-5 w-5" />
-              <span className="text-sm font-semibold uppercase tracking-[0.2em]">AI Agent</span>
-            </div>
-            <h2 className="text-2xl font-semibold text-slate-900">Build a dashboard from a business brief</h2>
-            <p className="mt-2 text-sm text-slate-600">
-              This flow is separate from AI Chat. Pick the tables, generate a draft plan, review and edit it, then let the Agent build the dashboard.
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            disabled={isBuildRunning}
-            className="rounded-full border border-slate-200 p-2 text-slate-500 transition hover:border-slate-300 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <X className="h-5 w-5" />
-          </button>
+    <AppModalShell
+      onClose={onClose}
+      title="Build a dashboard from a business brief"
+      description="Separate from AI Chat: choose the tables, generate a draft plan, review and edit it, then let the Agent build the dashboard."
+      icon={<Wand2 className="h-5 w-5" />}
+      maxWidthClass="max-w-6xl"
+      panelClassName="h-[88vh] max-h-[90vh]"
+      bodyClassName="px-6 py-5"
+      closeDisabled={isBuildRunning}
+      footer={(
+        <>
+        <div className="mr-auto text-sm text-gray-500">
+          {selectedTables.length > 0 && `${selectedTables.length} table${selectedTables.length !== 1 ? 's' : ''} selected`}
+          {step === 'plan' && draftPlan && ` | ${enabledChartCount} active chart${enabledChartCount !== 1 ? 's' : ''}`}
         </div>
 
-        <div className="border-b border-slate-200 px-8 py-4">
+          {step === 'select' && (
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+            >
+              Close
+            </button>
+          )}
+
+          {step === 'brief' && (
+            <button
+              onClick={() => setStep('select')}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back
+            </button>
+          )}
+
+          {step === 'plan' && (
+            <button
+              onClick={() => setStep('brief')}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to brief
+            </button>
+          )}
+
+          {step === 'building' && (
+            <button
+              onClick={() => setStep('plan')}
+              disabled={isBuildRunning}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to plan
+            </button>
+          )}
+
+          {step === 'select' && (
+            <button
+              onClick={() => {
+                if (selectedTables.length === 0) {
+                  toast.info('Choose at least one table before continuing.');
+                  return;
+                }
+                setStep('brief');
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors"
+            >
+              Continue
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          )}
+
+          {step === 'brief' && (
+            <button
+              onClick={requestPlan}
+              disabled={planMutation.isPending}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {planMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+              Generate plan
+            </button>
+          )}
+
+          {step === 'plan' && (
+            <>
+              <button
+                onClick={requestPlan}
+                disabled={planMutation.isPending}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {planMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+                Regenerate plan
+              </button>
+              <button
+                onClick={resetPlanEdits}
+                disabled={!hasPlanEdits}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <RefreshCcw className="h-4 w-4" />
+                Reset edits
+              </button>
+              <button
+                onClick={handleBuild}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors"
+              >
+                <Wand2 className="h-4 w-4" />
+                Build dashboard
+              </button>
+            </>
+          )}
+
+          {step === 'building' && !isBuildRunning && (
+            <button
+              onClick={handleBuild}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors"
+            >
+              <RefreshCcw className="h-4 w-4" />
+              Retry build
+            </button>
+          )}
+        </>
+      )}
+    >
+      <div className="space-y-5">
+        <div className="border-b border-gray-200 pb-5">
           <div className="grid gap-3 md:grid-cols-4">
             {STEP_META.map((item, index) => {
               const active = currentStepIndex === index;
@@ -486,19 +695,19 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
               return (
                 <div
                   key={item.key}
-                  className={`rounded-2xl border px-4 py-3 transition ${
+                  className={`rounded-lg border px-4 py-3 transition ${
                     active
-                      ? 'border-slate-900 bg-slate-900 text-white'
+                      ? 'border-blue-200 bg-blue-50 text-blue-700'
                       : complete
                         ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                        : 'border-slate-200 bg-slate-50 text-slate-500'
+                        : 'border-gray-200 bg-white text-gray-500'
                   }`}
                 >
                   <div className="flex items-center gap-2 text-sm font-semibold">
                     {complete ? <CheckCircle2 className="h-4 w-4" /> : <span>{index + 1}</span>}
                     <span>{item.label}</span>
                   </div>
-                  <p className={`mt-1 text-xs ${active ? 'text-slate-300' : complete ? 'text-emerald-600' : 'text-slate-400'}`}>
+                  <p className={`mt-1 text-xs ${active ? 'text-blue-600' : complete ? 'text-emerald-600' : 'text-gray-400'}`}>
                     {item.caption}
                   </p>
                 </div>
@@ -507,284 +716,467 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-8 py-6">
-          {agentError && (
-            <div className="mb-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-              {agentError}
-            </div>
-          )}
+        {agentError && (
+          <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            {agentError}
+          </div>
+        )}
 
-          {step === 'select' && (
-            <div className="space-y-6">
-              <div className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
-                <div className="rounded-3xl border border-slate-200 bg-slate-50 p-6">
-                  <div className="mb-3 flex items-center gap-2 text-slate-900">
-                    <Table2 className="h-5 w-5 text-sky-600" />
-                    <h3 className="text-lg font-semibold">Choose the tables the Agent may use</h3>
+        {step === 'select' && (
+          <div className="space-y-6">
+            <div className="grid gap-4 xl:grid-cols-[1.05fr_0.9fr_0.75fr]">
+              <div className="rounded-xl border border-gray-200 bg-blue-50 p-6">
+                <div className="mb-3 flex items-center gap-2 text-gray-900">
+                  <Table2 className="h-5 w-5 text-blue-600" />
+                  <h3 className="text-lg font-semibold">Choose the tables the Agent may use</h3>
+                </div>
+                <p className="text-sm text-gray-600">
+                  V1 only uses the tables you explicitly select here. It will not pull extra datasets and it will not blend data across datasets.
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                <div className="mb-3 flex items-center gap-2 text-gray-900">
+                  <FileText className="h-5 w-5 text-gray-500" />
+                  <h3 className="text-lg font-semibold">What happens next</h3>
+                </div>
+                <ol className="space-y-3 text-sm text-gray-600">
+                  <li>1. Write the business brief.</li>
+                  <li>2. Review the generated dashboard draft.</li>
+                  <li>3. Edit titles, scope, and included charts.</li>
+                  <li>4. Generate the final dashboard when the draft looks right.</li>
+                </ol>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                <div className="grid gap-4 sm:grid-cols-3 xl:grid-cols-1">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.16em] text-gray-400">Workspaces</p>
+                    <p className="mt-2 text-2xl font-semibold text-gray-900">{workspaceDetailsQuery.data?.length ?? 0}</p>
                   </div>
-                  <p className="text-sm text-slate-600">
-                    V1 only uses the tables you explicitly select here. It will not pull extra datasets and it will not blend data across datasets.
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.16em] text-gray-400">Available tables</p>
+                    <p className="mt-2 text-2xl font-semibold text-gray-900">{tables.length}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.16em] text-gray-400">Selected tables</p>
+                    <p className="mt-2 text-2xl font-semibold text-gray-900">{selectedTables.length}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-6 xl:grid-cols-[1.18fr_0.82fr]">
+              <div className="space-y-4">
+                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="relative flex-1">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                      <input
+                        value={tableSearch}
+                        onChange={(event) => setTableSearch(event.target.value)}
+                        placeholder="Search workspaces or tables..."
+                        className="w-full rounded-lg border border-gray-300 py-2.5 pl-9 pr-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedWorkspaceIds(workspaceSelectionGroups.map((group) => group.workspace.id))}
+                        disabled={Boolean(normalizedTableSearch)}
+                        className="px-3 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Expand all
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setExpandedWorkspaceIds([])}
+                        disabled={Boolean(normalizedTableSearch)}
+                        className="px-3 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Collapse all
+                      </button>
+                    </div>
+                  </div>
+                  <p className="mt-3 text-xs text-gray-500">
+                    Showing {workspaceSelectionGroups.length} workspace{workspaceSelectionGroups.length !== 1 ? 's' : ''} and {visibleTableCount} table{visibleTableCount !== 1 ? 's' : ''} in the current view.
                   </p>
                 </div>
 
-                <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-                  <div className="mb-3 flex items-center gap-2 text-slate-900">
-                    <FileText className="h-5 w-5 text-slate-500" />
-                    <h3 className="text-lg font-semibold">What happens next</h3>
-                  </div>
-                  <ol className="space-y-3 text-sm text-slate-600">
-                    <li>1. Write the business brief.</li>
-                    <li>2. Review the generated dashboard draft.</li>
-                    <li>3. Edit titles, scope, and included charts.</li>
-                    <li>4. Generate the final dashboard when the draft looks right.</li>
-                  </ol>
-                </div>
-              </div>
-
-              <div className="grid gap-4 lg:grid-cols-2">
                 {workspaceDetailsQuery.isLoading && (
-                  <div className="col-span-full flex items-center gap-2 rounded-2xl border border-slate-200 p-5 text-slate-600">
+                  <div className="flex items-center gap-2 rounded-lg border border-gray-200 p-5 text-gray-600">
                     <Loader2 className="h-4 w-4 animate-spin" />
                     Loading workspaces and tables...
                   </div>
                 )}
 
                 {!workspaceDetailsQuery.isLoading && tables.length === 0 && (
-                  <div className="col-span-full rounded-3xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
-                    <p className="text-base font-medium text-slate-900">No workspace tables are available yet.</p>
-                    <p className="mt-2 text-sm text-slate-500">
+                  <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-8 text-center">
+                    <p className="text-base font-medium text-gray-900">No workspace tables are available yet.</p>
+                    <p className="mt-2 text-sm text-gray-500">
                       Add at least one workspace table before using AI Agent on the dashboards page.
                     </p>
                   </div>
                 )}
 
-                {(workspaceDetailsQuery.data ?? []).map((workspace) => (
-                  <div key={workspace.id} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-                    <div className="mb-4">
-                      <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Workspace</p>
-                      <h4 className="text-lg font-semibold text-slate-900">{workspace.name}</h4>
-                      {workspace.description && <p className="mt-1 text-sm text-slate-500">{workspace.description}</p>}
-                    </div>
+                {!workspaceDetailsQuery.isLoading && tables.length > 0 && workspaceSelectionGroups.length === 0 && (
+                  <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-8 text-center">
+                    <p className="text-base font-medium text-gray-900">No tables match your current search.</p>
+                    <p className="mt-2 text-sm text-gray-500">Try a workspace name, table name, or source type.</p>
+                  </div>
+                )}
 
-                    <div className="space-y-3">
-                      {(workspace.tables ?? []).map((table) => {
-                        const key = `${workspace.id}:${table.id}`;
-                        const checked = selectedKeys.includes(key);
-                        return (
+                <div className="space-y-4">
+                  {workspaceSelectionGroups.map((group) => {
+                    const isExpanded = normalizedTableSearch ? true : expandedWorkspaceIds.includes(group.workspace.id);
+                    const allVisibleSelected =
+                      group.visibleTables.length > 0 && group.visibleSelectedCount === group.visibleTables.length;
+
+                    return (
+                      <div key={group.workspace.id} className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                        <div className="flex flex-col gap-3 border-b border-gray-100 pb-4 sm:flex-row sm:items-start sm:justify-between">
                           <button
-                            key={table.id}
-                            onClick={() => toggleTable(workspace.id, table.id)}
-                            className={`flex w-full items-start justify-between rounded-2xl border px-4 py-3 text-left transition ${
-                              checked
-                                ? 'border-blue-500 bg-blue-50 shadow-sm'
-                                : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
-                            }`}
+                            type="button"
+                            onClick={() => toggleWorkspaceExpanded(group.workspace.id)}
+                            disabled={Boolean(normalizedTableSearch)}
+                            className="flex items-start gap-3 text-left disabled:cursor-default"
                           >
-                            <div>
-                              <p className="font-medium text-slate-900">{table.display_name}</p>
-                              <p className="mt-1 text-xs uppercase tracking-[0.16em] text-slate-400">{table.source_kind}</p>
+                            <div className="mt-0.5 text-gray-400">
+                              {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                             </div>
-                            <div
-                              className={`mt-1 flex h-5 w-5 items-center justify-center rounded-full border ${
-                                checked ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white'
-                              }`}
-                            >
-                              {checked && <CheckCircle2 className="h-3.5 w-3.5" />}
+                            <div>
+                              <p className="text-xs uppercase tracking-[0.18em] text-gray-400">Workspace</p>
+                              <h4 className="text-lg font-semibold text-gray-900">{group.workspace.name}</h4>
+                              {group.workspace.description && (
+                                <p className="mt-1 text-sm text-gray-500">{group.workspace.description}</p>
+                              )}
+                              <p className="mt-2 text-xs text-gray-500">
+                                {group.selectedCount} of {group.totalTables} table{group.totalTables !== 1 ? 's' : ''} selected
+                              </p>
                             </div>
                           </button>
-                        );
-                      })}
+
+                          <div className="flex flex-wrap items-center gap-2">
+                            {group.selectedCount > 0 && (
+                              <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+                                {group.selectedCount} selected
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setWorkspaceTableSelection(
+                                  group.workspace.id,
+                                  group.visibleTables.map((table) => table.id),
+                                  !allVisibleSelected,
+                                )
+                              }
+                              className="px-3 py-1.5 text-xs font-medium text-gray-700 border border-gray-300 rounded-full hover:bg-gray-50 transition-colors"
+                            >
+                              {allVisibleSelected ? 'Clear shown' : 'Select shown'}
+                            </button>
+                          </div>
+                        </div>
+
+                        {isExpanded && (
+                          <div className="mt-4 space-y-3">
+                            {group.visibleTables.map((table) => {
+                              const key = `${group.workspace.id}:${table.id}`;
+                              const checked = selectedKeys.includes(key);
+                              return (
+                                <button
+                                  key={table.id}
+                                  onClick={() => toggleTable(group.workspace.id, table.id)}
+                                  className={`flex w-full items-start justify-between rounded-lg border px-4 py-3 text-left transition ${
+                                    checked
+                                      ? 'border-blue-500 bg-blue-50 shadow-sm'
+                                      : 'border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50/40'
+                                  }`}
+                                >
+                                  <div>
+                                    <p className="font-medium text-gray-900">{table.display_name}</p>
+                                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                                      <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-gray-600">
+                                        {table.source_kind}
+                                      </span>
+                                      <span className="text-xs text-gray-400">Table ID {table.id}</span>
+                                    </div>
+                                  </div>
+                                  <div
+                                    className={`mt-1 flex h-5 w-5 items-center justify-center rounded-full border ${
+                                      checked ? 'border-blue-600 bg-blue-600 text-white' : 'border-gray-300 bg-white'
+                                    }`}
+                                  >
+                                    {checked && <CheckCircle2 className="h-3.5 w-3.5" />}
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="space-y-4 xl:sticky xl:top-0 xl:self-start">
+                <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                  <div className="mb-4 flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900">Selected scope</h3>
+                      <p className="mt-1 text-sm text-gray-500">
+                        Keep the scope tight. The Agent will only use these tables.
+                      </p>
+                    </div>
+                    {selectedKeys.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={clearSelectedTables}
+                        className="text-xs font-medium text-gray-600 hover:text-gray-900"
+                      >
+                        Clear all
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                      <p className="text-xs uppercase tracking-[0.16em] text-gray-400">Selected tables</p>
+                      <p className="mt-2 text-2xl font-semibold text-gray-900">{selectedTables.length}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                      <p className="text-xs uppercase tracking-[0.16em] text-gray-400">Selected workspaces</p>
+                      <p className="mt-2 text-2xl font-semibold text-gray-900">{selectedWorkspaceCount}</p>
                     </div>
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
 
-          {step === 'brief' && (
-            <div className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
-              <div className="space-y-5 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700">Business goal</label>
-                  <textarea
-                    value={goal}
-                    onChange={(event) => setGoal(event.target.value)}
-                    rows={4}
-                    className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                  />
-                </div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="mb-2 block text-sm font-medium text-slate-700">Audience</label>
-                    <input
-                      value={audience}
-                      onChange={(event) => setAudience(event.target.value)}
-                      className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-2 block text-sm font-medium text-slate-700">Timeframe</label>
-                    <input
-                      value={timeframe}
-                      onChange={(event) => setTimeframe(event.target.value)}
-                      className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700">KPIs</label>
-                  <textarea
-                    value={kpisText}
-                    onChange={(event) => setKpisText(event.target.value)}
-                    rows={4}
-                    className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                  />
-                </div>
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700">Questions the dashboard must answer</label>
-                  <textarea
-                    value={questionsText}
-                    onChange={(event) => setQuestionsText(event.target.value)}
-                    rows={4}
-                    className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-5">
-                <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-                  <div className="mb-3 flex items-center gap-2 text-slate-900">
-                    <FileText className="h-5 w-5 text-slate-500" />
-                    <h3 className="text-lg font-semibold">Selected scope</h3>
-                  </div>
-                  <div className="space-y-3 text-sm text-slate-700">
-                    {selectedTableCards.map((item) => (
-                      <div key={item.key} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                        <p className="font-medium text-slate-900">{item.tableName}</p>
-                        <p className="mt-1 text-xs uppercase tracking-[0.16em] text-slate-500">{item.workspaceName}</p>
-                      </div>
-                    ))}
-                  </div>
+                  {selectedTableCards.length === 0 ? (
+                    <div className="mt-4 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-center text-sm text-gray-500">
+                      Choose at least one table to continue.
+                    </div>
+                  ) : (
+                    <div className="mt-4 max-h-[420px] space-y-3 overflow-y-auto pr-1">
+                      {selectedTableCards.map((item) => (
+                        <div key={item.key} className="flex items-start justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+                          <div className="min-w-0">
+                            <p className="font-medium text-gray-900">{item.tableName}</p>
+                            <p className="mt-1 text-xs uppercase tracking-[0.16em] text-gray-500">{item.workspaceName}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedKeys((prev) => prev.filter((key) => key !== item.key))}
+                            className="rounded-md p-1 text-gray-400 hover:bg-white hover:text-gray-700 transition-colors"
+                            title="Remove from selection"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
-                <div className="rounded-3xl border border-blue-200 bg-blue-50 p-6">
+                <div className="rounded-xl border border-blue-200 bg-blue-50 p-5">
                   <div className="mb-3 flex items-center gap-2 text-blue-900">
                     <Sparkles className="h-5 w-5" />
-                    <h3 className="text-lg font-semibold">Planning notes</h3>
+                    <h3 className="text-lg font-semibold">Selection tips</h3>
                   </div>
-                  <ul className="space-y-2 text-sm text-blue-900/85">
-                    <li>- The richer the brief, the better the draft dashboard plan.</li>
-                    <li>- You can review, rename, disable charts, and regenerate the draft before building.</li>
-                    <li>- The final dashboard only uses the workspace tables selected in this flow.</li>
+                  <ul className="space-y-2 text-sm text-blue-900/90">
+                    <li>- Prefer only the tables the dashboard truly needs.</li>
+                    <li>- Use search when you have many workspaces or similar table names.</li>
+                    <li>- Review the selected scope on the right before moving to the brief.</li>
                   </ul>
                 </div>
               </div>
             </div>
-          )}
+          </div>
+        )}
 
-          {step === 'plan' && draftPlan && (
-            <div className="space-y-6">
-              <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-                <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-                  <div className="mb-4 flex items-center gap-2 text-slate-900">
-                    <PencilLine className="h-5 w-5 text-sky-600" />
-                    <h3 className="text-lg font-semibold">Editable dashboard draft</h3>
+        {step === 'brief' && (
+          <div className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+            <div className="space-y-5 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700">Business goal</label>
+                  <textarea
+                    value={goal}
+                    onChange={(event) => setGoal(event.target.value)}
+                    rows={4}
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-700">Audience</label>
+                    <input
+                      value={audience}
+                      onChange={(event) => setAudience(event.target.value)}
+                      className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                    />
                   </div>
-                  <div className="space-y-4">
-                    <div>
-                      <label className="mb-2 block text-sm font-medium text-slate-700">Dashboard title</label>
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-700">Timeframe</label>
+                    <input
+                      value={timeframe}
+                      onChange={(event) => setTimeframe(event.target.value)}
+                      className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700">KPIs</label>
+                  <textarea
+                    value={kpisText}
+                    onChange={(event) => setKpisText(event.target.value)}
+                    rows={4}
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700">Questions the dashboard must answer</label>
+                  <textarea
+                    value={questionsText}
+                    onChange={(event) => setQuestionsText(event.target.value)}
+                    rows={4}
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </div>
+            </div>
+
+            <div className="space-y-5">
+              <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                <div className="mb-3 flex items-center gap-2 text-gray-900">
+                  <FileText className="h-5 w-5 text-gray-500" />
+                    <h3 className="text-lg font-semibold">Selected scope</h3>
+                </div>
+                <div className="space-y-3 text-sm text-gray-700">
+                  {selectedTableCards.map((item) => (
+                    <div key={item.key} className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+                      <p className="font-medium text-gray-900">{item.tableName}</p>
+                      <p className="mt-1 text-xs uppercase tracking-[0.16em] text-gray-500">{item.workspaceName}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-blue-200 bg-blue-50 p-6">
+                <div className="mb-3 flex items-center gap-2 text-blue-900">
+                  <Sparkles className="h-5 w-5" />
+                  <h3 className="text-lg font-semibold">Planning notes</h3>
+                </div>
+                <ul className="space-y-2 text-sm text-blue-900/90">
+                  <li>- The richer the brief, the better the draft dashboard plan.</li>
+                  <li>- You can review, rename, disable charts, and regenerate the draft before building.</li>
+                  <li>- The final dashboard only uses the workspace tables selected in this flow.</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {step === 'plan' && draftPlan && (
+          <div className="space-y-6">
+            <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+              <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                <div className="mb-4 flex items-center gap-2 text-gray-900">
+                  <PencilLine className="h-5 w-5 text-blue-600" />
+                    <h3 className="text-lg font-semibold">Editable dashboard draft</h3>
+                </div>
+                <div className="space-y-4">
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-700">Dashboard title</label>
                       <input
                         value={draftPlan.dashboard_title}
                         onChange={(event) => setDraftPlan((prev) => (prev ? { ...prev, dashboard_title: event.target.value } : prev))}
-                        className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                        className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                       />
-                    </div>
-                    <div>
-                      <label className="mb-2 block text-sm font-medium text-slate-700">Dashboard summary</label>
+                  </div>
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-700">Dashboard summary</label>
                       <textarea
                         value={draftPlan.dashboard_summary}
                         onChange={(event) => setDraftPlan((prev) => (prev ? { ...prev, dashboard_summary: event.target.value } : prev))}
                         rows={4}
-                        className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                        className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                       />
-                    </div>
-                    {draftPlan.warnings.length > 0 && (
-                      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                        {draftPlan.warnings.join(' ')}
-                      </div>
-                    )}
                   </div>
-                </div>
-
-                <div className="grid gap-4 sm:grid-cols-3 xl:grid-cols-1">
-                  <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                    <div className="flex items-center gap-2 text-slate-900">
-                      <LayoutDashboard className="h-5 w-5 text-slate-500" />
-                      <span className="text-sm font-semibold">Sections</span>
+                  {draftPlan.warnings.length > 0 && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                      {draftPlan.warnings.join(' ')}
                     </div>
-                    <p className="mt-3 text-3xl font-semibold text-slate-900">{enabledSectionCount}</p>
-                    <p className="mt-1 text-sm text-slate-500">sections will be built from your current draft</p>
-                  </div>
-                  <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                    <div className="flex items-center gap-2 text-slate-900">
-                      <ListChecks className="h-5 w-5 text-slate-500" />
-                      <span className="text-sm font-semibold">Active charts</span>
-                    </div>
-                    <p className="mt-3 text-3xl font-semibold text-slate-900">{enabledChartCount}</p>
-                    <p className="mt-1 text-sm text-slate-500">charts currently enabled for build</p>
-                  </div>
-                  <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                    <div className="flex items-center gap-2 text-slate-900">
-                      <Table2 className="h-5 w-5 text-slate-500" />
-                      <span className="text-sm font-semibold">Selected tables</span>
-                    </div>
-                    <p className="mt-3 text-3xl font-semibold text-slate-900">{selectedTableCards.length}</p>
-                    <p className="mt-1 text-sm text-slate-500">the Agent will stay inside this scope</p>
-                  </div>
+                  )}
                 </div>
               </div>
 
-              <div className="grid gap-6 lg:grid-cols-[0.92fr_1.08fr]">
-                <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="grid gap-4 sm:grid-cols-3 xl:grid-cols-1">
+                <div className="rounded-xl border border-gray-200 bg-gray-50 p-5">
+                  <div className="flex items-center gap-2 text-gray-900">
+                    <LayoutDashboard className="h-5 w-5 text-blue-600" />
+                      <span className="text-sm font-semibold">Sections</span>
+                  </div>
+                  <p className="mt-3 text-3xl font-semibold text-gray-900">{enabledSectionCount}</p>
+                  <p className="mt-1 text-sm text-gray-500">sections will be built from your current draft</p>
+                </div>
+                <div className="rounded-xl border border-gray-200 bg-gray-50 p-5">
+                  <div className="flex items-center gap-2 text-gray-900">
+                    <ListChecks className="h-5 w-5 text-blue-600" />
+                      <span className="text-sm font-semibold">Active charts</span>
+                  </div>
+                  <p className="mt-3 text-3xl font-semibold text-gray-900">{enabledChartCount}</p>
+                  <p className="mt-1 text-sm text-gray-500">charts currently enabled for build</p>
+                </div>
+                <div className="rounded-xl border border-gray-200 bg-gray-50 p-5">
+                  <div className="flex items-center gap-2 text-gray-900">
+                    <Table2 className="h-5 w-5 text-blue-600" />
+                      <span className="text-sm font-semibold">Selected tables</span>
+                  </div>
+                  <p className="mt-3 text-3xl font-semibold text-gray-900">{selectedTableCards.length}</p>
+                  <p className="mt-1 text-sm text-gray-500">the Agent will stay inside this scope</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-6 lg:grid-cols-[0.92fr_1.08fr]">
+              <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
                   <div className="mb-4 flex items-center justify-between gap-3">
                     <div>
-                      <h4 className="text-lg font-semibold text-slate-900">Sections</h4>
-                      <p className="mt-1 text-sm text-slate-500">Refine the narrative structure before building.</p>
+                      <h4 className="text-lg font-semibold text-gray-900">Sections</h4>
+                      <p className="mt-1 text-sm text-gray-500">Refine the narrative structure before building.</p>
                     </div>
                   </div>
                   <div className="space-y-4">
                     {draftPlan.sections.map((section, index) => {
                       const activeCharts = sectionActiveCount(section, draftPlan.charts);
                       return (
-                        <div key={`${section.workspace_id}:${section.workspace_table_id}`} className="rounded-2xl border border-slate-200 p-4">
+                        <div key={`${section.workspace_id}:${section.workspace_table_id}`} className="rounded-lg border border-gray-200 p-4">
                           <div className="mb-3 flex items-center justify-between gap-3">
                             <div>
-                              <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                              <p className="text-xs uppercase tracking-[0.16em] text-gray-400">
                                 {section.workspace_name} / {section.table_name}
                               </p>
-                              <p className="mt-1 text-sm font-medium text-slate-900">{activeCharts} active chart{activeCharts !== 1 ? 's' : ''}</p>
+                              <p className="mt-1 text-sm font-medium text-gray-900">{activeCharts} active chart{activeCharts !== 1 ? 's' : ''}</p>
                             </div>
-                            <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-600">
+                            <span className="rounded-full bg-gray-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-600">
                               Section
                             </span>
                           </div>
 
                           <div className="space-y-3">
                             <div>
-                              <label className="mb-1 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Title</label>
+                              <label className="mb-1 block text-xs font-medium uppercase tracking-[0.14em] text-gray-500">Title</label>
                               <input
                                 value={section.title}
                                 onChange={(event) => updateSection(index, { title: event.target.value })}
-                                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                               />
                             </div>
                             <div>
-                              <label className="mb-1 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Intent</label>
+                              <label className="mb-1 block text-xs font-medium uppercase tracking-[0.14em] text-gray-500">Intent</label>
                               <textarea
                                 value={section.intent}
                                 onChange={(event) => updateSection(index, { intent: event.target.value })}
                                 rows={3}
-                                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                               />
                             </div>
                             <div className="flex flex-wrap gap-2">
@@ -797,7 +1189,7 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
                                     className={`rounded-full px-3 py-1 text-xs font-medium ${
                                       chart.enabled
                                         ? 'bg-blue-50 text-blue-700'
-                                        : 'bg-slate-100 text-slate-400 line-through'
+                                        : 'bg-gray-100 text-gray-400 line-through'
                                     }`}
                                   >
                                     {chart.title}
@@ -812,13 +1204,13 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
                   </div>
                 </div>
 
-                <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
                   <div className="mb-4 flex items-center justify-between gap-3">
                     <div>
-                      <h4 className="text-lg font-semibold text-slate-900">Charts the Agent will build</h4>
-                      <p className="mt-1 text-sm text-slate-500">You can rename, keep, or skip charts before building.</p>
+                      <h4 className="text-lg font-semibold text-gray-900">Charts the Agent will build</h4>
+                      <p className="mt-1 text-sm text-gray-500">You can rename, keep, or skip charts before building.</p>
                     </div>
-                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-slate-600">
+                    <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">
                       Review mode
                     </span>
                   </div>
@@ -826,30 +1218,30 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
                     {draftPlan.charts.map((chart) => {
                       const configNotes = describeChartConfig(chart);
                       return (
-                        <div
-                          key={chart.key}
-                          className={`rounded-2xl border p-4 transition ${
-                            chart.enabled ? 'border-slate-200 bg-white' : 'border-slate-200 bg-slate-50'
-                          }`}
-                        >
+                      <div
+                        key={chart.key}
+                        className={`rounded-lg border p-4 transition ${
+                          chart.enabled ? 'border-gray-200 bg-white' : 'border-gray-200 bg-gray-50'
+                        }`}
+                      >
                           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                             <button
                               type="button"
                               onClick={() => updateChart(chart.key, { enabled: !chart.enabled })}
                               className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.14em] transition ${
-                                chart.enabled
-                                  ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                                  : 'bg-slate-200 text-slate-600 hover:bg-slate-300'
+                              chart.enabled
+                                ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                                  : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
                               }`}
                             >
                               <CheckCircle2 className="h-3.5 w-3.5" />
                               {chart.enabled ? 'Included in build' : 'Skipped for now'}
                             </button>
                             <div className="flex flex-wrap items-center gap-2">
-                              <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-600">
+                              <span className="rounded-full bg-gray-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-600">
                                 {chart.chart_type}
                               </span>
-                              <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                              <span className="rounded-full bg-gray-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500">
                                 {chart.workspace_name}
                               </span>
                             </div>
@@ -857,30 +1249,30 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
 
                           <div className="space-y-3">
                             <div>
-                              <label className="mb-1 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Chart title</label>
+                              <label className="mb-1 block text-xs font-medium uppercase tracking-[0.14em] text-gray-500">Chart title</label>
                               <input
                                 value={chart.title}
                                 onChange={(event) => updateChart(chart.key, { title: event.target.value })}
-                                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                               />
                             </div>
                             <div>
-                              <label className="mb-1 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500">Rationale</label>
+                              <label className="mb-1 block text-xs font-medium uppercase tracking-[0.14em] text-gray-500">Rationale</label>
                               <textarea
                                 value={chart.rationale}
                                 onChange={(event) => updateChart(chart.key, { rationale: event.target.value })}
                                 rows={3}
-                                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                               />
                             </div>
                             <div>
-                              <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                              <p className="text-xs uppercase tracking-[0.16em] text-gray-400">
                                 {chart.workspace_name} / {chart.table_name}
                               </p>
                               {configNotes.length > 0 && (
                                 <div className="mt-2 flex flex-wrap gap-2">
                                   {configNotes.map((note) => (
-                                    <span key={note} className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
+                                    <span key={note} className="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-600">
                                       {note}
                                     </span>
                                   ))}
@@ -892,192 +1284,78 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
                       );
                     })}
                   </div>
-                </div>
               </div>
             </div>
-          )}
+          </div>
+        )}
 
-          {step === 'building' && (
-            <div className="grid gap-6 lg:grid-cols-[0.85fr_1.15fr]">
-              <div className="space-y-4">
-                <div className="rounded-3xl border border-slate-200 bg-slate-950 p-6 text-white shadow-sm">
-                  <div className="mb-3 flex items-center gap-2 text-sky-300">
-                    <Bot className="h-5 w-5" />
-                    <h3 className="text-lg font-semibold">Agent run</h3>
+        {step === 'building' && (
+          <div className="grid gap-6 lg:grid-cols-[0.85fr_1.15fr]">
+            <div className="space-y-4">
+              <div className="rounded-xl border border-blue-200 bg-blue-50 p-6">
+                <div className="mb-3 flex items-center gap-2 text-blue-900">
+                  <Bot className="h-5 w-5" />
+                  <h3 className="text-lg font-semibold">Agent run</h3>
+                </div>
+                <p className="text-sm text-blue-900/80">
+                  The Agent is creating charts, checking their data, and assembling the dashboard from your approved draft.
+                </p>
+                <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-lg border border-blue-200 bg-white p-4">
+                    <p className="text-xs uppercase tracking-[0.16em] text-gray-400">Active charts</p>
+                    <p className="mt-2 text-2xl font-semibold text-gray-900">{enabledChartCount}</p>
                   </div>
-                  <p className="text-sm text-slate-300">
-                    The Agent is creating charts, checking their data, and assembling the dashboard from your approved draft.
-                  </p>
-                  <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                    <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                      <p className="text-xs uppercase tracking-[0.16em] text-slate-400">Active charts</p>
-                      <p className="mt-2 text-2xl font-semibold text-white">{enabledChartCount}</p>
-                    </div>
-                    <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                      <p className="text-xs uppercase tracking-[0.16em] text-slate-400">Sections</p>
-                      <p className="mt-2 text-2xl font-semibold text-white">{enabledSectionCount}</p>
-                    </div>
+                  <div className="rounded-lg border border-blue-200 bg-white p-4">
+                    <p className="text-xs uppercase tracking-[0.16em] text-gray-400">Sections</p>
+                    <p className="mt-2 text-2xl font-semibold text-gray-900">{enabledSectionCount}</p>
                   </div>
                 </div>
+              </div>
 
-                {!isBuildRunning && agentError && (
-                  <div className="rounded-3xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-900">
-                    <p className="font-semibold">You can go back, adjust the draft, and try again.</p>
-                    <p className="mt-2 text-amber-800">
-                      The current plan stays editable, so you can disable weak charts, update titles, or regenerate a fresh draft from the brief.
-                    </p>
+              {!isBuildRunning && agentError && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-900">
+                  <p className="font-semibold">You can go back, adjust the draft, and try again.</p>
+                  <p className="mt-2 text-amber-800">
+                    The current plan stays editable, so you can disable weak charts, update titles, or regenerate a fresh draft from the brief.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-lg font-semibold text-gray-900">Progress stream</h4>
+                  <p className="mt-1 text-sm text-gray-500">Each event comes directly from the standalone AI Agent service.</p>
+                </div>
+                {isBuildRunning && <Loader2 className="h-5 w-5 animate-spin text-blue-500" />}
+              </div>
+              <div className="space-y-3">
+                {events.length === 0 && (
+                  <div className="flex items-center gap-2 rounded-lg border border-gray-200 px-4 py-3 text-sm text-gray-500">
+                    <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                    Waiting for first event...
                   </div>
                 )}
-              </div>
-
-              <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-                <div className="mb-4 flex items-center justify-between gap-3">
-                  <div>
-                    <h4 className="text-lg font-semibold text-slate-900">Progress stream</h4>
-                    <p className="mt-1 text-sm text-slate-500">Each event comes directly from the standalone AI Agent service.</p>
-                  </div>
-                  {isBuildRunning && <Loader2 className="h-5 w-5 animate-spin text-slate-400" />}
-                </div>
-                <div className="space-y-3">
-                  {events.length === 0 && (
-                    <div className="flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-3 text-sm text-slate-500">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Waiting for first event...
-                    </div>
-                  )}
-                  {events.map((event, index) => (
-                    <div key={`${event.type}-${index}`} className="rounded-2xl border border-slate-200 px-4 py-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="font-medium text-slate-900">{event.message}</p>
-                          {event.error && <p className="mt-2 text-sm text-rose-600">{event.error}</p>}
-                        </div>
-                        <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                          {event.phase}
-                        </span>
+                {events.map((event, index) => (
+                  <div key={`${event.type}-${index}`} className="rounded-lg border border-gray-200 px-4 py-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-medium text-gray-900">{event.message}</p>
+                        {event.error && <p className="mt-2 text-sm text-rose-600">{event.error}</p>}
                       </div>
+                      <span className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] ${getBuildEventBadgeClass(event)}`}>
+                        {event.phase}
+                      </span>
                     </div>
-                  ))}
-                </div>
+                  </div>
+                ))}
               </div>
             </div>
-          )}
+          </div>
+        )}
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-8 py-5">
-          <div className="text-sm text-slate-500">
-            {selectedTables.length > 0 && `${selectedTables.length} table${selectedTables.length !== 1 ? 's' : ''} selected`}
-            {step === 'plan' && draftPlan && ` • ${enabledChartCount} active chart${enabledChartCount !== 1 ? 's' : ''}`}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            {step === 'select' && (
-              <button
-                onClick={onClose}
-                className="rounded-full border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-              >
-                Close
-              </button>
-            )}
-
-            {step === 'brief' && (
-              <button
-                onClick={() => setStep('select')}
-                className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                Back
-              </button>
-            )}
-
-            {step === 'plan' && (
-              <button
-                onClick={() => setStep('brief')}
-                className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                Back to brief
-              </button>
-            )}
-
-            {step === 'building' && (
-              <button
-                onClick={() => setStep('plan')}
-                disabled={isBuildRunning}
-                className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                Back to plan
-              </button>
-            )}
-
-            {step === 'select' && (
-              <button
-                onClick={() => {
-                  if (selectedTables.length === 0) {
-                    toast.info('Choose at least one table before continuing.');
-                    return;
-                  }
-                  setStep('brief');
-                }}
-                className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800"
-              >
-                Continue
-                <ChevronRight className="h-4 w-4" />
-              </button>
-            )}
-
-            {step === 'brief' && (
-              <button
-                onClick={requestPlan}
-                disabled={planMutation.isPending}
-                className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {planMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-                Generate plan
-              </button>
-            )}
-
-            {step === 'plan' && (
-              <>
-                <button
-                  onClick={requestPlan}
-                  disabled={planMutation.isPending}
-                  className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {planMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-                  Regenerate plan
-                </button>
-                <button
-                  onClick={resetPlanEdits}
-                  disabled={!hasPlanEdits}
-                  className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <RefreshCcw className="h-4 w-4" />
-                  Reset edits
-                </button>
-                <button
-                  onClick={handleBuild}
-                  className="inline-flex items-center gap-2 rounded-full bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-blue-700"
-                >
-                  <Wand2 className="h-4 w-4" />
-                  Build dashboard
-                </button>
-              </>
-            )}
-
-            {step === 'building' && !isBuildRunning && (
-              <button
-                onClick={handleBuild}
-                className="inline-flex items-center gap-2 rounded-full bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-blue-700"
-              >
-                <RefreshCcw className="h-4 w-4" />
-                Retry build
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
+    </AppModalShell>
   );
 }

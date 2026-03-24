@@ -17,6 +17,7 @@ import { ExploreChartConfig, type ExploreChartType, type ChartRoleConfig, type A
 import { toast } from 'sonner';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ChartDescriptionPanel } from '@/components/explore/ChartDescriptionPanel';
+import { AppModalShell } from '@/components/common/AppModalShell';
 import type { ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
 
 type ChartType = ExploreChartType;
@@ -349,7 +350,7 @@ export default function ExploreDetailPage() {
                     if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
                     if (e.key === 'Escape') { setChartDescInput(chart?.description ?? ''); setIsEditingDesc(false); }
                   }}
-                  placeholder="Add a description…"
+                  placeholder="Add a manual note..."
                   className="text-xs text-gray-600 border-b border-blue-400 bg-transparent outline-none px-0.5 w-80"
                 />
               ) : (
@@ -361,7 +362,7 @@ export default function ExploreDetailPage() {
                     {chartDescInput ? (
                       <span className="text-xs text-gray-500">{chartDescInput}</span>
                     ) : (
-                      <span className="text-xs text-gray-300 italic">Add a description…</span>
+                      <span className="text-xs text-gray-300 italic">Add a manual note...</span>
                     )}
                     <Pencil className="w-3 h-3 text-gray-300 opacity-0 group-hover/desc:opacity-100 transition-opacity" />
                   </div>
@@ -378,7 +379,7 @@ export default function ExploreDetailPage() {
               <button
                 onClick={() => setIsDescModalOpen(true)}
                 className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
-                title="AI Mô tả"
+                title="AI Description"
               >
                 <Bot className="w-4 h-4" />
               </button>
@@ -737,29 +738,17 @@ export default function ExploreDetailPage() {
 
       {/* AI Description Modal */}
       {isDescModalOpen && chartId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsDescModalOpen(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
-            {/* Modal header */}
-            <div className="flex items-center justify-between px-6 py-5 bg-gradient-to-r from-blue-600 to-violet-600 rounded-t-2xl">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-white/20 rounded-lg">
-                  <Bot className="w-5 h-5 text-white" />
-                </div>
-                <div>
-                  <h2 className="font-semibold text-white text-base">AI Mô tả</h2>
-                  <p className="text-xs text-blue-100 mt-0.5">Thông tin AI tự động phân tích biểu đồ</p>
-                </div>
-              </div>
-              <button onClick={() => setIsDescModalOpen(false)} className="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            {/* Modal body */}
-            <div className="flex-1 overflow-y-auto p-6">
-              <ChartDescriptionPanel chartId={chartId} canEdit={resPerms.canEdit} />
-            </div>
-          </div>
-        </div>
+        <AppModalShell
+          onClose={() => setIsDescModalOpen(false)}
+          title="AI Description"
+          description="Separate from the manual note shown under the chart title."
+          icon={<Bot className="h-5 w-5" />}
+          maxWidthClass="max-w-3xl"
+          panelClassName="max-h-[85vh]"
+          bodyClassName="p-6"
+        >
+          <ChartDescriptionPanel chartId={chartId} canEdit={resPerms.canEdit} />
+        </AppModalShell>
       )}
     </div>
   );

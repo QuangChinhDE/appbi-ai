@@ -192,6 +192,11 @@ class ChartMetadata(Base):
     query_aliases = Column(JSON, nullable=True, default=None)             # From feedback loop
     description_source = Column(String(20), nullable=True, default=None)  # "auto"|"user"|"feedback"
     description_updated_at = Column(DateTime(timezone=True), nullable=True, default=None)
+    generation_status = Column(String(20), nullable=True, default="idle")  # idle|queued|processing|succeeded|failed|stale
+    generation_error = Column(Text, nullable=True, default=None)
+    generation_requested_at = Column(DateTime(timezone=True), nullable=True, default=None)
+    generation_finished_at = Column(DateTime(timezone=True), nullable=True, default=None)
+    stale_reason = Column(Text, nullable=True, default=None)
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

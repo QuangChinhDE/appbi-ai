@@ -101,7 +101,7 @@ export function ChatSessionList({ sessions, viewMode, onDelete, onShare, deletin
                     {onShare && (
                       <button
                         onClick={() => onShare(s)}
-                        className="text-purple-600 hover:text-purple-900"
+                        className="text-blue-600 hover:text-blue-900"
                         title="Chia sẻ"
                       >
                         <Share2 className="h-5 w-5" />
@@ -138,7 +138,7 @@ export function ChatSessionList({ sessions, viewMode, onDelete, onShare, deletin
         >
           {/* Icon + title row */}
           <div className="flex items-start gap-3">
-            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-purple-100 to-blue-100 flex items-center justify-center flex-shrink-0">
+            <div className="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
               <MessageSquareText className="h-4 w-4 text-blue-500" />
             </div>
             <div className="flex-1 min-w-0">
@@ -163,7 +163,7 @@ export function ChatSessionList({ sessions, viewMode, onDelete, onShare, deletin
               {onShare && (
                 <button
                   onClick={(e) => { e.stopPropagation(); onShare(s); }}
-                  className="p-1 rounded text-gray-400 hover:text-purple-500 hover:bg-purple-50 opacity-0 group-hover:opacity-100 transition-all"
+                  className="p-1 rounded text-gray-400 hover:text-blue-500 hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition-all"
                   title="Chia sẻ"
                 >
                   <Share2 className="h-4 w-4" />

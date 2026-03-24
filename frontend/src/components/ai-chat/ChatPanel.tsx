@@ -31,7 +31,7 @@ function SuggestionChips({ suggestions, onSelect, disabled }: SuggestionChipsPro
           key={i}
           onClick={() => onSelect(s)}
           disabled={disabled}
-          className="text-xs px-3 py-1.5 bg-purple-50 border border-purple-200 text-purple-700 rounded-full hover:bg-purple-100 hover:border-purple-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+          className="text-xs px-3 py-1.5 bg-blue-50 border border-blue-200 text-blue-700 rounded-full hover:bg-blue-100 hover:border-blue-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
         >
           {s}
         </button>
@@ -368,7 +368,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         >
           <ArrowLeft className="h-4 w-4" />
         </button>
-        <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center flex-shrink-0">
+        <div className="w-8 h-8 rounded-xl bg-blue-600 flex items-center justify-center flex-shrink-0">
           <Sparkles className="h-4 w-4 text-white" />
         </div>
         <div className="flex-1 min-w-0">
@@ -382,7 +382,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         {canShare && (
           <button
             onClick={() => setIsShareOpen(true)}
-            className="p-1.5 rounded-lg text-gray-400 hover:text-purple-600 hover:bg-purple-50 transition-colors"
+            className="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
             title="Chia sẻ cuộc hội thoại"
           >
             <Share2 className="h-4 w-4" />
@@ -402,7 +402,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
         {isEmpty && (
           <div className="flex flex-col items-center justify-center h-full gap-6 py-12">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-100 to-blue-100 flex items-center justify-center">
+            <div className="w-16 h-16 rounded-2xl bg-blue-50 flex items-center justify-center">
               <Bot className="h-8 w-8 text-blue-500" />
             </div>
             <div className="text-center">

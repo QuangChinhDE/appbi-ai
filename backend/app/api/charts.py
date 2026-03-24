@@ -31,7 +31,11 @@ from app.schemas import (
     ChartParameterUpdate,
     ChartParameterResponse,
 )
-from app.services import ChartService, EmbeddingService, AutoTaggingService
+from app.services import ChartService, EmbeddingService
+from app.services.description_pipeline_service import (
+    DescriptionPipelineService,
+    resolve_session_factory,
+)
 from app.core.logging import get_logger
 
 
@@ -62,6 +66,37 @@ def _get_workspace_for_chart_table(db: Session, workspace_table_id: int):
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     return workspace, db_table
+
+
+def _serialize_chart_description(meta) -> dict:
+    if not meta:
+        return {
+            "auto_description": None,
+            "insight_keywords": None,
+            "common_questions": None,
+            "query_aliases": None,
+            "description_source": None,
+            "description_updated_at": None,
+            "generation_status": "idle",
+            "generation_error": None,
+            "generation_requested_at": None,
+            "generation_finished_at": None,
+            "stale_reason": None,
+        }
+
+    return {
+        "auto_description": getattr(meta, "auto_description", None),
+        "insight_keywords": getattr(meta, "insight_keywords", None),
+        "common_questions": getattr(meta, "common_questions", None),
+        "query_aliases": getattr(meta, "query_aliases", None),
+        "description_source": getattr(meta, "description_source", None),
+        "description_updated_at": meta.description_updated_at.isoformat() if getattr(meta, "description_updated_at", None) else None,
+        "generation_status": getattr(meta, "generation_status", "idle") or "idle",
+        "generation_error": getattr(meta, "generation_error", None),
+        "generation_requested_at": meta.generation_requested_at.isoformat() if getattr(meta, "generation_requested_at", None) else None,
+        "generation_finished_at": meta.generation_finished_at.isoformat() if getattr(meta, "generation_finished_at", None) else None,
+        "stale_reason": getattr(meta, "stale_reason", None),
+    }
 
 
 @router.get("/", response_model=List[ChartResponse])
@@ -206,7 +241,12 @@ def ai_chart_preview(
             config=config,
         )
         new_chart = ChartService.create(db, chart_create, owner_id=current_user.id)
-        background_tasks.add_task(EmbeddingService.embed_chart, db, new_chart.id)
+        DescriptionPipelineService.enqueue_chart_pipeline(
+            background_tasks,
+            db,
+            new_chart.id,
+            trigger="chart_created",
+        )
         response["saved"] = True
         response["chart_id"] = new_chart.id
         response["chart_name"] = new_chart.name
@@ -243,8 +283,12 @@ def create_chart(
         workspace, _ = _get_workspace_for_chart_table(db, chart.workspace_table_id)
         require_view_access(db, current_user, workspace, "workspaces")
         new_chart = ChartService.create(db, chart, owner_id=current_user.id)
-        background_tasks.add_task(AutoTaggingService.tag_chart, db, new_chart.id)
-        background_tasks.add_task(EmbeddingService.embed_chart, db, new_chart.id)
+        DescriptionPipelineService.enqueue_chart_pipeline(
+            background_tasks,
+            db,
+            new_chart.id,
+            trigger="chart_created",
+        )
         return new_chart
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -268,8 +312,12 @@ def update_chart(
         require_view_access(db, current_user, workspace, "workspaces")
     try:
         chart = ChartService.update(db, chart_id, chart_update)
-        background_tasks.add_task(AutoTaggingService.tag_chart, db, chart_id)
-        background_tasks.add_task(EmbeddingService.embed_chart, db, chart_id)
+        DescriptionPipelineService.enqueue_chart_pipeline(
+            background_tasks,
+            db,
+            chart_id,
+            trigger="chart_updated",
+        )
         return chart
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -419,23 +467,7 @@ def get_chart_description(
     if perm == "none":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     meta = db.query(ChartMetadata).filter(ChartMetadata.chart_id == chart_id).first()
-    if not meta:
-        return {
-            "auto_description": None,
-            "insight_keywords": None,
-            "common_questions": None,
-            "query_aliases": None,
-            "description_source": None,
-            "description_updated_at": None,
-        }
-    return {
-        "auto_description": meta.auto_description,
-        "insight_keywords": meta.insight_keywords,
-        "common_questions": meta.common_questions,
-        "query_aliases": meta.query_aliases,
-        "description_source": meta.description_source,
-        "description_updated_at": meta.description_updated_at.isoformat() if meta.description_updated_at else None,
-    }
+    return _serialize_chart_description(meta)
 
 
 @router.put("/{chart_id}/description")
@@ -470,18 +502,20 @@ def update_chart_description(
 
     meta.description_source = "user"
     meta.description_updated_at = datetime.utcnow()
+    meta.generation_status = "succeeded"
+    meta.generation_error = None
+    meta.generation_requested_at = None
+    meta.generation_finished_at = datetime.utcnow()
+    meta.stale_reason = None
     db.commit()
 
-    background_tasks.add_task(EmbeddingService.embed_chart, db, chart_id)
+    background_tasks.add_task(
+        DescriptionPipelineService.run_chart_embedding,
+        chart_id,
+        resolve_session_factory(db),
+    )
 
-    return {
-        "auto_description": meta.auto_description,
-        "insight_keywords": meta.insight_keywords,
-        "common_questions": meta.common_questions,
-        "query_aliases": meta.query_aliases,
-        "description_source": meta.description_source,
-        "description_updated_at": meta.description_updated_at.isoformat() if meta.description_updated_at else None,
-    }
+    return _serialize_chart_description(meta)
 
 
 @router.post("/{chart_id}/description/regenerate")
@@ -497,10 +531,15 @@ def regenerate_chart_description(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart {chart_id} not found")
     require_edit_access(db, current_user, chart, "explore_charts")
 
-    background_tasks.add_task(AutoTaggingService.tag_chart, db, chart_id, True)
-    background_tasks.add_task(EmbeddingService.embed_chart, db, chart_id)
+    DescriptionPipelineService.enqueue_chart_pipeline(
+        background_tasks,
+        db,
+        chart_id,
+        trigger="manual_regenerate",
+        force=True,
+    )
 
-    return {"status": "regenerating"}
+    return {"status": "queued", "generation_status": "queued"}
 
 
 # ---------------------------------------------------------------------------

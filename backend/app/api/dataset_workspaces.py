@@ -37,9 +37,11 @@ from app.schemas import (
 from app.services import (
     DatasetWorkspaceCRUDService,
     DataSourceConnectionService,
-    TableStatsService,
     EmbeddingService,
-    AutoTaggingService,
+)
+from app.services.description_pipeline_service import (
+    DescriptionPipelineService,
+    resolve_session_factory,
 )
 
 router = APIRouter()
@@ -114,6 +116,23 @@ def _infer_column_type(col: str, col_index: int, rows: list) -> str:
         return "date"
 
     return "string"
+
+
+def _serialize_table_description(table) -> dict:
+    return {
+        "auto_description": getattr(table, "auto_description", None),
+        "column_descriptions": getattr(table, "column_descriptions", None),
+        "common_questions": getattr(table, "common_questions", None),
+        "query_aliases": getattr(table, "query_aliases", None),
+        "description_source": getattr(table, "description_source", None),
+        "description_updated_at": table.description_updated_at.isoformat() if getattr(table, "description_updated_at", None) else None,
+        "schema_change_pending": getattr(table, "schema_change_pending", False),
+        "generation_status": getattr(table, "generation_status", "idle") or "idle",
+        "generation_error": getattr(table, "generation_error", None),
+        "generation_requested_at": table.generation_requested_at.isoformat() if getattr(table, "generation_requested_at", None) else None,
+        "generation_finished_at": table.generation_finished_at.isoformat() if getattr(table, "generation_finished_at", None) else None,
+        "stale_reason": getattr(table, "stale_reason", None),
+    }
 
 
 # ===== Table Vector Search (must be before /{workspace_id} routes) =====
@@ -328,10 +347,13 @@ def add_table_to_workspace(
         if not db_table:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
-        # Compute column stats, auto-description, and embeddings in background
-        background_tasks.add_task(TableStatsService.update_table_stats, db, db_table.id)
-        background_tasks.add_task(AutoTaggingService.describe_table, db, db_table.id)
-        background_tasks.add_task(EmbeddingService.embed_table, db, db_table.id)
+        # Queue a single AI-description pipeline to avoid duplicate generate/embed work.
+        DescriptionPipelineService.enqueue_table_pipeline(
+            background_tasks,
+            db,
+            db_table.id,
+            trigger="table_created",
+        )
 
         # Return plain dict instead of model to avoid serialization issues
         return {
@@ -388,10 +410,12 @@ def update_workspace_table(
         db, table_id, table_update
     )
 
-    # Recompute stats, auto-description, and embeddings when table definition changes
-    background_tasks.add_task(TableStatsService.update_table_stats, db, table_id)
-    background_tasks.add_task(AutoTaggingService.describe_table, db, table_id)
-    background_tasks.add_task(EmbeddingService.embed_table, db, table_id)
+    DescriptionPipelineService.enqueue_table_pipeline(
+        background_tasks,
+        db,
+        table_id,
+        trigger="table_updated",
+    )
 
     return updated_table
 
@@ -843,15 +867,7 @@ def get_table_description(
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
 
-    return {
-        "auto_description": table.auto_description,
-        "column_descriptions": table.column_descriptions,
-        "common_questions": table.common_questions,
-        "query_aliases": table.query_aliases,
-        "description_source": table.description_source,
-        "description_updated_at": table.description_updated_at.isoformat() if table.description_updated_at else None,
-        "schema_change_pending": table.schema_change_pending,
-    }
+    return _serialize_table_description(table)
 
 
 @router.put("/{workspace_id}/tables/{table_id}/description")
@@ -888,19 +904,20 @@ def update_table_description(
     table.description_source = "user"
     table.description_updated_at = datetime.utcnow()
     table.schema_change_pending = False
+    table.generation_status = "succeeded"
+    table.generation_error = None
+    table.generation_requested_at = None
+    table.generation_finished_at = datetime.utcnow()
+    table.stale_reason = None
     db.commit()
 
-    background_tasks.add_task(EmbeddingService.embed_table, db, table_id)
+    background_tasks.add_task(
+        DescriptionPipelineService.run_table_embedding,
+        table_id,
+        resolve_session_factory(db),
+    )
 
-    return {
-        "auto_description": table.auto_description,
-        "column_descriptions": table.column_descriptions,
-        "common_questions": table.common_questions,
-        "query_aliases": table.query_aliases,
-        "description_source": table.description_source,
-        "description_updated_at": table.description_updated_at.isoformat() if table.description_updated_at else None,
-        "schema_change_pending": table.schema_change_pending,
-    }
+    return _serialize_table_description(table)
 
 
 @router.post("/{workspace_id}/tables/{table_id}/description/regenerate")
@@ -924,10 +941,15 @@ def regenerate_table_description(
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
 
-    background_tasks.add_task(AutoTaggingService.describe_table, db, table_id, True)
-    background_tasks.add_task(EmbeddingService.embed_table, db, table_id)
+    DescriptionPipelineService.enqueue_table_pipeline(
+        background_tasks,
+        db,
+        table_id,
+        trigger="manual_regenerate",
+        force=True,
+    )
 
-    return {"status": "regenerating"}
+    return {"status": "queued", "generation_status": "queued"}
 
 
 # ===== Datasource Table List Endpoint =====
