@@ -30,6 +30,11 @@ interface NavItem {
   adminOnly?: boolean;  // only visible to admin
 }
 
+interface SidebarProps {
+  isCollapsed: boolean;
+  onToggleCollapse: () => void;
+}
+
 const ALL_NAV_ITEMS: NavItem[] = [
   {
     label: 'Data Sources',
@@ -78,8 +83,7 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
-export function Sidebar() {
-  const [isCollapsed, setIsCollapsed] = useState(false);
+export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const pathname = usePathname();
@@ -221,7 +225,7 @@ export function Sidebar() {
         {/* Collapse Toggle */}
         <div className="p-4">
           <button
-            onClick={() => setIsCollapsed(!isCollapsed)}
+            onClick={onToggleCollapse}
             className="w-full flex items-center justify-center px-3 py-2 text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-colors"
             title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
