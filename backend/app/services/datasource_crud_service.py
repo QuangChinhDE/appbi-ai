@@ -66,7 +66,7 @@ class DataSourceCRUDService:
         return db.query(DataSource).filter(DataSource.name == name).first()
     
     @staticmethod
-    def create(db: Session, data_source: DataSourceCreate) -> DataSource:
+    def create(db: Session, data_source: DataSourceCreate, owner_id=None) -> DataSource:
         """Create a new data source."""
         try:
             from app.core.crypto import encrypt_config
@@ -79,7 +79,8 @@ class DataSourceCRUDService:
                 name=data_source.name,
                 type=DataSourceType(data_source.type.value),
                 description=data_source.description,
-                config=config
+                config=config,
+                owner_id=owner_id,
             )
             db.add(db_data_source)
             db.commit()

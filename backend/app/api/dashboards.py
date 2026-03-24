@@ -6,7 +6,14 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app.core import get_db
-from app.core.dependencies import get_current_user, require_permission, require_edit_access, require_full_access, get_effective_permission
+from app.core.dependencies import (
+    get_current_user,
+    require_permission,
+    require_view_access,
+    require_edit_access,
+    require_full_access,
+    get_effective_permission,
+)
 from app.core.permissions import _owned_or_shared
 from app.models.models import Chart, DashboardChart, Dashboard
 from app.models.resource_share import ResourceType
@@ -30,6 +37,15 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/dashboards", tags=["dashboards"])
+
+
+def _require_chart_visibility(db: Session, current_user: User, chart_id: int) -> Chart:
+    """Ensure the current user can attach the chart to a dashboard."""
+    chart = db.query(Chart).filter(Chart.id == chart_id).first()
+    if not chart:
+        raise HTTPException(status_code=404, detail=f"Chart with ID {chart_id} not found")
+    require_view_access(db, current_user, chart, "explore_charts")
+    return chart
 
 
 @router.get("/", response_model=List[DashboardResponse])
@@ -64,7 +80,7 @@ def get_dashboard(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Dashboard with ID {dashboard_id} not found"
         )
-    dashboard.user_permission = get_effective_permission(db, current_user, dashboard, "dashboards")
+    dashboard.user_permission = require_view_access(db, current_user, dashboard, "dashboards")
     return dashboard
 
 
@@ -76,6 +92,8 @@ def create_dashboard(
 ):
     """Create a new dashboard."""
     try:
+        for chart_item in dashboard.charts:
+            _require_chart_visibility(db, current_user, chart_item.chart_id)
         return DashboardService.create(db, dashboard, owner_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -128,6 +146,7 @@ def add_chart_to_dashboard(
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
+    _require_chart_visibility(db, current_user, request.chart_id)
     try:
         dashboard = DashboardService.add_chart(
             db,

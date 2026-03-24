@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY backend/app/ ./app/
+COPY backend/tests/ ./tests/
 COPY backend/alembic/ ./alembic/
 COPY backend/alembic.ini .
 
@@ -31,7 +32,7 @@ COPY scope-foodball-demo.xlsx .
 
 # Copy entrypoint script
 COPY backend/entrypoint.sh .
-RUN chmod +x entrypoint.sh
+RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
 
 # Expose port
 EXPOSE 8000

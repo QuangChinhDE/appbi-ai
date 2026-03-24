@@ -19,7 +19,13 @@ const nextConfig = {
   env: {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1',
     NEXT_PUBLIC_AI_WS_URL: process.env.NEXT_PUBLIC_AI_WS_URL || 'ws://localhost:8001/chat/ws',
+    NEXT_PUBLIC_AI_CHAT_WS_URL:
+      process.env.NEXT_PUBLIC_AI_CHAT_WS_URL || process.env.NEXT_PUBLIC_AI_WS_URL || 'ws://localhost:8001/chat/ws',
+    NEXT_PUBLIC_AI_CHAT_HTTP_URL:
+      process.env.NEXT_PUBLIC_AI_CHAT_HTTP_URL || 'http://localhost:8001',
+    NEXT_PUBLIC_AI_AGENT_HTTP_URL:
+      process.env.NEXT_PUBLIC_AI_AGENT_HTTP_URL || 'http://localhost:8002',
   },
-}
+};
 
-module.exports = nextConfig
+module.exports = nextConfig;

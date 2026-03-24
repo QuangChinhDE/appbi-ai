@@ -7,7 +7,14 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_user, require_permission, require_edit_access, require_full_access, get_effective_permission
+from app.core.dependencies import (
+    get_current_user,
+    require_permission,
+    require_view_access,
+    require_edit_access,
+    require_full_access,
+    get_effective_permission,
+)
 from app.core.permissions import _owned_or_shared
 from app.models import DataSource, Chart, DatasetWorkspace, DatasetWorkspaceTable
 from app.models.resource_share import ResourceType
@@ -207,7 +214,7 @@ def get_workspace(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
     
-    workspace.user_permission = get_effective_permission(db, current_user, workspace, "workspaces")
+    workspace.user_permission = require_view_access(db, current_user, workspace, "workspaces")
     return workspace
 
 
@@ -303,7 +310,8 @@ def add_table_to_workspace(
         datasource = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
         if not datasource:
             raise HTTPException(status_code=404, detail="Datasource not found")
-        
+        require_view_access(db, current_user, datasource, "data_sources")
+
         # Validate SQL query if source_kind is 'sql_query'
         if table.source_kind == "sql_query":
             from app.services.query_validator import QueryValidator, QueryValidationError
@@ -932,13 +940,15 @@ def regenerate_table_description(
 def list_datasource_tables(
     datasource_id: int,
     search: Optional[str] = Query(None, description="Search query for table names"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """List all tables from a datasource"""
     # Get datasource
     datasource = db.query(DataSource).filter(DataSource.id == datasource_id).first()
     if not datasource:
         raise HTTPException(status_code=404, detail="Datasource not found")
+    require_view_access(db, current_user, datasource, "data_sources")
     
     try:
         tables = DataSourceConnectionService.list_tables(
@@ -972,7 +982,8 @@ def list_datasource_tables(
 def list_datasource_table_columns(
     datasource_id: int,
     table: str = Query(..., description="Table name (e.g. public.orders or orders)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Return columns for a specific table.
@@ -981,6 +992,7 @@ def list_datasource_table_columns(
     datasource = db.query(DataSource).filter(DataSource.id == datasource_id).first()
     if not datasource:
         raise HTTPException(status_code=404, detail="Datasource not found")
+    require_view_access(db, current_user, datasource, "data_sources")
     try:
         columns = DataSourceConnectionService.list_columns(
             ds_id=datasource.id,

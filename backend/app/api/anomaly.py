@@ -12,7 +12,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core import get_db
-from app.core.dependencies import get_current_user, require_permission
+from app.core.dependencies import get_current_user, require_permission, require_view_access
+from app.models.dataset_workspace import DatasetWorkspace, DatasetWorkspaceTable
 from app.models.anomaly import AnomalyAlert, MonitoredMetric
 from app.models.user import User
 from app.services.anomaly_detection import AnomalyDetectionService
@@ -86,6 +87,18 @@ def create_monitored_metric(
     current_user: User = Depends(require_permission("ai_chat", "edit")),
 ):
     """Create a new monitored metric."""
+    table = db.query(DatasetWorkspaceTable).filter(
+        DatasetWorkspaceTable.id == payload.workspace_table_id
+    ).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Workspace table not found")
+    workspace = db.query(DatasetWorkspace).filter(
+        DatasetWorkspace.id == table.workspace_id
+    ).first()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    require_view_access(db, current_user, workspace, "workspaces")
+
     metric = MonitoredMetric(
         workspace_table_id=payload.workspace_table_id,
         metric_column=payload.metric_column,

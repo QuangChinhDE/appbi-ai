@@ -31,7 +31,7 @@ class User(Base):
         nullable=False,
         server_default=text(
             '\'{"data_sources":"none","datasets":"none","workspaces":"none",'
-            '"explore_charts":"none","dashboards":"none","ai_chat":"none","settings":"none"}\''
+            '"explore_charts":"none","dashboards":"none","ai_chat":"none","ai_agent":"none","settings":"none"}\''
             '::jsonb'
         ),
     )

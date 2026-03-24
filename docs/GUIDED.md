@@ -1,418 +1,346 @@
-# AppBI — Hướng dẫn sử dụng
+﻿# AppBI - User Guide
 
-> Tài liệu này hướng dẫn người dùng mới sử dụng toàn bộ tính năng của AppBI từ đầu đến cuối.
-
----
-
-## Mục lục
-
-1. [Đăng nhập](#1-đăng-nhập)
-2. [Kết nối nguồn dữ liệu (DataSource)](#2-kết-nối-nguồn-dữ-liệu-datasource)
-3. [Đồng bộ dữ liệu vào hệ thống](#3-đồng-bộ-dữ-liệu-vào-hệ-thống)
-4. [Tạo Dataset Workspace và bảng dữ liệu](#4-tạo-dataset-workspace-và-bảng-dữ-liệu)
-5. [Tạo biểu đồ (Chart)](#5-tạo-biểu-đồ-chart)
-6. [Tạo Dashboard](#6-tạo-dashboard)
-7. [Bộ lọc toàn cục (Global Filters)](#7-bộ-lọc-toàn-cục-global-filters)
-8. [Chia sẻ tài nguyên (Sharing)](#8-chia-sẻ-tài-nguyên-sharing)
-9. [Quản lý phân quyền người dùng](#9-quản-lý-phân-quyền-người-dùng)
-10. [AI Chat Agent](#10-ai-chat-agent)
+This guide walks through the normal AppBI workflow from first login to building dashboards, sharing them, and using the split AI features.
 
 ---
 
-## 1. Đăng nhập
+## Table of Contents
 
-Truy cập `http://localhost:3000` (hoặc địa chỉ server được cấp).
-
-- Nhập **Email** và **Mật khẩu**
-- Nhấn **Sign In**
-
-Sau khi đăng nhập, bạn sẽ thấy sidebar bên trái với các module tương ứng quyền truy cập của tài khoản.
-
-> **Lưu ý bảo mật**: Đăng nhập bị giới hạn **5 lần/phút** per IP. Nếu bị từ chối, chờ 1 phút rồi thử lại.
-
-**Tài khoản demo:**
-
-| Email | Mật khẩu | Vai trò |
-|-------|----------|---------|
-| `admin@appbi.io` | `admin123` | Toàn quyền |
-| `edit@appbi.io` | `edit123` | Chỉnh sửa |
-| `viewer@appbi.io` | `viewer123` | Chỉ xem |
+1. [Sign In](#1-sign-in)
+2. [Connect a Data Source](#2-connect-a-data-source)
+3. [Sync Data](#3-sync-data)
+4. [Create a Workspace](#4-create-a-workspace)
+5. [Build Charts](#5-build-charts)
+6. [Build Dashboards](#6-build-dashboards)
+7. [Share Resources](#7-share-resources)
+8. [Manage Permissions](#8-manage-permissions)
+9. [AI Chat](#9-ai-chat)
+10. [AI Agent](#10-ai-agent)
+11. [Typical Workflow](#11-typical-workflow)
+12. [Troubleshooting](#12-troubleshooting)
+13. [Related Docs](#13-related-docs)
 
 ---
 
-## 2. Kết nối nguồn dữ liệu (DataSource)
+## 1. Sign In
 
-**Data Sources** là nơi bạn khai báo kết nối tới cơ sở dữ liệu hoặc file dữ liệu bên ngoài.
+Open `http://localhost:3000` and sign in with your AppBI account.
 
-### Tạo DataSource mới
+After login, the sidebar only shows modules your account is allowed to access.
 
-1. Vào **Data Sources** trên sidebar → nhấn **+ New Data Source**
-2. Điền thông tin:
-   - **Name**: Tên gợi nhớ (ví dụ: "PostgreSQL Prod", "Google Sheets Sales")
-   - **Type**: Chọn loại kết nối
-
-### Các loại DataSource được hỗ trợ
-
-| Loại | Thông tin cần điền |
-|------|-------------------|
-| **PostgreSQL** | Host, Port, Database, Username, Password, Schema |
-| **MySQL** | Host, Port, Database, Username, Password |
-| **BigQuery** | Project ID, Service Account JSON, Default Dataset |
-| **Google Sheets** | Service Account JSON, Spreadsheet ID, Sheet Name |
-| **Manual (CSV/Excel)** | Upload file trực tiếp |
-
-### Ví dụ — Google Sheets
-
-Để kết nối Google Sheets, cần có **Service Account** với quyền truy cập vào spreadsheet:
-
-1. Chọn type **Google Sheets**
-2. Dán nội dung file JSON của Service Account vào ô **Credentials JSON**
-3. Nhập **Spreadsheet ID** (lấy từ URL của Google Sheet)
-4. Nhập **Sheet Name** (tên tab, ví dụ: "Data Lake - Segment")
-5. Nhấn **Test Connection** để kiểm tra kết nối
-6. Nếu kết nối thành công → nhấn **Save**
-
-> Service Account cần được thêm vào Google Sheet dưới dạng viewer/editor trước khi kết nối.
+Notes:
+- `/auth/login` is rate-limited to `5 requests/minute` per IP.
+- If a user is deactivated, login is blocked even if the password is correct.
 
 ---
 
-## 3. Đồng bộ dữ liệu vào hệ thống
+## 2. Connect a Data Source
 
-AppBI lưu dữ liệu phân tích vào DuckDB (in-memory, rất nhanh). Để sử dụng được dữ liệu, cần **sync** từ nguồn vào hệ thống.
+Use the `Data Sources` module to register databases or files that AppBI can ingest.
 
-### Sync thủ công
+Typical flow:
+1. Open `Data Sources`.
+2. Click `New Data Source`.
+3. Choose the connector type.
+4. Fill in connection details.
+5. Test the connection.
+6. Save.
 
-1. Vào chi tiết DataSource → nhấn **Sync Now**
-2. Hệ thống sẽ kéo toàn bộ dữ liệu từ nguồn và lưu vào file Parquet cục bộ
-3. Sau khi sync xong, trạng thái sẽ hiển thị số dòng đã đồng bộ và thời gian lần cuối sync
+Common connector types:
+- PostgreSQL
+- MySQL
+- BigQuery
+- Google Sheets
+- Manual file upload
 
-> Dữ liệu đã sync được lưu lại qua các lần restart. Không cần sync lại mỗi lần khởi động server.
-
-### Sync tự động (Scheduled Sync)
-
-Trong cài đặt DataSource, có thể cấu hình **Sync Schedule** để tự động sync theo chu kỳ (hàng giờ, hàng ngày...).
-
----
-
-## 4. Tạo Dataset Workspace và bảng dữ liệu
-
-**Dataset Workspace** là không gian làm việc gom nhiều bảng từ các nguồn dữ liệu khác nhau lại thành một "schema ảo". Các biểu đồ được tạo từ bảng trong workspace.
-
-### Tạo Workspace
-
-1. Vào **Workspaces** → nhấn **+ New Workspace**
-2. Đặt tên và mô tả cho workspace
-3. Nhấn **Create**
-
-### Thêm bảng vào Workspace
-
-Sau khi tạo workspace, vào trang chi tiết và nhấn **+ Add Table**. Có 2 cách thêm bảng:
-
-#### Cách 1 — Physical Table (bảng trực tiếp từ DataSource)
-
-- Chọn **DataSource** đã kết nối
-- Chọn **Schema** và **Table name** từ danh sách
-- Đặt **Display Name** (tên hiển thị trong hệ thống)
-- Nhấn **Save**
-
-Dữ liệu của bảng này là dữ liệu đã được sync vào DuckDB.
-
-#### Cách 2 — SQL Query (câu truy vấn tùy chỉnh)
-
-- Chọn **DataSource** và chọn tab **SQL Query**
-- Viết câu SQL để lọc/join/transform dữ liệu
-- Hệ thống sẽ validate câu SQL trước khi lưu
-- Nhấn **Save**
-
-### Cột tính toán (Computed Columns)
-
-Sau khi thêm bảng, có thể thêm **cột tính toán** bằng công thức Excel:
-
-- Nhấn **Edit Table** → **Add Computed Column**
-- Đặt tên cột mới và viết công thức, ví dụ:
-  - `[revenue] / [qty]` → tính giá đơn vị
-  - `ROUND([amount] * 1.1, 2)` → cộng 10% thuế
-  - `LEFT([email], FIND("@", [email]) - 1)` → lấy username từ email
-  - `IF([status] = "active", 1, 0)` → flag nhị phân
-
-> Hỗ trợ các hàm: `IF`, `AND`, `OR`, `ROUND`, `ABS`, `LEN`, `LEFT`, `RIGHT`, `MID`, `UPPER`, `LOWER`, `TRIM`, `CONCAT`, `VALUE`, `TODAY`, `YEAR`, `MONTH`, `DAY`, `VLOOKUP`, `IFERROR`, `ISBLANK`, phép tính số học, so sánh, và nối chuỗi bằng `&`.
-
-### Preview dữ liệu
-
-Nhấn **Preview** trên bảng để xem 200 dòng đầu tiên cùng kiểu dữ liệu của từng cột.
+Good practice:
+- Use readable names such as `Postgres - Sales Prod` or `Sheets - Marketing Pipeline`.
+- Test credentials before saving.
+- Keep source credentials updated if the upstream system changes.
 
 ---
 
-## 5. Tạo biểu đồ (Chart)
+## 3. Sync Data
 
-**Charts** là các biểu đồ được lưu lại từ trang Explore, sử dụng dữ liệu từ một bảng trong workspace.
+AppBI analyzes synced data, not the remote source directly from every chart request.
 
-### Tạo Chart từ Explore
+What sync does:
+- pulls data from the source
+- stores it in the AppBI data layer
+- makes it available for workspaces, charts, dashboards, and AI
 
-1. Vào **Explore** → nhấn **+ New Chart** (hoặc vào workspace → nhấn **Explore** trên bảng)
-2. Chọn **Workspace** và **Table**
-3. Chọn **Chart Type**
-4. Cấu hình trường dữ liệu theo loại biểu đồ:
+Typical flow:
+1. Open a data source.
+2. Click `Sync Now`.
+3. Wait for the sync job to finish.
+4. Confirm row counts and last sync time.
 
-| Loại biểu đồ | Cấu hình |
+Important:
+- If a data source has not been synced yet, charts and AI flows may return empty or incomplete results.
+- Scheduled sync can be configured in datasource sync settings.
+
+---
+
+## 4. Create a Workspace
+
+A workspace is the modeling layer where you collect and organize tables for analysis.
+
+Typical flow:
+1. Open `Workspaces`.
+2. Click `New Workspace`.
+3. Name the workspace.
+4. Add one or more tables.
+
+You can add tables in two ways:
+- Physical table: select a synced table from a data source.
+- SQL table: define a query-backed table for filtered or transformed analysis.
+
+Workspace tips:
+- Keep workspace names aligned with a business domain such as `Sales`, `Operations`, or `Finance`.
+- Only expose the tables analysts really need.
+- Preview data before building charts.
+
+---
+
+## 5. Build Charts
+
+Charts are created from workspace tables in the `Explore` flow.
+
+Typical flow:
+1. Open `Explore` or start from a workspace table.
+2. Choose a workspace and table.
+3. Pick a chart type.
+4. Configure dimensions, metrics, and filters.
+5. Run the chart preview.
+6. Save the chart.
+
+Common chart types:
+- Bar
+- Line
+- Area
+- Pie
+- KPI
+- Table
+- Time series
+- Scatter
+
+Aggregation examples:
+- `sum`
+- `avg`
+- `count`
+- `count_distinct`
+- `min`
+- `max`
+
+Tip:
+- If a chart preview looks wrong, verify the source table, time grain, filters, and metric aggregation before saving.
+
+---
+
+## 6. Build Dashboards
+
+Dashboards combine multiple saved charts into a report layout.
+
+Typical flow:
+1. Open `Dashboards`.
+2. Click `New Dashboard`.
+3. Name the dashboard.
+4. Add existing charts.
+5. Arrange the layout.
+6. Save changes.
+
+Dashboard behavior:
+- Removing a chart from a dashboard does not delete the original saved chart.
+- Layout changes are stored separately from chart definitions.
+- Global filters apply across compatible charts in the same dashboard.
+
+---
+
+## 7. Share Resources
+
+AppBI supports sharing on top of module permissions.
+
+Resources that can be shared:
+- data sources
+- workspaces
+- charts
+- dashboards
+- chat sessions where supported by the backend
+
+Sharing rules:
+- Module permission decides whether the module is visible at all.
+- Resource sharing decides which specific items inside that module a user can open.
+- Sharing a dashboard can cascade access to the charts and workspaces it depends on.
+
+Typical flow:
+1. Open a chart, dashboard, workspace, or data source.
+2. Click `Share`.
+3. Pick the user.
+4. Grant `view` or `edit`.
+5. Save.
+
+---
+
+## 8. Manage Permissions
+
+AppBI uses module-level permissions for high-level access control.
+
+### Modules
+
+| Module | Purpose |
 |---|---|
-| **Bar / Line / Area** | Dimension (trục X), Metrics (trục Y, chọn hàm tổng hợp) |
-| **Grouped Bar** | Dimension + nhiều Metrics |
-| **Stacked Bar** | Dimension + Metrics + Breakdown (phân nhóm thêm) |
-| **Pie** | Label Field (nhãn), Value Field (giá trị) |
-| **Scatter** | X Field, Y Field |
-| **KPI** | Value Field (hiển thị một số lớn) |
-| **Time Series** | Time Field (trục X), Value Field (trục Y) |
-| **Table** | Chọn các cột muốn hiển thị |
+| `data_sources` | Manage and inspect data source connections |
+| `datasets` | Semantic and dataset-level analysis features |
+| `workspaces` | Build and manage dataset workspaces |
+| `explore_charts` | Create and edit charts |
+| `dashboards` | Create and edit dashboards |
+| `ai_chat` | Use AI Chat |
+| `ai_agent` | Use AI Agent report builder |
+| `settings` | Admin and system settings |
 
-5. Thêm **Filters** nếu cần (lọc dữ liệu trước khi vẽ biểu đồ)
-6. Nhấn **Run** để xem preview
-7. Nhập tên → nhấn **Save Chart**
+### Permission levels
 
-### Các hàm tổng hợp (Aggregation)
-
-| Hàm | Ý nghĩa |
+| Level | Meaning |
 |---|---|
-| `sum` | Tổng |
-| `avg` | Trung bình |
-| `count` | Đếm số dòng |
-| `count_distinct` | Đếm giá trị duy nhất |
-| `min` | Giá trị nhỏ nhất |
-| `max` | Giá trị lớn nhất |
+| `none` | Module hidden and API access denied |
+| `view` | Read-only access |
+| `edit` | Create and update, but not destructive admin actions |
+| `full` | Full control where the module supports it |
+
+Module-specific notes:
+- `data_sources` supports `none`, `view`, and `full`.
+- `ai_chat` supports `none`, `view`, and `edit`.
+- `ai_agent` supports `none`, `view`, and `edit`.
+- `settings` supports `none` and `full`.
+
+Preset overview:
+- `admin`: full BI control, plus `ai_chat=edit` and `ai_agent=edit`
+- `editor`: edit most BI modules, plus `ai_chat=edit` and `ai_agent=edit`
+- `viewer`: read-only BI access, `ai_chat=view`, `ai_agent=none`
+- `minimal`: dashboard viewing only, no AI access
+
+Important:
+- Module permission alone is not enough to open every object.
+- Resource-level ownership and shares are still enforced.
 
 ---
 
-## 6. Tạo Dashboard
+## 9. AI Chat
 
-**Dashboard** là tập hợp nhiều biểu đồ được bố trí trên một màn hình.
+`AI Chat` is the reactive assistant.
 
-### Tạo Dashboard mới
+Use it for:
+- asking questions in natural language
+- inspecting available workspaces and tables
+- summarizing data patterns
+- generating one chart when needed
+- continuing a conversational analysis session
 
-1. Vào **Dashboards** → nhấn **+ New Dashboard**
-2. Đặt tên và mô tả → nhấn **Create**
+Requirements:
+- `ai_chat >= view`
+- access to the underlying workspace/table/chart data
+- `ai-chat-service` must be running if you want live chat
 
-### Thêm biểu đồ vào Dashboard
+Where it lives:
+- UI entry: `/chat`
+- service: `ai-service/`
+- default port: `8001`
 
-1. Vào trang chi tiết Dashboard → nhấn **+ Add Chart**
-2. Tìm và chọn biểu đồ từ danh sách
-3. Biểu đồ sẽ xuất hiện trên grid
-
-### Sắp xếp bố cục
-
-- **Kéo thả**: Giữ vào thanh tiêu đề biểu đồ (có icon 6 chấm) để di chuyển
-- **Thay đổi kích thước**: Kéo góc dưới bên phải của tile biểu đồ
-- Layout được lưu tự động sau khi thả
-
-### Xóa biểu đồ khỏi Dashboard
-
-Nhấn icon **X** trên góc biểu đồ để gỡ khỏi dashboard (biểu đồ gốc không bị xóa).
-
----
-
-## 7. Bộ lọc toàn cục (Global Filters)
-
-Global Filters cho phép lọc dữ liệu trên toàn bộ biểu đồ trong dashboard cùng một lúc.
-
-### Cấu hình Filter
-
-1. Trên trang Dashboard → nhấn **Filters** (góc trên phải)
-2. Nhấn **+ Add Filter**
-3. Chọn:
-   - **Label**: Tên bộ lọc (hiển thị cho người dùng)
-   - **Field**: Trường dữ liệu cần lọc
-   - **Operator**: Điều kiện lọc (`=`, `!=`, `>`, `<`, `contains`, ...)
-   - **Default value**: Giá trị mặc định (tùy chọn)
-4. Nhấn **Save**
-
-### Sử dụng Filter
-
-Khi xem dashboard, bộ lọc xuất hiện ở đầu trang. Thay đổi giá trị filter → tất cả biểu đồ tự động cập nhật.
+Behavior notes:
+- Chat sessions are stored and can be reopened later.
+- If chat service is offline, the chat page still loads but live chat actions are unavailable.
+- Chat works independently from AI Agent.
 
 ---
 
-## 8. Chia sẻ tài nguyên (Sharing)
+## 10. AI Agent
 
-Bạn có thể chia sẻ **Dashboard, Chart, Workspace, DataSource** cho các thành viên khác trong team.
+`AI Agent` is the proactive report builder.
 
-### Chia sẻ với một người
+Use it for:
+- turning a business brief into a dashboard plan
+- generating multiple charts from selected workspace tables
+- assembling a dashboard layout automatically
+- building a report from one or more selected datasets without cross-dataset blending in v1
 
-1. Vào trang chi tiết của tài nguyên → nhấn icon **Share** (hoặc nút **Share**)
-2. Tìm kiếm email người dùng
-3. Chọn quyền: **View** (chỉ xem) hoặc **Edit** (có thể chỉnh sửa)
-4. Nhấn **Share**
+Requirements:
+- `ai_agent >= edit`
+- `dashboards >= edit`
+- `explore_charts >= edit`
+- view access on every selected workspace table
+- `ai-agent-service` must be running
 
-Người được chia sẻ sẽ thấy tài nguyên này trong danh sách của họ.
+Where it lives:
+- UI entry: `/dashboards`
+- service: `ai-agent-service/`
+- default port: `8002`
 
-### Chia sẻ với toàn team
+Current v1 flow:
+1. Open the Agent wizard from the dashboards page.
+2. Select one or more workspace tables.
+3. Fill in the structured brief.
+4. Review the generated plan.
+5. Start generation.
+6. Track progress while charts and dashboard sections are built.
+7. Open the finished dashboard.
 
-Nhấn **Share with all team** để chia sẻ ngay cho tất cả thành viên cùng một quyền.
-
-### Chia sẻ Dashboard theo tầng
-
-Khi chia sẻ một Dashboard, hệ thống tự động cascade share xuống:
-- Tất cả **Charts** trong dashboard
-- Tất cả **Workspaces** mà các chart đó dùng
-
-Người được chia sẻ sẽ thấy đủ dữ liệu để dashboard hiển thị đúng.
-
-### Cập nhật / Hủy chia sẻ
-
-- **Thay đổi quyền**: Vào Share dialog → chọn lại quyền cho người dùng đó
-- **Hủy chia sẻ**: Nhấn icon xóa cạnh tên người dùng trong Share dialog
-
----
-
-## 9. Quản lý phân quyền người dùng
-
-> Chức năng này chỉ dành cho tài khoản có quyền **User Management**.
-
-### Module Permissions
-
-AppBI kiểm soát quyền truy cập theo từng **module**:
-
-| Module | Điều khiển |
-|--------|-----------|
-| `dashboards` | Xem/tạo/sửa/xóa Dashboard |
-| `explore_charts` | Xem/tạo/sửa/xóa Chart |
-| `workspaces` | Xem/tạo/sửa/xóa Workspace |
-| `data_sources` | Xem/tạo/xóa DataSource |
-| `ai_chat` | Sử dụng AI Chat |
-| `user_management` | Quản lý người dùng |
-| `settings` | Cài đặt hệ thống |
-
-**Các mức quyền:**
-
-| Mức | Ý nghĩa |
-|-----|---------|
-| `none` | Không thấy module trong sidebar, API trả về 403 |
-| `view` | Chỉ xem (không tạo/sửa/xóa) |
-| `edit` | Tạo + Sửa (không xóa) |
-| `full` | Toàn quyền (tạo + sửa + xóa + share) |
-
-> Không phải module nào cũng có đủ 4 mức. Ví dụ: `data_sources` không có mức `edit`; `ai_chat` không có mức `full`.
-
-### Xem và thay đổi quyền
-
-1. Vào **Users** trên sidebar → chọn một người dùng
-2. Nhấn **Edit Permissions**
-3. Thay đổi mức quyền cho từng module
-4. Nhấn **Save**
-
-Hoặc dùng **Preset**:
-- `admin` — toàn quyền tất cả module
-- `editor` — edit hầu hết module, view datasource
-- `viewer` — chỉ xem tất cả
-- `minimal` — chỉ xem dashboard, ẩn phần còn lại
-
-### Quản lý tài khoản
-
-Từ trang **Users** (admin):
-
-- **Tạo tài khoản mới**: Nhấn **+ New User** → điền email, tên, mật khẩu, quyền ban đầu
-- **Deactivate tài khoản**: Nhấn **Deactivate** — tài khoản không đăng nhập được nhưng dữ liệu giữ nguyên
-- **Xóa tài khoản**: Nhấn **Delete** — xóa vĩnh viễn (chỉ khi không còn tài nguyên ràng buộc)
+Rules:
+- Agent only uses the tables selected by the user.
+- Multi-dataset v1 means section-based composition, not SQL join or dataset blending.
+- Build logic follows `docs/GUIDED_API_CHART.md`, `docs/GUIDED_API_DASHBOARD.md`, and `docs/GUIDED_API_AI_AGENT_REPORT.md`.
 
 ---
 
-## 10. AI Chat Agent
+## 11. Typical Workflow
 
-AI Chat là trợ lý phân tích dữ liệu tích hợp, có thể hiểu ngôn ngữ tự nhiên và thực hiện truy vấn dữ liệu.
-
-> Cần có quyền `ai_chat >= view` để sử dụng.
-
-### Giao diện Chat
-
-Nhấn biểu tượng **AI Chat** trên sidebar (hoặc nút chat nổi ở góc màn hình) để mở panel chat.
-
-### Những gì AI có thể làm
-
-| Yêu cầu | Ví dụ câu hỏi |
-|---------|---------------|
-| Liệt kê dữ liệu | "Có những workspace nào?" / "Bảng này có những cột gì?" |
-| Xem dữ liệu mẫu | "Cho tôi xem vài dòng dữ liệu trong bảng Data Lake" |
-| Phân tích | "Phân phối giá trị của cột status là gì?" |
-| Truy vấn | "Tổng revenue theo từng region?" / "Top 10 project theo số records?" |
-| Tìm kiếm | "Có biểu đồ nào về revenue chưa?" |
-| Tạo biểu đồ | "Tạo biểu đồ bar chart records theo project_id và lưu lại" |
-| Câu hỏi liên tiếp | AI nhớ ngữ cảnh trong cùng một phiên — có thể hỏi tiếp "breakdown theo status thế nào?" |
-
-### Lưu ý khi dùng AI
-
-- AI làm việc với **dữ liệu đã được sync** vào hệ thống. Nếu datasource chưa sync, AI sẽ không truy vấn được.
-- Nếu AI tạo biểu đồ, chart sẽ xuất hiện trong danh sách **Explore** → Charts để bạn thêm vào dashboard.
-- Phiên chat được lưu lại trong **Chat History** (biểu tượng đồng hồ) để xem lại sau.
-- AI hỗ trợ cả tiếng Anh và tiếng Việt.
-
----
-
-## Luồng làm việc điển hình
-
-```
-1. Kết nối DataSource (PostgreSQL / Google Sheets / ...)
-2. Sync dữ liệu vào hệ thống (Sync Now)
-3. Tạo Workspace → Add Table (chọn bảng đã sync)
-4. Tạo Charts từ Explore (chọn workspace + table + chart type)
-5. Tạo Dashboard → Add Charts
-6. Cấu hình Global Filters nếu cần
-7. Share Dashboard cho team (cascade tự động share chart + workspace)
-8. Dùng AI Chat để khám phá dữ liệu nhanh và tạo chart mới
+```text
+1. Connect a data source
+2. Run sync
+3. Create a workspace
+4. Add tables to the workspace
+5. Build charts in Explore
+6. Create a dashboard
+7. Share the dashboard with the team
+8. Use AI Chat for ad-hoc analysis
+9. Use AI Agent when you want a full dashboard/report generated from a structured brief
 ```
 
 ---
 
-## Câu hỏi thường gặp
+## 12. Troubleshooting
 
-**Q: Tại sao biểu đồ hiển thị "No data" hoặc lỗi?**
-- Kiểm tra datasource đã được sync chưa (vào Data Sources → xem trạng thái sync)
-- Kiểm tra workspace table có đang dùng đúng datasource đã sync chưa
+**Charts show no data**
+- Confirm the source has been synced.
+- Confirm the workspace table points to the expected source table.
+- Recheck chart filters and aggregation.
 
-**Q: Tôi share dashboard nhưng người kia vẫn không thấy?**
-- Kiểm tra quyền module `dashboards` của người đó — cần ít nhất `view`
-- Nếu quyền OK, có thể là lỗi hệ thống — liên hệ admin kiểm tra server logs
+**A user cannot open a shared dashboard**
+- Confirm the user has at least `dashboards=view`.
+- Confirm the dashboard has actually been shared to that user or team.
+- Confirm dependent charts and workspaces were shared correctly.
 
-**Q: AI Chat báo "0 rows" dù tôi biết có dữ liệu?**
-- Đây là vấn đề đã biết với hàm `count` trong AI Agent — xem [AI_AGENT.md](AI_AGENT.md#9-known-issues)
-- Thử hỏi theo cách khác: "liệt kê sample data" hoặc "tổng revenue là bao nhiêu?"
+**Chat page opens but chat does not work**
+- Confirm `ai-chat-service` is running.
+- Confirm `NEXT_PUBLIC_AI_CHAT_HTTP_URL` and `NEXT_PUBLIC_AI_CHAT_WS_URL` are configured correctly.
+- Confirm the user has `ai_chat` access.
 
-**Q: Tên dashboard không được chứa ký tự nào?**
-- Tránh dùng em-dash `—` (U+2014). Dùng gạch ngang thường `-` thay thế.
+**Agent entry is missing or generation is blocked**
+- Confirm `ai-agent-service` is running.
+- Confirm the user has `ai_agent >= edit`, `dashboards >= edit`, and `explore_charts >= edit`.
+- Confirm the selected workspace tables are visible to that user.
 
-**Q: Làm thế nào để thay đổi mật khẩu?**
-- Nhấn avatar/tên của bạn ở góc trên phải → **Change Password**
+**A dashboard name or generated title behaves strangely**
+- Prefer simple ASCII punctuation in titles when testing automation.
 
 ---
 
-## Ghi chú kỹ thuật (Technical Notes)
+## 13. Related Docs
 
-### API phân quyền module — Format đúng
-
-```http
-PUT /api/v1/permissions/{user_id}
-{ "permissions": { "dashboards": "view", "explore_charts": "view", ... } }
-```
-
-Wrapper `"permissions"` là bắt buộc. User mới mặc định có `{}` (tất cả `none`).
-
-### Google Sheets — source_table_name phải là tên gốc
-
-Khi thêm bảng GSheets vào workspace, dùng tên sheet GỐC, không dùng DuckDB slug:
-- ✅ `"Data Lake - Segment"` (tên sheet thực tế)
-- ❌ `"synced_ds1__schema__data_lake____segment"` (DuckDB VIEW slug)
-
-### Chart data response format
-
-```json
-{ "chart": {...}, "data": [{...}, ...], "pre_aggregated": false }
-```
-
-Data rows ở `body["data"]` (là list), không phải `body["rows"]`.
-
-### AI Chat WebSocket
-
-Endpoint: `ws://localhost:8001/chat/ws?token=<JWT>`
-
-Event types: `thinking`, `tool_call` (fields: `tool`, `args`), `tool_result` (fields: `tool`, `summary`, `data`), `text` (field: `content`), `suggestions`, `metrics`, `done` (field: `session_id`).
-
-### Datasource visibility (đã sửa 2026-03-23)
-
-`GET /api/v1/datasources` chỉ trả về datasource của mình hoặc được share. User `full` thấy tất cả.
+- [README.md](../README.md)
+- [DOCKER.md](./DOCKER.md)
+- [SETUP.md](./SETUP.md)
+- [API.md](./API.md)
+- [AI_AGENT.md](./AI_AGENT.md)
+- [GUIDED_API_CHART.md](./GUIDED_API_CHART.md)
+- [GUIDED_API_DASHBOARD.md](./GUIDED_API_DASHBOARD.md)
+- [GUIDED_API_AI_AGENT_REPORT.md](./GUIDED_API_AI_AGENT_REPORT.md)

@@ -1,7 +1,18 @@
-version: '3.8'
+# Development stack for hot reload.
+#
+# Base dev stack:
+#   docker compose -f docker-compose.dev.yml up --build -d
+#
+# Dev stack + both AI services:
+#   docker compose -f docker-compose.dev.yml -f docker-compose.ai.yml up --build -d
+#
+# Dev stack + chat only:
+#   docker compose -f docker-compose.dev.yml -f docker-compose.chat.yml up --build -d
+#
+# Dev stack + agent only:
+#   docker compose -f docker-compose.dev.yml -f docker-compose.agent.yml up --build -d
 
 services:
-  # PostgreSQL Database
   db:
     image: postgres:16-alpine
     container_name: appbi-db-dev
@@ -20,19 +31,16 @@ services:
       retries: 5
     restart: unless-stopped
     networks:
-      - appbi-network
+      - appbi-net
 
-  # FastAPI Backend with hot reload
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
     container_name: appbi-backend-dev
     volumes:
-      # Mount source code for hot reload
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic
-      # Parquet + DuckDB storage
       - appbi_data_dev:/app/.data
     environment:
       DATABASE_URL: postgresql+psycopg2://appbi:appbi@db:5432/appbi
@@ -53,34 +61,33 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # Override entrypoint for hot reload
     command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
     restart: unless-stopped
     networks:
-      - appbi-network
+      - appbi-net
 
-  # Next.js Frontend with hot reload
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile.dev
     container_name: appbi-frontend-dev
     volumes:
-      # Mount source code for hot reload
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public
-      # Preserve node_modules
       - /app/node_modules
       - /app/.next
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+      NEXT_PUBLIC_AI_CHAT_WS_URL: ws://localhost:8001/chat/ws
+      NEXT_PUBLIC_AI_CHAT_HTTP_URL: http://localhost:8001
+      NEXT_PUBLIC_AI_AGENT_HTTP_URL: http://localhost:8002
     ports:
       - "3000:3000"
     depends_on:
       - backend
     restart: unless-stopped
     networks:
-      - appbi-network
+      - appbi-net
 
 volumes:
   db_data_dev:
@@ -89,5 +96,5 @@ volumes:
     driver: local
 
 networks:
-  appbi-network:
+  appbi-net:
     driver: bridge

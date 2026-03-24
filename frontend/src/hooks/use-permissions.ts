@@ -10,6 +10,7 @@ export type ModuleKey =
   | 'explore_charts'
   | 'dashboards'
   | 'ai_chat'
+  | 'ai_agent'
   | 'settings';
 
 export interface MyPermissionsResponse {

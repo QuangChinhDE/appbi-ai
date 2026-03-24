@@ -164,9 +164,20 @@ def get_effective_permission(db: Session, user: User, resource, module: str) -> 
                 return share_level
             return module_level
 
-    # Fallback: user has module access but no ownership/share on this resource
-    # They can see it (list endpoints show it) → effective = "view"
-    return "view"
+    # Module access alone is not enough for object-level reads.
+    # List endpoints must opt into broader visibility explicitly.
+    return "none"
+
+
+def require_view_access(db: Session, user: User, resource, module: str) -> str:
+    """Raise 403 if user cannot view the resource (effective == none)."""
+    eff = get_effective_permission(db, user, resource, module)
+    if eff == "none":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission denied: view access required",
+        )
+    return eff
 
 
 def require_edit_access(db: Session, user: User, resource, module: str):

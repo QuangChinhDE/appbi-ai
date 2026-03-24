@@ -74,7 +74,7 @@ class ShareResponse(BaseModel):
 
     id: int
     resource_type: ResourceType
-    resource_id: int
+    resource_id: str
     user_id: uuid.UUID
     permission: SharePermission
     shared_by: uuid.UUID

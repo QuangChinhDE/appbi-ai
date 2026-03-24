@@ -27,18 +27,36 @@ _limiter = Limiter(key_func=get_remote_address)
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 
 
+def _infer_legacy_ai_agent_level(perms: dict[str, str]) -> str:
+    ai_chat_level = perms.get("ai_chat", "none")
+    dashboards_level = perms.get("dashboards", "none")
+    charts_level = perms.get("explore_charts", "none")
+
+    if ai_chat_level in {"edit", "full"} and dashboards_level in {"edit", "full"} and charts_level in {"edit", "full"}:
+        return "edit"
+    return "none"
+
+
 def create_access_token(user: User) -> str:
     now = datetime.now(timezone.utc)
-    # Embed the user's ai_chat permission level so ai-service can do RBAC
-    # without a round-trip to the backend on every message.
+    # Embed AI module levels so AI services can enforce RBAC without
+    # a round-trip to the backend on every request.
     perms = user.permissions or {}
-    ai_level: str = perms.get("ai_chat", "none") if isinstance(perms, dict) else "none"
+    ai_chat_level: str = perms.get("ai_chat", "none") if isinstance(perms, dict) else "none"
+    if isinstance(perms, dict):
+        ai_agent_level = perms.get("ai_agent")
+        if ai_agent_level is None:
+            ai_agent_level = _infer_legacy_ai_agent_level(perms)
+    else:
+        ai_agent_level = "none"
     payload = {
         "sub": str(user.id),
         "jti": str(uuid.uuid4()),
         "iat": now,
         "exp": now + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS),
-        "ai_level": ai_level,
+        "ai_level": ai_chat_level,
+        "ai_chat_level": ai_chat_level,
+        "ai_agent_level": ai_agent_level,
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
 

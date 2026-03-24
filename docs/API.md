@@ -19,7 +19,7 @@ All request/response bodies are **JSON**. Protected endpoints require a JWT toke
 7. [Charts](#7-charts)
 8. [Dashboards](#8-dashboards)
 9. [Semantic Views](#9-semantic-views)
-10. [AI Service](#10-ai-service)
+10. [AI Services](#10-ai-services)
 11. [Common Types](#11-common-types)
 
 ---
@@ -48,12 +48,13 @@ Login and receive a JWT token.
     "full_name": "Admin",
     "status": "active",
     "permissions": {
-      "dashboards": "full",
-      "explore_charts": "full",
-      "workspaces": "full",
       "data_sources": "full",
-      "ai_chat": "full",
-      "user_management": "full",
+      "datasets": "full",
+      "workspaces": "full",
+      "explore_charts": "full",
+      "dashboards": "full",
+      "ai_chat": "edit",
+      "ai_agent": "edit",
       "settings": "full"
     },
     "last_login_at": "2026-03-22T10:00:00Z",
@@ -98,7 +99,7 @@ Invalidate the current session. Sets `Set-Cookie: access_token=""; Max-Age=0` to
 
 ## 2. Users
 
-> Requires module permission `user_management >= view`. Write operations require `full`.
+> Requires module permission `settings >= view`. Write operations require `settings = full`.
 
 ### `GET /users/`
 
@@ -187,8 +188,8 @@ Module-level access control. Each user has a permission level per module.
 | `explore_charts` | Chart/explore builder |
 | `workspaces` | Dataset workspaces |
 | `data_sources` | DataSource connections |
-| `ai_chat` | AI chat agent |
-| `user_management` | User admin panel |
+| `ai_chat` | AI chat assistant |
+| `ai_agent` | AI dashboard/report builder |
 | `settings` | System settings |
 
 Permission levels: `none` → `view` → `edit` → `full`
@@ -208,7 +209,8 @@ Get current user's module permissions.
     "workspaces": "full",
     "explore_charts": "full",
     "dashboards": "full",
-    "ai_chat": "full",
+    "ai_chat": "edit",
+    "ai_agent": "edit",
     "settings": "full"
   },
   "module_levels": {
@@ -218,12 +220,13 @@ Get current user's module permissions.
     "explore_charts":  ["none", "view", "edit", "full"],
     "dashboards":      ["none", "view", "edit", "full"],
     "ai_chat":         ["none", "view", "edit"],
+    "ai_agent":        ["none", "view", "edit"],
     "settings":        ["none", "full"]
   }
 }
 ```
 
-> Note: `module_levels` shows the valid levels for each module — not all modules support all levels. `data_sources` has no `edit`; `ai_chat` has no `full`; `settings` is either `none` or `full` only.
+> Note: `module_levels` shows the valid levels for each module — not all modules support all levels. `data_sources` has no `edit`; `ai_chat` and `ai_agent` have no `full`; `settings` is either `none` or `full` only.
 
 ---
 
@@ -235,10 +238,10 @@ List available permission presets.
 ```json
 {
   "presets": {
-    "admin":   { "data_sources": "full",  "datasets": "full",  "workspaces": "full",  "explore_charts": "full",  "dashboards": "full",  "ai_chat": "edit", "settings": "full" },
-    "editor":  { "data_sources": "view",  "datasets": "edit",  "workspaces": "edit",  "explore_charts": "edit",  "dashboards": "edit",  "ai_chat": "edit", "settings": "none" },
-    "viewer":  { "data_sources": "view",  "datasets": "view",  "workspaces": "view",  "explore_charts": "view",  "dashboards": "view",  "ai_chat": "view", "settings": "none" },
-    "minimal": { "data_sources": "none",  "datasets": "none",  "workspaces": "none",  "explore_charts": "none",  "dashboards": "view",  "ai_chat": "none", "settings": "none" }
+    "admin":   { "data_sources": "full",  "datasets": "full",  "workspaces": "full",  "explore_charts": "full",  "dashboards": "full",  "ai_chat": "edit", "ai_agent": "edit", "settings": "full" },
+    "editor":  { "data_sources": "view",  "datasets": "edit",  "workspaces": "edit",  "explore_charts": "edit",  "dashboards": "edit",  "ai_chat": "edit", "ai_agent": "edit", "settings": "none" },
+    "viewer":  { "data_sources": "view",  "datasets": "view",  "workspaces": "view",  "explore_charts": "view",  "dashboards": "view",  "ai_chat": "view", "ai_agent": "none", "settings": "none" },
+    "minimal": { "data_sources": "none",  "datasets": "none",  "workspaces": "none",  "explore_charts": "none",  "dashboards": "view",  "ai_chat": "none", "ai_agent": "none", "settings": "none" }
   }
 }
 ```
@@ -254,7 +257,7 @@ Get permissions for all users (admin view).
 **Response 200**
 ```json
 {
-  "modules": ["data_sources", "datasets", "workspaces", "explore_charts", "dashboards", "ai_chat", "settings"],
+  "modules": ["data_sources", "datasets", "workspaces", "explore_charts", "dashboards", "ai_chat", "ai_agent", "settings"],
   "module_levels": { "data_sources": ["none","view","full"], "dashboards": ["none","view","edit","full"], ... },
   "users": [
     {
@@ -1862,186 +1865,71 @@ Execute a semantic query. Generates SQL from semantic definitions and runs it ag
 
 ---
 
-## 10. AI Service
+## 10. AI Services
+
+AI is now split into two optional services that sit on top of the BI backend.
+
+### AI Chat Service
 
 Base URL: `http://localhost:8001`
 
-The AI Service is a separate FastAPI process that provides a natural-language chat interface on top of the BI backend. It connects to the BI backend using the caller's JWT for all data operations.
+Purpose:
+- natural-language chat
+- streaming tool-calling
+- chat session management
 
-> **Auth**: All AI endpoints require the JWT token either as `Authorization: Bearer <token>` header, or as a query parameter `?token=<token>` (for WebSocket connections).
+Auth:
+- `Authorization: Bearer <token>` for HTTP endpoints
+- `?token=<jwt>` query parameter for the WebSocket endpoint
 
----
+Endpoints:
+- `GET /health`
+- `WS /chat/ws?token=<jwt>`
+- `POST /chat/stream`
+- `GET /chat/sessions`
+- `POST /chat/sessions`
+- `GET /chat/sessions/{session_id}`
+- `DELETE /chat/sessions/{session_id}`
+- `POST /chat/sessions/{session_id}/messages/{message_id}/feedback`
 
-### `GET /health`
+### AI Agent Service
 
-Health check.
+Base URL: `http://localhost:8002`
 
-**Response 200** — `{ "status": "ok" }`
+Purpose:
+- structured dashboard planning
+- multi-chart dashboard generation
+- proactive report building from selected workspace tables
 
----
+Auth:
+- `Authorization: Bearer <token>` required
+- backend-issued JWT must include sufficient `ai_agent` access
 
-### WebSocket `GET /chat/ws?token=<jwt>`
+Endpoints:
+- `GET /health`
+- `POST /agent/plan`
+- `POST /agent/build/stream`
 
-Persistent real-time chat connection. Send and receive JSON messages.
+### Agent Build Rules
 
-**Establish connection**:
-```
-ws://localhost:8001/chat/ws?token=eyJhbGci...
-```
+The AI Agent builder must follow these source-of-truth docs:
+- `docs/GUIDED_API_CHART.md`
+- `docs/GUIDED_API_DASHBOARD.md`
+- `docs/GUIDED_API_AI_AGENT_REPORT.md`
 
-**Send a message** (client → server):
-```json
-{
-  "type": "message",
-  "content": "What tables are available?",
-  "session_id": "uuid-or-null"
-}
-```
-If `session_id` is `null` or omitted, a new session is created.
+Key rules:
+- chart payloads must include `workspace_table_id`
+- chart config must include `workspace_id`, `chartType`, `roleConfig`, and `filters`
+- dashboard layout updates must use `dashboard_charts[].id`
+- multi-dataset v1 means dashboard composition, not dataset blending
 
-**Receive streaming chunks** (server → client):
-```json
-{ "type": "chunk",    "content": "Here are the available tables..." }
-{ "type": "tool_use", "tool": "list_workspace_tables", "input": {} }
-{ "type": "tool_result", "tool": "list_workspace_tables", "result": [...] }
-{ "type": "done",     "session_id": "abc-123", "message_id": null }
-```
+### Operational Notes
 
-| Event type | Description |
-|---|---|
-| `chunk` | Partial text token from the LLM |
-| `tool_use` | AI is calling a BI tool |
-| `tool_result` | Tool returned data |
-| `error` | Something went wrong |
-| `done` | Stream complete — includes `session_id` |
-
----
-
-### `POST /chat/stream`
-
-HTTP alternative to WebSocket. Returns a **Server-Sent Events (SSE)** stream.
-
-**Request body**
-```json
-{
-  "content": "Show me revenue by region",
-  "session_id": "uuid-or-null"
-}
-```
-
-**Response** — `Content-Type: text/event-stream`, each line is a JSON object:
-```
-data: {"type": "chunk", "content": "Here is revenue by region..."}
-data: {"type": "tool_use", "tool": "query_table", "input": {...}}
-data: {"type": "tool_result", "tool": "query_table", "result": {...}}
-data: {"type": "done", "session_id": "abc-123", "message_id": null}
-```
+- Chat and Agent can run independently.
+- If only `ai-agent-service` is running, the chat page will load but live chat will be unavailable.
+- If only `ai-chat-service` is running, the dashboard page still works but the AI Agent flow will be unavailable.
 
 ---
-
-### `GET /chat/sessions`
-
-List all chat sessions for the current user.
-
-**Response 200**
-```json
-[
-  {
-    "id": "uuid",
-    "title": "Revenue analysis",
-    "created_at": "2026-03-22T10:00:00Z",
-    "updated_at": "2026-03-22T10:05:00Z",
-    "message_count": 6
-  }
-]
-```
-
-> **Known issue**: `id` may be `null` for sessions created before session-ID persistence was implemented. These sessions cannot be resumed or used for feedback.
-
----
-
-### `GET /chat/sessions/{session_id}`
-
-Get a single session with its full message history.
-
-**Response 200**
-```json
-{
-  "id": "uuid",
-  "title": "Revenue analysis",
-  "messages": [
-    { "id": null, "role": "user",      "content": "Show me revenue by region", "created_at": "..." },
-    { "id": null, "role": "assistant", "content": "Here is revenue by region...", "created_at": "..." }
-  ],
-  "created_at": "...",
-  "updated_at": "..."
-}
-```
-
----
-
-### `DELETE /chat/sessions/{session_id}`
-
-Delete a chat session.
-
-**Response 204** — no body
-
----
-
-### `POST /chat/feedback`
-
-Submit thumbs-up / thumbs-down feedback on a message.
-
-**Request body**
-```json
-{
-  "message_id": "uuid",
-  "rating": "up",
-  "comment": "Optional free-text comment"
-}
-```
-
-| `rating` | Meaning |
-|---|---|
-| `"up"` | Positive feedback |
-| `"down"` | Negative feedback |
-
-> **Note**: `rating` must be exactly `"up"` or `"down"`. Other values (e.g. `"thumbs_up"`) return 422.
-
-**Response 200** — `{ "status": "ok" }`
-
----
-
-### `POST /chat/cleanup`
-
-Delete all chat sessions older than N days.
-
-**Request body** — `{ "days": 30 }`
-
-**Response 200** — `{ "deleted": 5 }`
-
----
-
-### AI Agent Tools
-
-The AI agent has access to these BI tools during a conversation:
-
-| Tool | Description |
-|---|---|
-| `list_workspaces` | List all accessible dataset workspaces |
-| `list_workspace_tables` | List tables in a workspace |
-| `get_table_schema` | Get column names and types for a table |
-| `get_sample_data` | Fetch sample rows from a table |
-| `query_table` | Execute a structured aggregation query (dimensions + measures + filters) |
-| `search_charts` | Search existing saved charts by name/keyword |
-| `get_chart_data` | Fetch data from a saved chart by chart ID |
-| `create_chart` | Create and save a new chart from the conversation |
-| `analyze_field` | Analyze value distribution for a column |
-
-**Known limitation**: The `query_table` tool sends count queries with `agg` field instead of `function`, causing 0-row results for `count` aggregations via the execute endpoint.
-
----
-
 ## 11. Common Types
 
 ### Column types

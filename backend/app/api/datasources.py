@@ -8,7 +8,14 @@ import io
 import csv as csv_module
 
 from app.core import get_db
-from app.core.dependencies import get_current_user, require_permission, require_edit_access, require_full_access, get_effective_permission
+from app.core.dependencies import (
+    get_current_user,
+    require_permission,
+    require_view_access,
+    require_edit_access,
+    require_full_access,
+    get_effective_permission,
+)
 from app.core.permissions import _owned_or_shared
 from app.models import DataSource, DatasetWorkspace
 from app.models.resource_share import ResourceType
@@ -117,7 +124,10 @@ def _parse_csv_bytes(content: bytes, filename: str) -> Dict[str, Any]:
 
 
 @router.post("/manual/parse-file")
-async def parse_manual_file(file: UploadFile = File(...)):
+async def parse_manual_file(
+    file: UploadFile = File(...),
+    _: User = Depends(require_permission("data_sources", "edit")),
+):
     """
     Parse an uploaded Excel (.xlsx/.xls) or CSV file server-side.
     Returns: { sheets: { sheetName: { columns: [...], rows: [...] } } }
@@ -177,7 +187,7 @@ def get_data_source(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Data source with ID {data_source_id} not found"
         )
-    data_source.user_permission = get_effective_permission(db, current_user, data_source, "data_sources")
+    data_source.user_permission = require_view_access(db, current_user, data_source, "data_sources")
     return data_source
 
 
@@ -189,7 +199,7 @@ def create_data_source(
 ):
     """Create a new data source."""
     try:
-        return DataSourceCRUDService.create(db, data_source)
+        return DataSourceCRUDService.create(db, data_source, owner_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -296,7 +306,7 @@ def test_data_source_connection(
 def execute_query(
     request: QueryExecuteRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("data_sources", "view")),
+    current_user: User = Depends(get_current_user),
 ):
     """Execute an ad-hoc SQL query against a data source."""
     data_source = DataSourceCRUDService.get_by_id(db, request.data_source_id)
@@ -305,7 +315,8 @@ def execute_query(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Data source with ID {request.data_source_id} not found"
         )
-    
+    require_view_access(db, current_user, data_source, "data_sources")
+
     try:
         start_time = time.time()
         columns, data, execution_time_ms = DataSourceConnectionService.execute_query(
@@ -332,11 +343,16 @@ def execute_query(
 # ── Schema Browser ────────────────────────────────────────────────────────────
 
 @router.get("/{data_source_id}/schema")
-def get_schema_browser(data_source_id: int, db: Session = Depends(get_db)):
+def get_schema_browser(
+    data_source_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Return schema tree: schemas → tables/views with row count estimates."""
     ds = DataSourceCRUDService.get_by_id(db, data_source_id)
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
+    require_view_access(db, current_user, ds, "data_sources")
     try:
         schemas = DataSourceConnectionService.get_schema_browser(ds.type.value, ds.config)
         return {"schemas": schemas}
@@ -352,11 +368,13 @@ def get_table_detail(
     table_name: str,
     preview_rows: int = 5,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Return column metadata (with PK/FK/IDX) and quick preview for a table."""
     ds = DataSourceCRUDService.get_by_id(db, data_source_id)
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
+    require_view_access(db, current_user, ds, "data_sources")
     try:
         detail = DataSourceConnectionService.get_table_detail(
             ds.type.value, ds.config, schema_name, table_name, preview_rows
@@ -373,11 +391,13 @@ def get_watermark_candidates(
     schema_name: str,
     table_name: str,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """List columns usable as watermark (timestamp/date/integer) for incremental sync."""
     ds = DataSourceCRUDService.get_by_id(db, data_source_id)
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
+    require_view_access(db, current_user, ds, "data_sources")
     try:
         candidates = DataSourceConnectionService.get_watermark_candidates(
             ds.type.value, ds.config, schema_name, table_name
@@ -390,11 +410,16 @@ def get_watermark_candidates(
 # ── Sync Config ───────────────────────────────────────────────────────────────
 
 @router.get("/{data_source_id}/sync-config")
-def get_sync_config(data_source_id: int, db: Session = Depends(get_db)):
+def get_sync_config(
+    data_source_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Return stored sync configuration for the data source."""
     ds = DataSourceCRUDService.get_by_id(db, data_source_id)
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
+    require_view_access(db, current_user, ds, "data_sources")
     return {"sync_config": ds.sync_config or {}}
 
 
@@ -432,12 +457,14 @@ def list_sync_jobs(
     data_source_id: int,
     limit: int = 10,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """List recent sync job history for a data source."""
     from app.models import SyncJob
     ds = DataSourceCRUDService.get_by_id(db, data_source_id)
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
+    require_view_access(db, current_user, ds, "data_sources")
     jobs = (
         db.query(SyncJob)
         .filter(SyncJob.data_source_id == data_source_id)
@@ -481,6 +508,7 @@ def trigger_sync(
     ds = DataSourceCRUDService.get_by_id(db, data_source_id)
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
+    require_edit_access(db, current_user, ds, "data_sources")
 
     # Reject if a job is already running
     running = (

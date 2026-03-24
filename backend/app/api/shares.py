@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_full_access
 from app.models.models import Chart, Dashboard, DashboardChart, DataSource
+from app.models.chat_session import ChatSession
 from app.models.dataset_workspace import DatasetWorkspace, DatasetWorkspaceTable
 from app.models.resource_share import ResourceShare, ResourceType, SharePermission
 from app.models.user import User, UserStatus
@@ -28,7 +29,7 @@ router = APIRouter(prefix="/shares", tags=["shares"])
 def _upsert_share(
     db: Session,
     resource_type: ResourceType,
-    resource_id: int,
+    resource_id: int | str,
     user_id: uuid.UUID,
     permission: SharePermission,
     shared_by: uuid.UUID,
@@ -89,6 +90,32 @@ def cascade_share_dashboard(
     db.commit()
 
 
+def _require_dashboard_cascade_access(db: Session, current_user: User, dashboard_id: int) -> None:
+    """Dashboard sharing may only cascade resources the user fully controls."""
+    dc_rows = (
+        db.query(DashboardChart)
+        .filter(DashboardChart.dashboard_id == dashboard_id)
+        .all()
+    )
+    for dc in dc_rows:
+        chart = db.query(Chart).filter(Chart.id == dc.chart_id).first()
+        if not chart:
+            continue
+        require_full_access(db, current_user, chart, "explore_charts")
+        if not chart.workspace_table_id:
+            continue
+        workspace_table = db.query(DatasetWorkspaceTable).filter(
+            DatasetWorkspaceTable.id == chart.workspace_table_id
+        ).first()
+        if not workspace_table:
+            continue
+        workspace = db.query(DatasetWorkspace).filter(
+            DatasetWorkspace.id == workspace_table.workspace_id
+        ).first()
+        if workspace:
+            require_full_access(db, current_user, workspace, "workspaces")
+
+
 def _revoke_cascade(
     db: Session,
     dashboard_id: int,
@@ -143,10 +170,11 @@ def _revoke_cascade(
 # ── Resource lookup for ownership check ───────────────────────────────────────
 
 _RESOURCE_MODEL_MAP = {
-    ResourceType.DASHBOARD: (Dashboard, "dashboards"),
-    ResourceType.CHART: (Chart, "explore_charts"),
-    ResourceType.DATASOURCE: (DataSource, "data_sources"),
-    ResourceType.WORKSPACE: (DatasetWorkspace, "workspaces"),
+    ResourceType.DASHBOARD: (Dashboard, "dashboards", "id"),
+    ResourceType.CHART: (Chart, "explore_charts", "id"),
+    ResourceType.DATASOURCE: (DataSource, "data_sources", "id"),
+    ResourceType.WORKSPACE: (DatasetWorkspace, "workspaces", "id"),
+    ResourceType.CHAT_SESSION: (ChatSession, "ai_chat", "session_id"),
 }
 
 
@@ -154,9 +182,16 @@ def _check_share_ownership(db: Session, current_user: User, resource_type: Resou
     """Verify the current user owns the resource or has full module access before allowing share operations."""
     model_info = _RESOURCE_MODEL_MAP.get(resource_type)
     if not model_info:
-        return  # Unknown types — skip check
-    model, module = model_info
-    resource = db.query(model).filter(model.id == int(resource_id)).first()
+        raise HTTPException(status_code=400, detail="Unsupported resource type")
+    model, module, lookup_field = model_info
+    if lookup_field == "session_id":
+        lookup_value = resource_id
+    else:
+        try:
+            lookup_value = int(resource_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=404, detail="Resource not found")
+    resource = db.query(model).filter(getattr(model, lookup_field) == lookup_value).first()
     if not resource:
         raise HTTPException(status_code=404, detail="Resource not found")
     require_full_access(db, current_user, resource, module)
@@ -172,6 +207,7 @@ def list_shares(
     current_user: User = Depends(get_current_user),
 ):
     """List all shares for a resource. Only owner or admin can list."""
+    _check_share_ownership(db, current_user, resource_type, resource_id)
     shares = (
         db.query(ResourceShare)
         .filter(
@@ -203,6 +239,7 @@ def add_share(
         raise HTTPException(status_code=404, detail="Target user not found")
 
     if resource_type == ResourceType.DASHBOARD:
+        _require_dashboard_cascade_access(db, current_user, int(resource_id))
         cascade_share_dashboard(db, int(resource_id), body.user_id, body.permission, current_user.id)
         share = db.query(ResourceShare).filter(
             ResourceShare.resource_type == ResourceType.DASHBOARD,
@@ -240,6 +277,16 @@ def update_share(
     ).first()
     if not share:
         raise HTTPException(status_code=404, detail="Share not found")
+
+    if resource_type == ResourceType.DASHBOARD:
+        _require_dashboard_cascade_access(db, current_user, int(resource_id))
+        cascade_share_dashboard(db, int(resource_id), user_id, body.permission, current_user.id)
+        share = db.query(ResourceShare).filter(
+            ResourceShare.resource_type == resource_type,
+            ResourceShare.resource_id == resource_id,
+            ResourceShare.user_id == user_id,
+        ).first()
+        return share
 
     share.permission = body.permission
     db.commit()
@@ -284,6 +331,8 @@ def share_all_team(
 ):
     """Share a resource with ALL active users (except the current user)."""
     _check_share_ownership(db, current_user, resource_type, resource_id)
+    if resource_type == ResourceType.DASHBOARD:
+        _require_dashboard_cascade_access(db, current_user, int(resource_id))
 
     active_users = (
         db.query(User)

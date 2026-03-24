@@ -67,9 +67,9 @@ def submit_feedback(
 def get_feedback_stats(
     month: Optional[str] = None,  # e.g. "2026-03"; omit for all-time
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("user_management", "view")),
+    current_user: User = Depends(require_permission("settings", "full")),
 ):
-    """Get feedback statistics. Requires user_management >= view permission.
+    """Get feedback statistics. Requires settings = full permission.
     Pass ?month=YYYY-MM to filter to a specific calendar month.
     """
     from sqlalchemy import func

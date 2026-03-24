@@ -8,7 +8,14 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
 from app.core import get_db
-from app.core.dependencies import get_current_user, require_permission, require_edit_access, require_full_access, get_effective_permission
+from app.core.dependencies import (
+    get_current_user,
+    require_permission,
+    require_view_access,
+    require_edit_access,
+    require_full_access,
+    get_effective_permission,
+)
 from app.core.permissions import _owned_or_shared
 from app.models.models import Chart, DashboardChart, Dashboard
 from app.models.resource_share import ResourceType
@@ -39,6 +46,22 @@ class AIChartPreviewRequest(BaseModel):
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/charts", tags=["charts"])
+
+
+def _get_workspace_for_chart_table(db: Session, workspace_table_id: int):
+    """Resolve the parent workspace for a chart source table."""
+    from app.models.dataset_workspace import DatasetWorkspace
+    from app.services.dataset_workspace_crud import DatasetWorkspaceCRUDService
+
+    db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, workspace_table_id)
+    if not db_table:
+        raise HTTPException(status_code=404, detail="Workspace table not found")
+
+    workspace = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == db_table.workspace_id).first()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    return workspace, db_table
 
 
 @router.get("/", response_model=List[ChartResponse])
@@ -102,14 +125,19 @@ def ai_chart_preview(
     Used by the AI agent's create_chart tool.
     Requires ai_chat >= view permission.
     """
-    from app.services.dataset_workspace_crud import DatasetWorkspaceCRUDService
     from app.models.models import DataSource
     from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
     from app.services.duckdb_engine import DuckDBEngine
 
-    db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, payload.workspace_table_id)
-    if not db_table:
-        raise HTTPException(status_code=404, detail="Workspace table not found")
+    workspace, db_table = _get_workspace_for_chart_table(db, payload.workspace_table_id)
+    require_view_access(db, current_user, workspace, "workspaces")
+    if payload.save:
+        perms = current_user.permissions or {}
+        if perms.get("explore_charts", "none") not in ("edit", "full"):
+            raise HTTPException(
+                status_code=403,
+                detail="Requires 'edit' permission on module 'explore_charts'",
+            )
 
     datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
     if not datasource:
@@ -199,7 +227,7 @@ def get_chart(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Chart with ID {chart_id} not found"
         )
-    chart.user_permission = get_effective_permission(db, current_user, chart, "explore_charts")
+    chart.user_permission = require_view_access(db, current_user, chart, "explore_charts")
     return chart
 
 
@@ -212,6 +240,8 @@ def create_chart(
 ):
     """Create a new chart."""
     try:
+        workspace, _ = _get_workspace_for_chart_table(db, chart.workspace_table_id)
+        require_view_access(db, current_user, workspace, "workspaces")
         new_chart = ChartService.create(db, chart, owner_id=current_user.id)
         background_tasks.add_task(AutoTaggingService.tag_chart, db, new_chart.id)
         background_tasks.add_task(EmbeddingService.embed_chart, db, new_chart.id)
@@ -233,6 +263,9 @@ def update_chart(
     if not chart_obj:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart with ID {chart_id} not found")
     require_edit_access(db, current_user, chart_obj, "explore_charts")
+    if chart_update.workspace_table_id is not None:
+        workspace, _ = _get_workspace_for_chart_table(db, chart_update.workspace_table_id)
+        require_view_access(db, current_user, workspace, "workspaces")
     try:
         chart = ChartService.update(db, chart_id, chart_update)
         background_tasks.add_task(AutoTaggingService.tag_chart, db, chart_id)
@@ -475,11 +508,16 @@ def regenerate_chart_description(
 # ---------------------------------------------------------------------------
 
 @router.get("/{chart_id}/parameters", response_model=List[ChartParameterResponse])
-def list_chart_parameters(chart_id: int, db: Session = Depends(get_db)):
+def list_chart_parameters(
+    chart_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """List all parameter definitions for a chart."""
     chart = ChartService.get_by_id(db, chart_id)
     if not chart:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart {chart_id} not found")
+    require_view_access(db, current_user, chart, "explore_charts")
     return ChartService.get_parameters(db, chart_id)
 
 

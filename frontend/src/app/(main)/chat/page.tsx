@@ -3,16 +3,14 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Loader2, MessageSquareText, Plus, Search } from 'lucide-react';
+import { toast } from 'sonner';
+
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { ChatSessionList } from '@/components/ai-chat/ChatSessionList';
-import { useCurrentUser } from '@/hooks/use-current-user';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
+import { AI_CHAT_HTTP_URL } from '@/lib/ai-services';
 import type { SessionSummary } from '@/components/ai-chat/ChatSessionList';
-
-const AI_HTTP_URL = (process.env.NEXT_PUBLIC_AI_WS_URL || 'ws://localhost:8001/chat/ws')
-  .replace(/^ws/, 'http')
-  .replace('/chat/ws', '');
 
 export default function ChatListPage() {
   const router = useRouter();
@@ -22,44 +20,65 @@ export default function ChatListPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [shareSession, setShareSession] = useState<SessionSummary | null>(null);
   const [authToken, setAuthToken] = useState<string>('');
-  const { data: currentUser } = useCurrentUser();
+  const [chatServiceAvailable, setChatServiceAvailable] = useState<boolean | null>(null);
   const { data: permData } = usePermissions();
   const canShare = hasPermission(permData?.permissions, 'ai_chat', 'edit');
 
   useEffect(() => {
     fetch('/api/auth/token')
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d?.token) setAuthToken(d.token); })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (data?.token) {
+          setAuthToken(data.token);
+        }
+      })
       .catch(() => {});
   }, []);
 
-  useEffect(() => { if (authToken) fetchSessions(); }, [authToken]);
+  useEffect(() => {
+    if (authToken) {
+      fetchSessions();
+    }
+  }, [authToken]);
 
   function authHeaders(): Record<string, string> {
-    return authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+    return authToken ? { Authorization: `Bearer ${authToken}` } : {};
   }
 
   async function fetchSessions() {
     setLoading(true);
     try {
-      const res = await fetch(`${AI_HTTP_URL}/chat/sessions`, { headers: authHeaders() });
-      if (res.ok) setSessions(await res.json());
-    } catch { /* AI service offline */ }
-    finally { setLoading(false); }
+      const response = await fetch(`${AI_CHAT_HTTP_URL}/chat/sessions`, { headers: authHeaders() });
+      if (response.ok) {
+        setSessions(await response.json());
+        setChatServiceAvailable(true);
+      } else {
+        setChatServiceAvailable(false);
+      }
+    } catch {
+      setChatServiceAvailable(false);
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function handleNewChat() {
+    if (chatServiceAvailable === false) {
+      toast.error('AI Chat service is offline. Start ai-chat-service to use chat.');
+      return;
+    }
+
     setCreating(true);
     try {
-      const res = await fetch(`${AI_HTTP_URL}/chat/sessions`, {
+      const response = await fetch(`${AI_CHAT_HTTP_URL}/chat/sessions`, {
         method: 'POST',
         headers: authHeaders(),
       });
-      if (!res.ok) throw new Error();
-      const { session_id } = await res.json();
+      if (!response.ok) throw new Error();
+      const { session_id } = await response.json();
       router.push(`/chat/${session_id}`);
     } catch {
-      router.push(`/chat/${crypto.randomUUID()}`);
+      toast.error('AI Chat service is offline. Start ai-chat-service to create a new chat.');
     } finally {
       setCreating(false);
     }
@@ -68,82 +87,105 @@ export default function ChatListPage() {
   async function handleDelete(id: string) {
     setDeletingId(id);
     try {
-      await fetch(`${AI_HTTP_URL}/chat/sessions/${id}`, {
+      await fetch(`${AI_CHAT_HTTP_URL}/chat/sessions/${id}`, {
         method: 'DELETE',
         headers: authHeaders(),
       });
-      setSessions(prev => prev.filter(s => s.session_id !== id));
-    } catch { /* ignore */ }
-    finally { setDeletingId(null); }
+      setSessions((prev) => prev.filter((session) => session.session_id !== id));
+    } catch {
+      // ignore delete failure when service is unavailable
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  function ServiceWarning() {
+    if (chatServiceAvailable !== false) return null;
+
+    return (
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        AI Chat service is offline. Start `ai-chat-service` if you want to use the chat module. AI Agent on the Dashboards page can still run separately.
+      </div>
+    );
   }
 
   return (
     <>
-    <PageListLayout
-      title="AI Chat"
-      description={`${sessions.length} cuộc hội thoại`}
-      action={
-        <button
-          onClick={handleNewChat}
-          disabled={creating}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50"
-        >
-          {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-          Cuộc hội thoại mới
-        </button>
-      }
-      isLoading={loading}
-      loadingText="Đang tải danh sách hội thoại…"
-      searchPlaceholder="Tìm theo tiêu đề…"
-      defaultView="grid"
-    >
-      {({ viewMode, filterText }) => {
-        const filtered = sessions.filter(s =>
-          s.title.toLowerCase().includes(filterText.toLowerCase()) ||
-          (s.last_message ?? '').toLowerCase().includes(filterText.toLowerCase())
-        );
+      <PageListLayout
+        title="AI Chat"
+        description={`${sessions.length} conversation${sessions.length !== 1 ? 's' : ''}`}
+        action={
+          <button
+            onClick={handleNewChat}
+            disabled={creating || chatServiceAvailable === false}
+            className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+          >
+            {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            New Conversation
+          </button>
+        }
+        isLoading={loading}
+        loadingText="Loading conversations..."
+        searchPlaceholder="Search conversations..."
+        defaultView="grid"
+      >
+        {({ viewMode, filterText }) => {
+          const filtered = sessions.filter(
+            (session) =>
+              session.title.toLowerCase().includes(filterText.toLowerCase()) ||
+              (session.last_message ?? '').toLowerCase().includes(filterText.toLowerCase()),
+          );
 
-        if (!loading && sessions.length === 0) {
+          if (!loading && sessions.length === 0) {
+            return (
+              <div className="space-y-4">
+                <ServiceWarning />
+                <div className="rounded-lg border border-gray-200 bg-white p-12 text-center">
+                  <MessageSquareText className="mx-auto mb-4 h-12 w-12 text-gray-400" />
+                  <h3 className="mb-2 text-lg font-medium text-gray-900">No conversations yet</h3>
+                  <p className="text-gray-500">Start a new chat when the AI Chat service is running.</p>
+                </div>
+              </div>
+            );
+          }
+
+          if (filtered.length === 0) {
+            return (
+              <div className="space-y-4">
+                <ServiceWarning />
+                <div className="flex h-48 flex-col items-center justify-center text-center">
+                  <Search className="mb-2 h-8 w-8 text-gray-300" />
+                  <p className="text-sm text-gray-500">
+                    No results for &ldquo;<strong>{filterText}</strong>&rdquo;
+                  </p>
+                </div>
+              </div>
+            );
+          }
+
           return (
-            <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
-              <MessageSquareText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">Chưa có cuộc hội thoại nào</h3>
-              <p className="text-gray-500">Nhấn &ldquo;Cuộc hội thoại mới&rdquo; để bắt đầu.</p>
+            <div className="space-y-4">
+              <ServiceWarning />
+              <ChatSessionList
+                sessions={filtered}
+                viewMode={viewMode}
+                onDelete={handleDelete}
+                onShare={canShare ? (session) => setShareSession(session) : undefined}
+                deletingId={deletingId}
+              />
             </div>
           );
-        }
+        }}
+      </PageListLayout>
 
-        if (filtered.length === 0) {
-          return (
-            <div className="flex flex-col items-center justify-center h-48 text-center">
-              <Search className="w-8 h-8 text-gray-300 mb-2" />
-              <p className="text-sm text-gray-500">
-                Không có kết quả cho &ldquo;<strong>{filterText}</strong>&rdquo;
-              </p>
-            </div>
-          );
-        }
-
-        return (
-          <ChatSessionList
-            sessions={filtered}
-            viewMode={viewMode}
-            onDelete={handleDelete}
-            onShare={canShare ? (s) => setShareSession(s) : undefined}
-            deletingId={deletingId}
-          />
-        );
-      }}
-    </PageListLayout>
-
-    {shareSession && (
-      <ShareDialog
-        resourceType="chat_session"
-        resourceId={shareSession.session_id}
-        resourceName={shareSession.title}
-        onClose={() => setShareSession(null)}
-      />
-    )}
-  </>
+      {shareSession && (
+        <ShareDialog
+          resourceType="chat_session"
+          resourceId={shareSession.session_id}
+          resourceName={shareSession.title}
+          onClose={() => setShareSession(null)}
+        />
+      )}
+    </>
   );
 }

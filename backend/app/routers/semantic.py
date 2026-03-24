@@ -6,7 +6,9 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.core.database import get_db
+from app.core.dependencies import require_permission
 from app.models.semantic import SemanticView, SemanticModel, SemanticExplore
+from app.models.user import User
 from app.schemas.semantic import (
     SemanticView as SemanticViewSchema,
     SemanticViewCreate,
@@ -26,11 +28,19 @@ import time
 
 router = APIRouter(prefix="/semantic", tags=["semantic"])
 
+require_semantic_view = require_permission("datasets", "view")
+require_semantic_edit = require_permission("datasets", "edit")
+require_semantic_full = require_permission("datasets", "full")
+
 
 # ============ Semantic Views ============
 
 @router.post("/views", response_model=SemanticViewSchema, status_code=status.HTTP_201_CREATED)
-def create_view(view: SemanticViewCreate, db: Session = Depends(get_db)):
+def create_view(
+    view: SemanticViewCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_edit),
+):
     """Create a new semantic view"""
     # Check if name already exists
     existing = db.query(SemanticView).filter(SemanticView.name == view.name).first()
@@ -67,14 +77,23 @@ def create_view(view: SemanticViewCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/views", response_model=List[SemanticViewSchema])
-def list_views(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+def list_views(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_view),
+):
     """List all semantic views"""
     views = db.query(SemanticView).offset(skip).limit(limit).all()
     return views
 
 
 @router.get("/views/{view_id}", response_model=SemanticViewSchema)
-def get_view(view_id: int, db: Session = Depends(get_db)):
+def get_view(
+    view_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_view),
+):
     """Get a semantic view by ID"""
     view = db.query(SemanticView).filter(SemanticView.id == view_id).first()
     if not view:
@@ -83,7 +102,12 @@ def get_view(view_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/views/{view_id}", response_model=SemanticViewSchema)
-def update_view(view_id: int, view_update: SemanticViewUpdate, db: Session = Depends(get_db)):
+def update_view(
+    view_id: int,
+    view_update: SemanticViewUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_edit),
+):
     """Update a semantic view"""
     db_view = db.query(SemanticView).filter(SemanticView.id == view_id).first()
     if not db_view:
@@ -107,7 +131,11 @@ def update_view(view_id: int, view_update: SemanticViewUpdate, db: Session = Dep
 
 
 @router.delete("/views/{view_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_view(view_id: int, db: Session = Depends(get_db)):
+def delete_view(
+    view_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_full),
+):
     """Delete a semantic view"""
     db_view = db.query(SemanticView).filter(SemanticView.id == view_id).first()
     if not db_view:
@@ -122,7 +150,11 @@ def delete_view(view_id: int, db: Session = Depends(get_db)):
 # ============ Semantic Models ============
 
 @router.post("/models", response_model=SemanticModelSchema, status_code=status.HTTP_201_CREATED)
-def create_model(model: SemanticModelCreate, db: Session = Depends(get_db)):
+def create_model(
+    model: SemanticModelCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_edit),
+):
     """Create a new semantic model"""
     existing = db.query(SemanticModel).filter(SemanticModel.name == model.name).first()
     if existing:
@@ -144,14 +176,23 @@ def create_model(model: SemanticModelCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/models", response_model=List[SemanticModelSchema])
-def list_models(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+def list_models(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_view),
+):
     """List all semantic models"""
     models = db.query(SemanticModel).offset(skip).limit(limit).all()
     return models
 
 
 @router.get("/models/{model_id}", response_model=SemanticModelSchema)
-def get_model(model_id: int, db: Session = Depends(get_db)):
+def get_model(
+    model_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_view),
+):
     """Get a semantic model by ID"""
     model = db.query(SemanticModel).filter(SemanticModel.id == model_id).first()
     if not model:
@@ -160,7 +201,12 @@ def get_model(model_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/models/{model_id}", response_model=SemanticModelSchema)
-def update_model(model_id: int, model_update: SemanticModelUpdate, db: Session = Depends(get_db)):
+def update_model(
+    model_id: int,
+    model_update: SemanticModelUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_edit),
+):
     """Update a semantic model"""
     db_model = db.query(SemanticModel).filter(SemanticModel.id == model_id).first()
     if not db_model:
@@ -177,7 +223,11 @@ def update_model(model_id: int, model_update: SemanticModelUpdate, db: Session =
 
 
 @router.delete("/models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_model(model_id: int, db: Session = Depends(get_db)):
+def delete_model(
+    model_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_full),
+):
     """Delete a semantic model"""
     db_model = db.query(SemanticModel).filter(SemanticModel.id == model_id).first()
     if not db_model:
@@ -192,7 +242,11 @@ def delete_model(model_id: int, db: Session = Depends(get_db)):
 # ============ Semantic Explores ============
 
 @router.post("/explores", response_model=SemanticExploreSchema, status_code=status.HTTP_201_CREATED)
-def create_explore(explore: SemanticExploreCreate, db: Session = Depends(get_db)):
+def create_explore(
+    explore: SemanticExploreCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_edit),
+):
     """Create a new semantic explore"""
     # Verify model exists
     model = db.query(SemanticModel).filter(SemanticModel.id == explore.model_id).first()
@@ -225,14 +279,23 @@ def create_explore(explore: SemanticExploreCreate, db: Session = Depends(get_db)
 
 
 @router.get("/explores", response_model=List[SemanticExploreSchema])
-def list_explores(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+def list_explores(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_view),
+):
     """List all semantic explores"""
     explores = db.query(SemanticExplore).offset(skip).limit(limit).all()
     return explores
 
 
 @router.get("/explores/{explore_id}", response_model=SemanticExploreSchema)
-def get_explore(explore_id: int, db: Session = Depends(get_db)):
+def get_explore(
+    explore_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_view),
+):
     """Get a semantic explore by ID"""
     explore = db.query(SemanticExplore).filter(SemanticExplore.id == explore_id).first()
     if not explore:
@@ -241,7 +304,11 @@ def get_explore(explore_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/explores/by-name/{explore_name}", response_model=SemanticExploreSchema)
-def get_explore_by_name(explore_name: str, db: Session = Depends(get_db)):
+def get_explore_by_name(
+    explore_name: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_view),
+):
     """Get a semantic explore by name"""
     explore = db.query(SemanticExplore).filter(SemanticExplore.name == explore_name).first()
     if not explore:
@@ -250,7 +317,12 @@ def get_explore_by_name(explore_name: str, db: Session = Depends(get_db)):
 
 
 @router.put("/explores/{explore_id}", response_model=SemanticExploreSchema)
-def update_explore(explore_id: int, explore_update: SemanticExploreUpdate, db: Session = Depends(get_db)):
+def update_explore(
+    explore_id: int,
+    explore_update: SemanticExploreUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_edit),
+):
     """Update a semantic explore"""
     db_explore = db.query(SemanticExplore).filter(SemanticExplore.id == explore_id).first()
     if not db_explore:
@@ -272,7 +344,11 @@ def update_explore(explore_id: int, explore_update: SemanticExploreUpdate, db: S
 
 
 @router.delete("/explores/{explore_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_explore(explore_id: int, db: Session = Depends(get_db)):
+def delete_explore(
+    explore_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_full),
+):
     """Delete a semantic explore"""
     db_explore = db.query(SemanticExplore).filter(SemanticExplore.id == explore_id).first()
     if not db_explore:
@@ -287,7 +363,11 @@ def delete_explore(explore_id: int, db: Session = Depends(get_db)):
 # ============ Semantic Query Execution ============
 
 @router.post("/query", response_model=SemanticQueryResponse)
-def execute_semantic_query(query_request: SemanticQueryRequest, db: Session = Depends(get_db)):
+def execute_semantic_query(
+    query_request: SemanticQueryRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_semantic_view),
+):
     """
     Execute a semantic query
     Generates SQL from semantic definitions and executes it

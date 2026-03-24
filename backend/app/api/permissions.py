@@ -30,6 +30,7 @@ MODULES = [
     "explore_charts",
     "dashboards",
     "ai_chat",
+    "ai_agent",
     "settings",
 ]
 
@@ -41,6 +42,7 @@ MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
     "explore_charts": ["none", "view", "edit", "full"],
     "dashboards":     ["none", "view", "edit", "full"],
     "ai_chat":        ["none", "view", "edit"],
+    "ai_agent":       ["none", "view", "edit"],
     "settings":       ["none", "full"],
 }
 
@@ -56,6 +58,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "explore_charts": "full",
         "dashboards": "full",
         "ai_chat": "edit",
+        "ai_agent": "edit",
         "settings": "full",
     },
     "editor": {
@@ -65,6 +68,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "explore_charts": "edit",
         "dashboards": "edit",
         "ai_chat": "edit",
+        "ai_agent": "edit",
         "settings": "none",
     },
     "viewer": {
@@ -74,6 +78,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "explore_charts": "view",
         "dashboards": "view",
         "ai_chat": "view",
+        "ai_agent": "none",
         "settings": "none",
     },
     "minimal": {
@@ -83,6 +88,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "explore_charts": "none",
         "dashboards": "view",
         "ai_chat": "none",
+        "ai_agent": "none",
         "settings": "none",
     },
 }
@@ -125,10 +131,27 @@ def _default_permissions() -> Dict[str, str]:
     return {m: "none" for m in MODULES}
 
 
+def _infer_legacy_ai_agent_level(stored: Dict[str, str]) -> str:
+    """Backfill ai_agent for legacy users whose permissions predate the module."""
+    ai_chat_level = stored.get("ai_chat", "none")
+    dashboards_level = stored.get("dashboards", "none")
+    charts_level = stored.get("explore_charts", "none")
+
+    if (
+        LEVEL_ORDER.get(ai_chat_level, 0) >= LEVEL_ORDER["edit"]
+        and LEVEL_ORDER.get(dashboards_level, 0) >= LEVEL_ORDER["edit"]
+        and LEVEL_ORDER.get(charts_level, 0) >= LEVEL_ORDER["edit"]
+    ):
+        return "edit"
+    return "none"
+
+
 def _get_user_permissions(user: User) -> Dict[str, str]:
     base = _default_permissions()
     stored: dict = user.permissions or {}
     base.update({k: v for k, v in stored.items() if k in MODULES})
+    if "ai_agent" not in stored:
+        base["ai_agent"] = _infer_legacy_ai_agent_level(base)
     return base
 
 
