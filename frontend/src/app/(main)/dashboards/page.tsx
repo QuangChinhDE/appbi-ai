@@ -2,11 +2,12 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Loader2, LayoutDashboard, Clock, Eye, Trash2, Search } from 'lucide-react';
+import { Plus, Loader2, LayoutDashboard, Clock, Eye, Trash2, Search, Bot } from 'lucide-react';
 import { useDashboards, useCreateDashboard, useDeleteDashboard } from '@/hooks/use-dashboards';
 import { DashboardList } from '@/components/dashboards/DashboardList';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { PageListLayout } from '@/components/common/PageListLayout';
+import { DashboardAgentWizard } from '@/components/ai-agent/DashboardAgentWizard';
 import { toast } from 'sonner';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
@@ -19,10 +20,15 @@ export default function DashboardsPage() {
   const [dashboardToDelete, setDashboardToDelete] = useState<{ id: number; name: string } | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingDashboard, setIsDeletingDashboard] = useState(false);
+  const [isAgentOpen, setIsAgentOpen] = useState(false);
 
   const { data: dashboards, isLoading } = useDashboards();
   const { data: permData } = usePermissions();
   const canEdit = hasPermission(permData?.permissions, 'dashboards', 'edit');
+  const canUseAgent =
+    hasPermission(permData?.permissions, 'ai_agent', 'edit') &&
+    hasPermission(permData?.permissions, 'dashboards', 'edit') &&
+    hasPermission(permData?.permissions, 'explore_charts', 'edit');
   const createMutation = useCreateDashboard();
   const deleteMutation = useDeleteDashboard();
 
@@ -92,81 +98,103 @@ export default function DashboardsPage() {
             d.description?.toLowerCase().includes(filterText.toLowerCase())
           );
 
-          if (!dashboards || dashboards.length === 0) {
-            return <DashboardList dashboards={[]} onDelete={handleDelete} />;
-          }
-
-          if (filtered.length === 0) {
-            return (
-              <div className="flex flex-col items-center justify-center h-48 text-center">
-                <Search className="w-8 h-8 text-gray-300 mb-2" />
-                <p className="text-sm text-gray-500">No dashboards matching "<strong>{filterText}</strong>"</p>
-              </div>
-            );
-          }
-
-          if (viewMode === 'grid') {
-            return (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                {filtered.map(dashboard => {
-                  const chartCount = dashboard.dashboard_charts?.length || 0;
-                  const createdAt = new Date(dashboard.created_at).toLocaleDateString('vi-VN', {
-                    day: '2-digit', month: '2-digit', year: 'numeric',
-                  });
-                  return (
-                    <div
-                      key={dashboard.id}
-                      className="bg-white rounded-lg border border-gray-200 hover:shadow-md transition-all group flex flex-col"
-                    >
-                      <div className="p-5 flex-1">
-                        <div className="flex items-start justify-between mb-3">
-                          <div className="w-10 h-10 rounded-lg bg-purple-50 flex items-center justify-center flex-shrink-0">
-                            <LayoutDashboard className="w-5 h-5 text-purple-600" />
-                          </div>
-                          {getResourcePermissions(dashboard.user_permission).canDelete && (
-                          <button
-                            onClick={() => handleDelete(dashboard.id)}
-                            className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 transition-all p-1 rounded"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                          )}
-                        </div>
-                        <h3 className="font-semibold text-gray-900 text-sm truncate mb-1">{dashboard.name}</h3>
-                        {dashboard.description && (
-                          <p className="text-xs text-gray-500 line-clamp-2 mb-2">{dashboard.description}</p>
-                        )}
-                        <div className="flex items-center justify-between text-xs text-gray-400 mt-2">
-                          <span>{chartCount} chart{chartCount !== 1 ? 's' : ''}</span>
-                          <span className="flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            {createdAt}
-                          </span>
-                        </div>
+          return (
+            <div className="space-y-6">
+              {canUseAgent && (
+                <div className="relative overflow-hidden rounded-2xl border border-blue-200 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.16),_transparent_32%),radial-gradient(circle_at_bottom_right,_rgba(14,165,233,0.14),_transparent_28%),white] p-6 shadow-sm">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="max-w-3xl">
+                      <div className="mb-2 flex items-center gap-2 text-sky-700">
+                        <Bot className="w-5 h-5" />
+                        <span className="text-xs font-semibold uppercase tracking-[0.2em]">AI Agent</span>
                       </div>
-                      <div className="px-5 py-3 border-t bg-gray-50 rounded-b-lg flex justify-end">
-                        <button
-                          onClick={() => router.push(`/dashboards/${dashboard.id}`)}
-                          className="flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 font-medium transition-colors"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                          Open
-                        </button>
+                      <h2 className="text-xl font-semibold text-gray-900">Turn a business brief into a full dashboard</h2>
+                      <p className="mt-2 text-sm text-gray-600">
+                        Separate from AI Chat: choose the tables, generate a draft, review and edit it, then let the Agent build the dashboard.
+                      </p>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <span className="rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-slate-700 ring-1 ring-inset ring-blue-100">Plan first</span>
+                        <span className="rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-slate-700 ring-1 ring-inset ring-blue-100">Review and edit</span>
+                        <span className="rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-slate-700 ring-1 ring-inset ring-blue-100">Build dashboard</span>
                       </div>
                     </div>
-                  );
-                })}
-              </div>
-            );
-          }
+                    <button
+                      onClick={() => setIsAgentOpen(true)}
+                      className="inline-flex items-center justify-center gap-2 rounded-full bg-slate-900 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800"
+                    >
+                      <Bot className="w-4 h-4" />
+                      Plan with AI Agent
+                    </button>
+                  </div>
+                </div>
+              )}
 
-          // List view
-          return (
-            <DashboardList
-              dashboards={filtered}
-              onDelete={canEdit ? handleDelete : undefined}
-              deletingId={isDeletingDashboard ? dashboardToDelete?.id : undefined}
-            />
+              {(!dashboards || dashboards.length === 0) ? (
+                <DashboardList dashboards={[]} onDelete={handleDelete} />
+              ) : filtered.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-48 text-center">
+                  <Search className="w-8 h-8 text-gray-300 mb-2" />
+                  <p className="text-sm text-gray-500">No dashboards matching "<strong>{filterText}</strong>"</p>
+                </div>
+              ) : viewMode === 'grid' ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                  {filtered.map(dashboard => {
+                    const chartCount = dashboard.dashboard_charts?.length || 0;
+                    const createdAt = new Date(dashboard.created_at).toLocaleDateString('vi-VN', {
+                      day: '2-digit', month: '2-digit', year: 'numeric',
+                    });
+                    return (
+                      <div
+                        key={dashboard.id}
+                        className="bg-white rounded-lg border border-gray-200 hover:shadow-md transition-all group flex flex-col"
+                      >
+                        <div className="p-5 flex-1">
+                          <div className="flex items-start justify-between mb-3">
+                            <div className="w-10 h-10 rounded-lg bg-purple-50 flex items-center justify-center flex-shrink-0">
+                              <LayoutDashboard className="w-5 h-5 text-purple-600" />
+                            </div>
+                            {getResourcePermissions(dashboard.user_permission).canDelete && (
+                            <button
+                              onClick={() => handleDelete(dashboard.id)}
+                              className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 transition-all p-1 rounded"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                            )}
+                          </div>
+                          <h3 className="font-semibold text-gray-900 text-sm truncate mb-1">{dashboard.name}</h3>
+                          {dashboard.description && (
+                            <p className="text-xs text-gray-500 line-clamp-2 mb-2">{dashboard.description}</p>
+                          )}
+                          <div className="flex items-center justify-between text-xs text-gray-400 mt-2">
+                            <span>{chartCount} chart{chartCount !== 1 ? 's' : ''}</span>
+                            <span className="flex items-center gap-1">
+                              <Clock className="w-3 h-3" />
+                              {createdAt}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="px-5 py-3 border-t bg-gray-50 rounded-b-lg flex justify-end">
+                          <button
+                            onClick={() => router.push(`/dashboards/${dashboard.id}`)}
+                            className="flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 font-medium transition-colors"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            Open
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <DashboardList
+                  dashboards={filtered}
+                  onDelete={canEdit ? handleDelete : undefined}
+                  deletingId={isDeletingDashboard ? dashboardToDelete?.id : undefined}
+                />
+              )}
+            </div>
           );
         }}
       </PageListLayout>
@@ -234,6 +262,11 @@ export default function DashboardsPage() {
           onClose={() => { setDashboardToDelete(null); setDeleteConstraints(null); }}
         />
       )}
+
+      <DashboardAgentWizard
+        isOpen={isAgentOpen}
+        onClose={() => setIsAgentOpen(false)}
+      />
     </>
   );
 }
