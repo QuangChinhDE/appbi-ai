@@ -33,6 +33,8 @@ interface PageListLayoutProps {
   title: string;
   /** Subtitle / item count shown below the title */
   description?: React.ReactNode;
+  /** Optional shared module overview block shown above the toolbar */
+  overview?: React.ReactNode;
   /** Primary action button (top-right of header) */
   action?: React.ReactNode;
   /** Renders a centered spinner when true */
@@ -58,6 +60,7 @@ interface PageListLayoutProps {
 export function PageListLayout({
   title,
   description,
+  overview,
   action,
   isLoading = false,
   loadingText = 'Loading…',
@@ -94,6 +97,8 @@ export function PageListLayout({
         </div>
         {description && <p className="text-gray-600">{description}</p>}
       </div>
+
+      {overview && <div className="mb-6">{overview}</div>}
 
       {/* ── Toolbar ───────────────────────────────────────────── */}
       {showToolbar && (

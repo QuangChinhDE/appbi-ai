@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Loader2, MessageSquareText, Plus, Search } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { ChatSessionList } from '@/components/ai-chat/ChatSessionList';
@@ -23,6 +24,10 @@ export default function ChatListPage() {
   const [chatServiceAvailable, setChatServiceAvailable] = useState<boolean | null>(null);
   const { data: permData } = usePermissions();
   const canShare = hasPermission(permData?.permissions, 'ai_chat', 'edit');
+  const activeToday = sessions.filter((session) => {
+    const lastActive = new Date(session.last_active).getTime();
+    return Number.isFinite(lastActive) && Date.now() - lastActive <= 24 * 60 * 60 * 1000;
+  }).length;
 
   useEffect(() => {
     fetch('/api/auth/token')
@@ -104,7 +109,7 @@ export default function ChatListPage() {
 
     return (
       <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-        AI Chat service is offline. Start `ai-chat-service` if you want to use the chat module. AI Agent on the Dashboards page can still run separately.
+        AI Chat service is offline. Start `ai-chat-service` if you want to use the chat module. AI Reports can still run separately.
       </div>
     );
   }
@@ -114,6 +119,40 @@ export default function ChatListPage() {
       <PageListLayout
         title="AI Chat"
         description={`${sessions.length} conversation${sessions.length !== 1 ? 's' : ''}`}
+        overview={(
+          <ModuleOverview
+            icon={MessageSquareText}
+            title="Keep conversational analysis separate from saved reports and dashboards"
+            description="AI Chat is the fast back-and-forth workspace for ad hoc questions, follow-up prompts, and shared discussions. Use it when you want exploration in conversation form instead of a persisted report workflow."
+            badges={['Ad hoc analysis', 'Conversations', 'Shareable sessions']}
+            stats={[
+              {
+                label: 'Conversations',
+                value: sessions.length,
+                helper: 'Saved chat threads currently available to reopen',
+              },
+              {
+                label: 'Active 24h',
+                value: activeToday,
+                helper: 'Sessions with activity in the last 24 hours',
+              },
+              {
+                label: 'Service status',
+                value:
+                  chatServiceAvailable === false ? (
+                    <span className="inline-flex rounded-full bg-rose-50 px-3 py-1 text-sm font-semibold text-rose-700">
+                      Offline
+                    </span>
+                  ) : (
+                    <span className="inline-flex rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700">
+                      Online
+                    </span>
+                  ),
+                helper: 'Live availability of the AI Chat backend service',
+              },
+            ]}
+          />
+        )}
         action={
           <button
             onClick={handleNewChat}

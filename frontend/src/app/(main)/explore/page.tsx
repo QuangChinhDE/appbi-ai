@@ -8,6 +8,7 @@ import { useRouter } from 'next/navigation';
 import { Plus, Trash2, BarChart3, Clock, Layers, Search } from 'lucide-react';
 import { useCharts, useDeleteChart } from '@/hooks/use-charts';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
+import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { toast } from 'sonner';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
@@ -26,6 +27,12 @@ export default function ExplorePage() {
   const { data: permData } = usePermissions();
   const canEdit = hasPermission(permData?.permissions, 'explore_charts', 'edit');
   const deleteChart = useDeleteChart();
+  const chartItems = charts ?? [];
+  const chartTypesUsed = new Set(chartItems.map((chart) => chart.chart_type)).size;
+  const updatedThisWeek = chartItems.filter((chart) => {
+    const updatedAt = new Date(chart.updated_at).getTime();
+    return Number.isFinite(updatedAt) && Date.now() - updatedAt <= 7 * 24 * 60 * 60 * 1000;
+  }).length;
   const [chartToDelete, setChartToDelete] = useState<Chart | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingChart, setIsDeletingChart] = useState(false);
@@ -60,6 +67,31 @@ export default function ExplorePage() {
     <PageListLayout
       title="Explore"
       description={`${charts?.length ?? 0} saved chart${charts?.length !== 1 ? 's' : ''}`}
+      overview={(
+        <ModuleOverview
+          icon={BarChart3}
+          title="Review saved charts before they graduate into dashboards"
+          description="Explore is where reusable chart drafts live. Use it to iterate on chart structure, keep visual building blocks organized, and promote the best results into Dashboards or AI Reports."
+          badges={['Saved charts', 'Reusable visuals', 'Chart editing']}
+          stats={[
+            {
+              label: 'Saved charts',
+              value: chartItems.length,
+              helper: 'Chart assets currently available to open and refine',
+            },
+            {
+              label: 'Chart types',
+              value: chartTypesUsed,
+              helper: 'Different visualization families represented right now',
+            },
+            {
+              label: 'Updated 7d',
+              value: updatedThisWeek,
+              helper: 'Charts touched in the last seven days',
+            },
+          ]}
+        />
+      )}
       action={canEdit ? (
         <button
           onClick={() => router.push('/explore/new')}

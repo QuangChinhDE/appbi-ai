@@ -10,7 +10,22 @@ from pydantic import BaseModel, ConfigDict, Field
 
 BuildMode = Literal["new_dashboard", "new_version", "replace_existing"]
 ReportSpecStatus = Literal["draft", "ready", "running", "failed", "archived"]
-ReportRunStatus = Literal["queued", "planning", "building", "succeeded", "failed"]
+ReportRunStatus = Literal[
+    "queued",
+    "planning",
+    "parsing_brief",
+    "selecting_datasets",
+    "profiling_data",
+    "quality_gate",
+    "planning_analysis",
+    "planning_charts",
+    "building",
+    "building_dashboard",
+    "generating_insights",
+    "composing_report",
+    "succeeded",
+    "failed",
+]
 
 
 class AgentReportSpecBase(BaseModel):

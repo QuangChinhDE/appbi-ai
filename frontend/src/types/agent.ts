@@ -1,7 +1,21 @@
 export type PlanningMode = 'quick' | 'deep';
 export type AgentBuildMode = 'new_dashboard' | 'new_version' | 'replace_existing';
 export type AgentReportSpecStatus = 'draft' | 'ready' | 'running' | 'failed' | 'archived';
-export type AgentReportRunStatus = 'queued' | 'planning' | 'building' | 'succeeded' | 'failed';
+export type AgentReportRunStatus =
+  | 'queued'
+  | 'planning'
+  | 'parsing_brief'
+  | 'selecting_datasets'
+  | 'profiling_data'
+  | 'quality_gate'
+  | 'planning_analysis'
+  | 'planning_charts'
+  | 'building'
+  | 'building_dashboard'
+  | 'generating_insights'
+  | 'composing_report'
+  | 'succeeded'
+  | 'failed';
 
 export interface SelectedTableRef {
   workspace_id: number;
@@ -9,6 +23,7 @@ export interface SelectedTableRef {
 }
 
 export interface AgentBriefRequest {
+  output_language?: 'auto' | 'vi' | 'en';
   report_name?: string;
   report_type?: string;
   goal: string;
@@ -16,15 +31,185 @@ export interface AgentBriefRequest {
   timeframe?: string;
   kpis: string[];
   questions: string[];
+  why_now?: string;
+  business_background?: string;
   comparison_period?: string;
   refresh_frequency?: string;
   must_include_sections: string[];
   alert_focus: string[];
   preferred_granularity?: string;
   decision_context?: string;
+  report_style?: string;
+  insight_depth?: string;
+  recommendation_style?: string;
+  confidence_preference?: string;
+  preferred_dashboard_structure?: string;
+  include_text_narrative?: boolean;
+  include_action_items?: boolean;
+  include_data_quality_notes?: boolean;
+  table_roles_hint?: string[];
+  business_glossary?: string[];
+  known_data_issues?: string[];
+  important_dimensions?: string[];
+  columns_to_avoid?: string[];
   notes?: string;
   planning_mode: PlanningMode;
   selected_tables: SelectedTableRef[];
+}
+
+export interface ParsedBriefArtifact {
+  output_language?: string | null;
+  business_goal: string;
+  decision_context?: string | null;
+  target_audience?: string | null;
+  report_style?: string | null;
+  insight_depth?: string | null;
+  recommendation_style?: string | null;
+  primary_kpis: string[];
+  secondary_kpis: string[];
+  must_answer_questions: string[];
+  required_sections: string[];
+  risk_focus: string[];
+  narrative_preferences: Record<string, any>;
+  important_dimensions: string[];
+  columns_to_avoid: string[];
+  glossary_terms: string[];
+  known_data_issues: string[];
+  table_role_hints: string[];
+  success_criteria: string[];
+  explicit_assumptions: string[];
+  clarification_gaps: string[];
+}
+
+export interface DatasetFitArtifactItem {
+  workspace_id: number;
+  workspace_name: string;
+  table_id: number;
+  table_name: string;
+  fit_score: number;
+  suggested_role: string;
+  good_for: string[];
+  weak_for: string[];
+  metadata_risk: string;
+  coverage_notes: string[];
+  notes: string;
+}
+
+export interface ProfilingArtifactItem {
+  workspace_id: number;
+  workspace_name: string;
+  table_id: number;
+  table_name: string;
+  row_sample_count: number;
+  column_count: number;
+  table_grain: string;
+  candidate_metrics: string[];
+  candidate_dimensions: string[];
+  candidate_time_fields: string[];
+  top_dimensions: Record<string, string[]>;
+  null_risk_columns: string[];
+  freshness_summary?: string | null;
+  semantic_summary?: string | null;
+  risk_flags: string[];
+}
+
+export interface QualityGateArtifact {
+  overall_status: string;
+  blockers: string[];
+  warnings: string[];
+  acceptable_risks: string[];
+  confidence_penalties: Record<string, number>;
+  recommended_adjustments: string[];
+  fields_with_issues: string[];
+  quality_summary?: string | null;
+}
+
+export interface AnalysisQuestionMap {
+  question: string;
+  target_table_id?: number | null;
+  target_table_name?: string | null;
+  suggested_method: string;
+  target_metric?: string | null;
+  target_dimension?: string | null;
+  target_time_field?: string | null;
+  expected_signal?: string | null;
+}
+
+export interface AnalysisPlanArtifact {
+  business_thesis: string;
+  analysis_objectives: string[];
+  question_map: AnalysisQuestionMap[];
+  hypotheses: string[];
+  priority_checks: string[];
+  fallback_checks: string[];
+  section_logic: Record<string, string>;
+  narrative_flow: string[];
+}
+
+export interface ChartInsightArtifact {
+  chart_key: string;
+  chart_id?: number | null;
+  title: string;
+  chart_type: string;
+  caption: string;
+  finding: string;
+  evidence_summary: string;
+  confidence: number;
+  warning_if_any?: string | null;
+}
+
+export interface SectionInsightArtifact {
+  section_title: string;
+  table_name: string;
+  summary: string;
+  key_findings: string[];
+  caveats: string[];
+  recommended_actions: string[];
+  confidence: number;
+  chart_keys: string[];
+  chart_ids: number[];
+}
+
+export interface InsightReportArtifact {
+  executive_summary: string;
+  top_findings: string[];
+  headline_risks: string[];
+  priority_actions: string[];
+  section_insights: SectionInsightArtifact[];
+  chart_insights: ChartInsightArtifact[];
+}
+
+export interface DashboardBlueprintArtifact {
+  dashboard_title: string;
+  executive_summary: string;
+  reading_order: string[];
+  section_intro_text: Record<string, string>;
+  chart_caption_map: Record<string, string>;
+  narrative_flow: string[];
+  layout_strategy: string;
+  callout_priority: string[];
+}
+
+export interface AgentRuntimeMetadata {
+  provider: string;
+  model: string;
+  fallback_chain: Array<{ provider: string; model: string }>;
+  timeout_seconds: number;
+}
+
+export interface AgentReportResultSummary {
+  created_chart_count?: number;
+  preflight_failures?: number;
+  build_mode?: AgentBuildMode;
+  executive_summary?: string;
+  top_findings?: string[];
+  headline_risks?: string[];
+  priority_actions?: string[];
+  insight_report?: InsightReportArtifact | null;
+  dashboard_blueprint?: DashboardBlueprintArtifact | null;
+  planning_runtime?: AgentRuntimeMetadata | null;
+  build_runtime?: AgentRuntimeMetadata | null;
+  chart_data_summary?: Record<string, any> | null;
 }
 
 export interface AgentChartPlan {
@@ -67,6 +252,12 @@ export interface AgentPlanResponse {
   sections: AgentSectionPlan[];
   charts: AgentChartPlan[];
   warnings: string[];
+  parsed_brief?: ParsedBriefArtifact | null;
+  dataset_fit_report?: DatasetFitArtifactItem[] | null;
+  profiling_report?: ProfilingArtifactItem[] | null;
+  quality_gate_report?: QualityGateArtifact | null;
+  analysis_plan?: AnalysisPlanArtifact | null;
+  runtime?: AgentRuntimeMetadata | null;
 }
 
 export interface AgentPlanEvent {
@@ -84,6 +275,7 @@ export interface AgentBuildEvent {
   chart_id?: number;
   dashboard_id?: number;
   dashboard_url?: string;
+  report_url?: string;
   error?: string;
 }
 
@@ -113,7 +305,7 @@ export interface AgentReportRun {
   error?: string | null;
   input_brief_json: Record<string, any>;
   plan_json: Record<string, any>;
-  result_summary_json?: Record<string, any> | null;
+  result_summary_json?: AgentReportResultSummary | null;
   created_at: string;
   finished_at?: string | null;
 }

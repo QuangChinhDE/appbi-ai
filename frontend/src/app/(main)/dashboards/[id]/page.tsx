@@ -3,7 +3,7 @@
 import React, { useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Plus, Save, Loader2, Edit2, Check, X, Share2 } from 'lucide-react';
+import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Bot, Sparkles } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import {
   useDashboard,
@@ -20,8 +20,8 @@ import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { DashboardChartLayout } from '@/types/api';
 import type { BaseFilter, ColumnInfo } from '@/lib/filters';
 import { inferColumnTypeFromData } from '@/lib/filters';
-import { useCurrentUser } from '@/hooks/use-current-user';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
+import { useAgentReportSpecs } from '@/hooks/use-agent-report-specs';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { toast } from 'sonner';
 
@@ -63,8 +63,9 @@ export default function DashboardDetailPage() {
   const [columnChartCount, setColumnChartCount] = useState<Map<string, number>>(new Map());
 
   const { data: dashboard, isLoading: isLoadingDashboard } = useDashboard(dashboardId);
-  const { data: currentUser } = useCurrentUser();
   const { data: permData } = usePermissions();
+  const canViewAgentReports = hasPermission(permData?.permissions, 'ai_agent', 'view');
+  const { data: agentReportSpecs = [] } = useAgentReportSpecs(canViewAgentReports);
   const resPerms = getResourcePermissions(dashboard?.user_permission);
   const canShare = resPerms.canShare;
   const canEditResource = resPerms.canEdit;
@@ -241,6 +242,7 @@ export default function DashboardDetailPage() {
   }
 
   const existingChartIds = dashboard.dashboard_charts?.map((dc) => dc.chart_id) || [];
+  const linkedAgentReport = agentReportSpecs.find((spec) => spec.latest_dashboard_id === dashboardId);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -255,6 +257,32 @@ export default function DashboardDetailPage() {
 
         {/* Header */}
         <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
+          {linkedAgentReport && (
+            <div className="mb-5 rounded-xl border border-blue-200 bg-blue-50 p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white text-blue-600">
+                    <Bot className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-blue-900">Generated from AI Report</p>
+                    <p className="mt-1 text-sm text-blue-800">
+                      This dashboard is the editable output of <span className="font-medium">{linkedAgentReport.name}</span>.
+                      Keep refining layout and charts here, then return to AI Reports when you want to review the narrative or rerun the brief.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => router.push(`/ai-reports/${linkedAgentReport.id}`)}
+                  className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-white px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100/40"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  Open AI report
+                </button>
+              </div>
+            </div>
+          )}
           <div className="flex items-center justify-between">
             <div className="flex-1">
               {isEditingName ? (

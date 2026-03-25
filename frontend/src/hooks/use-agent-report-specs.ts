@@ -50,6 +50,18 @@ export function useUpdateAgentReportSpec() {
   });
 }
 
+export function useDeleteAgentReportSpec() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => agentReportSpecsApi.remove(id),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: agentReportSpecKeys.lists() });
+      queryClient.removeQueries({ queryKey: agentReportSpecKeys.detail(id) });
+      queryClient.removeQueries({ queryKey: agentReportSpecKeys.runs(id) });
+    },
+  });
+}
+
 export function useCreateAgentReportRun() {
   const queryClient = useQueryClient();
   return useMutation({

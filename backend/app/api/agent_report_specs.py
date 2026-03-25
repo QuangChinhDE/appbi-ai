@@ -114,6 +114,17 @@ def update_agent_report_spec(
     return spec
 
 
+@router.delete("/{spec_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_agent_report_spec(
+    spec_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ai_agent", "edit")),
+):
+    spec = _get_owned_spec(db, spec_id, current_user)
+    db.delete(spec)
+    db.commit()
+
+
 @router.get("/{spec_id}/runs", response_model=List[AgentReportRunResponse])
 def list_agent_report_runs(
     spec_id: int,
@@ -183,7 +194,20 @@ def update_agent_report_run(
     elif run.status == "failed":
         spec.status = "failed"
         spec.last_run_at = run.finished_at or datetime.now(timezone.utc)
-    elif run.status in {"queued", "planning", "building"}:
+    elif run.status in {
+        "queued",
+        "planning",
+        "parsing_brief",
+        "selecting_datasets",
+        "profiling_data",
+        "quality_gate",
+        "planning_analysis",
+        "planning_charts",
+        "building",
+        "building_dashboard",
+        "generating_insights",
+        "composing_report",
+    }:
         spec.status = "running"
 
     db.commit()

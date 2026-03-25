@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Plus, Database, Edit, TestTube, Trash2, Clock, Search, Share2 } from 'lucide-react';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
+import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { toast } from 'sonner';
@@ -54,6 +55,9 @@ export default function DataSourcesPage() {
   const deleteMutation = useDeleteDataSource();
   const testMutation = useTestDataSource();
   const executeMutation = useExecuteQuery();
+  const distinctSourceTypes = new Set(dataSources.map((source) => source.type)).size;
+  const googleSheetsSources = dataSources.filter((source) => source.type === 'google_sheets').length;
+  const manualSources = dataSources.filter((source) => source.type === 'manual').length;
 
   const handleDelete = (id: number) => {
     const source = dataSources.find((s) => s.id === id);
@@ -147,6 +151,31 @@ export default function DataSourcesPage() {
       <PageListLayout
         title="Data Sources"
         description={`${dataSources.length} connection${dataSources.length !== 1 ? 's' : ''} configured`}
+        overview={(
+          <ModuleOverview
+            icon={Database}
+            title="Keep every data connection visible before it feeds workspaces and reports"
+            description="Data Sources is the connection layer of the platform. Manage source configs, test access, and track which connectors are ready before syncing tables into Dataset Workspaces."
+            badges={['Connections', 'Query runner', 'Sync inputs']}
+            stats={[
+              {
+                label: 'Connections',
+                value: dataSources.length,
+                helper: 'Configured sources currently available to the platform',
+              },
+              {
+                label: 'Source types',
+                value: distinctSourceTypes,
+                helper: 'Different connector categories now represented',
+              },
+              {
+                label: 'Sheets / Manual',
+                value: `${googleSheetsSources} / ${manualSources}`,
+                helper: 'Quick read on spreadsheet and manual-entry sources',
+              },
+            ]}
+          />
+        )}
         action={canEdit ? (
           <button
             onClick={() => router.push('/datasources/new')}

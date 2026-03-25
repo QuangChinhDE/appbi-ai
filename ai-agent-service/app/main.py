@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 async def lifespan(_app: FastAPI):
     logger.info("AI Agent service starting")
     logger.info("BI backend: %s", settings.bi_api_url)
+    logger.info(
+        "Active LLM: provider=%s model=%s timeout=%ss",
+        settings.active_llm_provider,
+        settings.active_llm_model,
+        settings.active_llm_timeout_seconds,
+    )
+    if settings.active_llm_fallback_chain:
+        logger.info("Active fallback chain: %s", settings.active_llm_fallback_chain)
     yield
     await bi_client.close()
     logger.info("AI Agent service stopped")
@@ -45,4 +53,11 @@ app.include_router(agent_router)
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "ai-agent"}
+    return {
+        "status": "ok",
+        "service": "ai-agent",
+        "provider": settings.active_llm_provider,
+        "model": settings.active_llm_model,
+        "fallback_chain": settings.active_llm_fallback_chain,
+        "timeout_seconds": settings.active_llm_timeout_seconds,
+    }

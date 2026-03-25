@@ -16,6 +16,7 @@ import {
   LogOut,
   KeyRound,
   Shield,
+  Bot,
 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useCurrentUser } from '@/hooks/use-current-user';
@@ -59,6 +60,12 @@ const ALL_NAV_ITEMS: NavItem[] = [
     href: '/dashboards',
     icon: <LayoutDashboard className="h-5 w-5" />,
     module: 'dashboards',
+  },
+  {
+    label: 'AI Reports',
+    href: '/ai-reports',
+    icon: <Bot className="h-5 w-5" />,
+    module: 'ai_agent',
   },
   {
     label: 'AI Chat',

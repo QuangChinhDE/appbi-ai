@@ -7,7 +7,11 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from fastapi import HTTPException
 
 from app.clients.bi_client import bi_client
+from app.config import settings
 from app.schemas.agent import AgentBuildEvent, AgentBuildRequest, AgentChartPlan, AgentPlanResponse
+from app.services.dashboard_composer import compose_dashboard_blueprint
+from app.services.insight_generator import generate_insight_report
+from app.services.output_language import is_vietnamese
 
 
 LEVEL_ORDER = {"none": 0, "view": 1, "edit": 2, "full": 3}
@@ -15,6 +19,15 @@ LEVEL_ORDER = {"none": 0, "view": 1, "edit": 2, "full": 3}
 
 def _has_level(permissions: Dict[str, str], module: str, required: str) -> bool:
     return LEVEL_ORDER.get(permissions.get(module, "none"), 0) >= LEVEL_ORDER[required]
+
+
+def _runtime_metadata() -> Dict[str, Any]:
+    return {
+        "provider": settings.active_llm_provider,
+        "model": settings.active_llm_model,
+        "fallback_chain": settings.active_llm_fallback_chain,
+        "timeout_seconds": settings.active_llm_timeout_seconds,
+    }
 
 
 def _event(
@@ -25,6 +38,7 @@ def _event(
     chart_id: int | None = None,
     dashboard_id: int | None = None,
     dashboard_url: str | None = None,
+    report_url: str | None = None,
     error: str | None = None,
 ) -> str:
     payload = AgentBuildEvent(
@@ -34,6 +48,7 @@ def _event(
         chart_id=chart_id,
         dashboard_id=dashboard_id,
         dashboard_url=dashboard_url,
+        report_url=report_url,
         error=error,
     )
     return json.dumps(payload.model_dump(), ensure_ascii=False) + "\n"
@@ -170,6 +185,7 @@ async def build_dashboard_stream(
     request: AgentBuildRequest,
     token: str,
 ) -> AsyncGenerator[str, None]:
+    vi = is_vietnamese(request.brief.output_language if hasattr(request.brief, "output_language") else None)
     perms_payload = await bi_client.get_my_permissions(token)
     permissions = perms_payload.get("permissions", {})
 
@@ -180,22 +196,24 @@ async def build_dashboard_stream(
     if not _has_level(permissions, "explore_charts", "edit"):
         raise HTTPException(status_code=403, detail="Requires explore_charts >= edit")
 
-    await _patch_run(request, token, {"status": "building"})
-    yield _event("phase", "validate", "Validated permissions and build inputs.")
+    await _patch_run(request, token, {"status": "planning_charts"})
+    yield _event("phase", "validate", "Đã xác thực quyền và dữ liệu đầu vào để build." if vi else "Validated permissions and build inputs.")
 
     layouts = _build_layouts(request.plan)
     created_charts: List[Dict[str, Any]] = []
     run_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
 
-    yield _event("phase", "preflight", "Running chart preflight checks before creating resources.")
+    await _patch_run(request, token, {"status": "planning_charts"})
+    yield _event("phase", "preflight", "Đang chạy kiểm tra preflight cho chart trước khi tạo tài nguyên." if vi else "Running chart preflight checks before creating resources.")
     preflight_failures = 0
     for chart in request.plan.charts:
         validation_error = _preflight_validate_chart(chart)
         if validation_error:
             preflight_failures += 1
-            yield _event("chart_failed", "preflight", f"Skipped '{chart.title}' during preflight.", error=validation_error)
+            yield _event("chart_failed", "preflight", f"Đã bỏ qua '{chart.title}' ở bước preflight." if vi else f"Skipped '{chart.title}' during preflight.", error=validation_error)
 
-    yield _event("phase", "create_charts", "Creating charts from the approved report plan.")
+    await _patch_run(request, token, {"status": "building_dashboard"})
+    yield _event("phase", "create_charts", "Đang tạo chart từ kế hoạch báo cáo đã được duyệt." if vi else "Creating charts from the approved report plan.")
     for chart in request.plan.charts:
         validation_error = _preflight_validate_chart(chart)
         if validation_error:
@@ -209,14 +227,16 @@ async def build_dashboard_stream(
             created_charts.append(
                 {
                     "key": chart.key,
+                    "chart": chart.model_dump(mode="json"),
                     "chart_id": created["id"],
                     "layout": layouts.get(chart.key, {"x": 0, "y": 0, "w": 6, "h": 4}),
                     "title": chart.title,
+                    "data_rows": chart_data.get("data") or [],
                 }
             )
-            yield _event("chart_created", "create_charts", f"Created chart '{chart.title}'.", chart_id=created["id"])
+            yield _event("chart_created", "create_charts", f"Đã tạo chart '{chart.title}'." if vi else f"Created chart '{chart.title}'.", chart_id=created["id"])
         except Exception as exc:
-            yield _event("chart_failed", "create_charts", f"Failed to create chart '{chart.title}'.", error=str(exc))
+            yield _event("chart_failed", "create_charts", f"Không tạo được chart '{chart.title}'." if vi else f"Failed to create chart '{chart.title}'.", error=str(exc))
 
     if not created_charts:
         await _patch_run(
@@ -229,10 +249,11 @@ async def build_dashboard_stream(
                 "result_summary_json": {"created_chart_count": 0, "preflight_failures": preflight_failures},
             },
         )
-        yield _event("error", "create_charts", "All charts failed. Dashboard was not created.", error="No charts were created successfully.")
+        yield _event("error", "create_charts", "Tất cả chart đều lỗi nên chưa tạo được dashboard." if vi else "All charts failed. Dashboard was not created.", error="No charts were created successfully." if not vi else "Không có chart nào được tạo thành công.")
         return
 
-    yield _event("phase", "assemble_dashboard", "Creating or updating the dashboard and attaching charts.")
+    await _patch_run(request, token, {"status": "building_dashboard"})
+    yield _event("phase", "assemble_dashboard", "Đang tạo hoặc cập nhật dashboard và gắn các chart vào đó." if vi else "Creating or updating the dashboard and attaching charts.")
     dashboard = await _resolve_target_dashboard(request, token, run_suffix)
     dashboard_id = dashboard["id"]
 
@@ -255,6 +276,15 @@ async def build_dashboard_stream(
     if dashboard_chart_layouts:
         await bi_client.update_dashboard_layout(dashboard_id, dashboard_chart_layouts, token)
 
+    await _patch_run(request, token, {"status": "generating_insights"})
+    yield _event("phase", "generating_insights", "Đang đọc dữ liệu chart đã build và viết insight dạng narrative." if vi else "Reading the built charts and drafting narrative insights.")
+    insight_report = generate_insight_report(request.plan, created_charts)
+
+    await _patch_run(request, token, {"status": "composing_report"})
+    yield _event("phase", "composing_report", "Đang ghép report reader với tóm tắt điều hành, phát hiện theo section và caption cho chart." if vi else "Composing the AI report reader with executive summary, section findings, and chart captions.")
+    dashboard_blueprint = compose_dashboard_blueprint(request.plan, insight_report)
+    report_url = f"/ai-reports/{request.report_spec_id}" if request.report_spec_id else None
+
     await _patch_run(
         request,
         token,
@@ -266,6 +296,21 @@ async def build_dashboard_stream(
                 "created_chart_count": len(created_charts),
                 "preflight_failures": preflight_failures,
                 "build_mode": request.build_mode,
+                "executive_summary": insight_report.executive_summary,
+                "top_findings": insight_report.top_findings,
+                "headline_risks": insight_report.headline_risks,
+                "priority_actions": insight_report.priority_actions,
+                "insight_report": insight_report.model_dump(mode="json"),
+                "dashboard_blueprint": dashboard_blueprint.model_dump(mode="json"),
+                "planning_runtime": request.plan.runtime.model_dump(mode="json") if request.plan.runtime else None,
+                "build_runtime": _runtime_metadata(),
+                "chart_data_summary": {
+                    item["key"]: {
+                        "chart_id": item["chart_id"],
+                        "row_count": len(item.get("data_rows") or []),
+                    }
+                    for item in created_charts
+                },
             },
         },
     )
@@ -273,14 +318,16 @@ async def build_dashboard_stream(
     yield _event(
         "dashboard_created",
         "assemble_dashboard",
-        f"Dashboard '{request.plan.dashboard_title}' is ready.",
+        f"Dashboard '{request.plan.dashboard_title}' đã sẵn sàng." if vi else f"Dashboard '{request.plan.dashboard_title}' is ready.",
         dashboard_id=dashboard_id,
         dashboard_url=f"/dashboards/{dashboard_id}",
+        report_url=report_url,
     )
     yield _event(
         "done",
         "done",
-        "AI Agent finished building the dashboard.",
+        "AI Agent đã hoàn tất việc dựng dashboard." if vi else "AI Agent finished building the dashboard.",
         dashboard_id=dashboard_id,
         dashboard_url=f"/dashboards/{dashboard_id}",
+        report_url=report_url,
     )

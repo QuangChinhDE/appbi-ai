@@ -9,6 +9,7 @@ import { Plus, Database, Loader2, Calendar, ChevronRight, Trash2, Search } from 
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { 
   useWorkspaces, 
@@ -26,6 +27,12 @@ export default function DatasetWorkspacesPage() {
   const canEdit = hasPermission(permData?.permissions, 'workspaces', 'edit');
   const createMutation = useCreateWorkspace();
   const deleteMutation = useDeleteWorkspace();
+  const workspaceItems = workspaces ?? [];
+  const documentedWorkspaces = workspaceItems.filter((workspace) => Boolean(workspace.description?.trim())).length;
+  const updatedThisWeek = workspaceItems.filter((workspace) => {
+    const updatedAt = new Date(workspace.updated_at).getTime();
+    return Number.isFinite(updatedAt) && Date.now() - updatedAt <= 7 * 24 * 60 * 60 * 1000;
+  }).length;
   const [workspaceToDelete, setWorkspaceToDelete] = useState<{ id: number; name: string } | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingWorkspace, setIsDeletingWorkspace] = useState(false);
@@ -89,6 +96,31 @@ export default function DatasetWorkspacesPage() {
       <PageListLayout
         title="Dataset Workspaces"
         description="Table-based datasets for exploring and analyzing data from your datasources"
+        overview={(
+          <ModuleOverview
+            icon={Database}
+            title="Prepare reusable table workspaces before you explore or automate"
+            description="Dataset Workspaces keep synced tables, lightweight transformations, and table context in one place. This is the staging area for Explore, AI descriptions, and AI Reports."
+            badges={['Tables', 'Transformations', 'AI context']}
+            stats={[
+              {
+                label: 'Workspaces',
+                value: workspaceItems.length,
+                helper: 'Named workspaces available for table-based analysis',
+              },
+              {
+                label: 'Documented',
+                value: documentedWorkspaces,
+                helper: 'Workspaces that already carry a written description',
+              },
+              {
+                label: 'Updated 7d',
+                value: updatedThisWeek,
+                helper: 'Workspaces touched in the last seven days',
+              },
+            ]}
+          />
+        )}
         action={canEdit ? (
           <button
             onClick={() => setIsCreateModalOpen(true)}

@@ -2,16 +2,16 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Loader2, LayoutDashboard, Clock, Eye, Trash2, Search, Bot, History, Sparkles } from 'lucide-react';
-import { useDashboards, useCreateDashboard, useDeleteDashboard } from '@/hooks/use-dashboards';
-import { useAgentReportSpecs } from '@/hooks/use-agent-report-specs';
-import { DashboardList } from '@/components/dashboards/DashboardList';
-import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
-import { PageListLayout } from '@/components/common/PageListLayout';
-import { DashboardAgentWizard } from '@/components/ai-agent/DashboardAgentWizard';
+import { Plus, Loader2, LayoutDashboard, Clock, Eye, Trash2, Search } from 'lucide-react';
 import { toast } from 'sonner';
+
+import { useDashboards, useCreateDashboard, useDeleteDashboard } from '@/hooks/use-dashboards';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import { DashboardList } from '@/components/dashboards/DashboardList';
+import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
+import { ModuleOverview } from '@/components/common/ModuleOverview';
+import { PageListLayout } from '@/components/common/PageListLayout';
 
 export default function DashboardsPage() {
   const router = useRouter();
@@ -21,22 +21,24 @@ export default function DashboardsPage() {
   const [dashboardToDelete, setDashboardToDelete] = useState<{ id: number; name: string } | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingDashboard, setIsDeletingDashboard] = useState(false);
-  const [isAgentOpen, setIsAgentOpen] = useState(false);
-  const [agentSpecId, setAgentSpecId] = useState<number | null>(null);
 
   const { data: dashboards, isLoading } = useDashboards();
   const { data: permData } = usePermissions();
   const canEdit = hasPermission(permData?.permissions, 'dashboards', 'edit');
-  const canUseAgent =
-    hasPermission(permData?.permissions, 'ai_agent', 'edit') &&
-    hasPermission(permData?.permissions, 'dashboards', 'edit') &&
-    hasPermission(permData?.permissions, 'explore_charts', 'edit');
-  const { data: savedReports = [] } = useAgentReportSpecs(canUseAgent);
   const createMutation = useCreateDashboard();
   const deleteMutation = useDeleteDashboard();
+  const dashboardItems = dashboards ?? [];
+  const totalChartLinks = dashboardItems.reduce(
+    (sum, dashboard) => sum + (dashboard.dashboard_charts?.length || 0),
+    0,
+  );
+  const dashboardsUpdatedThisWeek = dashboardItems.filter((dashboard) => {
+    const updatedAt = new Date(dashboard.updated_at).getTime();
+    return Number.isFinite(updatedAt) && Date.now() - updatedAt <= 7 * 24 * 60 * 60 * 1000;
+  }).length;
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreate = async (event: React.FormEvent) => {
+    event.preventDefault();
     try {
       await createMutation.mutateAsync({
         name: newDashboardName,
@@ -46,12 +48,12 @@ export default function DashboardsPage() {
       setNewDashboardDescription('');
       setIsCreating(false);
     } catch (error: any) {
-      toast.error(`Không thể tạo: ${error.message}`);
+      toast.error(`Could not create dashboard: ${error.message}`);
     }
   };
 
   const handleDelete = (id: number) => {
-    const dashboard = dashboards?.find(d => d.id === id);
+    const dashboard = dashboards?.find((item) => item.id === id);
     if (!dashboard) return;
     setDashboardToDelete({ id: dashboard.id, name: dashboard.name });
     setDeleteConstraints(null);
@@ -68,7 +70,7 @@ export default function DashboardsPage() {
       if (detail?.constraints) {
         setDeleteConstraints(detail.constraints);
       } else {
-        toast.error(`Không thể xóa: ${detail || error.message}`);
+        toast.error(`Could not delete dashboard: ${detail || error.message}`);
         setDashboardToDelete(null);
       }
     } finally {
@@ -81,164 +83,109 @@ export default function DashboardsPage() {
       <PageListLayout
         title="Dashboards"
         description={`${dashboards?.length ?? 0} dashboard${dashboards?.length !== 1 ? 's' : ''}`}
+        overview={(
+          <ModuleOverview
+            icon={LayoutDashboard}
+            title="Track the dashboards your team can refine and share"
+            description="Dashboards are the polished output layer of the product. Use this module to manage layouts, reopen saved boards, and continue manual edits after AI Reports or Explore have produced a draft."
+            badges={['Layouts', 'Manual editing', 'Sharing']}
+            stats={[
+              {
+                label: 'Saved dashboards',
+                value: dashboardItems.length,
+                helper: 'Boards currently available to open and refine',
+              },
+              {
+                label: 'Charts placed',
+                value: totalChartLinks,
+                helper: 'Total chart slots already attached across dashboards',
+              },
+              {
+                label: 'Updated 7d',
+                value: dashboardsUpdatedThisWeek,
+                helper: 'Dashboards touched in the last seven days',
+              },
+            ]}
+          />
+        )}
         action={canEdit ? (
           <button
             onClick={() => setIsCreating(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+            className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700"
           >
-            <Plus className="w-4 h-4" />
+            <Plus className="h-4 w-4" />
             New Dashboard
           </button>
         ) : undefined}
         isLoading={isLoading}
-        loadingText="Loading dashboards…"
-        searchPlaceholder="Search dashboards…"
+        loadingText="Loading dashboards..."
+        searchPlaceholder="Search dashboards..."
         defaultView="grid"
       >
         {({ viewMode, filterText }) => {
-          const filtered = (dashboards ?? []).filter(d =>
-            d.name.toLowerCase().includes(filterText.toLowerCase()) ||
-            d.description?.toLowerCase().includes(filterText.toLowerCase())
+          const filtered = (dashboards ?? []).filter((dashboard) =>
+            dashboard.name.toLowerCase().includes(filterText.toLowerCase()) ||
+            dashboard.description?.toLowerCase().includes(filterText.toLowerCase()),
           );
 
           return (
             <div className="space-y-6">
-              {canUseAgent && (
-                <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                    <div className="max-w-3xl">
-                      <div className="mb-3 flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
-                          <Bot className="w-5 h-5" />
-                        </div>
-                        <span className="text-xs font-semibold uppercase tracking-[0.2em]">AI Agent</span>
-                      </div>
-                      <h2 className="text-xl font-semibold text-gray-900">Turn a business brief into a full dashboard</h2>
-                      <p className="mt-2 text-sm text-gray-600">
-                        Separate from AI Chat: choose the tables, generate a draft, review and edit it, then let the Agent build the dashboard.
-                      </p>
-                      <div className="mt-4 flex flex-wrap gap-2">
-                        <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">Plan first</span>
-                        <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">Review and edit</span>
-                        <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">Build dashboard</span>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => {
-                        setAgentSpecId(null);
-                        setIsAgentOpen(true);
-                      }}
-                      className="inline-flex items-center justify-center gap-2 rounded-md bg-blue-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-blue-700"
-                    >
-                      <Bot className="w-4 h-4" />
-                      Plan with AI Agent
-                    </button>
-                  </div>
-                  {savedReports.length > 0 && (
-                    <div className="mt-5 border-t border-gray-100 pt-5">
-                      <div className="mb-3 flex items-center gap-2 text-gray-900">
-                        <History className="w-4 h-4 text-blue-600" />
-                        <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-gray-500">Saved AI Reports</h3>
-                      </div>
-                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                        {savedReports.slice(0, 6).map((spec) => (
-                          <div key={spec.id} className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <p className="font-semibold text-gray-900">{spec.name}</p>
-                                <p className="mt-1 text-xs uppercase tracking-[0.16em] text-gray-500">{spec.status}</p>
-                              </div>
-                              <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-medium text-blue-700">
-                                {spec.latest_dashboard_id ? `Dashboard #${spec.latest_dashboard_id}` : 'Draft only'}
-                              </span>
-                            </div>
-                            {spec.description && (
-                              <p className="mt-3 line-clamp-3 text-sm text-gray-600">{spec.description}</p>
-                            )}
-                            <div className="mt-4 flex items-center justify-between text-xs text-gray-500">
-                              <span>{spec.selected_tables_snapshot?.length ?? 0} tables</span>
-                              <span>{spec.last_run_at ? new Date(spec.last_run_at).toLocaleDateString('vi-VN') : 'Not run yet'}</span>
-                            </div>
-                            <div className="mt-4 flex gap-2">
-                              <button
-                                onClick={() => {
-                                  setAgentSpecId(spec.id);
-                                  setIsAgentOpen(true);
-                                }}
-                                className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-                              >
-                                <Sparkles className="w-4 h-4" />
-                                Open report
-                              </button>
-                              {spec.latest_dashboard_id && (
-                                <button
-                                  onClick={() => router.push(`/dashboards/${spec.latest_dashboard_id}`)}
-                                  className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
-                                >
-                                  <Eye className="w-4 h-4" />
-                                  Open dashboard
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
               {(!dashboards || dashboards.length === 0) ? (
                 <DashboardList dashboards={[]} onDelete={handleDelete} />
               ) : filtered.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-48 text-center">
-                  <Search className="w-8 h-8 text-gray-300 mb-2" />
-                  <p className="text-sm text-gray-500">No dashboards matching "<strong>{filterText}</strong>"</p>
+                <div className="flex h-48 flex-col items-center justify-center text-center">
+                  <Search className="mb-2 h-8 w-8 text-gray-300" />
+                  <p className="text-sm text-gray-500">
+                    No dashboards matching "<strong>{filterText}</strong>"
+                  </p>
                 </div>
               ) : viewMode === 'grid' ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                  {filtered.map(dashboard => {
+                <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
+                  {filtered.map((dashboard) => {
                     const chartCount = dashboard.dashboard_charts?.length || 0;
                     const createdAt = new Date(dashboard.created_at).toLocaleDateString('vi-VN', {
-                      day: '2-digit', month: '2-digit', year: 'numeric',
+                      day: '2-digit',
+                      month: '2-digit',
+                      year: 'numeric',
                     });
+
                     return (
                       <div
                         key={dashboard.id}
-                        className="bg-white rounded-lg border border-gray-200 hover:shadow-md transition-all group flex flex-col"
+                        className="group flex flex-col rounded-lg border border-gray-200 bg-white transition-all hover:shadow-md"
                       >
-                        <div className="p-5 flex-1">
-                          <div className="flex items-start justify-between mb-3">
-                            <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
-                              <LayoutDashboard className="w-5 h-5 text-blue-600" />
+                        <div className="flex-1 p-5">
+                          <div className="mb-3 flex items-start justify-between">
+                            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-blue-50">
+                              <LayoutDashboard className="h-5 w-5 text-blue-600" />
                             </div>
                             {getResourcePermissions(dashboard.user_permission).canDelete && (
-                            <button
-                              onClick={() => handleDelete(dashboard.id)}
-                              className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 transition-all p-1 rounded"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                              <button
+                                onClick={() => handleDelete(dashboard.id)}
+                                className="rounded p-1 text-gray-400 opacity-0 transition-all hover:text-red-600 group-hover:opacity-100"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
                             )}
                           </div>
-                          <h3 className="font-semibold text-gray-900 text-sm truncate mb-1">{dashboard.name}</h3>
+                          <h3 className="mb-1 truncate text-sm font-semibold text-gray-900">{dashboard.name}</h3>
                           {dashboard.description && (
-                            <p className="text-xs text-gray-500 line-clamp-2 mb-2">{dashboard.description}</p>
+                            <p className="mb-2 line-clamp-2 text-xs text-gray-500">{dashboard.description}</p>
                           )}
-                          <div className="flex items-center justify-between text-xs text-gray-400 mt-2">
+                          <div className="mt-2 flex items-center justify-between text-xs text-gray-400">
                             <span>{chartCount} chart{chartCount !== 1 ? 's' : ''}</span>
                             <span className="flex items-center gap-1">
-                              <Clock className="w-3 h-3" />
+                              <Clock className="h-3 w-3" />
                               {createdAt}
                             </span>
                           </div>
                         </div>
-                        <div className="px-5 py-3 border-t bg-gray-50 rounded-b-lg flex justify-end">
+                        <div className="flex justify-end rounded-b-lg border-t bg-gray-50 px-5 py-3">
                           <button
                             onClick={() => router.push(`/dashboards/${dashboard.id}`)}
-                            className="flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 font-medium transition-colors"
+                            className="flex items-center gap-1.5 text-xs font-medium text-blue-600 transition-colors hover:text-blue-800"
                           >
-                            <Eye className="w-3.5 h-3.5" />
+                            <Eye className="h-3.5 w-3.5" />
                             Open
                           </button>
                         </div>
@@ -258,41 +205,44 @@ export default function DashboardsPage() {
         }}
       </PageListLayout>
 
-      {/* Create Form Modal */}
       {isCreating && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="mx-4 w-full max-w-md rounded-lg bg-white shadow-xl">
             <form onSubmit={handleCreate}>
-              <div className="p-6 border-b border-gray-200">
+              <div className="border-b border-gray-200 p-6">
                 <h2 className="text-xl font-semibold">Create New Dashboard</h2>
               </div>
-              <div className="p-6 space-y-4">
+              <div className="space-y-4 p-6">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Dashboard Name *</label>
+                  <label className="mb-1 block text-sm font-medium text-gray-700">Dashboard Name *</label>
                   <input
                     type="text"
                     value={newDashboardName}
-                    onChange={(e) => setNewDashboardName(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    onChange={(event) => setNewDashboardName(event.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     required
                     autoFocus
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                  <label className="mb-1 block text-sm font-medium text-gray-700">Description</label>
                   <textarea
                     value={newDashboardDescription}
-                    onChange={(e) => setNewDashboardDescription(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    onChange={(event) => setNewDashboardDescription(event.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     rows={3}
                   />
                 </div>
               </div>
-              <div className="flex justify-end gap-3 p-6 border-t border-gray-200">
+              <div className="flex justify-end gap-3 border-t border-gray-200 p-6">
                 <button
                   type="button"
-                  onClick={() => { setIsCreating(false); setNewDashboardName(''); setNewDashboardDescription(''); }}
-                  className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                  onClick={() => {
+                    setIsCreating(false);
+                    setNewDashboardName('');
+                    setNewDashboardDescription('');
+                  }}
+                  className="rounded-md border border-gray-300 px-4 py-2 transition-colors hover:bg-gray-50"
                   disabled={createMutation.isPending}
                 >
                   Cancel
@@ -300,9 +250,9 @@ export default function DashboardsPage() {
                 <button
                   type="submit"
                   disabled={createMutation.isPending || !newDashboardName}
-                  className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {createMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {createMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
                   Create
                 </button>
               </div>
@@ -318,15 +268,12 @@ export default function DashboardsPage() {
           constraints={deleteConstraints}
           isDeleting={isDeletingDashboard}
           onConfirm={confirmDelete}
-          onClose={() => { setDashboardToDelete(null); setDeleteConstraints(null); }}
+          onClose={() => {
+            setDashboardToDelete(null);
+            setDeleteConstraints(null);
+          }}
         />
       )}
-
-      <DashboardAgentWizard
-        isOpen={isAgentOpen}
-        onClose={() => setIsAgentOpen(false)}
-        initialSpecId={agentSpecId}
-      />
     </>
   );
 }

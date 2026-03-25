@@ -29,6 +29,10 @@ export const agentReportSpecsApi = {
     return response.data;
   },
 
+  remove: async (id: number): Promise<void> => {
+    await apiClient.delete(`/agent-report-specs/${id}`);
+  },
+
   listRuns: async (id: number): Promise<AgentReportRun[]> => {
     const response = await apiClient.get(`/agent-report-specs/${id}/runs`);
     return response.data;

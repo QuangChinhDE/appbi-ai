@@ -19,8 +19,8 @@ def _make_openai_client(base_url: str | None = None, api_key: str | None = None)
 
 
 def _build_provider_chain() -> List[Dict[str, str]]:
-    chain = [{"provider": settings.llm_provider, "model": settings.llm_model}]
-    for entry in settings.fallback_chain:
+    chain = [{"provider": settings.active_llm_provider, "model": settings.active_llm_model}]
+    for entry in settings.active_llm_fallback_chain:
         if entry not in chain:
             chain.append(entry)
     return chain
@@ -63,7 +63,7 @@ async def _call_openai_json(
             response_format={"type": "json_object"},
             temperature=0.2,
             max_tokens=1800,
-            timeout=settings.llm_timeout_seconds,
+            timeout=settings.active_llm_timeout_seconds,
         )
         content = response.choices[0].message.content or "{}"
         return json.loads(content)
