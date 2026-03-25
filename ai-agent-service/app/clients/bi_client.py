@@ -36,12 +36,25 @@ class BIClient:
         self,
         workspace_id: int,
         table_id: int,
-        limit: int = 20,
+        limit: int = 40,
         token: str = "",
     ) -> Dict[str, Any]:
         response = await self._http.post(
             f"{self._base}/dataset-workspaces/{workspace_id}/tables/{table_id}/preview",
             json={"limit": limit},
+            headers=self._auth_headers(token),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def get_table_description(
+        self,
+        workspace_id: int,
+        table_id: int,
+        token: str,
+    ) -> Dict[str, Any]:
+        response = await self._http.get(
+            f"{self._base}/dataset-workspaces/{workspace_id}/tables/{table_id}/description",
             headers=self._auth_headers(token),
         )
         response.raise_for_status()
@@ -94,6 +107,22 @@ class BIClient:
         response.raise_for_status()
         return response.json()
 
+    async def update_dashboard(
+        self,
+        dashboard_id: int,
+        *,
+        name: Optional[str],
+        description: Optional[str],
+        token: str,
+    ) -> Dict[str, Any]:
+        response = await self._http.put(
+            f"{self._base}/dashboards/{dashboard_id}",
+            json={"name": name, "description": description},
+            headers=self._auth_headers(token),
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def add_chart_to_dashboard(
         self,
         dashboard_id: int,
@@ -104,6 +133,19 @@ class BIClient:
         response = await self._http.post(
             f"{self._base}/dashboards/{dashboard_id}/charts",
             json={"chart_id": chart_id, "layout": layout, "parameters": {}},
+            headers=self._auth_headers(token),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def remove_chart_from_dashboard(
+        self,
+        dashboard_id: int,
+        chart_id: int,
+        token: str,
+    ) -> Dict[str, Any]:
+        response = await self._http.delete(
+            f"{self._base}/dashboards/{dashboard_id}/charts/{chart_id}",
             headers=self._auth_headers(token),
         )
         response.raise_for_status()
@@ -126,6 +168,22 @@ class BIClient:
     async def get_dashboard(self, dashboard_id: int, token: str) -> Dict[str, Any]:
         response = await self._http.get(
             f"{self._base}/dashboards/{dashboard_id}",
+            headers=self._auth_headers(token),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def update_agent_report_run(
+        self,
+        *,
+        spec_id: int,
+        run_id: int,
+        payload: Dict[str, Any],
+        token: str,
+    ) -> Dict[str, Any]:
+        response = await self._http.patch(
+            f"{self._base}/agent-report-specs/{spec_id}/runs/{run_id}",
+            json=payload,
             headers=self._auth_headers(token),
         )
         response.raise_for_status()

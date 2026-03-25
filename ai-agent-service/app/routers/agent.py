@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -12,7 +13,7 @@ from app.clients.bi_client import bi_client
 from app.config import settings
 from app.schemas.agent import AgentBriefRequest, AgentBuildRequest, AgentPlanResponse
 from app.services.builder import build_dashboard_stream
-from app.services.planner import build_agent_plan, load_table_contexts
+from app.services.planner import generate_agent_plan, generate_agent_plan_stream
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -68,9 +69,46 @@ async def generate_plan(
     if payload.get("ai_agent_level", "none") not in ("edit", "full"):
         raise HTTPException(status_code=403, detail="Requires ai_agent >= edit")
     await _require_agent_permissions(token)
+    return await generate_agent_plan(brief, token)
 
-    contexts = await load_table_contexts(brief, token)
-    return build_agent_plan(brief, contexts)
+
+@router.post("/plan/stream")
+async def generate_plan_stream(
+    brief: AgentBriefRequest,
+    auth_ctx: tuple[dict, str] = Depends(_require_auth_raw),
+):
+    payload, token = auth_ctx
+    if payload.get("ai_agent_level", "none") not in ("edit", "full"):
+        raise HTTPException(status_code=403, detail="Requires ai_agent >= edit")
+    await _require_agent_permissions(token)
+
+    async def generate():
+        try:
+            async for event in generate_agent_plan_stream(brief, token):
+                yield event
+        except HTTPException as exc:
+            yield json.dumps(
+                {
+                    "type": "error",
+                    "phase": "plan",
+                    "message": exc.detail,
+                    "error": exc.detail,
+                },
+                ensure_ascii=False,
+            ) + "\n"
+        except Exception as exc:
+            logger.exception("Agent planning failed")
+            yield json.dumps(
+                {
+                    "type": "error",
+                    "phase": "plan",
+                    "message": "Agent planning failed",
+                    "error": str(exc),
+                },
+                ensure_ascii=False,
+            ) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
 @router.post("/build/stream")
@@ -88,6 +126,20 @@ async def build_dashboard(
             async for event in build_dashboard_stream(request, token):
                 yield event
         except HTTPException as exc:
+            if request.report_spec_id and request.report_run_id:
+                try:
+                    await bi_client.update_agent_report_run(
+                        spec_id=request.report_spec_id,
+                        run_id=request.report_run_id,
+                        payload={
+                            "status": "failed",
+                            "error": exc.detail,
+                            "finished_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                        token=token,
+                    )
+                except Exception:
+                    logger.exception("Failed to mark AI report run as failed after HTTPException")
             yield json.dumps(
                 {
                     "type": "error",
@@ -99,6 +151,20 @@ async def build_dashboard(
             ) + "\n"
         except Exception as exc:
             logger.exception("Agent build failed")
+            if request.report_spec_id and request.report_run_id:
+                try:
+                    await bi_client.update_agent_report_run(
+                        spec_id=request.report_spec_id,
+                        run_id=request.report_run_id,
+                        payload={
+                            "status": "failed",
+                            "error": str(exc),
+                            "finished_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                        token=token,
+                    )
+                except Exception:
+                    logger.exception("Failed to mark AI report run as failed after exception")
             yield json.dumps(
                 {
                     "type": "error",

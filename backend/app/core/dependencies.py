@@ -79,6 +79,26 @@ async def get_current_user(
 LEVEL_ORDER = {"none": 0, "view": 1, "edit": 2, "full": 3}
 
 
+def _normalize_permissions(user: User) -> dict:
+    perms: dict = user.permissions or {}
+    normalized = dict(perms)
+
+    if "ai_agent" not in normalized:
+        ai_chat_level = normalized.get("ai_chat", "none")
+        dashboards_level = normalized.get("dashboards", "none")
+        charts_level = normalized.get("explore_charts", "none")
+        if (
+            LEVEL_ORDER.get(ai_chat_level, 0) >= LEVEL_ORDER["edit"]
+            and LEVEL_ORDER.get(dashboards_level, 0) >= LEVEL_ORDER["edit"]
+            and LEVEL_ORDER.get(charts_level, 0) >= LEVEL_ORDER["edit"]
+        ):
+            normalized["ai_agent"] = "edit"
+        else:
+            normalized["ai_agent"] = "none"
+
+    return normalized
+
+
 def require_permission(module: str, min_level: str = "view"):
     """
     FastAPI dependency factory for module-level permission checks.
@@ -90,7 +110,7 @@ def require_permission(module: str, min_level: str = "view"):
     Admins with settings=full always pass any non-settings check.
     """
     async def _check(user: User = Depends(get_current_user)) -> User:
-        perms: dict = user.permissions or {}
+        perms = _normalize_permissions(user)
         user_level = perms.get(module, "none")
         if LEVEL_ORDER.get(user_level, 0) < LEVEL_ORDER.get(min_level, 0):
             raise HTTPException(
@@ -131,7 +151,7 @@ def get_effective_permission(db: Session, user: User, resource, module: str) -> 
       shared as 'view'          → view
       else                       → none
     """
-    perms: dict = user.permissions or {}
+    perms = _normalize_permissions(user)
     module_level = perms.get(module, "none")
 
     if module_level == "none":

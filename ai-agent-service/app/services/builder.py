@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any, AsyncGenerator, Dict, List
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from fastapi import HTTPException
 
@@ -39,12 +39,27 @@ def _event(
     return json.dumps(payload.model_dump(), ensure_ascii=False) + "\n"
 
 
+async def _patch_run(
+    request: AgentBuildRequest,
+    token: str,
+    payload: Dict[str, Any],
+) -> None:
+    if not request.report_spec_id or not request.report_run_id:
+        return
+    await bi_client.update_agent_report_run(
+        spec_id=request.report_spec_id,
+        run_id=request.report_run_id,
+        payload=payload,
+        token=token,
+    )
+
+
 def _chart_height(chart_type: str) -> int:
     if chart_type == "KPI":
         return 2
     if chart_type == "TABLE":
-        return 5
-    if chart_type == "PIE":
+        return 6
+    if chart_type in {"PIE", "BAR", "LINE", "AREA", "TIME_SERIES"}:
         return 4
     return 4
 
@@ -54,13 +69,14 @@ def _build_layouts(plan: AgentPlanResponse) -> Dict[str, Dict[str, int]]:
     current_y = 0
     chart_map = {chart.key: chart for chart in plan.charts}
 
-    for section in plan.sections:
+    for section in sorted(plan.sections, key=lambda item: item.priority):
         section_charts = [chart_map[key] for key in section.chart_keys if key in chart_map]
         if not section_charts:
             continue
 
         kpis = [chart for chart in section_charts if chart.chart_type == "KPI"]
-        analytics = [chart for chart in section_charts if chart.chart_type != "KPI"]
+        visuals = [chart for chart in section_charts if chart.chart_type not in {"KPI", "TABLE"}]
+        tables = [chart for chart in section_charts if chart.chart_type == "TABLE"]
 
         if kpis:
             width = max(3, 12 // len(kpis))
@@ -68,19 +84,22 @@ def _build_layouts(plan: AgentPlanResponse) -> Dict[str, Dict[str, int]]:
                 layouts[chart.key] = {"x": index * width, "y": current_y, "w": width, "h": 2}
             current_y += 2
 
-        if len(analytics) == 1:
-            chart = analytics[0]
-            layouts[chart.key] = {"x": 0, "y": current_y, "w": 12, "h": _chart_height(chart.chart_type)}
-            current_y += _chart_height(chart.chart_type)
-        elif len(analytics) >= 2:
-            first, second, *rest = analytics
-            layouts[first.key] = {"x": 0, "y": current_y, "w": 6, "h": _chart_height(first.chart_type)}
-            layouts[second.key] = {"x": 6, "y": current_y, "w": 6, "h": _chart_height(second.chart_type)}
-            current_y += max(_chart_height(first.chart_type), _chart_height(second.chart_type))
-            for chart in rest:
+        if visuals:
+            row_y = current_y
+            for index, chart in enumerate(visuals[:2]):
+                layouts[chart.key] = {"x": index * 6, "y": row_y, "w": 6, "h": _chart_height(chart.chart_type)}
+            if len(visuals) == 1:
+                layouts[visuals[0].key] = {"x": 0, "y": row_y, "w": 12, "h": _chart_height(visuals[0].chart_type)}
+            current_y += max((_chart_height(chart.chart_type) for chart in visuals[:2]), default=0)
+            for chart in visuals[2:]:
                 height = _chart_height(chart.chart_type)
                 layouts[chart.key] = {"x": 0, "y": current_y, "w": 12, "h": height}
                 current_y += height
+
+        for chart in tables:
+            height = _chart_height(chart.chart_type)
+            layouts[chart.key] = {"x": 0, "y": current_y, "w": 12, "h": height}
+            current_y += height
 
         current_y += 1
 
@@ -95,11 +114,56 @@ def _normalize_chart_payload(chart: AgentChartPlan, run_suffix: str) -> Dict[str
     config["filters"] = config.get("filters") or []
     return {
         "name": f"{chart.title} [{run_suffix}]",
-        "description": chart.rationale,
+        "description": chart.why_this_chart or chart.rationale,
         "workspace_table_id": chart.workspace_table_id,
         "chart_type": chart.chart_type.upper(),
         "config": config,
     }
+
+
+def _preflight_validate_chart(chart: AgentChartPlan) -> Optional[str]:
+    role_config = (chart.config or {}).get("roleConfig") or {}
+    if chart.chart_type == "KPI" and not role_config.get("metrics"):
+        return "KPI chart is missing roleConfig.metrics"
+    if chart.chart_type == "TIME_SERIES":
+        if not role_config.get("timeField"):
+            return "Time series chart is missing roleConfig.timeField"
+        if not role_config.get("metrics"):
+            return "Time series chart is missing roleConfig.metrics"
+    if chart.chart_type in {"BAR", "LINE", "AREA", "GROUPED_BAR", "STACKED_BAR", "PIE"}:
+        if not role_config.get("dimension"):
+            return f"{chart.chart_type} chart is missing roleConfig.dimension"
+        if not role_config.get("metrics"):
+            return f"{chart.chart_type} chart is missing roleConfig.metrics"
+    if chart.chart_type == "TABLE" and not role_config.get("selectedColumns"):
+        return "Table chart is missing roleConfig.selectedColumns"
+    return None
+
+
+async def _resolve_target_dashboard(
+    request: AgentBuildRequest,
+    token: str,
+    run_suffix: str,
+) -> Dict[str, Any]:
+    if request.build_mode == "replace_existing" and request.target_dashboard_id:
+        dashboard = await bi_client.get_dashboard(request.target_dashboard_id, token)
+        for dashboard_chart in list(dashboard.get("dashboard_charts", [])):
+            await bi_client.remove_chart_from_dashboard(request.target_dashboard_id, dashboard_chart["chart_id"], token)
+        updated = await bi_client.update_dashboard(
+            request.target_dashboard_id,
+            name=request.plan.dashboard_title,
+            description=request.plan.dashboard_summary,
+            token=token,
+        )
+        return updated
+
+    suffix = run_suffix if request.build_mode in {"new_dashboard", "new_version"} else ""
+    name = request.plan.dashboard_title if not suffix else f"{request.plan.dashboard_title} [{suffix}]"
+    return await bi_client.create_dashboard(
+        name=name,
+        description=request.plan.dashboard_summary,
+        token=token,
+    )
 
 
 async def build_dashboard_stream(
@@ -116,14 +180,26 @@ async def build_dashboard_stream(
     if not _has_level(permissions, "explore_charts", "edit"):
         raise HTTPException(status_code=403, detail="Requires explore_charts >= edit")
 
-    yield _event("phase", "validate", "Validated permissions and selected plan.")
+    await _patch_run(request, token, {"status": "building"})
+    yield _event("phase", "validate", "Validated permissions and build inputs.")
 
     layouts = _build_layouts(request.plan)
     created_charts: List[Dict[str, Any]] = []
     run_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
 
-    yield _event("phase", "create_charts", "Creating charts from approved plan.")
+    yield _event("phase", "preflight", "Running chart preflight checks before creating resources.")
+    preflight_failures = 0
     for chart in request.plan.charts:
+        validation_error = _preflight_validate_chart(chart)
+        if validation_error:
+            preflight_failures += 1
+            yield _event("chart_failed", "preflight", f"Skipped '{chart.title}' during preflight.", error=validation_error)
+
+    yield _event("phase", "create_charts", "Creating charts from the approved report plan.")
+    for chart in request.plan.charts:
+        validation_error = _preflight_validate_chart(chart)
+        if validation_error:
+            continue
         payload = _normalize_chart_payload(chart, run_suffix)
         try:
             created = await bi_client.create_chart(token=token, **payload)
@@ -138,35 +214,26 @@ async def build_dashboard_stream(
                     "title": chart.title,
                 }
             )
-            yield _event(
-                "chart_created",
-                "create_charts",
-                f"Created chart '{chart.title}'.",
-                chart_id=created["id"],
-            )
+            yield _event("chart_created", "create_charts", f"Created chart '{chart.title}'.", chart_id=created["id"])
         except Exception as exc:
-            yield _event(
-                "chart_failed",
-                "create_charts",
-                f"Failed to create chart '{chart.title}'.",
-                error=str(exc),
-            )
+            yield _event("chart_failed", "create_charts", f"Failed to create chart '{chart.title}'.", error=str(exc))
 
     if not created_charts:
-        yield _event(
-            "error",
-            "create_charts",
-            "All charts failed. Dashboard was not created.",
-            error="No charts were created successfully.",
+        await _patch_run(
+            request,
+            token,
+            {
+                "status": "failed",
+                "error": "No charts were created successfully.",
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "result_summary_json": {"created_chart_count": 0, "preflight_failures": preflight_failures},
+            },
         )
+        yield _event("error", "create_charts", "All charts failed. Dashboard was not created.", error="No charts were created successfully.")
         return
 
-    yield _event("phase", "assemble_dashboard", "Creating dashboard shell and attaching charts.")
-    dashboard = await bi_client.create_dashboard(
-        name=f"{request.plan.dashboard_title} [{run_suffix}]",
-        description=request.plan.dashboard_summary,
-        token=token,
-    )
+    yield _event("phase", "assemble_dashboard", "Creating or updating the dashboard and attaching charts.")
+    dashboard = await _resolve_target_dashboard(request, token, run_suffix)
     dashboard_id = dashboard["id"]
 
     dashboard_chart_layouts: List[Dict[str, Any]] = []
@@ -188,10 +255,25 @@ async def build_dashboard_stream(
     if dashboard_chart_layouts:
         await bi_client.update_dashboard_layout(dashboard_id, dashboard_chart_layouts, token)
 
+    await _patch_run(
+        request,
+        token,
+        {
+            "status": "succeeded",
+            "dashboard_id": dashboard_id,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "result_summary_json": {
+                "created_chart_count": len(created_charts),
+                "preflight_failures": preflight_failures,
+                "build_mode": request.build_mode,
+            },
+        },
+    )
+
     yield _event(
         "dashboard_created",
         "assemble_dashboard",
-        f"Dashboard '{request.plan.dashboard_title}' created.",
+        f"Dashboard '{request.plan.dashboard_title}' is ready.",
         dashboard_id=dashboard_id,
         dashboard_url=f"/dashboards/{dashboard_id}",
     )

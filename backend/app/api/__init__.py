@@ -2,7 +2,7 @@
 API package initialization.
 """
 from fastapi import APIRouter
-from app.api import auth, datasources, charts, dashboards, dataset_workspaces, users, shares, permissions, anomaly, feedback, chat_sessions
+from app.api import auth, datasources, charts, dashboards, dataset_workspaces, users, shares, permissions, anomaly, feedback, chat_sessions, agent_report_specs
 from app.routers import semantic
 
 # Create main API router
@@ -29,5 +29,8 @@ api_router.include_router(feedback.router)
 
 # AI Chat session persistence
 api_router.include_router(chat_sessions.router)
+
+# AI Agent saved reports
+api_router.include_router(agent_report_specs.router)
 
 __all__ = ["api_router"]

@@ -28,6 +28,7 @@ from app.models.anomaly import (
     AnomalyAlert,
 )
 from app.models.ai_feedback import AIFeedback
+from app.models.agent_report import AgentReportSpec, AgentReportRun
 # Commented out - using hybrid approach with filters_config JSON field instead
 # from app.models.dashboard_filter import DashboardFilter
 
@@ -54,4 +55,6 @@ __all__ = [
     "MonitoredMetric",
     "AnomalyAlert",
     "AIFeedback",
+    "AgentReportSpec",
+    "AgentReportRun",
 ]

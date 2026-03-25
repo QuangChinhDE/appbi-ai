@@ -2,8 +2,9 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Loader2, LayoutDashboard, Clock, Eye, Trash2, Search, Bot } from 'lucide-react';
+import { Plus, Loader2, LayoutDashboard, Clock, Eye, Trash2, Search, Bot, History, Sparkles } from 'lucide-react';
 import { useDashboards, useCreateDashboard, useDeleteDashboard } from '@/hooks/use-dashboards';
+import { useAgentReportSpecs } from '@/hooks/use-agent-report-specs';
 import { DashboardList } from '@/components/dashboards/DashboardList';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { PageListLayout } from '@/components/common/PageListLayout';
@@ -21,6 +22,7 @@ export default function DashboardsPage() {
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingDashboard, setIsDeletingDashboard] = useState(false);
   const [isAgentOpen, setIsAgentOpen] = useState(false);
+  const [agentSpecId, setAgentSpecId] = useState<number | null>(null);
 
   const { data: dashboards, isLoading } = useDashboards();
   const { data: permData } = usePermissions();
@@ -29,6 +31,7 @@ export default function DashboardsPage() {
     hasPermission(permData?.permissions, 'ai_agent', 'edit') &&
     hasPermission(permData?.permissions, 'dashboards', 'edit') &&
     hasPermission(permData?.permissions, 'explore_charts', 'edit');
+  const { data: savedReports = [] } = useAgentReportSpecs(canUseAgent);
   const createMutation = useCreateDashboard();
   const deleteMutation = useDeleteDashboard();
 
@@ -121,13 +124,67 @@ export default function DashboardsPage() {
                       </div>
                     </div>
                     <button
-                      onClick={() => setIsAgentOpen(true)}
+                      onClick={() => {
+                        setAgentSpecId(null);
+                        setIsAgentOpen(true);
+                      }}
                       className="inline-flex items-center justify-center gap-2 rounded-md bg-blue-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-blue-700"
                     >
                       <Bot className="w-4 h-4" />
                       Plan with AI Agent
                     </button>
                   </div>
+                  {savedReports.length > 0 && (
+                    <div className="mt-5 border-t border-gray-100 pt-5">
+                      <div className="mb-3 flex items-center gap-2 text-gray-900">
+                        <History className="w-4 h-4 text-blue-600" />
+                        <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-gray-500">Saved AI Reports</h3>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                        {savedReports.slice(0, 6).map((spec) => (
+                          <div key={spec.id} className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="font-semibold text-gray-900">{spec.name}</p>
+                                <p className="mt-1 text-xs uppercase tracking-[0.16em] text-gray-500">{spec.status}</p>
+                              </div>
+                              <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-medium text-blue-700">
+                                {spec.latest_dashboard_id ? `Dashboard #${spec.latest_dashboard_id}` : 'Draft only'}
+                              </span>
+                            </div>
+                            {spec.description && (
+                              <p className="mt-3 line-clamp-3 text-sm text-gray-600">{spec.description}</p>
+                            )}
+                            <div className="mt-4 flex items-center justify-between text-xs text-gray-500">
+                              <span>{spec.selected_tables_snapshot?.length ?? 0} tables</span>
+                              <span>{spec.last_run_at ? new Date(spec.last_run_at).toLocaleDateString('vi-VN') : 'Not run yet'}</span>
+                            </div>
+                            <div className="mt-4 flex gap-2">
+                              <button
+                                onClick={() => {
+                                  setAgentSpecId(spec.id);
+                                  setIsAgentOpen(true);
+                                }}
+                                className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                              >
+                                <Sparkles className="w-4 h-4" />
+                                Open report
+                              </button>
+                              {spec.latest_dashboard_id && (
+                                <button
+                                  onClick={() => router.push(`/dashboards/${spec.latest_dashboard_id}`)}
+                                  className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+                                >
+                                  <Eye className="w-4 h-4" />
+                                  Open dashboard
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -268,6 +325,7 @@ export default function DashboardsPage() {
       <DashboardAgentWizard
         isOpen={isAgentOpen}
         onClose={() => setIsAgentOpen(false)}
+        initialSpecId={agentSpecId}
       />
     </>
   );

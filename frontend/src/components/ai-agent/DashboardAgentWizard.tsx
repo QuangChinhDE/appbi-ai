@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft,
   Bot,
@@ -10,7 +10,9 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  Eye,
   FileText,
+  History,
   LayoutDashboard,
   ListChecks,
   Loader2,
@@ -25,77 +27,41 @@ import {
 import { toast } from 'sonner';
 
 import { AppModalShell } from '@/components/common/AppModalShell';
+import {
+  agentReportSpecKeys,
+  useAgentReportSpec,
+  useCreateAgentReportRun,
+  useCreateAgentReportSpec,
+  useUpdateAgentReportSpec,
+} from '@/hooks/use-agent-report-specs';
 import { useWorkspaces, WorkspaceWithTables } from '@/hooks/use-dataset-workspaces';
 import apiClient from '@/lib/api-client';
 import { AI_AGENT_HTTP_URL } from '@/lib/ai-services';
+import {
+  AgentBriefRequest,
+  AgentBuildEvent as BuildEvent,
+  AgentBuildMode,
+  AgentChartPlan,
+  AgentPlanEvent,
+  AgentPlanResponse,
+  AgentReportSpecDetail,
+  AgentSectionPlan,
+} from '@/types/agent';
 
 interface DashboardAgentWizardProps {
   isOpen: boolean;
   onClose: () => void;
+  initialSpecId?: number | null;
 }
 
 type WizardStep = 'select' | 'brief' | 'plan' | 'building';
-
-interface SelectedTableRef {
-  workspace_id: number;
-  table_id: number;
-}
-
-interface AgentBriefRequest {
-  goal: string;
-  audience?: string;
-  timeframe?: string;
-  kpis: string[];
-  questions: string[];
-  selected_tables: SelectedTableRef[];
-}
-
-interface AgentChartPlan {
-  key: string;
-  title: string;
-  chart_type: string;
-  workspace_id: number;
-  workspace_table_id: number;
-  workspace_name: string;
-  table_name: string;
-  rationale: string;
-  config: Record<string, any>;
-}
 
 interface EditableAgentChartPlan extends AgentChartPlan {
   enabled: boolean;
 }
 
-interface AgentSectionPlan {
-  title: string;
-  workspace_id: number;
-  workspace_table_id: number;
-  workspace_name: string;
-  table_name: string;
-  intent: string;
-  chart_keys: string[];
-}
-
-interface AgentPlanResponse {
-  dashboard_title: string;
-  dashboard_summary: string;
-  sections: AgentSectionPlan[];
-  charts: AgentChartPlan[];
-  warnings: string[];
-}
-
 interface EditableAgentPlan extends Omit<AgentPlanResponse, 'charts'> {
   charts: EditableAgentChartPlan[];
-}
-
-interface BuildEvent {
-  type: string;
-  phase: string;
-  message: string;
-  chart_id?: number;
-  dashboard_id?: number;
-  dashboard_url?: string;
-  error?: string;
 }
 
 const STEP_META: Array<{ key: WizardStep; label: string; caption: string }> = [
@@ -110,6 +76,8 @@ const INITIAL_AUDIENCE = 'Executive team';
 const INITIAL_TIMEFRAME = 'Last 30 days';
 const INITIAL_KPIS = 'Revenue\nOrder volume\nGrowth';
 const INITIAL_QUESTIONS = 'What is the main trend?\nWhich segment contributes the most?\nWhat anomaly needs attention?';
+const INITIAL_MUST_INCLUDE = 'Executive summary\nTrend\nBreakdown';
+const INITIAL_ALERT_FOCUS = 'Anomalies\nDrops';
 
 function splitLines(value: string): string[] {
   return value
@@ -122,10 +90,18 @@ function normalizePlan(plan: AgentPlanResponse): EditableAgentPlan {
   return {
     dashboard_title: plan.dashboard_title,
     dashboard_summary: plan.dashboard_summary,
-    sections: plan.sections.map((section) => ({ ...section, chart_keys: [...section.chart_keys] })),
+    strategy_summary: plan.strategy_summary,
+    planning_mode: plan.planning_mode,
+    quality_score: plan.quality_score,
+    quality_breakdown: { ...(plan.quality_breakdown ?? {}) },
+    sections: plan.sections.map((section) => ({
+      ...section,
+      chart_keys: [...section.chart_keys],
+      questions_covered: [...(section.questions_covered ?? [])],
+    })),
     charts: plan.charts.map((chart) => ({
       ...chart,
-      enabled: true,
+      enabled: typeof (chart as { enabled?: boolean }).enabled === 'boolean' ? Boolean((chart as { enabled?: boolean }).enabled) : true,
       config: JSON.parse(JSON.stringify(chart.config ?? {})),
     })),
     warnings: [...plan.warnings],
@@ -136,7 +112,15 @@ function cloneEditablePlan(plan: EditableAgentPlan): EditableAgentPlan {
   return {
     dashboard_title: plan.dashboard_title,
     dashboard_summary: plan.dashboard_summary,
-    sections: plan.sections.map((section) => ({ ...section, chart_keys: [...section.chart_keys] })),
+    strategy_summary: plan.strategy_summary,
+    planning_mode: plan.planning_mode,
+    quality_score: plan.quality_score,
+    quality_breakdown: { ...(plan.quality_breakdown ?? {}) },
+    sections: plan.sections.map((section) => ({
+      ...section,
+      chart_keys: [...section.chart_keys],
+      questions_covered: [...(section.questions_covered ?? [])],
+    })),
     charts: plan.charts.map((chart) => ({
       ...chart,
       enabled: chart.enabled,
@@ -161,6 +145,10 @@ function toBuildPlan(plan: EditableAgentPlan): AgentPlanResponse {
   return {
     dashboard_title: plan.dashboard_title.trim(),
     dashboard_summary: plan.dashboard_summary.trim(),
+    strategy_summary: plan.strategy_summary,
+    planning_mode: plan.planning_mode,
+    quality_score: plan.quality_score,
+    quality_breakdown: { ...(plan.quality_breakdown ?? {}) },
     sections,
     charts: activeCharts,
     warnings: [...plan.warnings],
@@ -209,6 +197,41 @@ function getBuildEventBadgeClass(event: BuildEvent): string {
   return 'bg-blue-50 text-blue-700 border border-blue-200';
 }
 
+function getPlanEventBadgeClass(event: AgentPlanEvent): string {
+  if (event.type === 'error') {
+    return 'bg-rose-50 text-rose-700 border border-rose-200';
+  }
+  if (event.type === 'done') {
+    return 'bg-emerald-50 text-emerald-700 border border-emerald-200';
+  }
+  return 'bg-blue-50 text-blue-700 border border-blue-200';
+}
+
+function briefToMultiline(value: unknown): string {
+  if (!Array.isArray(value)) return '';
+  return value.map((item) => String(item).trim()).filter(Boolean).join('\n');
+}
+
+function makeInitialBriefState() {
+  return {
+    reportName: '',
+    reportType: 'executive_tracking',
+    goal: INITIAL_GOAL,
+    audience: INITIAL_AUDIENCE,
+    timeframe: INITIAL_TIMEFRAME,
+    kpisText: INITIAL_KPIS,
+    questionsText: INITIAL_QUESTIONS,
+    comparisonPeriod: 'Previous period',
+    refreshFrequency: 'Weekly',
+    mustIncludeSectionsText: INITIAL_MUST_INCLUDE,
+    alertFocusText: INITIAL_ALERT_FOCUS,
+    preferredGranularity: 'day',
+    decisionContext: 'Help the team decide what changed, what is driving it, and where to focus next.',
+    notes: '',
+    planningMode: 'deep' as const,
+  };
+}
+
 async function getAuthToken(): Promise<string> {
   const response = await fetch('/api/auth/token');
   if (!response.ok) {
@@ -218,24 +241,43 @@ async function getAuthToken(): Promise<string> {
   return data.token;
 }
 
-export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardProps) {
+export function DashboardAgentWizard({ isOpen, onClose, initialSpecId = null }: DashboardAgentWizardProps) {
   const router = useRouter();
+  const initialBrief = useMemo(() => makeInitialBriefState(), []);
   const [step, setStep] = useState<WizardStep>('select');
+  const [activeSpecId, setActiveSpecId] = useState<number | null>(initialSpecId);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [tableSearch, setTableSearch] = useState('');
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<number[]>([]);
-  const [goal, setGoal] = useState(INITIAL_GOAL);
-  const [audience, setAudience] = useState(INITIAL_AUDIENCE);
-  const [timeframe, setTimeframe] = useState(INITIAL_TIMEFRAME);
-  const [kpisText, setKpisText] = useState(INITIAL_KPIS);
-  const [questionsText, setQuestionsText] = useState(INITIAL_QUESTIONS);
+  const [reportName, setReportName] = useState(initialBrief.reportName);
+  const [reportType, setReportType] = useState(initialBrief.reportType);
+  const [goal, setGoal] = useState(initialBrief.goal);
+  const [audience, setAudience] = useState(initialBrief.audience);
+  const [timeframe, setTimeframe] = useState(initialBrief.timeframe);
+  const [kpisText, setKpisText] = useState(initialBrief.kpisText);
+  const [questionsText, setQuestionsText] = useState(initialBrief.questionsText);
+  const [comparisonPeriod, setComparisonPeriod] = useState(initialBrief.comparisonPeriod);
+  const [refreshFrequency, setRefreshFrequency] = useState(initialBrief.refreshFrequency);
+  const [mustIncludeSectionsText, setMustIncludeSectionsText] = useState(initialBrief.mustIncludeSectionsText);
+  const [alertFocusText, setAlertFocusText] = useState(initialBrief.alertFocusText);
+  const [preferredGranularity, setPreferredGranularity] = useState(initialBrief.preferredGranularity);
+  const [decisionContext, setDecisionContext] = useState(initialBrief.decisionContext);
+  const [notes, setNotes] = useState(initialBrief.notes);
+  const [planningMode, setPlanningMode] = useState<'quick' | 'deep'>(initialBrief.planningMode);
   const [generatedPlan, setGeneratedPlan] = useState<EditableAgentPlan | null>(null);
   const [draftPlan, setDraftPlan] = useState<EditableAgentPlan | null>(null);
+  const [planningEvents, setPlanningEvents] = useState<AgentPlanEvent[]>([]);
   const [events, setEvents] = useState<BuildEvent[]>([]);
   const [agentError, setAgentError] = useState<string | null>(null);
   const [isBuildRunning, setIsBuildRunning] = useState(false);
+  const [buildMode, setBuildMode] = useState<AgentBuildMode>('new_dashboard');
 
+  const queryClient = useQueryClient();
   const { data: workspaces = [] } = useWorkspaces();
+  const activeSpecQuery = useAgentReportSpec(activeSpecId);
+  const createSpecMutation = useCreateAgentReportSpec();
+  const updateSpecMutation = useUpdateAgentReportSpec();
+  const createRunMutation = useCreateAgentReportRun();
 
   const workspaceDetailsQuery = useQuery<WorkspaceWithTables[]>({
     queryKey: ['agent-workspace-details', workspaces.map((workspace) => workspace.id).join('-')],
@@ -333,20 +375,55 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
 
   const briefPayload = useMemo<AgentBriefRequest>(
     () => ({
+      report_name: reportName.trim() || undefined,
+      report_type: reportType || undefined,
       goal: goal.trim(),
       audience: audience.trim() || undefined,
       timeframe: timeframe.trim() || undefined,
       kpis: splitLines(kpisText),
       questions: splitLines(questionsText),
+      comparison_period: comparisonPeriod.trim() || undefined,
+      refresh_frequency: refreshFrequency.trim() || undefined,
+      must_include_sections: splitLines(mustIncludeSectionsText),
+      alert_focus: splitLines(alertFocusText),
+      preferred_granularity: preferredGranularity.trim() || undefined,
+      decision_context: decisionContext.trim() || undefined,
+      notes: notes.trim() || undefined,
+      planning_mode: planningMode,
       selected_tables: selectedTables,
     }),
-    [audience, goal, kpisText, questionsText, selectedTables, timeframe],
+    [
+      alertFocusText,
+      audience,
+      comparisonPeriod,
+      decisionContext,
+      goal,
+      kpisText,
+      mustIncludeSectionsText,
+      notes,
+      planningMode,
+      preferredGranularity,
+      questionsText,
+      refreshFrequency,
+      reportName,
+      reportType,
+      selectedTables,
+      timeframe,
+    ],
   );
 
   const currentStepIndex = STEP_META.findIndex((item) => item.key === step);
   const buildPlan = useMemo(() => (draftPlan ? toBuildPlan(draftPlan) : null), [draftPlan]);
   const enabledChartCount = buildPlan?.charts.length ?? 0;
   const enabledSectionCount = buildPlan?.sections.length ?? 0;
+  const activeSpec = activeSpecQuery.data as AgentReportSpecDetail | undefined;
+  const recentRuns = useMemo(
+    () =>
+      [...(activeSpec?.runs ?? [])]
+        .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
+        .slice(0, 5),
+    [activeSpec],
+  );
   const hasPlanEdits = useMemo(() => {
     if (!generatedPlan || !draftPlan) return false;
     return JSON.stringify(generatedPlan) !== JSON.stringify(draftPlan);
@@ -355,15 +432,38 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
   useEffect(() => {
     if (!isOpen) {
       setStep('select');
+      setActiveSpecId(initialSpecId);
+      setSelectedKeys([]);
       setTableSearch('');
       setExpandedWorkspaceIds([]);
+      setReportName(initialBrief.reportName);
+      setReportType(initialBrief.reportType);
+      setGoal(initialBrief.goal);
+      setAudience(initialBrief.audience);
+      setTimeframe(initialBrief.timeframe);
+      setKpisText(initialBrief.kpisText);
+      setQuestionsText(initialBrief.questionsText);
+      setComparisonPeriod(initialBrief.comparisonPeriod);
+      setRefreshFrequency(initialBrief.refreshFrequency);
+      setMustIncludeSectionsText(initialBrief.mustIncludeSectionsText);
+      setAlertFocusText(initialBrief.alertFocusText);
+      setPreferredGranularity(initialBrief.preferredGranularity);
+      setDecisionContext(initialBrief.decisionContext);
+      setNotes(initialBrief.notes);
+      setPlanningMode(initialBrief.planningMode);
       setGeneratedPlan(null);
       setDraftPlan(null);
+      setPlanningEvents([]);
       setEvents([]);
       setAgentError(null);
       setIsBuildRunning(false);
+      setBuildMode('new_dashboard');
     }
-  }, [isOpen]);
+  }, [initialBrief, initialSpecId, isOpen]);
+
+  useEffect(() => {
+    setActiveSpecId(initialSpecId);
+  }, [initialSpecId]);
 
   useEffect(() => {
     if (!isOpen || !workspaceDetailsQuery.data?.length) return;
@@ -380,10 +480,51 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
     });
   }, [isOpen, workspaceDetailsQuery.data]);
 
+  useEffect(() => {
+    const spec = activeSpec;
+    if (!isOpen || !spec) return;
+
+    const brief = spec.brief_json ?? {};
+    const selected = Array.isArray(spec.selected_tables_snapshot) ? spec.selected_tables_snapshot : [];
+    setSelectedKeys(
+      selected
+        .map((item) => `${item.workspace_id}:${item.table_id}`)
+        .filter((item) => item !== 'undefined:undefined'),
+    );
+    setReportName(String(brief.report_name ?? spec.name ?? '').trim());
+    setReportType(String(brief.report_type ?? 'executive_tracking'));
+    setGoal(String(brief.goal ?? initialBrief.goal));
+    setAudience(String(brief.audience ?? ''));
+    setTimeframe(String(brief.timeframe ?? ''));
+    setKpisText(briefToMultiline(brief.kpis));
+    setQuestionsText(briefToMultiline(brief.questions));
+    setComparisonPeriod(String(brief.comparison_period ?? ''));
+    setRefreshFrequency(String(brief.refresh_frequency ?? ''));
+    setMustIncludeSectionsText(briefToMultiline(brief.must_include_sections));
+    setAlertFocusText(briefToMultiline(brief.alert_focus));
+    setPreferredGranularity(String(brief.preferred_granularity ?? ''));
+    setDecisionContext(String(brief.decision_context ?? ''));
+    setNotes(String(brief.notes ?? ''));
+    setPlanningMode(brief.planning_mode === 'quick' ? 'quick' : 'deep');
+
+    if (spec.approved_plan_json) {
+      const editable = normalizePlan(spec.approved_plan_json as AgentPlanResponse);
+      setGeneratedPlan(editable);
+      setDraftPlan(cloneEditablePlan(editable));
+      setBuildMode(spec.latest_dashboard_id ? 'replace_existing' : 'new_dashboard');
+      setStep('plan');
+    } else {
+      setGeneratedPlan(null);
+      setDraftPlan(null);
+      setStep('brief');
+    }
+    setAgentError(null);
+  }, [activeSpec, initialBrief, isOpen]);
+
   const planMutation = useMutation({
     mutationFn: async () => {
       const token = await getAuthToken();
-      const response = await fetch(`${AI_AGENT_HTTP_URL}/agent/plan`, {
+      const response = await fetch(`${AI_AGENT_HTTP_URL}/agent/plan/stream`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -392,24 +533,89 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
         body: JSON.stringify(briefPayload),
       });
 
-      if (!response.ok) {
+      if (!response.ok || !response.body) {
         const detail = await response.text();
         throw new Error(detail || 'AI Agent could not generate a plan.');
       }
 
-      return response.json() as Promise<AgentPlanResponse>;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalPlan: AgentPlanResponse | null = null;
+      setPlanningEvents([]);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line) as AgentPlanEvent;
+          setPlanningEvents((prev) => [...prev, event]);
+          if (event.type === 'error') {
+            throw new Error(event.error || event.message || 'AI Agent planning failed.');
+          }
+          if (event.type === 'done' && event.plan) {
+            finalPlan = event.plan;
+          }
+        }
+      }
+
+      if (!finalPlan) {
+        throw new Error('AI Agent did not return a final plan.');
+      }
+      return finalPlan;
     },
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       const editable = normalizePlan(data);
       setGeneratedPlan(editable);
       setDraftPlan(cloneEditablePlan(editable));
       setStep('plan');
       setAgentError(null);
+      if (activeSpecId) {
+        try {
+          await persistCurrentSpec(editable);
+          await refreshAgentReportViews(activeSpecId);
+        } catch (error: any) {
+          setAgentError(error.message || 'Updated draft generated, but the saved report could not be refreshed.');
+        }
+      }
     },
     onError: (error: Error) => {
       setAgentError(error.message);
     },
   });
+
+  async function persistCurrentSpec(plan: EditableAgentPlan | AgentPlanResponse): Promise<number> {
+    const payload = {
+      name: briefPayload.report_name || plan.dashboard_title,
+      description: plan.dashboard_summary,
+      selected_tables_snapshot: briefPayload.selected_tables,
+      brief_json: briefPayload as unknown as Record<string, any>,
+      approved_plan_json: plan as unknown as Record<string, any>,
+      status: 'ready' as const,
+    };
+
+    if (activeSpecId) {
+      await updateSpecMutation.mutateAsync({ id: activeSpecId, payload });
+      return activeSpecId;
+    }
+
+    const created = await createSpecMutation.mutateAsync(payload);
+    setActiveSpecId(created.id);
+    return created.id;
+  }
+
+  async function refreshAgentReportViews(specId: number | null | undefined) {
+    await queryClient.invalidateQueries({ queryKey: agentReportSpecKeys.lists() });
+    if (specId) {
+      await queryClient.invalidateQueries({ queryKey: agentReportSpecKeys.detail(specId) });
+      await queryClient.invalidateQueries({ queryKey: agentReportSpecKeys.runs(specId) });
+    }
+  }
 
   function toggleTable(workspaceId: number, tableId: number) {
     const key = `${workspaceId}:${tableId}`;
@@ -503,8 +709,29 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
     setEvents([]);
     setAgentError(null);
     setIsBuildRunning(true);
+    let persistedSpecId: number | null = activeSpecId;
 
     try {
+      const specId = await persistCurrentSpec(draftPlan);
+      persistedSpecId = specId;
+      const targetDashboardId =
+        buildMode === 'replace_existing'
+          ? activeSpec?.latest_dashboard_id ?? null
+          : null;
+      if (buildMode === 'replace_existing' && !targetDashboardId) {
+        throw new Error('This report does not have an existing dashboard to replace yet.');
+      }
+      const run = await createRunMutation.mutateAsync({
+        id: specId,
+        payload: {
+          build_mode: buildMode,
+          input_brief_json: briefPayload as unknown as Record<string, any>,
+          plan_json: buildPlan as unknown as Record<string, any>,
+          target_dashboard_id: targetDashboardId,
+          status: 'queued',
+        },
+      });
+
       const token = await getAuthToken();
       const response = await fetch(`${AI_AGENT_HTTP_URL}/agent/build/stream`, {
         method: 'POST',
@@ -512,7 +739,14 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ brief: briefPayload, plan: buildPlan }),
+        body: JSON.stringify({
+          brief: briefPayload,
+          plan: buildPlan,
+          build_mode: buildMode,
+          report_spec_id: specId,
+          report_run_id: run.id,
+          target_dashboard_id: targetDashboardId,
+        }),
       });
 
       if (!response.ok || !response.body) {
@@ -542,6 +776,7 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
           if (event.type === 'done' && event.dashboard_url) {
             didFinish = true;
             setIsBuildRunning(false);
+            await refreshAgentReportViews(specId);
             toast.success('AI Agent finished building the dashboard.');
             onClose();
             router.push(event.dashboard_url);
@@ -556,6 +791,7 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
     } catch (error: any) {
       setAgentError(error.message || 'AI Agent build failed.');
     } finally {
+      await refreshAgentReportViews(persistedSpecId);
       setIsBuildRunning(false);
     }
   }
@@ -655,6 +891,22 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
               >
                 {planMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
                 Regenerate plan
+              </button>
+              <button
+                onClick={async () => {
+                  if (!draftPlan) return;
+                  try {
+                    const specId = await persistCurrentSpec(draftPlan);
+                    toast.success(activeSpecId ? 'AI report updated.' : `AI report saved (#${specId}).`);
+                  } catch (error: any) {
+                    setAgentError(error.message || 'Could not save the AI report.');
+                  }
+                }}
+                disabled={!draftPlan || createSpecMutation.isPending || updateSpecMutation.isPending}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <FileText className="h-4 w-4" />
+                {activeSpecId ? 'Save report' : 'Save as report'}
               </button>
               <button
                 onClick={resetPlanEdits}
@@ -994,35 +1246,78 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
         )}
 
         {step === 'brief' && (
-          <div className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+          <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
             <div className="space-y-5 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+              <div className="grid gap-4 md:grid-cols-2">
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-gray-700">Business goal</label>
-                  <textarea
-                    value={goal}
-                    onChange={(event) => setGoal(event.target.value)}
-                    rows={4}
+                  <label className="mb-2 block text-sm font-medium text-gray-700">Report name</label>
+                  <input
+                    value={reportName}
+                    onChange={(event) => setReportName(event.target.value)}
+                    placeholder="Executive KPI watch"
                     className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                   />
                 </div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="mb-2 block text-sm font-medium text-gray-700">Audience</label>
-                    <input
-                      value={audience}
-                      onChange={(event) => setAudience(event.target.value)}
-                      className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-2 block text-sm font-medium text-gray-700">Timeframe</label>
-                    <input
-                      value={timeframe}
-                      onChange={(event) => setTimeframe(event.target.value)}
-                      className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    />
-                  </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700">Planning mode</label>
+                  <select
+                    value={planningMode}
+                    onChange={(event) => setPlanningMode(event.target.value as 'quick' | 'deep')}
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  >
+                    <option value="deep">Deep draft</option>
+                    <option value="quick">Quick draft</option>
+                  </select>
                 </div>
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-700">Business goal</label>
+                <textarea
+                  value={goal}
+                  onChange={(event) => setGoal(event.target.value)}
+                  rows={4}
+                  className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700">Audience</label>
+                  <input
+                    value={audience}
+                    onChange={(event) => setAudience(event.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700">Timeframe</label>
+                  <input
+                    value={timeframe}
+                    onChange={(event) => setTimeframe(event.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700">Comparison period</label>
+                  <input
+                    value={comparisonPeriod}
+                    onChange={(event) => setComparisonPeriod(event.target.value)}
+                    placeholder="Previous period / YoY / WoW"
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700">Refresh frequency</label>
+                  <input
+                    value={refreshFrequency}
+                    onChange={(event) => setRefreshFrequency(event.target.value)}
+                    placeholder="Daily / Weekly / Monthly"
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
                 <div>
                   <label className="mb-2 block text-sm font-medium text-gray-700">KPIs</label>
                   <textarea
@@ -1041,13 +1336,72 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
                     className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                   />
                 </div>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700">Must-have sections</label>
+                  <textarea
+                    value={mustIncludeSectionsText}
+                    onChange={(event) => setMustIncludeSectionsText(event.target.value)}
+                    rows={3}
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700">Alert focus</label>
+                  <textarea
+                    value={alertFocusText}
+                    onChange={(event) => setAlertFocusText(event.target.value)}
+                    rows={3}
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700">Preferred granularity</label>
+                  <input
+                    value={preferredGranularity}
+                    onChange={(event) => setPreferredGranularity(event.target.value)}
+                    placeholder="day / week / month"
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700">Report type</label>
+                  <input
+                    value={reportType}
+                    onChange={(event) => setReportType(event.target.value)}
+                    placeholder="executive_tracking / anomaly_watch"
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-700">Decision context</label>
+                <textarea
+                  value={decisionContext}
+                  onChange={(event) => setDecisionContext(event.target.value)}
+                  rows={3}
+                  className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-700">Additional notes</label>
+                <textarea
+                  value={notes}
+                  onChange={(event) => setNotes(event.target.value)}
+                  rows={3}
+                  className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
             </div>
 
             <div className="space-y-5">
               <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
                 <div className="mb-3 flex items-center gap-2 text-gray-900">
                   <FileText className="h-5 w-5 text-gray-500" />
-                    <h3 className="text-lg font-semibold">Selected scope</h3>
+                  <h3 className="text-lg font-semibold">Selected scope</h3>
                 </div>
                 <div className="space-y-3 text-sm text-gray-700">
                   {selectedTableCards.map((item) => (
@@ -1065,11 +1419,38 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
                   <h3 className="text-lg font-semibold">Planning notes</h3>
                 </div>
                 <ul className="space-y-2 text-sm text-blue-900/90">
-                  <li>- The richer the brief, the better the draft dashboard plan.</li>
-                  <li>- You can review, rename, disable charts, and regenerate the draft before building.</li>
+                  <li>- Deep draft spends longer thinking about narrative, drivers, and chart mix.</li>
+                  <li>- Saved reports can be reopened later, edited, and rerun.</li>
                   <li>- The final dashboard only uses the workspace tables selected in this flow.</li>
                 </ul>
               </div>
+
+              {(planMutation.isPending || planningEvents.length > 0) && (
+                <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+                  <div className="mb-4 flex items-center justify-between gap-3">
+                    <div>
+                      <h4 className="text-lg font-semibold text-gray-900">Planning progress</h4>
+                      <p className="mt-1 text-sm text-gray-500">The Agent is reasoning through the selected scope.</p>
+                    </div>
+                    {planMutation.isPending && <Loader2 className="h-5 w-5 animate-spin text-blue-500" />}
+                  </div>
+                  <div className="space-y-3">
+                    {planningEvents.map((event, index) => (
+                      <div key={`${event.phase}-${index}`} className="rounded-lg border border-gray-200 px-4 py-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium text-gray-900">{event.message}</p>
+                            {event.error && <p className="mt-2 text-sm text-rose-600">{event.error}</p>}
+                          </div>
+                          <span className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] ${getPlanEventBadgeClass(event)}`}>
+                            {event.phase}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1100,15 +1481,26 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
                         className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                       />
                   </div>
+                  {draftPlan.strategy_summary && (
+                    <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">Strategy summary</p>
+                      <p className="mt-2">{draftPlan.strategy_summary}</p>
+                    </div>
+                  )}
                   {draftPlan.warnings.length > 0 && (
                     <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                       {draftPlan.warnings.join(' ')}
                     </div>
                   )}
+                  {activeSpecId && (
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+                      Editing saved AI report #{activeSpecId}. You can keep refining this draft and rerun it later.
+                    </div>
+                  )}
                 </div>
               </div>
 
-              <div className="grid gap-4 sm:grid-cols-3 xl:grid-cols-1">
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
                 <div className="rounded-xl border border-gray-200 bg-gray-50 p-5">
                   <div className="flex items-center gap-2 text-gray-900">
                     <LayoutDashboard className="h-5 w-5 text-blue-600" />
@@ -1127,12 +1519,91 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
                 </div>
                 <div className="rounded-xl border border-gray-200 bg-gray-50 p-5">
                   <div className="flex items-center gap-2 text-gray-900">
-                    <Table2 className="h-5 w-5 text-blue-600" />
-                      <span className="text-sm font-semibold">Selected tables</span>
+                    <Sparkles className="h-5 w-5 text-blue-600" />
+                    <span className="text-sm font-semibold">Quality score</span>
                   </div>
-                  <p className="mt-3 text-3xl font-semibold text-gray-900">{selectedTableCards.length}</p>
-                  <p className="mt-1 text-sm text-gray-500">the Agent will stay inside this scope</p>
+                  <p className="mt-3 text-3xl font-semibold text-gray-900">{Math.round((draftPlan.quality_score ?? 0) * 100)}%</p>
+                  <div className="mt-3 grid gap-2 text-xs text-gray-500">
+                    {Object.entries(draftPlan.quality_breakdown ?? {}).map(([key, value]) => (
+                      <div key={key} className="flex items-center justify-between">
+                        <span className="capitalize">{key.replace(/_/g, ' ')}</span>
+                        <span>{Math.round((value ?? 0) * 100)}%</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
+                <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                  <label className="mb-2 block text-sm font-medium text-gray-700">Build mode</label>
+                  <select
+                    value={buildMode}
+                    onChange={(event) => setBuildMode(event.target.value as AgentBuildMode)}
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  >
+                    <option value="new_dashboard">Create a new dashboard</option>
+                    <option value="new_version">Create a new version</option>
+                    <option value="replace_existing" disabled={!activeSpec?.latest_dashboard_id}>Replace the latest saved dashboard</option>
+                  </select>
+                  <p className="mt-2 text-xs text-gray-500">
+                    {activeSpec?.latest_dashboard_id
+                      ? `Latest dashboard: #${activeSpec.latest_dashboard_id}`
+                      : 'Save and build once to enable replace-existing mode.'}
+                  </p>
+                </div>
+                {recentRuns.length > 0 && (
+                  <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                    <div className="mb-3 flex items-center gap-2 text-gray-900">
+                      <History className="h-5 w-5 text-blue-600" />
+                      <span className="text-sm font-semibold">Recent runs</span>
+                    </div>
+                    <div className="space-y-3">
+                      {recentRuns.map((run) => (
+                        <div key={run.id} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-medium text-gray-900">
+                                Run #{run.id} · {run.build_mode.replace(/_/g, ' ')}
+                              </p>
+                              <p className="mt-1 text-xs text-gray-500">
+                                {new Date(run.created_at).toLocaleString('vi-VN')}
+                              </p>
+                            </div>
+                            <span
+                              className={`rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${
+                                run.status === 'succeeded'
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : run.status === 'failed'
+                                    ? 'bg-rose-50 text-rose-700'
+                                    : 'bg-blue-50 text-blue-700'
+                              }`}
+                            >
+                              {run.status}
+                            </span>
+                          </div>
+                          {run.error && (
+                            <p className="mt-2 text-xs text-rose-600">{run.error}</p>
+                          )}
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {run.dashboard_id && (
+                              <button
+                                type="button"
+                                onClick={() => router.push(`/dashboards/${run.dashboard_id}`)}
+                                className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                              >
+                                <Eye className="h-3.5 w-3.5" />
+                                Open dashboard
+                              </button>
+                            )}
+                            {run.result_summary_json?.created_chart_count != null && (
+                              <span className="rounded-full bg-white px-2.5 py-1 text-[11px] text-gray-600">
+                                {run.result_summary_json.created_chart_count} charts built
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1179,6 +1650,21 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
                                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                               />
                             </div>
+                            {section.why_this_section && (
+                              <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-3 text-sm text-blue-900">
+                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-blue-700">Why this section</p>
+                                <p className="mt-2">{section.why_this_section}</p>
+                              </div>
+                            )}
+                            {section.questions_covered?.length > 0 && (
+                              <div className="flex flex-wrap gap-2">
+                                {section.questions_covered.map((question) => (
+                                  <span key={question} className="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
+                                    {question}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                             <div className="flex flex-wrap gap-2">
                               {section.chart_keys.map((chartKey) => {
                                 const chart = draftPlan.charts.find((item) => item.key === chartKey);
@@ -1264,6 +1750,26 @@ export function DashboardAgentWizard({ isOpen, onClose }: DashboardAgentWizardPr
                                 rows={3}
                                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                               />
+                            </div>
+                            {chart.why_this_chart && (
+                              <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-3 text-sm text-blue-900">
+                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-blue-700">Why this chart</p>
+                                <p className="mt-2">{chart.why_this_chart}</p>
+                              </div>
+                            )}
+                            <div className="grid gap-3 md:grid-cols-3">
+                              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3">
+                                <p className="text-xs uppercase tracking-[0.14em] text-gray-400">Confidence</p>
+                                <p className="mt-2 text-sm font-semibold text-gray-900">{Math.round((chart.confidence ?? 0) * 100)}%</p>
+                              </div>
+                              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3">
+                                <p className="text-xs uppercase tracking-[0.14em] text-gray-400">Expected signal</p>
+                                <p className="mt-2 text-sm text-gray-700">{chart.expected_signal || 'General performance signal'}</p>
+                              </div>
+                              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3">
+                                <p className="text-xs uppercase tracking-[0.14em] text-gray-400">Alternative considered</p>
+                                <p className="mt-2 text-sm text-gray-700">{chart.alternative_considered || 'None noted'}</p>
+                              </div>
                             </div>
                             <div>
                               <p className="text-xs uppercase tracking-[0.16em] text-gray-400">

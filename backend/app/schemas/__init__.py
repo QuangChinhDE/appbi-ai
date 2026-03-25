@@ -60,6 +60,15 @@ from app.schemas.dataset_workspace import (
     ColumnMetadata as WorkspaceColumnMetadata,
     DatasourceTable,
 )
+from app.schemas.agent_report import (
+    AgentReportSpecCreate,
+    AgentReportSpecUpdate,
+    AgentReportSpecResponse,
+    AgentReportSpecDetailResponse,
+    AgentReportRunCreate,
+    AgentReportRunUpdate,
+    AgentReportRunResponse,
+)
 
 __all__ = [
     # Data Source
@@ -116,4 +125,13 @@ __all__ = [
     "FilterCondition",
     "WorkspaceColumnMetadata",
     "DatasourceTable",
+
+    # AI Agent saved reports
+    "AgentReportSpecCreate",
+    "AgentReportSpecUpdate",
+    "AgentReportSpecResponse",
+    "AgentReportSpecDetailResponse",
+    "AgentReportRunCreate",
+    "AgentReportRunUpdate",
+    "AgentReportRunResponse",
 ]
