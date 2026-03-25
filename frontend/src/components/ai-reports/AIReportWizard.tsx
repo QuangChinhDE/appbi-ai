@@ -50,11 +50,11 @@ import {
 } from '@/types/agent';
 import {
   ALL_BRIEF_SECTIONS,
-  BRIEF_PRESETS,
-  BRIEF_SECTION_META,
   DEFAULT_BRIEF_SECTIONS,
+  getBriefPresets,
+  getBriefSectionMeta,
+  getStepMeta,
   makeInitialBriefState,
-  STEP_META,
 } from '@/components/ai-reports/wizard-config';
 import {
   briefToMultiline,
@@ -75,70 +75,133 @@ import {
   EditableAgentPlan,
   WizardStep,
 } from '@/components/ai-reports/wizard-types';
+import { useI18n } from '@/providers/LanguageProvider';
 
 type PlanWorkspaceTab = 'overview' | 'reasoning' | 'sections' | 'charts';
 
-const PLAN_WORKSPACE_TABS: Array<{
+function getPlanWorkspaceTabs(language: 'en' | 'vi'): Array<{
   key: PlanWorkspaceTab;
   label: string;
   caption: string;
-}> = [
-  { key: 'overview', label: 'Overview', caption: 'Sanity-check the draft' },
-  { key: 'reasoning', label: 'Reasoning', caption: 'See how the Agent thought' },
-  { key: 'sections', label: 'Sections', caption: 'Refine narrative flow' },
-  { key: 'charts', label: 'Charts', caption: 'Keep, rename, or skip charts' },
-];
+}> {
+  if (language === 'vi') {
+    return [
+      { key: 'overview', label: 'Tổng quan', caption: 'Kiểm tra nhanh draft' },
+      { key: 'reasoning', label: 'Reasoning', caption: 'Xem AI đã suy luận ra sao' },
+      { key: 'sections', label: 'Sections', caption: 'Tinh chỉnh narrative flow' },
+      { key: 'charts', label: 'Charts', caption: 'Giữ, đổi tên hoặc bỏ chart' },
+    ];
+  }
+  return [
+    { key: 'overview', label: 'Overview', caption: 'Sanity-check the draft' },
+    { key: 'reasoning', label: 'Reasoning', caption: 'See how the Agent thought' },
+    { key: 'sections', label: 'Sections', caption: 'Refine narrative flow' },
+    { key: 'charts', label: 'Charts', caption: 'Keep, rename, or skip charts' },
+  ];
+}
 
-const BRIEF_SECTION_FOCUS: Record<
+function getBriefSectionFocus(language: 'en' | 'vi'): Record<
   BriefSectionKey,
   { title: string; description: string; bullets: string[] }
-> = {
-  essentials: {
-    title: 'What the Agent needs first',
-    description: 'These fields shape the first good draft. They are the difference between a useful report and a generic one.',
-    bullets: [
-      'State the business goal in plain language, not just the metric list.',
-      'Name the audience so the Agent knows whether to sound executive or operational.',
-      'Give at least one KPI and one must-answer question before generating the draft.',
-    ],
-  },
-  intent: {
-    title: 'How this changes the report shape',
-    description: 'These controls influence comparison logic, section order, and how assertive the final narrative should feel.',
-    bullets: [
-      'Use comparison period when the reader expects trend or change analysis.',
-      'Must-have sections tell the Agent what should never be omitted.',
-      'Planning mode belongs here because it changes how hard the Agent reasons.',
-    ],
-  },
-  dataset: {
-    title: 'Where extra context helps most',
-    description: 'Use this area when table names, field names, or business meaning are ambiguous.',
-    bullets: [
-      'Role hints help the Agent understand which table is the core signal vs supporting context.',
-      'Glossary items reduce the risk of writing the wrong business interpretation.',
-      'Known issues and columns to avoid prevent overconfident insights on weak data.',
-    ],
-  },
-  narrative: {
-    title: 'How much written analysis to ship',
-    description: 'These settings shape the text layer around the dashboard rather than the raw chart mechanics.',
-    bullets: [
-      'Insight depth controls how dense the commentary should feel.',
-      'Recommendation and confidence modes affect how bold the written output becomes.',
-      'Narrative toggles tell the Agent whether to add prose, actions, and quality caveats.',
-    ],
-  },
-  advanced: {
-    title: 'Reserve this for edge cases',
-    description: 'Only use Advanced when the report has special instructions that do not fit the sections above.',
-    bullets: [
-      'Use notes for caveats, internal rules, or special constraints.',
-      'Avoid repeating information already covered in the brief.',
-      'If the essentials are strong, this section can be left blank.',
-    ],
-  },
-};
+> {
+  if (language === 'vi') {
+    return {
+      essentials: {
+        title: 'Những gì AI cần trước tiên',
+        description: 'Các trường này quyết định chất lượng bản draft đầu tiên. Chúng là ranh giới giữa một report hữu ích và một report chung chung.',
+        bullets: [
+          'Hãy viết mục tiêu nghiệp vụ bằng ngôn ngữ đời thường, không chỉ liệt kê metric.',
+          'Nêu rõ audience để AI biết nên viết theo giọng executive hay operational.',
+          'Nên có ít nhất một KPI và một câu hỏi bắt buộc phải trả lời trước khi generate draft.',
+        ],
+      },
+      intent: {
+        title: 'Cách phần này đổi hình dáng report',
+        description: 'Các điều khiển ở đây ảnh hưởng tới logic so sánh, thứ tự section và độ quyết đoán của narrative cuối cùng.',
+        bullets: [
+          'Dùng comparison period khi người đọc kỳ vọng phân tích xu hướng hoặc thay đổi.',
+          'Must-have sections cho AI biết phần nào tuyệt đối không được bỏ sót.',
+          'Planning mode đặt ở đây vì nó thay đổi mức độ suy luận của Agent.',
+        ],
+      },
+      dataset: {
+        title: 'Nơi ngữ cảnh bổ sung có ích nhất',
+        description: 'Hãy dùng khu vực này khi tên bảng, tên cột hoặc ý nghĩa nghiệp vụ còn mơ hồ.',
+        bullets: [
+          'Role hints giúp AI hiểu bảng nào là tín hiệu chính và bảng nào là ngữ cảnh hỗ trợ.',
+          'Glossary giảm rủi ro AI diễn giải sai ý nghĩa nghiệp vụ.',
+          'Known issues và columns to avoid giúp AI tránh viết quá tự tin trên dữ liệu yếu.',
+        ],
+      },
+      narrative: {
+        title: 'Mức độ phân tích bằng văn bản sẽ đi kèm',
+        description: 'Các thiết lập này ảnh hưởng đến lớp text quanh dashboard, không chỉ cơ chế chart thô.',
+        bullets: [
+          'Insight depth quyết định narrative sẽ ngắn gọn hay dày hơn.',
+          'Recommendation và confidence modes ảnh hưởng tới mức độ mạnh tay của kết luận.',
+          'Narrative toggles cho AI biết có nên thêm prose, action và data quality caveat hay không.',
+        ],
+      },
+      advanced: {
+        title: 'Chỉ dùng cho trường hợp đặc biệt',
+        description: 'Chỉ nên dùng Advanced khi report có những chỉ dẫn đặc biệt không nằm ở các phần trên.',
+        bullets: [
+          'Dùng notes cho caveat, rule nội bộ hoặc constraint đặc biệt.',
+          'Tránh lặp lại thông tin đã có trong brief.',
+          'Nếu phần essentials đã mạnh, khu vực này có thể để trống.',
+        ],
+      },
+    };
+  }
+
+  return {
+    essentials: {
+      title: 'What the Agent needs first',
+      description: 'These fields shape the first good draft. They are the difference between a useful report and a generic one.',
+      bullets: [
+        'State the business goal in plain language, not just the metric list.',
+        'Name the audience so the Agent knows whether to sound executive or operational.',
+        'Give at least one KPI and one must-answer question before generating the draft.',
+      ],
+    },
+    intent: {
+      title: 'How this changes the report shape',
+      description: 'These controls influence comparison logic, section order, and how assertive the final narrative should feel.',
+      bullets: [
+        'Use comparison period when the reader expects trend or change analysis.',
+        'Must-have sections tell the Agent what should never be omitted.',
+        'Planning mode belongs here because it changes how hard the Agent reasons.',
+      ],
+    },
+    dataset: {
+      title: 'Where extra context helps most',
+      description: 'Use this area when table names, field names, or business meaning are ambiguous.',
+      bullets: [
+        'Role hints help the Agent understand which table is the core signal vs supporting context.',
+        'Glossary items reduce the risk of writing the wrong business interpretation.',
+        'Known issues and columns to avoid prevent overconfident insights on weak data.',
+      ],
+    },
+    narrative: {
+      title: 'How much written analysis to ship',
+      description: 'These settings shape the text layer around the dashboard rather than the raw chart mechanics.',
+      bullets: [
+        'Insight depth controls how dense the commentary should feel.',
+        'Recommendation and confidence modes affect how bold the written output becomes.',
+        'Narrative toggles tell the Agent whether to add prose, actions, and quality caveats.',
+      ],
+    },
+    advanced: {
+      title: 'Reserve this for edge cases',
+      description: 'Only use Advanced when the report has special instructions that do not fit the sections above.',
+      bullets: [
+        'Use notes for caveats, internal rules, or special constraints.',
+        'Avoid repeating information already covered in the brief.',
+        'If the essentials are strong, this section can be left blank.',
+      ],
+    },
+  };
+}
 
 
 async function getAuthToken(): Promise<string> {
@@ -158,6 +221,7 @@ export function AIReportWizard({
   backHref = '/ai-reports',
 }: AIReportWizardProps) {
   const router = useRouter();
+  const { language } = useI18n();
   const isPageMode = mode === 'page';
   const isActive = isPageMode || isOpen;
   const handleClose = () => {
@@ -167,7 +231,12 @@ export function AIReportWizard({
     }
     router.push(backHref);
   };
-  const initialBrief = useMemo(() => makeInitialBriefState(), []);
+  const initialBrief = useMemo(() => makeInitialBriefState(language), [language]);
+  const stepMeta = useMemo(() => getStepMeta(language), [language]);
+  const briefSectionMeta = useMemo(() => getBriefSectionMeta(language), [language]);
+  const briefPresets = useMemo(() => getBriefPresets(language), [language]);
+  const planWorkspaceTabs = useMemo(() => getPlanWorkspaceTabs(language), [language]);
+  const briefSectionFocus = useMemo(() => getBriefSectionFocus(language), [language]);
   const [step, setStep] = useState<WizardStep>('select');
   const [activeSpecId, setActiveSpecId] = useState<number | null>(initialSpecId);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
@@ -331,6 +400,7 @@ export function AIReportWizard({
 
   const briefPayload = useMemo<AgentBriefRequest>(
     () => ({
+      output_language: language,
       report_name: reportName.trim() || undefined,
       report_type: reportType || undefined,
       goal: goal.trim(),
@@ -395,10 +465,11 @@ export function AIReportWizard({
       tableRolesHintText,
       timeframe,
       whyNow,
+      language,
     ],
   );
 
-  const currentStepIndex = STEP_META.findIndex((item) => item.key === step);
+  const currentStepIndex = stepMeta.findIndex((item) => item.key === step);
   const buildPlan = useMemo(() => (draftPlan ? toBuildPlan(draftPlan) : null), [draftPlan]);
   const enabledChartCount = buildPlan?.charts.length ?? 0;
   const enabledSectionCount = buildPlan?.sections.length ?? 0;
@@ -426,8 +497,8 @@ export function AIReportWizard({
   const briefRoleHints = useMemo(() => splitLines(tableRolesHintText), [tableRolesHintText]);
   const briefImportantDimensions = useMemo(() => splitLines(importantDimensionsText), [importantDimensionsText]);
   const visibleBriefSections = useMemo(
-    () => BRIEF_SECTION_META.filter((section) => !section.optional || expandedBriefSections.includes(section.key)),
-    [expandedBriefSections],
+    () => briefSectionMeta.filter((section) => !section.optional || expandedBriefSections.includes(section.key)),
+    [briefSectionMeta, expandedBriefSections],
   );
   const briefSectionProgress = useMemo<Record<BriefSectionKey, { filled: number; total: number; ready: boolean }>>(
     () => ({
@@ -515,8 +586,8 @@ export function AIReportWizard({
     [activeBriefSectionMeta?.key, visibleBriefSections],
   );
   const activeBriefFocus = useMemo(
-    () => BRIEF_SECTION_FOCUS[activeBriefSectionMeta?.key ?? 'essentials'],
-    [activeBriefSectionMeta?.key],
+    () => briefSectionFocus[activeBriefSectionMeta?.key ?? 'essentials'],
+    [activeBriefSectionMeta?.key, briefSectionFocus],
   );
   const activeBriefSnapshot = useMemo(() => {
     switch (activeBriefSectionMeta?.key) {
@@ -919,8 +990,8 @@ export function AIReportWizard({
     setExpandedBriefSections(DEFAULT_BRIEF_SECTIONS);
   }
 
-  function applyBriefPreset(presetKey: (typeof BRIEF_PRESETS)[number]['key']) {
-    const preset = BRIEF_PRESETS.find((item) => item.key === presetKey);
+  function applyBriefPreset(presetKey: (typeof briefPresets)[number]['key']) {
+    const preset = briefPresets.find((item) => item.key === presetKey);
     if (!preset) return;
 
     setGoal(preset.goal);
@@ -1284,7 +1355,7 @@ export function AIReportWizard({
       <div className="space-y-5">
         <div className="border-b border-gray-200 pb-5">
           <div className="grid gap-3 md:grid-cols-4">
-            {STEP_META.map((item, index) => {
+            {stepMeta.map((item, index) => {
               const active = currentStepIndex === index;
               const complete = currentStepIndex > index;
               return (
@@ -1635,7 +1706,7 @@ export function AIReportWizard({
                 Use a preset to prefill the brief in a sensible direction, then fine-tune only the parts that matter for this report.
               </p>
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                {BRIEF_PRESETS.map((preset) => (
+                {briefPresets.map((preset) => (
                   <button
                     key={preset.key}
                     type="button"
@@ -2426,7 +2497,7 @@ export function AIReportWizard({
                   <p className="mt-1 text-sm text-gray-500">Read in order: overview first, reasoning second, then edit sections and charts.</p>
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                  {PLAN_WORKSPACE_TABS.map((tab) => (
+                  {planWorkspaceTabs.map((tab) => (
                     <button
                       key={tab.key}
                       type="button"

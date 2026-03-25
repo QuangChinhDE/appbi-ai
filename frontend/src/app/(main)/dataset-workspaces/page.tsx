@@ -11,6 +11,7 @@ import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
+import { useI18n } from '@/providers/LanguageProvider';
 import { 
   useWorkspaces, 
   useCreateWorkspace, 
@@ -20,6 +21,7 @@ import {
 
 export default function DatasetWorkspacesPage() {
   const router = useRouter();
+  const { t, locale } = useI18n();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   
   const { data: workspaces, isLoading, error } = useWorkspaces();
@@ -94,29 +96,29 @@ export default function DatasetWorkspacesPage() {
   return (
     <>
       <PageListLayout
-        title="Dataset Workspaces"
+        title={t('module.workspaces.title')}
         description="Table-based datasets for exploring and analyzing data from your datasources"
         overview={(
           <ModuleOverview
             icon={Database}
-            title="Prepare reusable table workspaces before you explore or automate"
-            description="Dataset Workspaces keep synced tables, lightweight transformations, and table context in one place. This is the staging area for Explore, AI descriptions, and AI Reports."
-            badges={['Tables', 'Transformations', 'AI context']}
+            title={t('overview.workspaces.title')}
+            description={t('overview.workspaces.description')}
+            badges={[t('overview.workspaces.badge1'), t('overview.workspaces.badge2'), t('overview.workspaces.badge3')]}
             stats={[
               {
-                label: 'Workspaces',
+                label: t('overview.workspaces.count'),
                 value: workspaceItems.length,
-                helper: 'Named workspaces available for table-based analysis',
+                helper: t('overview.workspaces.countHelper'),
               },
               {
-                label: 'Documented',
+                label: t('overview.workspaces.documented'),
                 value: documentedWorkspaces,
-                helper: 'Workspaces that already carry a written description',
+                helper: t('overview.workspaces.documentedHelper'),
               },
               {
-                label: 'Updated 7d',
+                label: t('overview.workspaces.updated'),
                 value: updatedThisWeek,
-                helper: 'Workspaces touched in the last seven days',
+                helper: t('overview.workspaces.updatedHelper'),
               },
             ]}
           />
@@ -127,12 +129,12 @@ export default function DatasetWorkspacesPage() {
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
           >
             <Plus className="w-4 h-4" />
-            New Workspace
+            {t('action.newWorkspace')}
           </button>
         ) : undefined}
         isLoading={isLoading}
-        loadingText="Loading workspaces…"
-        searchPlaceholder="Search workspaces…"
+        loadingText={t('common.loading')}
+        searchPlaceholder={t('common.search')}
         defaultView="grid"
       >
         {({ viewMode, filterText }) => {
@@ -197,7 +199,7 @@ export default function DatasetWorkspacesPage() {
                       <div className="flex items-center gap-4 text-xs text-gray-500">
                         <div className="flex items-center gap-1">
                           <Calendar className="w-3 h-3" />
-                          <span>{new Date(workspace.updated_at).toLocaleDateString()}</span>
+                          <span>{new Date(workspace.updated_at).toLocaleDateString(locale)}</span>
                         </div>
                       </div>
                     </button>

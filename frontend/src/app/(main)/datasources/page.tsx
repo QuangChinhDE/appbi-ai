@@ -10,6 +10,7 @@ import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { PageListLayout } from '@/components/common/PageListLayout';
+import { useI18n } from '@/providers/LanguageProvider';
 import { toast } from 'sonner';
 import { useCurrentUser } from '@/hooks/use-current-user';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
@@ -38,6 +39,7 @@ type View = 'list' | 'query';
 
 export default function DataSourcesPage() {
   const router = useRouter();
+  const { t } = useI18n();
   const [currentView, setCurrentView] = useState<View>('list');
   const [sourceToDelete, setSourceToDelete] = useState<DataSource | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
@@ -149,29 +151,29 @@ export default function DataSourcesPage() {
   return (
     <>
       <PageListLayout
-        title="Data Sources"
+        title={t('module.datasources.title')}
         description={`${dataSources.length} connection${dataSources.length !== 1 ? 's' : ''} configured`}
         overview={(
           <ModuleOverview
             icon={Database}
-            title="Keep every data connection visible before it feeds workspaces and reports"
-            description="Data Sources is the connection layer of the platform. Manage source configs, test access, and track which connectors are ready before syncing tables into Dataset Workspaces."
-            badges={['Connections', 'Query runner', 'Sync inputs']}
+            title={t('overview.datasources.title')}
+            description={t('overview.datasources.description')}
+            badges={[t('overview.datasources.badge1'), t('overview.datasources.badge2'), t('overview.datasources.badge3')]}
             stats={[
               {
-                label: 'Connections',
+                label: t('overview.datasources.connections'),
                 value: dataSources.length,
-                helper: 'Configured sources currently available to the platform',
+                helper: t('overview.datasources.connectionsHelper'),
               },
               {
-                label: 'Source types',
+                label: t('overview.datasources.types'),
                 value: distinctSourceTypes,
-                helper: 'Different connector categories now represented',
+                helper: t('overview.datasources.typesHelper'),
               },
               {
-                label: 'Sheets / Manual',
+                label: t('overview.datasources.sheetsManual'),
                 value: `${googleSheetsSources} / ${manualSources}`,
-                helper: 'Quick read on spreadsheet and manual-entry sources',
+                helper: t('overview.datasources.sheetsManualHelper'),
               },
             ]}
           />
@@ -182,12 +184,12 @@ export default function DataSourcesPage() {
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
           >
             <Plus className="w-4 h-4" />
-            New Data Source
+            {t('action.newDataSource')}
           </button>
         ) : undefined}
         isLoading={isLoading}
-        loadingText="Loading data sources…"
-        searchPlaceholder="Search by name or type…"
+        loadingText={t('common.loading')}
+        searchPlaceholder={t('common.search')}
         defaultView="list"
       >
         {({ viewMode, filterText }) => {

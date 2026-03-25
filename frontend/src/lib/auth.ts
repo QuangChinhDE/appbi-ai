@@ -14,6 +14,7 @@ export interface CurrentUser {
   id: string;
   email: string;
   full_name: string;
+  preferred_language: 'en' | 'vi';
   status: string;
   last_login_at: string | null;
   created_at: string;

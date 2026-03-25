@@ -1,25 +1,9 @@
-/**
- * Standard layout for all module list pages.
- *
- * Usage (render prop — recommended):
- *   <PageListLayout
- *     title="Dashboards"
- *     description="3 dashboards"
- *     action={<button>New</button>}
- *     isLoading={isLoading}
- *     defaultView="grid"
- *   >
- *     {({ viewMode, filterText }) => (
- *       viewMode === 'grid' ? <CardGrid items={filtered} /> : <Table items={filtered} />
- *     )}
- *   </PageListLayout>
- *
- * Also accepts plain ReactNode children for backward-compat.
- */
 'use client';
 
 import React, { useState } from 'react';
 import { Loader2, Search, LayoutGrid, List as ListIcon } from 'lucide-react';
+
+import { useI18n } from '@/providers/LanguageProvider';
 
 export type ViewMode = 'grid' | 'list';
 
@@ -29,31 +13,16 @@ export interface ToolbarCtx {
 }
 
 interface PageListLayoutProps {
-  /** Page heading */
   title: string;
-  /** Subtitle / item count shown below the title */
   description?: React.ReactNode;
-  /** Optional shared module overview block shown above the toolbar */
   overview?: React.ReactNode;
-  /** Primary action button (top-right of header) */
   action?: React.ReactNode;
-  /** Renders a centered spinner when true */
   isLoading?: boolean;
-  /** Label next to the spinner. Default: "Loading…" */
   loadingText?: string;
-  /** Show the search input. Default: true */
   searchable?: boolean;
-  /** Placeholder for the search input. Default: "Search…" */
   searchPlaceholder?: string;
-  /** Show the grid / list toggle. Default: true */
   viewToggle?: boolean;
-  /** Initial view mode. Default: 'grid' */
   defaultView?: ViewMode;
-  /**
-   * Render prop receives current toolbar state so each page can
-   * filter its data and switch between grid / list layouts.
-   * Also accepts plain ReactNode for backward-compat.
-   */
   children: ((ctx: ToolbarCtx) => React.ReactNode) | React.ReactNode;
 }
 
@@ -63,22 +32,23 @@ export function PageListLayout({
   overview,
   action,
   isLoading = false,
-  loadingText = 'Loading…',
+  loadingText,
   searchable = true,
-  searchPlaceholder = 'Search…',
+  searchPlaceholder,
   viewToggle = true,
   defaultView = 'grid',
   children,
 }: PageListLayoutProps) {
+  const { t } = useI18n();
   const [viewMode, setViewMode] = useState<ViewMode>(defaultView);
   const [filterText, setFilterText] = useState('');
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-full">
+      <div className="flex h-full items-center justify-center">
         <div className="text-center">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-600 mx-auto mb-3" />
-          <p className="text-gray-600">{loadingText}</p>
+          <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-blue-600" />
+          <p className="text-gray-600">{loadingText ?? t('common.loading')}</p>
         </div>
       </div>
     );
@@ -89,9 +59,8 @@ export function PageListLayout({
 
   return (
     <div className="p-8">
-      {/* ── Header ────────────────────────────────────────────── */}
       <div className="mb-6">
-        <div className="flex items-center justify-between mb-2">
+        <div className="mb-2 flex items-center justify-between">
           <h1 className="text-2xl font-bold text-gray-900">{title}</h1>
           {action && <div>{action}</div>}
         </div>
@@ -100,51 +69,45 @@ export function PageListLayout({
 
       {overview && <div className="mb-6">{overview}</div>}
 
-      {/* ── Toolbar ───────────────────────────────────────────── */}
       {showToolbar && (
-        <div className="flex items-center gap-3 mb-6">
+        <div className="mb-6 flex items-center gap-3">
           {searchable && (
-            <div className="relative flex-1 max-w-sm">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+            <div className="relative max-w-sm flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
                 value={filterText}
-                onChange={(e) => setFilterText(e.target.value)}
-                placeholder={searchPlaceholder}
-                className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                onChange={(event) => setFilterText(event.target.value)}
+                placeholder={searchPlaceholder ?? t('common.search')}
+                className="w-full rounded-md border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
           )}
           {viewToggle && (
-            <div className="flex items-center border border-gray-300 rounded-md overflow-hidden ml-auto">
+            <div className="ml-auto flex items-center overflow-hidden rounded-md border border-gray-300">
               <button
                 onClick={() => setViewMode('grid')}
                 className={`p-2 transition-colors ${
-                  viewMode === 'grid'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white text-gray-500 hover:bg-gray-50'
+                  viewMode === 'grid' ? 'bg-blue-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-50'
                 }`}
-                title="Grid view"
+                title={t('common.gridView')}
               >
-                <LayoutGrid className="w-4 h-4" />
+                <LayoutGrid className="h-4 w-4" />
               </button>
               <button
                 onClick={() => setViewMode('list')}
                 className={`p-2 transition-colors ${
-                  viewMode === 'list'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white text-gray-500 hover:bg-gray-50'
+                  viewMode === 'list' ? 'bg-blue-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-50'
                 }`}
-                title="List view"
+                title={t('common.listView')}
               >
-                <ListIcon className="w-4 h-4" />
+                <ListIcon className="h-4 w-4" />
               </button>
             </div>
           )}
         </div>
       )}
 
-      {/* ── Content ───────────────────────────────────────────── */}
       {typeof children === 'function' ? children(ctx) : children}
     </div>
   );

@@ -92,6 +92,11 @@ export const authApi = {
     await apiClient.post('/auth/change-password', { old_password, new_password });
   },
 
+  updatePreferences: async (payload: { preferred_language: 'en' | 'vi' }) => {
+    const response = await apiClient.patch('/auth/preferences', payload);
+    return response.data;
+  },
+
   logout: async () => {
     // Call the Next.js proxy so the cookie is cleared on the same origin
     await fetch('/api/auth/logout', { method: 'POST' });

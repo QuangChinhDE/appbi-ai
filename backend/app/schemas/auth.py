@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional, Dict, Literal
 from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
 
 from app.models.user import UserStatus
@@ -32,6 +32,7 @@ class UserCreate(BaseModel):
 class UserUpdate(BaseModel):
     full_name: Optional[str] = Field(None, min_length=1, max_length=255)
     status: Optional[UserStatus] = None
+    preferred_language: Optional[Literal["en", "vi"]] = None
 
 
 class UserResponse(BaseModel):
@@ -40,6 +41,7 @@ class UserResponse(BaseModel):
     id: uuid.UUID
     email: str
     full_name: str
+    preferred_language: Literal["en", "vi"] = "en"
     status: UserStatus
     permissions: Dict[str, str] = {}
     last_login_at: Optional[datetime] = None
@@ -56,6 +58,10 @@ class TokenResponse(BaseModel):
 class ChangePasswordRequest(BaseModel):
     old_password: str = Field(..., min_length=1)
     new_password: str = Field(..., min_length=8)
+
+
+class UserPreferencesUpdate(BaseModel):
+    preferred_language: Literal["en", "vi"]
 
 
 # ── Shares ────────────────────────────────────────────────────────────────────

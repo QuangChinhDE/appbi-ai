@@ -17,7 +17,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import ALGORITHM, get_current_user
 from app.models.user import User
-from app.schemas.auth import ChangePasswordRequest, LoginRequest, TokenResponse, UserResponse
+from app.schemas.auth import ChangePasswordRequest, LoginRequest, TokenResponse, UserPreferencesUpdate, UserResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -135,6 +135,19 @@ def change_password(
     current_user.password_hash = _pwd.hash(body.new_password)
     db.commit()
     return {"message": "Password changed successfully"}
+
+
+@router.patch("/preferences", response_model=UserResponse)
+def update_preferences(
+    body: UserPreferencesUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update current user's UI preferences."""
+    current_user.preferred_language = body.preferred_language
+    db.commit()
+    db.refresh(current_user)
+    return UserResponse.model_validate(current_user)
 
 
 @router.post("/logout")

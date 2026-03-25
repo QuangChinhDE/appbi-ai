@@ -18,6 +18,7 @@ import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { useAgentReportSpecs, useDeleteAgentReportSpec } from '@/hooks/use-agent-report-specs';
 import { hasPermission, usePermissions } from '@/hooks/use-permissions';
+import { useI18n } from '@/providers/LanguageProvider';
 
 function statusTone(status: string) {
   if (status === 'ready' || status === 'succeeded') return 'bg-emerald-50 text-emerald-700 border-emerald-200';
@@ -27,6 +28,7 @@ function statusTone(status: string) {
 
 export default function AIReportsPage() {
   const router = useRouter();
+  const { t, locale } = useI18n();
 
   const { data: permData } = usePermissions();
   const canViewAgent = hasPermission(permData?.permissions, 'ai_agent', 'view');
@@ -52,8 +54,8 @@ export default function AIReportsPage() {
   async function handleDeleteReport(specId: number, specName: string, hasDashboard: boolean) {
     const confirmed = window.confirm(
       hasDashboard
-        ? `Delete AI report "${specName}"?\n\nThis removes the brief and run history, but keeps the linked dashboard in Dashboards.`
-        : `Delete AI report "${specName}"?\n\nThis removes the saved brief and run history.`,
+        ? t('aiReports.delete.withDashboard', { name: specName })
+        : t('aiReports.delete.withoutDashboard', { name: specName }),
     );
     if (!confirmed) return;
 
@@ -74,12 +76,12 @@ export default function AIReportsPage() {
               <Bot className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-2xl font-semibold text-gray-900">AI Reports</h1>
-              <p className="mt-1 text-sm text-gray-500">This module is separate from dashboards and requires AI Agent access.</p>
+              <h1 className="text-2xl font-semibold text-gray-900">{t('aiReports.permissionTitle')}</h1>
+              <p className="mt-1 text-sm text-gray-500">{t('aiReports.permissionDescription')}</p>
             </div>
           </div>
           <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-            You do not currently have permission to view AI Reports.
+            {t('aiReports.permissionMessage')}
           </div>
         </div>
       </div>
@@ -89,29 +91,29 @@ export default function AIReportsPage() {
   return (
     <>
       <PageListLayout
-        title="AI Reports"
+        title={t('module.aiReports.title')}
         description={reportCountLabel}
         overview={(
           <ModuleOverview
             icon={Bot}
-            title="Plan, build, and rerun AI-generated reports before polishing them in Dashboards"
-            description="Use AI Reports for the brief, reasoning, draft review, and run history. When the output looks right, continue polishing the result in Dashboards without losing the report narrative or lifecycle."
-            badges={['Brief', 'Draft review', 'Run history', 'Narrative reader']}
+            title={t('overview.aiReports.title')}
+            description={t('overview.aiReports.description')}
+            badges={[t('overview.aiReports.badge1'), t('overview.aiReports.badge2'), t('overview.aiReports.badge3'), t('overview.aiReports.badge4')]}
             stats={[
               {
-                label: 'Saved reports',
+                label: t('overview.aiReports.saved'),
                 value: savedReports.length,
-                helper: 'All drafts and report specs currently in the system',
+                helper: t('overview.aiReports.savedHelper'),
               },
               {
-                label: 'Ready now',
+                label: t('overview.aiReports.ready'),
                 value: reportStats.ready,
-                helper: 'Reports ready to rerun, review, or hand off',
+                helper: t('overview.aiReports.readyHelper'),
               },
               {
-                label: 'Linked dashboards',
+                label: t('overview.aiReports.linked'),
                 value: reportStats.linkedDashboards,
-                helper: 'Outputs already available to refine in Dashboards',
+                helper: t('overview.aiReports.linkedHelper'),
               },
             ]}
           />
@@ -122,12 +124,12 @@ export default function AIReportsPage() {
             className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700"
           >
             <Bot className="h-4 w-4" />
-            New AI Report
+            {t('aiReports.new')}
           </button>
         ) : undefined}
         isLoading={isLoading}
-        loadingText="Loading AI reports..."
-        searchPlaceholder="Search AI reports..."
+        loadingText={t('aiReports.loading')}
+        searchPlaceholder={t('aiReports.searchPlaceholder')}
         defaultView="grid"
       >
         {({ viewMode, filterText }) => {
@@ -147,17 +149,15 @@ export default function AIReportsPage() {
                   <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
                     <FileText className="h-6 w-6" />
                   </div>
-                  <h3 className="mt-4 text-lg font-semibold text-gray-900">No AI reports yet</h3>
-                  <p className="mt-2 text-sm text-gray-500">
-                    Create your first AI report to turn a business brief into a saved draft, dashboard, and narrative reader.
-                  </p>
+                  <h3 className="mt-4 text-lg font-semibold text-gray-900">{t('aiReports.noReportsTitle')}</h3>
+                  <p className="mt-2 text-sm text-gray-500">{t('aiReports.noReportsDescription')}</p>
                   {canEditAgent && (
                     <button
                       onClick={() => router.push('/ai-reports/new')}
                       className="mt-6 inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
                     >
                       <Bot className="h-4 w-4" />
-                      New AI Report
+                      {t('aiReports.new')}
                     </button>
                   )}
                 </div>
@@ -175,7 +175,7 @@ export default function AIReportsPage() {
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <p className="font-semibold text-gray-900">{spec.name}</p>
-                          <p className="mt-1 text-xs uppercase tracking-[0.16em] text-gray-500">Spec #{spec.id}</p>
+                          <p className="mt-1 text-xs uppercase tracking-[0.16em] text-gray-500">{t('aiReports.specLabel')} #{spec.id}</p>
                         </div>
                         <span className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] ${statusTone(spec.status)}`}>
                           {spec.status}
@@ -186,60 +186,62 @@ export default function AIReportsPage() {
                       )}
                       <div className="mt-4 grid gap-3 text-xs text-gray-500 sm:grid-cols-2">
                         <div className="rounded-lg bg-gray-50 px-3 py-2">
-                          <p className="font-medium text-gray-700">Tables in scope</p>
+                          <p className="font-medium text-gray-700">{t('aiReports.inScope')}</p>
                           <p className="mt-1">{spec.selected_tables_snapshot?.length ?? 0}</p>
                         </div>
                         <div className="rounded-lg bg-gray-50 px-3 py-2">
-                          <p className="font-medium text-gray-700">Latest dashboard</p>
-                          <p className="mt-1">{spec.latest_dashboard_id ? `#${spec.latest_dashboard_id}` : 'Draft only'}</p>
+                          <p className="font-medium text-gray-700">{t('aiReports.latestDashboard')}</p>
+                          <p className="mt-1">{spec.latest_dashboard_id ? `#${spec.latest_dashboard_id}` : t('common.draftOnly')}</p>
                         </div>
                       </div>
                       <div className="mt-4 flex items-center justify-between text-xs text-gray-500">
                         <span className="inline-flex items-center gap-1">
                           <History className="h-3.5 w-3.5" />
-                          Saved report
+                          {t('aiReports.savedReport')}
                         </span>
                         <span className="inline-flex items-center gap-1">
                           <Clock className="h-3.5 w-3.5" />
-                          {spec.last_run_at ? new Date(spec.last_run_at).toLocaleDateString('vi-VN') : 'Not run yet'}
+                          {spec.last_run_at ? new Date(spec.last_run_at).toLocaleDateString(locale) : t('common.notRunYet')}
                         </span>
                       </div>
-                      <div className="mt-5 flex flex-wrap gap-2">
+                      <div className="mt-5 space-y-2">
                         {spec.latest_dashboard_id && (
                           <button
                             onClick={() => router.push(`/dashboards/${spec.latest_dashboard_id}`)}
-                            className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
+                            className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
                           >
                             <LayoutDashboard className="h-4 w-4" />
-                            Edit in dashboard
+                            {t('aiReports.editInDashboard')}
                           </button>
                         )}
-                        <button
-                          onClick={() => router.push(`/ai-reports/${spec.id}`)}
-                          className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
-                        >
-                          <Sparkles className="h-4 w-4" />
-                          Read report
-                        </button>
-                        {canEditAgent && (
+                        <div className={`grid gap-2 ${canEditAgent ? 'grid-cols-3' : 'grid-cols-1'}`}>
                           <button
-                            onClick={() => router.push(`/ai-reports/${spec.id}/edit`)}
-                            className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+                            onClick={() => router.push(`/ai-reports/${spec.id}`)}
+                            className="inline-flex min-w-0 items-center justify-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
                           >
-                            <PencilLine className="h-4 w-4" />
-                            Edit brief
+                            <Sparkles className="h-4 w-4 shrink-0" />
+                            <span className="truncate">{t('aiReports.read')}</span>
                           </button>
-                        )}
-                        {canEditAgent && (
-                          <button
-                            onClick={() => handleDeleteReport(spec.id, spec.name, Boolean(spec.latest_dashboard_id))}
-                            disabled={deleteSpecMutation.isPending}
-                            className="inline-flex items-center gap-2 rounded-md border border-rose-200 bg-white px-3 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                            Delete
-                          </button>
-                        )}
+                          {canEditAgent && (
+                            <button
+                              onClick={() => router.push(`/ai-reports/${spec.id}/edit`)}
+                              className="inline-flex min-w-0 items-center justify-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+                            >
+                              <PencilLine className="h-4 w-4 shrink-0" />
+                              <span className="truncate">{t('aiReports.editBrief')}</span>
+                            </button>
+                          )}
+                          {canEditAgent && (
+                            <button
+                              onClick={() => handleDeleteReport(spec.id, spec.name, Boolean(spec.latest_dashboard_id))}
+                              disabled={deleteSpecMutation.isPending}
+                              className="inline-flex min-w-0 items-center justify-center gap-2 rounded-md border border-rose-200 bg-white px-3 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              <Trash2 className="h-4 w-4 shrink-0" />
+                              <span className="truncate">{t('common.delete')}</span>
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   ))}

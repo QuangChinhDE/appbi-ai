@@ -11,10 +11,12 @@ import { ShareDialog } from '@/components/common/ShareDialog';
 import { ChatSessionList } from '@/components/ai-chat/ChatSessionList';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { AI_CHAT_HTTP_URL } from '@/lib/ai-services';
+import { useI18n } from '@/providers/LanguageProvider';
 import type { SessionSummary } from '@/components/ai-chat/ChatSessionList';
 
 export default function ChatListPage() {
   const router = useRouter();
+  const { t } = useI18n();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -117,38 +119,38 @@ export default function ChatListPage() {
   return (
     <>
       <PageListLayout
-        title="AI Chat"
+        title={t('module.chat.title')}
         description={`${sessions.length} conversation${sessions.length !== 1 ? 's' : ''}`}
         overview={(
           <ModuleOverview
             icon={MessageSquareText}
-            title="Keep conversational analysis separate from saved reports and dashboards"
-            description="AI Chat is the fast back-and-forth workspace for ad hoc questions, follow-up prompts, and shared discussions. Use it when you want exploration in conversation form instead of a persisted report workflow."
-            badges={['Ad hoc analysis', 'Conversations', 'Shareable sessions']}
+            title={t('overview.chat.title')}
+            description={t('overview.chat.description')}
+            badges={[t('overview.chat.badge1'), t('overview.chat.badge2'), t('overview.chat.badge3')]}
             stats={[
               {
-                label: 'Conversations',
+                label: t('overview.chat.conversations'),
                 value: sessions.length,
-                helper: 'Saved chat threads currently available to reopen',
+                helper: t('overview.chat.conversationsHelper'),
               },
               {
-                label: 'Active 24h',
+                label: t('overview.chat.active'),
                 value: activeToday,
-                helper: 'Sessions with activity in the last 24 hours',
+                helper: t('overview.chat.activeHelper'),
               },
               {
-                label: 'Service status',
+                label: t('overview.chat.service'),
                 value:
                   chatServiceAvailable === false ? (
                     <span className="inline-flex rounded-full bg-rose-50 px-3 py-1 text-sm font-semibold text-rose-700">
-                      Offline
+                      {t('overview.chat.offline')}
                     </span>
                   ) : (
                     <span className="inline-flex rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700">
-                      Online
+                      {t('overview.chat.online')}
                     </span>
                   ),
-                helper: 'Live availability of the AI Chat backend service',
+                helper: t('overview.chat.serviceHelper'),
               },
             ]}
           />
@@ -160,12 +162,12 @@ export default function ChatListPage() {
             className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
           >
             {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-            New Conversation
+            {t('action.newChat')}
           </button>
         }
         isLoading={loading}
-        loadingText="Loading conversations..."
-        searchPlaceholder="Search conversations..."
+        loadingText={t('common.loading')}
+        searchPlaceholder={t('common.search')}
         defaultView="grid"
       >
         {({ viewMode, filterText }) => {

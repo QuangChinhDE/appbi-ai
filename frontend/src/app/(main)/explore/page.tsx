@@ -10,6 +10,7 @@ import { useCharts, useDeleteChart } from '@/hooks/use-charts';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
+import { useI18n } from '@/providers/LanguageProvider';
 import { toast } from 'sonner';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
@@ -23,6 +24,7 @@ const CHART_TYPE_LABELS: Record<string, string> = {
 
 export default function ExplorePage() {
   const router = useRouter();
+  const { t, locale } = useI18n();
   const { data: charts, isLoading } = useCharts();
   const { data: permData } = usePermissions();
   const canEdit = hasPermission(permData?.permissions, 'explore_charts', 'edit');
@@ -65,29 +67,29 @@ export default function ExplorePage() {
   return (
     <>
     <PageListLayout
-      title="Explore"
+      title={t('module.explore.title')}
       description={`${charts?.length ?? 0} saved chart${charts?.length !== 1 ? 's' : ''}`}
       overview={(
         <ModuleOverview
           icon={BarChart3}
-          title="Review saved charts before they graduate into dashboards"
-          description="Explore is where reusable chart drafts live. Use it to iterate on chart structure, keep visual building blocks organized, and promote the best results into Dashboards or AI Reports."
-          badges={['Saved charts', 'Reusable visuals', 'Chart editing']}
+          title={t('overview.explore.title')}
+          description={t('overview.explore.description')}
+          badges={[t('overview.explore.badge1'), t('overview.explore.badge2'), t('overview.explore.badge3')]}
           stats={[
             {
-              label: 'Saved charts',
+              label: t('overview.explore.saved'),
               value: chartItems.length,
-              helper: 'Chart assets currently available to open and refine',
+              helper: t('overview.explore.savedHelper'),
             },
             {
-              label: 'Chart types',
+              label: t('overview.explore.types'),
               value: chartTypesUsed,
-              helper: 'Different visualization families represented right now',
+              helper: t('overview.explore.typesHelper'),
             },
             {
-              label: 'Updated 7d',
+              label: t('overview.explore.updated'),
               value: updatedThisWeek,
-              helper: 'Charts touched in the last seven days',
+              helper: t('overview.explore.updatedHelper'),
             },
           ]}
         />
@@ -98,11 +100,11 @@ export default function ExplorePage() {
           className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
         >
           <Plus className="w-4 h-4" />
-          New Chart
+          {t('action.newChart')}
         </button>
       ) : undefined}
       isLoading={isLoading}
-      loadingText="Loading charts…"
+      loadingText={t('common.loading')}
     >
       {({ viewMode, filterText }) => {
         const filtered = (charts ?? []).filter(c =>
@@ -142,7 +144,7 @@ export default function ExplorePage() {
               {filtered.map(chart => {
                 const config = chart.config as any;
                 const typeLabel = CHART_TYPE_LABELS[chart.chart_type] ?? chart.chart_type;
-                const createdAt = new Date(chart.created_at).toLocaleDateString('vi-VN', {
+                const createdAt = new Date(chart.created_at).toLocaleDateString(locale, {
                   day: '2-digit', month: '2-digit', year: 'numeric',
                 });
                 return (
@@ -193,7 +195,7 @@ export default function ExplorePage() {
             {filtered.map(chart => {
               const config = chart.config as any;
               const typeLabel = CHART_TYPE_LABELS[chart.chart_type] ?? chart.chart_type;
-              const createdAt = new Date(chart.created_at).toLocaleDateString('vi-VN', {
+              const createdAt = new Date(chart.created_at).toLocaleDateString(locale, {
                 day: '2-digit', month: '2-digit', year: 'numeric',
               });
               return (

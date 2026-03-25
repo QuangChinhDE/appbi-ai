@@ -12,9 +12,11 @@ import { DashboardList } from '@/components/dashboards/DashboardList';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
+import { useI18n } from '@/providers/LanguageProvider';
 
 export default function DashboardsPage() {
   const router = useRouter();
+  const { t, locale } = useI18n();
   const [isCreating, setIsCreating] = useState(false);
   const [newDashboardName, setNewDashboardName] = useState('');
   const [newDashboardDescription, setNewDashboardDescription] = useState('');
@@ -81,29 +83,29 @@ export default function DashboardsPage() {
   return (
     <>
       <PageListLayout
-        title="Dashboards"
+        title={t('module.dashboards.title')}
         description={`${dashboards?.length ?? 0} dashboard${dashboards?.length !== 1 ? 's' : ''}`}
         overview={(
           <ModuleOverview
             icon={LayoutDashboard}
-            title="Track the dashboards your team can refine and share"
-            description="Dashboards are the polished output layer of the product. Use this module to manage layouts, reopen saved boards, and continue manual edits after AI Reports or Explore have produced a draft."
-            badges={['Layouts', 'Manual editing', 'Sharing']}
+            title={t('overview.dashboards.title')}
+            description={t('overview.dashboards.description')}
+            badges={[t('overview.dashboards.badge1'), t('overview.dashboards.badge2'), t('overview.dashboards.badge3')]}
             stats={[
               {
-                label: 'Saved dashboards',
+                label: t('overview.dashboards.saved'),
                 value: dashboardItems.length,
-                helper: 'Boards currently available to open and refine',
+                helper: t('overview.dashboards.savedHelper'),
               },
               {
-                label: 'Charts placed',
+                label: t('overview.dashboards.charts'),
                 value: totalChartLinks,
-                helper: 'Total chart slots already attached across dashboards',
+                helper: t('overview.dashboards.chartsHelper'),
               },
               {
-                label: 'Updated 7d',
+                label: t('overview.dashboards.updated'),
                 value: dashboardsUpdatedThisWeek,
-                helper: 'Dashboards touched in the last seven days',
+                helper: t('overview.dashboards.updatedHelper'),
               },
             ]}
           />
@@ -114,12 +116,12 @@ export default function DashboardsPage() {
             className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700"
           >
             <Plus className="h-4 w-4" />
-            New Dashboard
+            {t('action.newDashboard')}
           </button>
         ) : undefined}
         isLoading={isLoading}
-        loadingText="Loading dashboards..."
-        searchPlaceholder="Search dashboards..."
+        loadingText={t('common.loading')}
+        searchPlaceholder={t('common.search')}
         defaultView="grid"
       >
         {({ viewMode, filterText }) => {
@@ -143,7 +145,7 @@ export default function DashboardsPage() {
                 <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
                   {filtered.map((dashboard) => {
                     const chartCount = dashboard.dashboard_charts?.length || 0;
-                    const createdAt = new Date(dashboard.created_at).toLocaleDateString('vi-VN', {
+                    const createdAt = new Date(dashboard.created_at).toLocaleDateString(locale, {
                       day: '2-digit',
                       month: '2-digit',
                       year: 'numeric',

@@ -12,23 +12,23 @@ import {
   ChevronLeft,
   ChevronRight,
   MessageSquareText,
-  Users,
   LogOut,
   KeyRound,
   Shield,
   Bot,
 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
+
 import { useCurrentUser } from '@/hooks/use-current-user';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { authApi } from '@/lib/api-client';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface NavItem {
-  label: string;
+  labelKey: string;
   href: string;
   icon: React.ReactNode;
-  module?: string;      // module key for permission check
-  adminOnly?: boolean;  // only visible to admin
+  module?: string;
 }
 
 interface SidebarProps {
@@ -37,48 +37,13 @@ interface SidebarProps {
 }
 
 const ALL_NAV_ITEMS: NavItem[] = [
-  {
-    label: 'Data Sources',
-    href: '/datasources',
-    icon: <Plug className="h-5 w-5" />,
-    module: 'data_sources',
-  },
-  {
-    label: 'Workspaces',
-    href: '/dataset-workspaces',
-    icon: <Database className="h-5 w-5" />,
-    module: 'workspaces',
-  },
-  {
-    label: 'Explore',
-    href: '/explore',
-    icon: <Search className="h-5 w-5" />,
-    module: 'explore_charts',
-  },
-  {
-    label: 'Dashboards',
-    href: '/dashboards',
-    icon: <LayoutDashboard className="h-5 w-5" />,
-    module: 'dashboards',
-  },
-  {
-    label: 'AI Reports',
-    href: '/ai-reports',
-    icon: <Bot className="h-5 w-5" />,
-    module: 'ai_agent',
-  },
-  {
-    label: 'AI Chat',
-    href: '/chat',
-    icon: <MessageSquareText className="h-5 w-5" />,
-    module: 'ai_chat',
-  },
-  {
-    label: 'Settings',
-    href: '/permissions',
-    icon: <Shield className="h-5 w-5" />,
-    module: 'settings',
-  },
+  { labelKey: 'sidebar.nav.datasources', href: '/datasources', icon: <Plug className="h-5 w-5" />, module: 'data_sources' },
+  { labelKey: 'sidebar.nav.workspaces', href: '/dataset-workspaces', icon: <Database className="h-5 w-5" />, module: 'workspaces' },
+  { labelKey: 'sidebar.nav.explore', href: '/explore', icon: <Search className="h-5 w-5" />, module: 'explore_charts' },
+  { labelKey: 'sidebar.nav.dashboards', href: '/dashboards', icon: <LayoutDashboard className="h-5 w-5" />, module: 'dashboards' },
+  { labelKey: 'sidebar.nav.aiReports', href: '/ai-reports', icon: <Bot className="h-5 w-5" />, module: 'ai_agent' },
+  { labelKey: 'sidebar.nav.aiChat', href: '/chat', icon: <MessageSquareText className="h-5 w-5" />, module: 'ai_chat' },
+  { labelKey: 'sidebar.nav.settings', href: '/permissions', icon: <Shield className="h-5 w-5" />, module: 'settings' },
 ];
 
 function getInitials(name: string): string {
@@ -95,6 +60,8 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
   const [showChangePassword, setShowChangePassword] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const { language, setLanguage, t } = useI18n();
   const { data: user } = useCurrentUser();
   const { data: permData } = usePermissions();
 
@@ -109,8 +76,6 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
     return pathname.startsWith(href);
   };
 
-  const queryClient = useQueryClient();
-
   const handleLogout = async () => {
     try {
       await authApi.logout();
@@ -122,51 +87,45 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
 
   return (
     <div
-      className={`fixed left-0 top-0 h-screen bg-white border-r border-gray-200 transition-all duration-300 flex flex-col z-40 ${
+      className={`fixed left-0 top-0 z-40 flex h-screen flex-col border-r border-gray-200 bg-white transition-all duration-300 ${
         isCollapsed ? 'w-16' : 'w-64'
       }`}
     >
-      {/* Logo */}
-      <div className="h-16 flex items-center justify-between px-4 border-b border-gray-200">
-        {!isCollapsed && (
+      <div className="flex h-16 items-center justify-between border-b border-gray-200 px-4">
+        {!isCollapsed ? (
           <Link href="/" className="flex items-center space-x-2">
-            <div className="w-8 h-8 bg-gradient-to-br from-blue-600 to-purple-600 rounded-lg flex items-center justify-center">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-600 to-purple-600">
               <BarChart3 className="h-5 w-5 text-white" />
             </div>
-            <span className="text-xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+            <span className="bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-xl font-bold text-transparent">
               AppBI
             </span>
           </Link>
-        )}
-        {isCollapsed && (
-          <Link href="/" className="flex items-center justify-center w-full">
-            <div className="w-8 h-8 bg-gradient-to-br from-blue-600 to-purple-600 rounded-lg flex items-center justify-center">
+        ) : (
+          <Link href="/" className="flex w-full items-center justify-center">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-600 to-purple-600">
               <BarChart3 className="h-5 w-5 text-white" />
             </div>
           </Link>
         )}
       </div>
 
-      {/* Navigation */}
       <nav className="flex-1 overflow-y-auto py-4">
         <ul className="space-y-1 px-2">
           {visibleItems.map((item) => {
             const active = isActive(item.href);
+            const label = t(item.labelKey);
             return (
               <li key={item.href}>
                 <Link
                   href={item.href}
-                  className={`flex items-center space-x-3 px-3 py-2.5 rounded-lg transition-all ${
-                    active
-                      ? 'bg-blue-50 text-blue-700 font-medium'
-                      : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+                  className={`flex items-center space-x-3 rounded-lg px-3 py-2.5 transition-all ${
+                    active ? 'bg-blue-50 font-medium text-blue-700' : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
                   }`}
-                  title={isCollapsed ? item.label : undefined}
+                  title={isCollapsed ? label : undefined}
                 >
-                  <span className={active ? 'text-blue-600' : 'text-gray-500'}>
-                    {item.icon}
-                  </span>
-                  {!isCollapsed && <span>{item.label}</span>}
+                  <span className={active ? 'text-blue-600' : 'text-gray-500'}>{item.icon}</span>
+                  {!isCollapsed && <span>{label}</span>}
                 </Link>
               </li>
             );
@@ -174,84 +133,109 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
         </ul>
       </nav>
 
-      {/* User avatar + menu */}
       <div className="border-t border-gray-200">
         {user && (
           <div className="relative">
             <button
               onClick={() => setShowUserMenu((v) => !v)}
-              className={`w-full flex items-center px-4 py-3 hover:bg-gray-50 transition-colors ${
-                isCollapsed ? 'justify-center' : 'space-x-3'
+              className={`w-full px-4 py-3 transition-colors hover:bg-gray-50 ${
+                isCollapsed ? 'flex justify-center' : 'flex items-center space-x-3'
               }`}
               title={isCollapsed ? user.full_name : undefined}
             >
-              {/* Avatar circle */}
-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+              <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-600 to-purple-600 text-xs font-bold text-white">
                 {getInitials(user.full_name || user.email)}
               </div>
               {!isCollapsed && (
-                <div className="flex-1 min-w-0 text-left">
-                  <p className="text-sm font-medium text-gray-900 truncate">{user.full_name}</p>
-                  <p className="text-xs text-gray-500 truncate">{user.email}</p>
+                <div className="min-w-0 flex-1 text-left">
+                  <p className="truncate text-sm font-medium text-gray-900">{user.full_name}</p>
+                  <p className="truncate text-xs text-gray-500">{user.email}</p>
                 </div>
               )}
             </button>
 
-            {/* Dropdown */}
             {showUserMenu && (
               <div
-                className={`absolute bottom-full ${
+                className={`absolute bottom-full z-50 mb-1 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg ${
                   isCollapsed ? 'left-full ml-2' : 'left-2 right-2'
-                } mb-1 bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden z-50`}
+                }`}
               >
                 {!isCollapsed && (
-                  <div className="px-4 py-3 border-b border-gray-100">
+                  <div className="border-b border-gray-100 px-4 py-3">
                     <p className="text-sm font-medium text-gray-900">{user.full_name}</p>
-                    <p className="text-xs text-gray-500 truncate">{user.email}</p>
+                    <p className="truncate text-xs text-gray-500">{user.email}</p>
                   </div>
                 )}
+
+                <div className="border-b border-gray-100 px-4 py-3">
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">
+                    {t('sidebar.user.language')}
+                  </p>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => setLanguage('en')}
+                      className={`rounded-md border px-3 py-2 text-xs font-medium transition-colors ${
+                        language === 'en'
+                          ? 'border-blue-600 bg-blue-50 text-blue-700'
+                          : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                      }`}
+                    >
+                      {t('common.english')}
+                    </button>
+                    <button
+                      onClick={() => setLanguage('vi')}
+                      className={`rounded-md border px-3 py-2 text-xs font-medium transition-colors ${
+                        language === 'vi'
+                          ? 'border-blue-600 bg-blue-50 text-blue-700'
+                          : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                      }`}
+                    >
+                      {t('common.vietnamese')}
+                    </button>
+                  </div>
+                </div>
+
                 <button
-                  onClick={() => { setShowChangePassword(true); setShowUserMenu(false); }}
-                  className="w-full flex items-center space-x-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
+                  onClick={() => {
+                    setShowChangePassword(true);
+                    setShowUserMenu(false);
+                  }}
+                  className="flex w-full items-center space-x-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
                 >
                   <KeyRound className="h-4 w-4 text-gray-400" />
-                  <span>Change password</span>
+                  <span>{t('sidebar.user.changePassword')}</span>
                 </button>
                 <button
                   onClick={handleLogout}
-                  className="w-full flex items-center space-x-2 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50"
+                  className="flex w-full items-center space-x-2 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50"
                 >
                   <LogOut className="h-4 w-4" />
-                  <span>Sign out</span>
+                  <span>{t('sidebar.user.signOut')}</span>
                 </button>
               </div>
             )}
           </div>
         )}
 
-        {/* Collapse Toggle */}
         <div className="p-4">
           <button
             onClick={onToggleCollapse}
-            className="w-full flex items-center justify-center px-3 py-2 text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-colors"
-            title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            className="flex w-full items-center justify-center rounded-lg px-3 py-2 text-gray-600 transition-colors hover:bg-gray-50 hover:text-gray-900"
+            title={isCollapsed ? t('sidebar.expand') : t('sidebar.collapse')}
           >
             {isCollapsed ? (
               <ChevronRight className="h-5 w-5" />
             ) : (
               <>
-                <ChevronLeft className="h-5 w-5 mr-2" />
-                <span className="text-sm">Collapse</span>
+                <ChevronLeft className="mr-2 h-5 w-5" />
+                <span className="text-sm">{t('sidebar.collapse')}</span>
               </>
             )}
           </button>
         </div>
       </div>
 
-      {/* Change Password modal */}
-      {showChangePassword && (
-        <ChangePasswordModal onClose={() => setShowChangePassword(false)} />
-      )}
+      {showChangePassword && <ChangePasswordModal onClose={() => setShowChangePassword(false)} />}
     </div>
   );
 }
@@ -263,26 +247,26 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const { t } = useI18n();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     if (newPassword !== confirmPassword) {
-      setError('New passwords do not match.');
+      setError(t('password.error.mismatch'));
       return;
     }
     if (newPassword.length < 8) {
-      setError('Password must be at least 8 characters.');
+      setError(t('password.error.length'));
       return;
     }
     setLoading(true);
     try {
-      const { authApi } = await import('@/lib/api-client');
       await authApi.changePassword(oldPassword, newPassword);
       setSuccess(true);
       setTimeout(onClose, 1500);
     } catch (err: any) {
-      setError(err?.response?.data?.detail || 'Failed to change password.');
+      setError(err?.response?.data?.detail || t('password.error.failed'));
     } finally {
       setLoading(false);
     }
@@ -290,62 +274,62 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-sm mx-4 p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">Change password</h2>
+      <div className="mx-4 w-full max-w-sm rounded-xl bg-white p-6 shadow-xl">
+        <h2 className="mb-4 text-lg font-semibold text-gray-900">{t('password.title')}</h2>
 
         {success ? (
-          <p className="text-green-600 text-sm">Password changed successfully!</p>
+          <p className="text-sm text-green-600">{t('password.success')}</p>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-3">
             {error && (
-              <p className="text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
                 {error}
               </p>
             )}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Current password</label>
+              <label className="mb-1 block text-sm font-medium text-gray-700">{t('password.current')}</label>
               <input
                 type="password"
                 required
                 value={oldPassword}
                 onChange={(e) => setOldPassword(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">New password</label>
+              <label className="mb-1 block text-sm font-medium text-gray-700">{t('password.new')}</label>
               <input
                 type="password"
                 required
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Confirm new password</label>
+              <label className="mb-1 block text-sm font-medium text-gray-700">{t('password.confirm')}</label>
               <input
                 type="password"
                 required
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
             <div className="flex justify-end space-x-2 pt-2">
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded-lg border border-gray-200"
+                className="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
               >
-                Cancel
+                {t('common.cancel')}
               </button>
               <button
                 type="submit"
                 disabled={loading}
-                className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-60"
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-60"
               >
-                {loading ? 'Saving…' : 'Save'}
+                {loading ? t('common.loading') : t('password.submit')}
               </button>
             </div>
           </form>
@@ -354,4 +338,3 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
     </div>
   );
 }
-
