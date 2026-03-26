@@ -1,54 +1,57 @@
 """
-EmbeddingService — generate and store vector embeddings for charts/tables.
+EmbeddingService - generate and store vector embeddings for charts/tables.
 
-Uses Gemini gemini-embedding-001 (768 dims via outputDimensionality) via direct httpx call.
-NOTE: text-embedding-004 is not available on this project's API key.
-      gemini-embedding-001 is available on v1beta and supports outputDimensionality=768
-      so the DB vector(768) schema stays unchanged.
-Stores embeddings in resource_embeddings table (pgvector).
+Uses the OpenRouter embeddings endpoint so all AI traffic goes through the same
+provider. Embeddings are stored in resource_embeddings (pgvector).
 """
 import logging
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
 import httpx
-from sqlalchemy.orm import Session
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-EMBEDDING_MODEL = "models/gemini-embedding-001"
-EMBEDDING_DIMS = 768
-_GEMINI_EMBED_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/"
-    "models/gemini-embedding-001:embedContent"
-)
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
-def _gemini_embed(content: str, task_type: str) -> Optional[List[float]]:
-    """
-    Direct httpx POST to Gemini v1beta embedding endpoint.
-    Uses outputDimensionality=768 to match the existing vector(768) DB column.
-    """
-    if not settings.GEMINI_API_KEY:
+def _openrouter_embed(content: str) -> Optional[List[float]]:
+    if not settings.OPENROUTER_API_KEY:
         return None
+
+    payload: Dict[str, Any] = {
+        "model": settings.OPENROUTER_EMBEDDING_MODEL,
+        "input": content,
+        "encoding_format": "float",
+    }
+    if settings.OPENROUTER_EMBEDDING_DIMENSIONS > 0:
+        payload["dimensions"] = settings.OPENROUTER_EMBEDDING_DIMENSIONS
+
     try:
-        resp = httpx.post(
-            _GEMINI_EMBED_URL,
-            params={"key": settings.GEMINI_API_KEY},
-            json={
-                "model": EMBEDDING_MODEL,
-                "content": {"parts": [{"text": content}]},
-                "taskType": task_type,
-                "outputDimensionality": EMBEDDING_DIMS,
+        response = httpx.post(
+            f"{OPENROUTER_BASE_URL}/embeddings",
+            headers={
+                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": settings.OPENROUTER_SITE_URL,
+                "X-Title": settings.OPENROUTER_APP_NAME,
             },
+            json=payload,
             timeout=30.0,
         )
-        resp.raise_for_status()
-        return resp.json()["embedding"]["values"]
+        response.raise_for_status()
+        data = response.json().get("data") or []
+        if not data:
+            return None
+        embedding = data[0].get("embedding")
+        if not isinstance(embedding, list):
+            return None
+        return [float(value) for value in embedding]
     except Exception as exc:
-        logger.warning("EmbeddingService: _gemini_embed failed — %s", exc)
+        logger.warning("EmbeddingService: OpenRouter embedding failed - %s", exc)
         return None
 
 
@@ -62,31 +65,26 @@ def _extract_col_names(columns_cache) -> List[str]:
 
 
 class EmbeddingService:
-
-    # ── Embedding generation ────────────────────────────────────────────────
-
     @staticmethod
     def generate_embedding(content: str) -> Optional[List[float]]:
-        """Call Gemini embedding API. Returns 768-dim vector or None on failure."""
-        if not settings.GEMINI_API_KEY:
-            logger.debug("EmbeddingService: GEMINI_API_KEY not set, skipping")
+        """Generate a document embedding via OpenRouter."""
+        if not settings.OPENROUTER_API_KEY:
+            logger.debug("EmbeddingService: OPENROUTER_API_KEY not set, skipping")
             return None
-        result = _gemini_embed(content[:8000], "RETRIEVAL_DOCUMENT")
+        result = _openrouter_embed(content[:8000])
         if result is None:
-            logger.warning("EmbeddingService: generate failed — returned None")
+            logger.warning("EmbeddingService: generate failed - returned None")
         return result
 
     @staticmethod
     def generate_query_embedding(query: str) -> Optional[List[float]]:
-        """Embedding for a search query (different task_type for better retrieval)."""
-        if not settings.GEMINI_API_KEY:
+        """Generate a query embedding via OpenRouter."""
+        if not settings.OPENROUTER_API_KEY:
             return None
-        result = _gemini_embed(query[:2000], "RETRIEVAL_QUERY")
+        result = _openrouter_embed(query[:2000])
         if result is None:
-            logger.warning("EmbeddingService: query embed failed — returned None")
+            logger.warning("EmbeddingService: query embed failed - returned None")
         return result
-
-    # ── Text builders ───────────────────────────────────────────────────────
 
     @staticmethod
     def build_chart_text(chart, table=None) -> str:
@@ -100,7 +98,6 @@ class EmbeddingService:
             f"Type: {chart.chart_type}",
         ]
 
-        # Chart metadata (domain, intent, metrics, tags, + knowledge fields)
         m = getattr(chart, "chart_meta", None)
         if m:
             if m.domain:
@@ -113,7 +110,6 @@ class EmbeddingService:
                 parts.append(f"Dimensions: {', '.join(m.dimensions)}")
             if m.tags:
                 parts.append(f"Tags: {', '.join(m.tags)}")
-            # Knowledge system fields
             if m.auto_description:
                 parts.append(f"Description: {m.auto_description}")
             if m.insight_keywords:
@@ -123,14 +119,12 @@ class EmbeddingService:
             if m.common_questions:
                 parts.append(f"Common questions: {'; '.join(m.common_questions)}")
 
-        # Chart config axes
         config = chart.config or {}
         if config.get("dimensions"):
             parts.append(f"X-axis: {config['dimensions']}")
         if config.get("metrics"):
             parts.append(f"Y-axis: {config['metrics']}")
 
-        # Table info — include table description for richer context
         if table:
             parts.append(f"Table: {table.display_name}")
             if table.auto_description:
@@ -153,41 +147,36 @@ class EmbeddingService:
         """
         parts = [f"Table: {table.display_name}"]
 
-        # Main description
         if table.auto_description:
             parts.append(f"Description: {table.auto_description}")
 
-        # Per-column descriptions (most informative for search)
         if table.column_descriptions:
             for col, desc in list(table.column_descriptions.items())[:20]:
                 parts.append(f"Column {col}: {desc}")
 
-        # Column names + types (fallback/supplement)
         if table.column_stats:
-            col_summary = ", ".join([
-                f"{col} ({stats.get('dtype', 'unknown')})"
-                for col, stats in list(table.column_stats.items())[:25]
-            ])
+            col_summary = ", ".join(
+                [
+                    f"{col} ({stats.get('dtype', 'unknown')})"
+                    for col, stats in list(table.column_stats.items())[:25]
+                ]
+            )
             parts.append(f"Columns: {col_summary}")
         elif table.columns_cache:
             cols = _extract_col_names(table.columns_cache)
             if cols:
                 parts.append(f"Columns: {', '.join(cols[:25])}")
 
-        # Query aliases from feedback loop
         if table.query_aliases:
             parts.append(
-                f"Also known as / commonly searched with: "
+                "Also known as / commonly searched with: "
                 f"{', '.join(table.query_aliases)}"
             )
 
-        # Common questions improve semantic search for natural language queries
         if table.common_questions:
             parts.append(f"Common questions: {'; '.join(table.common_questions)}")
 
         return "\n".join(parts)
-
-    # ── Upsert helpers ──────────────────────────────────────────────────────
 
     @staticmethod
     def upsert_embedding(
@@ -202,7 +191,9 @@ class EmbeddingService:
             return False
 
         try:
-            db.execute(text("""
+            db.execute(
+                text(
+                    """
                 INSERT INTO resource_embeddings
                     (resource_type, resource_id, embedding, source_text, updated_at)
                 VALUES
@@ -212,17 +203,20 @@ class EmbeddingService:
                     embedding   = EXCLUDED.embedding,
                     source_text = EXCLUDED.source_text,
                     updated_at  = NOW()
-            """), {
-                "rtype": resource_type,
-                "rid": resource_id,
-                "emb": str(vector),
-                "src": source_text,
-            })
+            """
+                ),
+                {
+                    "rtype": resource_type,
+                    "rid": resource_id,
+                    "emb": str(vector),
+                    "src": source_text,
+                },
+            )
             db.commit()
             logger.info("EmbeddingService: upserted %s/%s", resource_type, resource_id)
             return True
         except Exception as exc:
-            logger.warning("EmbeddingService: upsert failed — %s", exc)
+            logger.warning("EmbeddingService: upsert failed - %s", exc)
             db.rollback()
             return False
 
@@ -230,8 +224,9 @@ class EmbeddingService:
     def embed_chart(db: Session, chart_id: int) -> bool:
         """Embed a chart (with its workspace table). Safe to call in background."""
         try:
-            from app.models.models import Chart
             from app.models.dataset_workspace import DatasetWorkspaceTable
+            from app.models.models import Chart
+
             chart = db.query(Chart).filter(Chart.id == chart_id).first()
             if not chart:
                 return False
@@ -243,7 +238,7 @@ class EmbeddingService:
             source_text = EmbeddingService.build_chart_text(chart, table)
             return EmbeddingService.upsert_embedding(db, "chart", chart_id, source_text)
         except Exception as exc:
-            logger.warning("EmbeddingService: embed_chart %s failed — %s", chart_id, exc)
+            logger.warning("EmbeddingService: embed_chart %s failed - %s", chart_id, exc)
             return False
 
     @staticmethod
@@ -251,6 +246,7 @@ class EmbeddingService:
         """Embed a workspace table. Safe to call in background."""
         try:
             from app.models.dataset_workspace import DatasetWorkspaceTable
+
             table = db.query(DatasetWorkspaceTable).filter(
                 DatasetWorkspaceTable.id == table_id
             ).first()
@@ -259,22 +255,23 @@ class EmbeddingService:
             source_text = EmbeddingService.build_table_text(table)
             return EmbeddingService.upsert_embedding(db, "workspace_table", table_id, source_text)
         except Exception as exc:
-            logger.warning("EmbeddingService: embed_table %s failed — %s", table_id, exc)
+            logger.warning("EmbeddingService: embed_table %s failed - %s", table_id, exc)
             return False
 
     @staticmethod
     def delete_embedding(db: Session, resource_type: str, resource_id: int) -> None:
         """Remove embedding when resource is deleted."""
         try:
-            db.execute(text(
-                "DELETE FROM resource_embeddings WHERE resource_type=:rt AND resource_id=:rid"
-            ), {"rt": resource_type, "rid": resource_id})
+            db.execute(
+                text(
+                    "DELETE FROM resource_embeddings WHERE resource_type=:rt AND resource_id=:rid"
+                ),
+                {"rt": resource_type, "rid": resource_id},
+            )
             db.commit()
         except Exception as exc:
-            logger.warning("EmbeddingService: delete failed — %s", exc)
+            logger.warning("EmbeddingService: delete failed - %s", exc)
             db.rollback()
-
-    # ── Search ──────────────────────────────────────────────────────────────
 
     @staticmethod
     def search_similar(
@@ -287,18 +284,18 @@ class EmbeddingService:
         """
         Vector similarity search with optional permission filtering.
         Returns list of {resource_id, source_text, similarity}.
-        Falls back to empty list if embeddings not available.
+        Falls back to empty list if embeddings are not available.
         """
         query_vector = EmbeddingService.generate_query_embedding(query)
         if query_vector is None:
             return []
 
         try:
-            # Embed the vector literal directly — avoids SQLAlchemy `:param::type` tokenizer conflict
             qemb_lit = str(query_vector)
             if resource_type == "chart" and user_id is not None:
-                # Permission-aware: only charts owned by or shared with user
-                rows = db.execute(text(f"""
+                rows = db.execute(
+                    text(
+                        f"""
                     SELECT
                         re.resource_id,
                         re.source_text,
@@ -313,23 +310,31 @@ class EmbeddingService:
                       AND (c.owner_id = CAST(:uid AS uuid) OR rs.id IS NOT NULL)
                     ORDER BY re.embedding <=> '{qemb_lit}'::vector
                     LIMIT :lim
-                """), {
-                    "rtype": resource_type,
-                    "uid": str(user_id),
-                    "lim": limit,
-                }).fetchall()
+                """
+                    ),
+                    {
+                        "rtype": resource_type,
+                        "uid": str(user_id),
+                        "lim": limit,
+                    },
+                ).fetchall()
             else:
-                rows = db.execute(text(f"""
+                rows = db.execute(
+                    text(
+                        f"""
                     SELECT resource_id, source_text,
                            1 - (embedding <=> '{qemb_lit}'::vector) AS similarity
                     FROM resource_embeddings
                     WHERE resource_type = :rtype
                     ORDER BY embedding <=> '{qemb_lit}'::vector
                     LIMIT :lim
-                """), {
-                    "rtype": resource_type,
-                    "lim": limit,
-                }).fetchall()
+                """
+                    ),
+                    {
+                        "rtype": resource_type,
+                        "lim": limit,
+                    },
+                ).fetchall()
 
             return [
                 {
@@ -340,5 +345,5 @@ class EmbeddingService:
                 for row in rows
             ]
         except Exception as exc:
-            logger.warning("EmbeddingService: search failed — %s", exc)
+            logger.warning("EmbeddingService: search failed - %s", exc)
             return []

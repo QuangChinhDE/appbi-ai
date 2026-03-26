@@ -262,6 +262,7 @@ class AgentPlanResponse(BaseModel):
     quality_gate_report: Optional[QualityGateArtifact] = None
     analysis_plan: Optional[AnalysisPlanArtifact] = None
     runtime: Optional[AgentRuntimeMetadata] = None
+    phase_runtimes: Dict[str, AgentRuntimeMetadata] = Field(default_factory=dict)
 
 
 class AgentBuildRequest(BaseModel):

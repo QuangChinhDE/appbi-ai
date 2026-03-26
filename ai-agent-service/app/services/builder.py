@@ -7,11 +7,11 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from fastapi import HTTPException
 
 from app.clients.bi_client import bi_client
-from app.config import settings
 from app.schemas.agent import AgentBuildEvent, AgentBuildRequest, AgentChartPlan, AgentPlanResponse
 from app.services.dashboard_composer import compose_dashboard_blueprint
 from app.services.insight_generator import generate_insight_report
 from app.services.output_language import is_vietnamese
+from app.services.runtime_metadata import rule_runtime_metadata
 
 
 LEVEL_ORDER = {"none": 0, "view": 1, "edit": 2, "full": 3}
@@ -19,15 +19,6 @@ LEVEL_ORDER = {"none": 0, "view": 1, "edit": 2, "full": 3}
 
 def _has_level(permissions: Dict[str, str], module: str, required: str) -> bool:
     return LEVEL_ORDER.get(permissions.get(module, "none"), 0) >= LEVEL_ORDER[required]
-
-
-def _runtime_metadata() -> Dict[str, Any]:
-    return {
-        "provider": settings.active_llm_provider,
-        "model": settings.active_llm_model,
-        "fallback_chain": settings.active_llm_fallback_chain,
-        "timeout_seconds": settings.active_llm_timeout_seconds,
-    }
 
 
 def _event(
@@ -197,23 +188,48 @@ async def build_dashboard_stream(
         raise HTTPException(status_code=403, detail="Requires explore_charts >= edit")
 
     await _patch_run(request, token, {"status": "planning_charts"})
-    yield _event("phase", "validate", "Đã xác thực quyền và dữ liệu đầu vào để build." if vi else "Validated permissions and build inputs.")
+    yield _event(
+        "phase",
+        "validate",
+        "Da xac thuc quyen va du lieu dau vao de build."
+        if vi
+        else "Validated permissions and build inputs.",
+    )
 
     layouts = _build_layouts(request.plan)
     created_charts: List[Dict[str, Any]] = []
     run_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
 
     await _patch_run(request, token, {"status": "planning_charts"})
-    yield _event("phase", "preflight", "Đang chạy kiểm tra preflight cho chart trước khi tạo tài nguyên." if vi else "Running chart preflight checks before creating resources.")
+    yield _event(
+        "phase",
+        "preflight",
+        "Dang chay kiem tra preflight cho chart truoc khi tao tai nguyen."
+        if vi
+        else "Running chart preflight checks before creating resources.",
+    )
     preflight_failures = 0
     for chart in request.plan.charts:
         validation_error = _preflight_validate_chart(chart)
         if validation_error:
             preflight_failures += 1
-            yield _event("chart_failed", "preflight", f"Đã bỏ qua '{chart.title}' ở bước preflight." if vi else f"Skipped '{chart.title}' during preflight.", error=validation_error)
+            yield _event(
+                "chart_failed",
+                "preflight",
+                f"Da bo qua '{chart.title}' o buoc preflight."
+                if vi
+                else f"Skipped '{chart.title}' during preflight.",
+                error=validation_error,
+            )
 
     await _patch_run(request, token, {"status": "building_dashboard"})
-    yield _event("phase", "create_charts", "Đang tạo chart từ kế hoạch báo cáo đã được duyệt." if vi else "Creating charts from the approved report plan.")
+    yield _event(
+        "phase",
+        "create_charts",
+        "Dang tao chart tu ke hoach bao cao da duoc duyet."
+        if vi
+        else "Creating charts from the approved report plan.",
+    )
     for chart in request.plan.charts:
         validation_error = _preflight_validate_chart(chart)
         if validation_error:
@@ -234,9 +250,23 @@ async def build_dashboard_stream(
                     "data_rows": chart_data.get("data") or [],
                 }
             )
-            yield _event("chart_created", "create_charts", f"Đã tạo chart '{chart.title}'." if vi else f"Created chart '{chart.title}'.", chart_id=created["id"])
+            yield _event(
+                "chart_created",
+                "create_charts",
+                f"Da tao chart '{chart.title}'."
+                if vi
+                else f"Created chart '{chart.title}'.",
+                chart_id=created["id"],
+            )
         except Exception as exc:
-            yield _event("chart_failed", "create_charts", f"Không tạo được chart '{chart.title}'." if vi else f"Failed to create chart '{chart.title}'.", error=str(exc))
+            yield _event(
+                "chart_failed",
+                "create_charts",
+                f"Khong tao duoc chart '{chart.title}'."
+                if vi
+                else f"Failed to create chart '{chart.title}'.",
+                error=str(exc),
+            )
 
     if not created_charts:
         await _patch_run(
@@ -249,11 +279,26 @@ async def build_dashboard_stream(
                 "result_summary_json": {"created_chart_count": 0, "preflight_failures": preflight_failures},
             },
         )
-        yield _event("error", "create_charts", "Tất cả chart đều lỗi nên chưa tạo được dashboard." if vi else "All charts failed. Dashboard was not created.", error="No charts were created successfully." if not vi else "Không có chart nào được tạo thành công.")
+        yield _event(
+            "error",
+            "create_charts",
+            "Tat ca chart deu loi nen chua tao duoc dashboard."
+            if vi
+            else "All charts failed. Dashboard was not created.",
+            error="Khong co chart nao duoc tao thanh cong."
+            if vi
+            else "No charts were created successfully.",
+        )
         return
 
     await _patch_run(request, token, {"status": "building_dashboard"})
-    yield _event("phase", "assemble_dashboard", "Đang tạo hoặc cập nhật dashboard và gắn các chart vào đó." if vi else "Creating or updating the dashboard and attaching charts.")
+    yield _event(
+        "phase",
+        "assemble_dashboard",
+        "Dang tao hoac cap nhat dashboard va gan cac chart vao do."
+        if vi
+        else "Creating or updating the dashboard and attaching charts.",
+    )
     dashboard = await _resolve_target_dashboard(request, token, run_suffix)
     dashboard_id = dashboard["id"]
 
@@ -276,14 +321,44 @@ async def build_dashboard_stream(
     if dashboard_chart_layouts:
         await bi_client.update_dashboard_layout(dashboard_id, dashboard_chart_layouts, token)
 
+    build_phase_runtimes: Dict[str, Dict[str, Any]] = {
+        "chart_build": rule_runtime_metadata().model_dump(mode="json"),
+    }
+
     await _patch_run(request, token, {"status": "generating_insights"})
-    yield _event("phase", "generating_insights", "Đang đọc dữ liệu chart đã build và viết insight dạng narrative." if vi else "Reading the built charts and drafting narrative insights.")
-    insight_report = generate_insight_report(request.plan, created_charts)
+    yield _event(
+        "phase",
+        "generating_insights",
+        "Dang doc du lieu chart da build va viet insight dang narrative."
+        if vi
+        else "Reading the built charts and drafting narrative insights.",
+    )
+    insight_report, insight_runtime = await generate_insight_report(request.plan, created_charts)
+    build_phase_runtimes["insight"] = insight_runtime.model_dump(mode="json")
 
     await _patch_run(request, token, {"status": "composing_report"})
-    yield _event("phase", "composing_report", "Đang ghép report reader với tóm tắt điều hành, phát hiện theo section và caption cho chart." if vi else "Composing the AI report reader with executive summary, section findings, and chart captions.")
-    dashboard_blueprint = compose_dashboard_blueprint(request.plan, insight_report)
+    yield _event(
+        "phase",
+        "composing_report",
+        "Dang ghep report reader voi tom tat dieu hanh, phat hien theo section va caption cho chart."
+        if vi
+        else "Composing the AI report reader with executive summary, section findings, and chart captions.",
+    )
+    dashboard_blueprint, narrative_runtime = await compose_dashboard_blueprint(request.plan, insight_report)
+    build_phase_runtimes["narrative"] = narrative_runtime.model_dump(mode="json")
+    primary_build_runtime = narrative_runtime if narrative_runtime.provider != "rule-based" else insight_runtime
     report_url = f"/ai-reports/{request.report_spec_id}" if request.report_spec_id else None
+
+    combined_phase_runtimes = {
+        **{
+            f"planning.{phase}": runtime.model_dump(mode="json")
+            for phase, runtime in (request.plan.phase_runtimes or {}).items()
+        },
+        **{
+            f"build.{phase}": runtime
+            for phase, runtime in build_phase_runtimes.items()
+        },
+    }
 
     await _patch_run(
         request,
@@ -303,7 +378,8 @@ async def build_dashboard_stream(
                 "insight_report": insight_report.model_dump(mode="json"),
                 "dashboard_blueprint": dashboard_blueprint.model_dump(mode="json"),
                 "planning_runtime": request.plan.runtime.model_dump(mode="json") if request.plan.runtime else None,
-                "build_runtime": _runtime_metadata(),
+                "phase_runtimes": combined_phase_runtimes,
+                "build_runtime": primary_build_runtime.model_dump(mode="json"),
                 "chart_data_summary": {
                     item["key"]: {
                         "chart_id": item["chart_id"],
@@ -318,7 +394,9 @@ async def build_dashboard_stream(
     yield _event(
         "dashboard_created",
         "assemble_dashboard",
-        f"Dashboard '{request.plan.dashboard_title}' đã sẵn sàng." if vi else f"Dashboard '{request.plan.dashboard_title}' is ready.",
+        f"Dashboard '{request.plan.dashboard_title}' da san sang."
+        if vi
+        else f"Dashboard '{request.plan.dashboard_title}' is ready.",
         dashboard_id=dashboard_id,
         dashboard_url=f"/dashboards/{dashboard_id}",
         report_url=report_url,
@@ -326,7 +404,9 @@ async def build_dashboard_stream(
     yield _event(
         "done",
         "done",
-        "AI Agent đã hoàn tất việc dựng dashboard." if vi else "AI Agent finished building the dashboard.",
+        "AI Agent da hoan tat viec dung dashboard."
+        if vi
+        else "AI Agent finished building the dashboard.",
         dashboard_id=dashboard_id,
         dashboard_url=f"/dashboards/{dashboard_id}",
         report_url=report_url,

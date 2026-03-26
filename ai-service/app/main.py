@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"AI Chat service starting - provider={settings.llm_provider} model={settings.llm_model}")
+    logger.info(f"AI Chat service starting - provider={settings.active_provider} model={settings.active_model}")
     logger.info(f"BI backend: {settings.bi_api_url}")
     if settings.fallback_chain:
         logger.info(f"Fallback chain: {settings.fallback_chain}")
@@ -52,6 +52,6 @@ def health():
     return {
         "status": "ok",
         "service": "ai-chat",
-        "provider": settings.llm_provider,
-        "model": settings.llm_model,
+        "provider": settings.active_provider,
+        "model": settings.active_model,
     }

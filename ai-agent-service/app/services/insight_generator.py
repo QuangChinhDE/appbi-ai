@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional
+import json
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from app.config import settings
 from app.schemas.agent import (
     AgentChartPlan,
     AgentPlanResponse,
+    AgentRuntimeMetadata,
     ChartInsightArtifact,
     InsightReportArtifact,
     SectionInsightArtifact,
 )
+from app.services.llm_client import generate_json
 from app.services.output_language import is_vietnamese
+from app.services.runtime_metadata import llm_runtime_metadata, rule_runtime_metadata
 
 
 def _is_number(value: Any) -> bool:
@@ -38,10 +43,10 @@ def _to_number(value: Any) -> Optional[float]:
 def _dimension_label(value: Any, language: str | None) -> str:
     vi = is_vietnamese(language)
     if value is None:
-        return "Không xác định" if vi else "Unknown"
+        return "Khong xac dinh" if vi else "Unknown"
     text = str(value).strip()
     if not text or text.lower() in {"none", "null", "nan", "n/a"}:
-        return "Không xác định" if vi else "Unknown"
+        return "Khong xac dinh" if vi else "Unknown"
     return text
 
 
@@ -64,7 +69,7 @@ def _summarize_rows(
 ) -> str:
     vi = is_vietnamese(language)
     if not rows:
-        return "Không có dòng dữ liệu nào được trả về." if vi else "No data rows were returned."
+        return "Khong co dong du lieu nao duoc tra ve." if vi else "No data rows were returned."
     if metric_field and dimension_field:
         ranked = sorted(
             [row for row in rows if _to_number(row.get(metric_field)) is not None],
@@ -81,9 +86,9 @@ def _summarize_rows(
         values = [value for value in values if value is not None]
         if values:
             if vi:
-                return f"{metric_field} dao động từ {min(values):,.0f} đến {max(values):,.0f} trên {len(rows)} dòng."
+                return f"{metric_field} dao dong tu {min(values):,.0f} den {max(values):,.0f} tren {len(rows)} dong."
             return f"{metric_field} ranges from {min(values):,.0f} to {max(values):,.0f} across {len(rows)} rows."
-    return f"Trả về {len(rows)} dòng dữ liệu." if vi else f"Returned {len(rows)} rows."
+    return f"Tra ve {len(rows)} dong du lieu." if vi else f"Returned {len(rows)} rows."
 
 
 def _build_chart_insight(
@@ -106,9 +111,9 @@ def _build_chart_insight(
         if len(values) >= 2:
             delta = values[-1] - values[0]
             if vi:
-                direction = "tăng lên" if delta > 0 else "giảm xuống" if delta < 0 else "đi ngang tương đối"
-                finding = f"{chart.title} {direction} trong giai đoạn mẫu, dựa trên {metric_field}."
-                caption = f"{chart.title}: tín hiệu xu hướng cho {metric_field.replace('_', ' ')}."
+                direction = "tang len" if delta > 0 else "giam xuong" if delta < 0 else "di ngang tuong doi"
+                finding = f"{chart.title} {direction} trong giai doan mau, dua tren {metric_field}."
+                caption = f"{chart.title}: tin hieu xu huong cho {metric_field.replace('_', ' ')}."
             else:
                 direction = "increased" if delta > 0 else "decreased" if delta < 0 else "stayed broadly flat"
                 finding = f"{chart.title} {direction} across the sampled period, based on {metric_field}."
@@ -123,15 +128,15 @@ def _build_chart_insight(
             leader = ranked[0]
             label = _dimension_label(leader.get(dimension_field), language)
             if vi:
-                finding = f"{label} nổi bật trong {chart.title} với giá trị {leader.get(metric_field)}."
-                caption = f"{chart.title}: so sánh {metric_field.replace('_', ' ')} theo {dimension_field.replace('_', ' ')}."
+                finding = f"{label} noi bat trong {chart.title} voi gia tri {leader.get(metric_field)}."
+                caption = f"{chart.title}: so sanh {metric_field.replace('_', ' ')} theo {dimension_field.replace('_', ' ')}."
             else:
                 finding = f"{label} stands out in {chart.title} with {leader.get(metric_field)}."
                 caption = f"{chart.title}: compare how {metric_field.replace('_', ' ')} varies by {dimension_field.replace('_', ' ')}."
     elif rows and chart.chart_type == "TABLE":
         if vi:
-            finding = f"{chart.title} giữ lại góc nhìn vận hành chi tiết với {len(rows)} dòng hiển thị để follow-up."
-            caption = f"{chart.title}: dữ liệu chi tiết hỗ trợ việc kiểm tra."
+            finding = f"{chart.title} giu lai goc nhin van hanh chi tiet voi {len(rows)} dong hien thi de follow-up."
+            caption = f"{chart.title}: du lieu chi tiet ho tro viec kiem tra."
         else:
             finding = f"{chart.title} keeps a detailed operational view with {len(rows)} visible rows for follow-up."
             caption = f"{chart.title}: detailed supporting records for investigation."
@@ -149,7 +154,7 @@ def _build_chart_insight(
     )
 
 
-def generate_insight_report(
+def _build_rule_based_insight_report(
     plan: AgentPlanResponse,
     chart_payloads: Iterable[Dict[str, Any]],
 ) -> InsightReportArtifact:
@@ -183,19 +188,19 @@ def generate_insight_report(
 
         if any("inactive" in finding.lower() or "deactive" in finding.lower() for finding in key_findings):
             recommended_actions.append(
-                "Ưu tiên rà soát các nhóm có tỷ trọng bảng không hoạt động cao nhất."
+                "Uu tien ra soat cac nhom co ty trong bang khong hoat dong cao nhat."
                 if vi
                 else "Prioritize review of the segments with the highest inactive asset concentration."
             )
         if any("ownership" in finding.lower() or "stewardship" in finding.lower() or "metadata" in finding.lower() for finding in key_findings):
             recommended_actions.append(
-                "Xác minh độ phủ metadata và ownership trước khi dùng các tài sản này cho báo cáo quan trọng."
+                "Xac minh do phu metadata va ownership truoc khi dung cac tai san nay cho bao cao quan trong."
                 if vi
                 else "Validate metadata and ownership coverage before using these assets for critical reporting."
             )
         if not recommended_actions:
             recommended_actions.append(
-                "Dùng phần này để dẫn hướng vòng follow-up vận hành và xác minh tiếp theo."
+                "Dung phan nay de dan huong vong follow-up van hanh va xac minh tiep theo."
                 if vi
                 else "Use this section to guide the next round of operational follow-up and validation."
             )
@@ -224,7 +229,7 @@ def generate_insight_report(
     executive_summary = plan.dashboard_summary
     if top_findings:
         executive_summary = (
-            f"{plan.dashboard_summary} Tín hiệu nổi bật: {' '.join(top_findings[:2])}"
+            f"{plan.dashboard_summary} Tin hieu noi bat: {' '.join(top_findings[:2])}"
             if vi
             else f"{plan.dashboard_summary} Top signals: {' '.join(top_findings[:2])}"
         )
@@ -237,3 +242,204 @@ def generate_insight_report(
         section_insights=section_insights,
         chart_insights=chart_insights,
     )
+
+
+def _llm_enabled(plan: AgentPlanResponse) -> bool:
+    if not settings.openrouter_api_key:
+        return False
+    if not plan.parsed_brief:
+        return False
+    return bool(plan.parsed_brief.narrative_preferences.get("include_text_narrative", True))
+
+
+def _chart_payload_summary(base_report: InsightReportArtifact) -> List[Dict[str, Any]]:
+    return [
+        {
+            "chart_key": item.chart_key,
+            "title": item.title,
+            "chart_type": item.chart_type,
+            "caption": item.caption,
+            "finding": item.finding,
+            "evidence_summary": item.evidence_summary,
+            "warning_if_any": item.warning_if_any,
+            "confidence": item.confidence,
+        }
+        for item in base_report.chart_insights
+    ]
+
+
+def _section_payload_summary(base_report: InsightReportArtifact) -> List[Dict[str, Any]]:
+    return [
+        {
+            "section_title": item.section_title,
+            "table_name": item.table_name,
+            "summary": item.summary,
+            "key_findings": item.key_findings,
+            "caveats": item.caveats,
+            "recommended_actions": item.recommended_actions,
+            "confidence": item.confidence,
+            "chart_keys": item.chart_keys,
+        }
+        for item in base_report.section_insights
+    ]
+
+
+async def _generate_llm_overrides(
+    plan: AgentPlanResponse,
+    base_report: InsightReportArtifact,
+) -> Optional[Dict[str, Any]]:
+    language = plan.parsed_brief.output_language if plan.parsed_brief else None
+    vi = is_vietnamese(language)
+    system_prompt = (
+        "Ban la senior data analyst viet narrative bao cao. "
+        "Hay viet lai insight report dua tren bang chung co san, khong duoc bịa them so lieu, khong duoc doi nghia chart key. "
+        "Tra ve JSON hop le va giu tat ca cau chu hien thi bang tieng Viet."
+        if vi
+        else
+        "You are a senior data analyst writing a report narrative. "
+        "Rewrite the insight report from the supplied evidence only, without inventing numbers or changing chart keys. "
+        "Return valid JSON only."
+    )
+    user_prompt = json.dumps(
+        {
+            "dashboard_title": plan.dashboard_title,
+            "dashboard_summary": plan.dashboard_summary,
+            "strategy_summary": plan.strategy_summary,
+            "quality_score": plan.quality_score,
+            "warnings": plan.warnings[:6],
+            "analysis_plan": plan.analysis_plan.model_dump(mode="json") if plan.analysis_plan else None,
+            "base_report": {
+                "executive_summary": base_report.executive_summary,
+                "top_findings": base_report.top_findings,
+                "headline_risks": base_report.headline_risks,
+                "priority_actions": base_report.priority_actions,
+                "sections": _section_payload_summary(base_report),
+                "charts": _chart_payload_summary(base_report),
+            },
+            "output_contract": {
+                "executive_summary": "string",
+                "top_findings": ["string"],
+                "headline_risks": ["string"],
+                "priority_actions": ["string"],
+                "section_overrides": [
+                    {
+                        "section_title": "string",
+                        "summary": "string",
+                        "key_findings": ["string"],
+                        "caveats": ["string"],
+                        "recommended_actions": ["string"],
+                    }
+                ],
+                "chart_overrides": [
+                    {
+                        "chart_key": "string",
+                        "caption": "string",
+                        "finding": "string",
+                        "evidence_summary": "string|null",
+                        "warning_if_any": "string|null",
+                    }
+                ],
+            },
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+    return await generate_json(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model_override=settings.model_for_phase("insight"),
+    )
+
+
+def _coerce_string_list(value: Any, limit: int) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    cleaned: List[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text:
+            cleaned.append(text)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def _merge_llm_overrides(
+    base_report: InsightReportArtifact,
+    overrides: Dict[str, Any],
+) -> InsightReportArtifact:
+    chart_map = {item.chart_key: item for item in base_report.chart_insights}
+    merged_chart_insights: List[ChartInsightArtifact] = []
+    override_by_chart_key = {}
+    for item in overrides.get("chart_overrides") or []:
+        chart_key = str(item.get("chart_key") or "").strip()
+        if chart_key:
+            override_by_chart_key[chart_key] = item
+
+    for chart in base_report.chart_insights:
+        override = override_by_chart_key.get(chart.chart_key) or {}
+        merged_chart_insights.append(
+            chart.model_copy(
+                update={
+                    "caption": str(override.get("caption") or chart.caption).strip(),
+                    "finding": str(override.get("finding") or chart.finding).strip(),
+                    "evidence_summary": str(override.get("evidence_summary") or chart.evidence_summary).strip(),
+                    "warning_if_any": (
+                        str(override.get("warning_if_any")).strip()
+                        if override.get("warning_if_any") not in (None, "")
+                        else chart.warning_if_any
+                    ),
+                }
+            )
+        )
+
+    merged_chart_map = {item.chart_key: item for item in merged_chart_insights}
+    override_by_section = {}
+    for item in overrides.get("section_overrides") or []:
+        section_title = str(item.get("section_title") or "").strip()
+        if section_title:
+            override_by_section[section_title] = item
+
+    merged_sections: List[SectionInsightArtifact] = []
+    for section in base_report.section_insights:
+        override = override_by_section.get(section.section_title) or {}
+        merged_sections.append(
+            section.model_copy(
+                update={
+                    "summary": str(override.get("summary") or section.summary).strip(),
+                    "key_findings": _coerce_string_list(override.get("key_findings"), 4) or section.key_findings,
+                    "caveats": _coerce_string_list(override.get("caveats"), 3) or section.caveats,
+                    "recommended_actions": _coerce_string_list(override.get("recommended_actions"), 3)
+                    or section.recommended_actions,
+                    "chart_ids": [
+                        merged_chart_map[key].chart_id
+                        for key in section.chart_keys
+                        if key in merged_chart_map and merged_chart_map[key].chart_id is not None
+                    ],
+                }
+            )
+        )
+
+    return InsightReportArtifact(
+        executive_summary=str(overrides.get("executive_summary") or base_report.executive_summary).strip(),
+        top_findings=_coerce_string_list(overrides.get("top_findings"), 5) or base_report.top_findings,
+        headline_risks=_coerce_string_list(overrides.get("headline_risks"), 4) or base_report.headline_risks,
+        priority_actions=_coerce_string_list(overrides.get("priority_actions"), 4) or base_report.priority_actions,
+        section_insights=merged_sections,
+        chart_insights=merged_chart_insights,
+    )
+
+
+async def generate_insight_report(
+    plan: AgentPlanResponse,
+    chart_payloads: Iterable[Dict[str, Any]],
+) -> Tuple[InsightReportArtifact, AgentRuntimeMetadata]:
+    base_report = _build_rule_based_insight_report(plan, chart_payloads)
+    if not _llm_enabled(plan):
+        return base_report, rule_runtime_metadata()
+
+    overrides = await _generate_llm_overrides(plan, base_report)
+    if not overrides:
+        return base_report, rule_runtime_metadata()
+
+    return _merge_llm_overrides(base_report, overrides), llm_runtime_metadata("insight")

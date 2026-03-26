@@ -10,7 +10,7 @@ export function getStepMeta(language: AppLanguage): StepMeta[] {
       { key: 'select', label: 'Chọn bảng', caption: 'Xác định phạm vi phân tích' },
       { key: 'brief', label: 'Viết brief', caption: 'Mô tả mục tiêu nghiệp vụ' },
       { key: 'plan', label: 'Duyệt draft', caption: 'Chỉnh sửa trước khi build' },
-      { key: 'building', label: 'Build dashboard', caption: 'Tạo chart và bố cục' },
+      { key: 'building', label: 'Tạo dashboard', caption: 'Tạo chart và bố cục' },
     ];
   }
   return [
@@ -45,7 +45,7 @@ export function getBriefSectionMeta(language: AppLanguage): BriefSectionMeta[] {
       },
       {
         key: 'narrative',
-        title: 'Narrative output',
+        title: 'Đầu ra phân tích',
         description: 'Chọn mức độ phân tích bằng văn bản sẽ đi kèm report.',
         helper: 'Phần này ảnh hưởng tới độ sâu của executive summary, caveat và việc AI có đề xuất action hay không.',
         optional: true,
@@ -119,7 +119,7 @@ export function getBriefPresets(language: AppLanguage): BriefPreset[] {
       {
         key: 'operations',
         title: 'Theo dõi vận hành',
-        summary: 'Theo dõi vận hành với check lặp lại, owner và blocker.',
+        summary: 'Theo dõi vận hành với các điểm kiểm tra lặp lại, owner và blocker.',
         goal: 'Tạo báo cáo vận hành làm nổi bật các vấn đề cần follow-up, ownership gap và thay đổi trong hoạt động theo thời gian.',
         audience: 'Quản lý vận hành',
         reportStyle: 'operational',
@@ -150,7 +150,7 @@ export function getBriefPresets(language: AppLanguage): BriefPreset[] {
       },
       {
         key: 'investigative',
-        title: 'Đi sâu điều tra',
+        title: 'Điều tra chuyên sâu',
         summary: 'Narrative dài hơn với giả thuyết, yếu tố dẫn dắt và caveat.',
         goal: 'Điều tra xem điều gì đang thay đổi, nhóm nào đang dẫn dắt thay đổi đó và giả thuyết nào đáng xác minh tiếp theo.',
         audience: 'Analyst và chủ report',
@@ -250,7 +250,7 @@ export function makeInitialBriefState(language: AppLanguage) {
       comparisonPeriod: 'Kỳ trước',
       refreshFrequency: 'Weekly',
       mustIncludeSectionsText: 'Executive summary\nTrend\nBreakdown',
-      alertFocusText: 'Anomalies\nDrops',
+      alertFocusText: 'Bất thường\nSụt giảm',
       preferredGranularity: 'day',
       decisionContext: 'Giúp nhóm quyết định điều gì đã thay đổi, yếu tố nào đang dẫn dắt và nên tập trung vào đâu tiếp theo.',
       reportStyle: 'executive',

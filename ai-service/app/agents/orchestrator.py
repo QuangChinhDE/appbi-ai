@@ -153,8 +153,8 @@ def _make_openrouter_client():
             api_key=settings.openrouter_api_key,
             base_url="https://openrouter.ai/api/v1",
             default_headers={
-                "HTTP-Referer": "http://localhost:3000",
-                "X-Title": "AppBI AI Chat",
+                "HTTP-Referer": settings.openrouter_site_url,
+                "X-Title": settings.openrouter_app_name,
             },
         )
     except ImportError:
@@ -209,10 +209,9 @@ def _make_gemini_model(model_name: str):
 
 
 def _build_provider_chain() -> List[Dict[str, str]]:
-    """Build ordered list of {provider, model} to try, primary first."""
-    chain = [{"provider": settings.llm_provider, "model": settings.llm_model}]
+    """Build ordered list of OpenRouter models to try, primary first."""
+    chain = [{"provider": settings.active_provider, "model": settings.active_model}]
     for entry in settings.fallback_chain:
-        # avoid duplicate
         if entry not in chain:
             chain.append(entry)
     return chain

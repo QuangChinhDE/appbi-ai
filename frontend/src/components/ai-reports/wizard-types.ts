@@ -21,6 +21,7 @@ export interface AgentHealthPayload {
   service: string;
   provider?: string;
   model?: string;
+  phase_models?: Record<string, string>;
   fallback_chain?: Array<{ provider: string; model: string }>;
   timeout_seconds?: number;
 }

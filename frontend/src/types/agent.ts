@@ -209,6 +209,7 @@ export interface AgentReportResultSummary {
   dashboard_blueprint?: DashboardBlueprintArtifact | null;
   planning_runtime?: AgentRuntimeMetadata | null;
   build_runtime?: AgentRuntimeMetadata | null;
+  phase_runtimes?: Record<string, AgentRuntimeMetadata> | null;
   chart_data_summary?: Record<string, any> | null;
 }
 
@@ -258,6 +259,7 @@ export interface AgentPlanResponse {
   quality_gate_report?: QualityGateArtifact | null;
   analysis_plan?: AnalysisPlanArtifact | null;
   runtime?: AgentRuntimeMetadata | null;
+  phase_runtimes?: Record<string, AgentRuntimeMetadata> | null;
 }
 
 export interface AgentPlanEvent {

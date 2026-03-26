@@ -28,19 +28,10 @@ from app.services.dataset_selector import build_dataset_fit_report
 from app.services.llm_client import generate_json
 from app.services.output_language import infer_output_language, is_vietnamese
 from app.services.quality_gate import evaluate_quality_gate
+from app.services.runtime_metadata import llm_runtime_metadata, rule_runtime_metadata
 
 
 SUPPORTED_CHART_TYPES = {"KPI", "BAR", "LINE", "AREA", "PIE", "TABLE", "TIME_SERIES", "GROUPED_BAR", "STACKED_BAR"}
-
-
-def _runtime_metadata() -> AgentRuntimeMetadata:
-    return AgentRuntimeMetadata(
-        provider=settings.active_llm_provider,
-        model=settings.active_llm_model,
-        fallback_chain=settings.active_llm_fallback_chain,
-        timeout_seconds=settings.active_llm_timeout_seconds,
-    )
-
 
 @dataclass
 class TableContext:
@@ -368,7 +359,11 @@ async def _generate_strategy_with_llm(
         ensure_ascii=False,
         default=str,
     )
-    return await generate_json(system_prompt=system_prompt, user_prompt=user_prompt)
+    return await generate_json(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model_override=settings.model_for_phase("planning"),
+    )
 
 
 def _build_heuristic_strategy(
@@ -709,6 +704,7 @@ def _materialize_strategy(
     profiling_report: List[ProfilingArtifactItem],
     quality_gate_report: QualityGateArtifact,
     analysis_plan: AnalysisPlanArtifact,
+    phase_runtimes: Dict[str, AgentRuntimeMetadata],
 ) -> AgentPlanResponse:
     vi = is_vietnamese(parsed_brief.output_language)
     profile_map = {profile.context.table_id: profile for profile in profiles}
@@ -808,7 +804,8 @@ def _materialize_strategy(
         profiling_report=profiling_report,
         quality_gate_report=quality_gate_report,
         analysis_plan=analysis_plan,
-        runtime=_runtime_metadata(),
+        runtime=phase_runtimes.get("planning"),
+        phase_runtimes=phase_runtimes,
     )
 
 
@@ -889,6 +886,14 @@ def _review_plan_quality(
 
 
 async def generate_agent_plan(brief: AgentBriefRequest, token: str) -> AgentPlanResponse:
+    phase_runtimes: Dict[str, AgentRuntimeMetadata] = {
+        "brief": rule_runtime_metadata(),
+        "dataset_fit": rule_runtime_metadata(),
+        "profiling": rule_runtime_metadata(),
+        "quality_gate": rule_runtime_metadata(),
+        "analysis_plan": rule_runtime_metadata(),
+        "review": rule_runtime_metadata(),
+    }
     parsed_brief = parse_brief(brief)
     contexts = await load_table_contexts(brief, token)
     profiles = [profile_table(brief, context) for context in contexts]
@@ -913,6 +918,11 @@ async def generate_agent_plan(brief: AgentBriefRequest, token: str) -> AgentPlan
         if brief.planning_mode == "deep"
         else None
     )
+    phase_runtimes["planning"] = (
+        llm_runtime_metadata("planning")
+        if strategy is not None
+        else rule_runtime_metadata()
+    )
     if strategy is None:
         strategy = _build_heuristic_strategy(brief, profiles, parsed_brief, dataset_fit_report, analysis_plan)
     plan = _materialize_strategy(
@@ -924,6 +934,7 @@ async def generate_agent_plan(brief: AgentBriefRequest, token: str) -> AgentPlan
         profiling_report,
         quality_gate_report,
         analysis_plan,
+        phase_runtimes,
     )
     return _review_plan_quality(plan, brief, quality_gate_report)
 
@@ -936,6 +947,14 @@ def _plan_event(event_type: str, phase: str, message: str, plan: Optional[AgentP
 async def generate_agent_plan_stream(brief: AgentBriefRequest, token: str) -> AsyncGenerator[str, None]:
     parsed_brief = parse_brief(brief)
     vi = is_vietnamese(parsed_brief.output_language)
+    phase_runtimes: Dict[str, AgentRuntimeMetadata] = {
+        "brief": rule_runtime_metadata(),
+        "dataset_fit": rule_runtime_metadata(),
+        "profiling": rule_runtime_metadata(),
+        "quality_gate": rule_runtime_metadata(),
+        "analysis_plan": rule_runtime_metadata(),
+        "review": rule_runtime_metadata(),
+    }
     yield _plan_event(
         "phase",
         "parse_brief",
@@ -1014,6 +1033,11 @@ async def generate_agent_plan_stream(brief: AgentBriefRequest, token: str) -> As
         if brief.planning_mode == "deep"
         else None
     )
+    phase_runtimes["planning"] = (
+        llm_runtime_metadata("planning")
+        if strategy is not None
+        else rule_runtime_metadata()
+    )
     if strategy is None:
         yield _plan_event(
             "phase",
@@ -1040,6 +1064,7 @@ async def generate_agent_plan_stream(brief: AgentBriefRequest, token: str) -> As
         profiling_report,
         quality_gate_report,
         analysis_plan,
+        phase_runtimes,
     )
 
     yield _plan_event(

@@ -74,10 +74,17 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "dev-secret-key-change-in-production"
     DATASOURCE_ENCRYPTION_KEY: str = ""
 
-    # AI / Embedding
-    GEMINI_API_KEY: str = ""
-    OPENAI_API_KEY: str = ""       # optional fallback for embeddings
-    OPENROUTER_API_KEY: str = ""   # used by auto-tagging LLM calls
+    # AI / Embedding (OpenRouter-only runtime)
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_SITE_URL: str = "http://localhost:3000"
+    OPENROUTER_APP_NAME: str = "AppBI"
+    AI_DESCRIPTION_MODEL: str = "openai/gpt-4o-mini"
+    OPENROUTER_EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
+    OPENROUTER_EMBEDDING_DIMENSIONS: int = 768
+
+    @property
+    def active_description_model(self) -> str:
+        return self.AI_DESCRIPTION_MODEL.strip() or "openai/gpt-4o-mini"
     
     model_config = SettingsConfigDict(
         env_file=_ROOT_ENV,

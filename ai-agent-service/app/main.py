@@ -26,6 +26,7 @@ async def lifespan(_app: FastAPI):
         settings.active_llm_model,
         settings.active_llm_timeout_seconds,
     )
+    logger.info("AI report phase models: %s", settings.ai_agent_phase_models)
     if settings.active_llm_fallback_chain:
         logger.info("Active fallback chain: %s", settings.active_llm_fallback_chain)
     yield
@@ -58,6 +59,7 @@ def health():
         "service": "ai-agent",
         "provider": settings.active_llm_provider,
         "model": settings.active_llm_model,
+        "phase_models": settings.ai_agent_phase_models,
         "fallback_chain": settings.active_llm_fallback_chain,
         "timeout_seconds": settings.active_llm_timeout_seconds,
     }

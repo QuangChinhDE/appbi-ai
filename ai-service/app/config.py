@@ -15,19 +15,21 @@ class Settings(BaseSettings):
     # BI backend
     bi_api_url: str = Field("http://localhost:8000/api/v1", alias="BI_API_URL")
 
-    # Primary LLM
-    llm_provider: str = Field("openai", alias="LLM_PROVIDER")   # openai | anthropic | gemini | openrouter
-    llm_model: str = Field("gpt-4o-mini", alias="LLM_MODEL")
+    # OpenRouter-backed chat runtime
+    llm_model: str = Field("openai/gpt-4o-mini", alias="LLM_MODEL")
+    ai_chat_model: str = Field("", alias="AI_CHAT_MODEL")
 
-    # Fallback chain — comma-separated "provider:model" pairs
-    # e.g. "openai:gpt-4o-mini,anthropic:claude-3-5-haiku-20241022,gemini:gemini-2.0-flash"
+    # Fallback chain - accepts either plain models or legacy provider:model pairs
     llm_fallback_chain: str = Field("", alias="LLM_FALLBACK_CHAIN")
+    ai_chat_fallback_models: str = Field("", alias="AI_CHAT_FALLBACK_MODELS")
 
-    # API keys
+    # OpenRouter config
+    openrouter_api_key: str = Field("", alias="OPENROUTER_API_KEY")
+    openrouter_site_url: str = Field("http://localhost:3000", alias="OPENROUTER_SITE_URL")
+    openrouter_app_name: str = Field("AppBI AI Chat", alias="OPENROUTER_APP_NAME")
     openai_api_key: str = Field("", alias="OPENAI_API_KEY")
     anthropic_api_key: str = Field("", alias="ANTHROPIC_API_KEY")
     gemini_api_key: str = Field("", alias="GEMINI_API_KEY")
-    openrouter_api_key: str = Field("", alias="OPENROUTER_API_KEY")
 
     # Session
     ai_session_ttl_minutes: int = Field(30, alias="AI_SESSION_TTL_MINUTES")
@@ -41,16 +43,29 @@ class Settings(BaseSettings):
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
     @property
+    def active_provider(self) -> str:
+        return "openrouter"
+
+    @property
+    def active_model(self) -> str:
+        return self.ai_chat_model.strip() or self.llm_model
+
+    @property
     def fallback_chain(self) -> List[dict]:
-        """Parse LLM_FALLBACK_CHAIN into a list of {provider, model} dicts."""
-        if not self.llm_fallback_chain.strip():
+        """Parse fallback config into a list of {provider, model} dicts."""
+        raw_chain = self.ai_chat_fallback_models.strip() or self.llm_fallback_chain.strip()
+        if not raw_chain:
             return []
         result = []
-        for entry in self.llm_fallback_chain.split(","):
+        for entry in raw_chain.split(","):
             entry = entry.strip()
+            if not entry:
+                continue
             if ":" in entry:
-                provider, model = entry.split(":", 1)
-                result.append({"provider": provider.strip(), "model": model.strip()})
+                _, model = entry.split(":", 1)
+            else:
+                model = entry
+            result.append({"provider": "openrouter", "model": model.strip()})
         return result
 
     class Config:
