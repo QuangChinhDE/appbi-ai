@@ -43,17 +43,17 @@ export default apiClient;
 // Data Sources API
 export const dataSourcesApi = {
   getAll: async () => {
-    const response = await apiClient.get('/datasources');
+    const response = await apiClient.get('/datasources/');
     return response.data;
   },
-  
+
   getById: async (id: number) => {
     const response = await apiClient.get(`/datasources/${id}`);
     return response.data;
   },
-  
+
   create: async (payload: any) => {
-    const response = await apiClient.post('/datasources', payload);
+    const response = await apiClient.post('/datasources/', payload);
     return response.data;
   },
   
@@ -134,7 +134,7 @@ export const permissionsApi = {
 // Users API
 export const usersApi = {
   getAll: async () => {
-    const response = await apiClient.get('/users');
+    const response = await apiClient.get('/users/');
     return response.data;
   },
 
@@ -149,7 +149,7 @@ export const usersApi = {
   },
 
   create: async (payload: { email: string; full_name: string; password: string }) => {
-    const response = await apiClient.post('/users', payload);
+    const response = await apiClient.post('/users/', payload);
     return response.data;
   },
 

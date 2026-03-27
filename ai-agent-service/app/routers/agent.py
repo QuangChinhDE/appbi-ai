@@ -108,7 +108,11 @@ async def generate_plan_stream(
                 ensure_ascii=False,
             ) + "\n"
 
-    return StreamingResponse(generate(), media_type="application/x-ndjson")
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/build/stream")
@@ -175,4 +179,8 @@ async def build_dashboard(
                 ensure_ascii=False,
             ) + "\n"
 
-    return StreamingResponse(generate(), media_type="application/x-ndjson")
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no"},
+    )
