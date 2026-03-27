@@ -232,9 +232,16 @@ AI Chat variables:
 - `AI_WORKSPACE_TABLE_LIMIT`
 
 AI Agent variables:
-- `OPENAI_API_KEY`
 - `SECRET_KEY`
 - `BI_API_URL`
+- `OPENROUTER_API_KEY` (required for LLM calls)
+- `LLM_MODEL` (default model, e.g. `openai/gpt-4o-mini`)
+- `AI_AGENT_ENRICHMENT_MODEL` (override for brief enrichment phase)
+- `AI_AGENT_PLANNING_MODEL` (override for dashboard strategy phase)
+- `AI_AGENT_INSIGHT_MODEL` (override for insight generation phase)
+- `AI_AGENT_NARRATIVE_MODEL` (override for blueprint narrative phase)
+- `AI_AGENT_LLM_FALLBACK_CHAIN` (comma-separated fallback models)
+- `AI_AGENT_LLM_TIMEOUT_SECONDS` (LLM call timeout)
 
 See [`.env.docker.example`](./.env.docker.example) for the maintained baseline.
 
@@ -279,35 +286,48 @@ Typical first-time flow:
 
 ## AI Agent Workflow
 
-Current flow from `/dashboards`:
-1. Open the AI Agent wizard.
-2. Search and choose one or more workspace tables.
-3. Review the selected scope panel.
-4. Fill in the structured brief.
-5. Generate a plan.
-6. Review and edit sections and charts.
-7. Build the dashboard.
-8. Open the generated dashboard.
+The AI Agent wizard is accessible from `/ai-reports`. It follows a 4-step flow:
 
-Current UX highlights:
-- workspace search
-- collapse and expand by workspace
-- select shown or clear shown per workspace
-- selected scope summary for large table sets
-- editable plan before build
+1. **Select tables** — pick one or more workspace tables. Table descriptions and column counts are shown inline to help you choose.
+2. **Write brief** — fill in 6 fields: goal, audience, timeframe, comparison period, detail level, and notes. The AI enriches this brief with inferred KPIs, domain-specific questions, table relationships, and a narrative arc.
+3. **Review plan** — the AI generates a dashboard plan with sections and charts. Each section shows its charts inline. You can toggle charts on/off, edit titles, and inspect technical details. Warnings from the quality gate are shown prominently.
+4. **Build and view results** — the AI creates charts, assembles the dashboard, generates narrative insights, and shows results inline: executive summary, top findings, risks, priority actions, section-by-section analysis, and per-chart evidence.
 
-Current limitation:
-- saved reusable report specs are not implemented yet
-- if you want a new report variant, you currently go through the wizard again
+Key features:
+- saved and reusable report specs (draft, ready, running, archived)
+- report run history with result persistence
+- inline report viewing after build (no redirect required)
+- full Vietnamese and English language support
+- LLM brief enrichment for domain-aware planning
+- streaming progress for both planning and build phases
+
+AI Agent planning pipeline:
+1. Rule-based brief parsing (baseline)
+2. LLM brief enrichment (infer domain, KPIs, questions, table relationships, narrative arc)
+3. Table profiling (column types, metrics, dimensions, time fields)
+4. Dataset fit scoring (per question, not global)
+5. Quality gate (blockers, warnings, null risk, freshness)
+6. Analysis plan (question-to-table mapping with enriched context)
+7. LLM dashboard strategy (sections with business-intent titles, chart selection with hypotheses)
+8. Quality review and scoring
 
 ## Project Structure
 
 ```text
-backend/                  FastAPI backend
-frontend/                 Next.js frontend
-ai-service/               AI Chat service
-ai-agent-service/         AI Agent service
-docs/                     project documentation
+backend/                  FastAPI backend (BI API, auth, permissions, AI Description)
+frontend/                 Next.js frontend (dashboards, explore, AI Reports wizard)
+ai-service/               AI Chat service (conversational analysis)
+ai-agent-service/         AI Agent service (report planning and dashboard building)
+  app/services/
+    brief_parser.py       rule-based brief parsing
+    brief_enricher.py     LLM brief enrichment (domain, KPIs, questions)
+    planner.py            planning pipeline orchestration
+    analysis_planner.py   question-to-table mapping
+    builder.py            dashboard build orchestration
+    insight_generator.py  chart insight and narrative generation
+    dashboard_composer.py dashboard blueprint composition
+    llm_client.py         OpenRouter LLM client with fallback chain
+docs/                     project documentation and guided API docs
 docker-compose.yml        base BI stack
 docker-compose.ai.yml     full AI overlay
 docker-compose.chat.yml   AI Chat overlay
@@ -332,3 +352,7 @@ docker-compose.dev.yml    development stack
 - The backend contains AI Description generation even when no optional AI service is running.
 - If only `ai-agent-service` is running, the `/chat` page still loads but live chat actions are unavailable.
 - If only `ai-chat-service` is running, dashboard generation via AI Agent is unavailable.
+- AI Agent uses OpenRouter as the LLM provider. Set `OPENROUTER_API_KEY` in `.env`.
+- Each LLM phase (enrichment, planning, insight, narrative) can use a different model via phase-specific env vars.
+- AI Reports are persisted as `AgentReportSpec` with run history. Users can revisit, re-edit, and re-run reports.
+- The AI Reports wizard at `/ai-reports/new` supports both modal and full-page modes.
