@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     ai_agent_fallback_models: str = Field("", alias="AI_AGENT_FALLBACK_MODELS")
     ai_agent_llm_fallback_chain: str = Field("", alias="AI_AGENT_LLM_FALLBACK_CHAIN")
     ai_agent_llm_timeout_seconds: int = Field(0, alias="AI_AGENT_LLM_TIMEOUT_SECONDS")
+    ai_agent_enrichment_model: str = Field("", alias="AI_AGENT_ENRICHMENT_MODEL")
     ai_agent_planning_model: str = Field("", alias="AI_AGENT_PLANNING_MODEL")
     ai_agent_insight_model: str = Field("", alias="AI_AGENT_INSIGHT_MODEL")
     ai_agent_narrative_model: str = Field("", alias="AI_AGENT_NARRATIVE_MODEL")
@@ -71,6 +72,7 @@ class Settings(BaseSettings):
     def model_for_phase(self, phase: str) -> str:
         phase_key = (phase or "").strip().lower()
         overrides = {
+            "enrichment": self.ai_agent_enrichment_model.strip() or self.ai_agent_model.strip(),
             "planning": self.ai_agent_planning_model.strip() or self.ai_agent_model.strip(),
             "insight": self.ai_agent_insight_model.strip(),
             "narrative": self.ai_agent_narrative_model.strip(),
@@ -85,6 +87,7 @@ class Settings(BaseSettings):
     @property
     def ai_agent_phase_models(self) -> Dict[str, str]:
         return {
+            "enrichment": self.model_for_phase("enrichment"),
             "planning": self.model_for_phase("planning"),
             "insight": self.model_for_phase("insight"),
             "narrative": self.model_for_phase("narrative"),

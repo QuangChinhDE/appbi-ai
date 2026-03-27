@@ -35,12 +35,22 @@ def _provider_available(provider: str) -> bool:
     return provider == "openrouter" and bool(settings.openrouter_api_key)
 
 
+PHASE_MAX_TOKENS: Dict[str, int] = {
+    "enrichment": 3000,
+    "planning": 4000,
+    "insight": 2500,
+    "narrative": 2000,
+}
+_DEFAULT_MAX_TOKENS = 2000
+
+
 async def _call_openrouter_json(
     *,
     model: str,
     system_prompt: str,
     user_prompt: str,
     timeout_seconds: int,
+    max_tokens: int,
 ) -> Optional[Dict[str, Any]]:
     client = _make_openrouter_client()
 
@@ -53,7 +63,7 @@ async def _call_openrouter_json(
             ],
             response_format={"type": "json_object"},
             temperature=0.2,
-            max_tokens=1800,
+            max_tokens=max_tokens,
             timeout=timeout_seconds,
         )
         content = response.choices[0].message.content or "{}"
@@ -68,8 +78,10 @@ async def generate_json(
     user_prompt: str,
     model_override: Optional[str] = None,
     timeout_seconds: Optional[int] = None,
+    phase: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     effective_timeout = timeout_seconds or settings.active_llm_timeout_seconds
+    effective_max_tokens = PHASE_MAX_TOKENS.get((phase or "").lower(), _DEFAULT_MAX_TOKENS)
     for entry in _build_provider_chain(model_override):
         provider = entry["provider"]
         model = entry["model"]
@@ -81,8 +93,9 @@ async def generate_json(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 timeout_seconds=effective_timeout,
+                max_tokens=effective_max_tokens,
             )
         except Exception:
-            logger.exception("Agent planner LLM call failed for provider=%s model=%s", provider, model)
+            logger.exception("Agent planner LLM call failed for provider=%s model=%s phase=%s", provider, model, phase)
             continue
     return None

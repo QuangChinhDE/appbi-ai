@@ -13,6 +13,67 @@ from app.schemas.agent import (
 from app.services.output_language import is_vietnamese
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _question_table_score(question: str, fit_item: DatasetFitArtifactItem, profile: ProfilingArtifactItem | None) -> float:
+    """Score how well a table answers a given question (higher = better fit)."""
+    score = fit_item.fit_score  # baseline from dataset selector
+
+    q_lower = question.lower()
+
+    # Boost if table's coverage_notes or good_for mention keywords in the question
+    for text in fit_item.good_for + fit_item.coverage_notes:
+        tokens = [t for t in text.lower().split() if len(t) > 3]
+        if any(t in q_lower for t in tokens):
+            score += 0.15
+            break
+
+    # Boost if table name appears in question
+    if fit_item.table_name.lower().replace("_", " ") in q_lower:
+        score += 0.2
+
+    # Boost if question mentions time-related terms and table has time fields
+    time_terms = {"xu hướng", "trend", "thời gian", "time", "tháng", "month", "quý", "quarter", "tuần", "week"}
+    if profile and profile.candidate_time_fields and any(t in q_lower for t in time_terms):
+        score += 0.15
+
+    # Boost if question mentions segment/breakdown and table has dimensions
+    segment_terms = {"phân khúc", "segment", "vùng", "region", "nhóm", "group", "breakdown", "phân rã", "category"}
+    if profile and profile.candidate_dimensions and any(t in q_lower for t in segment_terms):
+        score += 0.1
+
+    # Boost if question mentions specific column names
+    if profile:
+        for col in (profile.candidate_metrics + profile.candidate_dimensions)[:10]:
+            if col.lower().replace("_", " ") in q_lower:
+                score += 0.25
+                break
+
+    return min(score, 1.5)
+
+
+def _best_table_for_question(
+    question: str,
+    dataset_fit_report: list[DatasetFitArtifactItem],
+    profile_map: dict[int, ProfilingArtifactItem],
+) -> DatasetFitArtifactItem | None:
+    """Find the single best table for a given question."""
+    if not dataset_fit_report:
+        return None
+    scored = [
+        (item, _question_table_score(question, item, profile_map.get(item.table_id)))
+        for item in dataset_fit_report
+    ]
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+    return scored[0][0]
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def build_analysis_plan(
     parsed_brief: ParsedBriefArtifact,
     dataset_fit_report: list[DatasetFitArtifactItem],
@@ -24,9 +85,10 @@ def build_analysis_plan(
     profile_map = {item.table_id: item for item in profiling_report}
     ranked_fit = sorted(dataset_fit_report, key=lambda item: item.fit_score, reverse=True)
 
+    # --- Question → Table mapping (now per-question, not all-to-top-1) ---
     question_map: list[AnalysisQuestionMap] = []
     for question in parsed_brief.must_answer_questions:
-        target = ranked_fit[0] if ranked_fit else None
+        target = _best_table_for_question(question, dataset_fit_report, profile_map)
         suggested_method = "giám sát tổng quan" if vi else "summary monitoring"
         target_metric = None
         target_dimension = None
@@ -72,18 +134,21 @@ def build_analysis_plan(
             )
         )
 
-    hypotheses = [
-        (
-            "Những khu vực rủi ro cao nhất thường đồng thời có dấu hiệu không hoạt động và thiếu metadata stewardship."
+    # --- Hypotheses: use enriched data when available ---
+    hypotheses: list[str] = []
+    if parsed_brief.narrative_arc:
+        hypotheses.append(parsed_brief.narrative_arc)
+    if parsed_brief.business_domain:
+        hypotheses.append(
+            f"Domain đã nhận diện: {parsed_brief.business_domain}. Phân tích nên dùng góc nhìn và KPI phù hợp ngành này."
             if vi
-            else "The highest-risk areas will combine inactivity with weak stewardship metadata."
-        ),
-        (
-            "Những phần hữu ích nhất của dashboard nên tách rõ giám sát tổng quan với chi tiết phục vụ follow-up vận hành."
-            if vi
-            else "The most useful dashboard sections will separate summary monitoring from operational follow-up detail."
-        ),
-    ]
+            else f"Identified domain: {parsed_brief.business_domain}. Analysis should use industry-appropriate perspectives and KPIs."
+        )
+    hypotheses.append(
+        "Những phần hữu ích nhất của dashboard nên tách rõ giám sát tổng quan với chi tiết phục vụ follow-up vận hành."
+        if vi
+        else "The most useful dashboard sections will separate summary monitoring from operational follow-up detail."
+    )
     if quality_gate_report.warnings:
         hypotheses.append(
             "Vấn đề chất lượng dữ liệu có thể làm giảm độ tin cậy của các kết luận chi tiết, nên narrative từng phần cần có caveat."
@@ -91,6 +156,7 @@ def build_analysis_plan(
             else "Data quality issues may reduce confidence in granular findings, so section narratives should include caveats."
         )
 
+    # --- Section logic ---
     section_logic = {
         item.table_name: (
             (
@@ -106,11 +172,19 @@ def build_analysis_plan(
         for item in ranked_fit
     }
 
-    analysis_objectives = [
+    # --- Table relationships as analysis objectives ---
+    analysis_objectives: list[str] = []
+    if parsed_brief.table_relationships:
+        for rel in parsed_brief.table_relationships[:3]:
+            analysis_objectives.append(
+                f"Khai thác mối quan hệ: {rel}" if vi else f"Leverage relationship: {rel}"
+            )
+    analysis_objectives.extend([
         "Chuyển brief thành một nhóm nhỏ câu hỏi nghiệp vụ quan trọng nhất." if vi else "Translate the brief into a small set of business-critical questions.",
         "Ánh xạ từng câu hỏi vào bảng phù hợp nhất và phương pháp phân tích mạnh nhất." if vi else "Map each question to the strongest available table and analysis method.",
         "Cân bằng giữa góc nhìn điều hành tổng quan và đủ chi tiết để follow-up hành động." if vi else "Balance executive monitoring with enough detail for follow-up action.",
-    ]
+    ])
+
     priority_checks = [
         "Xác nhận bảng nào phù hợp nhất để làm phần tóm tắt điều hành." if vi else "Confirm which selected table is strongest for the executive summary.",
         "Kiểm tra nơi nào caveat về chất lượng dữ liệu cần làm giảm confidence hoặc giới hạn lựa chọn chart." if vi else "Check where data-quality caveats should lower confidence or limit chart choice.",
@@ -121,11 +195,16 @@ def build_analysis_plan(
         "Ưu tiên bảng chi tiết khi giả định để dựng chart còn mong manh." if vi else "Prefer detail tables when chart assumptions would be fragile.",
         "Nếu rủi ro chất lượng dữ liệu cao, narrative phải nói rõ caveat." if vi else "If quality risks are high, keep the narrative explicit about caveats.",
     ]
-    narrative_flow = [
+
+    # --- Narrative flow: use enriched arc if available ---
+    narrative_flow: list[str] = []
+    if parsed_brief.narrative_arc:
+        narrative_flow.append(parsed_brief.narrative_arc)
+    narrative_flow.extend([
         "Bắt đầu từ tín hiệu nghiệp vụ tổng quan quan trọng nhất." if vi else "Start with the top-line business signal.",
         "Đi tiếp vào các bảng phù hợp nhất để phân rã và tìm nguyên nhân." if vi else "Move into the highest-fit supporting tables for breakdown and root-cause analysis.",
         "Kết thúc bằng stewardship, caveat và hành động đề xuất." if vi else "Close with stewardship, caveats, and recommended actions.",
-    ]
+    ])
 
     return AnalysisPlanArtifact(
         business_thesis=(

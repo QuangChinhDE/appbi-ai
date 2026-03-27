@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 BuildMode = Literal["new_dashboard", "new_version", "replace_existing"]
 ReportSpecStatus = Literal["draft", "ready", "running", "failed", "archived"]
+WizardStep = Literal["select", "brief", "plan", "building"]
 ReportRunStatus = Literal[
     "queued",
     "planning",
@@ -39,6 +40,7 @@ class AgentReportSpecBase(BaseModel):
 class AgentReportSpecCreate(AgentReportSpecBase):
     latest_dashboard_id: Optional[int] = None
     status: ReportSpecStatus = "draft"
+    current_step: WizardStep = "select"
 
 
 class AgentReportSpecUpdate(BaseModel):
@@ -49,6 +51,7 @@ class AgentReportSpecUpdate(BaseModel):
     approved_plan_json: Optional[Dict[str, Any]] = None
     latest_dashboard_id: Optional[int] = None
     status: Optional[ReportSpecStatus] = None
+    current_step: Optional[WizardStep] = None
 
 
 class AgentReportRunBase(BaseModel):
@@ -92,6 +95,7 @@ class AgentReportSpecResponse(AgentReportSpecBase):
     owner_id: Optional[UUID] = None
     latest_dashboard_id: Optional[int] = None
     status: ReportSpecStatus
+    current_step: WizardStep = "select"
     last_run_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime

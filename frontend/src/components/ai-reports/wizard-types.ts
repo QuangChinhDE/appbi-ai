@@ -6,7 +6,7 @@ import {
 } from '@/types/agent';
 
 export type WizardStep = 'select' | 'brief' | 'plan' | 'building';
-export type BriefSectionKey = 'essentials' | 'intent' | 'dataset' | 'narrative' | 'advanced';
+export type BriefSectionKey = 'brief' | 'dataset' | 'settings';
 
 export interface AIReportWizardProps {
   isOpen?: boolean;
@@ -54,15 +54,20 @@ export interface BriefPreset {
   summary: string;
   goal: string;
   audience: string;
-  reportStyle: string;
-  reportType: string;
   comparisonPeriod: string;
-  refreshFrequency: string;
   mustIncludeSectionsText: string;
   alertFocusText: string;
-  insightDepth: string;
-  recommendationStyle: string;
-  preferredDashboardStructure: string;
+}
+
+export interface TableDescriptionCard {
+  key: string;
+  workspaceId: number;
+  tableId: number;
+  workspaceName: string;
+  tableName: string;
+  autoDescription: string | null;
+  columnDescriptions: Record<string, string> | null;
+  commonQuestions: string[] | null;
 }
 
 export type BuildEventBadgeInput = BuildEvent;

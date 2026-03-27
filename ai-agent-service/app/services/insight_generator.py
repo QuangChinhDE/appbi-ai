@@ -50,7 +50,16 @@ def _dimension_label(value: Any, language: str | None) -> str:
     return text
 
 
-def _pick_fields(rows: List[Dict[str, Any]]) -> tuple[Optional[str], Optional[str]]:
+def _pick_fields(rows: List[Dict[str, Any]], chart: Optional["AgentChartPlan"] = None) -> tuple[Optional[str], Optional[str]]:
+    # Prefer roleConfig fields set by the planner — they reflect actual analytical intent
+    if chart is not None:
+        role_config = (chart.config or {}).get("roleConfig") or {}
+        metrics = role_config.get("metrics") or []
+        metric_field = metrics[0].get("field") if metrics else None
+        dimension_field = role_config.get("dimension") or role_config.get("timeField") or None
+        if metric_field or dimension_field:
+            return dimension_field, metric_field
+
     if not rows:
         return None, None
     keys = list(rows[0].keys())
@@ -91,6 +100,55 @@ def _summarize_rows(
     return f"Tra ve {len(rows)} dong du lieu." if vi else f"Returned {len(rows)} rows."
 
 
+def _compute_signals(
+    rows: List[Dict[str, Any]],
+    dimension_field: Optional[str],
+    metric_field: Optional[str],
+) -> Dict[str, Any]:
+    """Compute statistical signals from real data rows for LLM to reason over."""
+    signals: Dict[str, Any] = {"row_count": len(rows)}
+    if not rows or not metric_field:
+        return signals
+
+    values = [_to_number(row.get(metric_field)) for row in rows if _to_number(row.get(metric_field)) is not None]
+    if not values:
+        return signals
+
+    total = sum(values)
+    signals["total"] = round(total, 2)
+    signals["mean"] = round(total / len(values), 2)
+    signals["min"] = round(min(values), 2)
+    signals["max"] = round(max(values), 2)
+
+    # Trend: compare first half vs second half
+    if len(values) >= 4:
+        mid = len(values) // 2
+        first_avg = sum(values[:mid]) / mid
+        second_avg = sum(values[mid:]) / (len(values) - mid)
+        if first_avg != 0:
+            trend_pct = round((second_avg - first_avg) / abs(first_avg) * 100, 1)
+            signals["trend_pct"] = trend_pct
+            signals["trend_direction"] = "up" if trend_pct > 2 else "down" if trend_pct < -2 else "flat"
+
+    # Top/bottom segments
+    if dimension_field:
+        ranked = sorted(
+            [row for row in rows if _to_number(row.get(metric_field)) is not None],
+            key=lambda r: _to_number(r.get(metric_field)) or 0,
+            reverse=True,
+        )
+        if ranked:
+            top_val = _to_number(ranked[0].get(metric_field)) or 0
+            signals["top_segment"] = str(ranked[0].get(dimension_field, ""))
+            signals["top_value"] = round(top_val, 2)
+            if total > 0:
+                signals["top_share_pct"] = round(top_val / total * 100, 1)
+            if len(ranked) >= 2:
+                signals["second_segment"] = str(ranked[1].get(dimension_field, ""))
+
+    return signals
+
+
 def _build_chart_insight(
     chart: AgentChartPlan,
     chart_id: Optional[int],
@@ -99,44 +157,42 @@ def _build_chart_insight(
     warning_if_any: Optional[str] = None,
 ) -> ChartInsightArtifact:
     vi = is_vietnamese(language)
-    dimension_field, metric_field = _pick_fields(rows)
+    dimension_field, metric_field = _pick_fields(rows, chart)
+    signals = _compute_signals(rows, dimension_field, metric_field)
     evidence_summary = _summarize_rows(rows, dimension_field, metric_field, language)
 
-    finding = chart.expected_signal or chart.rationale
+    finding = chart.hypothesis or chart.expected_signal or chart.rationale
     caption = chart.title
 
     if rows and chart.chart_type in {"TIME_SERIES", "LINE", "AREA"} and metric_field:
-        values = [_to_number(row.get(metric_field)) for row in rows]
-        values = [value for value in values if value is not None]
-        if len(values) >= 2:
-            delta = values[-1] - values[0]
+        trend_dir = signals.get("trend_direction")
+        trend_pct = signals.get("trend_pct")
+        if trend_dir and trend_pct is not None:
             if vi:
-                direction = "tang len" if delta > 0 else "giam xuong" if delta < 0 else "di ngang tuong doi"
-                finding = f"{chart.title} {direction} trong giai doan mau, dua tren {metric_field}."
-                caption = f"{chart.title}: tin hieu xu huong cho {metric_field.replace('_', ' ')}."
+                dir_text = "tăng" if trend_dir == "up" else "giảm" if trend_dir == "down" else "đi ngang"
+                finding = f"{chart.title}: {metric_field.replace('_', ' ')} {dir_text} {abs(trend_pct):.1f}% so với nửa đầu cùng kỳ."
+                caption = f"{chart.title}: xu hướng {metric_field.replace('_', ' ')}."
             else:
-                direction = "increased" if delta > 0 else "decreased" if delta < 0 else "stayed broadly flat"
-                finding = f"{chart.title} {direction} across the sampled period, based on {metric_field}."
-                caption = f"{chart.title}: trend signal for {metric_field.replace('_', ' ')}."
+                dir_text = "up" if trend_dir == "up" else "down" if trend_dir == "down" else "flat"
+                finding = f"{chart.title}: {metric_field.replace('_', ' ')} trended {dir_text} {abs(trend_pct):.1f}% vs the earlier period."
+                caption = f"{chart.title}: {metric_field.replace('_', ' ')} trend."
     elif rows and metric_field and dimension_field and chart.chart_type in {"BAR", "GROUPED_BAR", "STACKED_BAR", "PIE"}:
-        ranked = sorted(
-            [row for row in rows if _to_number(row.get(metric_field)) is not None],
-            key=lambda row: _to_number(row.get(metric_field)) or 0,
-            reverse=True,
-        )
-        if ranked:
-            leader = ranked[0]
-            label = _dimension_label(leader.get(dimension_field), language)
+        top_seg = signals.get("top_segment")
+        top_share = signals.get("top_share_pct")
+        if top_seg:
+            label = _dimension_label(top_seg, language)
             if vi:
-                finding = f"{label} noi bat trong {chart.title} voi gia tri {leader.get(metric_field)}."
-                caption = f"{chart.title}: so sanh {metric_field.replace('_', ' ')} theo {dimension_field.replace('_', ' ')}."
+                share_text = f" ({top_share:.0f}% tổng)" if top_share is not None else ""
+                finding = f"{label} dẫn đầu trong {chart.title}{share_text} theo {metric_field.replace('_', ' ')}."
+                caption = f"{chart.title}: so sánh {metric_field.replace('_', ' ')} theo {dimension_field.replace('_', ' ')}."
             else:
-                finding = f"{label} stands out in {chart.title} with {leader.get(metric_field)}."
-                caption = f"{chart.title}: compare how {metric_field.replace('_', ' ')} varies by {dimension_field.replace('_', ' ')}."
+                share_text = f" ({top_share:.0f}% of total)" if top_share is not None else ""
+                finding = f"{label} leads in {chart.title}{share_text} by {metric_field.replace('_', ' ')}."
+                caption = f"{chart.title}: {metric_field.replace('_', ' ')} by {dimension_field.replace('_', ' ')}."
     elif rows and chart.chart_type == "TABLE":
         if vi:
-            finding = f"{chart.title} giu lai goc nhin van hanh chi tiet voi {len(rows)} dong hien thi de follow-up."
-            caption = f"{chart.title}: du lieu chi tiet ho tro viec kiem tra."
+            finding = f"{chart.title} giữ lại góc nhìn vận hành chi tiết với {len(rows)} dòng hiển thị để follow-up."
+            caption = f"{chart.title}: dữ liệu chi tiết hỗ trợ việc kiểm tra."
         else:
             finding = f"{chart.title} keeps a detailed operational view with {len(rows)} visible rows for follow-up."
             caption = f"{chart.title}: detailed supporting records for investigation."
@@ -156,7 +212,7 @@ def _build_chart_insight(
 
 def _build_rule_based_insight_report(
     plan: AgentPlanResponse,
-    chart_payloads: Iterable[Dict[str, Any]],
+    chart_payloads: List[Dict[str, Any]],
 ) -> InsightReportArtifact:
     language = plan.parsed_brief.output_language if plan.parsed_brief else None
     vi = is_vietnamese(language)
@@ -184,23 +240,28 @@ def _build_rule_based_insight_report(
             continue
         key_findings = [item.finding for item in related[:3]]
         caveats = [item.warning_if_any for item in related if item.warning_if_any][:2]
-        recommended_actions: List[str] = []
 
-        if any("inactive" in finding.lower() or "deactive" in finding.lower() for finding in key_findings):
+        # Generate context-aware recommended actions from the section's analysis intent
+        recommended_actions: List[str] = []
+        section_intent = getattr(section, "intent", "") or ""
+        top_finding = key_findings[0] if key_findings else ""
+        low_confidence = any(item.confidence < 0.55 for item in related)
+
+        if low_confidence:
             recommended_actions.append(
-                "Uu tien ra soat cac nhom co ty trong bang khong hoat dong cao nhat."
+                "Kiểm tra lại chất lượng dữ liệu cho section này trước khi đưa vào báo cáo chính thức."
                 if vi
-                else "Prioritize review of the segments with the highest inactive asset concentration."
+                else "Verify data quality for this section before using it in a formal report."
             )
-        if any("ownership" in finding.lower() or "stewardship" in finding.lower() or "metadata" in finding.lower() for finding in key_findings):
+        if section_intent:
             recommended_actions.append(
-                "Xac minh do phu metadata va ownership truoc khi dung cac tai san nay cho bao cao quan trong."
+                f"Dùng section này để trả lời: {section_intent[:120]}."
                 if vi
-                else "Validate metadata and ownership coverage before using these assets for critical reporting."
+                else f"Use this section to address: {section_intent[:120]}."
             )
         if not recommended_actions:
             recommended_actions.append(
-                "Dung phan nay de dan huong vong follow-up van hanh va xac minh tiep theo."
+                "Dùng phần này để dẫn hướng vòng follow-up vận hành và xác minh tiếp theo."
                 if vi
                 else "Use this section to guide the next round of operational follow-up and validation."
             )
@@ -287,27 +348,31 @@ def _section_payload_summary(base_report: InsightReportArtifact) -> List[Dict[st
 async def _generate_llm_overrides(
     plan: AgentPlanResponse,
     base_report: InsightReportArtifact,
+    chart_signals: Optional[Dict[str, Any]] = None,
+    chart_sample_rows: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> Optional[Dict[str, Any]]:
     language = plan.parsed_brief.output_language if plan.parsed_brief else None
     vi = is_vietnamese(language)
     system_prompt = (
-        "Ban la senior data analyst viet narrative bao cao. "
-        "Hay viet lai insight report dua tren bang chung co san, khong duoc bịa them so lieu, khong duoc doi nghia chart key. "
-        "Tra ve JSON hop le va giu tat ca cau chu hien thi bang tieng Viet."
+        "Bạn là senior data analyst đang viết narrative báo cáo BI. "
+        "Nhiệm vụ: phân tích dữ liệu thực tế được cung cấp và viết lại insight report với nhận định sắc bén, "
+        "chỉ ra xu hướng, segment nổi bật, và đề xuất hành động có căn cứ từ số liệu. "
+        "Không được bịa thêm số liệu, không được đổi chart_key. Trả về JSON hợp lệ, viết bằng tiếng Việt."
         if vi
         else
-        "You are a senior data analyst writing a report narrative. "
-        "Rewrite the insight report from the supplied evidence only, without inventing numbers or changing chart keys. "
-        "Return valid JSON only."
+        "You are a senior data analyst writing a BI report narrative. "
+        "Analyze the real data signals provided and rewrite the insight report with sharp analytical findings: "
+        "identify trends, highlight standout segments, and suggest evidence-backed actions. "
+        "Do not invent numbers or change chart keys. Return valid JSON only."
     )
     user_prompt = json.dumps(
         {
             "dashboard_title": plan.dashboard_title,
             "dashboard_summary": plan.dashboard_summary,
             "strategy_summary": plan.strategy_summary,
-            "quality_score": plan.quality_score,
-            "warnings": plan.warnings[:6],
             "analysis_plan": plan.analysis_plan.model_dump(mode="json") if plan.analysis_plan else None,
+            "chart_signals": chart_signals or {},
+            "chart_sample_rows": {k: v[:10] for k, v in (chart_sample_rows or {}).items()},
             "base_report": {
                 "executive_summary": base_report.executive_summary,
                 "top_findings": base_report.top_findings,
@@ -348,6 +413,7 @@ async def _generate_llm_overrides(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         model_override=settings.model_for_phase("insight"),
+        phase="insight",
     )
 
 
@@ -434,11 +500,25 @@ async def generate_insight_report(
     plan: AgentPlanResponse,
     chart_payloads: Iterable[Dict[str, Any]],
 ) -> Tuple[InsightReportArtifact, AgentRuntimeMetadata]:
-    base_report = _build_rule_based_insight_report(plan, chart_payloads)
+    payloads_list = list(chart_payloads)
+    base_report = _build_rule_based_insight_report(plan, payloads_list)
     if not _llm_enabled(plan):
         return base_report, rule_runtime_metadata()
 
-    overrides = await _generate_llm_overrides(plan, base_report)
+    # Build signals and sample rows per chart for LLM to reason over real data
+    chart_map = {chart.key: chart for chart in plan.charts}
+    chart_signals: Dict[str, Any] = {}
+    chart_sample_rows: Dict[str, List[Dict[str, Any]]] = {}
+    for payload in payloads_list:
+        key = payload.get("key") or ""
+        rows = list(payload.get("data_rows") or [])
+        chart = chart_map.get(key)
+        if chart and rows:
+            dim, met = _pick_fields(rows, chart)
+            chart_signals[key] = _compute_signals(rows, dim, met)
+            chart_sample_rows[key] = rows[:10]
+
+    overrides = await _generate_llm_overrides(plan, base_report, chart_signals, chart_sample_rows)
     if not overrides:
         return base_report, rule_runtime_metadata()
 

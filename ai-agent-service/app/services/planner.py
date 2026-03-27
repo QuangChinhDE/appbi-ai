@@ -22,6 +22,7 @@ from app.schemas.agent import (
     QualityGateArtifact,
 )
 from app.services.analysis_planner import build_analysis_plan
+from app.services.brief_enricher import enrich_brief
 from app.services.brief_parser import parse_brief
 from app.services.data_profiler import build_profiling_report
 from app.services.dataset_selector import build_dataset_fit_report
@@ -204,10 +205,27 @@ async def load_table_contexts(brief: AgentBriefRequest, token: str) -> List[Tabl
     return contexts
 
 
+def _table_descriptions_for_enrichment(contexts: List[TableContext]) -> List[Dict[str, Any]]:
+    """Build the lightweight table-description payload consumed by brief_enricher."""
+    result: List[Dict[str, Any]] = []
+    for ctx in contexts:
+        desc = ctx.table_description or {}
+        result.append({
+            "workspace_id": ctx.workspace_id,
+            "table_id": ctx.table_id,
+            "table_name": ctx.table_name,
+            "auto_description": desc.get("auto_description") or "",
+            "column_descriptions": desc.get("column_descriptions") or {},
+            "common_questions": desc.get("common_questions") or [],
+            "columns": ctx.columns,
+        })
+    return result
+
+
 def profile_table(brief: AgentBriefRequest, context: TableContext) -> TableProfile:
     language = infer_output_language(
         brief.output_language,
-        [brief.goal, brief.audience, brief.decision_context, brief.notes, " ".join(brief.questions)],
+        [brief.goal, brief.audience, brief.timeframe, brief.comparison_period, brief.detail_level, brief.notes],
     )
     vi = is_vietnamese(language)
     typed_columns = [{"name": column["name"], "type": _infer_type(column, context.sample_rows)} for column in context.columns]
@@ -220,7 +238,13 @@ def profile_table(brief: AgentBriefRequest, context: TableContext) -> TableProfi
         if 1 < _unique_count(column_name, context.sample_rows) <= 10
     ]
 
-    scoring_terms = brief.kpis + brief.questions + [brief.goal, brief.audience or "", brief.report_type or ""]
+    scoring_terms = [
+        brief.goal,
+        brief.audience or "",
+        brief.comparison_period or "",
+        brief.detail_level or "",
+        brief.timeframe or "",
+    ]
     metric_candidates = sorted(
         numeric_columns,
         key=lambda name: (_score_name_against_terms(name, scoring_terms), -len(name)),
@@ -228,7 +252,13 @@ def profile_table(brief: AgentBriefRequest, context: TableContext) -> TableProfi
     )
     dimension_candidates = sorted(
         categorical_columns,
-        key=lambda name: (_score_name_against_terms(name, brief.questions + [brief.goal]), -len(name)),
+        key=lambda name: (
+            _score_name_against_terms(
+                name,
+                [brief.goal, brief.notes or "", brief.comparison_period or "", brief.detail_level or ""],
+            ),
+            -len(name),
+        ),
         reverse=True,
     )
 
@@ -251,7 +281,7 @@ def profile_table(brief: AgentBriefRequest, context: TableContext) -> TableProfi
     )
     question_matches = _match_questions(
         " ".join([context.table_name, business_summary, " ".join(column["name"] for column in typed_columns)]),
-        brief.questions,
+        brief.questions or [brief.goal, brief.notes or ""],
     )
 
     return TableProfile(
@@ -304,21 +334,55 @@ async def _generate_strategy_with_llm(
     vi = is_vietnamese(parsed_brief.output_language)
     system_prompt = (
         (
-            "Bạn là một chuyên gia BI/DA cấp cao đang thiết kế kế hoạch dashboard. "
-            "Hãy dùng brief và hồ sơ bảng để tạo chiến lược báo cáo theo hướng nghiệp vụ trước. "
-            "Không được bịa thêm bảng hoặc cột. Chỉ trả về JSON hợp lệ. "
+            "Bạn là một senior BI/DA đang thiết kế kế hoạch dashboard.\n\n"
+            "Bạn đã nhận được một enriched brief bao gồm: business domain, KPI đã suy luận, "
+            "câu hỏi phân tích chuyên sâu, mối quan hệ giữa các bảng, và narrative arc.\n\n"
+            "QUY TẮC THIẾT KẾ:\n"
+            "1. Section KHÔNG đặt tên theo bảng (ví dụ 'orders'). Đặt theo business intent "
+            "(ví dụ 'Hiệu suất doanh thu Q4', 'Phân tích khách hàng theo phân khúc').\n"
+            "2. Chart type phải match câu hỏi phân tích:\n"
+            "   - 'X thay đổi thế nào theo thời gian?' → TIME_SERIES hoặc LINE\n"
+            "   - 'Segment nào dẫn dắt?' → BAR (sorted) hoặc GROUPED_BAR\n"
+            "   - 'Cơ cấu tỷ trọng?' → PIE (chỉ khi ≤7 categories)\n"
+            "   - 'Con số headline?' → KPI\n"
+            "3. Mỗi chart PHẢI có hypothesis rõ ràng: 'Tôi kỳ vọng thấy X vì Y'.\n"
+            "4. KHÔNG tạo chart trùng lặp (2 bar chart cùng metric cùng dimension).\n"
+            "5. Dùng enriched primary_kpis và secondary_kpis để chọn metric chính xác.\n"
+            "6. Nếu có table_relationships, tạo ít nhất 1 section kết hợp insight từ nhiều bảng.\n"
+            "7. Không được bịa thêm bảng hoặc cột. Chỉ trả về JSON hợp lệ.\n"
             "Mọi câu chữ hiển thị cho người dùng phải viết bằng tiếng Việt."
         )
         if vi
         else (
-            "You are a senior BI analyst designing a dashboard plan. "
-            "Use the brief and table profiles to create a business-first report strategy. "
-            "Do not invent columns or tables. Return strict JSON only."
+            "You are a senior BI analyst designing a dashboard plan.\n\n"
+            "You have received an enriched brief that includes: business domain, inferred KPIs, "
+            "domain-specific analytical questions, table relationships, and a narrative arc.\n\n"
+            "DESIGN RULES:\n"
+            "1. Section titles must reflect business intent (e.g., 'Q4 Revenue Performance', "
+            "'Customer Segment Analysis'), NOT table names.\n"
+            "2. Chart type must match the analytical question:\n"
+            "   - 'How does X change over time?' → TIME_SERIES or LINE\n"
+            "   - 'Which segment drives?' → BAR (sorted) or GROUPED_BAR\n"
+            "   - 'Composition/share?' → PIE (only if ≤7 categories)\n"
+            "   - 'Headline number?' → KPI\n"
+            "3. Every chart MUST have a clear hypothesis: 'I expect to see X because Y'.\n"
+            "4. Do NOT create redundant charts (same metric + same dimension = same chart).\n"
+            "5. Use the enriched primary_kpis and secondary_kpis to pick the right metrics.\n"
+            "6. If table_relationships exist, create at least 1 section with cross-table insights.\n"
+            "7. Do not invent columns or tables. Return strict JSON only."
         )
     )
     user_prompt = json.dumps(
         {
-            "brief": brief.model_dump(),
+            "planning_brief": {
+                "goal": brief.goal,
+                "audience": brief.audience,
+                "timeframe": brief.timeframe,
+                "comparison_period": brief.comparison_period,
+                "detail_level": brief.detail_level,
+                "notes": brief.notes,
+                "output_language": brief.output_language,
+            },
             "parsed_brief": parsed_brief.model_dump(mode="json"),
             "dataset_fit_report": [item.model_dump(mode="json") for item in dataset_fit_report],
             "profiling_report": [item.model_dump(mode="json") for item in profiling_report],
@@ -332,7 +396,7 @@ async def _generate_strategy_with_llm(
                 "warnings": ["string"],
                 "sections": [
                     {
-                        "table_id": "number",
+                        "table_id": "number — must match a table_id in the tables list",
                         "title": "string",
                         "intent": "string",
                         "why_this_section": "string",
@@ -342,11 +406,13 @@ async def _generate_strategy_with_llm(
                             {
                                 "title": "string",
                                 "chart_type": "KPI|BAR|LINE|AREA|PIE|TABLE|TIME_SERIES|GROUPED_BAR|STACKED_BAR",
+                                "hypothesis": "string — what analytical question this chart is testing",
                                 "insight_goal": "string",
                                 "why_this_chart": "string",
-                                "metric_hint": "string|null",
-                                "dimension_hint": "string|null",
-                                "time_hint": "string|null",
+                                "metric_field": "string|null — exact column name from this table's columns list",
+                                "metric_agg": "sum|avg|count|count_distinct|min|max — choose the right aggregation for this metric",
+                                "dimension_field": "string|null — exact column name from this table's columns list",
+                                "time_field": "string|null — exact column name from this table's columns list",
                                 "expected_signal": "string|null",
                                 "alternative_considered": "string|null",
                                 "confidence": "0.0-1.0"
@@ -363,6 +429,7 @@ async def _generate_strategy_with_llm(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         model_override=settings.model_for_phase("planning"),
+        phase="planning",
     )
 
 
@@ -462,7 +529,7 @@ def _build_heuristic_strategy(
                         if vi
                         else f"Compare performance across {profile.primary_dimension}."
                     ),
-                    "why_this_chart": "Phân rã theo phân khúc giúp thấy phần nào đang kéo kết quả chung." if vi else "Breakdowns help explain which segment drives the overall result.",
+                    "why_this_chart": "Phân rã theo phân khúc giúp thấy phần nào Ä'ang kéo kết quả chung." if vi else "Breakdowns help explain which segment drives the overall result.",
                     "metric_hint": profile.primary_metric or count_field,
                     "dimension_hint": profile.primary_dimension,
                     "time_hint": None,
@@ -502,7 +569,7 @@ def _build_heuristic_strategy(
         )
         return requests
 
-    executive_questions = brief.questions[:3] or executive_profile.question_matches
+    executive_questions = parsed_brief.must_answer_questions[:3] or executive_profile.question_matches
     sections.append(
         {
             "table_id": executive_profile.context.table_id,
@@ -534,7 +601,7 @@ def _build_heuristic_strategy(
         fit = fit_by_table_id.get(profile.context.table_id)
         if profile.context.table_id == executive_profile.context.table_id:
             charts = charts[2:5] + charts[-1:]
-        if not profile.primary_time and any(section.lower() == "trend" for section in brief.must_include_sections):
+        if not profile.primary_time and brief.comparison_period and brief.comparison_period != "none":
             warnings.append(
                 f"{profile.context.table_name} không có trường thời gian đủ rõ để làm phần xu hướng mạnh hơn."
                 if vi
@@ -556,7 +623,7 @@ def _build_heuristic_strategy(
                     )
                 ),
                 "why_this_section": (fit.notes if fit and fit.notes else profile.business_summary),
-                "questions_covered": profile.question_matches or brief.questions[:2],
+                "questions_covered": profile.question_matches or parsed_brief.must_answer_questions[:2],
                 "priority": index + 1,
                 "charts": charts[:4],
             }
@@ -573,9 +640,22 @@ def _build_heuristic_strategy(
     if brief.timeframe:
         dashboard_summary_parts.append(f"Khung thời gian chính: {brief.timeframe}." if vi else f"Primary timeframe: {brief.timeframe}.")
     if brief.comparison_period:
-        dashboard_summary_parts.append(f"So sánh với: {brief.comparison_period}." if vi else f"Compare against: {brief.comparison_period}.")
-    if brief.alert_focus:
-        dashboard_summary_parts.append(f"Trọng tâm cảnh báo: {', '.join(brief.alert_focus[:3])}." if vi else f"Alert focus: {', '.join(brief.alert_focus[:3])}.")
+        comparison_label = {
+            "previous_period": "kỳ trước" if vi else "the previous period",
+            "same_period": "cùng kỳ" if vi else "the same period",
+            "none": "không ép mốc so sánh cố định" if vi else "no fixed comparison baseline",
+        }.get(brief.comparison_period, brief.comparison_period)
+        dashboard_summary_parts.append(
+            f"So sánh với: {comparison_label}."
+            if vi
+            else f"Compare against: {comparison_label}."
+        )
+    if brief.detail_level:
+        dashboard_summary_parts.append(
+            f"Mức đọc ưu tiên: {'chi tiết' if brief.detail_level == 'detailed' else 'tổng quan'}."
+            if vi
+            else f"Preferred read depth: {'detailed' if brief.detail_level == 'detailed' else 'overview'}."
+        )
     if parsed_brief.decision_context:
         dashboard_summary_parts.append(f"Bối cảnh ra quyết định: {parsed_brief.decision_context}." if vi else f"Decision context: {parsed_brief.decision_context}.")
 
@@ -607,16 +687,51 @@ def _pick_best_name(candidates: List[str], hint: Optional[str], fallback: Option
     return fallback or candidates[0]
 
 
-def _metric_payload(profile: TableProfile, metric_hint: Optional[str], label: Optional[str] = None) -> Dict[str, str]:
-    numeric_candidates = profile.metric_candidates or profile.numeric_columns
-    numeric_metric = _pick_best_name(numeric_candidates, metric_hint, profile.primary_metric)
-    if numeric_metric and numeric_metric in numeric_candidates:
-        return {
-            "field": numeric_metric,
-            "agg": "sum",
-            "label": label or numeric_metric.replace("_", " ").title(),
-        }
+_VALID_AGGS = {"sum", "avg", "count", "count_distinct", "min", "max"}
 
+
+def _all_column_names(profile: TableProfile) -> List[str]:
+    return [col["name"] for col in profile.typed_columns]
+
+
+def _resolve_column(llm_field: Optional[str], candidates: List[str], fallback: Optional[str], profile: TableProfile) -> Optional[str]:
+    """Use LLM-specified field if it exists in the table, else fuzzy-match, else fallback."""
+    all_cols = _all_column_names(profile)
+    if llm_field and llm_field in all_cols:
+        return llm_field
+    # fuzzy match against candidates if LLM gave a hint that doesn't exactly match
+    hint = llm_field or None
+    if hint:
+        ranked = sorted(candidates, key=lambda name: _score_name_against_terms(name, [hint]), reverse=True)
+        if ranked and _score_name_against_terms(ranked[0], [hint]) > 0:
+            return ranked[0]
+    return fallback or (candidates[0] if candidates else None)
+
+
+def _metric_payload(
+    profile: TableProfile,
+    metric_field: Optional[str],
+    metric_agg: Optional[str] = None,
+    label: Optional[str] = None,
+) -> Dict[str, str]:
+    numeric_candidates = profile.metric_candidates or profile.numeric_columns
+    # No numeric columns at all → always use record count to avoid sum(VARCHAR) errors
+    if not numeric_candidates:
+        count_field = _count_field(profile.typed_columns)
+        return {
+            "field": count_field,
+            "agg": "count",
+            "label": label or "Record Count",
+        }
+    resolved = _resolve_column(metric_field, numeric_candidates, profile.primary_metric, profile)
+    # resolved must be a genuine numeric column, not just any column
+    if resolved and resolved in numeric_candidates:
+        agg = metric_agg if metric_agg in _VALID_AGGS else "sum"
+        return {
+            "field": resolved,
+            "agg": agg,
+            "label": label or resolved.replace("_", " ").title(),
+        }
     count_field = _count_field(profile.typed_columns)
     return {
         "field": count_field,
@@ -630,18 +745,26 @@ def _build_chart_config(profile: TableProfile, chart_request: Dict[str, Any]) ->
     if chart_type not in SUPPORTED_CHART_TYPES:
         chart_type = "TABLE"
 
-    metric_hint = chart_request.get("metric_hint")
-    dimension_hint = chart_request.get("dimension_hint")
-    time_hint = chart_request.get("time_hint")
-    metric_payload = _metric_payload(profile, metric_hint, chart_request.get("title"))
-    dimension = _pick_best_name(profile.low_cardinality_columns + profile.dimension_candidates, dimension_hint, profile.primary_dimension)
-    time_field = _pick_best_name(profile.date_columns, time_hint, profile.primary_time)
+    # LLM-specified fields (new contract) take priority over old hint fields
+    llm_metric = chart_request.get("metric_field") or chart_request.get("metric_hint")
+    llm_agg = chart_request.get("metric_agg")
+    llm_dimension = chart_request.get("dimension_field") or chart_request.get("dimension_hint")
+    llm_time = chart_request.get("time_field") or chart_request.get("time_hint")
+
+    metric = _metric_payload(profile, llm_metric, llm_agg, chart_request.get("title"))
+    dimension = _resolve_column(
+        llm_dimension,
+        profile.low_cardinality_columns + profile.dimension_candidates,
+        profile.primary_dimension,
+        profile,
+    )
+    time_field = _resolve_column(llm_time, profile.date_columns, profile.primary_time, profile)
 
     if chart_type == "KPI":
         return {
             "workspace_id": profile.context.workspace_id,
             "chartType": "KPI",
-            "roleConfig": {"metrics": [metric_payload]},
+            "roleConfig": {"metrics": [metric]},
             "filters": [],
         }
 
@@ -653,7 +776,7 @@ def _build_chart_config(profile: TableProfile, chart_request: Dict[str, Any]) ->
             "chartType": "TIME_SERIES",
             "roleConfig": {
                 "timeField": time_field,
-                "metrics": [metric_payload],
+                "metrics": [metric],
             },
             "filters": [],
         }
@@ -661,7 +784,7 @@ def _build_chart_config(profile: TableProfile, chart_request: Dict[str, Any]) ->
     if chart_type in {"BAR", "LINE", "AREA", "GROUPED_BAR", "STACKED_BAR"}:
         if not dimension:
             return None
-        role_config: Dict[str, Any] = {"dimension": dimension, "metrics": [metric_payload]}
+        role_config: Dict[str, Any] = {"dimension": dimension, "metrics": [metric]}
         if chart_type in {"GROUPED_BAR", "STACKED_BAR"} and len(profile.dimension_candidates) > 1:
             breakdown = next((item for item in profile.dimension_candidates if item != dimension), None)
             if breakdown:
@@ -681,7 +804,7 @@ def _build_chart_config(profile: TableProfile, chart_request: Dict[str, Any]) ->
             "chartType": "PIE",
             "roleConfig": {
                 "dimension": dimension,
-                "metrics": [_metric_payload(profile, metric_hint, "Share")],
+                "metrics": [_metric_payload(profile, llm_metric, llm_agg, "Share")],
             },
             "filters": [],
         }
@@ -752,6 +875,7 @@ def _materialize_strategy(
                     or ("Hỗ trợ trực tiếp cho mục tiêu của báo cáo." if vi else "Supports the report objective."),
                     insight_goal=raw_chart.get("insight_goal"),
                     why_this_chart=raw_chart.get("why_this_chart"),
+                    hypothesis=raw_chart.get("hypothesis"),
                     confidence=float(raw_chart.get("confidence") or 0.6),
                     alternative_considered=raw_chart.get("alternative_considered"),
                     expected_signal=raw_chart.get("expected_signal"),
@@ -815,37 +939,31 @@ def _review_plan_quality(
     quality_gate_report: QualityGateArtifact,
 ) -> AgentPlanResponse:
     vi = is_vietnamese(plan.parsed_brief.output_language if plan.parsed_brief else None)
+    explicit_questions = plan.parsed_brief.must_answer_questions if plan.parsed_brief else []
     active_question_hits = sum(
         1
-        for question in brief.questions
+        for question in explicit_questions
         if any(question in section.questions_covered for section in plan.sections)
     )
-    question_coverage = active_question_hits / max(len(brief.questions), 1) if brief.questions else 1.0
-
-    metric_text = " ".join(
-        " ".join(
-            [
-                chart.title,
-                chart.rationale or "",
-                chart.insight_goal or "",
-                json.dumps(chart.config, ensure_ascii=False),
-            ]
-        )
-        for chart in plan.charts
-    ).lower()
-    kpi_hits = sum(1 for kpi in brief.kpis if kpi.lower() in metric_text)
-    kpi_coverage = kpi_hits / max(len(brief.kpis), 1) if brief.kpis else 1.0
+    question_coverage = active_question_hits / max(len(explicit_questions), 1) if explicit_questions else 1.0
 
     unique_chart_types = len({chart.chart_type for chart in plan.charts})
     chart_diversity = min(unique_chart_types / 4.0, 1.0)
     section_balance = min(len(plan.sections) / max(len(brief.selected_tables), 1), 1.0)
     dataset_fit = 1.0 if plan.charts and plan.sections else 0.0
+    metric_ready_charts = sum(
+        1
+        for chart in plan.charts
+        if chart.chart_type.upper() != "TABLE"
+        and bool((chart.config.get("roleConfig") or {}).get("metrics"))
+    )
+    metric_coverage = metric_ready_charts / max(len(plan.charts), 1) if plan.charts else 0.0
     penalty_points = sum(float(value) for value in quality_gate_report.confidence_penalties.values())
     confidence_penalty = min(max(penalty_points, 0.0), 0.4)
 
     quality_breakdown = {
         "question_coverage": round(question_coverage, 3),
-        "kpi_coverage": round(kpi_coverage, 3),
+        "metric_coverage": round(metric_coverage, 3),
         "chart_diversity": round(chart_diversity, 3),
         "section_balance": round(section_balance, 3),
         "dataset_fit": round(dataset_fit, 3),
@@ -853,7 +971,7 @@ def _review_plan_quality(
     }
     quality_score = (
         question_coverage * 0.26
-        + kpi_coverage * 0.22
+        + metric_coverage * 0.22
         + chart_diversity * 0.16
         + section_balance * 0.16
         + dataset_fit * 0.20
@@ -861,7 +979,7 @@ def _review_plan_quality(
     quality_score = max(0.0, min(1.0, quality_score - confidence_penalty))
 
     warnings = list(plan.warnings)
-    if quality_breakdown["question_coverage"] < 0.6 and brief.questions:
+    if quality_breakdown["question_coverage"] < 0.6 and explicit_questions:
         warnings.append(
             "Bản nháp mới chỉ bao phủ một phần các câu hỏi nghiệp vụ đã nêu; nên tinh chỉnh brief thêm."
             if vi
@@ -896,6 +1014,15 @@ async def generate_agent_plan(brief: AgentBriefRequest, token: str) -> AgentPlan
     }
     parsed_brief = parse_brief(brief)
     contexts = await load_table_contexts(brief, token)
+
+    # --- Brief enrichment (LLM Call 1) ---
+    if brief.planning_mode == "deep":
+        table_descs = _table_descriptions_for_enrichment(contexts)
+        parsed_brief = await enrich_brief(brief, parsed_brief, table_descs)
+        phase_runtimes["enrichment"] = llm_runtime_metadata("enrichment")
+    else:
+        phase_runtimes["enrichment"] = rule_runtime_metadata()
+
     profiles = [profile_table(brief, context) for context in contexts]
     profiling_report = build_profiling_report(profiles, parsed_brief.output_language)
     dataset_fit_report = build_dataset_fit_report(parsed_brief, profiles)
@@ -971,6 +1098,21 @@ async def generate_agent_plan_stream(brief: AgentBriefRequest, token: str) -> As
         else "Inspecting the selected workspace tables and sample data.",
     )
     contexts = await load_table_contexts(brief, token)
+
+    # --- Brief enrichment (LLM Call 1) ---
+    if brief.planning_mode == "deep":
+        yield _plan_event(
+            "phase",
+            "enrich_brief",
+            "Đang phân tích domain, suy luận KPI và câu hỏi chuyên sâu từ mô tả bảng."
+            if vi
+            else "Analyzing domain, inferring KPIs and expert-level questions from table descriptions.",
+        )
+        table_descs = _table_descriptions_for_enrichment(contexts)
+        parsed_brief = await enrich_brief(brief, parsed_brief, table_descs)
+        phase_runtimes["enrichment"] = llm_runtime_metadata("enrichment")
+    else:
+        phase_runtimes["enrichment"] = rule_runtime_metadata()
 
     yield _plan_event(
         "phase",
@@ -1077,3 +1219,4 @@ async def generate_agent_plan_stream(brief: AgentBriefRequest, token: str) -> As
     plan = _review_plan_quality(plan, brief, quality_gate_report)
 
     yield _plan_event("done", "done", "Bản nháp đã sẵn sàng để review." if vi else "Draft ready for review.", plan=plan)
+

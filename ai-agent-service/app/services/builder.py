@@ -199,6 +199,7 @@ async def build_dashboard_stream(
     layouts = _build_layouts(request.plan)
     created_charts: List[Dict[str, Any]] = []
     run_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    seen_chart_names: set[str] = set()
 
     await _patch_run(request, token, {"status": "planning_charts"})
     yield _event(
@@ -235,6 +236,10 @@ async def build_dashboard_stream(
         if validation_error:
             continue
         payload = _normalize_chart_payload(chart, run_suffix)
+        # Deduplicate chart names: two sections may plan identical chart titles
+        if payload["name"] in seen_chart_names:
+            payload["name"] = f"{chart.title} [{chart.key[-8:]}] [{run_suffix}]"
+        seen_chart_names.add(payload["name"])
         try:
             created = await bi_client.create_chart(token=token, **payload)
             chart_data = await bi_client.get_chart_data(created["id"], token)

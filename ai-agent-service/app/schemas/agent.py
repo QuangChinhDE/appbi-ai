@@ -15,16 +15,17 @@ class AgentBriefRequest(BaseModel):
     report_name: Optional[str] = Field(default=None, max_length=255)
     report_type: Optional[str] = Field(default="executive_tracking", max_length=100)
     goal: str = Field(..., min_length=3, max_length=500)
-    audience: Optional[str] = Field(default=None, max_length=255)
+    audience: Optional[str] = Field(default=None, pattern="^(exec|manager|analyst)$")
     timeframe: Optional[str] = Field(default=None, max_length=255)
     why_now: Optional[str] = Field(default=None, max_length=500)
     business_background: Optional[str] = Field(default=None, max_length=2000)
     kpis: List[str] = Field(default_factory=list)
     questions: List[str] = Field(default_factory=list)
-    comparison_period: Optional[str] = Field(default=None, max_length=120)
+    comparison_period: Optional[str] = Field(default=None, pattern="^(previous_period|same_period|none)$")
     refresh_frequency: Optional[str] = Field(default=None, max_length=120)
     must_include_sections: List[str] = Field(default_factory=list)
     alert_focus: List[str] = Field(default_factory=list)
+    detail_level: Optional[str] = Field(default=None, pattern="^(overview|detailed)$")
     preferred_granularity: Optional[str] = Field(default=None, max_length=100)
     decision_context: Optional[str] = Field(default=None, max_length=500)
     report_style: Optional[str] = Field(default="executive", max_length=120)
@@ -98,6 +99,9 @@ class ParsedBriefArtifact(BaseModel):
     explicit_assumptions: List[str] = Field(default_factory=list)
     clarification_gaps: List[str] = Field(default_factory=list)
     success_criteria: List[str] = Field(default_factory=list)
+    business_domain: Optional[str] = None
+    table_relationships: List[str] = Field(default_factory=list)
+    narrative_arc: Optional[str] = None
 
 
 class DatasetFitArtifactItem(BaseModel):
@@ -227,6 +231,7 @@ class AgentChartPlan(BaseModel):
     rationale: str
     insight_goal: Optional[str] = None
     why_this_chart: Optional[str] = None
+    hypothesis: Optional[str] = None
     confidence: float = 0.6
     alternative_considered: Optional[str] = None
     expected_signal: Optional[str] = None

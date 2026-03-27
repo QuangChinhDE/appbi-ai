@@ -78,6 +78,7 @@ def create_agent_report_spec(
         name=spec_in.name,
         description=spec_in.description,
         status=spec_in.status,
+        current_step=spec_in.current_step,
         owner_id=current_user.id,
         latest_dashboard_id=spec_in.latest_dashboard_id,
         selected_tables_snapshot=spec_in.selected_tables_snapshot,
@@ -165,6 +166,7 @@ def create_agent_report_run(
         target_dashboard_id=run_in.target_dashboard_id,
     )
     spec.status = "running"
+    spec.current_step = "building"
     spec.last_run_at = datetime.now(timezone.utc)
     db.add(run)
     db.commit()

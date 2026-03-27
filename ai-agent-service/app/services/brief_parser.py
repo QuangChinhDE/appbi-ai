@@ -1,7 +1,80 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from app.schemas.agent import AgentBriefRequest, ParsedBriefArtifact
 from app.services.output_language import infer_output_language, is_vietnamese
+
+
+AUDIENCE_LABELS = {
+    'exec': {'vi': 'ban điều hành', 'en': 'executive leadership'},
+    'manager': {'vi': 'quản lý vận hành', 'en': 'managers'},
+    'analyst': {'vi': 'analyst', 'en': 'analysts'},
+}
+
+COMPARISON_LABELS = {
+    'previous_period': {'vi': 'kỳ trước', 'en': 'the previous period'},
+    'same_period': {'vi': 'cùng kỳ', 'en': 'the same period'},
+    'none': {'vi': 'không ép so sánh cố định', 'en': 'no fixed comparison baseline'},
+}
+
+DETAIL_LABELS = {
+    'overview': {'vi': 'tổng quan', 'en': 'overview'},
+    'detailed': {'vi': 'chi tiết', 'en': 'detailed'},
+}
+
+
+def _label(value: str | None, mapping: dict[str, dict[str, str]], lang: str, fallback: str) -> str:
+    if not value:
+        return fallback
+    return mapping.get(value, {}).get(lang, fallback)
+
+
+def _infer_questions(brief: AgentBriefRequest, vi: bool) -> list[str]:
+    timeframe = brief.timeframe or ('30 ngày gần nhất' if vi else 'the last 30 days')
+    comparison = _label(
+        brief.comparison_period,
+        COMPARISON_LABELS,
+        'vi' if vi else 'en',
+        'một mốc tham chiếu phù hợp' if vi else 'a sensible baseline',
+    )
+    detail = brief.detail_level or 'overview'
+
+    questions = [
+        (
+            f'Điều gì thay đổi nổi bật nhất trong {timeframe} khi nhìn so với {comparison}?'
+            if vi
+            else f'What changed most across {timeframe} compared with {comparison}?'
+        ),
+        (
+            'Nhóm, phân khúc hoặc bảng nào đang dẫn dắt tín hiệu chính này?'
+            if vi
+            else 'Which segment, domain, or table is driving the main signal?'
+        ),
+    ]
+
+    questions.append(
+        (
+            'Những caveat dữ liệu hoặc rủi ro nào cần xem trước khi hành động?'
+            if vi
+            else 'Which data caveats or risks should be reviewed before acting?'
+        )
+        if detail == 'detailed'
+        else (
+            'Điểm quyết định hoặc rủi ro nào nên được ưu tiên theo dõi tiếp?'
+            if vi
+            else 'Which decision point or risk should be prioritised next?'
+        )
+    )
+
+    if brief.notes:
+        questions.append(
+            (
+                'Lưu ý nào trong notes cần được phản ánh rõ trong narrative cuối?'
+                if vi
+                else 'Which note should be explicitly reflected in the final narrative?'
+            )
+        )
+
+    return questions[:3]
 
 
 def parse_brief(brief: AgentBriefRequest) -> ParsedBriefArtifact:
@@ -11,19 +84,31 @@ def parse_brief(brief: AgentBriefRequest) -> ParsedBriefArtifact:
             brief.goal,
             brief.audience,
             brief.timeframe,
-            brief.why_now,
-            brief.business_background,
-            brief.decision_context,
+            brief.comparison_period,
+            brief.detail_level,
             brief.notes,
-            " ".join(brief.kpis),
-            " ".join(brief.questions),
-            " ".join(brief.must_include_sections),
-            " ".join(brief.alert_focus),
         ],
     )
     vi = is_vietnamese(output_language)
-    primary_kpis = brief.kpis[:3]
-    secondary_kpis = brief.kpis[3:]
+    audience_label = _label(
+        brief.audience,
+        AUDIENCE_LABELS,
+        'vi' if vi else 'en',
+        'người đọc mục tiêu' if vi else 'the target audience',
+    )
+    comparison_label = _label(
+        brief.comparison_period,
+        COMPARISON_LABELS,
+        'vi' if vi else 'en',
+        'không ép mốc so sánh cố định' if vi else 'no forced comparison baseline',
+    )
+    detail_label = _label(
+        brief.detail_level,
+        DETAIL_LABELS,
+        'vi' if vi else 'en',
+        'tổng quan' if vi else 'overview',
+    )
+    inferred_questions = _infer_questions(brief, vi)
 
     explicit_assumptions: list[str] = []
     clarification_gaps: list[str] = []
@@ -31,98 +116,85 @@ def parse_brief(brief: AgentBriefRequest) -> ParsedBriefArtifact:
 
     if not brief.audience:
         explicit_assumptions.append(
-            "Giả định báo cáo phục vụ nhóm người đọc nghiệp vụ tổng quát."
+            'Giả định report phục vụ một nhóm business cần nhìn nhanh tín hiệu quan trọng nhất.'
             if vi
-            else "Assume the dashboard should work for a general business audience."
-        )
-    if not brief.decision_context:
-        clarification_gaps.append(
-            "Bối cảnh ra quyết định chưa được nêu rõ, nên Agent sẽ ưu tiên insight giám sát tổng quan."
-            if vi
-            else "Decision context is not explicit, so the Agent will prioritize broad monitoring insights."
+            else 'Assume the report should work for a business reader who needs the key signal quickly.'
         )
     if not brief.timeframe:
         explicit_assumptions.append(
-            "Sử dụng lát cắt dữ liệu mới nhất hiện có vì brief chưa chỉ ra mốc thời gian cụ thể."
+            'Mặc định đọc trên lát cắt dữ liệu gần nhất vì brief không chỉ rõ mốc thời gian.'
             if vi
-            else "Use the latest available data snapshot because no timeframe was specified."
+            else 'Default to the latest data window because the brief does not specify a timeframe.'
         )
-    if not brief.kpis:
-        clarification_gaps.append(
-            "Chưa có danh sách KPI rõ ràng, nên Agent sẽ tự suy luận các chỉ số chính từ những bảng đã chọn."
-            if vi
-            else "No KPI list was provided, so the Agent will infer headline metrics from the selected tables."
-        )
-    if not brief.questions:
-        clarification_gaps.append(
-            "Chưa có câu hỏi nghiệp vụ cụ thể, nên Agent sẽ ưu tiên hướng giám sát tổng quan và phát hiện bất thường."
-            if vi
-            else "No explicit business questions were provided, so the Agent will focus on broad monitoring and anomaly prompts."
-        )
-    if not brief.report_style:
+    if not brief.comparison_period:
         explicit_assumptions.append(
-            "Mặc định dùng cấu trúc báo cáo theo kiểu điều hành."
+            'Agent có thể chọn mốc so sánh hợp lý nhất từ tín hiệu dữ liệu hiện có.'
             if vi
-            else "Default to an executive-style report structure."
+            else 'The Agent may choose the most sensible comparison baseline from the available data.'
         )
-    if not brief.preferred_dashboard_structure:
+    if not brief.detail_level:
         explicit_assumptions.append(
-            "Mặc định ưu tiên cấu trúc tóm tắt trước, chi tiết sau nếu brief không yêu cầu thứ tự đọc khác."
+            'Ưu tiên nhịp đọc summary-first trước, rồi mới đi sâu khi dữ liệu cho phép.'
             if vi
-            else "Use a summary-first dashboard structure unless the brief implies another reading order."
+            else 'Prefer a summary-first readout before going deeper when the data supports it.'
         )
 
-    if primary_kpis:
-        success_criteria.append(
-            f"Làm rõ các KPI chính: {', '.join(primary_kpis[:3])}."
+    success_criteria.append(
+        (
+            f'Làm rõ quyết định trọng tâm mà report này phải hỗ trợ: {brief.goal}.'
             if vi
-            else f"Clearly cover the primary KPIs: {', '.join(primary_kpis[:3])}."
+            else f'Clarify the core decision this report needs to support: {brief.goal}.'
         )
-    if brief.questions:
-        success_criteria.append(
-            f"Trả lời các câu hỏi nghiệp vụ trọng tâm: {', '.join(brief.questions[:3])}."
+    )
+    success_criteria.append(
+        (
+            f'Giữ giọng giải thích phù hợp với audience là {audience_label}.'
             if vi
-            else f"Answer the top business questions: {', '.join(brief.questions[:3])}."
+            else f'Keep the explanation style appropriate for {audience_label}.'
         )
-    if brief.include_data_quality_notes:
-        success_criteria.append(
-            "Nêu rõ các lưu ý về chất lượng dữ liệu đi cùng mỗi phát hiện quan trọng."
+    )
+    success_criteria.append(
+        (
+            f'Ưu tiên mức đọc {detail_label} và framing so sánh theo {comparison_label}.'
             if vi
-            else "Call out data quality caveats alongside any major finding."
+            else f'Prioritise a {detail_label} readout framed against {comparison_label}.'
         )
-    if brief.include_action_items:
+    )
+    if brief.notes:
         success_criteria.append(
-            "Kết thúc mỗi phần lớn bằng hành động tiếp theo thực tế khi dữ liệu đủ bằng chứng."
+            'Phản ánh các lưu ý business hoặc dữ liệu trong narrative cuối mà không làm report trở nên lan man.'
             if vi
-            else "End each major section with practical follow-up actions where evidence supports them."
+            else 'Reflect the business or data notes in the final narrative without making the report noisy.'
         )
 
     return ParsedBriefArtifact(
         output_language=output_language,
         business_goal=brief.goal,
-        target_audience=brief.audience,
-        decision_context=brief.decision_context,
-        report_style=brief.report_style,
-        insight_depth=brief.insight_depth,
-        recommendation_style=brief.recommendation_style,
-        primary_kpis=primary_kpis,
-        secondary_kpis=secondary_kpis,
-        must_answer_questions=brief.questions,
-        required_sections=brief.must_include_sections,
-        risk_focus=brief.alert_focus,
-        important_dimensions=brief.important_dimensions,
-        columns_to_avoid=brief.columns_to_avoid,
-        glossary_terms=brief.business_glossary,
-        known_data_issues=brief.known_data_issues,
-        table_role_hints=brief.table_roles_hint,
+        target_audience=audience_label,
+        decision_context=brief.goal,
+        report_style='executive' if brief.audience == 'exec' else ('operational' if brief.audience == 'manager' else 'analytical'),
+        insight_depth='deep' if brief.detail_level == 'detailed' else 'balanced',
+        recommendation_style='suggested_actions' if brief.audience in {'exec', 'manager'} else 'analytical_next_steps',
+        primary_kpis=[],
+        secondary_kpis=[],
+        must_answer_questions=inferred_questions,
+        required_sections=[],
+        risk_focus=[],
+        important_dimensions=[],
+        columns_to_avoid=[],
+        glossary_terms=[],
+        known_data_issues=[],
+        table_role_hints=[],
         narrative_preferences={
-            "preferred_dashboard_structure": brief.preferred_dashboard_structure,
-            "include_text_narrative": brief.include_text_narrative,
-            "include_action_items": brief.include_action_items,
-            "include_data_quality_notes": brief.include_data_quality_notes,
-            "confidence_preference": brief.confidence_preference,
-            "why_now": brief.why_now,
-            "business_background": brief.business_background,
+            'preferred_dashboard_structure': 'summary_then_drivers' if brief.detail_level == 'detailed' else 'summary_first',
+            'include_text_narrative': True,
+            'include_action_items': brief.audience in {'exec', 'manager'},
+            'include_data_quality_notes': True,
+            'confidence_preference': 'include_tentative_with_caveats',
+            'timeframe': brief.timeframe,
+            'comparison_period': brief.comparison_period,
+            'detail_level': brief.detail_level,
+            'notes': brief.notes,
         },
         explicit_assumptions=explicit_assumptions,
         clarification_gaps=clarification_gaps,

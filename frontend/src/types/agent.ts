@@ -1,6 +1,10 @@
 export type PlanningMode = 'quick' | 'deep';
 export type AgentBuildMode = 'new_dashboard' | 'new_version' | 'replace_existing';
 export type AgentReportSpecStatus = 'draft' | 'ready' | 'running' | 'failed' | 'archived';
+export type AgentWizardStep = 'select' | 'brief' | 'plan' | 'building';
+export type AgentAudience = 'exec' | 'manager' | 'analyst';
+export type AgentComparisonPeriod = 'previous_period' | 'same_period' | 'none';
+export type AgentDetailLevel = 'overview' | 'detailed';
 export type AgentReportRunStatus =
   | 'queued'
   | 'planning'
@@ -25,35 +29,13 @@ export interface SelectedTableRef {
 export interface AgentBriefRequest {
   output_language?: 'auto' | 'vi' | 'en';
   report_name?: string;
-  report_type?: string;
   goal: string;
-  audience?: string;
+  audience?: AgentAudience;
   timeframe?: string;
-  kpis: string[];
-  questions: string[];
-  why_now?: string;
-  business_background?: string;
-  comparison_period?: string;
-  refresh_frequency?: string;
-  must_include_sections: string[];
-  alert_focus: string[];
-  preferred_granularity?: string;
-  decision_context?: string;
-  report_style?: string;
-  insight_depth?: string;
-  recommendation_style?: string;
-  confidence_preference?: string;
-  preferred_dashboard_structure?: string;
-  include_text_narrative?: boolean;
-  include_action_items?: boolean;
-  include_data_quality_notes?: boolean;
-  table_roles_hint?: string[];
-  business_glossary?: string[];
-  known_data_issues?: string[];
-  important_dimensions?: string[];
-  columns_to_avoid?: string[];
+  comparison_period?: AgentComparisonPeriod;
+  detail_level?: AgentDetailLevel;
   notes?: string;
-  planning_mode: PlanningMode;
+  planning_mode?: PlanningMode;
   selected_tables: SelectedTableRef[];
 }
 
@@ -79,6 +61,9 @@ export interface ParsedBriefArtifact {
   success_criteria: string[];
   explicit_assumptions: string[];
   clarification_gaps: string[];
+  business_domain?: string | null;
+  table_relationships?: string[];
+  narrative_arc?: string | null;
 }
 
 export interface DatasetFitArtifactItem {
@@ -224,6 +209,7 @@ export interface AgentChartPlan {
   rationale: string;
   insight_goal?: string | null;
   why_this_chart?: string | null;
+  hypothesis?: string | null;
   confidence?: number;
   alternative_considered?: string | null;
   expected_signal?: string | null;
@@ -288,6 +274,7 @@ export interface AgentReportSpec {
   owner_id?: string | null;
   latest_dashboard_id?: number | null;
   status: AgentReportSpecStatus;
+  current_step?: AgentWizardStep;
   selected_tables_snapshot: Array<Record<string, any>>;
   brief_json: Record<string, any>;
   approved_plan_json?: Record<string, any> | null;
@@ -324,6 +311,7 @@ export interface AgentReportSpecCreate {
   approved_plan_json?: Record<string, any> | null;
   latest_dashboard_id?: number | null;
   status?: AgentReportSpecStatus;
+  current_step?: AgentWizardStep;
 }
 
 export interface AgentReportSpecUpdate {
@@ -334,6 +322,7 @@ export interface AgentReportSpecUpdate {
   approved_plan_json?: Record<string, any> | null;
   latest_dashboard_id?: number | null;
   status?: AgentReportSpecStatus;
+  current_step?: AgentWizardStep;
 }
 
 export interface AgentReportRunCreate {

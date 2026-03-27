@@ -102,6 +102,7 @@ async def _generate_blueprint_overrides(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         model_override=settings.model_for_phase("narrative"),
+        phase="narrative",
     )
 
 

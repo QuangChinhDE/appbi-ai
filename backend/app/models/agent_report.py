@@ -23,6 +23,7 @@ class AgentReportSpec(Base):
     selected_tables_snapshot = Column(JSONB, nullable=False, default=list)
     brief_json = Column(JSONB, nullable=False, default=dict)
     approved_plan_json = Column(JSONB, nullable=True, default=None)
+    current_step = Column(String(30), nullable=False, default="select")
 
     last_run_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
