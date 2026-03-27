@@ -97,7 +97,16 @@ def _summarize_rows(
             if vi:
                 return f"{metric_field} dao dong tu {min(values):,.0f} den {max(values):,.0f} tren {len(rows)} dong."
             return f"{metric_field} ranges from {min(values):,.0f} to {max(values):,.0f} across {len(rows)} rows."
-    return f"Tra ve {len(rows)} dong du lieu." if vi else f"Returned {len(rows)} rows."
+    # Fallback: still extract whatever we can from the data
+    if dimension_field and not metric_field:
+        # Count per dimension group
+        from collections import Counter
+        counts = Counter(str(row.get(dimension_field, "")).strip() for row in rows if row.get(dimension_field) not in (None, ""))
+        top_items = counts.most_common(3)
+        if top_items:
+            snippets = [f"{label} = {count}" for label, count in top_items]
+            return "; ".join(snippets) + (f" ({len(rows)} {('dòng' if vi else 'rows')} tổng)" if len(rows) > 3 else "")
+    return f"Trả về {len(rows)} dòng dữ liệu." if vi else f"Returned {len(rows)} rows."
 
 
 def _compute_signals(
@@ -197,6 +206,20 @@ def _build_chart_insight(
             finding = f"{chart.title} keeps a detailed operational view with {len(rows)} visible rows for follow-up."
             caption = f"{chart.title}: detailed supporting records for investigation."
 
+    # Enrich evidence with actual signal numbers when available
+    signal_parts = []
+    if signals.get("total") is not None and metric_field:
+        signal_parts.append(f"total({metric_field})={signals['total']:,.2f}")
+    if signals.get("mean") is not None:
+        signal_parts.append(f"avg={signals['mean']:,.2f}")
+    if signals.get("top_segment"):
+        share = f" ({signals['top_share_pct']:.0f}%)" if signals.get("top_share_pct") is not None else ""
+        signal_parts.append(f"top: {signals['top_segment']}={signals.get('top_value', '?')}{share}")
+    if signals.get("trend_pct") is not None:
+        signal_parts.append(f"trend: {signals['trend_pct']:+.1f}%")
+    if signal_parts:
+        evidence_summary = f"{evidence_summary} [{'; '.join(signal_parts)}]"
+
     return ChartInsightArtifact(
         chart_key=chart.key,
         chart_id=chart_id,
@@ -233,13 +256,28 @@ def _build_rule_based_insight_report(
             )
         )
 
+    # Map quality gate warnings to tables so sections can inherit them as caveats
+    quality_warnings_by_table: Dict[str, List[str]] = {}
+    if plan.quality_gate_report:
+        for warning in (plan.quality_gate_report.warnings or []):
+            for section in plan.sections:
+                if section.table_name and section.table_name.lower() in warning.lower():
+                    quality_warnings_by_table.setdefault(section.table_name, []).append(warning)
+        for blocker in (plan.quality_gate_report.blockers or []):
+            for section in plan.sections:
+                if section.table_name and section.table_name.lower() in blocker.lower():
+                    quality_warnings_by_table.setdefault(section.table_name, []).append(blocker)
+
     section_insights: List[SectionInsightArtifact] = []
     for section in plan.sections:
         related = [item for item in chart_insights if item.chart_key in section.chart_keys]
         if not related:
             continue
         key_findings = [item.finding for item in related[:3]]
-        caveats = [item.warning_if_any for item in related if item.warning_if_any][:2]
+        # Combine chart-level warnings with quality gate warnings for this table
+        chart_caveats = [item.warning_if_any for item in related if item.warning_if_any]
+        table_caveats = quality_warnings_by_table.get(section.table_name, [])
+        caveats = list(dict.fromkeys(chart_caveats + table_caveats))[:4]
 
         # Generate context-aware recommended actions from the section's analysis intent
         recommended_actions: List[str] = []
@@ -289,10 +327,21 @@ def _build_rule_based_insight_report(
 
     executive_summary = plan.dashboard_summary
     if top_findings:
+        signal_text = " ".join(top_findings[:2])
         executive_summary = (
-            f"{plan.dashboard_summary} Tin hieu noi bat: {' '.join(top_findings[:2])}"
+            f"{plan.dashboard_summary} Tín hiệu nổi bật: {signal_text}"
             if vi
-            else f"{plan.dashboard_summary} Top signals: {' '.join(top_findings[:2])}"
+            else f"{plan.dashboard_summary} Top signals: {signal_text}"
+        )
+
+    # Inject cross-table relationship context when available
+    table_relationships = (plan.parsed_brief.table_relationships if plan.parsed_brief else []) or []
+    if table_relationships:
+        rel_text = "; ".join(table_relationships[:2])
+        executive_summary += (
+            f" Mối quan hệ giữa các bảng: {rel_text}."
+            if vi
+            else f" Cross-table relationships: {rel_text}."
         )
 
     return InsightReportArtifact(

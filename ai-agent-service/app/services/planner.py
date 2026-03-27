@@ -303,6 +303,13 @@ def profile_table(brief: AgentBriefRequest, context: TableContext) -> TableProfi
 
 
 def _profile_prompt_payload(profile: TableProfile) -> Dict[str, Any]:
+    # Compute unique counts for dimension candidates so LLM knows cardinality
+    dimension_cardinality = {}
+    for dim in profile.dimension_candidates[:8]:
+        count = _unique_count(dim, profile.context.sample_rows)
+        if count > 0:
+            dimension_cardinality[dim] = count
+
     return {
         "workspace_id": profile.context.workspace_id,
         "workspace_name": profile.context.workspace_name,
@@ -313,6 +320,7 @@ def _profile_prompt_payload(profile: TableProfile) -> Dict[str, Any]:
         "numeric_columns": profile.numeric_columns[:8],
         "date_columns": profile.date_columns[:6],
         "dimension_candidates": profile.dimension_candidates[:8],
+        "dimension_cardinality": dimension_cardinality,
         "primary_metric": profile.primary_metric,
         "primary_time": profile.primary_time,
         "primary_dimension": profile.primary_dimension,
@@ -993,6 +1001,8 @@ def _review_plan_quality(
         )
     warnings.extend(quality_gate_report.blockers)
     warnings.extend(quality_gate_report.warnings)
+    # Deduplicate while preserving order
+    warnings = list(dict.fromkeys(warnings))
 
     return plan.model_copy(
         update={
