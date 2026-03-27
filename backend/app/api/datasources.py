@@ -138,8 +138,8 @@ async def parse_manual_file(
         raise HTTPException(status_code=400, detail=f"Unsupported file type '{ext}'. Allowed: xlsx, xls, csv")
 
     content = await file.read()
-    if len(content) > 50 * 1024 * 1024:  # 50 MB guard
-        raise HTTPException(status_code=400, detail="File too large (max 50 MB)")
+    if len(content) > 250 * 1024 * 1024:  # 250 MB guard
+        raise HTTPException(status_code=400, detail="File too large (max 250 MB)")
 
     try:
         if ext in ('.xlsx', '.xls'):
