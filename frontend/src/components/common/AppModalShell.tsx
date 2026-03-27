@@ -35,7 +35,7 @@ export function AppModalShell({
   if (variant === 'page') {
     return (
       <div className="flex min-h-screen w-full min-w-0 flex-col bg-gray-50">
-        <div className="border-b border-gray-200 bg-white px-5 py-4 lg:px-8 2xl:px-10">
+        <div className="sticky top-0 z-10 border-b border-gray-200 bg-white px-5 py-4 lg:px-8 2xl:px-10">
           <div className="flex items-start justify-between gap-4">
             <div className="flex min-w-0 items-start gap-3">
               {icon && (

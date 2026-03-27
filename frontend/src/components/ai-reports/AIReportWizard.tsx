@@ -1,6 +1,6 @@
 ﻿'use client';
 
-import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -50,10 +50,6 @@ import {
   AgentSectionPlan,
 } from '@/types/agent';
 import {
-  ALL_BRIEF_SECTIONS,
-  DEFAULT_BRIEF_SECTIONS,
-  getBriefPresets,
-  getBriefSectionMeta,
   getStepMeta,
   makeInitialBriefState,
 } from '@/components/ai-reports/wizard-config';
@@ -65,15 +61,14 @@ import {
   getPlanEventBadgeClass,
   normalizePlan,
   sectionActiveCount,
-  splitLines,
   toBuildPlan,
 } from '@/components/ai-reports/wizard-helpers';
 import {
   AIReportWizardProps,
   AgentHealthPayload,
-  BriefSectionKey,
   EditableAgentChartPlan,
   EditableAgentPlan,
+  TableDescriptionCard,
   WizardStep,
 } from '@/components/ai-reports/wizard-types';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -84,9 +79,9 @@ import { BuildStep } from '@/components/ai-reports/steps/BuildStep';
 import { CollapsibleGuideCard } from '@/components/ai-reports/steps/shared/CollapsibleGuideCard';
 import { WizardRenderErrorBoundary } from '@/components/ai-reports/WizardRenderErrorBoundary';
 
-type PlanWorkspaceTab = 'overview' | 'reasoning' | 'sections' | 'charts';
-type BriefDockTab = 'summary' | 'scope' | 'agent';
+type PlanWorkspaceTab = 'plan' | 'sections' | 'charts';
 type ProcessPhaseStatus = 'done' | 'active' | 'pending' | 'error';
+const WIZARD_STEP_ORDER: WizardStep[] = ['select', 'brief', 'plan', 'building'];
 
 
 function buildPhaseSummary(
@@ -138,6 +133,7 @@ function formatProcessPhaseLabel(phase: string, language: 'en' | 'vi') {
   if (language === 'vi') {
     const phaseLabels: Record<string, string> = {
       parse_brief: 'Phân tích brief',
+      enrich_brief: 'Suy luận domain & KPI',
       collect_context: 'Thu thập ngữ cảnh',
       profile_tables: 'Profile dữ liệu',
       dataset_fit: 'Đánh giá độ phù hợp',
@@ -170,123 +166,80 @@ function getPlanWorkspaceTabs(language: 'en' | 'vi'): Array<{
 }> {
   if (language === 'vi') {
     return [
-      { key: 'overview', label: 'Tổng quan', caption: 'Kiểm tra nhanh draft' },
-      { key: 'reasoning', label: 'Suy luận', caption: 'Xem AI đã suy luận ra sao' },
+      { key: 'plan', label: 'Phân tích', caption: 'Luận điểm, giả thuyết và data' },
       { key: 'sections', label: 'Phần', caption: 'Tinh chỉnh narrative flow' },
       { key: 'charts', label: 'Biểu đồ', caption: 'Giữ, đổi tên hoặc bỏ chart' },
     ];
   }
   return [
-    { key: 'overview', label: 'Overview', caption: 'Sanity-check the draft' },
-    { key: 'reasoning', label: 'Reasoning', caption: 'See how the Agent thought' },
+    { key: 'plan', label: 'Analysis plan', caption: 'Thesis, hypotheses, and data fit' },
     { key: 'sections', label: 'Sections', caption: 'Refine narrative flow' },
     { key: 'charts', label: 'Charts', caption: 'Keep, rename, or skip charts' },
   ];
 }
 
-function getBriefSectionFocus(language: 'en' | 'vi'): Record<
-  BriefSectionKey,
-  { title: string; description: string; bullets: string[] }
-> {
+function formatAudienceChoice(value: string | undefined, language: 'en' | 'vi') {
   if (language === 'vi') {
-    return {
-      essentials: {
-        title: 'Những gì AI cần trước tiên',
-        description: 'Các trường này quyết định chất lượng bản draft đầu tiên. Chúng là ranh giới giữa một report hữu ích và một report chung chung.',
-        bullets: [
-          'Hãy viết mục tiêu nghiệp vụ bằng ngôn ngữ đời thường, không chỉ liệt kê metric.',
-          'Nêu rõ audience để AI biết nên viết theo giọng executive hay operational.',
-          'Nên có ít nhất một KPI và một câu hỏi bắt buộc phải trả lời trước khi generate draft.',
-        ],
-      },
-      intent: {
-        title: 'Cách phần này đổi hình dáng report',
-        description: 'Các điều khiển ở đây ảnh hưởng tới logic so sánh, thứ tự section và độ quyết đoán của narrative cuối cùng.',
-        bullets: [
-          'Dùng comparison period khi người đọc kỳ vọng phân tích xu hướng hoặc thay đổi.',
-          'Must-have sections cho AI biết phần nào tuyệt đối không được bỏ sót.',
-          'Planning mode đặt ở đây vì nó thay đổi mức độ suy luận của Agent.',
-        ],
-      },
-      dataset: {
-        title: 'Nơi ngữ cảnh bổ sung có ích nhất',
-        description: 'Hãy dùng khu vực này khi tên bảng, tên cột hoặc ý nghĩa nghiệp vụ còn mơ hồ.',
-        bullets: [
-          'Role hints giúp AI hiểu bảng nào là tín hiệu chính và bảng nào là ngữ cảnh hỗ trợ.',
-          'Glossary giảm rủi ro AI diễn giải sai ý nghĩa nghiệp vụ.',
-          'Known issues và columns to avoid giúp AI tránh viết quá tự tin trên dữ liệu yếu.',
-        ],
-      },
-      narrative: {
-        title: 'Mức độ phân tích bằng văn bản sẽ đi kèm',
-        description: 'Các thiết lập này ảnh hưởng đến lớp text quanh dashboard, không chỉ cơ chế chart thô.',
-        bullets: [
-          'Insight depth quyết định narrative sẽ ngắn gọn hay dày hơn.',
-          'Recommendation và confidence modes ảnh hưởng tới mức độ mạnh tay của kết luận.',
-          'Narrative toggles cho AI biết có nên thêm prose, action và data quality caveat hay không.',
-        ],
-      },
-      advanced: {
-        title: 'Chỉ dùng cho trường hợp đặc biệt',
-        description: 'Chỉ nên dùng Advanced khi report có những chỉ dẫn đặc biệt không nằm ở các phần trên.',
-        bullets: [
-          'Dùng notes cho caveat, rule nội bộ hoặc constraint đặc biệt.',
-          'Tránh lặp lại thông tin đã có trong brief.',
-          'Nếu phần essentials đã mạnh, khu vực này có thể để trống.',
-        ],
-      },
-    };
+    if (value === 'exec') return 'Ban điều hành';
+    if (value === 'manager') return 'Manager';
+    if (value === 'analyst') return 'Analyst';
+    return 'chưa chọn audience';
   }
-
-  return {
-    essentials: {
-      title: 'What the Agent needs first',
-      description: 'These fields shape the first good draft. They are the difference between a useful report and a generic one.',
-      bullets: [
-        'State the business goal in plain language, not just the metric list.',
-        'Name the audience so the Agent knows whether to sound executive or operational.',
-        'Give at least one KPI and one must-answer question before generating the draft.',
-      ],
-    },
-    intent: {
-      title: 'How this changes the report shape',
-      description: 'These controls influence comparison logic, section order, and how assertive the final narrative should feel.',
-      bullets: [
-        'Use comparison period when the reader expects trend or change analysis.',
-        'Must-have sections tell the Agent what should never be omitted.',
-        'Planning mode belongs here because it changes how hard the Agent reasons.',
-      ],
-    },
-    dataset: {
-      title: 'Where extra context helps most',
-      description: 'Use this area when table names, field names, or business meaning are ambiguous.',
-      bullets: [
-        'Role hints help the Agent understand which table is the core signal vs supporting context.',
-        'Glossary items reduce the risk of writing the wrong business interpretation.',
-        'Known issues and columns to avoid prevent overconfident insights on weak data.',
-      ],
-    },
-    narrative: {
-      title: 'How much written analysis to ship',
-      description: 'These settings shape the text layer around the dashboard rather than the raw chart mechanics.',
-      bullets: [
-        'Insight depth controls how dense the commentary should feel.',
-        'Recommendation and confidence modes affect how bold the written output becomes.',
-        'Narrative toggles tell the Agent whether to add prose, actions, and quality caveats.',
-      ],
-    },
-    advanced: {
-      title: 'Reserve this for edge cases',
-      description: 'Only use Advanced when the report has special instructions that do not fit the sections above.',
-      bullets: [
-        'Use notes for caveats, internal rules, or special constraints.',
-        'Avoid repeating information already covered in the brief.',
-        'If the essentials are strong, this section can be left blank.',
-      ],
-    },
-  };
+  if (value === 'exec') return 'Exec';
+  if (value === 'manager') return 'Manager';
+  if (value === 'analyst') return 'Analyst';
+  return 'no audience selected';
 }
 
+function formatComparisonChoice(value: string | undefined, language: 'en' | 'vi') {
+  if (language === 'vi') {
+    if (value === 'previous_period') return 'Kỳ trước';
+    if (value === 'same_period') return 'Cùng kỳ';
+    if (value === 'none') return 'Không ép so sánh';
+    return 'chưa chọn mốc so sánh';
+  }
+  if (value === 'previous_period') return 'Previous period';
+  if (value === 'same_period') return 'Same period';
+  if (value === 'none') return 'None';
+  return 'no comparison selected';
+}
+
+function formatDetailChoice(value: string | undefined, language: 'en' | 'vi') {
+  if (language === 'vi') {
+    if (value === 'overview') return 'Tổng quan';
+    if (value === 'detailed') return 'Chi tiết';
+    return 'chưa chọn mức chi tiết';
+  }
+  if (value === 'overview') return 'Overview';
+  if (value === 'detailed') return 'Detailed';
+  return 'no detail level selected';
+}
+
+function normalizeAudienceChoice(value: unknown): '' | 'exec' | 'manager' | 'analyst' {
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) return '';
+  if (['exec', 'executive', 'executive leadership', 'ban điều hành', 'ban dieu hanh'].includes(text)) return 'exec';
+  if (['manager', 'managers', 'operations managers', 'quản lý', 'quan ly'].includes(text)) return 'manager';
+  if (['analyst', 'analysts'].includes(text)) return 'analyst';
+  return '';
+}
+
+function normalizeComparisonChoice(value: unknown): '' | 'previous_period' | 'same_period' | 'none' {
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) return '';
+  if (['previous_period', 'previous period', 'kỳ trước', 'ky truoc'].includes(text)) return 'previous_period';
+  if (['same_period', 'same period', 'cùng kỳ', 'cung ky'].includes(text)) return 'same_period';
+  if (['none', 'no comparison', 'không so sánh', 'khong so sanh'].includes(text)) return 'none';
+  return '';
+}
+
+function normalizeDetailChoice(value: unknown): '' | 'overview' | 'detailed' {
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) return '';
+  if (['overview', 'tổng quan', 'tong quan'].includes(text)) return 'overview';
+  if (['detailed', 'detail', 'chi tiết', 'chi tiet'].includes(text)) return 'detailed';
+  return '';
+}
 
 async function getAuthToken(): Promise<string> {
   const response = await fetch('/api/auth/token');
@@ -318,49 +271,19 @@ export function AIReportWizard({
   };
   const initialBrief = useMemo(() => makeInitialBriefState(language), [language]);
   const stepMeta = useMemo(() => getStepMeta(language), [language]);
-  const briefSectionMeta = useMemo(() => getBriefSectionMeta(language), [language]);
-  const briefPresets = useMemo(() => getBriefPresets(language), [language]);
   const planWorkspaceTabs = useMemo(() => getPlanWorkspaceTabs(language), [language]);
-  const briefSectionFocus = useMemo(() => getBriefSectionFocus(language), [language]);
   const [step, setStep] = useState<WizardStep>('select');
   const [activeSpecId, setActiveSpecId] = useState<number | null>(initialSpecId);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [tableSearch, setTableSearch] = useState('');
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<number[]>([]);
-  const [expandedBriefSections, setExpandedBriefSections] = useState<BriefSectionKey[]>(DEFAULT_BRIEF_SECTIONS);
-  const [activeBriefSection, setActiveBriefSection] = useState<BriefSectionKey>('essentials');
-  const [briefDockTab, setBriefDockTab] = useState<BriefDockTab>('summary');
-  const [planWorkspaceTab, setPlanWorkspaceTab] = useState<PlanWorkspaceTab>('overview');
-  const [reportName, setReportName] = useState(initialBrief.reportName);
-  const [reportType, setReportType] = useState(initialBrief.reportType);
+  const [planWorkspaceTab, setPlanWorkspaceTab] = useState<PlanWorkspaceTab>('plan');
   const [goal, setGoal] = useState(initialBrief.goal);
   const [audience, setAudience] = useState(initialBrief.audience);
   const [timeframe, setTimeframe] = useState(initialBrief.timeframe);
-  const [whyNow, setWhyNow] = useState(initialBrief.whyNow);
-  const [businessBackground, setBusinessBackground] = useState(initialBrief.businessBackground);
-  const [kpisText, setKpisText] = useState(initialBrief.kpisText);
-  const [questionsText, setQuestionsText] = useState(initialBrief.questionsText);
   const [comparisonPeriod, setComparisonPeriod] = useState(initialBrief.comparisonPeriod);
-  const [refreshFrequency, setRefreshFrequency] = useState(initialBrief.refreshFrequency);
-  const [mustIncludeSectionsText, setMustIncludeSectionsText] = useState(initialBrief.mustIncludeSectionsText);
-  const [alertFocusText, setAlertFocusText] = useState(initialBrief.alertFocusText);
   const [preferredGranularity, setPreferredGranularity] = useState(initialBrief.preferredGranularity);
-  const [decisionContext, setDecisionContext] = useState(initialBrief.decisionContext);
-  const [reportStyle, setReportStyle] = useState(initialBrief.reportStyle);
-  const [insightDepth, setInsightDepth] = useState(initialBrief.insightDepth);
-  const [recommendationStyle, setRecommendationStyle] = useState(initialBrief.recommendationStyle);
-  const [confidencePreference, setConfidencePreference] = useState(initialBrief.confidencePreference);
-  const [preferredDashboardStructure, setPreferredDashboardStructure] = useState(initialBrief.preferredDashboardStructure);
-  const [includeTextNarrative, setIncludeTextNarrative] = useState(initialBrief.includeTextNarrative);
-  const [includeActionItems, setIncludeActionItems] = useState(initialBrief.includeActionItems);
-  const [includeDataQualityNotes, setIncludeDataQualityNotes] = useState(initialBrief.includeDataQualityNotes);
-  const [tableRolesHintText, setTableRolesHintText] = useState(initialBrief.tableRolesHintText);
-  const [businessGlossaryText, setBusinessGlossaryText] = useState(initialBrief.businessGlossaryText);
-  const [knownDataIssuesText, setKnownDataIssuesText] = useState(initialBrief.knownDataIssuesText);
-  const [importantDimensionsText, setImportantDimensionsText] = useState(initialBrief.importantDimensionsText);
-  const [columnsToAvoidText, setColumnsToAvoidText] = useState(initialBrief.columnsToAvoidText);
   const [notes, setNotes] = useState(initialBrief.notes);
-  const [planningMode, setPlanningMode] = useState<'quick' | 'deep'>(initialBrief.planningMode);
   const [generatedPlan, setGeneratedPlan] = useState<EditableAgentPlan | null>(null);
   const [draftPlan, setDraftPlan] = useState<EditableAgentPlan | null>(null);
   const [planningEvents, setPlanningEvents] = useState<AgentPlanEvent[]>([]);
@@ -368,14 +291,17 @@ export function AIReportWizard({
   const [agentError, setAgentError] = useState<string | null>(null);
   const [isBuildRunning, setIsBuildRunning] = useState(false);
   const [buildMode, setBuildMode] = useState<AgentBuildMode>('new_dashboard');
+  const [buildResult, setBuildResult] = useState<any>(null);
+  const [buildDashboardUrl, setBuildDashboardUrl] = useState<string | null>(null);
+  const [buildReportUrl, setBuildReportUrl] = useState<string | null>(null);
+  const [tableDescriptions, setTableDescriptions] = useState<TableDescriptionCard[]>([]);
   const [openGuides, setOpenGuides] = useState<Record<string, boolean>>({
     'select-guide': false,
     'brief-guide': false,
     'brief-presets': false,
     'brief-focus': false,
     'brief-progress': false,
-    'overview-guide': false,
-    'reasoning-guide': false,
+    'plan-guide': false,
     'sections-guide': false,
     'charts-guide': false,
     'build-guide': true,
@@ -504,86 +430,69 @@ export function AIReportWizard({
   const briefPayload = useMemo<AgentBriefRequest>(
     () => ({
       output_language: language,
-      report_name: reportName.trim() || undefined,
-      report_type: reportType || undefined,
       goal: goal.trim(),
-      audience: audience.trim() || undefined,
+      audience: normalizeAudienceChoice(audience) || undefined,
       timeframe: timeframe.trim() || undefined,
-      why_now: whyNow.trim() || undefined,
-      business_background: businessBackground.trim() || undefined,
-      kpis: splitLines(kpisText),
-      questions: splitLines(questionsText),
-      comparison_period: comparisonPeriod.trim() || undefined,
-      refresh_frequency: refreshFrequency.trim() || undefined,
-      must_include_sections: splitLines(mustIncludeSectionsText),
-      alert_focus: splitLines(alertFocusText),
-      preferred_granularity: preferredGranularity.trim() || undefined,
-      decision_context: decisionContext.trim() || undefined,
-      report_style: reportStyle.trim() || undefined,
-      insight_depth: insightDepth.trim() || undefined,
-      recommendation_style: recommendationStyle.trim() || undefined,
-      confidence_preference: confidencePreference.trim() || undefined,
-      preferred_dashboard_structure: preferredDashboardStructure.trim() || undefined,
-      include_text_narrative: includeTextNarrative,
-      include_action_items: includeActionItems,
-      include_data_quality_notes: includeDataQualityNotes,
-      table_roles_hint: splitLines(tableRolesHintText),
-      business_glossary: splitLines(businessGlossaryText),
-      known_data_issues: splitLines(knownDataIssuesText),
-      important_dimensions: splitLines(importantDimensionsText),
-      columns_to_avoid: splitLines(columnsToAvoidText),
+      comparison_period: normalizeComparisonChoice(comparisonPeriod) || undefined,
+      detail_level: normalizeDetailChoice(preferredGranularity) || undefined,
       notes: notes.trim() || undefined,
-      planning_mode: planningMode,
       selected_tables: selectedTables,
     }),
     [
-      alertFocusText,
       audience,
-      businessBackground,
-      businessGlossaryText,
       comparisonPeriod,
-      confidencePreference,
-      columnsToAvoidText,
-      decisionContext,
       goal,
-      importantDimensionsText,
-      includeActionItems,
-      includeDataQualityNotes,
-      includeTextNarrative,
-      insightDepth,
-      kpisText,
-      knownDataIssuesText,
-      mustIncludeSectionsText,
       notes,
-      planningMode,
       preferredGranularity,
-      preferredDashboardStructure,
-      questionsText,
-      recommendationStyle,
-      refreshFrequency,
-      reportName,
-      reportStyle,
-      reportType,
       selectedTables,
-      tableRolesHintText,
       timeframe,
-      whyNow,
       language,
     ],
   );
 
   const currentStepIndex = stepMeta.findIndex((item) => item.key === step);
   const currentStepMeta = stepMeta[currentStepIndex] ?? stepMeta[0];
+  const activeSpec = activeSpecQuery.data as AgentReportSpecDetail | undefined;
+  const persistedProgressStep = useMemo<WizardStep>(() => {
+    if (activeSpec?.latest_dashboard_id || activeSpec?.current_step === 'building') {
+      return 'building';
+    }
+    if (generatedPlan || draftPlan || activeSpec?.approved_plan_json) {
+      return 'plan';
+    }
+    if (selectedTables.length > 0 || (activeSpec?.selected_tables_snapshot?.length ?? 0) > 0) {
+      return 'brief';
+    }
+    return 'select';
+  }, [
+    activeSpec?.approved_plan_json,
+    activeSpec?.current_step,
+    activeSpec?.latest_dashboard_id,
+    activeSpec?.selected_tables_snapshot?.length,
+    draftPlan,
+    generatedPlan,
+    selectedTables.length,
+  ]);
+  // Track the highest step the user can revisit based on persisted progress plus current local navigation.
+  const highestReachedIndex = useMemo(() => {
+    const persistedIndex = WIZARD_STEP_ORDER.indexOf(persistedProgressStep);
+    return Math.max(persistedIndex, currentStepIndex);
+  }, [currentStepIndex, persistedProgressStep]);
   const buildPlan = useMemo(() => (draftPlan ? toBuildPlan(draftPlan) : null), [draftPlan]);
   const enabledChartCount = buildPlan?.charts.length ?? 0;
   const enabledSectionCount = buildPlan?.sections.length ?? 0;
-  const activeSpec = activeSpecQuery.data as AgentReportSpecDetail | undefined;
   const recentRuns = useMemo(
     () =>
       [...(activeSpec?.runs ?? [])]
         .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
         .slice(0, 5),
     [activeSpec],
+  );
+  const hasBuiltOutput = useMemo(
+    () =>
+      Boolean(activeSpec?.latest_dashboard_id) ||
+      recentRuns.some((run) => run.status === 'succeeded'),
+    [activeSpec?.latest_dashboard_id, recentRuns],
   );
   const hasPlanEdits = useMemo(() => {
     if (!generatedPlan || !draftPlan) return false;
@@ -594,12 +503,6 @@ export function AIReportWizard({
     () => selectedTableCards.slice(0, 3).map((item) => item.tableName),
     [selectedTableCards],
   );
-  const briefKpis = useMemo(() => splitLines(kpisText), [kpisText]);
-  const briefQuestions = useMemo(() => splitLines(questionsText), [questionsText]);
-  const briefKnownIssues = useMemo(() => splitLines(knownDataIssuesText), [knownDataIssuesText]);
-  const briefGlossary = useMemo(() => splitLines(businessGlossaryText), [businessGlossaryText]);
-  const briefRoleHints = useMemo(() => splitLines(tableRolesHintText), [tableRolesHintText]);
-  const briefImportantDimensions = useMemo(() => splitLines(importantDimensionsText), [importantDimensionsText]);
   const wizardText = useMemo(
     () =>
       isVietnamese
@@ -706,7 +609,7 @@ export function AIReportWizard({
             editInDashboard: 'Chỉnh trong dashboard',
             chartsBuilt: 'chart đã build',
             reviewWorkspace: 'Không gian duyệt draft',
-            reviewWorkspaceDesc: 'Nên đọc theo thứ tự: overview trước, reasoning sau, rồi mới sửa sections và charts.',
+            reviewWorkspaceDesc: 'Đọc Plan trước để nắm chiến lược, rồi chỉnh sửa sections và charts.',
           }
         : {
             title: 'Build an AI report from a business brief',
@@ -812,10 +715,11 @@ export function AIReportWizard({
             editInDashboard: 'Edit in dashboard',
             chartsBuilt: 'charts built',
             reviewWorkspace: 'Review workspace',
-            reviewWorkspaceDesc: 'Read in order: overview first, reasoning second, then edit sections and charts.',
+            reviewWorkspaceDesc: 'Review the Plan tab first to understand the strategy, then edit sections and charts.',
           },
     [isVietnamese],
   );
+  const fallbackReportName = isVietnamese ? 'AI Report mới' : 'New AI Report';
   const currentStepGuide = useMemo(() => {
     switch (step) {
       case 'select':
@@ -839,21 +743,21 @@ export function AIReportWizard({
         };
       case 'brief':
         return {
-          title: isVietnamese ? 'Viết brief trước khi tối ưu' : 'Brief before you optimize',
+          title: isVietnamese ? 'Giữ brief thật ngắn' : 'Keep the brief compact',
           description: isVietnamese
-            ? 'Agent sẽ nhận được nhiều giá trị hơn từ một mục tiêu sắc nét và vài câu hỏi rõ ràng, thay vì điền hết tất cả trường một lúc.'
-            : 'The Agent will get more value from a sharp goal and a few clear questions than from filling every field at once.',
+            ? 'Step này chỉ còn 6 trường cốt lõi để Agent tự phát triển hướng phân tích như một DA senior, thay vì bắt người dùng điền quá nhiều.'
+            : 'This step now keeps only six core fields so the Agent can develop the analysis like a senior analyst without over-collecting inputs.',
           bullets: [
             isVietnamese
-              ? 'Hoàn thành phần essentials trước, sau đó mới bổ sung ngữ cảnh ở những chỗ giảm được mơ hồ.'
-              : 'Complete the essentials first, then add context only where it reduces ambiguity.',
+              ? 'Goal là trường bắt buộc duy nhất; các trường còn lại chỉ giúp Agent chọn đúng góc nhìn và độ sâu.'
+              : 'The goal is the only required field; everything else just helps the Agent choose the right lens and depth.',
             isVietnamese
-              ? 'Dùng tóm tắt ở bên phải để xem brief hiện tại đã đúng ý chưa.'
-              : 'Use the live summary on the right to see whether the brief already sounds right.',
+              ? 'Không còn KPI, question hay dataset context viết tay; Agent sẽ tự suy luận phần đó từ brief ngắn và mô tả bảng.'
+              : 'There are no manual KPI, question, or dataset-context fields anymore; the Agent infers them from the short brief and table descriptions.',
           ],
           stats: [
-            { label: isVietnamese ? 'C?u h?i' : 'Questions', value: String(briefQuestions.length) },
-            { label: 'KPIs', value: String(briefKpis.length) },
+            { label: isVietnamese ? 'Audience' : 'Audience', value: formatAudienceChoice(audience || undefined, language) },
+            { label: isVietnamese ? 'Mức chi tiết' : 'Detail level', value: formatDetailChoice(preferredGranularity || undefined, language) },
           ],
         };
       case 'plan':
@@ -903,8 +807,6 @@ export function AIReportWizard({
         };
     }
   }, [
-    briefKpis.length,
-    briefQuestions.length,
     buildMode,
     currentStepMeta.caption,
     currentStepMeta.label,
@@ -915,141 +817,28 @@ export function AIReportWizard({
     selectedWorkspaceCount,
     step,
   ]);
-  const briefDockTabs = useMemo(
-    () => [
-      {
-        key: 'summary' as const,
-        label: isVietnamese ? 'Tóm tắt' : 'Summary',
-        caption: isVietnamese ? 'Độ sẵn sàng và trọng tâm' : 'Readiness and focus',
-      },
-      {
-        key: 'scope' as const,
-        label: isVietnamese ? 'Phạm vi' : 'Scope',
-        caption: isVietnamese ? 'Bảng đã chọn' : 'Selected tables',
-      },
-      {
-        key: 'agent' as const,
-        label: isVietnamese ? 'AI hiểu gì' : 'Agent view',
-        caption: isVietnamese ? 'Preview cách AI hiểu brief' : 'Preview how the Agent reads the brief',
-      },
-    ],
-    [isVietnamese],
-  );
-  const visibleBriefSections = useMemo(
-    () => briefSectionMeta.filter((section) => !section.optional || expandedBriefSections.includes(section.key)),
-    [briefSectionMeta, expandedBriefSections],
-  );
-  const briefSectionProgress = useMemo<Record<BriefSectionKey, { filled: number; total: number; ready: boolean }>>(
-    () => ({
-      essentials: {
-        filled: [
-          Boolean(reportName.trim()),
-          Boolean(goal.trim()),
-          Boolean(audience.trim()),
-          briefKpis.length > 0,
-          briefQuestions.length > 0,
-        ].filter(Boolean).length,
-        total: 5,
-        ready: Boolean(goal.trim()) && Boolean(audience.trim()) && briefKpis.length > 0 && briefQuestions.length > 0,
-      },
-      intent: {
-        filled: [
-          Boolean(decisionContext.trim()),
-          Boolean(reportStyle.trim()),
-          Boolean(comparisonPeriod.trim()),
-          Boolean(refreshFrequency.trim()),
-          splitLines(mustIncludeSectionsText).length > 0,
-        ].filter(Boolean).length,
-        total: 5,
-        ready:
-          Boolean(decisionContext.trim()) &&
-          Boolean(reportStyle.trim()) &&
-          Boolean(comparisonPeriod.trim()) &&
-          splitLines(mustIncludeSectionsText).length > 0,
-      },
-      dataset: {
-        filled: [briefRoleHints.length > 0, briefGlossary.length > 0, briefKnownIssues.length > 0, briefImportantDimensions.length > 0, splitLines(columnsToAvoidText).length > 0].filter(Boolean).length,
-        total: 5,
-        ready: briefRoleHints.length + briefGlossary.length + briefKnownIssues.length + briefImportantDimensions.length + splitLines(columnsToAvoidText).length > 0,
-      },
-      narrative: {
-        filled: [
-          Boolean(insightDepth.trim()),
-          Boolean(recommendationStyle.trim()),
-          Boolean(confidencePreference.trim()),
-          includeTextNarrative || includeActionItems || includeDataQualityNotes,
-        ].filter(Boolean).length,
-        total: 4,
-        ready: Boolean(insightDepth.trim()) && Boolean(recommendationStyle.trim()),
-      },
-      advanced: {
-        filled: [Boolean(reportType.trim()), Boolean(preferredGranularity.trim()), Boolean(notes.trim()), planningMode === 'deep'].filter(Boolean).length,
-        total: 4,
-        ready: Boolean(reportType.trim()) || Boolean(notes.trim()),
-      },
-    }),
-    [
-      audience,
-      briefGlossary.length,
-      briefImportantDimensions.length,
-      briefKpis.length,
-      briefKnownIssues.length,
-      briefQuestions.length,
-      briefRoleHints.length,
-      columnsToAvoidText,
-      comparisonPeriod,
-      confidencePreference,
-      decisionContext,
-      goal,
-      includeActionItems,
-      includeDataQualityNotes,
-      includeTextNarrative,
-      insightDepth,
-      mustIncludeSectionsText,
-      notes,
-      planningMode,
-      preferredGranularity,
-      recommendationStyle,
-      refreshFrequency,
-      reportName,
-      reportStyle,
-      reportType,
-    ],
-  );
-  const activeBriefSectionMeta = useMemo(
-    () => visibleBriefSections.find((section) => section.key === activeBriefSection) ?? visibleBriefSections[0],
-    [activeBriefSection, visibleBriefSections],
-  );
-  const activeBriefSectionIndex = useMemo(
-    () => visibleBriefSections.findIndex((section) => section.key === activeBriefSectionMeta?.key),
-    [activeBriefSectionMeta?.key, visibleBriefSections],
-  );
-  const activeBriefFocus = useMemo(
-    () => briefSectionFocus[activeBriefSectionMeta?.key ?? 'essentials'],
-    [activeBriefSectionMeta?.key, briefSectionFocus],
-  );
-  const activeBriefProgress = briefSectionProgress[activeBriefSectionMeta?.key ?? 'essentials'];
   const readinessChecks = useMemo(
     () => [
       { label: isVietnamese ? 'Đã chọn bảng' : 'Tables selected', done: selectedTables.length > 0 },
-      { label: isVietnamese ? 'Đã xác định mục tiêu nghiệp vụ' : 'Business goal defined', done: goal.trim().length > 0 },
-      { label: isVietnamese ? 'Đã xác định audience' : 'Audience set', done: audience.trim().length > 0 },
-      { label: isVietnamese ? 'Có ít nhất một KPI' : 'At least one KPI', done: briefKpis.length > 0 },
-      { label: isVietnamese ? 'Có ít nhất một câu hỏi' : 'At least one question', done: briefQuestions.length > 0 },
+      { label: isVietnamese ? 'Đã nêu quyết định cần hỗ trợ' : 'Decision goal defined', done: goal.trim().length > 0 },
+      { label: isVietnamese ? 'Đã chọn audience' : 'Audience selected', done: audience.trim().length > 0 },
+      { label: isVietnamese ? 'Đã chọn mốc so sánh' : 'Comparison selected', done: comparisonPeriod.trim().length > 0 },
+      { label: isVietnamese ? 'Đã chọn mức chi tiết' : 'Detail level selected', done: preferredGranularity.trim().length > 0 },
     ],
-    [audience, briefKpis.length, briefQuestions.length, goal, isVietnamese, selectedTables.length],
+    [audience, comparisonPeriod, goal, isVietnamese, preferredGranularity, selectedTables.length],
   );
   const readinessCount = readinessChecks.filter((item) => item.done).length;
   const agentUnderstandingPreview = useMemo(() => {
-    const style = reportStyle || 'executive';
-    const audienceLabel = audience.trim() || (isVietnamese ? 'đối tượng đọc mục tiêu' : 'your target audience');
-    const primaryFocus = briefKpis[0] || briefQuestions[0] || (isVietnamese ? 'mục tiêu nghiệp vụ chính' : 'the main business outcome');
-    const timeframeLabel = timeframe.trim() || (isVietnamese ? 'khoảng thời gian đã chọn' : 'the chosen timeframe');
+    const audienceLabel = formatAudienceChoice(audience.trim() || undefined, language);
+    const comparisonLabel = formatComparisonChoice(comparisonPeriod.trim() || undefined, language);
+    const detailLabel = formatDetailChoice(preferredGranularity.trim() || undefined, language);
+    const timeframeLabel = timeframe.trim() || (isVietnamese ? '30 ngày gần nhất' : 'Last 30 days');
+    const goalLabel = goal.trim() || (isVietnamese ? 'mục tiêu ra quyết định chính' : 'the main decision goal');
     if (isVietnamese) {
-      return `Agent sẽ draft một report kiểu ${style} cho ${audienceLabel}, tập trung vào ${primaryFocus}, sử dụng ${selectedTables.length} bảng đã chọn trong ${timeframeLabel}.`;
+      return `Agent sẽ đọc brief này như một DA senior cho ${audienceLabel}, tập trung vào quyết định "${goalLabel}", dùng ${selectedTables.length} bảng đã chọn trong ${timeframeLabel}, so với ${comparisonLabel} và ở mức ${detailLabel}.`;
     }
-    return `The Agent will draft a ${style} report for ${audienceLabel}, focused on ${primaryFocus}, using ${selectedTables.length} selected table${selectedTables.length === 1 ? '' : 's'} across ${timeframeLabel}.`;
-  }, [audience, briefKpis, briefQuestions, isVietnamese, reportStyle, selectedTables.length, timeframe]);
+    return `The Agent will read this as a senior analyst brief for ${audienceLabel}, focused on the decision "${goalLabel}", using ${selectedTables.length} selected table${selectedTables.length === 1 ? '' : 's'} across ${timeframeLabel}, compared with ${comparisonLabel}, at a ${detailLabel} read depth.`;
+  }, [audience, comparisonPeriod, goal, isVietnamese, language, preferredGranularity, selectedTables.length, timeframe]);
 
   useEffect(() => {
     if (!isActive) {
@@ -1058,39 +847,12 @@ export function AIReportWizard({
       setSelectedKeys([]);
       setTableSearch('');
       setExpandedWorkspaceIds([]);
-      setExpandedBriefSections(DEFAULT_BRIEF_SECTIONS);
-      setActiveBriefSection('essentials');
-      setBriefDockTab('summary');
-      setReportName(initialBrief.reportName);
-      setReportType(initialBrief.reportType);
       setGoal(initialBrief.goal);
       setAudience(initialBrief.audience);
       setTimeframe(initialBrief.timeframe);
-      setWhyNow(initialBrief.whyNow);
-      setBusinessBackground(initialBrief.businessBackground);
-      setKpisText(initialBrief.kpisText);
-      setQuestionsText(initialBrief.questionsText);
       setComparisonPeriod(initialBrief.comparisonPeriod);
-      setRefreshFrequency(initialBrief.refreshFrequency);
-      setMustIncludeSectionsText(initialBrief.mustIncludeSectionsText);
-      setAlertFocusText(initialBrief.alertFocusText);
       setPreferredGranularity(initialBrief.preferredGranularity);
-      setDecisionContext(initialBrief.decisionContext);
-      setReportStyle(initialBrief.reportStyle);
-      setInsightDepth(initialBrief.insightDepth);
-      setRecommendationStyle(initialBrief.recommendationStyle);
-      setConfidencePreference(initialBrief.confidencePreference);
-      setPreferredDashboardStructure(initialBrief.preferredDashboardStructure);
-      setIncludeTextNarrative(initialBrief.includeTextNarrative);
-      setIncludeActionItems(initialBrief.includeActionItems);
-      setIncludeDataQualityNotes(initialBrief.includeDataQualityNotes);
-      setTableRolesHintText(initialBrief.tableRolesHintText);
-      setBusinessGlossaryText(initialBrief.businessGlossaryText);
-      setKnownDataIssuesText(initialBrief.knownDataIssuesText);
-      setImportantDimensionsText(initialBrief.importantDimensionsText);
-      setColumnsToAvoidText(initialBrief.columnsToAvoidText);
       setNotes(initialBrief.notes);
-      setPlanningMode(initialBrief.planningMode);
       setGeneratedPlan(null);
       setDraftPlan(null);
       setPlanningEvents([]);
@@ -1098,7 +860,7 @@ export function AIReportWizard({
       setAgentError(null);
       setIsBuildRunning(false);
       setBuildMode('new_dashboard');
-      setPlanWorkspaceTab('overview');
+      setPlanWorkspaceTab('plan');
     }
   }, [initialBrief, initialSpecId, isActive]);
 
@@ -1132,59 +894,78 @@ export function AIReportWizard({
         .map((item) => `${item.workspace_id}:${item.table_id}`)
         .filter((item) => item !== 'undefined:undefined'),
     );
-    setReportName(String(brief.report_name ?? spec.name ?? '').trim());
-    setReportType(String(brief.report_type ?? 'executive_tracking'));
     setGoal(String(brief.goal ?? initialBrief.goal));
-    setAudience(String(brief.audience ?? ''));
-    setTimeframe(String(brief.timeframe ?? ''));
-    setWhyNow(String(brief.why_now ?? ''));
-    setBusinessBackground(String(brief.business_background ?? ''));
-    setKpisText(briefToMultiline(brief.kpis));
-    setQuestionsText(briefToMultiline(brief.questions));
-    setComparisonPeriod(String(brief.comparison_period ?? ''));
-    setRefreshFrequency(String(brief.refresh_frequency ?? ''));
-    setMustIncludeSectionsText(briefToMultiline(brief.must_include_sections));
-    setAlertFocusText(briefToMultiline(brief.alert_focus));
-    setPreferredGranularity(String(brief.preferred_granularity ?? ''));
-    setDecisionContext(String(brief.decision_context ?? ''));
-    setReportStyle(String(brief.report_style ?? 'executive'));
-    setInsightDepth(String(brief.insight_depth ?? 'balanced'));
-    setRecommendationStyle(String(brief.recommendation_style ?? 'suggested_actions'));
-    setConfidencePreference(String(brief.confidence_preference ?? 'include_tentative_with_caveats'));
-    setPreferredDashboardStructure(String(brief.preferred_dashboard_structure ?? 'summary_first'));
-    setIncludeTextNarrative(Boolean(brief.include_text_narrative ?? true));
-    setIncludeActionItems(Boolean(brief.include_action_items ?? true));
-    setIncludeDataQualityNotes(Boolean(brief.include_data_quality_notes ?? true));
-    setTableRolesHintText(briefToMultiline(brief.table_roles_hint));
-    setBusinessGlossaryText(briefToMultiline(brief.business_glossary));
-    setKnownDataIssuesText(briefToMultiline(brief.known_data_issues));
-    setImportantDimensionsText(briefToMultiline(brief.important_dimensions));
-    setColumnsToAvoidText(briefToMultiline(brief.columns_to_avoid));
+    setAudience(normalizeAudienceChoice(brief.audience));
+    setTimeframe(String(brief.timeframe ?? initialBrief.timeframe));
+    setComparisonPeriod(normalizeComparisonChoice(brief.comparison_period));
+    setPreferredGranularity(
+      normalizeDetailChoice(brief.detail_level ?? brief.preferred_granularity),
+    );
     setNotes(String(brief.notes ?? ''));
-    setPlanningMode(brief.planning_mode === 'quick' ? 'quick' : 'deep');
+
+    const savedStep =
+      WIZARD_STEP_ORDER.includes(spec.current_step as WizardStep)
+        ? (spec.current_step as WizardStep)
+        : 'select';
+    const defaultStep = (() => {
+      if (spec.latest_dashboard_id || savedStep === 'building') return 'building' as const;
+      if (spec.approved_plan_json) return 'plan' as const;
+      if (spec.selected_tables_snapshot?.length > 0) return 'brief' as const;
+      return 'select' as const;
+    })();
+    const savedIdx = WIZARD_STEP_ORDER.indexOf(savedStep);
+    const defaultIdx = WIZARD_STEP_ORDER.indexOf(defaultStep);
+    const resolvedStep =
+      savedIdx >= 0 ? WIZARD_STEP_ORDER[Math.max(savedIdx, defaultIdx)] : defaultStep;
 
     if (spec.approved_plan_json) {
       const editable = normalizePlan(spec.approved_plan_json as AgentPlanResponse);
       setGeneratedPlan(editable);
       setDraftPlan(cloneEditablePlan(editable));
       setBuildMode(spec.latest_dashboard_id ? 'replace_existing' : 'new_dashboard');
-      setPlanWorkspaceTab('overview');
-      setStep('plan');
+      setPlanWorkspaceTab('plan');
+      setStep(resolvedStep);
+      if (spec.status !== 'running') {
+        setEvents([]);
+        setIsBuildRunning(false);
+      }
+      // Restore build result from latest successful run when returning to building step
+      if (resolvedStep === 'building' && spec.runs?.length) {
+        const sortedRuns = [...spec.runs].sort(
+          (a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+        );
+        const successRun = sortedRuns.find((r: any) => r.status === 'succeeded') ?? sortedRuns[0];
+        if (successRun?.result_summary_json) {
+          setBuildResult(successRun.result_summary_json);
+        }
+        if (spec.latest_dashboard_id) {
+          setBuildDashboardUrl(`/dashboards/${spec.latest_dashboard_id}`);
+        }
+        setBuildReportUrl(`/ai-reports/${spec.id}`);
+      }
+    } else if (spec.selected_tables_snapshot?.length > 0) {
+      setGeneratedPlan(null);
+      setDraftPlan(null);
+      setStep(resolvedStep);
+      if (spec.status !== 'running') {
+        setEvents([]);
+        setIsBuildRunning(false);
+      }
     } else {
       setGeneratedPlan(null);
       setDraftPlan(null);
-      setActiveBriefSection('essentials');
-      setStep('brief');
+      setStep('select');
+      setEvents([]);
+      setIsBuildRunning(false);
     }
     setAgentError(null);
   }, [activeSpec, initialBrief, isActive]);
 
   useEffect(() => {
-    if (!activeBriefSectionMeta) return;
-    if (activeBriefSection !== activeBriefSectionMeta.key) {
-      setActiveBriefSection(activeBriefSectionMeta.key);
+    if (step !== 'building' && !isBuildRunning && events.length > 0) {
+      setEvents([]);
     }
-  }, [activeBriefSection, activeBriefSectionMeta]);
+  }, [events.length, isBuildRunning, step]);
 
   const planMutation = useMutation({
     mutationFn: async () => {
@@ -1245,7 +1026,7 @@ export function AIReportWizard({
       const editable = normalizePlan(data);
       setGeneratedPlan(editable);
       setDraftPlan(cloneEditablePlan(editable));
-      setPlanWorkspaceTab('overview');
+      setPlanWorkspaceTab('plan');
       setStep('plan');
       setAgentError(null);
       if (activeSpecId) {
@@ -1278,6 +1059,7 @@ export function AIReportWizard({
       buildPhaseSummary(planningEvents, [
         'parse_brief',
         'collect_context',
+        'enrich_brief',
         'profile_tables',
         'dataset_fit',
         'quality_gate',
@@ -1322,12 +1104,13 @@ export function AIReportWizard({
 
   async function persistCurrentSpec(plan: EditableAgentPlan | AgentPlanResponse): Promise<number> {
     const payload = {
-      name: briefPayload.report_name || plan.dashboard_title,
+      name: plan.dashboard_title || activeSpec?.name || fallbackReportName,
       description: plan.dashboard_summary,
       selected_tables_snapshot: briefPayload.selected_tables,
       brief_json: briefPayload as unknown as Record<string, any>,
       approved_plan_json: plan as unknown as Record<string, any>,
       status: 'ready' as const,
+      current_step: 'plan' as const,
     };
 
     if (activeSpecId) {
@@ -1335,6 +1118,20 @@ export function AIReportWizard({
       return activeSpecId;
     }
 
+    const created = await createSpecMutation.mutateAsync(payload);
+    setActiveSpecId(created.id);
+    return created.id;
+  }
+
+  async function ensureSpecCreated(): Promise<number> {
+    if (activeSpecId) return activeSpecId;
+    const payload = {
+      name: activeSpec?.name || fallbackReportName,
+      selected_tables_snapshot: briefPayload.selected_tables,
+      brief_json: briefPayload as unknown as Record<string, any>,
+      status: 'draft' as const,
+      current_step: 'brief' as const,
+    };
     const created = await createSpecMutation.mutateAsync(payload);
     setActiveSpecId(created.id);
     return created.id;
@@ -1407,33 +1204,6 @@ export function AIReportWizard({
     setSelectedKeys([]);
   }
 
-  function openAllBriefSections() {
-    setExpandedBriefSections(ALL_BRIEF_SECTIONS);
-  }
-
-  function collapseOptionalBriefSections() {
-    setExpandedBriefSections(DEFAULT_BRIEF_SECTIONS);
-  }
-
-  function applyBriefPreset(presetKey: (typeof briefPresets)[number]['key']) {
-    const preset = briefPresets.find((item) => item.key === presetKey);
-    if (!preset) return;
-
-    setGoal(preset.goal);
-    setAudience(preset.audience);
-    setReportStyle(preset.reportStyle);
-    setReportType(preset.reportType);
-    setComparisonPeriod(preset.comparisonPeriod);
-    setRefreshFrequency(preset.refreshFrequency);
-    setMustIncludeSectionsText(preset.mustIncludeSectionsText);
-    setAlertFocusText(preset.alertFocusText);
-    setInsightDepth(preset.insightDepth);
-    setRecommendationStyle(preset.recommendationStyle);
-    setPreferredDashboardStructure(preset.preferredDashboardStructure);
-    openAllBriefSections();
-    toast.success(`${preset.title} preset applied.`);
-  }
-
   function updateSection(index: number, patch: Partial<AgentSectionPlan>) {
     setDraftPlan((prev) => {
       if (!prev) return prev;
@@ -1467,6 +1237,18 @@ export function AIReportWizard({
     if (briefPayload.selected_tables.length === 0) {
       toast.info(wizardText.chooseAtLeastOne);
       return;
+    }
+    // Persist brief data to spec before generating plan
+    if (activeSpecId) {
+      updateSpecMutation.mutate({
+        id: activeSpecId,
+        payload: {
+          brief_json: briefPayload as unknown as Record<string, any>,
+          selected_tables_snapshot: briefPayload.selected_tables,
+          name: activeSpec?.name || fallbackReportName,
+          current_step: 'brief',
+        },
+      });
     }
     setAgentError(null);
     planMutation.mutate();
@@ -1566,19 +1348,27 @@ export function AIReportWizard({
           if (event.type === 'done' && event.dashboard_url) {
             didFinish = true;
             setIsBuildRunning(false);
+            setBuildDashboardUrl(event.dashboard_url || null);
+            setBuildReportUrl(event.report_url || (specId ? `/ai-reports/${specId}` : null));
             await refreshAgentReportViews(specId);
+            // Fetch the run result for inline report display
+            try {
+              const specData: any = await queryClient.fetchQuery({ queryKey: agentReportSpecKeys.detail(specId) });
+              const runs = [...(specData?.runs ?? [])].sort(
+                (a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+              );
+              const latestRun = runs.find((r: any) => r.status === 'succeeded') ?? runs[0];
+              if (latestRun?.result_summary_json) {
+                setBuildResult(latestRun.result_summary_json);
+              }
+            } catch {
+              // Non-critical — inline report just won't show
+            }
             toast.success(
               isVietnamese
-                ? 'AI report đã build xong. Đang mở dashboard để bạn tiếp tục chỉnh sửa.'
-                : 'AI report built successfully. Opening the dashboard so you can continue editing there.',
+                ? 'AI report đã build xong! Xem kết quả bên dưới.'
+                : 'AI report built successfully! See the results below.',
             );
-            if (!isPageMode) {
-              handleClose();
-            }
-            const destination = event.dashboard_url || event.report_url || (specId ? `/ai-reports/${specId}` : null);
-            if (destination) {
-              router.push(destination);
-            }
             return;
           }
         }
@@ -1673,7 +1463,7 @@ export function AIReportWizard({
 
           {step === 'brief' && (
             <button
-              onClick={() => setStep('select')}
+              onClick={() => { setStep('select'); }}
               disabled={isInteractionLocked}
               className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -1684,7 +1474,7 @@ export function AIReportWizard({
 
           {step === 'plan' && (
             <button
-              onClick={() => setStep('brief')}
+              onClick={() => { setStep('brief'); }}
               disabled={isInteractionLocked}
               className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -1695,7 +1485,7 @@ export function AIReportWizard({
 
           {step === 'building' && (
             <button
-              onClick={() => setStep('plan')}
+              onClick={() => { setStep('plan'); }}
               disabled={isBuildRunning}
               className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -1706,11 +1496,51 @@ export function AIReportWizard({
 
           {step === 'select' && (
             <button
-              onClick={() => {
+              onClick={async () => {
                 if (selectedTables.length === 0) {
                   toast.info(wizardText.chooseAtLeastOne);
                   return;
                 }
+                try {
+                  const specId = await ensureSpecCreated();
+                  // Update URL so browser refresh resumes at this spec
+                  if (isPageMode && !initialSpecId && specId) {
+                    router.replace(`/ai-reports/${specId}/edit`);
+                  }
+                } catch {
+                  // Continue even if spec creation fails — user can retry later
+                }
+                // Fetch table descriptions in parallel for the BriefStep sidebar
+                Promise.allSettled(
+                  selectedTables.map(async (ref: { workspace_id: number; table_id: number }) => {
+                    try {
+                      const { data } = await apiClient.get(
+                        `/dataset-workspaces/${ref.workspace_id}/tables/${ref.table_id}/description`,
+                      );
+                      const tbl = tables.find(
+                        (t: { workspace_id: number; table_id: number }) => t.workspace_id === ref.workspace_id && t.table_id === ref.table_id,
+                      );
+                      return {
+                        key: `${ref.workspace_id}:${ref.table_id}`,
+                        workspaceId: ref.workspace_id,
+                        tableId: ref.table_id,
+                        workspaceName: tbl?.workspace_name ?? `Workspace ${ref.workspace_id}`,
+                        tableName: tbl?.table_name ?? `Table ${ref.table_id}`,
+                        autoDescription: data?.auto_description ?? null,
+                        columnDescriptions: data?.column_descriptions ?? null,
+                        commonQuestions: data?.common_questions ?? null,
+                      } satisfies TableDescriptionCard;
+                    } catch {
+                      return null;
+                    }
+                  }),
+                ).then((results: PromiseSettledResult<TableDescriptionCard | null>[]) => {
+                  const cards = results
+                    .filter((r: PromiseSettledResult<TableDescriptionCard | null>): r is PromiseFulfilledResult<TableDescriptionCard | null> => r.status === 'fulfilled')
+                    .map((r: PromiseFulfilledResult<TableDescriptionCard | null>) => r.value)
+                    .filter((v: TableDescriptionCard | null): v is TableDescriptionCard => v !== null);
+                  setTableDescriptions(cards);
+                });
                 setStep('brief');
               }}
               className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors"
@@ -1801,16 +1631,26 @@ export function AIReportWizard({
             <div className="grid gap-3 md:grid-cols-4 2xl:grid-cols-1">
             {stepMeta.map((item, index) => {
               const active = currentStepIndex === index;
-              const complete = currentStepIndex > index;
+              const isLastStep = index === stepMeta.length - 1;
+              const complete = isLastStep
+                ? hasBuiltOutput && !active
+                : highestReachedIndex > index && !active;
+              const canNavigate = index <= highestReachedIndex && !isInteractionLocked;
               return (
-                <div
+                <button
+                  type="button"
                   key={item.key}
-                  className={`rounded-lg border px-4 py-3 transition ${
+                  disabled={!canNavigate}
+                  onClick={() => {
+                    if (!canNavigate || active) return;
+                    setStep(item.key);
+                  }}
+                  className={`w-full rounded-lg border px-4 py-3 text-left transition ${
                     active
                       ? 'border-blue-200 bg-blue-50 text-blue-700'
                       : complete
-                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                        : 'border-gray-200 bg-white text-gray-500'
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 cursor-pointer'
+                        : 'border-gray-200 bg-white text-gray-500 cursor-default'
                   }`}
                 >
                   <div className="flex items-center gap-2 text-sm font-semibold">
@@ -1820,7 +1660,7 @@ export function AIReportWizard({
                   <p className={`mt-1 text-xs ${active ? 'text-blue-600' : complete ? 'text-emerald-600' : 'text-gray-400'}`}>
                     {item.caption}
                   </p>
-                </div>
+                </button>
               );
             })}
             </div>
@@ -1890,29 +1730,10 @@ export function AIReportWizard({
           <BriefStep
             isVietnamese={isVietnamese}
             language={language}
-            wizardText={wizardText}
             isPlanningLocked={isPlanningLocked}
-            briefPresets={briefPresets}
-            applyBriefPreset={applyBriefPreset}
-            briefSectionMeta={briefSectionMeta}
-            visibleBriefSections={visibleBriefSections}
-            activeBriefSection={activeBriefSection}
-            setActiveBriefSection={setActiveBriefSection}
-            briefSectionProgress={briefSectionProgress}
-            activeBriefSectionMeta={activeBriefSectionMeta}
-            activeBriefFocus={activeBriefFocus}
-            activeBriefProgress={activeBriefProgress}
-            activeBriefSectionIndex={activeBriefSectionIndex}
-            collapseOptionalBriefSections={collapseOptionalBriefSections}
-            openAllBriefSections={openAllBriefSections}
-            briefDockTabs={briefDockTabs}
-            briefDockTab={briefDockTab}
-            setBriefDockTab={setBriefDockTab}
             agentUnderstandingPreview={agentUnderstandingPreview}
             selectedTables={selectedTables}
             selectedTableCards={selectedTableCards}
-            briefKpis={briefKpis}
-            briefQuestions={briefQuestions}
             readinessCount={readinessCount}
             readinessChecks={readinessChecks}
             openGuides={openGuides}
@@ -1920,72 +1741,24 @@ export function AIReportWizard({
             planMutation={planMutation}
             planningEvents={planningEvents}
             planningPhaseSummary={planningPhaseSummary}
-            latestPlanningThought={latestPlanningThought}
             recentPlanningThoughts={recentPlanningThoughts}
             formatProcessPhaseLabel={formatProcessPhaseLabel}
             getProcessPhaseStatusClass={getProcessPhaseStatusClass}
             getProcessPhaseStatusLabel={getProcessPhaseStatusLabel}
             getPlanEventBadgeClass={getPlanEventBadgeClass}
-            reportName={reportName}
-            setReportName={setReportName}
-            reportType={reportType}
-            setReportType={setReportType}
             goal={goal}
             setGoal={setGoal}
             audience={audience}
             setAudience={setAudience}
             timeframe={timeframe}
             setTimeframe={setTimeframe}
-            whyNow={whyNow}
-            setWhyNow={setWhyNow}
-            businessBackground={businessBackground}
-            setBusinessBackground={setBusinessBackground}
-            kpisText={kpisText}
-            setKpisText={setKpisText}
-            questionsText={questionsText}
-            setQuestionsText={setQuestionsText}
             comparisonPeriod={comparisonPeriod}
             setComparisonPeriod={setComparisonPeriod}
-            refreshFrequency={refreshFrequency}
-            setRefreshFrequency={setRefreshFrequency}
-            mustIncludeSectionsText={mustIncludeSectionsText}
-            setMustIncludeSectionsText={setMustIncludeSectionsText}
-            alertFocusText={alertFocusText}
-            setAlertFocusText={setAlertFocusText}
             preferredGranularity={preferredGranularity}
             setPreferredGranularity={setPreferredGranularity}
-            decisionContext={decisionContext}
-            setDecisionContext={setDecisionContext}
-            reportStyle={reportStyle}
-            setReportStyle={setReportStyle}
-            insightDepth={insightDepth}
-            setInsightDepth={setInsightDepth}
-            recommendationStyle={recommendationStyle}
-            setRecommendationStyle={setRecommendationStyle}
-            confidencePreference={confidencePreference}
-            setConfidencePreference={setConfidencePreference}
-            preferredDashboardStructure={preferredDashboardStructure}
-            setPreferredDashboardStructure={setPreferredDashboardStructure}
-            includeTextNarrative={includeTextNarrative}
-            setIncludeTextNarrative={setIncludeTextNarrative}
-            includeActionItems={includeActionItems}
-            setIncludeActionItems={setIncludeActionItems}
-            includeDataQualityNotes={includeDataQualityNotes}
-            setIncludeDataQualityNotes={setIncludeDataQualityNotes}
-            tableRolesHintText={tableRolesHintText}
-            setTableRolesHintText={setTableRolesHintText}
-            businessGlossaryText={businessGlossaryText}
-            setBusinessGlossaryText={setBusinessGlossaryText}
-            knownDataIssuesText={knownDataIssuesText}
-            setKnownDataIssuesText={setKnownDataIssuesText}
-            importantDimensionsText={importantDimensionsText}
-            setImportantDimensionsText={setImportantDimensionsText}
-            columnsToAvoidText={columnsToAvoidText}
-            setColumnsToAvoidText={setColumnsToAvoidText}
             notes={notes}
             setNotes={setNotes}
-            planningMode={planningMode}
-            setPlanningMode={setPlanningMode}
+            tableDescriptions={tableDescriptions}
           />
         )}
         {step === 'plan' && draftPlan && (
@@ -2030,6 +1803,10 @@ export function AIReportWizard({
             events={events}
             agentError={agentError}
             isBuildRunning={isBuildRunning}
+            hasBuiltOutput={hasBuiltOutput}
+            buildResult={buildResult}
+            buildDashboardUrl={buildDashboardUrl}
+            buildReportUrl={buildReportUrl}
           />
         )}
         {isPlanningLocked && (
