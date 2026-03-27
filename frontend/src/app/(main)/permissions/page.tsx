@@ -155,12 +155,10 @@ function MatrixTab() {
     onError: (err: any) => toast.error(err?.response?.data?.detail || 'Preset failed'),
   });
 
-  const cycleLevel = (userId: string, module: string, current: string, allowed: string[]) => {
-    const idx = allowed.indexOf(current);
-    const next = allowed[(idx + 1) % allowed.length];
+  const setLevel = (userId: string, module: string, level: string) => {
     setPendingChanges((p) => ({
       ...p,
-      [userId]: { ...(p[userId] || {}), [module]: next },
+      [userId]: { ...(p[userId] || {}), [module]: level },
     }));
   };
 
@@ -264,17 +262,20 @@ function MatrixTab() {
                     const s = LEVEL_STYLES[val] || LEVEL_STYLES.none;
                     return (
                       <td key={m} className="px-3 py-3.5 text-center">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            cycleLevel(user.user_id, m, val, allowed);
-                          }}
-                          className={`inline-flex items-center justify-center min-w-[72px] px-3 py-1.5 rounded-lg text-xs font-semibold ring-1 ring-inset transition-all hover:shadow-sm ${
+                        <select
+                          value={val}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => setLevel(user.user_id, m, e.target.value)}
+                          className={`appearance-none cursor-pointer text-center min-w-[80px] px-3 py-1.5 rounded-lg text-xs font-semibold ring-1 ring-inset transition-all hover:shadow-sm ${
                             changed ? 'ring-yellow-400 bg-yellow-50 text-yellow-800 shadow-sm' : `${s.bg} ${s.text} ${s.ring}`
                           }`}
                         >
-                          {LEVEL_LABELS[val] || val}
-                        </button>
+                          {allowed.map((lvl) => (
+                            <option key={lvl} value={lvl}>
+                              {LEVEL_LABELS[lvl] || lvl}
+                            </option>
+                          ))}
+                        </select>
                       </td>
                     );
                   })}

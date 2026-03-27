@@ -36,7 +36,7 @@ MODULES = [
 
 # Per-module allowed levels (enforces business rules)
 MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
-    "data_sources":   ["none", "view", "full"],
+    "data_sources":   ["none", "view", "edit", "full"],
     "datasets":       ["none", "view", "edit", "full"],
     "workspaces":     ["none", "view", "edit", "full"],
     "explore_charts": ["none", "view", "edit", "full"],
