@@ -74,6 +74,13 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "dev-secret-key-change-in-production"
     DATASOURCE_ENCRYPTION_KEY: str = ""
 
+    # Platform-level Google / GCP service account
+    # When set, users do NOT need to paste a credentials JSON when connecting
+    # Google Sheets or BigQuery — they only need to share their resource with
+    # the service-account email shown in the UI.
+    GCP_SERVICE_ACCOUNT_JSON: str = ""
+    GCP_SERVICE_ACCOUNT_EMAIL: str = ""
+
     # AI / Embedding (OpenRouter-only runtime)
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_SITE_URL: str = "http://localhost:3000"

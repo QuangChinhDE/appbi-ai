@@ -88,6 +88,15 @@ export default function DataSourceForm({
   // Show/hide password field for DB connections
   const [showPassword, setShowPassword] = useState(false);
 
+  // Platform-level GCP service account info
+  const [platformGcp, setPlatformGcp] = useState<{ available: boolean; email: string | null } | null>(null);
+  useEffect(() => {
+    fetch(`${API_BASE}/datasources/platform-gcp-info`, { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setPlatformGcp({ available: d.platform_credential_available, email: d.service_account_email }))
+      .catch(() => {});
+  }, []);
+
   // Reset test state whenever config fields change
   useEffect(() => { setTestState('idle'); setTestMessage(''); }, [config]);
 
@@ -288,6 +297,16 @@ export default function DataSourceForm({
     } else if (type === DataSourceType.BIGQUERY) {
       return (
         <>
+          {platformGcp?.available && (
+            <div className="flex items-start gap-2 px-3 py-2.5 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800">
+              <CheckCircle className="w-4 h-4 mt-0.5 shrink-0 text-green-600" />
+              <div>
+                <span className="font-medium">Platform credential active.</span> Share your BigQuery dataset with{' '}
+                <span className="font-mono bg-green-100 px-1 rounded">{platformGcp.email}</span> then fill in Project ID below.
+              </div>
+            </div>
+          )}
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Project ID
@@ -302,33 +321,35 @@ export default function DataSourceForm({
             />
           </div>
 
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="text-sm font-medium text-gray-700">
-                Service Account JSON
-              </label>
-              <button
-                type="button"
-                onClick={() => setShowCredentials(v => !v)}
-                className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 transition-colors"
-              >
-                {showCredentials ? <><EyeOff className="w-3.5 h-3.5" /> Hide</> : <><Eye className="w-3.5 h-3.5" /> Show</>}
-              </button>
+          {!platformGcp?.available && (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-sm font-medium text-gray-700">
+                  Service Account JSON
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowCredentials(v => !v)}
+                  className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 transition-colors"
+                >
+                  {showCredentials ? <><EyeOff className="w-3.5 h-3.5" /> Hide</> : <><Eye className="w-3.5 h-3.5" /> Show</>}
+                </button>
+              </div>
+              <textarea
+                value={config.credentials_json || ''}
+                onChange={(e) => handleConfigChange('credentials_json', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                style={!showCredentials ? { WebkitTextSecurity: 'disc' } as any : undefined}
+                placeholder={showCredentials ? (initialData ? '(stored — paste new JSON to replace)' : '{"type": "service_account", ...}') : 'Paste Service Account JSON here'}
+                rows={6}
+                required={!initialData || !config.credentials_json}
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Paste the entire JSON key file content
+              </p>
             </div>
-            <textarea
-              value={config.credentials_json || ''}
-              onChange={(e) => handleConfigChange('credentials_json', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              style={!showCredentials ? { WebkitTextSecurity: 'disc' } as any : undefined}
-              placeholder={showCredentials ? (initialData ? '(stored — paste new JSON to replace)' : '{"type": "service_account", ...}') : 'Paste Service Account JSON here'}
-              rows={6}
-              required={!initialData || !config.credentials_json}
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              Paste the entire JSON key file content
-            </p>
-          </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -347,33 +368,45 @@ export default function DataSourceForm({
     } else if (type === DataSourceType.GOOGLE_SHEETS) {
       return (
         <>
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="text-sm font-medium text-gray-700">
-                Service Account JSON
-              </label>
-              <button
-                type="button"
-                onClick={() => setShowCredentials(v => !v)}
-                className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 transition-colors"
-              >
-                {showCredentials ? <><EyeOff className="w-3.5 h-3.5" /> Hide</> : <><Eye className="w-3.5 h-3.5" /> Show</>}
-              </button>
+          {platformGcp?.available && (
+            <div className="flex items-start gap-2 px-3 py-2.5 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800">
+              <CheckCircle className="w-4 h-4 mt-0.5 shrink-0 text-green-600" />
+              <div>
+                <span className="font-medium">Platform credential active.</span> Share your Google Sheet with{' '}
+                <span className="font-mono bg-green-100 px-1 rounded">{platformGcp.email}</span> then paste the Sheet link below.
+              </div>
             </div>
-            <textarea
-              value={config.credentials_json || ''}
-              onChange={(e) => handleConfigChange('credentials_json', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              style={!showCredentials ? { WebkitTextSecurity: 'disc' } as any : undefined}
-              placeholder={showCredentials ? (initialData ? '(stored — paste new JSON to replace)' : '{"type": "service_account", "project_id": "...", ...}') : 'Paste Service Account JSON here'}
-              rows={4}
-              required={!initialData || !config.credentials_json}
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              Paste your Google Service Account JSON credentials
-            </p>
-          </div>
+          )}
+
+          {!platformGcp?.available && (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-sm font-medium text-gray-700">
+                  Service Account JSON
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowCredentials(v => !v)}
+                  className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 transition-colors"
+                >
+                  {showCredentials ? <><EyeOff className="w-3.5 h-3.5" /> Hide</> : <><Eye className="w-3.5 h-3.5" /> Show</>}
+                </button>
+              </div>
+              <textarea
+                value={config.credentials_json || ''}
+                onChange={(e) => handleConfigChange('credentials_json', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                style={!showCredentials ? { WebkitTextSecurity: 'disc' } as any : undefined}
+                placeholder={showCredentials ? (initialData ? '(stored — paste new JSON to replace)' : '{"type": "service_account", "project_id": "...", ...}') : 'Paste Service Account JSON here'}
+                rows={4}
+                required={!initialData || !config.credentials_json}
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Paste your Google Service Account JSON credentials
+              </p>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">

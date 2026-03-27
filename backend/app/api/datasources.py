@@ -31,10 +31,27 @@ from app.schemas import (
 )
 from app.services import DataSourceCRUDService, DataSourceConnectionService
 from app.core.logging import get_logger
+from app.core.config import settings
 import time
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/datasources", tags=["datasources"])
+
+
+# ── Platform GCP credential info ──────────────────────────────────────────────
+
+@router.get("/platform-gcp-info")
+def get_platform_gcp_info(_: User = Depends(get_current_user)):
+    """
+    Returns whether a platform-level GCP service account is configured.
+    If configured, also returns the email so users know which account to share with.
+    """
+    has_credential = bool((settings.GCP_SERVICE_ACCOUNT_JSON or "").strip())
+    email = (settings.GCP_SERVICE_ACCOUNT_EMAIL or "").strip() or None
+    return {
+        "platform_credential_available": has_credential,
+        "service_account_email": email,
+    }
 
 
 # ── Manual datasource: server-side file parsing ───────────────────────────────

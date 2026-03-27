@@ -11,12 +11,35 @@ from google.oauth2 import service_account
 import json
 
 from app.core.logging import get_logger
+from app.core.config import settings
 from app.models import DataSourceType
 from app.services.sql_validator import validate_select_only
 from app.services.google_sheets_connector import create_google_sheets_connector
 from app.services.manual_table_connector import create_manual_table_connector
 
 logger = get_logger(__name__)
+
+
+def _resolve_gcp_credentials_json(config: Dict[str, Any]) -> str:
+    """
+    Return the GCP credentials JSON string to use for a connection.
+
+    Priority:
+      1. credentials_json supplied in the datasource config (user-provided key).
+      2. GCP_SERVICE_ACCOUNT_JSON from platform settings (.env).
+
+    Raises ValueError when neither source is available.
+    """
+    from_config = config.get("credentials_json") or ""
+    if isinstance(from_config, str) and from_config.strip():
+        return from_config.strip()
+    platform_json = (settings.GCP_SERVICE_ACCOUNT_JSON or "").strip()
+    if platform_json:
+        return platform_json
+    raise ValueError(
+        "No GCP credentials found. Either provide credentials_json in the "
+        "datasource config or set GCP_SERVICE_ACCOUNT_JSON in the platform .env."
+    )
 
 
 class DataSourceConnectionService:
@@ -102,7 +125,7 @@ class DataSourceConnectionService:
     def _test_bigquery(config: Dict[str, Any]) -> Tuple[bool, str]:
         """Test BigQuery connection."""
         try:
-            credentials_info = json.loads(config.get("credentials_json", "{}"))
+            credentials_info = json.loads(_resolve_gcp_credentials_json(config))
             credentials = service_account.Credentials.from_service_account_info(credentials_info)
             client = bigquery.Client(
                 credentials=credentials,
@@ -385,7 +408,7 @@ class DataSourceConnectionService:
         """Execute query against BigQuery."""
         client = None
         try:
-            credentials_info = json.loads(config.get("credentials_json", "{}"))
+            credentials_info = json.loads(_resolve_gcp_credentials_json(config))
             credentials = service_account.Credentials.from_service_account_info(credentials_info)
             project_id = config.get("project_id")
             
@@ -540,7 +563,7 @@ class DataSourceConnectionService:
         """Infer column types from BigQuery query."""
         client = None
         try:
-            credentials_info = json.loads(config.get("credentials_json", "{}"))
+            credentials_info = json.loads(_resolve_gcp_credentials_json(config))
             credentials = service_account.Credentials.from_service_account_info(credentials_info)
             project_id = config.get("project_id")
             
@@ -773,7 +796,7 @@ class DataSourceConnectionService:
         """List tables from BigQuery."""
         client = None
         try:
-            credentials_info = json.loads(config.get("credentials_json", "{}"))
+            credentials_info = json.loads(_resolve_gcp_credentials_json(config))
             credentials = service_account.Credentials.from_service_account_info(credentials_info)
             project_id = config.get("project_id")
             
@@ -1359,7 +1382,7 @@ class DataSourceConnectionService:
     @staticmethod
     def _bq_list_columns(config: Dict[str, Any], full_table: str) -> List[Dict[str, str]]:
         try:
-            credentials_info = json.loads(config.get("credentials_json", "{}"))
+            credentials_info = json.loads(_resolve_gcp_credentials_json(config))
             credentials = service_account.Credentials.from_service_account_info(credentials_info)
             client = bigquery.Client(credentials=credentials, project=config.get("project_id"))
             parts = full_table.split(".")

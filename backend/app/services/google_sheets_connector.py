@@ -147,15 +147,11 @@ class GoogleSheetsConnector:
 def create_google_sheets_connector(config: Dict[str, Any]) -> GoogleSheetsConnector:
     """
     Create a Google Sheets connector from config.
-    
-    Args:
-        config: Configuration dict with credentials_json
-        
-    Returns:
-        GoogleSheetsConnector instance
+
+    credentials_json is resolved in priority order:
+      1. Value in config (user-provided key)
+      2. GCP_SERVICE_ACCOUNT_JSON from platform settings (.env)
     """
-    credentials_json = config.get('credentials_json')
-    if not credentials_json:
-        raise ValueError("credentials_json is required for Google Sheets connection")
-    
+    from app.services.datasource_service import _resolve_gcp_credentials_json
+    credentials_json = _resolve_gcp_credentials_json(config)
     return GoogleSheetsConnector(credentials_json)

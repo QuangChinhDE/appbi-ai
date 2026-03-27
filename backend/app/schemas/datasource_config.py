@@ -55,22 +55,21 @@ class MySQLConfig(BaseModel):
 class BigQueryConfig(BaseModel):
     """BigQuery connection configuration."""
     project_id: str = Field(..., description="GCP project ID")
-    credentials_json: str = Field(..., description="Service account JSON as string")
+    credentials_json: Optional[str] = Field(None, description="Service account JSON — omit to use platform credential")
     default_dataset: Optional[str] = Field(None, description="Default dataset name")
-    
+
     @field_validator('project_id')
     @classmethod
     def validate_project_id(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError("Project ID cannot be empty")
         return v.strip()
-    
+
     @field_validator('credentials_json')
     @classmethod
-    def validate_credentials(cls, v: str) -> str:
+    def validate_credentials(cls, v: Optional[str]) -> Optional[str]:
         if not v or not v.strip():
-            raise ValueError("Credentials JSON cannot be empty")
-        # Basic validation that it looks like JSON
+            return None
         v = v.strip()
         if not (v.startswith('{') and v.endswith('}')):
             raise ValueError("Credentials must be valid JSON object")
@@ -85,16 +84,15 @@ class GoogleSheetsConfig(BaseModel):
     """
     model_config = ConfigDict(extra='allow')
 
-    credentials_json: str = Field(..., description="Service account JSON as string")
+    credentials_json: Optional[str] = Field(None, description="Service account JSON — omit to use platform credential")
     spreadsheet_id: str = Field(..., description="Google Sheets spreadsheet ID")
     sheet_name: Optional[str] = Field(None, description="Sheet name (optional, uses first sheet if not provided)")
-    
+
     @field_validator('credentials_json')
     @classmethod
-    def validate_credentials(cls, v: str) -> str:
+    def validate_credentials(cls, v: Optional[str]) -> Optional[str]:
         if not v or not v.strip():
-            raise ValueError("Credentials JSON cannot be empty")
-        # Basic validation that it looks like JSON
+            return None
         v = v.strip()
         if not (v.startswith('{') and v.endswith('}')):
             raise ValueError("Credentials must be valid JSON object")
