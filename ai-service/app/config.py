@@ -23,13 +23,33 @@ class Settings(BaseSettings):
     llm_fallback_chain: str = Field("", alias="LLM_FALLBACK_CHAIN")
     ai_chat_fallback_models: str = Field("", alias="AI_CHAT_FALLBACK_MODELS")
 
-    # OpenRouter config
+    # OpenRouter config — primary + up to 5 numbered keys
     openrouter_api_key: str = Field("", alias="OPENROUTER_API_KEY")
+    openrouter_api_key_1: str = Field("", alias="OPENROUTER_API_KEY_1")
+    openrouter_api_key_2: str = Field("", alias="OPENROUTER_API_KEY_2")
+    openrouter_api_key_3: str = Field("", alias="OPENROUTER_API_KEY_3")
+    openrouter_api_key_4: str = Field("", alias="OPENROUTER_API_KEY_4")
+    openrouter_api_key_5: str = Field("", alias="OPENROUTER_API_KEY_5")
     openrouter_site_url: str = Field("http://localhost:3000", alias="OPENROUTER_SITE_URL")
     openrouter_app_name: str = Field("AppBI AI Chat", alias="OPENROUTER_APP_NAME")
     openai_api_key: str = Field("", alias="OPENAI_API_KEY")
     anthropic_api_key: str = Field("", alias="ANTHROPIC_API_KEY")
     gemini_api_key: str = Field("", alias="GEMINI_API_KEY")
+
+    @property
+    def active_api_keys(self) -> List[str]:
+        """All configured OpenRouter keys in priority order (KEY_1..5 first, then bare KEY)."""
+        numbered = [
+            self.openrouter_api_key_1,
+            self.openrouter_api_key_2,
+            self.openrouter_api_key_3,
+            self.openrouter_api_key_4,
+            self.openrouter_api_key_5,
+        ]
+        keys = [k.strip() for k in numbered if k.strip()]
+        if not keys and self.openrouter_api_key.strip():
+            keys = [self.openrouter_api_key.strip()]
+        return keys
 
     # Session
     ai_session_ttl_minutes: int = Field(30, alias="AI_SESSION_TTL_MINUTES")

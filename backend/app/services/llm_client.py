@@ -1,5 +1,7 @@
 """
 OpenRouter-backed LLM client for backend AI tasks (auto-tagging, descriptions).
+Supports multi-key rotation: tries OPENROUTER_API_KEY_1..5 in order,
+falls back to bare OPENROUTER_API_KEY, stops and logs when all keys are exhausted.
 """
 import json
 import logging
@@ -14,18 +16,24 @@ logger = logging.getLogger(__name__)
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _TIMEOUT = 45.0  # seconds
 
+_KEY_EXHAUSTED_STATUSES = {401, 402, 403, 429}
+
+
+def _is_key_exhausted(exc: Exception) -> bool:
+    """Return True when the error signals quota/auth failure for this key."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in _KEY_EXHAUSTED_STATUSES
+    msg = str(exc).lower()
+    return any(kw in msg for kw in ("401", "402", "403", "429", "rate limit", "quota", "insufficient credits", "invalid api key"))
+
 
 class LLMClient:
     """Minimal JSON-only client for backend AI generation tasks."""
 
     @staticmethod
-    def _call_openrouter(
-        prompt: str, system: str, model: str, max_tokens: int
+    def _call_with_key(
+        api_key: str, prompt: str, system: str, model: str, max_tokens: int
     ) -> Optional[dict]:
-        api_key = settings.OPENROUTER_API_KEY
-        if not api_key:
-            return None
-
         payload = {
             "model": model,
             "messages": [
@@ -59,26 +67,36 @@ class LLMClient:
         max_tokens: int = 512,
     ) -> Optional[dict]:
         """
-        Send a prompt through OpenRouter and parse the JSON response.
-        Returns None on failure or when no API key is configured.
+        Send a prompt through OpenRouter with automatic key rotation.
+
+        Tries each key in OPENROUTER_API_KEY_1..5 order (or bare OPENROUTER_API_KEY).
+        Rotates to next key on 401/402/403/429. Returns None when all keys fail.
         """
-        if not settings.OPENROUTER_API_KEY:
-            logger.debug("LLMClient: OPENROUTER_API_KEY not configured")
+        api_keys = settings.active_api_keys
+        if not api_keys:
+            logger.debug("LLMClient: no OPENROUTER_API_KEY configured")
             return None
 
         effective_model = model or settings.active_description_model
 
-        try:
-            result = LLMClient._call_openrouter(prompt, system, effective_model, max_tokens)
-            if result is not None:
-                return result
-        except httpx.HTTPStatusError as exc:
-            logger.warning(
-                "LLMClient: OpenRouter HTTP error %s - %s",
-                exc.response.status_code,
-                exc.response.text[:200],
-            )
-        except Exception as exc:
-            logger.warning("LLMClient: OpenRouter failed - %s", exc)
+        for key_index, api_key in enumerate(api_keys, start=1):
+            try:
+                result = LLMClient._call_with_key(api_key, prompt, system, effective_model, max_tokens)
+                if result is not None:
+                    return result
+            except Exception as exc:
+                if _is_key_exhausted(exc):
+                    logger.warning(
+                        "LLMClient: API key #%d exhausted (model=%s): %s — trying next key",
+                        key_index, effective_model, exc,
+                    )
+                    continue
+                logger.warning("LLMClient: OpenRouter failed with key #%d — %s", key_index, exc)
+                return None  # non-quota error — don't rotate
 
+        logger.error(
+            "LLMClient: all %d OpenRouter API key(s) exhausted. "
+            "Check credits on OPENROUTER_API_KEY_1..5.",
+            len(api_keys),
+        )
         return None

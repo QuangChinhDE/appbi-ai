@@ -82,7 +82,13 @@ class Settings(BaseSettings):
     GCP_SERVICE_ACCOUNT_EMAIL: str = ""
 
     # AI / Embedding (OpenRouter-only runtime)
+    # Primary key (backward-compat) + up to 5 numbered keys for rotation
     OPENROUTER_API_KEY: str = ""
+    OPENROUTER_API_KEY_1: str = ""
+    OPENROUTER_API_KEY_2: str = ""
+    OPENROUTER_API_KEY_3: str = ""
+    OPENROUTER_API_KEY_4: str = ""
+    OPENROUTER_API_KEY_5: str = ""
     OPENROUTER_SITE_URL: str = "http://localhost:3000"
     OPENROUTER_APP_NAME: str = "AppBI"
     AI_DESCRIPTION_MODEL: str = "openai/gpt-4o-mini"
@@ -92,6 +98,21 @@ class Settings(BaseSettings):
     @property
     def active_description_model(self) -> str:
         return self.AI_DESCRIPTION_MODEL.strip() or "openai/gpt-4o-mini"
+
+    @property
+    def active_api_keys(self) -> List[str]:
+        """All configured OpenRouter keys in priority order."""
+        numbered = [
+            self.OPENROUTER_API_KEY_1,
+            self.OPENROUTER_API_KEY_2,
+            self.OPENROUTER_API_KEY_3,
+            self.OPENROUTER_API_KEY_4,
+            self.OPENROUTER_API_KEY_5,
+        ]
+        keys = [k.strip() for k in numbered if k.strip()]
+        if not keys and self.OPENROUTER_API_KEY.strip():
+            keys = [self.OPENROUTER_API_KEY.strip()]
+        return keys
     
     model_config = SettingsConfigDict(
         env_file=_ROOT_ENV,

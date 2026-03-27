@@ -27,9 +27,34 @@ class Settings(BaseSettings):
     ai_agent_insight_model: str = Field("", alias="AI_AGENT_INSIGHT_MODEL")
     ai_agent_narrative_model: str = Field("", alias="AI_AGENT_NARRATIVE_MODEL")
 
+    # Primary key (backward-compat) + up to 5 numbered keys
     openrouter_api_key: str = Field("", alias="OPENROUTER_API_KEY")
+    openrouter_api_key_1: str = Field("", alias="OPENROUTER_API_KEY_1")
+    openrouter_api_key_2: str = Field("", alias="OPENROUTER_API_KEY_2")
+    openrouter_api_key_3: str = Field("", alias="OPENROUTER_API_KEY_3")
+    openrouter_api_key_4: str = Field("", alias="OPENROUTER_API_KEY_4")
+    openrouter_api_key_5: str = Field("", alias="OPENROUTER_API_KEY_5")
     openrouter_site_url: str = Field("http://localhost:3000", alias="OPENROUTER_SITE_URL")
     openrouter_app_name: str = Field("AppBI AI Agent", alias="OPENROUTER_APP_NAME")
+
+    @property
+    def active_api_keys(self) -> List[str]:
+        """Return all configured OpenRouter keys in priority order.
+
+        Numbered keys (KEY_1..KEY_5) take precedence when set.
+        Falls back to the bare OPENROUTER_API_KEY for backward-compat.
+        """
+        numbered = [
+            self.openrouter_api_key_1,
+            self.openrouter_api_key_2,
+            self.openrouter_api_key_3,
+            self.openrouter_api_key_4,
+            self.openrouter_api_key_5,
+        ]
+        keys = [k.strip() for k in numbered if k.strip()]
+        if not keys and self.openrouter_api_key.strip():
+            keys = [self.openrouter_api_key.strip()]
+        return keys
 
     @property
     def active_llm_provider(self) -> str:

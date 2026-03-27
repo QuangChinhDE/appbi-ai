@@ -146,11 +146,12 @@ def _make_openai_client():
         raise RuntimeError("openai package not installed")
 
 
-def _make_openrouter_client():
+def _make_openrouter_client(api_key: str = ""):
     try:
         from openai import AsyncOpenAI
+        key = api_key or settings.openrouter_api_key
         return AsyncOpenAI(
-            api_key=settings.openrouter_api_key,
+            api_key=key,
             base_url="https://openrouter.ai/api/v1",
             default_headers={
                 "HTTP-Referer": settings.openrouter_site_url,
@@ -159,6 +160,15 @@ def _make_openrouter_client():
         )
     except ImportError:
         raise RuntimeError("openai package not installed")
+
+
+def _is_key_exhausted(exc: Exception) -> bool:
+    """Return True when the error signals quota/auth failure for this key."""
+    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    if status in {401, 402, 403, 429}:
+        return True
+    msg = str(exc).lower()
+    return any(kw in msg for kw in ("401", "402", "403", "429", "rate limit", "quota", "insufficient credits", "invalid api key", "unauthorized"))
 
 
 def _make_anthropic_client():
@@ -591,10 +601,32 @@ async def _run_with_provider(
         async for event in _gemini_loop(gemini_model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context):
             yield event
     elif provider == "openrouter":
-        client = _make_openrouter_client()
-        yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-        async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context):
-            yield event
+        api_keys = settings.active_api_keys
+        if not api_keys:
+            raise RuntimeError(
+                "No OpenRouter API keys configured. "
+                "Set OPENROUTER_API_KEY or OPENROUTER_API_KEY_1..5 in .env"
+            )
+        last_key_exc: Exception | None = None
+        for key_index, api_key in enumerate(api_keys, start=1):
+            try:
+                client = _make_openrouter_client(api_key=api_key)
+                if key_index == 1:
+                    yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
+                async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context):
+                    yield event
+                return  # success — stop key rotation
+            except Exception as exc:
+                if _is_key_exhausted(exc):
+                    logger.warning("OpenRouter key #%d exhausted (model=%s): %s — trying next key", key_index, model, exc)
+                    last_key_exc = exc
+                    continue
+                raise  # non-quota error — bubble up to provider loop
+        # All keys exhausted
+        raise RuntimeError(
+            f"All {len(api_keys)} OpenRouter API key(s) exhausted for model={model}. "
+            "Check credits on OPENROUTER_API_KEY_1..5."
+        ) from last_key_exc
     else:
         raise ValueError(f"Unknown provider: {provider}")
 
@@ -1234,7 +1266,12 @@ async def _generate_suggestions(provider: str, model: str, session: Conversation
 
     try:
         if provider in ("openai", "openrouter"):
-            client = _make_openai_client() if provider == "openai" else _make_openrouter_client()
+            if provider == "openai":
+                client = _make_openai_client()
+            else:
+                # Use first available key for suggestions (non-critical, no retry needed)
+                keys = settings.active_api_keys
+                client = _make_openrouter_client(api_key=keys[0] if keys else "")
             resp = await client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": suggest_prompt}],
