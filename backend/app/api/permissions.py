@@ -41,8 +41,8 @@ MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
     "workspaces":     ["none", "view", "edit", "full"],
     "explore_charts": ["none", "view", "edit", "full"],
     "dashboards":     ["none", "view", "edit", "full"],
-    "ai_chat":        ["none", "view", "edit"],
-    "ai_agent":       ["none", "view", "edit"],
+    "ai_chat":        ["none", "view", "edit", "full"],
+    "ai_agent":       ["none", "view", "edit", "full"],
     "settings":       ["none", "full"],
 }
 
@@ -57,8 +57,8 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "workspaces": "full",
         "explore_charts": "full",
         "dashboards": "full",
-        "ai_chat": "edit",
-        "ai_agent": "edit",
+        "ai_chat": "full",
+        "ai_agent": "full",
         "settings": "full",
     },
     "editor": {
