@@ -36,3 +36,5 @@ check_*.py
 fix_*.py
 add_*.py
 run.py
+_tmp/
+tmp_build_vi_ai_report.py
