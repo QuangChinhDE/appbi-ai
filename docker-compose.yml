@@ -40,7 +40,7 @@ services:
       POSTGRES_USER: ${DB_USER:-appbi}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-appbi}
       POSTGRES_DB: ${DB_NAME:-appbi}
-      CORS_ORIGINS: http://localhost:${FRONTEND_PORT:-3000},http://frontend:3000
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001,http://frontend:3000}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
       API_RELOAD: "false"
@@ -84,10 +84,10 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_PORT:-8000}/api/v1
-        NEXT_PUBLIC_AI_CHAT_WS_URL: ws://localhost:${AI_CHAT_PORT:-8001}/chat/ws
-        NEXT_PUBLIC_AI_CHAT_HTTP_URL: http://localhost:${AI_CHAT_PORT:-8001}
-        NEXT_PUBLIC_AI_AGENT_HTTP_URL: http://localhost:${AI_AGENT_PORT:-8002}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
+        NEXT_PUBLIC_AI_CHAT_WS_URL: ${NEXT_PUBLIC_AI_CHAT_WS_URL:-ws://localhost:8001/chat/ws}
+        NEXT_PUBLIC_AI_CHAT_HTTP_URL: ${NEXT_PUBLIC_AI_CHAT_HTTP_URL:-http://localhost:8001}
+        NEXT_PUBLIC_AI_AGENT_HTTP_URL: ${NEXT_PUBLIC_AI_AGENT_HTTP_URL:-http://localhost:8002}
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000/api/v1
