@@ -12,6 +12,7 @@ import { DashboardList } from '@/components/dashboards/DashboardList';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
+import { GettingStartedGuide } from '@/components/common/GettingStartedGuide';
 import { useI18n } from '@/providers/LanguageProvider';
 
 export default function DashboardsPage() {
@@ -82,6 +83,9 @@ export default function DashboardsPage() {
 
   return (
     <>
+      <div className="px-8 pt-6">
+        <GettingStartedGuide locale={locale} />
+      </div>
       <PageListLayout
         title={t('module.dashboards.title')}
         description={`${dashboards?.length ?? 0} dashboard${dashboards?.length !== 1 ? 's' : ''}`}
