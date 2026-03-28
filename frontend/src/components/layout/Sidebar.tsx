@@ -16,6 +16,7 @@ import {
   KeyRound,
   Shield,
   Bot,
+  HelpCircle,
 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -23,6 +24,7 @@ import { useCurrentUser } from '@/hooks/use-current-user';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { authApi } from '@/lib/api-client';
 import { useI18n } from '@/providers/LanguageProvider';
+import { GettingStartedModal } from '@/components/common/GettingStartedGuide';
 
 interface NavItem {
   labelKey: string;
@@ -58,6 +60,7 @@ function getInitials(name: string): string {
 export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -197,6 +200,16 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
 
                 <button
                   onClick={() => {
+                    setShowGuide(true);
+                    setShowUserMenu(false);
+                  }}
+                  className="flex w-full items-center space-x-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
+                >
+                  <HelpCircle className="h-4 w-4 text-gray-400" />
+                  <span>{language === 'vi' ? 'Hướng dẫn sử dụng' : 'Getting started guide'}</span>
+                </button>
+                <button
+                  onClick={() => {
                     setShowChangePassword(true);
                     setShowUserMenu(false);
                   }}
@@ -236,6 +249,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
       </div>
 
       {showChangePassword && <ChangePasswordModal onClose={() => setShowChangePassword(false)} />}
+      <GettingStartedModal open={showGuide} onClose={() => setShowGuide(false)} locale={language} />
     </div>
   );
 }
