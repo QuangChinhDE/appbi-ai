@@ -50,7 +50,7 @@ export default function DataSourcesPage() {
 
   const { data: currentUser } = useCurrentUser();
   const { data: permData } = usePermissions();
-  const canEdit = hasPermission(permData?.permissions, 'data_sources', 'full');
+  const canEdit = hasPermission(permData?.permissions, 'data_sources', 'edit');
   const canShare = hasPermission(permData?.permissions, 'data_sources', 'full');
 
   const { data: dataSources = [], isLoading } = useDataSources();
