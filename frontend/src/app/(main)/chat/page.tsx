@@ -77,7 +77,7 @@ export default function ChatListPage() {
 
     setCreating(true);
     try {
-      const response = await fetch(`${AI_CHAT_HTTP_URL}/chat/sessions`, {
+      const response = await fetch(`${getAiChatHttpUrl()}/chat/sessions`, {
         method: 'POST',
         headers: authHeaders(),
       });
