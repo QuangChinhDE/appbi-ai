@@ -39,7 +39,7 @@ import {
 } from '@/hooks/use-agent-report-specs';
 import { useWorkspaces, WorkspaceWithTables } from '@/hooks/use-dataset-workspaces';
 import apiClient from '@/lib/api-client';
-import { AI_AGENT_HTTP_URL } from '@/lib/ai-services';
+import { getAiAgentHttpUrl } from '@/lib/ai-services';
 import {
   AgentBriefRequest,
   AgentBuildEvent as BuildEvent,
@@ -332,7 +332,7 @@ export function AIReportWizard({
     enabled: isActive,
     staleTime: 30_000,
     queryFn: async () => {
-      const response = await fetch(`${AI_AGENT_HTTP_URL}/health`);
+      const response = await fetch(`${getAiAgentHttpUrl()}/agent/health`);
       if (!response.ok) {
         throw new Error('Could not load AI Agent health.');
       }
@@ -994,7 +994,7 @@ export function AIReportWizard({
       planAbortControllerRef.current = controller;
       const token = await getAuthToken();
       try {
-        const response = await fetch(`${AI_AGENT_HTTP_URL}/agent/plan/stream`, {
+        const response = await fetch(`${getAiAgentHttpUrl()}/agent/plan/stream`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -1334,7 +1334,7 @@ export function AIReportWizard({
       });
 
       const token = await getAuthToken();
-      const response = await fetch(`${AI_AGENT_HTTP_URL}/agent/build/stream`, {
+      const response = await fetch(`${getAiAgentHttpUrl()}/agent/build/stream`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

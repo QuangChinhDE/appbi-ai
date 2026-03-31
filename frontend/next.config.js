@@ -16,16 +16,21 @@ if (fs.existsSync(rootEnvPath)) {
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
-  // Proxy /api/v1/* to the backend container so the client-side NEXT_PUBLIC_API_URL
-  // can be a relative path (/api/v1) that works on any domain without CORS issues.
+  // Proxy requests to backend and AI services so all NEXT_PUBLIC_* URLs can be
+  // relative paths (domain-agnostic). These rewrites are the fallback when there
+  // is NO nginx in front (localhost dev). On production nginx intercepts first.
   async rewrites() {
     const backendUrl = process.env.BACKEND_URL || 'http://backend:8000/api/v1';
     const backendBase = backendUrl.replace(/\/api\/v1\/?$/, '');
+    const chatBase = process.env.AI_CHAT_INTERNAL_URL || 'http://ai-chat-service:8001';
+    const agentBase = process.env.AI_AGENT_INTERNAL_URL || 'http://ai-agent-service:8001';
     return [
-      {
-        source: '/api/v1/:path*',
-        destination: `${backendBase}/api/v1/:path*`,
-      },
+      // REST API → backend
+      { source: '/api/v1/:path*', destination: `${backendBase}/api/v1/:path*` },
+      // AI Chat (HTTP + WebSocket)
+      { source: '/chat/:path*', destination: `${chatBase}/chat/:path*` },
+      // AI Agent
+      { source: '/agent/:path*', destination: `${agentBase}/agent/:path*` },
     ];
   },
   env: {

@@ -10,7 +10,7 @@ import { PageListLayout } from '@/components/common/PageListLayout';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { ChatSessionList } from '@/components/ai-chat/ChatSessionList';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
-import { AI_CHAT_HTTP_URL } from '@/lib/ai-services';
+import { getAiChatHttpUrl } from '@/lib/ai-services';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { SessionSummary } from '@/components/ai-chat/ChatSessionList';
 
@@ -55,7 +55,7 @@ export default function ChatListPage() {
   async function fetchSessions() {
     setLoading(true);
     try {
-      const response = await fetch(`${AI_CHAT_HTTP_URL}/chat/sessions`, { headers: authHeaders() });
+      const response = await fetch(`${getAiChatHttpUrl()}/chat/sessions`, { headers: authHeaders() });
       if (response.ok) {
         setSessions(await response.json());
         setChatServiceAvailable(true);
@@ -94,7 +94,7 @@ export default function ChatListPage() {
   async function handleDelete(id: string) {
     setDeletingId(id);
     try {
-      await fetch(`${AI_CHAT_HTTP_URL}/chat/sessions/${id}`, {
+      await fetch(`${getAiChatHttpUrl()}/chat/sessions/${id}`, {
         method: 'DELETE',
         headers: authHeaders(),
       });

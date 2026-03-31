@@ -23,6 +23,12 @@ _bearer = HTTPBearer(auto_error=False)
 _LEVEL_ORDER = {"none": 0, "view": 1, "edit": 2, "full": 3}
 
 
+@router.get("/health", include_in_schema=False)
+async def agent_health_via_prefix():
+    """Health check accessible via /agent/health (routed through nginx /agent/ location)."""
+    return {"status": "ok", "service": "ai-agent"}
+
+
 def _decode_token(token: str | None) -> dict | None:
     if not token:
         return None

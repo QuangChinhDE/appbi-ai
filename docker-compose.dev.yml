@@ -83,11 +83,12 @@ services:
       - /app/node_modules
       - /app/.next
     environment:
-      NEXT_PUBLIC_APP_URL: http://localhost:3000
-      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
-      NEXT_PUBLIC_AI_CHAT_WS_URL: ws://localhost:8001/chat/ws
-      NEXT_PUBLIC_AI_CHAT_HTTP_URL: http://localhost:8001
-      NEXT_PUBLIC_AI_AGENT_HTTP_URL: http://localhost:8002
+      # Relative path — Next.js dev server rewrites /api/v1/* → backend container.
+      NEXT_PUBLIC_API_URL: /api/v1
+      # AI service URLs derived at runtime from window.location (no localhost baking).
+      BACKEND_URL: http://backend:8000/api/v1
+      AI_CHAT_INTERNAL_URL: http://ai-chat-service:8001
+      AI_AGENT_INTERNAL_URL: http://ai-agent-service:8001
     ports:
       - "3000:3000"
     depends_on:

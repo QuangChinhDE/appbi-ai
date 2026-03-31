@@ -13,7 +13,7 @@ import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
-import { AI_CHAT_HTTP_URL, AI_CHAT_WS_URL } from '@/lib/ai-services';
+import { getAiChatHttpUrl, getAiChatWsUrl } from '@/lib/ai-services';
 import type { ActivityStep, ChatMessageData, ChartPayload, MessageMetrics, MessageFeedback } from './types';
 
 interface SuggestionChipsProps {
@@ -111,7 +111,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       const headers: Record<string, string> = {};
       const t = token ?? tokenRef.current;
       if (t) headers['Authorization'] = `Bearer ${t}`;
-      const res = await fetch(`${AI_CHAT_HTTP_URL}/chat/sessions/${sessionId}`, { headers });
+      const res = await fetch(`${getAiChatHttpUrl()}/chat/sessions/${sessionId}`, { headers });
       if (!res.ok) return;
       const data = await res.json();
       setSessionTitle(data.title ?? 'New Conversation');
@@ -141,17 +141,17 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     setWsError(null);
 
     // Use pre-fetched token if provided, otherwise fetch fresh
-    let wsUrl = AI_CHAT_WS_URL;
+    let wsUrl = getAiChatWsUrl();
     const t = token ?? tokenRef.current;
     if (t) {
-      wsUrl = `${AI_CHAT_WS_URL}?token=${encodeURIComponent(t)}`;
+      wsUrl = `${getAiChatWsUrl()}?token=${encodeURIComponent(t)}`;
     } else {
       try {
         const res = await fetch('/api/auth/token');
         if (res.ok) {
           const { token: freshToken } = await res.json();
           tokenRef.current = freshToken;
-          wsUrl = `${AI_CHAT_WS_URL}?token=${encodeURIComponent(freshToken)}`;
+          wsUrl = `${getAiChatWsUrl()}?token=${encodeURIComponent(freshToken)}`;
         }
       } catch {
         // Proceed without token — server will reject with 4001
@@ -319,7 +319,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (tokenRef.current) headers['Authorization'] = `Bearer ${tokenRef.current}`;
       const res = await fetch(
-        `${AI_CHAT_HTTP_URL}/chat/sessions/${sessionId}/messages/${messageId}/feedback`,
+        `${getAiChatHttpUrl()}/chat/sessions/${sessionId}/messages/${messageId}/feedback`,
         { method: 'POST', headers, body: JSON.stringify({ rating }) },
       );
       if (res.ok) {

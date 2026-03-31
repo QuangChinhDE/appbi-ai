@@ -84,14 +84,14 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:${FRONTEND_PORT:-3000}}
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
-        NEXT_PUBLIC_AI_CHAT_WS_URL: ${NEXT_PUBLIC_AI_CHAT_WS_URL:-ws://localhost:8001/chat/ws}
-        NEXT_PUBLIC_AI_CHAT_HTTP_URL: ${NEXT_PUBLIC_AI_CHAT_HTTP_URL:-http://localhost:8001}
-        NEXT_PUBLIC_AI_AGENT_HTTP_URL: ${NEXT_PUBLIC_AI_AGENT_HTTP_URL:-http://localhost:8002}
+        # NEXT_PUBLIC_API_URL is baked as a relative path so it works on any domain.
+        # AI service URLs are NOT baked — derived at runtime from window.location automatically.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api/v1}
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000/api/v1
+      AI_CHAT_INTERNAL_URL: http://ai-chat-service:8001
+      AI_AGENT_INTERNAL_URL: http://ai-agent-service:8001
       SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
