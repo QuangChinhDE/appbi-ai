@@ -1,29 +1,21 @@
 'use client';
 
-import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { useParams } from 'next/navigation';
-import type { Layout } from 'react-grid-layout';
+import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { BarChart3, Loader2, AlertTriangle } from 'lucide-react';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
+import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { publicDashboardApi } from '@/lib/api/public';
 import type { Dashboard, DashboardChart, ChartDataResponse } from '@/types/api';
 import type { BaseFilter, ColumnInfo } from '@/lib/filters';
 import { applyFiltersToRows, inferColumnTypeFromData } from '@/lib/filters';
 
-// Dynamic-import react-grid-layout so it never runs on the server (uses window)
-const ResponsiveGridLayout = dynamic(
-  () =>
-    import('react-grid-layout').then((mod) => {
-      const { Responsive, WidthProvider } = mod;
-      return WidthProvider(Responsive);
-    }),
-  { ssr: false },
-);
+const ResponsiveGridLayout = WidthProvider(Responsive);
 
 export default function PublicDashboardPage() {
   const params = useParams();
@@ -231,6 +223,19 @@ export default function PublicDashboardPage() {
             {dashboard.dashboard_charts.map((dc) => {
               const cd = chartData[dc.chart_id];
               const chart = dc.chart;
+              if (!chart) {
+                return (
+                  <div key={dc.id.toString()} className="rounded-xl border border-amber-200 bg-white p-4 shadow-sm">
+                    <div className="flex h-full min-h-[240px] items-center justify-center text-center">
+                      <div>
+                        <AlertTriangle className="mx-auto mb-2 h-6 w-6 text-amber-500" />
+                        <p className="text-sm font-medium text-amber-700">Chart metadata unavailable</p>
+                        <p className="mt-1 text-xs text-amber-600">This shared dashboard contains a chart reference that could not be loaded.</p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
               const customTitle = dc.layout.custom_title;
               const title = customTitle ?? chart?.name ?? '';
               const roleConfig = (chart?.config as any)?.roleConfig;
@@ -243,29 +248,31 @@ export default function PublicDashboardPage() {
 
               return (
                 <div key={dc.id.toString()} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                  {title && (
-                    <p className="mb-2 text-sm font-semibold text-gray-800 truncate">{title}</p>
-                  )}
-                  {!cd ? (
-                    <div className="flex h-full items-center justify-center">
-                      <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
-                    </div>
-                  ) : roleConfig ? (
-                    <div className="h-[320px]">
-                      <ExploreChart
-                        type={chart.chart_type}
+                  <ChartErrorBoundary chartId={dc.chart_id}>
+                    {title && (
+                      <p className="mb-2 text-sm font-semibold text-gray-800 truncate">{title}</p>
+                    )}
+                    {!cd ? (
+                      <div className="flex h-full items-center justify-center">
+                        <Loader2 className="h-4 w-4 animate-spin text-gray-400" />
+                      </div>
+                    ) : roleConfig ? (
+                      <div className="h-[320px]">
+                        <ExploreChart
+                          type={chart.chart_type}
+                          data={filteredRows}
+                          roleConfig={roleConfig}
+                          preAggregated={cd.pre_aggregated ?? false}
+                        />
+                      </div>
+                    ) : (
+                      <ChartPreview
+                        chartType={chart.chart_type}
                         data={filteredRows}
-                        roleConfig={roleConfig}
-                        preAggregated={cd.pre_aggregated ?? false}
+                        config={(chart.config as any) ?? {}}
                       />
-                    </div>
-                  ) : (
-                    <ChartPreview
-                      chartType={chart.chart_type}
-                      data={filteredRows}
-                      config={chart.config as any}
-                    />
-                  )}
+                    )}
+                  </ChartErrorBoundary>
                 </div>
               );
             })}
