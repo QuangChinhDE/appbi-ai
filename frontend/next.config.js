@@ -35,13 +35,9 @@ const nextConfig = {
   },
   env: {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || '/api/v1',
-    NEXT_PUBLIC_AI_WS_URL: process.env.NEXT_PUBLIC_AI_WS_URL || 'ws://localhost:8001/chat/ws',
-    NEXT_PUBLIC_AI_CHAT_WS_URL:
-      process.env.NEXT_PUBLIC_AI_CHAT_WS_URL || process.env.NEXT_PUBLIC_AI_WS_URL || 'ws://localhost:8001/chat/ws',
-    NEXT_PUBLIC_AI_CHAT_HTTP_URL:
-      process.env.NEXT_PUBLIC_AI_CHAT_HTTP_URL || 'http://localhost:8001',
-    NEXT_PUBLIC_AI_AGENT_HTTP_URL:
-      process.env.NEXT_PUBLIC_AI_AGENT_HTTP_URL || 'http://localhost:8002',
+    // AI URLs are intentionally NOT baked here.
+    // frontend/src/lib/ai-services.ts derives them at runtime from window.location,
+    // unless the deploy environment explicitly sets NEXT_PUBLIC_AI_* overrides.
   },
 };
 
