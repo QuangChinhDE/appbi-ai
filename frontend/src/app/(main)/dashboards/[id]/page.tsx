@@ -3,7 +3,7 @@
 import React, { useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Bot, Sparkles } from 'lucide-react';
+import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Bot, Sparkles } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import {
   useDashboard,
@@ -16,6 +16,7 @@ import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { AddChartModal } from '@/components/dashboards/AddChartModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { ShareDialog } from '@/components/common/ShareDialog';
+import { PublicShareDialog } from '@/components/common/PublicShareDialog';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { DashboardChartLayout } from '@/types/api';
 import type { BaseFilter, ColumnInfo } from '@/lib/filters';
@@ -58,6 +59,7 @@ export default function DashboardDetailPage() {
   const [globalFilters, setGlobalFilters] = useState<BaseFilter[]>([]);
   const [availableColumns, setAvailableColumns] = useState<ColumnInfo[]>([]);
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
+  const [isPublicShareOpen, setIsPublicShareOpen] = useState(false);
   // columnChartCount: how many distinct chartIds have each column
   const columnChartCountRef = React.useRef<Map<string, Set<number>>>(new Map());
   const [columnChartCount, setColumnChartCount] = useState<Map<string, number>>(new Map());
@@ -336,6 +338,15 @@ export default function DashboardDetailPage() {
                   Saving...
                 </span>
               )}
+              {canEditResource && (
+                <button
+                  onClick={() => setIsPublicShareOpen(true)}
+                  className="flex items-center px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
+                >
+                  <Globe className="h-4 w-4 mr-2" />
+                  {dashboard.share_token ? 'Public link' : 'Share link'}
+                </button>
+              )}
               {canShare && (
                 <button
                   onClick={() => setIsShareDialogOpen(true)}
@@ -397,13 +408,23 @@ export default function DashboardDetailPage() {
           variant="danger"
         />
 
-        {/* Share Dialog */}
+        {/* Share Dialog (team members) */}
         {isShareDialogOpen && dashboard && (
           <ShareDialog
             resourceType="dashboard"
             resourceId={dashboardId}
             resourceName={dashboard.name}
             onClose={() => setIsShareDialogOpen(false)}
+          />
+        )}
+
+        {/* Public link dialog */}
+        {isPublicShareOpen && dashboard && (
+          <PublicShareDialog
+            dashboardId={dashboardId}
+            dashboardName={dashboard.name}
+            currentToken={dashboard.share_token}
+            onClose={() => setIsPublicShareOpen(false)}
           />
         )}
       </div>

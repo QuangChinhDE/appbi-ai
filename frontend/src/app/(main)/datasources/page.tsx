@@ -10,6 +10,7 @@ import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { PageListLayout } from '@/components/common/PageListLayout';
+import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { useI18n } from '@/providers/LanguageProvider';
 import { toast } from 'sonner';
 import { useCurrentUser } from '@/hooks/use-current-user';
@@ -249,9 +250,12 @@ export default function DataSourcesPage() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <h3 className="font-semibold text-gray-900 text-sm truncate">{ds.name}</h3>
-                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${typeColor}`}>
-                          {typeLabel}
-                        </span>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <OwnerBadge email={ds.owner_email} />
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${typeColor}`}>
+                            {typeLabel}
+                          </span>
+                        </div>
                       </div>
                     </div>
                     {ds.description && (

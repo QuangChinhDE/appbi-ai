@@ -21,6 +21,8 @@ class AgentReportSpec(Base):
     latest_dashboard_id = Column(Integer, ForeignKey("dashboards.id", ondelete="SET NULL"), nullable=True)
 
     selected_tables_snapshot = Column(JSONB, nullable=False, default=list)
+    domain_id = Column(String(100), nullable=True)
+    domain_version = Column(String(50), nullable=True)
     brief_json = Column(JSONB, nullable=False, default=dict)
     approved_plan_json = Column(JSONB, nullable=True, default=None)
     current_step = Column(String(30), nullable=False, default="select")
@@ -44,6 +46,8 @@ class AgentReportRun(Base):
     target_dashboard_id = Column(Integer, ForeignKey("dashboards.id", ondelete="SET NULL"), nullable=True)
 
     build_mode = Column(String(30), nullable=False, default="new_dashboard")
+    domain_id = Column(String(100), nullable=True)
+    domain_version = Column(String(50), nullable=True)
     status = Column(String(30), nullable=False, default="queued")
     error = Column(Text, nullable=True)
 

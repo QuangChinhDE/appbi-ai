@@ -18,6 +18,7 @@ import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { useAgentReportSpecs, useDeleteAgentReportSpec } from '@/hooks/use-agent-report-specs';
 import { hasPermission, usePermissions } from '@/hooks/use-permissions';
+import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { useI18n } from '@/providers/LanguageProvider';
 
 function statusTone(status: string) {
@@ -175,7 +176,10 @@ export default function AIReportsPage() {
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <p className="font-semibold text-gray-900">{spec.name}</p>
-                          <p className="mt-1 text-xs uppercase tracking-[0.16em] text-gray-500">{t('aiReports.specLabel')} #{spec.id}</p>
+                          <div className="mt-1 flex items-center gap-2">
+                            <OwnerBadge email={spec.owner_email} />
+                            <span className="text-xs uppercase tracking-[0.16em] text-gray-500">{t('aiReports.specLabel')} #{spec.id}</span>
+                          </div>
                         </div>
                         <span className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] ${statusTone(spec.status)}`}>
                           {spec.status}
@@ -261,7 +265,10 @@ export default function AIReportsPage() {
                       className="grid grid-cols-[minmax(0,2fr)_120px_120px_160px_auto] gap-3 border-b border-gray-100 px-5 py-4 last:border-b-0"
                     >
                       <div className="min-w-0">
-                        <p className="truncate font-medium text-gray-900">{spec.name}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="truncate font-medium text-gray-900">{spec.name}</p>
+                          <OwnerBadge email={spec.owner_email} />
+                        </div>
                         {spec.description && <p className="mt-1 truncate text-sm text-gray-500">{spec.description}</p>}
                       </div>
                       <div>

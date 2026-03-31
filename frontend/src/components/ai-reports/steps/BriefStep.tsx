@@ -6,6 +6,9 @@ export function BriefStep(props: any) {
     isVietnamese,
     language,
     isPlanningLocked,
+    domainId,
+    setDomainId,
+    domains,
     openGuides,
     toggleGuide,
     goal,
@@ -63,12 +66,66 @@ export function BriefStep(props: any) {
         { value: 'overview', label: 'Overview' },
         { value: 'detailed', label: 'Detailed' },
       ];
+  const selectedDomain = Array.isArray(domains)
+    ? domains.find((item) => item.id === domainId) ?? domains.find((item) => item.id === 'finance')
+    : null;
 
   return (
     <fieldset disabled={isPlanningLocked} className="space-y-0">
       <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
         {/* ── Left: form ── */}
         <div className="space-y-5">
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-gray-900">
+              {isVietnamese ? 'Business domain' : 'Business domain'}
+            </label>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {(domains ?? []).map((domain) => {
+                const isActive = domainId === domain.id;
+                return (
+                  <button
+                    key={domain.id}
+                    type="button"
+                    onClick={() => domain.enabled && setDomainId(domain.id)}
+                    disabled={!domain.enabled}
+                    className={`rounded-2xl border p-4 text-left transition ${
+                      isActive
+                        ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
+                        : domain.enabled
+                          ? 'border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:bg-blue-50/40'
+                          : 'cursor-not-allowed border-dashed border-gray-200 bg-gray-50 text-gray-400'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold">{domain.label}</p>
+                        <p className="mt-1 text-xs leading-relaxed">{domain.description}</p>
+                      </div>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${
+                        domain.enabled ? 'bg-white/90 text-emerald-700' : 'bg-white text-gray-500'
+                      }`}>
+                        {domain.enabled ? 'Live' : 'Coming soon'}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            {selectedDomain && (
+              <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700">
+                  {selectedDomain.helperTitle?.[language] ?? selectedDomain.label}
+                </p>
+                <p className="mt-1 text-sm leading-6 text-emerald-900">
+                  {selectedDomain.helperDescription?.[language]}
+                </p>
+                <p className="mt-2 text-xs leading-5 text-emerald-800">
+                  <span className="font-semibold">{isVietnamese ? 'Ví dụ goal:' : 'Example goal:'}</span>{' '}
+                  {selectedDomain.exampleGoal?.[language]}
+                </p>
+              </div>
+            )}
+          </div>
           {/* Goal — full width, prominent */}
           <div>
             <label className="mb-1.5 block text-sm font-medium text-gray-900">
@@ -79,8 +136,8 @@ export function BriefStep(props: any) {
               value={goal}
               onChange={(e) => setGoal(e.target.value)}
               placeholder={isVietnamese
-                ? 'Ví dụ: Phân tích doanh thu Q4 theo vùng miền so với cùng kỳ năm ngoái'
-                : 'Example: Analyze Q4 revenue by region compared to the same period last year'}
+                ? (selectedDomain?.exampleGoal?.vi ?? 'Ví dụ: Phân tích doanh thu Q4 theo vùng miền so với cùng kỳ năm ngoái')
+                : (selectedDomain?.exampleGoal?.en ?? 'Example: Analyze Q4 revenue by region compared to the same period last year')}
               className="w-full rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-900 shadow-sm outline-none transition placeholder:text-gray-400 focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
             />
           </div>

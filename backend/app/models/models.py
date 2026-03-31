@@ -124,10 +124,13 @@ class Dashboard(Base):
     # Ownership
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
+    # Public link sharing — null means not shared
+    share_token = Column(String(64), nullable=True, unique=True, index=True)
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-    
+
     # Relationships
     dashboard_charts = relationship("DashboardChart", back_populates="dashboard", cascade="all, delete-orphan")
 

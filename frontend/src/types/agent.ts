@@ -5,6 +5,14 @@ export type AgentWizardStep = 'select' | 'brief' | 'plan' | 'building';
 export type AgentAudience = 'exec' | 'manager' | 'analyst';
 export type AgentComparisonPeriod = 'previous_period' | 'same_period' | 'none';
 export type AgentDetailLevel = 'overview' | 'detailed';
+export type AgentDomainId =
+  | 'sales'
+  | 'marketing'
+  | 'finance'
+  | 'hr'
+  | 'operations'
+  | 'customer_service'
+  | 'generic';
 export type AgentReportRunStatus =
   | 'queued'
   | 'planning'
@@ -27,6 +35,7 @@ export interface SelectedTableRef {
 }
 
 export interface AgentBriefRequest {
+  domain_id?: AgentDomainId;
   output_language?: 'auto' | 'vi' | 'en';
   report_name?: string;
   goal: string;
@@ -40,6 +49,8 @@ export interface AgentBriefRequest {
 }
 
 export interface ParsedBriefArtifact {
+  domain_id?: AgentDomainId | null;
+  domain_version?: string | null;
   output_language?: string | null;
   business_goal: string;
   decision_context?: string | null;
@@ -64,6 +75,12 @@ export interface ParsedBriefArtifact {
   business_domain?: string | null;
   table_relationships?: string[];
   narrative_arc?: string | null;
+}
+
+export interface ThesisArtifact {
+  central_thesis: string;
+  supporting_arguments: string[];
+  narrative_arc: string;
 }
 
 export interface DatasetFitArtifactItem {
@@ -230,6 +247,8 @@ export interface AgentSectionPlan {
 }
 
 export interface AgentPlanResponse {
+  domain_id?: AgentDomainId | null;
+  domain_version?: string | null;
   dashboard_title: string;
   dashboard_summary: string;
   strategy_summary?: string | null;
@@ -244,6 +263,7 @@ export interface AgentPlanResponse {
   profiling_report?: ProfilingArtifactItem[] | null;
   quality_gate_report?: QualityGateArtifact | null;
   analysis_plan?: AnalysisPlanArtifact | null;
+  thesis?: ThesisArtifact | null;
   runtime?: AgentRuntimeMetadata | null;
   phase_runtimes?: Record<string, AgentRuntimeMetadata> | null;
 }
@@ -272,7 +292,10 @@ export interface AgentReportSpec {
   name: string;
   description?: string | null;
   owner_id?: string | null;
+  owner_email?: string | null;
   latest_dashboard_id?: number | null;
+  domain_id?: AgentDomainId | null;
+  domain_version?: string | null;
   status: AgentReportSpecStatus;
   current_step?: AgentWizardStep;
   selected_tables_snapshot: Array<Record<string, any>>;
@@ -290,6 +313,8 @@ export interface AgentReportRun {
   dashboard_id?: number | null;
   target_dashboard_id?: number | null;
   build_mode: AgentBuildMode;
+  domain_id?: AgentDomainId | null;
+  domain_version?: string | null;
   status: AgentReportRunStatus;
   error?: string | null;
   input_brief_json: Record<string, any>;
@@ -307,6 +332,8 @@ export interface AgentReportSpecCreate {
   name: string;
   description?: string;
   selected_tables_snapshot: Array<Record<string, any>>;
+  domain_id?: AgentDomainId;
+  domain_version?: string;
   brief_json: Record<string, any>;
   approved_plan_json?: Record<string, any> | null;
   latest_dashboard_id?: number | null;
@@ -318,6 +345,8 @@ export interface AgentReportSpecUpdate {
   name?: string;
   description?: string;
   selected_tables_snapshot?: Array<Record<string, any>>;
+  domain_id?: AgentDomainId;
+  domain_version?: string;
   brief_json?: Record<string, any>;
   approved_plan_json?: Record<string, any> | null;
   latest_dashboard_id?: number | null;
@@ -327,6 +356,8 @@ export interface AgentReportSpecUpdate {
 
 export interface AgentReportRunCreate {
   build_mode: AgentBuildMode;
+  domain_id?: AgentDomainId;
+  domain_version?: string;
   input_brief_json: Record<string, any>;
   plan_json: Record<string, any>;
   target_dashboard_id?: number | null;

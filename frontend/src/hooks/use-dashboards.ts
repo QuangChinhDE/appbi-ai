@@ -94,7 +94,7 @@ export const useRemoveChartFromDashboard = () => {
 
 export const useUpdateDashboardLayout = () => {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: ({
       dashboardId,
@@ -105,6 +105,28 @@ export const useUpdateDashboardLayout = () => {
     }) => dashboardApi.updateLayout(dashboardId, chartLayouts),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['dashboards', variables.dashboardId] });
+    },
+  });
+};
+
+export const useShareDashboard = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => dashboardApi.share(id),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ['dashboards'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboards', id] });
+    },
+  });
+};
+
+export const useUnshareDashboard = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => dashboardApi.unshare(id),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ['dashboards'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboards', id] });
     },
   });
 };

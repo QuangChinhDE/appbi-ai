@@ -8,6 +8,8 @@ from fastapi import HTTPException
 
 from app.clients.bi_client import bi_client
 from app.config import settings
+from app.domains.core import get_domain_pack, get_public_domain_catalog, normalize_domain_id
+from app.domains.core.base import DomainPack
 from app.schemas.agent import (
     AgentBriefRequest,
     AgentChartPlan,
@@ -20,9 +22,10 @@ from app.schemas.agent import (
     ParsedBriefArtifact,
     ProfilingArtifactItem,
     QualityGateArtifact,
+    ThesisArtifact,
 )
 from app.services.analysis_planner import build_analysis_plan
-from app.services.brief_enricher import enrich_brief
+from app.services.brief_enricher import derive_thesis, enrich_brief
 from app.services.brief_parser import parse_brief
 from app.services.data_profiler import build_profiling_report
 from app.services.dataset_selector import build_dataset_fit_report
@@ -62,6 +65,25 @@ class TableProfile:
     primary_dimension: Optional[str]
     question_matches: List[str]
     business_summary: str
+
+
+def _resolve_domain_pack(brief: AgentBriefRequest) -> DomainPack:
+    requested_domain = normalize_domain_id(brief.domain_id)
+    try:
+        pack = get_domain_pack(requested_domain)
+    except KeyError as exc:
+        public_domains = ", ".join(metadata.id for metadata in get_public_domain_catalog())
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown domain '{requested_domain}'. Available domains: {public_domains}.",
+        ) from exc
+
+    if pack.metadata.public and not pack.metadata.enabled:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Domain '{pack.metadata.id}' is not enabled yet. Available now: finance.",
+        )
+    return pack
 
 
 def _slugify(value: str) -> str:
@@ -338,16 +360,33 @@ async def _generate_strategy_with_llm(
     profiling_report: List[ProfilingArtifactItem],
     quality_gate_report: QualityGateArtifact,
     analysis_plan: AnalysisPlanArtifact,
+    thesis: ThesisArtifact,
+    domain_pack: DomainPack,
 ) -> Optional[Dict[str, Any]]:
     vi = is_vietnamese(parsed_brief.output_language)
-    system_prompt = (
-        (
+    planner_context = domain_pack.planner_context(parsed_brief, vi) if domain_pack.planner_context else {}
+
+    # Build the CONTROLLING THESIS block — injected at the top of the system
+    # prompt as a named section so the model treats it as a constraint, not data.
+    args_text = "\n".join(
+        f"  {i}. {arg}" for i, arg in enumerate(thesis.supporting_arguments, 1)
+    )
+    if vi:
+        thesis_block = (
+            "=== LUẬN ĐIỂM TRUNG TÂM (mọi section phải phục vụ luận điểm này) ===\n"
+            f"Luận điểm: {thesis.central_thesis}\n"
+            f"Các luận cứ hỗ trợ (theo thứ tự ưu tiên):\n{args_text}\n"
+            f"Cung bậc câu chuyện: {thesis.narrative_arc or 'Chưa xác định'}\n"
+            "==========================================================================\n\n"
+        )
+        design_rules = (
             "Bạn là một senior BI/DA đang thiết kế kế hoạch dashboard.\n\n"
             "Bạn đã nhận được một enriched brief bao gồm: business domain, KPI đã suy luận, "
             "câu hỏi phân tích chuyên sâu, mối quan hệ giữa các bảng, và narrative arc.\n\n"
             "QUY TẮC THIẾT KẾ:\n"
-            "1. Section KHÔNG đặt tên theo bảng (ví dụ 'orders'). Đặt theo business intent "
-            "(ví dụ 'Hiệu suất doanh thu Q4', 'Phân tích khách hàng theo phân khúc').\n"
+            "1. Mỗi section PHẢI phục vụ một luận cứ cụ thể trong danh sách trên. "
+            "Section KHÔNG đặt tên theo bảng (ví dụ 'orders'). Đặt theo business intent "
+            "phản ánh đúng luận cứ đó (ví dụ 'Hiệu suất doanh thu Q4').\n"
             "2. Chart type phải match câu hỏi phân tích:\n"
             "   - 'X thay đổi thế nào theo thời gian?' → TIME_SERIES hoặc LINE\n"
             "   - 'Segment nào dẫn dắt?' → BAR (sorted) hoặc GROUPED_BAR\n"
@@ -360,14 +399,23 @@ async def _generate_strategy_with_llm(
             "7. Không được bịa thêm bảng hoặc cột. Chỉ trả về JSON hợp lệ.\n"
             "Mọi câu chữ hiển thị cho người dùng phải viết bằng tiếng Việt."
         )
-        if vi
-        else (
+        system_prompt = thesis_block + design_rules
+    else:
+        thesis_block = (
+            "=== CONTROLLING THESIS (every section must serve this thesis) ===\n"
+            f"Central thesis: {thesis.central_thesis}\n"
+            f"Supporting arguments (in priority order):\n{args_text}\n"
+            f"Narrative arc: {thesis.narrative_arc or 'Not specified'}\n"
+            "=================================================================\n\n"
+        )
+        design_rules = (
             "You are a senior BI analyst designing a dashboard plan.\n\n"
             "You have received an enriched brief that includes: business domain, inferred KPIs, "
             "domain-specific analytical questions, table relationships, and a narrative arc.\n\n"
             "DESIGN RULES:\n"
-            "1. Section titles must reflect business intent (e.g., 'Q4 Revenue Performance', "
-            "'Customer Segment Analysis'), NOT table names.\n"
+            "1. Each section MUST serve one of the supporting arguments listed above. "
+            "Section titles must reflect business intent (e.g., 'Q4 Revenue Performance'), "
+            "NOT table names. Map the section title to the argument it covers.\n"
             "2. Chart type must match the analytical question:\n"
             "   - 'How does X change over time?' → TIME_SERIES or LINE\n"
             "   - 'Which segment drives?' → BAR (sorted) or GROUPED_BAR\n"
@@ -379,10 +427,17 @@ async def _generate_strategy_with_llm(
             "6. If table_relationships exist, create at least 1 section with cross-table insights.\n"
             "7. Do not invent columns or tables. Return strict JSON only."
         )
-    )
+        system_prompt = thesis_block + design_rules
+    if planner_context.get("system_appendix"):
+        system_prompt += "\n\n" + str(planner_context["system_appendix"])
     user_prompt = json.dumps(
         {
+            # thesis is repeated in user_prompt so the model sees it alongside
+            # the data context; it is already in the system_prompt as a constraint.
+            "controlling_thesis": thesis.model_dump(mode="json"),
             "planning_brief": {
+                "domain_id": domain_pack.metadata.id,
+                "domain_version": domain_pack.metadata.version,
                 "goal": brief.goal,
                 "audience": brief.audience,
                 "timeframe": brief.timeframe,
@@ -396,6 +451,7 @@ async def _generate_strategy_with_llm(
             "profiling_report": [item.model_dump(mode="json") for item in profiling_report],
             "quality_gate_report": quality_gate_report.model_dump(mode="json"),
             "analysis_plan": analysis_plan.model_dump(mode="json"),
+            "selected_domain_context": planner_context.get("user_context") or {},
             "tables": [_profile_prompt_payload(profile) for profile in profiles],
             "output_contract": {
                 "dashboard_title": "string",
@@ -447,8 +503,13 @@ def _build_heuristic_strategy(
     parsed_brief: ParsedBriefArtifact,
     dataset_fit_report: List[DatasetFitArtifactItem],
     analysis_plan: AnalysisPlanArtifact,
+    thesis: ThesisArtifact,
+    domain_pack: DomainPack,
 ) -> Dict[str, Any]:
     vi = is_vietnamese(parsed_brief.output_language)
+    planner_context = domain_pack.planner_context(parsed_brief, vi) if domain_pack.planner_context else {}
+    domain_lens = str((planner_context.get("user_context") or {}).get("domain_lens") or "").strip()
+    section_archetypes = list((planner_context.get("user_context") or {}).get("finance_section_archetypes") or [])
     warnings: List[str] = []
     sections: List[Dict[str, Any]] = []
     fit_by_table_id = {item.table_id: item for item in dataset_fit_report}
@@ -577,25 +638,28 @@ def _build_heuristic_strategy(
         )
         return requests
 
-    executive_questions = parsed_brief.must_answer_questions[:3] or executive_profile.question_matches
+    # Executive section covers ALL supporting arguments as a top-level overview.
+    # This ensures every argument appears in at least one section even if there
+    # are more arguments than supporting tables.
+    executive_questions = thesis.supporting_arguments or parsed_brief.must_answer_questions[:3] or executive_profile.question_matches
     sections.append(
         {
             "table_id": executive_profile.context.table_id,
             "title": "Tóm tắt điều hành" if vi else "Executive summary",
             "intent": (
-                f"Trả lời mục tiêu cấp cao nhất: {parsed_brief.business_goal}"
+                f"Kiểm chứng luận điểm trung tâm: {thesis.central_thesis}"
                 if vi
-                else f"Answer the top-level goal: {parsed_brief.business_goal}"
+                else f"Validate the central thesis: {thesis.central_thesis}"
             ),
             "why_this_section": (
                 (
-                    "Phần này đi trước với các KPI và xu hướng liên quan nhất tới quyết định để người đọc định vị nhanh. "
-                    f"Góc nhìn người đọc: {parsed_brief.target_audience}."
+                    "Phần này đi trước với các KPI và xu hướng trực tiếp kiểm chứng luận điểm trung tâm "
+                    f"để người đọc định vị nhanh. Góc nhìn người đọc: {parsed_brief.target_audience}."
                 )
                 if vi
                 else (
-                    "This section leads with the most decision-relevant KPIs and trend so the audience can orient quickly. "
-                    f"Audience lens: {parsed_brief.target_audience}."
+                    "This section leads with KPIs and trends that directly validate the central thesis "
+                    f"so the audience can orient quickly. Audience lens: {parsed_brief.target_audience}."
                 )
             ),
             "questions_covered": executive_questions,
@@ -604,6 +668,14 @@ def _build_heuristic_strategy(
         }
     )
 
+    # Map each supporting section to a thesis argument sequentially.
+    # Section index 1 → argument 1, index 2 → argument 2, etc.
+    # Section 0 (executive) already covers ALL arguments as overview, so supporting
+    # sections each own ONE argument starting from index 1.
+    # If there are more sections than arguments, remaining sections fall back to
+    # generic intent but still reference the central thesis for coherence.
+    # If there are more arguments than sections, uncovered arguments are still
+    # visible through the executive section's questions_covered.
     for index, profile in enumerate(profiles, start=1):
         charts = _base_chart_requests(profile)
         fit = fit_by_table_id.get(profile.context.table_id)
@@ -615,23 +687,46 @@ def _build_heuristic_strategy(
                 if vi
                 else f"{profile.context.table_name} has no clear time field for a stronger trend section."
             )
+
+        # Each supporting section owns one argument: section 1 → arg 1, section 2 → arg 2, …
+        matched_arg = thesis.supporting_arguments[index] if index < len(thesis.supporting_arguments) else None
+
+        if matched_arg:
+            section_intent = (
+                f"Trả lời luận cứ: {matched_arg}"
+                if vi
+                else f"Address argument: {matched_arg}"
+            )
+            section_title = matched_arg[:80].rstrip(".") if len(matched_arg) > 10 else profile.context.table_name
+            why = (
+                f"Section này trực tiếp trả lời luận cứ '{matched_arg[:60]}' trong thesis. "
+                f"{(fit.notes if fit and fit.notes else '')}"
+            ).strip() if vi else (
+                f"This section directly addresses the argument '{matched_arg[:60]}' from the thesis. "
+                f"{(fit.notes if fit and fit.notes else '')}"
+            ).strip()
+        else:
+            section_intent = (
+                (
+                    f"Giải thích hiệu suất và các yếu tố dẫn dắt trong {profile.context.table_name}. "
+                    f"Vai trò gợi ý: {(fit.suggested_role if fit else 'supporting analysis').replace('_', ' ')}."
+                )
+                if vi
+                else (
+                    f"Explain performance and drivers in {profile.context.table_name}. "
+                    f"Suggested role: {(fit.suggested_role if fit else 'supporting analysis').replace('_', ' ')}."
+                )
+            )
+            section_title = section_archetypes[index - 1] if index - 1 < len(section_archetypes) else profile.context.table_name
+            why = fit.notes if fit and fit.notes else profile.business_summary
+
         sections.append(
             {
                 "table_id": profile.context.table_id,
-                "title": f"{profile.context.workspace_name} / {profile.context.table_name}",
-                "intent": (
-                    (
-                        f"Giải thích hiệu suất và các yếu tố dẫn dắt trong {profile.context.table_name}. "
-                        f"Vai trò gợi ý: {(fit.suggested_role if fit else 'supporting analysis').replace('_', ' ')}."
-                    )
-                    if vi
-                    else (
-                        f"Explain performance and drivers in {profile.context.table_name}. "
-                        f"Suggested role: {(fit.suggested_role if fit else 'supporting analysis').replace('_', ' ')}."
-                    )
-                ),
-                "why_this_section": (fit.notes if fit and fit.notes else profile.business_summary),
-                "questions_covered": profile.question_matches or parsed_brief.must_answer_questions[:2],
+                "title": section_title,
+                "intent": section_intent,
+                "why_this_section": why,
+                "questions_covered": ([matched_arg] if matched_arg else []) + (profile.question_matches or parsed_brief.must_answer_questions[:2]),
                 "priority": index + 1,
                 "charts": charts[:4],
             }
@@ -666,20 +761,19 @@ def _build_heuristic_strategy(
         )
     if parsed_brief.decision_context:
         dashboard_summary_parts.append(f"Bối cảnh ra quyết định: {parsed_brief.decision_context}." if vi else f"Decision context: {parsed_brief.decision_context}.")
+    if domain_lens:
+        dashboard_summary_parts.append(
+            f"Lăng kính domain: {domain_lens}."
+            if vi
+            else f"Domain lens: {domain_lens}."
+        )
 
     return {
         "dashboard_title": dashboard_title,
         "dashboard_summary": " ".join(dashboard_summary_parts),
-        "strategy_summary": analysis_plan.business_thesis or (
-            (
-                "Bắt đầu bằng phần tổng quan điều hành, sau đó đi vào các phần phân rã theo từng bảng để giải thích yếu tố dẫn dắt, "
-                "và luôn giữ ít nhất một góc nhìn chi tiết cho việc follow-up vận hành."
-            )
-            if vi
-            else
-            "Lead with an executive overview, then move into per-table breakdowns that explain the main drivers "
-            "and preserve at least one detail view for operational follow-up."
-        ),
+        "strategy_summary": thesis.central_thesis,
+        "domain_id": domain_pack.metadata.id,
+        "domain_version": domain_pack.metadata.version,
         "warnings": warnings,
         "sections": sections,
     }
@@ -826,6 +920,70 @@ def _build_chart_config(profile: TableProfile, chart_request: Dict[str, Any]) ->
     }
 
 
+def _fallback_chart_requests(profile: TableProfile, vi: bool) -> List[Dict[str, Any]]:
+    """Generate safe fallback charts when a planned section yields no valid charts."""
+    requests: List[Dict[str, Any]] = [
+        {
+            "title": f"{profile.context.table_name} - KPI nền" if vi else f"{profile.context.table_name} - Baseline KPI",
+            "chart_type": "KPI",
+            "insight_goal": (
+                "Giữ một KPI đếm bản ghi để vẫn có tín hiệu top-line đáng tin."
+                if vi
+                else "Keep a reliable record-count KPI so the plan still has a top-line signal."
+            ),
+            "why_this_chart": (
+                "Fallback an toàn khi metric số yếu hoặc chart LLM không materialize được."
+                if vi
+                else "Safe fallback when numeric metrics are weak or the LLM chart cannot be materialized."
+            ),
+            "metric_agg": "count",
+            "confidence": 0.55,
+        }
+    ]
+    if profile.primary_dimension:
+        requests.append(
+            {
+                "title": (
+                    f"{profile.context.table_name} - Phân bố theo {profile.primary_dimension.replace('_', ' ')}"
+                    if vi
+                    else f"{profile.context.table_name} - Distribution by {profile.primary_dimension.replace('_', ' ').title()}"
+                ),
+                "chart_type": "BAR",
+                "insight_goal": (
+                    "So sánh quy mô count giữa các nhóm chính để giữ được góc nhìn phân rã."
+                    if vi
+                    else "Compare count volume across the main groups to preserve a breakdown view."
+                ),
+                "why_this_chart": (
+                    "Count-based breakdown giúp tránh plan rỗng khi thiếu metric số."
+                    if vi
+                    else "A count-based breakdown avoids an empty plan when numeric metrics are unavailable."
+                ),
+                "dimension_field": profile.primary_dimension,
+                "metric_agg": "count",
+                "confidence": 0.5,
+            }
+        )
+    requests.append(
+        {
+            "title": f"{profile.context.table_name} - Bảng chi tiết" if vi else f"{profile.context.table_name} - Detail table",
+            "chart_type": "TABLE",
+            "insight_goal": (
+                "Giữ bảng detail để người review vẫn có điểm bám kiểm tra vận hành."
+                if vi
+                else "Keep a detail table so reviewers still have an operational inspection anchor."
+            ),
+            "why_this_chart": (
+                "Bảng detail là fallback cuối cùng khi các chart suy luận không hợp lệ."
+                if vi
+                else "A detail table is the last-resort fallback when inferred charts are invalid."
+            ),
+            "confidence": 0.45,
+        }
+    )
+    return requests
+
+
 def _materialize_strategy(
     brief: AgentBriefRequest,
     strategy: Dict[str, Any],
@@ -835,13 +993,56 @@ def _materialize_strategy(
     profiling_report: List[ProfilingArtifactItem],
     quality_gate_report: QualityGateArtifact,
     analysis_plan: AnalysisPlanArtifact,
+    thesis: ThesisArtifact,
     phase_runtimes: Dict[str, AgentRuntimeMetadata],
+    domain_pack: DomainPack,
 ) -> AgentPlanResponse:
     vi = is_vietnamese(parsed_brief.output_language)
     profile_map = {profile.context.table_id: profile for profile in profiles}
     charts: List[AgentChartPlan] = []
     sections: List[AgentSectionPlan] = []
     warnings = list(strategy.get("warnings") or [])
+
+    def append_chart(
+        profile: TableProfile,
+        section_index: int,
+        chart_index: int,
+        raw_chart: Dict[str, Any],
+    ) -> Optional[str]:
+        chart_type = str(raw_chart.get("chart_type", "TABLE")).upper()
+        config = _build_chart_config(profile, raw_chart)
+        if not config:
+            warnings.append(
+                (
+                    f"Bỏ qua chart '{raw_chart.get('title', chart_type)}' cho {profile.context.table_name} vì thiếu trường bắt buộc."
+                )
+                if vi
+                else f"Skipped chart '{raw_chart.get('title', chart_type)}' for {profile.context.table_name} because required fields were missing."
+            )
+            return None
+        key = f"{_slugify(profile.context.workspace_name)}-{_slugify(profile.context.table_name)}-{section_index}-{chart_index}"
+        charts.append(
+            AgentChartPlan(
+                key=key,
+                title=raw_chart.get("title") or f"{profile.context.table_name} {chart_type.title()}",
+                chart_type=chart_type,
+                workspace_id=profile.context.workspace_id,
+                workspace_table_id=profile.context.table_id,
+                workspace_name=profile.context.workspace_name,
+                table_name=profile.context.table_name,
+                rationale=raw_chart.get("insight_goal")
+                or raw_chart.get("why_this_chart")
+                or ("Hỗ trợ trực tiếp cho mục tiêu của báo cáo." if vi else "Supports the report objective."),
+                insight_goal=raw_chart.get("insight_goal"),
+                why_this_chart=raw_chart.get("why_this_chart"),
+                hypothesis=raw_chart.get("hypothesis"),
+                confidence=float(raw_chart.get("confidence") or 0.6),
+                alternative_considered=raw_chart.get("alternative_considered"),
+                expected_signal=raw_chart.get("expected_signal"),
+                config=config,
+            )
+        )
+        return key
 
     for section_index, raw_section in enumerate(strategy.get("sections") or [], start=1):
         table_id = raw_section.get("table_id")
@@ -891,6 +1092,19 @@ def _materialize_strategy(
                 )
             )
 
+        if not section_chart_keys:
+            warnings.append(
+                (
+                    f"Section '{raw_section.get('title') or profile.context.table_name}' không materialize được chart hợp lệ; dùng fallback count/table."
+                )
+                if vi
+                else f"Section '{raw_section.get('title') or profile.context.table_name}' could not materialize valid charts; using count/table fallback."
+            )
+            for fallback_index, fallback_chart in enumerate(_fallback_chart_requests(profile, vi), start=1):
+                key = append_chart(profile, section_index, 90 + fallback_index, fallback_chart)
+                if key:
+                    section_chart_keys.append(key)
+
         if section_chart_keys:
             sections.append(
                 AgentSectionPlan(
@@ -904,6 +1118,41 @@ def _materialize_strategy(
                     questions_covered=list(raw_section.get("questions_covered") or []),
                     priority=int(raw_section.get("priority") or section_index),
                     chart_keys=section_chart_keys,
+                )
+            )
+    if not charts and profiles:
+        fallback_profile = profiles[0]
+        warnings.append(
+            "Planner không tạo được section hợp lệ nào; đang dùng executive fallback tối thiểu."
+            if vi
+            else "Planner did not create any valid sections; using a minimal executive fallback."
+        )
+        fallback_keys: List[str] = []
+        for fallback_index, fallback_chart in enumerate(_fallback_chart_requests(fallback_profile, vi), start=1):
+            key = append_chart(fallback_profile, 1, 190 + fallback_index, fallback_chart)
+            if key:
+                fallback_keys.append(key)
+        if fallback_keys:
+            sections.append(
+                AgentSectionPlan(
+                    title="Tóm tắt điều hành" if vi else "Executive summary",
+                    workspace_id=fallback_profile.context.workspace_id,
+                    workspace_table_id=fallback_profile.context.table_id,
+                    workspace_name=fallback_profile.context.workspace_name,
+                    table_name=fallback_profile.context.table_name,
+                    intent=(
+                        f"Giữ mạch luận điểm trung tâm: {thesis.central_thesis}"
+                        if vi
+                        else f"Preserve the central thesis narrative: {thesis.central_thesis}"
+                    ),
+                    why_this_section=(
+                        "Fallback tối thiểu để không đánh rơi luận điểm khi planner upstream thiếu chart hợp lệ."
+                        if vi
+                        else "Minimal fallback to preserve the thesis when upstream planning yields no valid charts."
+                    ),
+                    questions_covered=list(thesis.supporting_arguments or parsed_brief.must_answer_questions[:3]),
+                    priority=1,
+                    chart_keys=fallback_keys,
                 )
             )
 
@@ -924,9 +1173,11 @@ def _materialize_strategy(
     sections = sorted(sections, key=lambda section: section.priority)
 
     return AgentPlanResponse(
+        domain_id=strategy.get("domain_id") or parsed_brief.domain_id or domain_pack.metadata.id,
+        domain_version=strategy.get("domain_version") or parsed_brief.domain_version or domain_pack.metadata.version,
         dashboard_title=(strategy.get("dashboard_title") or brief.report_name or brief.goal).strip()[:120],
         dashboard_summary=(strategy.get("dashboard_summary") or brief.goal).strip(),
-        strategy_summary=strategy.get("strategy_summary"),
+        strategy_summary=(strategy.get("strategy_summary") or thesis.central_thesis).strip(),
         planning_mode=brief.planning_mode,
         sections=sections,
         charts=charts,
@@ -936,6 +1187,7 @@ def _materialize_strategy(
         profiling_report=profiling_report,
         quality_gate_report=quality_gate_report,
         analysis_plan=analysis_plan,
+        thesis=thesis,
         runtime=phase_runtimes.get("planning"),
         phase_runtimes=phase_runtimes,
     )
@@ -945,6 +1197,7 @@ def _review_plan_quality(
     plan: AgentPlanResponse,
     brief: AgentBriefRequest,
     quality_gate_report: QualityGateArtifact,
+    domain_pack: DomainPack,
 ) -> AgentPlanResponse:
     vi = is_vietnamese(plan.parsed_brief.output_language if plan.parsed_brief else None)
     explicit_questions = plan.parsed_brief.must_answer_questions if plan.parsed_brief else []
@@ -986,6 +1239,13 @@ def _review_plan_quality(
     )
     quality_score = max(0.0, min(1.0, quality_score - confidence_penalty))
 
+    domain_review = domain_pack.review_plan(plan, brief, quality_gate_report) if domain_pack.review_plan else None
+    if domain_review:
+        quality_breakdown.update(
+            {key: round(value, 3) for key, value in domain_review.quality_breakdown.items()}
+        )
+        quality_score = max(0.0, min(1.0, quality_score + domain_review.quality_score_delta))
+
     warnings = list(plan.warnings)
     if quality_breakdown["question_coverage"] < 0.6 and explicit_questions:
         warnings.append(
@@ -999,6 +1259,8 @@ def _review_plan_quality(
             if vi
             else "Draft has limited chart variety. Consider replacing one chart during review."
         )
+    if domain_review:
+        warnings.extend(domain_review.warnings)
     warnings.extend(quality_gate_report.blockers)
     warnings.extend(quality_gate_report.warnings)
     # Deduplicate while preserving order
@@ -1022,16 +1284,22 @@ async def generate_agent_plan(brief: AgentBriefRequest, token: str) -> AgentPlan
         "analysis_plan": rule_runtime_metadata(),
         "review": rule_runtime_metadata(),
     }
+    domain_pack = _resolve_domain_pack(brief)
     parsed_brief = parse_brief(brief)
+    if domain_pack.prepare_brief:
+        parsed_brief = domain_pack.prepare_brief(brief, parsed_brief)
     contexts = await load_table_contexts(brief, token)
 
     # --- Brief enrichment (LLM Call 1) ---
     if brief.planning_mode == "deep":
         table_descs = _table_descriptions_for_enrichment(contexts)
-        parsed_brief = await enrich_brief(brief, parsed_brief, table_descs)
+        parsed_brief = await enrich_brief(brief, parsed_brief, table_descs, domain_pack)
         phase_runtimes["enrichment"] = llm_runtime_metadata("enrichment")
     else:
         phase_runtimes["enrichment"] = rule_runtime_metadata()
+
+    # --- ThesisArtifact: derived once, propagated as required input ---
+    thesis = derive_thesis(parsed_brief)
 
     profiles = [profile_table(brief, context) for context in contexts]
     profiling_report = build_profiling_report(profiles, parsed_brief.output_language)
@@ -1041,7 +1309,7 @@ async def generate_agent_plan(brief: AgentBriefRequest, token: str) -> AgentPlan
         parsed_brief.known_data_issues,
         parsed_brief.output_language,
     )
-    analysis_plan = build_analysis_plan(parsed_brief, dataset_fit_report, profiling_report, quality_gate_report)
+    analysis_plan = build_analysis_plan(parsed_brief, dataset_fit_report, profiling_report, quality_gate_report, thesis)
     strategy = (
         await _generate_strategy_with_llm(
             brief,
@@ -1051,6 +1319,8 @@ async def generate_agent_plan(brief: AgentBriefRequest, token: str) -> AgentPlan
             profiling_report,
             quality_gate_report,
             analysis_plan,
+            thesis,
+            domain_pack,
         )
         if brief.planning_mode == "deep"
         else None
@@ -1061,7 +1331,7 @@ async def generate_agent_plan(brief: AgentBriefRequest, token: str) -> AgentPlan
         else rule_runtime_metadata()
     )
     if strategy is None:
-        strategy = _build_heuristic_strategy(brief, profiles, parsed_brief, dataset_fit_report, analysis_plan)
+        strategy = _build_heuristic_strategy(brief, profiles, parsed_brief, dataset_fit_report, analysis_plan, thesis, domain_pack)
     plan = _materialize_strategy(
         brief,
         strategy,
@@ -1071,9 +1341,11 @@ async def generate_agent_plan(brief: AgentBriefRequest, token: str) -> AgentPlan
         profiling_report,
         quality_gate_report,
         analysis_plan,
+        thesis,
         phase_runtimes,
+        domain_pack,
     )
-    return _review_plan_quality(plan, brief, quality_gate_report)
+    return _review_plan_quality(plan, brief, quality_gate_report, domain_pack)
 
 
 def _plan_event(event_type: str, phase: str, message: str, plan: Optional[AgentPlanResponse] = None, error: Optional[str] = None) -> str:
@@ -1082,7 +1354,10 @@ def _plan_event(event_type: str, phase: str, message: str, plan: Optional[AgentP
 
 
 async def generate_agent_plan_stream(brief: AgentBriefRequest, token: str) -> AsyncGenerator[str, None]:
+    domain_pack = _resolve_domain_pack(brief)
     parsed_brief = parse_brief(brief)
+    if domain_pack.prepare_brief:
+        parsed_brief = domain_pack.prepare_brief(brief, parsed_brief)
     vi = is_vietnamese(parsed_brief.output_language)
     phase_runtimes: Dict[str, AgentRuntimeMetadata] = {
         "brief": rule_runtime_metadata(),
@@ -1119,10 +1394,13 @@ async def generate_agent_plan_stream(brief: AgentBriefRequest, token: str) -> As
             else "Analyzing domain, inferring KPIs and expert-level questions from table descriptions.",
         )
         table_descs = _table_descriptions_for_enrichment(contexts)
-        parsed_brief = await enrich_brief(brief, parsed_brief, table_descs)
+        parsed_brief = await enrich_brief(brief, parsed_brief, table_descs, domain_pack)
         phase_runtimes["enrichment"] = llm_runtime_metadata("enrichment")
     else:
         phase_runtimes["enrichment"] = rule_runtime_metadata()
+
+    # --- ThesisArtifact: derived once after enrichment, propagated as required input ---
+    thesis = derive_thesis(parsed_brief)
 
     yield _plan_event(
         "phase",
@@ -1163,7 +1441,7 @@ async def generate_agent_plan_stream(brief: AgentBriefRequest, token: str) -> As
         if vi
         else "Building a DA-style analysis logic that maps questions to methods and evidence.",
     )
-    analysis_plan = build_analysis_plan(parsed_brief, dataset_fit_report, profiling_report, quality_gate_report)
+    analysis_plan = build_analysis_plan(parsed_brief, dataset_fit_report, profiling_report, quality_gate_report, thesis)
 
     yield _plan_event(
         "phase",
@@ -1181,6 +1459,8 @@ async def generate_agent_plan_stream(brief: AgentBriefRequest, token: str) -> As
             profiling_report,
             quality_gate_report,
             analysis_plan,
+            thesis,
+            domain_pack,
         )
         if brief.planning_mode == "deep"
         else None
@@ -1198,7 +1478,7 @@ async def generate_agent_plan_stream(brief: AgentBriefRequest, token: str) -> As
             if vi
             else "No LLM strategy was available, so the Agent is using the guided fallback planner.",
         )
-        strategy = _build_heuristic_strategy(brief, profiles, parsed_brief, dataset_fit_report, analysis_plan)
+        strategy = _build_heuristic_strategy(brief, profiles, parsed_brief, dataset_fit_report, analysis_plan, thesis, domain_pack)
 
     yield _plan_event(
         "phase",
@@ -1216,7 +1496,9 @@ async def generate_agent_plan_stream(brief: AgentBriefRequest, token: str) -> As
         profiling_report,
         quality_gate_report,
         analysis_plan,
+        thesis,
         phase_runtimes,
+        domain_pack,
     )
 
     yield _plan_event(
@@ -1226,7 +1508,7 @@ async def generate_agent_plan_stream(brief: AgentBriefRequest, token: str) -> As
         if vi
         else "Reviewing the draft for question coverage, chart diversity, report balance, and data quality risk.",
     )
-    plan = _review_plan_quality(plan, brief, quality_gate_report)
+    plan = _review_plan_quality(plan, brief, quality_gate_report, domain_pack)
 
     yield _plan_event("done", "done", "Bản nháp đã sẵn sàng để review." if vi else "Draft ready for review.", plan=plan)
 

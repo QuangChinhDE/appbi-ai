@@ -73,6 +73,7 @@ class DataSourceResponse(DataSourceBase):
     """Schema for data source response."""
     id: int
     owner_id: Optional[UUID] = None
+    owner_email: Optional[str] = None
     user_permission: Optional[str] = None
     created_at: datetime
     updated_at: datetime
@@ -188,6 +189,7 @@ class ChartResponse(ChartBase):
     """Schema for chart response."""
     id: int
     owner_id: Optional[UUID] = None
+    owner_email: Optional[str] = None
     user_permission: Optional[str] = None
     created_at: datetime
     updated_at: datetime
@@ -243,12 +245,14 @@ class DashboardResponse(DashboardBase):
     """Schema for dashboard response."""
     id: int
     owner_id: Optional[UUID] = None
+    owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    share_token: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     dashboard_charts: List[DashboardChartResponse] = []
     filters_config: Optional[List[Dict[str, Any]]] = None
-    
+
     model_config = ConfigDict(from_attributes=True)
 
 

@@ -11,6 +11,7 @@ class SelectedTableRef(BaseModel):
 
 
 class AgentBriefRequest(BaseModel):
+    domain_id: Optional[str] = Field(default=None, max_length=100)
     output_language: Optional[str] = Field(default="auto", pattern="^(auto|vi|en)$")
     report_name: Optional[str] = Field(default=None, max_length=255)
     report_type: Optional[str] = Field(default="executive_tracking", max_length=100)
@@ -78,6 +79,8 @@ class AgentBriefRequest(BaseModel):
 
 
 class ParsedBriefArtifact(BaseModel):
+    domain_id: Optional[str] = None
+    domain_version: Optional[str] = None
     output_language: Optional[str] = None
     business_goal: str
     target_audience: Optional[str] = None
@@ -102,6 +105,19 @@ class ParsedBriefArtifact(BaseModel):
     business_domain: Optional[str] = None
     table_relationships: List[str] = Field(default_factory=list)
     narrative_arc: Optional[str] = None
+
+
+class ThesisArtifact(BaseModel):
+    """First-class thesis object propagated as a required input through every pipeline stage.
+
+    Generated once after brief enrichment and threaded through analysis_planner,
+    planner (LLM + heuristic fallback), and insight_generator.  Any stage that
+    does not receive a ThesisArtifact must fail early rather than produce an
+    incoherent report.
+    """
+    central_thesis: str
+    supporting_arguments: List[str] = Field(default_factory=list)
+    narrative_arc: str = ""
 
 
 class DatasetFitArtifactItem(BaseModel):
@@ -252,6 +268,8 @@ class AgentSectionPlan(BaseModel):
 
 
 class AgentPlanResponse(BaseModel):
+    domain_id: Optional[str] = None
+    domain_version: Optional[str] = None
     dashboard_title: str
     dashboard_summary: str
     strategy_summary: Optional[str] = None
@@ -266,6 +284,7 @@ class AgentPlanResponse(BaseModel):
     profiling_report: List[ProfilingArtifactItem] = Field(default_factory=list)
     quality_gate_report: Optional[QualityGateArtifact] = None
     analysis_plan: Optional[AnalysisPlanArtifact] = None
+    thesis: Optional[ThesisArtifact] = None
     runtime: Optional[AgentRuntimeMetadata] = None
     phase_runtimes: Dict[str, AgentRuntimeMetadata] = Field(default_factory=dict)
 

@@ -84,6 +84,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:${FRONTEND_PORT:-3000}}
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
         NEXT_PUBLIC_AI_CHAT_WS_URL: ${NEXT_PUBLIC_AI_CHAT_WS_URL:-ws://localhost:8001/chat/ws}
         NEXT_PUBLIC_AI_CHAT_HTTP_URL: ${NEXT_PUBLIC_AI_CHAT_HTTP_URL:-http://localhost:8001}

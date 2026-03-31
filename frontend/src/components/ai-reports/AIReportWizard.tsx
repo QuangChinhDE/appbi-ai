@@ -44,11 +44,17 @@ import {
   AgentBriefRequest,
   AgentBuildEvent as BuildEvent,
   AgentBuildMode,
+  AgentDomainId,
   AgentPlanEvent,
   AgentPlanResponse,
   AgentReportSpecDetail,
   AgentSectionPlan,
 } from '@/types/agent';
+import {
+  AGENT_DOMAIN_CATALOG,
+  getDefaultDomainId,
+  getDomainCatalogItem,
+} from '@/components/ai-reports/domain-config';
 import {
   getStepMeta,
   makeInitialBriefState,
@@ -278,6 +284,7 @@ export function AIReportWizard({
   const [tableSearch, setTableSearch] = useState('');
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<number[]>([]);
   const [planWorkspaceTab, setPlanWorkspaceTab] = useState<PlanWorkspaceTab>('plan');
+  const [domainId, setDomainId] = useState<AgentDomainId>(initialBrief.domainId);
   const [goal, setGoal] = useState(initialBrief.goal);
   const [audience, setAudience] = useState(initialBrief.audience);
   const [timeframe, setTimeframe] = useState(initialBrief.timeframe);
@@ -422,6 +429,10 @@ export function AIReportWizard({
     () => new Set(selectedTables.map((item) => item.workspace_id)).size,
     [selectedTables],
   );
+  const selectedDomain = useMemo(
+    () => getDomainCatalogItem(domainId) ?? getDomainCatalogItem(getDefaultDomainId()),
+    [domainId],
+  );
   const visibleTableCount = useMemo(
     () => workspaceSelectionGroups.reduce((total, group) => total + group.visibleTables.length, 0),
     [workspaceSelectionGroups],
@@ -429,6 +440,7 @@ export function AIReportWizard({
 
   const briefPayload = useMemo<AgentBriefRequest>(
     () => ({
+      domain_id: domainId,
       output_language: language,
       goal: goal.trim(),
       audience: normalizeAudienceChoice(audience) || undefined,
@@ -447,6 +459,7 @@ export function AIReportWizard({
       selectedTables,
       timeframe,
       language,
+      domainId,
     ],
   );
 
@@ -745,17 +758,18 @@ export function AIReportWizard({
         return {
           title: isVietnamese ? 'Giữ brief thật ngắn' : 'Keep the brief compact',
           description: isVietnamese
-            ? 'Step này chỉ còn 6 trường cốt lõi để Agent tự phát triển hướng phân tích như một DA senior, thay vì bắt người dùng điền quá nhiều.'
-            : 'This step now keeps only six core fields so the Agent can develop the analysis like a senior analyst without over-collecting inputs.',
+            ? 'Step này chỉ giữ domain và các trường brief cốt lõi để Agent tự phát triển hướng phân tích như một DA senior, thay vì bắt người dùng điền quá nhiều.'
+            : 'This step now keeps the domain plus the core brief fields so the Agent can develop the analysis like a senior analyst without over-collecting inputs.',
           bullets: [
             isVietnamese
               ? 'Goal là trường bắt buộc duy nhất; các trường còn lại chỉ giúp Agent chọn đúng góc nhìn và độ sâu.'
               : 'The goal is the only required field; everything else just helps the Agent choose the right lens and depth.',
             isVietnamese
-              ? 'Không còn KPI, question hay dataset context viết tay; Agent sẽ tự suy luận phần đó từ brief ngắn và mô tả bảng.'
-              : 'There are no manual KPI, question, or dataset-context fields anymore; the Agent infers them from the short brief and table descriptions.',
+              ? 'Không còn KPI, question hay dataset context viết tay; Agent sẽ tự suy luận phần đó từ domain đã chọn, brief ngắn và mô tả bảng.'
+              : 'There are no manual KPI, question, or dataset-context fields anymore; the Agent infers them from the chosen domain, the short brief, and the table descriptions.',
           ],
           stats: [
+            { label: isVietnamese ? 'Domain' : 'Domain', value: selectedDomain?.label ?? 'Finance' },
             { label: isVietnamese ? 'Audience' : 'Audience', value: formatAudienceChoice(audience || undefined, language) },
             { label: isVietnamese ? 'Mức chi tiết' : 'Detail level', value: formatDetailChoice(preferredGranularity || undefined, language) },
           ],
@@ -813,6 +827,7 @@ export function AIReportWizard({
     enabledChartCount,
     enabledSectionCount,
     events.length,
+    selectedDomain?.label,
     selectedTables.length,
     selectedWorkspaceCount,
     step,
@@ -834,11 +849,12 @@ export function AIReportWizard({
     const detailLabel = formatDetailChoice(preferredGranularity.trim() || undefined, language);
     const timeframeLabel = timeframe.trim() || (isVietnamese ? '30 ngày gần nhất' : 'Last 30 days');
     const goalLabel = goal.trim() || (isVietnamese ? 'mục tiêu ra quyết định chính' : 'the main decision goal');
+    const domainLabel = selectedDomain?.label ?? 'Finance';
     if (isVietnamese) {
-      return `Agent sẽ đọc brief này như một DA senior cho ${audienceLabel}, tập trung vào quyết định "${goalLabel}", dùng ${selectedTables.length} bảng đã chọn trong ${timeframeLabel}, so với ${comparisonLabel} và ở mức ${detailLabel}.`;
+      return `Agent sẽ đọc brief này như một DA senior theo domain ${domainLabel}, cho ${audienceLabel}, tập trung vào quyết định "${goalLabel}", dùng ${selectedTables.length} bảng đã chọn trong ${timeframeLabel}, so với ${comparisonLabel} và ở mức ${detailLabel}.`;
     }
-    return `The Agent will read this as a senior analyst brief for ${audienceLabel}, focused on the decision "${goalLabel}", using ${selectedTables.length} selected table${selectedTables.length === 1 ? '' : 's'} across ${timeframeLabel}, compared with ${comparisonLabel}, at a ${detailLabel} read depth.`;
-  }, [audience, comparisonPeriod, goal, isVietnamese, language, preferredGranularity, selectedTables.length, timeframe]);
+    return `The Agent will read this as a ${domainLabel} specialist brief for ${audienceLabel}, focused on the decision "${goalLabel}", using ${selectedTables.length} selected table${selectedTables.length === 1 ? '' : 's'} across ${timeframeLabel}, compared with ${comparisonLabel}, at a ${detailLabel} read depth.`;
+  }, [audience, comparisonPeriod, goal, isVietnamese, language, preferredGranularity, selectedDomain?.label, selectedTables.length, timeframe]);
 
   useEffect(() => {
     if (!isActive) {
@@ -847,6 +863,7 @@ export function AIReportWizard({
       setSelectedKeys([]);
       setTableSearch('');
       setExpandedWorkspaceIds([]);
+      setDomainId(initialBrief.domainId);
       setGoal(initialBrief.goal);
       setAudience(initialBrief.audience);
       setTimeframe(initialBrief.timeframe);
@@ -894,6 +911,10 @@ export function AIReportWizard({
         .map((item) => `${item.workspace_id}:${item.table_id}`)
         .filter((item) => item !== 'undefined:undefined'),
     );
+    const restoredDomainId = getDomainCatalogItem(
+      (brief.domain_id ?? spec.domain_id ?? initialBrief.domainId) as AgentDomainId,
+    )?.id ?? getDefaultDomainId();
+    setDomainId(restoredDomainId);
     setGoal(String(brief.goal ?? initialBrief.goal));
     setAudience(normalizeAudienceChoice(brief.audience));
     setTimeframe(String(brief.timeframe ?? initialBrief.timeframe));
@@ -1107,6 +1128,8 @@ export function AIReportWizard({
       name: plan.dashboard_title || activeSpec?.name || fallbackReportName,
       description: plan.dashboard_summary,
       selected_tables_snapshot: briefPayload.selected_tables,
+      domain_id: domainId,
+      domain_version: selectedDomain?.version,
       brief_json: briefPayload as unknown as Record<string, any>,
       approved_plan_json: plan as unknown as Record<string, any>,
       status: 'ready' as const,
@@ -1128,6 +1151,8 @@ export function AIReportWizard({
     const payload = {
       name: activeSpec?.name || fallbackReportName,
       selected_tables_snapshot: briefPayload.selected_tables,
+      domain_id: domainId,
+      domain_version: selectedDomain?.version,
       brief_json: briefPayload as unknown as Record<string, any>,
       status: 'draft' as const,
       current_step: 'brief' as const,
@@ -1245,6 +1270,8 @@ export function AIReportWizard({
         payload: {
           brief_json: briefPayload as unknown as Record<string, any>,
           selected_tables_snapshot: briefPayload.selected_tables,
+          domain_id: domainId,
+          domain_version: selectedDomain?.version,
           name: activeSpec?.name || fallbackReportName,
           current_step: 'brief',
         },
@@ -1297,6 +1324,8 @@ export function AIReportWizard({
         id: specId,
         payload: {
           build_mode: buildMode,
+          domain_id: domainId,
+          domain_version: selectedDomain?.version,
           input_brief_json: briefPayload as unknown as Record<string, any>,
           plan_json: buildPlan as unknown as Record<string, any>,
           target_dashboard_id: targetDashboardId,
@@ -1731,6 +1760,9 @@ export function AIReportWizard({
             isVietnamese={isVietnamese}
             language={language}
             isPlanningLocked={isPlanningLocked}
+            domainId={domainId}
+            setDomainId={setDomainId}
+            domains={AGENT_DOMAIN_CATALOG}
             agentUnderstandingPreview={agentUnderstandingPreview}
             selectedTables={selectedTables}
             selectedTableCards={selectedTableCards}
@@ -1765,6 +1797,7 @@ export function AIReportWizard({
           <ReviewPlanStep
             draftPlan={draftPlan}
             setDraftPlan={setDraftPlan}
+            selectedDomain={selectedDomain}
             activeSpecId={activeSpecId}
             activeSpec={activeSpec}
             recentRuns={recentRuns}

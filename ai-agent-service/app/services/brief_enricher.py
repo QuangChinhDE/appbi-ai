@@ -12,7 +12,8 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from app.config import settings
-from app.schemas.agent import AgentBriefRequest, ParsedBriefArtifact
+from app.domains.core.base import DomainPack
+from app.schemas.agent import AgentBriefRequest, AgentPlanResponse, ParsedBriefArtifact, ThesisArtifact
 from app.services.llm_client import generate_json
 from app.services.output_language import infer_output_language, is_vietnamese
 
@@ -23,10 +24,114 @@ logger = logging.getLogger(__name__)
 # Public API
 # ---------------------------------------------------------------------------
 
+def derive_thesis(parsed_brief: ParsedBriefArtifact) -> ThesisArtifact:
+    """Derive a ThesisArtifact from an enriched ParsedBriefArtifact.
+
+    Rule-based — no additional LLM call.  Must be called after enrich_brief so
+    that business_domain, narrative_arc, primary_kpis, and must_answer_questions
+    are populated.  Works on a non-enriched brief too, producing a weaker thesis.
+    """
+    vi = is_vietnamese(parsed_brief.output_language)
+    domain_tag = f" [{parsed_brief.business_domain}]" if parsed_brief.business_domain else ""
+
+    # decision_context was enriched by LLM-1 as "expanded decision context based on
+    # domain understanding" — it's substantively richer than the raw business_goal.
+    # Use it as the thesis body when it adds meaningful content (>10 chars more than goal).
+    # Fallback to raw goal + domain when enrichment did not produce a richer context.
+    if (
+        parsed_brief.decision_context
+        and len(parsed_brief.decision_context) > len(parsed_brief.business_goal) + 10
+    ):
+        central_thesis = parsed_brief.decision_context.rstrip(".") + domain_tag + "."
+    else:
+        central_thesis = parsed_brief.business_goal.rstrip(".") + domain_tag + "."
+
+    arguments: List[str] = []
+
+    # Ordered analytical questions are the strongest supporting arguments
+    for question in parsed_brief.must_answer_questions[:4]:
+        arguments.append(question)
+
+    # Fill remaining slots with primary KPIs (labelled so they read as arguments)
+    for kpi in parsed_brief.primary_kpis:
+        if len(arguments) >= 5:
+            break
+        label = f"KPI chính cần theo dõi: {kpi}" if vi else f"Primary KPI to track: {kpi}"
+        if label not in arguments:
+            arguments.append(label)
+
+    # Cross-table relationship as a final argument if room remains
+    if parsed_brief.table_relationships and len(arguments) < 5:
+        rel = parsed_brief.table_relationships[0]
+        arguments.append(
+            f"Khai thác mối quan hệ dữ liệu: {rel}" if vi else f"Leverage data relationship: {rel}"
+        )
+
+    return ThesisArtifact(
+        central_thesis=central_thesis,
+        supporting_arguments=arguments[:5],
+        narrative_arc=parsed_brief.narrative_arc or "",
+    )
+
+
+def _clean_string_list(values: List[Any], limit: int = 5) -> List[str]:
+    cleaned: List[str] = []
+    for value in values:
+        text = str(value).strip()
+        if text:
+            cleaned.append(text)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def rehydrate_plan_thesis(plan: AgentPlanResponse) -> Optional[ThesisArtifact]:
+    """Recover a thesis from the richest plan artifact that is still available."""
+    if plan.thesis and plan.thesis.central_thesis.strip():
+        return plan.thesis
+
+    if plan.parsed_brief is not None:
+        return derive_thesis(plan.parsed_brief)
+
+    if plan.analysis_plan and plan.analysis_plan.business_thesis.strip():
+        narrative_flow = _clean_string_list(plan.analysis_plan.narrative_flow, limit=3)
+        supporting_arguments = _clean_string_list(plan.analysis_plan.hypotheses, limit=5)
+        return ThesisArtifact(
+            central_thesis=plan.analysis_plan.business_thesis.strip(),
+            supporting_arguments=supporting_arguments,
+            narrative_arc=narrative_flow[0] if narrative_flow else "",
+        )
+
+    if plan.strategy_summary and plan.strategy_summary.strip():
+        return ThesisArtifact(
+            central_thesis=plan.strategy_summary.strip(),
+            supporting_arguments=[],
+            narrative_arc="",
+        )
+
+    return None
+
+
+def ensure_plan_thesis(plan: AgentPlanResponse) -> AgentPlanResponse:
+    """Guarantee that a build-time plan carries a thesis, backfilling older saved plans."""
+    thesis = rehydrate_plan_thesis(plan)
+    if thesis is None or not thesis.central_thesis.strip():
+        raise ValueError("Agent plan is missing thesis context. Regenerate the report plan before building.")
+
+    updates: Dict[str, Any] = {}
+    if plan.thesis is None or not plan.thesis.central_thesis.strip():
+        updates["thesis"] = thesis
+    if not (plan.strategy_summary or "").strip():
+        updates["strategy_summary"] = thesis.central_thesis
+
+    return plan.model_copy(update=updates) if updates else plan
+
+
 async def enrich_brief(
     brief: AgentBriefRequest,
     baseline: ParsedBriefArtifact,
     table_descriptions: List[Dict[str, Any]],
+    domain_pack: DomainPack,
 ) -> ParsedBriefArtifact:
     """Call the LLM to enrich *baseline* with domain-aware KPIs, questions, etc.
 
@@ -37,8 +142,9 @@ async def enrich_brief(
     If the LLM call fails the original *baseline* is returned unchanged.
     """
     vi = is_vietnamese(baseline.output_language)
-    system_prompt = _build_system_prompt(vi)
-    user_prompt = _build_user_prompt(brief, baseline, table_descriptions, vi)
+    domain_context = domain_pack.enrichment_context(brief, baseline, table_descriptions, vi) if domain_pack.enrichment_context else {}
+    system_prompt = _build_system_prompt(vi, domain_context.get("system_appendix"))
+    user_prompt = _build_user_prompt(brief, baseline, table_descriptions, vi, domain_context.get("user_context"))
 
     result = await generate_json(
         system_prompt=system_prompt,
@@ -51,16 +157,19 @@ async def enrich_brief(
         logger.warning("Brief enrichment LLM call returned None — using baseline brief")
         return baseline
 
-    return _merge_enrichment(baseline, result, vi)
+    enriched = _merge_enrichment(baseline, result, vi)
+    if domain_pack.prepare_brief:
+        enriched = domain_pack.prepare_brief(brief, enriched)
+    return enriched
 
 
 # ---------------------------------------------------------------------------
 # Prompt builders
 # ---------------------------------------------------------------------------
 
-def _build_system_prompt(vi: bool) -> str:
+def _build_system_prompt(vi: bool, domain_appendix: Optional[str] = None) -> str:
     if vi:
-        return (
+        prompt = (
             "Bạn là một senior Data Analyst với hơn 10 năm kinh nghiệm trong ngành BI. "
             "Khi nhận một brief kinh doanh ngắn cùng mô tả các bảng dữ liệu, bạn luôn thực hiện "
             "6 bước tư duy sau TRƯỚC KHI đề xuất bất kỳ điều gì:\n\n"
@@ -78,7 +187,10 @@ def _build_system_prompt(vi: bool) -> str:
             "6. CẢNH BÁO: Dựa trên mô tả cột và dữ liệu, có risk nào về data cần nêu?\n\n"
             "Trả về JSON hợp lệ duy nhất. Mọi text phải bằng tiếng Việt."
         )
-    return (
+        if domain_appendix:
+            prompt += "\n\n" + domain_appendix
+        return prompt
+    prompt = (
         "You are a senior Data Analyst with over 10 years of experience in BI. "
         "When you receive a short business brief together with table descriptions, you always perform "
         "6 thinking steps BEFORE proposing anything:\n\n"
@@ -96,6 +208,9 @@ def _build_system_prompt(vi: bool) -> str:
         "6. FLAG RISKS: Based on column descriptions and data, are there data risks to flag?\n\n"
         "Return valid JSON only."
     )
+    if domain_appendix:
+        prompt += "\n\n" + domain_appendix
+    return prompt
 
 
 def _build_user_prompt(
@@ -103,6 +218,7 @@ def _build_user_prompt(
     baseline: ParsedBriefArtifact,
     table_descriptions: List[Dict[str, Any]],
     vi: bool,
+    domain_context: Optional[Dict[str, Any]] = None,
 ) -> str:
     tables_payload = []
     for td in table_descriptions:
@@ -126,6 +242,7 @@ def _build_user_prompt(
 
     payload = {
         "brief": {
+            "domain_id": brief.domain_id,
             "goal": brief.goal,
             "audience": brief.audience,
             "timeframe": brief.timeframe,
@@ -134,6 +251,7 @@ def _build_user_prompt(
             "notes": brief.notes,
         },
         "tables": tables_payload,
+        "selected_domain_context": domain_context or {},
         "output_contract": {
             "business_domain": "string — identified industry/domain",
             "primary_kpis": ["string — max 4, using actual column names where possible"],

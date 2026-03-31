@@ -1,6 +1,7 @@
 """
 API router for dashboard endpoints.
 """
+import secrets
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
@@ -14,7 +15,7 @@ from app.core.dependencies import (
     require_full_access,
     get_effective_permission,
 )
-from app.core.permissions import _owned_or_shared
+from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models.models import Chart, DashboardChart, Dashboard
 from app.models.resource_share import ResourceType
 from app.models.user import User
@@ -64,6 +65,7 @@ def list_dashboards(
     )
     for item in items:
         item.user_permission = get_effective_permission(db, current_user, item, "dashboards")
+    stamp_owner_emails(db, items)
     return items
 
 
@@ -197,6 +199,42 @@ def update_dashboard_layout(
         request.chart_layouts
     )
     return dashboard
+
+
+# ============ Public Link Sharing ============
+
+@router.post("/{dashboard_id}/share", status_code=status.HTTP_200_OK)
+def share_dashboard(
+    dashboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Generate (or return existing) a public share token for a dashboard."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    if not dash.share_token:
+        dash.share_token = secrets.token_urlsafe(32)
+        db.commit()
+        db.refresh(dash)
+    return {"share_token": dash.share_token}
+
+
+@router.delete("/{dashboard_id}/share", status_code=status.HTTP_200_OK)
+def unshare_dashboard(
+    dashboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Revoke the public share token for a dashboard."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    dash.share_token = None
+    db.commit()
+    return {"share_token": None}
 
 
 # ============ Dashboard Filters ============

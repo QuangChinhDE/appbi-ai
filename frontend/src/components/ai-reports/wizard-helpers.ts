@@ -4,11 +4,37 @@ import {
   AgentPlanEvent,
   AgentPlanResponse,
   AgentSectionPlan,
+  ThesisArtifact,
 } from '@/types/agent';
 import { EditableAgentChartPlan, EditableAgentPlan } from './wizard-types';
 
 function ensureArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
+}
+
+function hydrateThesis(plan: Pick<AgentPlanResponse, 'analysis_plan' | 'parsed_brief' | 'strategy_summary' | 'thesis'>): ThesisArtifact | undefined {
+  if (plan.thesis?.central_thesis?.trim()) {
+    return {
+      central_thesis: plan.thesis.central_thesis,
+      supporting_arguments: ensureArray(plan.thesis.supporting_arguments),
+      narrative_arc: plan.thesis.narrative_arc ?? '',
+    };
+  }
+
+  const centralThesis =
+    plan.analysis_plan?.business_thesis?.trim() ||
+    plan.strategy_summary?.trim() ||
+    '';
+  if (!centralThesis) {
+    return undefined;
+  }
+
+  const narrativeFlow = ensureArray(plan.analysis_plan?.narrative_flow).filter((item) => Boolean(String(item).trim()));
+  return {
+    central_thesis: centralThesis,
+    supporting_arguments: ensureArray(plan.analysis_plan?.hypotheses).filter((item) => Boolean(String(item).trim())).slice(0, 5),
+    narrative_arc: plan.parsed_brief?.narrative_arc?.trim() || narrativeFlow[0] || '',
+  };
 }
 
 export function splitLines(value: string): string[] {
@@ -19,7 +45,10 @@ export function splitLines(value: string): string[] {
 }
 
 export function normalizePlan(plan: AgentPlanResponse): EditableAgentPlan {
+  const thesis = hydrateThesis(plan);
   return {
+    domain_id: plan.domain_id ?? plan.parsed_brief?.domain_id ?? undefined,
+    domain_version: plan.domain_version ?? plan.parsed_brief?.domain_version ?? undefined,
     dashboard_title: plan.dashboard_title ?? '',
     dashboard_summary: plan.dashboard_summary ?? '',
     strategy_summary: plan.strategy_summary,
@@ -84,6 +113,7 @@ export function normalizePlan(plan: AgentPlanResponse): EditableAgentPlan {
           section_logic: { ...(plan.analysis_plan.section_logic ?? {}) },
         }
       : undefined,
+    thesis: thesis ? JSON.parse(JSON.stringify(thesis)) : undefined,
     runtime: plan.runtime ? JSON.parse(JSON.stringify(plan.runtime)) : undefined,
     phase_runtimes: plan.phase_runtimes ? JSON.parse(JSON.stringify(plan.phase_runtimes)) : undefined,
     sections: ensureArray(plan.sections).map((section) => ({
@@ -102,6 +132,8 @@ export function normalizePlan(plan: AgentPlanResponse): EditableAgentPlan {
 
 export function cloneEditablePlan(plan: EditableAgentPlan): EditableAgentPlan {
   return {
+    domain_id: plan.domain_id,
+    domain_version: plan.domain_version,
     dashboard_title: plan.dashboard_title,
     dashboard_summary: plan.dashboard_summary,
     strategy_summary: plan.strategy_summary,
@@ -113,6 +145,7 @@ export function cloneEditablePlan(plan: EditableAgentPlan): EditableAgentPlan {
     profiling_report: plan.profiling_report ? JSON.parse(JSON.stringify(plan.profiling_report)) : undefined,
     quality_gate_report: plan.quality_gate_report ? JSON.parse(JSON.stringify(plan.quality_gate_report)) : undefined,
     analysis_plan: plan.analysis_plan ? JSON.parse(JSON.stringify(plan.analysis_plan)) : undefined,
+    thesis: plan.thesis ? JSON.parse(JSON.stringify(plan.thesis)) : undefined,
     runtime: plan.runtime ? JSON.parse(JSON.stringify(plan.runtime)) : undefined,
     phase_runtimes: plan.phase_runtimes ? JSON.parse(JSON.stringify(plan.phase_runtimes)) : undefined,
     sections: ensureArray(plan.sections).map((section) => ({
@@ -130,6 +163,7 @@ export function cloneEditablePlan(plan: EditableAgentPlan): EditableAgentPlan {
 }
 
 export function toBuildPlan(plan: EditableAgentPlan): AgentPlanResponse {
+  const thesis = hydrateThesis(plan);
   const activeCharts = ensureArray(plan.charts)
     .filter((chart) => chart.enabled)
     .map(({ enabled: _enabled, ...chart }) => chart);
@@ -142,6 +176,8 @@ export function toBuildPlan(plan: EditableAgentPlan): AgentPlanResponse {
     .filter((section) => section.chart_keys.length > 0);
 
   return {
+    domain_id: plan.domain_id ?? plan.parsed_brief?.domain_id ?? undefined,
+    domain_version: plan.domain_version ?? plan.parsed_brief?.domain_version ?? undefined,
     dashboard_title: plan.dashboard_title.trim(),
     dashboard_summary: plan.dashboard_summary.trim(),
     strategy_summary: plan.strategy_summary,
@@ -153,6 +189,7 @@ export function toBuildPlan(plan: EditableAgentPlan): AgentPlanResponse {
     profiling_report: plan.profiling_report ? JSON.parse(JSON.stringify(plan.profiling_report)) : undefined,
     quality_gate_report: plan.quality_gate_report ? JSON.parse(JSON.stringify(plan.quality_gate_report)) : undefined,
     analysis_plan: plan.analysis_plan ? JSON.parse(JSON.stringify(plan.analysis_plan)) : undefined,
+    thesis: thesis ? JSON.parse(JSON.stringify(thesis)) : undefined,
     runtime: plan.runtime ? JSON.parse(JSON.stringify(plan.runtime)) : undefined,
     phase_runtimes: plan.phase_runtimes ? JSON.parse(JSON.stringify(plan.phase_runtimes)) : undefined,
     sections,

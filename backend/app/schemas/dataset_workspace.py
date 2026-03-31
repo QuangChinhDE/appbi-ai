@@ -28,6 +28,7 @@ class WorkspaceResponse(WorkspaceBase):
     """Schema for workspace response"""
     id: int
     owner_id: Optional[UUID] = None
+    owner_email: Optional[str] = None
     user_permission: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

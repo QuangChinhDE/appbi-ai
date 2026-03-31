@@ -68,6 +68,7 @@ export interface DataSource {
   description?: string;
   config: Record<string, any>;
   owner_id?: string;
+  owner_email?: string;
   user_permission?: 'none' | 'view' | 'edit' | 'full';
   created_at: string;
   updated_at: string;
@@ -303,6 +304,7 @@ export interface Chart {
   chart_type: ChartType;
   config: ChartConfig;
   owner_id?: string;
+  owner_email?: string;
   user_permission?: 'none' | 'view' | 'edit' | 'full';
   created_at: string;
   updated_at: string;
@@ -395,7 +397,9 @@ export interface Dashboard {
   name: string;
   description?: string;
   owner_id?: string;
+  owner_email?: string;
   user_permission?: 'none' | 'view' | 'edit' | 'full';
+  share_token?: string | null;
   created_at: string;
   updated_at: string;
   dashboard_charts: DashboardChart[];

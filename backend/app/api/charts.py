@@ -16,7 +16,7 @@ from app.core.dependencies import (
     require_full_access,
     get_effective_permission,
 )
-from app.core.permissions import _owned_or_shared
+from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models.models import Chart, DashboardChart, Dashboard
 from app.models.resource_share import ResourceType
 from app.models.user import User
@@ -115,6 +115,7 @@ def list_charts(
     )
     for item in items:
         item.user_permission = get_effective_permission(db, current_user, item, "explore_charts")
+    stamp_owner_emails(db, items)
     return items
 
 

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core import get_db
 from app.core.dependencies import get_current_user, require_permission
+from app.core.permissions import stamp_owner_emails
 from app.models.agent_report import AgentReportRun, AgentReportSpec
 from app.models.user import User
 from app.schemas.agent_report import (
@@ -22,6 +23,13 @@ from app.schemas.agent_report import (
 )
 
 router = APIRouter(prefix="/agent-report-specs", tags=["agent-report-specs"])
+
+
+def _infer_domain_metadata(payload: dict | None, fallback_id: str | None, fallback_version: str | None) -> tuple[str | None, str | None]:
+    source = payload or {}
+    inferred_id = fallback_id or source.get("domain_id")
+    inferred_version = fallback_version or source.get("domain_version")
+    return inferred_id, inferred_version
 
 
 def _get_owned_spec(db: Session, spec_id: int, current_user: User) -> AgentReportSpec:
@@ -60,12 +68,14 @@ def list_agent_report_specs(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("ai_agent", "view")),
 ):
-    return (
+    items = (
         db.query(AgentReportSpec)
         .filter(AgentReportSpec.owner_id == current_user.id)
         .order_by(AgentReportSpec.updated_at.desc())
         .all()
     )
+    stamp_owner_emails(db, items)
+    return items
 
 
 @router.post("/", response_model=AgentReportSpecResponse, status_code=status.HTTP_201_CREATED)
@@ -74,6 +84,11 @@ def create_agent_report_spec(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("ai_agent", "edit")),
 ):
+    domain_id, domain_version = _infer_domain_metadata(
+        spec_in.approved_plan_json or spec_in.brief_json,
+        spec_in.domain_id,
+        spec_in.domain_version,
+    )
     spec = AgentReportSpec(
         name=spec_in.name,
         description=spec_in.description,
@@ -82,6 +97,8 @@ def create_agent_report_spec(
         owner_id=current_user.id,
         latest_dashboard_id=spec_in.latest_dashboard_id,
         selected_tables_snapshot=spec_in.selected_tables_snapshot,
+        domain_id=domain_id,
+        domain_version=domain_version,
         brief_json=spec_in.brief_json,
         approved_plan_json=spec_in.approved_plan_json,
     )
@@ -108,7 +125,17 @@ def update_agent_report_spec(
     current_user: User = Depends(require_permission("ai_agent", "edit")),
 ):
     spec = _get_owned_spec(db, spec_id, current_user)
-    for key, value in spec_in.model_dump(exclude_unset=True).items():
+    payload = spec_in.model_dump(exclude_unset=True)
+    domain_id, domain_version = _infer_domain_metadata(
+        payload.get("approved_plan_json") or payload.get("brief_json"),
+        payload.get("domain_id"),
+        payload.get("domain_version"),
+    )
+    if domain_id is not None:
+        payload["domain_id"] = domain_id
+    if domain_version is not None:
+        payload["domain_version"] = domain_version
+    for key, value in payload.items():
         setattr(spec, key, value)
     db.commit()
     db.refresh(spec)
@@ -154,12 +181,24 @@ def create_agent_report_run(
         selected_tables = run_in.input_brief_json.get("selected_tables")
         if isinstance(selected_tables, list):
             spec.selected_tables_snapshot = selected_tables
+        if run_in.input_brief_json.get("domain_id") and not run_in.domain_id:
+            spec.domain_id = run_in.input_brief_json.get("domain_id")
     if run_in.plan_json:
         spec.approved_plan_json = run_in.plan_json
+        if run_in.plan_json.get("domain_id") and not run_in.domain_id:
+            spec.domain_id = run_in.plan_json.get("domain_id")
+        if run_in.plan_json.get("domain_version") and not run_in.domain_version:
+            spec.domain_version = run_in.plan_json.get("domain_version")
+    if run_in.domain_id is not None:
+        spec.domain_id = run_in.domain_id
+    if run_in.domain_version is not None:
+        spec.domain_version = run_in.domain_version
     run = AgentReportRun(
         report_spec_id=spec.id,
         triggered_by=current_user.id,
         build_mode=run_in.build_mode,
+        domain_id=run_in.domain_id or spec.domain_id,
+        domain_version=run_in.domain_version or spec.domain_version,
         status=run_in.status,
         input_brief_json=run_in.input_brief_json,
         plan_json=run_in.plan_json,

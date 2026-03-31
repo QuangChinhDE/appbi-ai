@@ -16,7 +16,7 @@ from app.core.dependencies import (
     require_full_access,
     get_effective_permission,
 )
-from app.core.permissions import _owned_or_shared
+from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models import DataSource, DatasetWorkspace
 from app.models.resource_share import ResourceType
 from app.models.user import User
@@ -188,6 +188,7 @@ def list_data_sources(
     )
     for s in sources:
         s.user_permission = get_effective_permission(db, current_user, s, "data_sources")
+    stamp_owner_emails(db, sources)
     return sources
 
 

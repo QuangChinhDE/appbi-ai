@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Loader2, LayoutDashboard, Clock, Eye, Trash2, Search } from 'lucide-react';
+import { Plus, Loader2, LayoutDashboard, Clock, Eye, Trash2, Search, Globe } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { useDashboards, useCreateDashboard, useDeleteDashboard } from '@/hooks/use-dashboards';
@@ -13,7 +13,10 @@ import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { GettingStartedGuide } from '@/components/common/GettingStartedGuide';
+import { PublicShareDialog } from '@/components/common/PublicShareDialog';
+import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { useI18n } from '@/providers/LanguageProvider';
+import type { Dashboard } from '@/types/api';
 
 export default function DashboardsPage() {
   const router = useRouter();
@@ -24,6 +27,7 @@ export default function DashboardsPage() {
   const [dashboardToDelete, setDashboardToDelete] = useState<{ id: number; name: string } | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingDashboard, setIsDeletingDashboard] = useState(false);
+  const [publicShareDash, setPublicShareDash] = useState<Dashboard | null>(null);
 
   const { data: dashboards, isLoading } = useDashboards();
   const { data: permData } = usePermissions();
@@ -175,6 +179,7 @@ export default function DashboardsPage() {
                             )}
                           </div>
                           <h3 className="mb-1 truncate text-sm font-semibold text-gray-900">{dashboard.name}</h3>
+                          <OwnerBadge email={dashboard.owner_email} />
                           {dashboard.description && (
                             <p className="mb-2 line-clamp-2 text-xs text-gray-500">{dashboard.description}</p>
                           )}
@@ -186,10 +191,20 @@ export default function DashboardsPage() {
                             </span>
                           </div>
                         </div>
-                        <div className="flex justify-end rounded-b-lg border-t bg-gray-50 px-5 py-3">
+                        <div className="flex items-center justify-between rounded-b-lg border-t bg-gray-50 px-5 py-3">
+                          {getResourcePermissions(dashboard.user_permission).canEdit && (
+                            <button
+                              onClick={() => setPublicShareDash(dashboard)}
+                              className="flex items-center gap-1 text-xs text-gray-400 transition-colors hover:text-purple-600"
+                              title="Share public link"
+                            >
+                              <Globe className="h-3.5 w-3.5" />
+                              {dashboard.share_token ? 'Link active' : 'Share'}
+                            </button>
+                          )}
                           <button
                             onClick={() => router.push(`/dashboards/${dashboard.id}`)}
-                            className="flex items-center gap-1.5 text-xs font-medium text-blue-600 transition-colors hover:text-blue-800"
+                            className="ml-auto flex items-center gap-1.5 text-xs font-medium text-blue-600 transition-colors hover:text-blue-800"
                           >
                             <Eye className="h-3.5 w-3.5" />
                             Open
@@ -278,6 +293,15 @@ export default function DashboardsPage() {
             setDashboardToDelete(null);
             setDeleteConstraints(null);
           }}
+        />
+      )}
+
+      {publicShareDash && (
+        <PublicShareDialog
+          dashboardId={publicShareDash.id}
+          dashboardName={publicShareDash.name}
+          currentToken={publicShareDash.share_token}
+          onClose={() => setPublicShareDash(null)}
         />
       )}
     </>

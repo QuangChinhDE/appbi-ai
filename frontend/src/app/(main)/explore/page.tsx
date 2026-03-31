@@ -10,6 +10,7 @@ import { useCharts, useDeleteChart } from '@/hooks/use-charts';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
+import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { useI18n } from '@/providers/LanguageProvider';
 import { toast } from 'sonner';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
@@ -157,7 +158,10 @@ export default function ExplorePage() {
                       <BarChart3 className="w-4 h-4 text-blue-600" />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900 truncate">{chart.name}</p>
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium text-gray-900 truncate">{chart.name}</p>
+                        <OwnerBadge email={chart.owner_email} />
+                      </div>
                       {chart.description ? (
                         <p className="text-xs text-gray-500 truncate">{chart.description}</p>
                       ) : config?.roleConfig?.dimension ? (
@@ -220,6 +224,7 @@ export default function ExplorePage() {
 
                   <div className="flex-1 min-w-0">
                     <h3 className="font-semibold text-gray-900 truncate text-sm">{chart.name}</h3>
+                    <OwnerBadge email={chart.owner_email} />
                     {chart.description ? (
                       <p className="text-xs text-gray-500 mt-0.5 truncate">{chart.description}</p>
                     ) : config?.roleConfig?.dimension && (

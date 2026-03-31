@@ -9,6 +9,7 @@ from app.schemas.agent import (
     ParsedBriefArtifact,
     ProfilingArtifactItem,
     QualityGateArtifact,
+    ThesisArtifact,
 )
 from app.services.output_language import is_vietnamese
 
@@ -79,6 +80,7 @@ def build_analysis_plan(
     dataset_fit_report: list[DatasetFitArtifactItem],
     profiling_report: list[ProfilingArtifactItem],
     quality_gate_report: QualityGateArtifact,
+    thesis: ThesisArtifact,
 ) -> AnalysisPlanArtifact:
     vi = is_vietnamese(parsed_brief.output_language)
     fit_map = {item.table_id: item for item in dataset_fit_report}
@@ -134,21 +136,17 @@ def build_analysis_plan(
             )
         )
 
-    # --- Hypotheses: use enriched data when available ---
-    hypotheses: list[str] = []
-    if parsed_brief.narrative_arc:
-        hypotheses.append(parsed_brief.narrative_arc)
-    if parsed_brief.business_domain:
+    # --- Hypotheses: thesis arguments are the primary hypotheses ---
+    # thesis.supporting_arguments carry the ordered analytical questions/KPIs
+    # derived from enrichment; they must stay ordered and separate from generic
+    # operational notes so downstream LLMs can treat them as distinct claims.
+    hypotheses: list[str] = list(thesis.supporting_arguments)
+    if parsed_brief.business_domain and not any(parsed_brief.business_domain in h for h in hypotheses):
         hypotheses.append(
             f"Domain đã nhận diện: {parsed_brief.business_domain}. Phân tích nên dùng góc nhìn và KPI phù hợp ngành này."
             if vi
             else f"Identified domain: {parsed_brief.business_domain}. Analysis should use industry-appropriate perspectives and KPIs."
         )
-    hypotheses.append(
-        "Những phần hữu ích nhất của dashboard nên tách rõ giám sát tổng quan với chi tiết phục vụ follow-up vận hành."
-        if vi
-        else "The most useful dashboard sections will separate summary monitoring from operational follow-up detail."
-    )
     if quality_gate_report.warnings:
         hypotheses.append(
             "Vấn đề chất lượng dữ liệu có thể làm giảm độ tin cậy của các kết luận chi tiết, nên narrative từng phần cần có caveat."
@@ -172,18 +170,24 @@ def build_analysis_plan(
         for item in ranked_fit
     }
 
-    # --- Table relationships as analysis objectives ---
+    # --- Analysis objectives: grounded in thesis arguments, not generic templates ---
+    # Each supporting argument becomes a concrete analysis objective so that
+    # section designers (LLM or heuristic) can map sections 1-to-1 to objectives.
     analysis_objectives: list[str] = []
+    for i, arg in enumerate(thesis.supporting_arguments, start=1):
+        analysis_objectives.append(
+            f"Luận điểm {i}: {arg}" if vi else f"Argument {i}: {arg}"
+        )
     if parsed_brief.table_relationships:
-        for rel in parsed_brief.table_relationships[:3]:
+        for rel in parsed_brief.table_relationships[:2]:
             analysis_objectives.append(
                 f"Khai thác mối quan hệ: {rel}" if vi else f"Leverage relationship: {rel}"
             )
-    analysis_objectives.extend([
-        "Chuyển brief thành một nhóm nhỏ câu hỏi nghiệp vụ quan trọng nhất." if vi else "Translate the brief into a small set of business-critical questions.",
-        "Ánh xạ từng câu hỏi vào bảng phù hợp nhất và phương pháp phân tích mạnh nhất." if vi else "Map each question to the strongest available table and analysis method.",
-        "Cân bằng giữa góc nhìn điều hành tổng quan và đủ chi tiết để follow-up hành động." if vi else "Balance executive monitoring with enough detail for follow-up action.",
-    ])
+    if not analysis_objectives:
+        analysis_objectives = [
+            "Chuyển brief thành một nhóm nhỏ câu hỏi nghiệp vụ quan trọng nhất." if vi else "Translate the brief into a small set of business-critical questions.",
+            "Ánh xạ từng câu hỏi vào bảng phù hợp nhất và phương pháp phân tích mạnh nhất." if vi else "Map each question to the strongest available table and analysis method.",
+        ]
 
     priority_checks = [
         "Xác nhận bảng nào phù hợp nhất để làm phần tóm tắt điều hành." if vi else "Confirm which selected table is strongest for the executive summary.",
@@ -196,10 +200,12 @@ def build_analysis_plan(
         "Nếu rủi ro chất lượng dữ liệu cao, narrative phải nói rõ caveat." if vi else "If quality risks are high, keep the narrative explicit about caveats.",
     ]
 
-    # --- Narrative flow: use enriched arc if available ---
+    # --- Narrative flow: thesis.narrative_arc is the canonical first entry ---
+    # The arc (open → climax → close) is the structural contract for all sections.
+    # It must be the first item so downstream prompts can treat it as the lead.
     narrative_flow: list[str] = []
-    if parsed_brief.narrative_arc:
-        narrative_flow.append(parsed_brief.narrative_arc)
+    if thesis.narrative_arc:
+        narrative_flow.append(thesis.narrative_arc)
     narrative_flow.extend([
         "Bắt đầu từ tín hiệu nghiệp vụ tổng quan quan trọng nhất." if vi else "Start with the top-line business signal.",
         "Đi tiếp vào các bảng phù hợp nhất để phân rã và tìm nguyên nhân." if vi else "Move into the highest-fit supporting tables for breakdown and root-cause analysis.",
@@ -207,15 +213,9 @@ def build_analysis_plan(
     ])
 
     return AnalysisPlanArtifact(
-        business_thesis=(
-            parsed_brief.business_goal
-            if parsed_brief.business_goal
-            else (
-                "Xây dựng báo cáo giám sát giúp người đọc nắm tín hiệu nhanh và hành động trên các điểm rủi ro lớn nhất."
-                if vi
-                else "Build a monitoring report that helps the audience orient quickly and act on the riskiest signals."
-            )
-        ),
+        # thesis.central_thesis is the controlling thesis; it is richer than the
+        # raw business_goal because it has been enriched with domain context.
+        business_thesis=thesis.central_thesis,
         analysis_objectives=analysis_objectives,
         question_map=question_map,
         hypotheses=hypotheses,

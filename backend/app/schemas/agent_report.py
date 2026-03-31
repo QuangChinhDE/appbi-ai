@@ -33,6 +33,8 @@ class AgentReportSpecBase(BaseModel):
     name: str = Field(..., min_length=3, max_length=255)
     description: Optional[str] = Field(default=None, max_length=2000)
     selected_tables_snapshot: List[Dict[str, Any]] = Field(default_factory=list)
+    domain_id: Optional[str] = Field(default=None, max_length=100)
+    domain_version: Optional[str] = Field(default=None, max_length=50)
     brief_json: Dict[str, Any] = Field(default_factory=dict)
     approved_plan_json: Optional[Dict[str, Any]] = None
 
@@ -47,6 +49,8 @@ class AgentReportSpecUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=3, max_length=255)
     description: Optional[str] = Field(default=None, max_length=2000)
     selected_tables_snapshot: Optional[List[Dict[str, Any]]] = None
+    domain_id: Optional[str] = Field(default=None, max_length=100)
+    domain_version: Optional[str] = Field(default=None, max_length=50)
     brief_json: Optional[Dict[str, Any]] = None
     approved_plan_json: Optional[Dict[str, Any]] = None
     latest_dashboard_id: Optional[int] = None
@@ -56,6 +60,8 @@ class AgentReportSpecUpdate(BaseModel):
 
 class AgentReportRunBase(BaseModel):
     build_mode: BuildMode = "new_dashboard"
+    domain_id: Optional[str] = Field(default=None, max_length=100)
+    domain_version: Optional[str] = Field(default=None, max_length=50)
     input_brief_json: Dict[str, Any] = Field(default_factory=dict)
     plan_json: Dict[str, Any] = Field(default_factory=dict)
     target_dashboard_id: Optional[int] = None
@@ -93,6 +99,7 @@ class AgentReportRunResponse(AgentReportRunBase):
 class AgentReportSpecResponse(AgentReportSpecBase):
     id: int
     owner_id: Optional[UUID] = None
+    owner_email: Optional[str] = None
     latest_dashboard_id: Optional[int] = None
     status: ReportSpecStatus
     current_step: WizardStep = "select"

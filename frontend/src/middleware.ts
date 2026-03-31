@@ -13,7 +13,7 @@ import type { NextRequest } from 'next/server';
 import { jwtVerify } from 'jose';
 
 // Public paths that do NOT require authentication
-const PUBLIC_PATHS = ['/login'];
+const PUBLIC_PATHS = ['/login', '/d/'];
 
 function getSecret(): Uint8Array {
   const secret = process.env.SECRET_KEY ?? 'change-this-in-production';

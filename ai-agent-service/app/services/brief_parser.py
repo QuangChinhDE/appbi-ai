@@ -168,6 +168,8 @@ def parse_brief(brief: AgentBriefRequest) -> ParsedBriefArtifact:
         )
 
     return ParsedBriefArtifact(
+        domain_id=brief.domain_id,
+        domain_version=None,
         output_language=output_language,
         business_goal=brief.goal,
         target_audience=audience_label,

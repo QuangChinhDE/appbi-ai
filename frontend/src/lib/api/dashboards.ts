@@ -62,4 +62,13 @@ export const dashboardApi = {
     });
     return response.data;
   },
+
+  share: async (id: number): Promise<{ share_token: string }> => {
+    const response = await apiClient.post(`/dashboards/${id}/share`);
+    return response.data;
+  },
+
+  unshare: async (id: number): Promise<void> => {
+    await apiClient.delete(`/dashboards/${id}/share`);
+  },
 };

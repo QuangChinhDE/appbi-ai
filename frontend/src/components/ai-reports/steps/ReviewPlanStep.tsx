@@ -6,6 +6,7 @@ export function ReviewPlanStep(props: any) {
   const {
     draftPlan,
     setDraftPlan,
+    selectedDomain,
     activeSpecId,
     activeSpec,
     recentRuns,
@@ -37,10 +38,16 @@ export function ReviewPlanStep(props: any) {
   const qualityGateBlockers = Array.isArray(draftPlan?.quality_gate_report?.blockers) ? draftPlan.quality_gate_report.blockers : [];
   const qualityGateWarnings = Array.isArray(draftPlan?.quality_gate_report?.warnings) ? draftPlan.quality_gate_report.warnings : [];
   const analysisQuestionMap = Array.isArray(draftPlan?.analysis_plan?.question_map) ? draftPlan.analysis_plan.question_map : [];
+  const thesis = draftPlan?.thesis;
+  const thesisArguments = Array.isArray(draftPlan?.thesis?.supporting_arguments) ? draftPlan.thesis.supporting_arguments : [];
+  const narrativeFlow = Array.isArray(draftPlan?.analysis_plan?.narrative_flow) ? draftPlan.analysis_plan.narrative_flow : [];
   const qualityBreakdownEntries = Object.entries(draftPlan?.quality_breakdown ?? {});
   const parsedBriefSuccessCriteria = Array.isArray(draftPlan?.parsed_brief?.success_criteria) ? draftPlan.parsed_brief.success_criteria : [];
   const parsedBriefAssumptions = Array.isArray(draftPlan?.parsed_brief?.explicit_assumptions) ? draftPlan.parsed_brief.explicit_assumptions : [];
   const recentRunsSafe = Array.isArray(recentRuns) ? recentRuns : [];
+  const domainLabel = selectedDomain?.label ?? draftPlan?.domain_id ?? activeSpec?.domain_id ?? 'Finance';
+  const domainVersion = draftPlan?.domain_version ?? draftPlan?.parsed_brief?.domain_version ?? activeSpec?.domain_version ?? selectedDomain?.version;
+  const domainLens = selectedDomain?.reviewLens?.[isVietnamese ? 'vi' : 'en'];
 
   const CHART_TYPE_COLORS = {
     KPI: 'bg-violet-50 text-violet-700 border-violet-200',
@@ -60,6 +67,19 @@ export function ReviewPlanStep(props: any) {
       <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <div className="grid gap-4 lg:grid-cols-[1fr_auto]">
           <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-emerald-700">
+                {domainLabel}
+              </span>
+              {domainVersion && (
+                <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-500">
+                  v{domainVersion}
+                </span>
+              )}
+              {domainLens && (
+                <span className="text-xs text-gray-500">{domainLens}</span>
+              )}
+            </div>
             <div>
               <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">
                 {isVietnamese ? 'Tiêu đề dashboard' : 'Dashboard title'}
@@ -113,6 +133,42 @@ export function ReviewPlanStep(props: any) {
           </div>
         </div>
       </div>
+
+      {(thesis?.central_thesis || draftPlan?.analysis_plan?.business_thesis) && (
+        <div className="rounded-xl border border-blue-200 bg-blue-50/60 p-5 shadow-sm">
+          <div className="flex items-start gap-3">
+            <div className="rounded-lg bg-white p-2 text-blue-600 shadow-sm">
+              <Sparkles className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">
+                {isVietnamese ? 'Luan diem trung tam' : 'Central thesis'}
+              </p>
+              <p className="mt-2 text-sm font-medium leading-6 text-slate-900">
+                {thesis?.central_thesis || draftPlan?.analysis_plan?.business_thesis}
+              </p>
+              {(thesis?.narrative_arc || narrativeFlow[0]) && (
+                <p className="mt-3 text-sm leading-6 text-slate-600">
+                  <span className="font-semibold text-slate-800">Narrative arc:</span>{' '}
+                  {thesis?.narrative_arc || narrativeFlow[0]}
+                </p>
+              )}
+              {thesisArguments.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {thesisArguments.map((item, index) => (
+                    <span
+                      key={`${item}-${index}`}
+                      className="rounded-full border border-blue-200 bg-white px-3 py-1 text-[11px] font-medium text-blue-700"
+                    >
+                      {item}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Sections with inline chart cards ── */}
       {sections.map((section, sIndex) => {

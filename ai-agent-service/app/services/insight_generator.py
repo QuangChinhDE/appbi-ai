@@ -4,6 +4,8 @@ import json
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.config import settings
+from app.domains.core import get_domain_pack, normalize_domain_id
+from app.domains.core.base import DomainPack
 from app.schemas.agent import (
     AgentChartPlan,
     AgentPlanResponse,
@@ -11,10 +13,19 @@ from app.schemas.agent import (
     ChartInsightArtifact,
     InsightReportArtifact,
     SectionInsightArtifact,
+    ThesisArtifact,
 )
 from app.services.llm_client import generate_json
 from app.services.output_language import is_vietnamese
 from app.services.runtime_metadata import llm_runtime_metadata, rule_runtime_metadata
+
+
+def _resolve_plan_domain_pack(plan: AgentPlanResponse) -> DomainPack:
+    domain_id = plan.domain_id or (plan.parsed_brief.domain_id if plan.parsed_brief else None) or "generic"
+    try:
+        return get_domain_pack(normalize_domain_id(domain_id))
+    except KeyError:
+        return get_domain_pack("generic")
 
 
 def _is_number(value: Any) -> bool:
@@ -236,6 +247,7 @@ def _build_chart_insight(
 def _build_rule_based_insight_report(
     plan: AgentPlanResponse,
     chart_payloads: List[Dict[str, Any]],
+    thesis: Optional[ThesisArtifact] = None,
 ) -> InsightReportArtifact:
     language = plan.parsed_brief.output_language if plan.parsed_brief else None
     vi = is_vietnamese(language)
@@ -325,14 +337,29 @@ def _build_rule_based_insight_report(
         priority_actions.extend(section.recommended_actions)
     priority_actions = list(dict.fromkeys(priority_actions))[:4]
 
-    executive_summary = plan.dashboard_summary
-    if top_findings:
-        signal_text = " ".join(top_findings[:2])
-        executive_summary = (
-            f"{plan.dashboard_summary} Tín hiệu nổi bật: {signal_text}"
-            if vi
-            else f"{plan.dashboard_summary} Top signals: {signal_text}"
-        )
+    # Executive summary is anchored to thesis.narrative_arc when available.
+    # The arc (open → climax → close) gives the summary its story structure
+    # instead of being a flat concatenation of signals.
+    if thesis and thesis.narrative_arc:
+        arc_anchor = thesis.narrative_arc
+        if top_findings:
+            signal_text = " ".join(top_findings[:2])
+            executive_summary = (
+                f"{arc_anchor} Tín hiệu thực tế: {signal_text}"
+                if vi
+                else f"{arc_anchor} Observed signals: {signal_text}"
+            )
+        else:
+            executive_summary = arc_anchor
+    else:
+        executive_summary = plan.dashboard_summary
+        if top_findings:
+            signal_text = " ".join(top_findings[:2])
+            executive_summary = (
+                f"{plan.dashboard_summary} Tín hiệu nổi bật: {signal_text}"
+                if vi
+                else f"{plan.dashboard_summary} Top signals: {signal_text}"
+            )
 
     # Inject cross-table relationship context when available
     table_relationships = (plan.parsed_brief.table_relationships if plan.parsed_brief else []) or []
@@ -399,27 +426,73 @@ async def _generate_llm_overrides(
     base_report: InsightReportArtifact,
     chart_signals: Optional[Dict[str, Any]] = None,
     chart_sample_rows: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    thesis: Optional[ThesisArtifact] = None,
 ) -> Optional[Dict[str, Any]]:
     language = plan.parsed_brief.output_language if plan.parsed_brief else None
     vi = is_vietnamese(language)
-    system_prompt = (
-        "Bạn là senior data analyst đang viết narrative báo cáo BI. "
-        "Nhiệm vụ: phân tích dữ liệu thực tế được cung cấp và viết lại insight report với nhận định sắc bén, "
-        "chỉ ra xu hướng, segment nổi bật, và đề xuất hành động có căn cứ từ số liệu. "
-        "Không được bịa thêm số liệu, không được đổi chart_key. Trả về JSON hợp lệ, viết bằng tiếng Việt."
-        if vi
-        else
-        "You are a senior data analyst writing a BI report narrative. "
-        "Analyze the real data signals provided and rewrite the insight report with sharp analytical findings: "
-        "identify trends, highlight standout segments, and suggest evidence-backed actions. "
-        "Do not invent numbers or change chart keys. Return valid JSON only."
-    )
+    domain_pack = _resolve_plan_domain_pack(plan)
+    insight_context = domain_pack.insight_context(plan.parsed_brief, vi) if (domain_pack.insight_context and plan.parsed_brief) else {}
+
+    # Build the CONTROLLING THESIS block for the narrative LLM.
+    # The executive_summary MUST open with the narrative arc, findings must
+    # serve the supporting arguments in order, and recommended actions must
+    # close the story arc.
+    if thesis:
+        args_text = "\n".join(
+            f"  {i}. {arg}" for i, arg in enumerate(thesis.supporting_arguments, 1)
+        )
+        if vi:
+            thesis_block = (
+                "=== LUẬN ĐIỂM TRUNG TÂM ===\n"
+                f"Luận điểm: {thesis.central_thesis}\n"
+                f"Các luận cứ hỗ trợ:\n{args_text}\n"
+                f"Cung bậc câu chuyện: {thesis.narrative_arc or 'Chưa xác định'}\n"
+                "YÊU CẦU: executive_summary PHẢI mở bằng narrative arc. "
+                "Mỗi section PHẢI phục vụ ít nhất một luận cứ ở trên.\n"
+                "============================\n\n"
+            )
+        else:
+            thesis_block = (
+                "=== CONTROLLING THESIS ===\n"
+                f"Central thesis: {thesis.central_thesis}\n"
+                f"Supporting arguments:\n{args_text}\n"
+                f"Narrative arc: {thesis.narrative_arc or 'Not specified'}\n"
+                "REQUIREMENT: executive_summary MUST open with the narrative arc. "
+                "Each section MUST serve at least one of the arguments above.\n"
+                "==========================\n\n"
+            )
+    else:
+        thesis_block = ""
+
+    if vi:
+        system_prompt = (
+            thesis_block
+            + "Bạn là senior data analyst đang viết narrative báo cáo BI. "
+            "Nhiệm vụ: phân tích dữ liệu thực tế được cung cấp và viết lại insight report với nhận định sắc bén, "
+            "chỉ ra xu hướng, segment nổi bật, và đề xuất hành động có căn cứ từ số liệu. "
+            "Không được bịa thêm số liệu, không được đổi chart_key. Trả về JSON hợp lệ, viết bằng tiếng Việt."
+        )
+    else:
+        system_prompt = (
+            thesis_block
+            + "You are a senior data analyst writing a BI report narrative. "
+            "Analyze the real data signals provided and rewrite the insight report with sharp analytical findings: "
+            "identify trends, highlight standout segments, and suggest evidence-backed actions. "
+            "Do not invent numbers or change chart keys. Return valid JSON only."
+        )
+    if insight_context.get("system_appendix"):
+        system_prompt += "\n\n" + str(insight_context["system_appendix"])
+
     user_prompt = json.dumps(
         {
+            "controlling_thesis": thesis.model_dump(mode="json") if thesis else None,
+            "domain_id": plan.domain_id or domain_pack.metadata.id,
+            "domain_version": plan.domain_version or domain_pack.metadata.version,
             "dashboard_title": plan.dashboard_title,
             "dashboard_summary": plan.dashboard_summary,
             "strategy_summary": plan.strategy_summary,
             "analysis_plan": plan.analysis_plan.model_dump(mode="json") if plan.analysis_plan else None,
+            "selected_domain_context": insight_context.get("user_context") or {},
             "chart_signals": chart_signals or {},
             "chart_sample_rows": {k: v[:10] for k, v in (chart_sample_rows or {}).items()},
             "base_report": {
@@ -548,9 +621,10 @@ def _merge_llm_overrides(
 async def generate_insight_report(
     plan: AgentPlanResponse,
     chart_payloads: Iterable[Dict[str, Any]],
+    thesis: Optional[ThesisArtifact] = None,
 ) -> Tuple[InsightReportArtifact, AgentRuntimeMetadata]:
     payloads_list = list(chart_payloads)
-    base_report = _build_rule_based_insight_report(plan, payloads_list)
+    base_report = _build_rule_based_insight_report(plan, payloads_list, thesis=thesis)
     if not _llm_enabled(plan):
         return base_report, rule_runtime_metadata()
 
@@ -567,7 +641,7 @@ async def generate_insight_report(
             chart_signals[key] = _compute_signals(rows, dim, met)
             chart_sample_rows[key] = rows[:10]
 
-    overrides = await _generate_llm_overrides(plan, base_report, chart_signals, chart_sample_rows)
+    overrides = await _generate_llm_overrides(plan, base_report, chart_signals, chart_sample_rows, thesis=thesis)
     if not overrides:
         return base_report, rule_runtime_metadata()
 

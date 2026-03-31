@@ -100,3 +100,14 @@ def _owned_or_shared(
 def get_module_permission(db: Session, user: User, module: str) -> str:
     """Deprecated alias — use get_user_module_permission() instead."""
     return get_user_module_permission(user, module)
+
+
+def stamp_owner_emails(db: Session, items) -> None:
+    """Batch-set `owner_email` on a list of ORM objects that have `owner_id`."""
+    owner_ids = {i.owner_id for i in items if i.owner_id}
+    if not owner_ids:
+        return
+    users = db.query(User.id, User.email).filter(User.id.in_(owner_ids)).all()
+    lookup = {u.id: u.email for u in users}
+    for item in items:
+        item.owner_email = lookup.get(item.owner_id)

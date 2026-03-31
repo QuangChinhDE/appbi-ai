@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from app.clients.bi_client import bi_client
 from app.schemas.agent import AgentBuildEvent, AgentBuildRequest, AgentChartPlan, AgentPlanResponse
+from app.services.brief_enricher import ensure_plan_thesis
 from app.services.dashboard_composer import compose_dashboard_blueprint
 from app.services.insight_generator import generate_insight_report
 from app.services.output_language import is_vietnamese
@@ -177,6 +178,19 @@ async def build_dashboard_stream(
     token: str,
 ) -> AsyncGenerator[str, None]:
     vi = is_vietnamese(request.brief.output_language if hasattr(request.brief, "output_language") else None)
+
+    try:
+        request = request.model_copy(update={"plan": ensure_plan_thesis(request.plan)})
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Ke hoach bao cao dang thieu thesis context. Hay regenerate plan truoc khi build."
+                if vi
+                else "The report plan is missing thesis context. Regenerate the plan before building."
+            ),
+        ) from exc
+
     perms_payload = await bi_client.get_my_permissions(token)
     permissions = perms_payload.get("permissions", {})
 
@@ -338,7 +352,9 @@ async def build_dashboard_stream(
         if vi
         else "Reading the built charts and drafting narrative insights.",
     )
-    insight_report, insight_runtime = await generate_insight_report(request.plan, created_charts)
+    insight_report, insight_runtime = await generate_insight_report(
+        request.plan, created_charts, thesis=request.plan.thesis
+    )
     build_phase_runtimes["insight"] = insight_runtime.model_dump(mode="json")
 
     await _patch_run(request, token, {"status": "composing_report"})

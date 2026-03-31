@@ -11,6 +11,7 @@ import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
+import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { useI18n } from '@/providers/LanguageProvider';
 import { 
   useWorkspaces, 
@@ -190,6 +191,7 @@ export default function DatasetWorkspacesPage() {
                           <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">
                             {workspace.name}
                           </h3>
+                          <OwnerBadge email={workspace.owner_email} />
                         </div>
                         <ChevronRight className="w-5 h-5 text-gray-400 group-hover:text-blue-600 transition-colors" />
                       </div>
@@ -233,9 +235,12 @@ export default function DatasetWorkspacesPage() {
                     onClick={() => router.push(`/dataset-workspaces/${workspace.id}`)}
                     className="flex-1 text-left min-w-0"
                   >
-                    <span className="text-sm font-medium text-gray-900 hover:text-blue-600 transition-colors">
-                      {workspace.name}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-gray-900 hover:text-blue-600 transition-colors">
+                        {workspace.name}
+                      </span>
+                      <OwnerBadge email={workspace.owner_email} />
+                    </div>
                     {workspace.description && (
                       <p className="text-xs text-gray-500 mt-0.5 truncate">{workspace.description}</p>
                     )}
