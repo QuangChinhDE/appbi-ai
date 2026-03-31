@@ -25,7 +25,14 @@ def review_finance_plan(
     )
     result = DomainReviewResult()
 
-    finance_health_tokens = ["finance", "financial", "tai chinh", "profit", "margin", "cost", "cash", "variance"]
+    finance_health_tokens = [
+        "finance", "financial", "tài chính", "tai chinh",
+        "profit", "lợi nhuận", "loi nhuan",
+        "margin", "biên độ", "bien do",
+        "cost", "chi phí", "chi phi",
+        "cash", "dòng tiền", "dong tien",
+        "variance", "phương sai", "phuong sai",
+    ]
     if not _contains_any(tokens, finance_health_tokens):
         result.warnings.append(
             "Finance domain review: the plan still reads too generic and lacks a clear finance lens."
@@ -36,7 +43,11 @@ def review_finance_plan(
         result.quality_breakdown["domain_lens"] = 0.9
 
     has_time_signal = any(item.candidate_time_fields for item in plan.profiling_report)
-    if has_time_signal and not _contains_any(tokens, ["variance", "trend", "month", "quarter", "year", "budget"]):
+    if has_time_signal and not _contains_any(tokens, [
+        "variance", "phương sai", "trend", "xu hướng",
+        "month", "tháng", "quarter", "quý", "year", "năm",
+        "budget", "ngân sách",
+    ]):
         result.warnings.append(
             "Finance domain review: comparable time signals exist but the plan lacks a clear variance or trend framing."
         )
@@ -49,7 +60,9 @@ def review_finance_plan(
         _contains_any(" ".join(item.candidate_metrics), ["revenue", "sales", "expense", "cost", "profit", "margin", "cash", "budget"])
         for item in plan.profiling_report
     )
-    if has_financial_metric and not _contains_any(tokens, ["margin", "profit", "cost", "expense"]):
+    if has_financial_metric and not _contains_any(tokens, [
+        "margin", "biên độ", "profit", "lợi nhuận", "cost", "chi phí", "expense", "chi tiêu",
+    ]):
         result.warnings.append(
             "Finance domain review: finance metrics exist but the plan does not surface a cost or profitability lens."
         )

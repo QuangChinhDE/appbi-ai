@@ -509,7 +509,7 @@ def _build_heuristic_strategy(
     vi = is_vietnamese(parsed_brief.output_language)
     planner_context = domain_pack.planner_context(parsed_brief, vi) if domain_pack.planner_context else {}
     domain_lens = str((planner_context.get("user_context") or {}).get("domain_lens") or "").strip()
-    section_archetypes = list((planner_context.get("user_context") or {}).get("finance_section_archetypes") or [])
+    section_archetypes = list((planner_context.get("user_context") or {}).get("section_archetypes") or [])
     warnings: List[str] = []
     sections: List[Dict[str, Any]] = []
     fit_by_table_id = {item.table_id: item for item in dataset_fit_report}

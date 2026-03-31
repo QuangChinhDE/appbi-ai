@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List
 
+from app.domains.finance.config import METADATA
 from app.domains.finance.glossary import FINANCE_GLOSSARY, FINANCE_PRIMARY_KPIS, FINANCE_SECTION_ARCHETYPES
 from app.domains.finance.narrative import FINANCE_DOMAIN_LENS_EN, FINANCE_DOMAIN_LENS_VI
 from app.domains.finance.prompts import (
@@ -42,8 +43,8 @@ def prepare_finance_brief(brief: AgentBriefRequest, parsed_brief: ParsedBriefArt
     )
     return parsed_brief.model_copy(
         update={
-            "domain_id": "finance",
-            "domain_version": "1.0",
+            "domain_id": METADATA.id,
+            "domain_version": METADATA.version,
             "glossary_terms": glossary_terms,
             "required_sections": required_sections,
             "success_criteria": list(dict.fromkeys(success_criteria)),
@@ -58,6 +59,8 @@ def finance_enrichment_context(
     table_descriptions: List[Dict[str, Any]],
     vi: bool,
 ) -> Dict[str, Any]:
+    if not table_descriptions:
+        table_descriptions = []
     metric_hints = _find_column_matches(
         table_descriptions,
         ["revenue", "sales", "amount", "expense", "cost", "profit", "margin", "budget", "forecast", "cash", "ar", "ap"],
@@ -80,7 +83,7 @@ def finance_planner_context(parsed_brief: ParsedBriefArtifact, vi: bool) -> Dict
         "system_appendix": FINANCE_PLANNER_PROMPT_VI if vi else FINANCE_PLANNER_PROMPT_EN,
         "user_context": {
             "selected_domain": "finance",
-            "finance_section_archetypes": FINANCE_SECTION_ARCHETYPES,
+            "section_archetypes": FINANCE_SECTION_ARCHETYPES,
             "finance_glossary_terms": FINANCE_GLOSSARY,
             "domain_lens": FINANCE_DOMAIN_LENS_VI if vi else FINANCE_DOMAIN_LENS_EN,
             "parsed_domain_id": parsed_brief.domain_id,
