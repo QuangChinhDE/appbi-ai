@@ -32,7 +32,7 @@ export function PublicShareDialog({
   const [copied, setCopied] = useState(false);
   const [publicFilters, setPublicFilters] = useState<BaseFilter[]>(currentPublicFilters.length > 0 ? currentPublicFilters : globalFilters);
   const [savedPublicFilters, setSavedPublicFilters] = useState<BaseFilter[]>(currentPublicFilters.length > 0 ? currentPublicFilters : globalFilters);
-  const [filtersExpanded, setFiltersExpanded] = useState(false);
+  const [filtersExpanded, setFiltersExpanded] = useState(!currentToken || currentPublicFilters.length === 0);
   const shareMutation = useShareDashboard();
   const unshareMutation = useUnshareDashboard();
 
@@ -49,6 +49,12 @@ export function PublicShareDialog({
     setPublicFilters(next);
     setSavedPublicFilters(next);
   }, [currentPublicFilters, globalFilters]);
+
+  useEffect(() => {
+    if (!token || publicFilters.length === 0) {
+      setFiltersExpanded(true);
+    }
+  }, [token, publicFilters.length]);
 
   const handleSavePublicLink = async () => {
     try {
@@ -113,49 +119,52 @@ export function PublicShareDialog({
           </p>
 
           {/* Public filters section */}
-          {(publicFilters.length > 0 || availableColumns.length > 0) && (
-            <div className="rounded-lg border border-gray-200">
-              <button
-                type="button"
-                onClick={() => setFiltersExpanded(v => !v)}
-                className="flex w-full items-center justify-between px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-              >
-                <span className="flex items-center gap-2">
-                  <Filter className="h-4 w-4 text-gray-400" />
-                  Public link filters
-                  {publicFilters.length > 0 && (
-                    <span className="rounded-full bg-blue-100 px-1.5 py-0.5 text-xs font-semibold text-blue-700">
-                      {publicFilters.length}
-                    </span>
-                  )}
-                </span>
-                {filtersExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-              </button>
-              {filtersExpanded && (
-                <div className="border-t border-gray-100 px-3 py-2 space-y-1">
-                  <p className="text-xs text-gray-400 mb-2">
-                    These filters are saved on the server and enforced for everyone opening this link.
-                  </p>
-                  {availableColumns.length > 0 ? (
-                    <DashboardFilterBar
-                      columns={availableColumns}
-                      columnChartCount={columnChartCount}
-                      filters={publicFilters}
-                      onFiltersChange={setPublicFilters}
-                    />
-                  ) : publicFilters.length > 0 ? (
-                    publicFilters.map(f => (
+          <div className="rounded-lg border border-gray-200">
+            <button
+              type="button"
+              onClick={() => setFiltersExpanded(v => !v)}
+              className="flex w-full items-center justify-between px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              <span className="flex items-center gap-2">
+                <Filter className="h-4 w-4 text-gray-400" />
+                Public link filters
+                {publicFilters.length > 0 && (
+                  <span className="rounded-full bg-blue-100 px-1.5 py-0.5 text-xs font-semibold text-blue-700">
+                    {publicFilters.length}
+                  </span>
+                )}
+              </span>
+              {filtersExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </button>
+            {filtersExpanded && (
+              <div className="border-t border-gray-100 px-3 py-2 space-y-2">
+                <p className="text-xs text-gray-500">
+                  These filters are saved on the server and enforced for everyone opening this link.
+                </p>
+                {availableColumns.length > 0 ? (
+                  <DashboardFilterBar
+                    columns={availableColumns}
+                    columnChartCount={columnChartCount}
+                    filters={publicFilters}
+                    onFiltersChange={setPublicFilters}
+                  />
+                ) : publicFilters.length > 0 ? (
+                  <div className="space-y-1">
+                    {publicFilters.map(f => (
                       <div key={f.id} className="rounded px-1 py-1 text-xs text-gray-700">
                         {formatFilterLabel(f)}
                       </div>
-                    ))
-                  ) : (
-                    <p className="text-xs text-gray-400">Open the dashboard detail page to define public link filters.</p>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    This dialog does not currently have chart column context, so new filters cannot be added here.
+                    Open the dashboard detail page, then open Public link there to add filters before sharing.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           {resolvedPublicUrl ? (
             <>
