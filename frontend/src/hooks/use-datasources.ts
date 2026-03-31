@@ -42,7 +42,7 @@ export const useUpdateDataSource = () => {
   return useMutation({
     mutationFn: ({ id, data }: { id: number; data: DataSourceUpdate }) =>
       dataSourceApi.update(id, data),
-    onSuccess: (_, variables) => {
+    onSuccess: (_data: unknown, variables: { id: number; data: DataSourceUpdate }) => {
       queryClient.invalidateQueries({ queryKey: ['datasources'] });
       queryClient.invalidateQueries({ queryKey: ['datasources', variables.id] });
     },
@@ -125,7 +125,7 @@ export const useSaveSyncConfig = () => {
   return useMutation({
     mutationFn: ({ id, config }: { id: number; config: SyncConfig }) =>
       dataSourceApi.saveSyncConfig(id, config),
-    onSuccess: (_, variables) => {
+    onSuccess: (_data: unknown, variables: { id: number; config: SyncConfig }) => {
       queryClient.invalidateQueries({ queryKey: ['datasources', variables.id, 'sync-config'] });
     },
   });
@@ -146,7 +146,7 @@ export const useTriggerSync = () => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => dataSourceApi.triggerSync(id),
-    onSuccess: (_, id) => {
+    onSuccess: (_data: unknown, id: number) => {
       queryClient.invalidateQueries({ queryKey: ['datasources', id, 'sync-jobs'] });
       // Clear cached preview errors so the workspace page retries automatically
       // once the background sync thread finishes writing the DuckDB views.

@@ -2,6 +2,7 @@
  * React Query hooks for Dataset Workspaces API
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { Query } from '@tanstack/react-query';
 import { apiClient as api } from '@/lib/api-client';
 
 // ===== Types =====
@@ -230,7 +231,7 @@ export function useUpdateWorkspace() {
       );
       return response.data;
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (_data: DatasetWorkspace, variables: { id: number; input: UpdateWorkspaceInput }) => {
       queryClient.invalidateQueries({ queryKey: workspaceKeys.detail(variables.id) });
       queryClient.invalidateQueries({ queryKey: workspaceKeys.lists() });
     },
@@ -267,7 +268,7 @@ export function useAddTableToWorkspace() {
       );
       return response.data;
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (_data: WorkspaceTable, variables: { workspaceId: number; input: AddTableInput }) => {
       queryClient.invalidateQueries({ queryKey: workspaceKeys.detail(variables.workspaceId) });
       queryClient.invalidateQueries({ queryKey: workspaceKeys.tables(variables.workspaceId) });
     },
@@ -296,7 +297,7 @@ export function useUpdateTable() {
       );
       return response.data;
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (_data: WorkspaceTable, variables: { workspaceId: number; tableId: number; input: UpdateTableInput }) => {
       queryClient.invalidateQueries({ queryKey: workspaceKeys.detail(variables.workspaceId) });
       queryClient.invalidateQueries({ queryKey: workspaceKeys.tables(variables.workspaceId) });
     },
@@ -313,7 +314,7 @@ export function useRemoveTable() {
     mutationFn: async ({ workspaceId, tableId }: { workspaceId: number; tableId: number }) => {
       await api.delete(`/dataset-workspaces/${workspaceId}/tables/${tableId}`);
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (_data: void, variables: { workspaceId: number; tableId: number }) => {
       queryClient.invalidateQueries({ queryKey: workspaceKeys.detail(variables.workspaceId) });
       queryClient.invalidateQueries({ queryKey: workspaceKeys.tables(variables.workspaceId) });
     },
@@ -340,12 +341,12 @@ export function useTablePreview(
     enabled: workspaceId !== null && tableId !== null,
     // Retry every 5s while the table is not yet synced (422) so the UI
     // automatically recovers once the background sync thread finishes.
-    refetchInterval: (query) => {
+    refetchInterval: (query: Query<TablePreviewResponse, any, TablePreviewResponse, readonly unknown[]>) => {
       const err = query.state.error as any;
       if (err?.response?.status === 422) return 5000;
       return false;
     },
-    retry: (failureCount, error: any) => {
+    retry: (failureCount: number, error: any) => {
       // Keep retrying 422 (not synced) indefinitely; stop on other errors.
       if (error?.response?.status === 422) return true;
       return failureCount < 2;
