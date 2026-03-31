@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import type { Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
@@ -36,6 +36,8 @@ export default function PublicDashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [globalFilters, setGlobalFilters] = useState<BaseFilter[]>([]);
   const [availableColumns, setAvailableColumns] = useState<ColumnInfo[]>([]);
+  // Track whether filters have been seeded (from URL params or filters_config)
+  const filtersInitializedRef = useRef(false);
 
   const columnChartCount = useMemo(() => {
     const tracker = new Map<string, Set<number>>();
@@ -76,15 +78,53 @@ export default function PublicDashboardPage() {
   // Mark as mounted (client-only)
   useEffect(() => { setMounted(true); }, []);
 
+  // Keep URL search params in sync with globalFilters (shallow replace, no history entry)
+  useEffect(() => {
+    if (!mounted || !filtersInitializedRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    if (globalFilters.length > 0) {
+      params.set('filters', encodeURIComponent(JSON.stringify(globalFilters)));
+    } else {
+      params.delete('filters');
+    }
+    const newSearch = params.toString();
+    const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : '');
+    if (newUrl !== window.location.pathname + window.location.search) {
+      window.history.replaceState(null, '', newUrl);
+    }
+  }, [globalFilters, mounted]);
+
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
 
     async function load() {
+      // Read URL filter params (synchronously before async fetch)
+      let urlFilters: BaseFilter[] | null = null;
+      try {
+        const filtersParam = new URLSearchParams(window.location.search).get('filters');
+        if (filtersParam) {
+          const parsed = JSON.parse(decodeURIComponent(filtersParam));
+          if (Array.isArray(parsed)) urlFilters = parsed as BaseFilter[];
+        }
+      } catch {
+        // invalid param — ignore
+      }
+
       try {
         const dash = await publicDashboardApi.get(token);
         if (cancelled) return;
         setDashboard(dash);
+
+        // Initialize filters once: URL params take precedence over saved filters_config
+        if (!filtersInitializedRef.current) {
+          filtersInitializedRef.current = true;
+          if (urlFilters) {
+            setGlobalFilters(urlFilters);
+          } else if (Array.isArray(dash.filters_config) && dash.filters_config.length > 0) {
+            setGlobalFilters(dash.filters_config as BaseFilter[]);
+          }
+        }
 
         // Fetch all chart data in parallel
         const entries = await Promise.allSettled(
@@ -139,7 +179,7 @@ export default function PublicDashboardPage() {
   }
 
   const layouts: Layout[] = dashboard.dashboard_charts.map((dc) => {
-    const l = dc.layout as Record<string, number>;
+    const l = dc.layout;
     return { i: dc.id.toString(), x: l.x || 0, y: l.y || 0, w: l.w || 4, h: l.h || 4 };
   });
 
@@ -191,7 +231,7 @@ export default function PublicDashboardPage() {
             {dashboard.dashboard_charts.map((dc) => {
               const cd = chartData[dc.chart_id];
               const chart = dc.chart;
-              const customTitle = (dc.layout as any)?.custom_title;
+              const customTitle = dc.layout.custom_title;
               const title = customTitle ?? chart?.name ?? '';
               const roleConfig = (chart?.config as any)?.roleConfig;
               const filteredRows = Array.isArray(cd?.data)

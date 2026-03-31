@@ -35,7 +35,7 @@ export function DashboardGrid({
 }: DashboardGridProps) {
   // Convert backend layout to react-grid-layout format
   const layouts = dashboardCharts.map((dc) => {
-    const layout = dc.layout as Record<string, number>;
+    const layout = dc.layout;
     return {
       i: dc.id.toString(),
       x: layout.x || 0,

@@ -339,7 +339,7 @@ export interface DashboardChartLayout {
 export interface DashboardChart {
   id: number;
   chart_id: number;
-  layout: Record<string, number>;
+  layout: DashboardChartLayout;
   chart: Chart;
   parameters?: Record<string, any> | null;
 }
@@ -419,6 +419,7 @@ export interface DashboardCreate {
 export interface DashboardUpdate {
   name?: string;
   description?: string;
+  filters_config?: any[];
 }
 
 export interface QueryExecuteRequest {

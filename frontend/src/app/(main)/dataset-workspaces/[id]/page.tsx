@@ -621,9 +621,16 @@ export default function WorkspaceDetailPage() {
                   <div className="text-center max-w-sm">
                     <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto mb-3" />
                     <h3 className="text-base font-semibold text-gray-900 mb-1">Chưa sync</h3>
-                    <p className="text-sm text-gray-600">
-                      Bảng này chưa được đồng bộ vào DuckDB. Hãy vào trang Datasource và chạy Sync trước khi xem dữ liệu.
+                    <p className="text-sm text-gray-600 mb-4">
+                      Bảng này chưa được đồng bộ vào DuckDB. Nếu bạn vừa chạy Sync, hãy đợi vài giây — trang sẽ tự động cập nhật khi sync xong.
                     </p>
+                    <button
+                      onClick={() => refetchPreview()}
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      Thử lại ngay
+                    </button>
                   </div>
                 </div>
               ) : (

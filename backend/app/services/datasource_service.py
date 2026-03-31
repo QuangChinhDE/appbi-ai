@@ -124,6 +124,7 @@ class DataSourceConnectionService:
     @staticmethod
     def _test_bigquery(config: Dict[str, Any]) -> Tuple[bool, str]:
         """Test BigQuery connection."""
+        client = None
         try:
             credentials_info = json.loads(_resolve_gcp_credentials_json(config))
             credentials = service_account.Credentials.from_service_account_info(credentials_info)
@@ -131,12 +132,38 @@ class DataSourceConnectionService:
                 credentials=credentials,
                 project=config.get("project_id")
             )
-            # Test with a simple query
+            # Test basic API access
             query = "SELECT 1"
             client.query(query).result()
+
+            # Also verify dataset/table listing permission — this is what the datasource
+            # actually needs after connecting.  If default_dataset is set, probe that
+            # dataset directly (covers per-dataset IAM roles).  Otherwise attempt a
+            # project-level dataset listing so the user gets an early warning.
+            default_dataset = config.get("default_dataset", "").strip()
+            if default_dataset:
+                try:
+                    list(client.list_tables(default_dataset, max_results=1))
+                except Exception as e:
+                    return True, f"Connection successful, but could not list tables in dataset '{default_dataset}': {e}"
+            else:
+                try:
+                    datasets = list(client.list_datasets(max_results=1))
+                    if not datasets:
+                        return True, (
+                            "Connection successful, but no datasets found in the project. "
+                            "Check that the service account has bigquery.datasets.list on the project, "
+                            "or set a Default Dataset to target a specific dataset."
+                        )
+                except Exception as e:
+                    return True, f"Connection successful, but could not list datasets: {e}. Set a Default Dataset if the service account only has per-dataset access."
+
             return True, "Connection successful"
         except Exception as e:
             return False, str(e)
+        finally:
+            if client:
+                client.close()
     
     @staticmethod
     def _test_google_sheets(config: Dict[str, Any]) -> Tuple[bool, str]:
@@ -713,11 +740,14 @@ class DataSourceConnectionService:
             """
             
             if search_query:
-                query += f" AND table_name ILIKE '%{search_query}%'"
-            
+                query += " AND table_name ILIKE %s"
+                params = (f"%{search_query}%",)
+            else:
+                params = ()
+
             query += " ORDER BY table_schema, table_name"
-            
-            cursor.execute(query)
+
+            cursor.execute(query, params)
             rows = cursor.fetchall()
             
             tables = []
@@ -756,20 +786,22 @@ class DataSourceConnectionService:
             database = config.get("database")
             
             # Query information_schema for tables
-            query = f"""
+            query = """
                 SELECT 
                     TABLE_NAME,
                     TABLE_TYPE
                 FROM information_schema.tables
-                WHERE TABLE_SCHEMA = '{database}'
+                WHERE TABLE_SCHEMA = %s
             """
-            
+            params: tuple = (database,)
+
             if search_query:
-                query += f" AND TABLE_NAME LIKE '%{search_query}%'"
-            
+                query += " AND TABLE_NAME LIKE %s"
+                params = (database, f"%{search_query}%")
+
             query += " ORDER BY TABLE_NAME"
-            
-            cursor.execute(query)
+
+            cursor.execute(query, params)
             rows = cursor.fetchall()
             
             tables = []
@@ -799,43 +831,65 @@ class DataSourceConnectionService:
             credentials_info = json.loads(_resolve_gcp_credentials_json(config))
             credentials = service_account.Credentials.from_service_account_info(credentials_info)
             project_id = config.get("project_id")
-            
+
             client = bigquery.Client(
                 credentials=credentials,
                 project=project_id
             )
-            
+
             logger.info(f"Listing BigQuery tables for project {project_id}")
-            
-            # List all datasets
-            datasets = list(client.list_datasets())
-            
+
+            class _DS:
+                def __init__(self, ds_id):
+                    self.dataset_id = ds_id
+
+            default_dataset = config.get("default_dataset", "").strip()
+
+            if default_dataset:
+                # User explicitly set a dataset — scope listing to that dataset only.
+                logger.info(f"default_dataset configured: listing only '{default_dataset}'")
+                datasets = [_DS(default_dataset)]
+            else:
+                # No dataset filter — list all datasets in the project.
+                datasets = list(client.list_datasets())
+                if not datasets:
+                    logger.warning(
+                        f"list_datasets() returned empty for project {project_id}. "
+                        "Grant bigquery.datasets.list on the project or set a Default Dataset."
+                    )
+
             tables = []
             for dataset in datasets:
                 dataset_id = dataset.dataset_id
-                
-                # List tables in dataset
-                dataset_tables = list(client.list_tables(dataset_id))
-                
+
+                try:
+                    dataset_tables = list(client.list_tables(dataset_id))
+                except Exception as e:
+                    logger.warning(f"Could not list tables in dataset '{dataset_id}': {e}")
+                    continue
+
                 for table in dataset_tables:
                     table_name = f"{dataset_id}.{table.table_id}"
-                    
+
                     # Apply search filter
                     if search_query and search_query.lower() not in table_name.lower():
                         continue
-                    
+
                     tables.append({
                         "name": table_name,
                         "schema": dataset_id,
                         "type": "view" if table.table_type == "VIEW" else "table"
                     })
-            
+
             logger.info(f"BigQuery tables listed: {len(tables)}")
             return tables
-            
+
         except Exception as e:
             logger.error(f"BigQuery list tables failed on project {config.get('project_id')}: {str(e)}")
             raise
+        finally:
+            if client:
+                client.close()
     
     @staticmethod
     def _list_google_sheets(
@@ -1381,17 +1435,29 @@ class DataSourceConnectionService:
 
     @staticmethod
     def _bq_list_columns(config: Dict[str, Any], full_table: str) -> List[Dict[str, str]]:
+        client = None
         try:
             credentials_info = json.loads(_resolve_gcp_credentials_json(config))
             credentials = service_account.Credentials.from_service_account_info(credentials_info)
-            client = bigquery.Client(credentials=credentials, project=config.get("project_id"))
+            project_id = config.get("project_id", "")
+            client = bigquery.Client(credentials=credentials, project=project_id)
             parts = full_table.split(".")
-            dataset_id = parts[0] if len(parts) >= 2 else ""
-            table_id = parts[1] if len(parts) >= 2 else full_table
-            table_ref = client.get_table(f"{dataset_id}.{table_id}")
+            if len(parts) >= 3:
+                # Already fully-qualified: project.dataset.table
+                table_ref_str = full_table
+            elif len(parts) == 2:
+                # dataset.table — prefix with project so cross-project refs work
+                table_ref_str = f"{project_id}.{parts[0]}.{parts[1]}"
+            else:
+                table_ref_str = full_table
+            table_ref = client.get_table(table_ref_str)
             return [{"name": f.name, "type": f.field_type} for f in table_ref.schema]
-        except Exception:
+        except Exception as e:
+            logger.warning(f"_bq_list_columns failed for table '{full_table}': {e}")
             return []
+        finally:
+            if client:
+                client.close()
 
     @staticmethod
     def _sheets_list_columns(config: Dict[str, Any], sheet_name: str) -> List[Dict[str, str]]:

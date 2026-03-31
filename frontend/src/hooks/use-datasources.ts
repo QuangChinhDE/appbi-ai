@@ -148,6 +148,10 @@ export const useTriggerSync = () => {
     mutationFn: (id: number) => dataSourceApi.triggerSync(id),
     onSuccess: (_, id) => {
       queryClient.invalidateQueries({ queryKey: ['datasources', id, 'sync-jobs'] });
+      // Clear cached preview errors so the workspace page retries automatically
+      // once the background sync thread finishes writing the DuckDB views.
+      queryClient.invalidateQueries({ queryKey: ['dataset-workspaces'] });
+      queryClient.invalidateQueries({ queryKey: ['table-preview'] });
     },
   });
 };

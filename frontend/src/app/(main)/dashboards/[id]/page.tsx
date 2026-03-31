@@ -12,6 +12,7 @@ import {
   useRemoveChartFromDashboard,
   useUpdateDashboardLayout,
 } from '@/hooks/use-dashboards';
+import { dashboardApi } from '@/lib/api/dashboards';
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { AddChartModal } from '@/components/dashboards/AddChartModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
@@ -63,6 +64,10 @@ export default function DashboardDetailPage() {
   // columnChartCount: how many distinct chartIds have each column
   const columnChartCountRef = React.useRef<Map<string, Set<number>>>(new Map());
   const [columnChartCount, setColumnChartCount] = useState<Map<string, number>>(new Map());
+  // Refs for filter seeding and auto-save
+  const filtersSeededRef = React.useRef(false);
+  const filtersSaveTimerRef = React.useRef<NodeJS.Timeout | null>(null);
+  const filtersSnapshotRef = React.useRef<string>('[]');
 
   const { data: dashboard, isLoading: isLoadingDashboard } = useDashboard(dashboardId);
   const { data: permData } = usePermissions();
@@ -75,6 +80,35 @@ export default function DashboardDetailPage() {
   const addChartMutation = useAddChartToDashboard();
   const removeChartMutation = useRemoveChartFromDashboard();
   const updateLayoutMutation = useUpdateDashboardLayout();
+
+  // Seed globalFilters from dashboard.filters_config once when dashboard first loads
+  React.useEffect(() => {
+    if (!dashboard || filtersSeededRef.current) return;
+    filtersSeededRef.current = true;
+    const initial: BaseFilter[] = Array.isArray(dashboard.filters_config) ? dashboard.filters_config as BaseFilter[] : [];
+    filtersSnapshotRef.current = JSON.stringify(initial);
+    setGlobalFilters(initial);
+  }, [dashboard]);
+
+  // Auto-save globalFilters to backend for editors (1.5s debounce, skips the initial seed)
+  React.useEffect(() => {
+    if (!filtersSeededRef.current) return;
+    const current = JSON.stringify(globalFilters);
+    if (current === filtersSnapshotRef.current) return; // no change from saved value
+    if (!canEditResource) return;
+    if (filtersSaveTimerRef.current) clearTimeout(filtersSaveTimerRef.current);
+    filtersSaveTimerRef.current = setTimeout(async () => {
+      try {
+        await dashboardApi.update(dashboardId, { filters_config: globalFilters });
+        filtersSnapshotRef.current = JSON.stringify(globalFilters);
+      } catch {
+        // silent — filters remain active in session even if save fails
+      }
+    }, 1500);
+    return () => {
+      if (filtersSaveTimerRef.current) clearTimeout(filtersSaveTimerRef.current);
+    };
+  }, [globalFilters, canEditResource, dashboardId]);
 
   // Auto-save layout with debounce
   const debouncedSaveLayout = useDebounce(

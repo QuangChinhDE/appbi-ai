@@ -338,6 +338,18 @@ export function useTablePreview(
       return response.data;
     },
     enabled: workspaceId !== null && tableId !== null,
+    // Retry every 5s while the table is not yet synced (422) so the UI
+    // automatically recovers once the background sync thread finishes.
+    refetchInterval: (query) => {
+      const err = query.state.error as any;
+      if (err?.response?.status === 422) return 5000;
+      return false;
+    },
+    retry: (failureCount, error: any) => {
+      // Keep retrying 422 (not synced) indefinitely; stop on other errors.
+      if (error?.response?.status === 422) return true;
+      return failureCount < 2;
+    },
   });
 }
 
