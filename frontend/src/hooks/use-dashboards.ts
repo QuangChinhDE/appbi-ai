@@ -112,10 +112,11 @@ export const useUpdateDashboardLayout = () => {
 export const useShareDashboard = () => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (id: number) => dashboardApi.share(id),
-    onSuccess: (_, id) => {
+    mutationFn: ({ dashboardId, publicFiltersConfig }: { dashboardId: number; publicFiltersConfig?: any[] }) =>
+      dashboardApi.share(dashboardId, publicFiltersConfig),
+    onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['dashboards'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboards', id] });
+      queryClient.invalidateQueries({ queryKey: ['dashboards', variables.dashboardId] });
     },
   });
 };

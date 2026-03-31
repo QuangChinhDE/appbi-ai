@@ -216,6 +216,7 @@ class DashboardBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     filters_config: Optional[List[Dict[str, Any]]] = None  # Dashboard-level filters (hybrid v1)
+    public_filters_config: Optional[List[Dict[str, Any]]] = None
 
 
 class DashboardCreate(DashboardBase):
@@ -228,6 +229,12 @@ class DashboardUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
     filters_config: Optional[List[Dict[str, Any]]] = None
+    public_filters_config: Optional[List[Dict[str, Any]]] = None
+
+
+class DashboardShareRequest(BaseModel):
+    """Schema for saving public-link-specific filters."""
+    public_filters_config: Optional[List[Dict[str, Any]]] = None
 
 
 class DashboardChartResponse(BaseModel):
@@ -252,6 +259,7 @@ class DashboardResponse(DashboardBase):
     updated_at: datetime
     dashboard_charts: List[DashboardChartResponse] = []
     filters_config: Optional[List[Dict[str, Any]]] = None
+    public_filters_config: Optional[List[Dict[str, Any]]] = None
 
     model_config = ConfigDict(from_attributes=True)
 

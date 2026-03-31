@@ -459,6 +459,9 @@ export default function DashboardDetailPage() {
             dashboardName={dashboard.name}
             currentToken={dashboard.share_token}
             globalFilters={globalFilters}
+            currentPublicFilters={dashboard.public_filters_config as BaseFilter[] ?? []}
+            availableColumns={availableColumns}
+            columnChartCount={columnChartCount}
             onClose={() => setIsPublicShareOpen(false)}
           />
         )}

@@ -63,8 +63,11 @@ export const dashboardApi = {
     return response.data;
   },
 
-  share: async (id: number): Promise<{ share_token: string }> => {
-    const response = await apiClient.post(`/dashboards/${id}/share`);
+  share: async (
+    id: number,
+    public_filters_config?: any[],
+  ): Promise<{ share_token: string; public_filters_config?: any[] }> => {
+    const response = await apiClient.post(`/dashboards/${id}/share`, { public_filters_config });
     return response.data;
   },
 

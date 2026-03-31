@@ -1,16 +1,20 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { X, Link2, Copy, Check, Trash2, Globe, Filter, ChevronDown, ChevronUp } from 'lucide-react';
 import { useShareDashboard, useUnshareDashboard } from '@/hooks/use-dashboards';
+import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { toast } from 'sonner';
-import type { BaseFilter } from '@/lib/filters';
+import type { BaseFilter, ColumnInfo } from '@/lib/filters';
 
 interface PublicShareDialogProps {
   dashboardId: number;
   dashboardName: string;
   currentToken: string | null | undefined;
   globalFilters?: BaseFilter[];
+  currentPublicFilters?: BaseFilter[];
+  availableColumns?: ColumnInfo[];
+  columnChartCount?: Map<string, number>;
   onClose: () => void;
 }
 
@@ -19,32 +23,45 @@ export function PublicShareDialog({
   dashboardName,
   currentToken,
   globalFilters = [],
+  currentPublicFilters = [],
+  availableColumns = [],
+  columnChartCount = new Map<string, number>(),
   onClose,
 }: PublicShareDialogProps) {
   const [token, setToken] = useState<string | null | undefined>(currentToken);
   const [copied, setCopied] = useState(false);
-  // Preset filter IDs to encode into the share link (default: all active filters)
-  const [presetFilterIds, setPresetFilterIds] = useState<Set<string>>(
-    new Set(globalFilters.map(f => f.id))
-  );
+  const [publicFilters, setPublicFilters] = useState<BaseFilter[]>(currentPublicFilters.length > 0 ? currentPublicFilters : globalFilters);
+  const [savedPublicFilters, setSavedPublicFilters] = useState<BaseFilter[]>(currentPublicFilters.length > 0 ? currentPublicFilters : globalFilters);
   const [filtersExpanded, setFiltersExpanded] = useState(false);
   const shareMutation = useShareDashboard();
   const unshareMutation = useUnshareDashboard();
 
   // Always use runtime origin so custom domains work automatically
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
-  const presetFilters = globalFilters.filter(f => presetFilterIds.has(f.id));
-  const filterParam = presetFilters.length > 0
-    ? `?filters=${encodeURIComponent(JSON.stringify(presetFilters))}`
-    : '';
-  const resolvedPublicUrl = token ? `${origin.replace(/\/$/, '')}/d/${token}${filterParam}` : null;
+  const resolvedPublicUrl = token ? `${origin.replace(/\/$/, '')}/d/${token}` : null;
+  const filtersDirty = useMemo(
+    () => JSON.stringify(publicFilters) !== JSON.stringify(savedPublicFilters),
+    [publicFilters, savedPublicFilters],
+  );
 
-  const handleGenerate = async () => {
+  useEffect(() => {
+    const next = currentPublicFilters.length > 0 ? currentPublicFilters : globalFilters;
+    setPublicFilters(next);
+    setSavedPublicFilters(next);
+  }, [currentPublicFilters, globalFilters]);
+
+  const handleSavePublicLink = async () => {
     try {
-      const result = await shareMutation.mutateAsync(dashboardId);
+      const result = await shareMutation.mutateAsync({
+        dashboardId,
+        publicFiltersConfig: publicFilters,
+      });
       setToken(result.share_token);
+      setSavedPublicFilters(publicFilters);
+      return result.share_token;
     } catch {
       toast.error('Failed to generate share link.');
+      return null;
     }
   };
 
@@ -58,20 +75,16 @@ export function PublicShareDialog({
     }
   };
 
-  const handleCopy = () => {
-    if (!resolvedPublicUrl) return;
-    navigator.clipboard.writeText(resolvedPublicUrl);
+  const handleCopy = async () => {
+    let nextToken = token;
+    if (!nextToken || filtersDirty) {
+      nextToken = await handleSavePublicLink();
+    }
+    if (!nextToken) return;
+    const nextUrl = `${origin.replace(/\/$/, '')}/d/${nextToken}`;
+    navigator.clipboard.writeText(nextUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  };
-
-  const toggleFilter = (id: string) => {
-    setPresetFilterIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
   };
 
   const formatFilterLabel = (f: BaseFilter): string => {
@@ -99,8 +112,8 @@ export function PublicShareDialog({
             Anyone with the link can view <strong>{dashboardName}</strong> in read-only mode — no login required.
           </p>
 
-          {/* Preset filters section */}
-          {globalFilters.length > 0 && (
+          {/* Public filters section */}
+          {(publicFilters.length > 0 || availableColumns.length > 0) && (
             <div className="rounded-lg border border-gray-200">
               <button
                 type="button"
@@ -109,10 +122,10 @@ export function PublicShareDialog({
               >
                 <span className="flex items-center gap-2">
                   <Filter className="h-4 w-4 text-gray-400" />
-                  Preset filters
-                  {presetFilterIds.size > 0 && (
+                  Public link filters
+                  {publicFilters.length > 0 && (
                     <span className="rounded-full bg-blue-100 px-1.5 py-0.5 text-xs font-semibold text-blue-700">
-                      {presetFilterIds.size}
+                      {publicFilters.length}
                     </span>
                   )}
                 </span>
@@ -121,19 +134,24 @@ export function PublicShareDialog({
               {filtersExpanded && (
                 <div className="border-t border-gray-100 px-3 py-2 space-y-1">
                   <p className="text-xs text-gray-400 mb-2">
-                    Selected filters will be applied when anyone opens this link.
+                    These filters are saved on the server and enforced for everyone opening this link.
                   </p>
-                  {globalFilters.map(f => (
-                    <label key={f.id} className="flex items-center gap-2 cursor-pointer rounded px-1 py-1 hover:bg-gray-50">
-                      <input
-                        type="checkbox"
-                        checked={presetFilterIds.has(f.id)}
-                        onChange={() => toggleFilter(f.id)}
-                        className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600"
-                      />
-                      <span className="text-xs text-gray-700 truncate">{formatFilterLabel(f)}</span>
-                    </label>
-                  ))}
+                  {availableColumns.length > 0 ? (
+                    <DashboardFilterBar
+                      columns={availableColumns}
+                      columnChartCount={columnChartCount}
+                      filters={publicFilters}
+                      onFiltersChange={setPublicFilters}
+                    />
+                  ) : publicFilters.length > 0 ? (
+                    publicFilters.map(f => (
+                      <div key={f.id} className="rounded px-1 py-1 text-xs text-gray-700">
+                        {formatFilterLabel(f)}
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-xs text-gray-400">Open the dashboard detail page to define public link filters.</p>
+                  )}
                 </div>
               )}
             </div>
@@ -160,8 +178,16 @@ export function PublicShareDialog({
                   className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
                 >
                   {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                  {copied ? 'Copied!' : 'Copy link'}
+                  {copied ? 'Copied!' : filtersDirty ? 'Save and copy link' : 'Copy link'}
                 </button>
+                {token && filtersDirty && (
+                  <button
+                    onClick={handleSavePublicLink}
+                    className="flex items-center gap-2 rounded-lg border border-blue-200 px-4 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50"
+                  >
+                    Save filters
+                  </button>
+                )}
                 <button
                   onClick={handleRevoke}
                   disabled={unshareMutation.isPending}
@@ -184,7 +210,7 @@ export function PublicShareDialog({
                 <p className="mt-1 text-xs text-gray-400">Generate a link to share this dashboard externally.</p>
               </div>
               <button
-                onClick={handleGenerate}
+                onClick={handleSavePublicLink}
                 disabled={shareMutation.isPending}
                 className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
               >

@@ -301,6 +301,7 @@ export default function DashboardsPage() {
           dashboardId={publicShareDash.id}
           dashboardName={publicShareDash.name}
           currentToken={publicShareDash.share_token}
+          currentPublicFilters={publicShareDash.public_filters_config as any[] ?? []}
           onClose={() => setPublicShareDash(null)}
         />
       )}

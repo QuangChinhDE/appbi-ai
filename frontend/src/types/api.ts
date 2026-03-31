@@ -404,6 +404,7 @@ export interface Dashboard {
   updated_at: string;
   dashboard_charts: DashboardChart[];
   filters_config?: any[]; // Dashboard-level filters (hybrid v1)
+  public_filters_config?: any[];
 }
 
 export interface DashboardCreate {
@@ -420,6 +421,7 @@ export interface DashboardUpdate {
   name?: string;
   description?: string;
   filters_config?: any[];
+  public_filters_config?: any[];
 }
 
 export interface QueryExecuteRequest {

@@ -9,7 +9,6 @@ import { BarChart3, Loader2, AlertTriangle } from 'lucide-react';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
-import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { publicDashboardApi } from '@/lib/api/public';
 import type { Dashboard, DashboardChart, ChartDataResponse } from '@/types/api';
 import type { BaseFilter, ColumnInfo } from '@/lib/filters';
@@ -70,51 +69,21 @@ export default function PublicDashboardPage() {
   // Mark as mounted (client-only)
   useEffect(() => { setMounted(true); }, []);
 
-  // Keep URL search params in sync with globalFilters (shallow replace, no history entry)
-  useEffect(() => {
-    if (!mounted || !filtersInitializedRef.current) return;
-    const params = new URLSearchParams(window.location.search);
-    if (globalFilters.length > 0) {
-      params.set('filters', encodeURIComponent(JSON.stringify(globalFilters)));
-    } else {
-      params.delete('filters');
-    }
-    const newSearch = params.toString();
-    const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : '');
-    if (newUrl !== window.location.pathname + window.location.search) {
-      window.history.replaceState(null, '', newUrl);
-    }
-  }, [globalFilters, mounted]);
-
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
 
     async function load() {
-      // Read URL filter params (synchronously before async fetch)
-      let urlFilters: BaseFilter[] | null = null;
-      try {
-        const filtersParam = new URLSearchParams(window.location.search).get('filters');
-        if (filtersParam) {
-          const parsed = JSON.parse(decodeURIComponent(filtersParam));
-          if (Array.isArray(parsed)) urlFilters = parsed as BaseFilter[];
-        }
-      } catch {
-        // invalid param — ignore
-      }
-
       try {
         const dash = await publicDashboardApi.get(token);
         if (cancelled) return;
         setDashboard(dash);
 
-        // Initialize filters once: URL params take precedence over saved filters_config
+        // Initialize filters once from the server-enforced public share config.
         if (!filtersInitializedRef.current) {
           filtersInitializedRef.current = true;
-          if (urlFilters) {
-            setGlobalFilters(urlFilters);
-          } else if (Array.isArray(dash.filters_config) && dash.filters_config.length > 0) {
-            setGlobalFilters(dash.filters_config as BaseFilter[]);
+          if (Array.isArray(dash.public_filters_config) && dash.public_filters_config.length > 0) {
+            setGlobalFilters(dash.public_filters_config as BaseFilter[]);
           }
         }
 
@@ -199,12 +168,19 @@ export default function PublicDashboardPage() {
 
       {/* Dashboard grid */}
       <main className="mx-auto max-w-screen-xl px-4 py-6">
-        <DashboardFilterBar
-          columns={availableColumns}
-          columnChartCount={columnChartCount}
-          filters={globalFilters}
-          onFiltersChange={setGlobalFilters}
-        />
+        {globalFilters.length > 0 && (
+          <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
+            <div className="mb-2 text-sm font-medium text-blue-900">Applied public filters</div>
+            <div className="flex flex-wrap gap-2">
+              {globalFilters.map((filter) => (
+                <span key={filter.id} className="rounded-full border border-blue-200 bg-white px-2.5 py-1 text-xs text-blue-800">
+                  {filter.label ?? filter.field}: {Array.isArray(filter.value) ? filter.value.join(' – ') : String(filter.value ?? '')}
+                </span>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-blue-700">These filters are enforced by the shared link and cannot be removed to reveal broader data.</p>
+          </div>
+        )}
         {dashboard.dashboard_charts.length === 0 ? (
           <div className="flex h-64 items-center justify-center rounded-xl border-2 border-dashed border-gray-300 bg-white">
             <p className="text-sm text-gray-500">No charts in this dashboard yet.</p>

@@ -206,6 +206,7 @@ def update_dashboard_layout(
 @router.post("/{dashboard_id}/share", status_code=status.HTTP_200_OK)
 def share_dashboard(
     dashboard_id: int,
+    request: DashboardShareRequest | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -216,9 +217,16 @@ def share_dashboard(
     require_edit_access(db, current_user, dash, "dashboards")
     if not dash.share_token:
         dash.share_token = secrets.token_urlsafe(32)
-        db.commit()
-        db.refresh(dash)
-    return {"share_token": dash.share_token}
+    if request is not None and request.public_filters_config is not None:
+        dash.public_filters_config = request.public_filters_config
+    elif dash.public_filters_config is None:
+        dash.public_filters_config = []
+    db.commit()
+    db.refresh(dash)
+    return {
+        "share_token": dash.share_token,
+        "public_filters_config": dash.public_filters_config or [],
+    }
 
 
 @router.delete("/{dashboard_id}/share", status_code=status.HTTP_200_OK)
@@ -233,6 +241,7 @@ def unshare_dashboard(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
     require_edit_access(db, current_user, dash, "dashboards")
     dash.share_token = None
+    dash.public_filters_config = []
     db.commit()
     return {"share_token": None}
 
