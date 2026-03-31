@@ -458,6 +458,7 @@ export default function DashboardDetailPage() {
             dashboardId={dashboardId}
             dashboardName={dashboard.name}
             currentToken={dashboard.share_token}
+            globalFilters={globalFilters}
             onClose={() => setIsPublicShareOpen(false)}
           />
         )}

@@ -58,23 +58,46 @@ function pivotByBreakdown(
   metric: MetricConfig,
   breakdownField: string,
   preAggregated = false,
+  havingFilters: BaseFilter[] = [],
 ): { pivoted: Record<string, any>[]; seriesKeys: string[] } {
   const seriesKeys = [...new Set(data.map(r => String(r[breakdownField] ?? '')))].slice(0, 12);
   // When backend pre-aggregated, the metric value is in the aliased column (e.g. "sum__field")
   const valueKey = preAggregated ? metricKey(metric) : metric.field;
 
-  const map: Record<string, Record<string, any>> = {};
+  // Two-pass: collect raw rows per (dim, breakdown) group, then aggregate properly
+  const groupMap = new Map<string, Map<string, Record<string, any>[]>>();
   for (const row of data) {
     const dk = String(row[dimField] ?? '');
     const bk = String(row[breakdownField] ?? '');
-    if (!map[dk]) {
-      map[dk] = { [dimField]: dk };
-      seriesKeys.forEach(k => { map[dk][k] = 0; });
-    }
-    const val = Number(row[valueKey]) || 0;
-    map[dk][bk] = (Number(map[dk][bk]) || 0) + val;
+    if (!groupMap.has(dk)) groupMap.set(dk, new Map());
+    const bkMap = groupMap.get(dk)!;
+    if (!bkMap.has(bk)) bkMap.set(bk, []);
+    bkMap.get(bk)!.push(row);
   }
-  return { pivoted: Object.values(map), seriesKeys };
+
+  const pivoted: Record<string, any>[] = [];
+  for (const [dk, bkMap] of groupMap) {
+    const out: Record<string, any> = { [dimField]: dk };
+    seriesKeys.forEach(k => { out[k] = 0; });
+    for (const [bk, rows] of bkMap) {
+      if (!seriesKeys.includes(bk)) continue;
+      const vals = rows.map(r => Number(r[valueKey]) || 0);
+      switch (metric.agg) {
+        case 'sum':            out[bk] = vals.reduce((a, b) => a + b, 0); break;
+        case 'avg':            out[bk] = vals.reduce((a, b) => a + b, 0) / Math.max(vals.length, 1); break;
+        case 'count':          out[bk] = rows.length; break;
+        case 'min':            out[bk] = Math.min(...vals); break;
+        case 'max':            out[bk] = Math.max(...vals); break;
+        case 'count_distinct': out[bk] = new Set(rows.map(r => r[valueKey])).size; break;
+        default:               out[bk] = vals.reduce((a, b) => a + b, 0);
+      }
+    }
+    pivoted.push(out);
+  }
+
+  // Apply having filters to pivoted result (Bug 6 fix)
+  const filtered = havingFilters.length > 0 ? applyFiltersToRows(pivoted, havingFilters) : pivoted;
+  return { pivoted: filtered, seriesKeys };
 }
 
 function EmptyState({ message }: { message: string }) {
@@ -124,12 +147,12 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
     return agg;
   }, [data, type, xField, metrics, havingFilters, preAggregated]);
 
-  // Pivot for breakdown-based charts
+  // Pivot for breakdown-based charts (Bug 1+2 fix: added BAR and TIME_SERIES)
   const breakdownResult = useMemo(() => {
     if (!breakdown || !xField || metrics.length === 0) return null;
-    if (!['STACKED_BAR', 'LINE', 'AREA'].includes(type)) return null;
-    return pivotByBreakdown(data, xField, metrics[0], breakdown, preAggregated);
-  }, [data, type, xField, metrics, breakdown, preAggregated]);
+    if (!['STACKED_BAR', 'LINE', 'AREA', 'BAR', 'GROUPED_BAR', 'TIME_SERIES'].includes(type)) return null;
+    return pivotByBreakdown(data, xField, metrics[0], breakdown, preAggregated, havingFilters);
+  }, [data, type, xField, metrics, breakdown, preAggregated, havingFilters]);
 
   if (!data || data.length === 0) {
     return <EmptyState message="No data — run the query first." />;
@@ -144,8 +167,16 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
       // Backend returned a single-row aggregate; value is in aliased column
       agg = Number(data[0]?.[metricKey(m)]) || 0;
     } else {
-      const total = data.reduce((s, r) => s + (Number(r[m.field]) || 0), 0);
-      agg = m.agg === 'avg' ? total / Math.max(data.length, 1) : total;
+      // Bug 3 fix: correctly handle all agg functions
+      const vals = data.map(r => Number(r[m.field]) || 0);
+      switch (m.agg) {
+        case 'avg':            agg = vals.reduce((a, b) => a + b, 0) / Math.max(vals.length, 1); break;
+        case 'count':          agg = data.length; break;
+        case 'min':            agg = Math.min(...vals); break;
+        case 'max':            agg = Math.max(...vals); break;
+        case 'count_distinct': agg = new Set(data.map(r => r[m.field])).size; break;
+        default:               agg = vals.reduce((a, b) => a + b, 0);
+      }
     }
     const fmt =
       agg >= 1_000_000 ? `${(agg / 1_000_000).toFixed(2)}M`
@@ -189,7 +220,25 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
   // ── SCATTER ───────────────────────────────────────────────────────────────
   if (type === 'SCATTER') {
     if (!scatterX || !scatterY) return <EmptyState message="Set X Axis and Y Axis fields in Field Mapping." />;
-    const pts = data.map(r => ({ x: Number(r[scatterX]) || 0, y: Number(r[scatterY]) || 0 }));
+    // Bug 5 fix: include dimension (label) field in each point so tooltip can show it
+    const pts = data.map(r => ({
+      x: Number(r[scatterX]) || 0,
+      y: Number(r[scatterY]) || 0,
+      ...(dimension ? { label: r[dimension] } : {}),
+    }));
+    const ScatterTooltip = ({ active, payload }: any) => {
+      if (!active || !payload?.length) return null;
+      const pt = payload[0]?.payload;
+      return (
+        <div className="bg-white border border-gray-200 rounded px-3 py-2 text-xs shadow-sm">
+          {dimension && pt.label !== undefined && (
+            <div className="font-semibold text-gray-800 mb-1">{String(pt.label)}</div>
+          )}
+          <div className="text-gray-600">{scatterX}: <span className="font-medium text-gray-800">{pt.x?.toLocaleString()}</span></div>
+          <div className="text-gray-600">{scatterY}: <span className="font-medium text-gray-800">{pt.y?.toLocaleString()}</span></div>
+        </div>
+      );
+    };
     return (
       <ResponsiveContainer width="100%" height="100%">
         <ScatterChart>
@@ -199,7 +248,7 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
           <YAxis dataKey="y" name={scatterY} type="number" tick={{ fontSize: 11 }}
             label={{ value: scatterY, angle: -90, position: 'insideLeft', fontSize: 11 }} />
           <ZAxis range={[40, 40]} />
-          <Tooltip cursor={{ strokeDasharray: '3 3' }} />
+          <Tooltip content={<ScatterTooltip />} cursor={{ strokeDasharray: '3 3' }} />
           <Scatter name={`${scatterX} vs ${scatterY}`} data={pts} fill={PALETTE[0]} />
         </ScatterChart>
       </ResponsiveContainer>
@@ -291,19 +340,27 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
   }
 
   // ── BAR / GROUPED_BAR (default) ────────────────────────────────────────────
+  // Bug 1 fix: use breakdownResult (pivoted) when breakdown is configured
+  const { pivoted: barData, seriesKeys: barKeys } = breakdownResult ?? {
+    pivoted: aggData,
+    seriesKeys: seriesMetrics.map(metricKey),
+  };
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <BarChart data={aggData}>
+      <BarChart data={barData}>
         <CartesianGrid strokeDasharray="3 3" />
         <XAxis dataKey={xField} tick={{ fontSize: 11 }} />
         <YAxis tick={{ fontSize: 11 }} />
         <Tooltip formatter={MetricTooltipFormatter(seriesMetrics)} />
         <Legend />
-        {seriesMetrics.map((m, i) => (
-          <Bar key={metricKey(m)} dataKey={metricKey(m)}
-            name={metricLabel(m)}
-            fill={PALETTE[i % PALETTE.length]} />
-        ))}
+        {barKeys.map((k, i) => {
+          const m = seriesMetrics.find(m => metricKey(m) === k);
+          return (
+            <Bar key={k} dataKey={k}
+              name={m ? metricLabel(m) : k}
+              fill={PALETTE[i % PALETTE.length]} />
+          );
+        })}
       </BarChart>
     </ResponsiveContainer>
   );

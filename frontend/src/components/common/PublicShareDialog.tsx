@@ -1,14 +1,16 @@
 'use client';
 
 import { useState } from 'react';
-import { X, Link2, Copy, Check, Trash2, Globe } from 'lucide-react';
+import { X, Link2, Copy, Check, Trash2, Globe, Filter, ChevronDown, ChevronUp } from 'lucide-react';
 import { useShareDashboard, useUnshareDashboard } from '@/hooks/use-dashboards';
 import { toast } from 'sonner';
+import type { BaseFilter } from '@/lib/filters';
 
 interface PublicShareDialogProps {
   dashboardId: number;
   dashboardName: string;
   currentToken: string | null | undefined;
+  globalFilters?: BaseFilter[];
   onClose: () => void;
 }
 
@@ -16,17 +18,26 @@ export function PublicShareDialog({
   dashboardId,
   dashboardName,
   currentToken,
+  globalFilters = [],
   onClose,
 }: PublicShareDialogProps) {
   const [token, setToken] = useState<string | null | undefined>(currentToken);
   const [copied, setCopied] = useState(false);
+  // Preset filter IDs to encode into the share link (default: all active filters)
+  const [presetFilterIds, setPresetFilterIds] = useState<Set<string>>(
+    new Set(globalFilters.map(f => f.id))
+  );
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
   const shareMutation = useShareDashboard();
   const unshareMutation = useUnshareDashboard();
 
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  const publicBaseUrl = process.env.NEXT_PUBLIC_APP_URL || origin;
-  const resolvedPublicUrl = token ? `${publicBaseUrl.replace(/\/$/, '')}/d/${token}` : null;
-  const usesLocalhostBase = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(publicBaseUrl);
+  // Always use runtime origin so custom domains work automatically
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+  const presetFilters = globalFilters.filter(f => presetFilterIds.has(f.id));
+  const filterParam = presetFilters.length > 0
+    ? `?filters=${encodeURIComponent(JSON.stringify(presetFilters))}`
+    : '';
+  const resolvedPublicUrl = token ? `${origin.replace(/\/$/, '')}/d/${token}${filterParam}` : null;
 
   const handleGenerate = async () => {
     try {
@@ -54,6 +65,21 @@ export function PublicShareDialog({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const toggleFilter = (id: string) => {
+    setPresetFilterIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const formatFilterLabel = (f: BaseFilter): string => {
+    const field = f.label ?? f.field;
+    const val = Array.isArray(f.value) ? f.value.join(' – ') : String(f.value ?? '');
+    return `${field}: ${val}`;
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="mx-4 w-full max-w-md rounded-xl bg-white shadow-xl">
@@ -72,6 +98,46 @@ export function PublicShareDialog({
           <p className="text-sm text-gray-500">
             Anyone with the link can view <strong>{dashboardName}</strong> in read-only mode — no login required.
           </p>
+
+          {/* Preset filters section */}
+          {globalFilters.length > 0 && (
+            <div className="rounded-lg border border-gray-200">
+              <button
+                type="button"
+                onClick={() => setFiltersExpanded(v => !v)}
+                className="flex w-full items-center justify-between px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                <span className="flex items-center gap-2">
+                  <Filter className="h-4 w-4 text-gray-400" />
+                  Preset filters
+                  {presetFilterIds.size > 0 && (
+                    <span className="rounded-full bg-blue-100 px-1.5 py-0.5 text-xs font-semibold text-blue-700">
+                      {presetFilterIds.size}
+                    </span>
+                  )}
+                </span>
+                {filtersExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </button>
+              {filtersExpanded && (
+                <div className="border-t border-gray-100 px-3 py-2 space-y-1">
+                  <p className="text-xs text-gray-400 mb-2">
+                    Selected filters will be applied when anyone opens this link.
+                  </p>
+                  {globalFilters.map(f => (
+                    <label key={f.id} className="flex items-center gap-2 cursor-pointer rounded px-1 py-1 hover:bg-gray-50">
+                      <input
+                        type="checkbox"
+                        checked={presetFilterIds.has(f.id)}
+                        onChange={() => toggleFilter(f.id)}
+                        className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600"
+                      />
+                      <span className="text-xs text-gray-700 truncate">{formatFilterLabel(f)}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {resolvedPublicUrl ? (
             <>
@@ -109,11 +175,6 @@ export function PublicShareDialog({
               <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                 Revoking the link immediately disables public access. You can always generate a new one.
               </p>
-              {usesLocalhostBase && (
-                <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                  This link currently uses `localhost`, so it only works on this machine. Set `NEXT_PUBLIC_APP_URL` to your real app URL if you want to share it with other people.
-                </p>
-              )}
             </>
           ) : (
             <>
