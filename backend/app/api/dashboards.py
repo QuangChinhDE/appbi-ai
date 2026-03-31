@@ -22,6 +22,7 @@ from app.models.user import User
 from app.schemas import (
     DashboardCreate,
     DashboardUpdate,
+    DashboardShareRequest,
     DashboardResponse,
     DashboardAddChartRequest,
     DashboardUpdateLayoutRequest,
