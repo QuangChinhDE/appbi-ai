@@ -30,8 +30,18 @@ export async function POST(req: NextRequest) {
     value: '',
     httpOnly: true,
     sameSite: 'lax',
+    secure: process.env.COOKIE_SECURE !== 'false',
     maxAge: 0,
     path: '/',
+  });
+  response.cookies.set({
+    name: 'refresh_token',
+    value: '',
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.COOKIE_SECURE !== 'false',
+    maxAge: 0,
+    path: '/api/auth/refresh',
   });
 
   return response;

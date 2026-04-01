@@ -392,7 +392,7 @@ def get_chart_data(
         logger.error(f"Failed to get chart data: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get chart data: {str(e)}"
+            detail="Failed to retrieve chart data."
         )
 
 

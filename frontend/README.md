@@ -11,7 +11,9 @@ Next.js-based frontend for the AppBI Business Intelligence tool.
 
 2. **Setup environment**:
    ```powershell
-   cp .env.local.example .env.local
+   # Environment variables are defined in the root .env.example
+   # Copy root .env.example to .env at the project root:
+   cp ../../.env.example ../../.env
    ```
 
 3. **Start development server**:

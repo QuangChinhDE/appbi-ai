@@ -10,7 +10,7 @@ def _find_project_root() -> pathlib.Path:
     """
     Walk up from this file to find the project root.
     The project root is the directory that contains BOTH a '.env' (or
-    '.env.docker.example') file AND a 'backend/' subdirectory.
+    '.env.example') file AND a 'backend/' subdirectory.
     Falls back to the directory 4 levels above this file (legacy behaviour)
     if the walk reaches the filesystem root without finding a match.
     """
@@ -18,7 +18,7 @@ def _find_project_root() -> pathlib.Path:
     for _ in range(10):  # Walk at most 10 levels up
         if (candidate / "backend").is_dir() and (
             (candidate / ".env").exists()
-            or (candidate / ".env.docker.example").exists()
+            or (candidate / ".env.example").exists()
             or (candidate / "docker-compose.yml").exists()
         ):
             return candidate
@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = "dev-secret-key-change-in-production"
     DATASOURCE_ENCRYPTION_KEY: str = ""
+    COOKIE_SECURE: bool = True
+    ENVIRONMENT: str = "production"
 
     # Platform-level Google / GCP service account
     # When set, users do NOT need to paste a credentials JSON when connecting
@@ -128,3 +130,29 @@ class Settings(BaseSettings):
 
 # Global settings instance
 settings = Settings()
+
+_INSECURE_DEFAULTS = {
+    "dev-secret-key-change-in-production",
+    "change-this-in-production",
+}
+
+
+def validate_security_settings() -> None:
+    """Fail-fast if production is running with insecure defaults."""
+    if settings.ENVIRONMENT.lower() in ("dev", "development", "test"):
+        return  # skip validation in dev/test
+
+    errors: list[str] = []
+    if settings.SECRET_KEY in _INSECURE_DEFAULTS:
+        errors.append(
+            "SECRET_KEY is still set to a development default. "
+            "Generate a secure key: python -c 'import secrets; print(secrets.token_urlsafe(64))'"
+        )
+    if not settings.DATASOURCE_ENCRYPTION_KEY:
+        errors.append(
+            "DATASOURCE_ENCRYPTION_KEY is empty — datasource credentials will be stored in plaintext. "
+            "Generate a key: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
+        )
+    if errors:
+        msg = "FATAL — Insecure configuration detected:\n" + "\n".join(f"  • {e}" for e in errors)
+        raise RuntimeError(msg)

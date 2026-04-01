@@ -16,15 +16,19 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import ALGORITHM, get_current_user
-from app.models.user import User
+from app.models.user import User, UserStatus
+from app.models.revoked_token import RevokedToken
 from app.schemas.auth import ChangePasswordRequest, LoginRequest, TokenResponse, UserPreferencesUpdate, UserResponse
+from app.services.audit_service import audit
+from app.models.audit_log import AuditAction
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
 _limiter = Limiter(key_func=get_remote_address)
 
-ACCESS_TOKEN_EXPIRE_HOURS = 24
+ACCESS_TOKEN_EXPIRE_HOURS = 1
+REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 
 def _infer_legacy_ai_agent_level(perms: dict[str, str]) -> str:
@@ -61,15 +65,40 @@ def create_access_token(user: User) -> str:
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 
+def create_refresh_token(user: User) -> str:
+    """Create a long-lived refresh token for token rotation."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": str(user.id),
+        "jti": str(uuid.uuid4()),
+        "iat": now,
+        "exp": now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        "type": "refresh",
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
+
+
 def _set_auth_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key="access_token",
         value=token,
         httponly=True,
         samesite="lax",
-        secure=False,   # set True when behind HTTPS
+        secure=settings.COOKIE_SECURE,
         max_age=ACCESS_TOKEN_EXPIRE_HOURS * 3600,
         path="/",
+    )
+
+
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key="refresh_token",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=settings.COOKIE_SECURE,
+        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        path="/api/v1/auth/refresh",  # only sent to refresh endpoint
     )
 
 
@@ -91,6 +120,8 @@ def login(
     check_hash = user.password_hash if user else dummy_hash
 
     if not _pwd.verify(body.password, check_hash) or not user:
+        audit(db, AuditAction.LOGIN_FAILED, request=request,
+              details={"email": body.email})
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -109,7 +140,11 @@ def login(
     db.refresh(user)
 
     token = create_access_token(user)
+    refresh = create_refresh_token(user)
     _set_auth_cookie(response, token)
+    _set_refresh_cookie(response, refresh)
+
+    audit(db, AuditAction.LOGIN_SUCCESS, request=request, user_id=user.id)
 
     return TokenResponse(access_token=token, user=UserResponse.model_validate(user))
 
@@ -121,7 +156,9 @@ def me(current_user: User = Depends(get_current_user)):
 
 
 @router.post("/change-password")
+@_limiter.limit("3/minute")
 def change_password(
+    request: Request,
     body: ChangePasswordRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -134,6 +171,7 @@ def change_password(
         )
     current_user.password_hash = _pwd.hash(body.new_password)
     db.commit()
+    audit(db, AuditAction.PASSWORD_CHANGED, request=request, user_id=current_user.id)
     return {"message": "Password changed successfully"}
 
 
@@ -151,10 +189,104 @@ def update_preferences(
 
 
 @router.post("/logout")
-def logout(response: Response):
-    """Clear authentication cookie (phase 1 — cookie-based invalidation)."""
+def logout(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    """Clear authentication cookie and revoke the token server-side."""
+    token = request.cookies.get("access_token")
+    logout_user_id = None
+    if token:
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+            jti = payload.get("jti")
+            exp = payload.get("exp")
+            logout_user_id = payload.get("sub")
+            if jti and exp:
+                from datetime import datetime, timezone
+                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
+                revoked = RevokedToken(
+                    jti=jti,
+                    user_id=logout_user_id,
+                    expires_at=expires_at,
+                )
+                db.merge(revoked)
+                db.commit()
+        except Exception:
+            pass  # Best-effort — always clear cookie regardless
+
     response.delete_cookie(key="access_token", path="/")
+    response.delete_cookie(key="refresh_token", path="/api/v1/auth/refresh")
+    audit(db, AuditAction.LOGOUT, request=request, user_id=logout_user_id)
     return {"message": "Logged out"}
+
+
+@router.post("/refresh", response_model=TokenResponse)
+@_limiter.limit("10/minute")
+def refresh_access_token(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    """Exchange a valid refresh token for a new access token + refresh token (rotation)."""
+    refresh = request.cookies.get("refresh_token")
+    if not refresh:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token missing",
+        )
+
+    try:
+        payload = jwt.decode(refresh, settings.SECRET_KEY, algorithms=[ALGORITHM])
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+        )
+
+    if payload.get("type") != "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token type",
+        )
+
+    # Check if refresh token was already revoked (reuse detection)
+    old_jti = payload.get("jti")
+    if old_jti:
+        revoked = db.query(RevokedToken).filter(RevokedToken.jti == old_jti).first()
+        if revoked:
+            # Possible token theft — revoke all tokens for this user
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Refresh token already used — please login again",
+            )
+
+    user_id = payload.get("sub")
+    user = db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+    if not user or user.status != UserStatus.ACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or deactivated",
+        )
+
+    # Revoke old refresh token (rotation — each refresh token used exactly once)
+    if old_jti:
+        exp = payload.get("exp")
+        if exp:
+            expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
+            db.merge(RevokedToken(jti=old_jti, user_id=user_id, expires_at=expires_at))
+            db.commit()
+
+    # Issue new token pair
+    new_access = create_access_token(user)
+    new_refresh = create_refresh_token(user)
+    _set_auth_cookie(response, new_access)
+    _set_refresh_cookie(response, new_refresh)
+
+    audit(db, AuditAction.TOKEN_REFRESHED, request=request, user_id=user.id)
+
+    return TokenResponse(access_token=new_access, user=UserResponse.model_validate(user))
 
 
 # ── Password utility (used by seed script) ────────────────────────────────────

@@ -23,7 +23,7 @@ Optional for local development without Docker:
 ```bash
 git clone <repo-url>
 cd Dashboard-App-v2
-cp .env.docker.example .env
+cp .env.example .env
 ```
 
 ### Start base stack only

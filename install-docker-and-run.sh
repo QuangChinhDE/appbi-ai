@@ -61,8 +61,8 @@ ok "$USER đã vào group docker (hiệu lực khi mở terminal mới)"
 # ── 4. Tạo .env nếu chưa có ─────────────────────────────
 echo -e "\n${BOLD}[4/5] Cấu hình .env...${RESET}"
 if [ ! -f .env ]; then
-    cp .env.docker.example .env
-    ok ".env đã được tạo từ .env.docker.example"
+    cp .env.example .env
+    ok ".env đã được tạo từ .env.example"
     info "Bạn có thể chỉnh sửa .env để thay đổi mật khẩu, API keys, v.v."
 else
     ok ".env đã tồn tại — giữ nguyên"

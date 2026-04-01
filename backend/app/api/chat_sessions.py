@@ -146,6 +146,8 @@ def upsert_session(
     """Create a new session or update title/last_active if it already exists."""
     existing = db.query(ChatSession).filter(ChatSession.session_id == body.session_id).first()
     if existing:
+        if str(existing.owner_id) != str(current_user.id):
+            raise HTTPException(status_code=403, detail="Access denied")
         existing.title = body.title
         existing.last_active = datetime.datetime.utcnow()
         db.commit()

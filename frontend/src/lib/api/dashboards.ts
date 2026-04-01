@@ -83,7 +83,7 @@ export const dashboardApi = {
 
   createPublicLink: async (
     dashboardId: number,
-    data: { name: string; filters_config?: any[] },
+    data: { name: string; filters_config?: any[]; password?: string },
   ): Promise<PublicLink> => {
     const response = await apiClient.post(`/dashboards/${dashboardId}/public-links`, data);
     return response.data;
@@ -92,7 +92,8 @@ export const dashboardApi = {
   updatePublicLink: async (
     dashboardId: number,
     linkId: number,
-    data: { name?: string; filters_config?: any[]; is_active?: boolean },
+    // password: undefined = no change, '' = clear password, non-empty = set new
+    data: { name?: string; filters_config?: any[]; is_active?: boolean; password?: string },
   ): Promise<PublicLink> => {
     const response = await apiClient.patch(`/dashboards/${dashboardId}/public-links/${linkId}`, data);
     return response.data;
@@ -110,6 +111,7 @@ export interface PublicLink {
   token: string;
   filters_config: any[] | null;
   is_active: boolean;
+  has_password: boolean;
   access_count: number;
   last_accessed_at: string | null;
   created_at: string;

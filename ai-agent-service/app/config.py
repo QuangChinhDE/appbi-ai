@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     secret_key: str = Field("dev-secret-key-change-in-production", alias="SECRET_KEY")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
+    # CORS
+    cors_origins: str = Field("http://localhost:3000", alias="CORS_ORIGINS")
+
+    # Environment — set to 'dev' to skip secret validation
+    environment: str = Field("production", alias="ENVIRONMENT")
+
     llm_model: str = Field("openai/gpt-4o-mini", alias="LLM_MODEL")
     llm_fallback_chain: str = Field("", alias="LLM_FALLBACK_CHAIN")
     llm_timeout_seconds: int = Field(60, alias="LLM_TIMEOUT_SECONDS")
@@ -125,3 +131,20 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+_INSECURE_DEFAULTS = {
+    "dev-secret-key-change-in-production",
+    "change-this-in-production",
+}
+
+
+def validate_security_settings() -> None:
+    """Fail-fast if production is running with insecure defaults."""
+    if settings.environment.lower() in ("dev", "development", "test"):
+        return
+    if settings.secret_key in _INSECURE_DEFAULTS:
+        raise RuntimeError(
+            "FATAL — SECRET_KEY is still set to a development default. "
+            "Set SECRET_KEY in your .env file. Generate one with: "
+            "python -c 'import secrets; print(secrets.token_urlsafe(64))'"
+        )

@@ -43,6 +43,8 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001,http://frontend:3000}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
       API_RELOAD: "false"
       SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@appbi.io}
@@ -65,8 +67,9 @@ services:
       OPENROUTER_EMBEDDING_DIMENSIONS: ${OPENROUTER_EMBEDDING_DIMENSIONS:-768}
     volumes:
       - appbi_data:/app/.data
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
+    # Backend is not exposed to host in production — accessed only via
+    # the internal Docker network (frontend reverse-proxy and nginx).
+    # For local development, use docker-compose.dev.yml which adds port mapping.
     depends_on:
       db:
         condition: service_healthy
@@ -93,8 +96,11 @@ services:
       AI_CHAT_INTERNAL_URL: http://ai-chat-service:8001
       AI_AGENT_INTERNAL_URL: http://ai-agent-service:8001
       SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
     ports:
-      - "${FRONTEND_PORT:-3000}:3000"
+      # Bind to 127.0.0.1 so the frontend is reachable only via nginx,
+      # not directly from the public internet.
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
     depends_on:
       backend:
         condition: service_healthy

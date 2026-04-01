@@ -3,8 +3,11 @@ API router for dashboard endpoints.
 """
 import secrets
 from fastapi import APIRouter, Depends, HTTPException, status
+from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 from typing import List
+
+_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 from app.core import get_db
 from app.core.dependencies import (
@@ -290,6 +293,7 @@ def create_public_link(
         token=secrets.token_urlsafe(32),
         filters_config=request.filters_config or [],
         created_by=current_user.id,
+        password_hash=_pwd_context.hash(request.password) if request.password else None,
     )
     db.add(link)
     db.commit()
@@ -323,6 +327,8 @@ def update_public_link(
         link.filters_config = request.filters_config
     if request.is_active is not None:
         link.is_active = request.is_active
+    if request.password is not None:
+        link.password_hash = _pwd_context.hash(request.password) if request.password else None
     db.commit()
     db.refresh(link)
     return link

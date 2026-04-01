@@ -43,8 +43,10 @@ from app.services.description_pipeline_service import (
     DescriptionPipelineService,
     resolve_session_factory,
 )
+from app.core.logging import get_logger
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 
 
@@ -375,9 +377,8 @@ def add_table_to_workspace(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to add table to workspace")
+        raise HTTPException(status_code=500, detail="Failed to add table to workspace.")
 
 
 @router.put("/{workspace_id}/tables/{table_id}", response_model=TableResponse)
@@ -639,9 +640,10 @@ def preview_workspace_table(
                     "message": f"Table '{tname}' has not been synced from the datasource yet. Please sync the datasource first.",
                 }
             )
+        logger.error(f"Failed to preview table: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to preview table: {str(e)}"
+            detail="Failed to preview table."
         )
 
 
@@ -838,9 +840,10 @@ def execute_workspace_table_query(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Failed to execute query: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to execute query: {str(e)}"
+            detail="Failed to execute query."
         )
 
 
@@ -990,9 +993,10 @@ def list_datasource_tables(
         ]
     
     except Exception as e:
+        logger.error(f"Failed to list tables: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to list tables: {str(e)}"
+            detail="Failed to list tables."
         )
 
 
@@ -1025,4 +1029,5 @@ def list_datasource_table_columns(
         )
         return {"columns": columns}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list columns: {str(e)}")
+        logger.error(f"Failed to list columns for ds {datasource_id} table {table}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list columns.")

@@ -1,23 +1,28 @@
 /**
- * Next.js API route — login proxy.
+ * Next.js API route — token refresh proxy.
  *
- * Receives email/password, forwards to the backend, and sets the
- * access_token cookie on the NEXT.JS origin (port 3000) so that
- * the Edge middleware can read it during server-side navigation.
+ * Forwards the refresh_token cookie to the backend /auth/refresh endpoint,
+ * and sets updated access_token + refresh_token cookies on the Next.js origin.
  */
 import { NextRequest, NextResponse } from 'next/server';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000/api/v1';
 
 export async function POST(req: NextRequest) {
-  const body = await req.json();
+  const refreshToken = req.cookies.get('refresh_token')?.value;
+
+  if (!refreshToken) {
+    return NextResponse.json({ error: 'No refresh token' }, { status: 401 });
+  }
 
   let backendRes: Response;
   try {
-    backendRes = await fetch(`${BACKEND_URL}/auth/login`, {
+    backendRes = await fetch(`${BACKEND_URL}/auth/refresh`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: `refresh_token=${refreshToken}`,
+      },
     });
   } catch {
     return NextResponse.json({ detail: 'Cannot reach backend' }, { status: 502 });
@@ -26,25 +31,42 @@ export async function POST(req: NextRequest) {
   const data = await backendRes.json();
 
   if (!backendRes.ok) {
-    return NextResponse.json(data, { status: backendRes.status });
+    // Clear stale cookies on auth failure
+    const errorResponse = NextResponse.json(data, { status: backendRes.status });
+    errorResponse.cookies.set({
+      name: 'access_token',
+      value: '',
+      httpOnly: true,
+      sameSite: 'lax',
+      maxAge: 0,
+      path: '/',
+    });
+    errorResponse.cookies.set({
+      name: 'refresh_token',
+      value: '',
+      httpOnly: true,
+      sameSite: 'lax',
+      maxAge: 0,
+      path: '/api/auth/refresh',
+    });
+    return errorResponse;
   }
 
-  // Set access_token cookie on the Next.js origin so middleware can read it
   const token: string = data.access_token;
-  const maxAge = 1 * 60 * 60; // 1 hour, matching backend
-
   const response = NextResponse.json(data, { status: 200 });
+
+  // Set new access token
   response.cookies.set({
     name: 'access_token',
     value: token,
     httpOnly: true,
     sameSite: 'lax',
     secure: process.env.COOKIE_SECURE !== 'false',
-    maxAge,
+    maxAge: 1 * 60 * 60, // 1 hour
     path: '/',
   });
 
-  // Proxy refresh token cookie from backend response
+  // Proxy new refresh token from backend
   const setCookieHeaders = backendRes.headers.getSetCookie?.() ?? [];
   for (const cookieStr of setCookieHeaders) {
     if (cookieStr.startsWith('refresh_token=')) {

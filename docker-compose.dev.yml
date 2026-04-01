@@ -53,6 +53,8 @@ services:
       CORS_ORIGINS: http://localhost:3000,http://frontend:3000
       LOG_LEVEL: DEBUG
       SECRET_KEY: dev-secret-key
+      ENVIRONMENT: dev
+      COOKIE_SECURE: "false"
       SEED_DEMO_DATA: "false"
       DATA_DIR: /app/.data
       DATASOURCE_ENCRYPTION_KEY: ${DATASOURCE_ENCRYPTION_KEY:-}
@@ -89,6 +91,8 @@ services:
       BACKEND_URL: http://backend:8000/api/v1
       AI_CHAT_INTERNAL_URL: http://ai-chat-service:8001
       AI_AGENT_INTERNAL_URL: http://ai-agent-service:8001
+      SECRET_KEY: dev-secret-key
+      COOKIE_SECURE: "false"
     ports:
       - "3000:3000"
     depends_on:

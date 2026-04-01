@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import {
   X, Link2, Copy, Check, Trash2, Globe, Filter, Plus,
-  Eye, EyeOff, Clock, Loader2, ArrowLeft,
+  Eye, EyeOff, Clock, Loader2, ArrowLeft, Lock, Code2,
 } from 'lucide-react';
 import { dashboardApi, PublicLink } from '@/lib/api/dashboards';
 import { chartApi } from '@/lib/api/charts';
@@ -49,9 +49,24 @@ export function PublicLinksManager({
   // Form state
   const [formName, setFormName] = useState('');
   const [formFilters, setFormFilters] = useState<BaseFilter[]>([]);
+  const [formPassword, setFormPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  // For edit: whether to change the password (or leave it unchanged)
+  const [changePassword, setChangePassword] = useState(false);
 
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [copiedEmbedId, setCopiedEmbedId] = useState<number | null>(null);
+  const [copiedSnippetId, setCopiedSnippetId] = useState<number | null>(null);
+
+  const getEmbedUrl = (link: PublicLink) => `${origin.replace(/\/$/, '')}/embed/${link.token}`;
+
+  const getIframeSnippet = (link: PublicLink) =>
+    `<iframe\n  src="${getEmbedUrl(link)}"\n  width="100%"\n  height="600"\n  frameborder="0"\n  allowtransparency="true"\n  title="${link.name.replace(/"/g, '&quot;')}"\n></iframe>`;
+
+  const copyText = (text: string, onDone: () => void) => {
+    navigator.clipboard.writeText(text).then(onDone).catch(() => toast.error('Failed to copy'));
+  };
 
   // ── Fetch column data from charts if not provided ──
   const fetchColumnData = useCallback(async () => {
@@ -134,6 +149,7 @@ export function PublicLinksManager({
       const link = await dashboardApi.createPublicLink(dashboardId, {
         name: formName.trim(),
         filters_config: formFilters,
+        password: formPassword.trim() || undefined,
       });
       setLinks(prev => [link, ...prev]);
       resetForm();
@@ -150,9 +166,14 @@ export function PublicLinksManager({
     if (!editingLink) return;
     setSaving(true);
     try {
+      const passwordField: { password?: string } = {};
+      if (changePassword) {
+        passwordField.password = formPassword.trim(); // '' = clear, non-empty = new
+      }
       const updated = await dashboardApi.updatePublicLink(dashboardId, editingLink.id, {
         name: formName.trim() || undefined,
         filters_config: formFilters,
+        ...passwordField,
       });
       setLinks(prev => prev.map(l => l.id === editingLink.id ? updated : l));
       resetForm();
@@ -192,15 +213,19 @@ export function PublicLinksManager({
   const handleCopy = (link: PublicLink, e: React.MouseEvent) => {
     e.stopPropagation();
     const url = `${origin.replace(/\/$/, '')}/d/${link.token}`;
-    navigator.clipboard.writeText(url);
-    setCopiedId(link.id);
-    setTimeout(() => setCopiedId(null), 2000);
+    copyText(url, () => {
+      setCopiedId(link.id);
+      setTimeout(() => setCopiedId(null), 2000);
+    });
   };
 
   const openEdit = (link: PublicLink) => {
     setEditingLink(link);
     setFormName(link.name);
     setFormFilters((link.filters_config ?? []) as BaseFilter[]);
+    setFormPassword('');
+    setShowPassword(false);
+    setChangePassword(false);
     setView('edit');
   };
 
@@ -212,6 +237,9 @@ export function PublicLinksManager({
   const resetForm = () => {
     setFormName('');
     setFormFilters([]);
+    setFormPassword('');
+    setShowPassword(false);
+    setChangePassword(false);
     setEditingLink(null);
   };
 
@@ -305,6 +333,11 @@ export function PublicLinksManager({
                                 Inactive
                               </span>
                             )}
+                            {link.has_password && (
+                              <span className="px-1.5 py-0.5 bg-amber-100 text-amber-700 text-[10px] rounded-full flex-shrink-0 flex items-center gap-0.5">
+                                <Lock className="w-2.5 h-2.5" />Password
+                              </span>
+                            )}
                             {(link.filters_config?.length ?? 0) > 0 && (
                               <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 text-[10px] rounded-full flex-shrink-0">
                                 <Filter className="w-3 h-3 inline mr-0.5" />
@@ -313,14 +346,6 @@ export function PublicLinksManager({
                             )}
                           </div>
                           <div className="flex items-center gap-0.5 flex-shrink-0">
-                            <button
-                              onClick={e => handleCopy(link, e)}
-                              disabled={!link.is_active}
-                              className="p-1.5 text-gray-400 hover:text-blue-600 disabled:opacity-30 rounded hover:bg-gray-100"
-                              title="Copy link"
-                            >
-                              {copiedId === link.id ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
-                            </button>
                             <button
                               onClick={e => handleToggleActive(link, e)}
                               className={`p-1.5 rounded hover:bg-gray-100 ${link.is_active ? 'text-gray-400 hover:text-amber-600' : 'text-gray-400 hover:text-green-600'}`}
@@ -356,13 +381,44 @@ export function PublicLinksManager({
                           <span>Created: {formatDate(link.created_at)}</span>
                         </div>
 
-                        {/* Row 4: URL */}
+                        {/* Row 4: Share URL + Embed URL */}
                         {link.is_active && (
-                          <div className="flex items-center gap-2 mt-2 px-2.5 py-1 rounded border border-gray-100 bg-gray-50">
-                            <Link2 className="h-3 w-3 flex-shrink-0 text-gray-400" />
-                            <span className="flex-1 truncate text-[11px] text-gray-500 font-mono">
-                              {origin.replace(/\/$/, '')}/d/{link.token}
-                            </span>
+                          <div className="mt-2 space-y-1">
+                            {/* Page URL */}
+                            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-gray-100 bg-gray-50">
+                              <Link2 className="h-3 w-3 flex-shrink-0 text-gray-400" />
+                              <span className="flex-1 truncate text-[11px] text-gray-500 font-mono">
+                                {origin.replace(/\/$/, '')}/d/{link.token}
+                              </span>
+                              <button
+                                onClick={e => { e.stopPropagation(); copyText(`${origin.replace(/\/$/, '')}/d/${link.token}`, () => { setCopiedId(link.id); setTimeout(() => setCopiedId(null), 2000); }); }}
+                                className="flex-shrink-0 text-gray-400 hover:text-blue-600 p-0.5 rounded"
+                                title="Copy page URL"
+                              >
+                                {copiedId === link.id ? <Check className="h-3 w-3 text-green-600" /> : <Copy className="h-3 w-3" />}
+                              </button>
+                            </div>
+                            {/* Embed URL */}
+                            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-purple-100 bg-purple-50">
+                              <Code2 className="h-3 w-3 flex-shrink-0 text-purple-400" />
+                              <span className="flex-1 truncate text-[11px] text-purple-600 font-mono">
+                                {origin.replace(/\/$/, '')}/embed/{link.token}
+                              </span>
+                              <button
+                                onClick={e => { e.stopPropagation(); copyText(getEmbedUrl(link), () => { setCopiedEmbedId(link.id); setTimeout(() => setCopiedEmbedId(null), 2000); }); }}
+                                className="flex-shrink-0 text-purple-400 hover:text-purple-700 p-0.5 rounded"
+                                title="Copy embed URL"
+                              >
+                                {copiedEmbedId === link.id ? <Check className="h-3 w-3 text-green-600" /> : <Copy className="h-3 w-3" />}
+                              </button>
+                              <button
+                                onClick={e => { e.stopPropagation(); copyText(getIframeSnippet(link), () => { setCopiedSnippetId(link.id); setTimeout(() => setCopiedSnippetId(null), 2000); }); }}
+                                className="flex-shrink-0 text-purple-400 hover:text-purple-700 p-0.5 rounded text-[9px] font-mono leading-none border border-purple-200 px-1 py-0.5 bg-white"
+                                title="Copy iframe HTML snippet"
+                              >
+                                {copiedSnippetId === link.id ? <Check className="h-3 w-3 text-green-600" /> : '</>'}
+                              </button>
+                            </div>
                           </div>
                         )}
                       </div>
@@ -425,6 +481,78 @@ export function PublicLinksManager({
                     <p className="text-xs text-gray-400 mt-1">
                       Add charts to the dashboard first, then create public links with filters.
                     </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Password protection */}
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <Lock className="w-4 h-4 text-amber-500" />
+                  <h3 className="text-sm font-medium text-gray-700">Password protection</h3>
+                  <span className="text-xs text-gray-400">— optional</span>
+                </div>
+
+                {view === 'edit' && editingLink?.has_password && !changePassword ? (
+                  <div className="flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <Lock className="h-3.5 w-3.5 text-amber-600" />
+                      <span className="text-xs text-amber-800">Password is set · sessions expire after 2 hours</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => { setChangePassword(true); setFormPassword(''); }}
+                        className="text-xs text-blue-600 hover:underline"
+                      >
+                        Change
+                      </button>
+                      <button
+                        onClick={() => { setChangePassword(true); setFormPassword(''); }}
+                        className="text-xs text-red-500 hover:underline"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {view === 'edit' && changePassword && (
+                      <p className="text-xs text-gray-500">
+                        {editingLink?.has_password
+                          ? 'Leave blank to remove the password, or enter a new one.'
+                          : 'Enter a password to protect this link.'}
+                      </p>
+                    )}
+                    <div className="relative">
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        value={formPassword}
+                        onChange={e => setFormPassword(e.target.value)}
+                        placeholder={view === 'create' ? 'Leave blank for no password' : 'New password (blank = remove)'}
+                        className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 pr-10 focus:ring-2 focus:ring-blue-400 focus:border-blue-400 outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(s => !s)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      >
+                        {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </div>
+                    {formPassword && (
+                      <p className="text-xs text-amber-600 flex items-center gap-1">
+                        <Lock className="h-3 w-3" />
+                        Viewers will need this password · sessions auto-expire after 2 hours
+                      </p>
+                    )}
+                    {view === 'edit' && changePassword && (
+                      <button
+                        onClick={() => { setChangePassword(false); setFormPassword(''); }}
+                        className="text-xs text-gray-400 hover:text-gray-600"
+                      >
+                        Cancel change
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

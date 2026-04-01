@@ -57,11 +57,60 @@ export async function middleware(request: NextRequest) {
   try {
     await jwtVerify(token, getSecret(), { algorithms: ['HS256'] });
   } catch {
-    // Invalid/expired token — clear cookie and redirect to login
+    // Access token expired — try silent refresh via refresh_token cookie
+    const refreshToken = request.cookies.get('refresh_token')?.value;
+    if (refreshToken) {
+      try {
+        const backendUrl = process.env.BACKEND_URL || 'http://backend:8000/api/v1';
+        const refreshRes = await fetch(`${backendUrl}/auth/refresh`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Cookie: `refresh_token=${refreshToken}`,
+          },
+        });
+        if (refreshRes.ok) {
+          const data = await refreshRes.json();
+          const newToken: string = data.access_token;
+          const response = NextResponse.next();
+          response.cookies.set({
+            name: 'access_token',
+            value: newToken,
+            httpOnly: true,
+            sameSite: 'lax',
+            secure: process.env.COOKIE_SECURE !== 'false',
+            maxAge: 1 * 60 * 60,
+            path: '/',
+          });
+          // Proxy new refresh token
+          const setCookieHeaders = refreshRes.headers.getSetCookie?.() ?? [];
+          for (const cookieStr of setCookieHeaders) {
+            if (cookieStr.startsWith('refresh_token=')) {
+              const value = cookieStr.split('=')[1]?.split(';')[0] ?? '';
+              response.cookies.set({
+                name: 'refresh_token',
+                value,
+                httpOnly: true,
+                sameSite: 'lax',
+                secure: process.env.COOKIE_SECURE !== 'false',
+                maxAge: 7 * 24 * 60 * 60,
+                path: '/api/auth/refresh',
+              });
+            }
+          }
+          return response;
+        }
+      } catch {
+        // Refresh failed — fall through to redirect to login
+      }
+    }
+
+    // Invalid/expired token and refresh failed — redirect to login
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = '/login';
     const response = NextResponse.redirect(loginUrl);
     response.cookies.delete('access_token');
+    response.cookies.delete('refresh_token');
     return response;
   }
 

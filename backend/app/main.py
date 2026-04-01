@@ -11,10 +11,14 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.core import settings, setup_logging
+from app.core.config import validate_security_settings
 from app.api import api_router
 
 # Setup logging
 setup_logging()
+
+# Fail-fast if production uses insecure defaults
+validate_security_settings()
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -45,6 +49,10 @@ async def lifespan(app: FastAPI):
     from app.services.anomaly_scheduler import startup as anomaly_scheduler_startup
     anomaly_scheduler_startup()
 
+    # Periodic cleanup of expired revoked tokens
+    from app.services.token_cleanup import schedule_token_cleanup
+    schedule_token_cleanup()
+
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
@@ -59,12 +67,19 @@ async def lifespan(app: FastAPI):
     DuckDBEngine.shutdown()
 
 
+# Disable Swagger UI / ReDoc / OpenAPI schema in production to prevent
+# leaking the full API surface to unauthenticated users.
+_is_dev = settings.ENVIRONMENT.lower() in ("dev", "development", "test")
+
 # Create FastAPI application
 app = FastAPI(
     title="AppBI - Modern BI Tool",
     description="Open-source Business Intelligence tool with SQL data source support",
     version="0.1.0",
     lifespan=lifespan,
+    docs_url="/docs" if _is_dev else None,
+    redoc_url="/redoc" if _is_dev else None,
+    openapi_url="/openapi.json" if _is_dev else None,
 )
 
 # Configure CORS

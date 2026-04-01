@@ -128,13 +128,13 @@ Important notes:
 Create `.env` from the maintained Docker template:
 
 ```bash
-cp .env.docker.example .env
+cp .env.example .env
 ```
 
 On Windows PowerShell you can also use:
 
 ```powershell
-Copy-Item .env.docker.example .env
+Copy-Item .env.example .env
 ```
 
 ### 2. Choose the stack mode
@@ -243,7 +243,7 @@ AI Agent variables:
 - `AI_AGENT_LLM_FALLBACK_CHAIN` (comma-separated fallback models)
 - `AI_AGENT_LLM_TIMEOUT_SECONDS` (LLM call timeout)
 
-See [`.env.docker.example`](./.env.docker.example) for the maintained baseline.
+See [`.env.example`](./.env.example) for the maintained baseline.
 
 ## Permissions
 

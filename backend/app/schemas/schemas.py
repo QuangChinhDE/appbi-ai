@@ -241,6 +241,7 @@ class PublicLinkCreate(BaseModel):
     """Schema for creating a named public link."""
     name: str = Field(..., min_length=1, max_length=255)
     filters_config: Optional[List[Dict[str, Any]]] = None
+    password: Optional[str] = Field(None, min_length=1, max_length=128)
 
 
 class PublicLinkUpdate(BaseModel):
@@ -248,6 +249,8 @@ class PublicLinkUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     filters_config: Optional[List[Dict[str, Any]]] = None
     is_active: Optional[bool] = None
+    # None = no change; empty string = clear password; non-empty = new password
+    password: Optional[str] = Field(None, max_length=128)
 
 
 class PublicLinkResponse(BaseModel):
@@ -258,6 +261,7 @@ class PublicLinkResponse(BaseModel):
     token: str
     filters_config: Optional[List[Dict[str, Any]]] = None
     is_active: bool
+    has_password: bool = False
     access_count: int
     last_accessed_at: Optional[datetime] = None
     created_at: datetime

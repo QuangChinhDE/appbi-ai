@@ -20,6 +20,10 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models.user import User, UserStatus
 from app.models.resource_share import ResourceShare, ResourceType
+from app.models.revoked_token import RevokedToken
+
+import logging as _logging
+_dep_logger = _logging.getLogger(__name__)
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -59,6 +63,12 @@ async def get_current_user(
         user_id: str | None = payload.get("sub")
         if not user_id:
             raise ValueError("missing sub")
+        # Check server-side revocation blacklist
+        jti = payload.get("jti")
+        if jti:
+            revoked = db.query(RevokedToken).filter(RevokedToken.jti == jti).first()
+            if revoked:
+                raise ValueError("token revoked")
     except (JWTError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -113,6 +123,10 @@ def require_permission(module: str, min_level: str = "view"):
         perms = _normalize_permissions(user)
         user_level = perms.get(module, "none")
         if LEVEL_ORDER.get(user_level, 0) < LEVEL_ORDER.get(min_level, 0):
+            _dep_logger.warning(
+                "PERMISSION_DENIED user=%s module=%s required=%s actual=%s",
+                user.id, module, min_level, user_level,
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Requires '{min_level}' permission on module '{module}'",

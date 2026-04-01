@@ -7,6 +7,8 @@ services:
     environment:
       BI_API_URL: http://backend:8000/api/v1
       SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://frontend:3000}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
       LLM_MODEL: ${LLM_MODEL:-openai/gpt-4o-mini}
       LLM_FALLBACK_CHAIN: ${LLM_FALLBACK_CHAIN:-}
       AI_CHAT_MODEL: ${AI_CHAT_MODEL:-}
@@ -23,8 +25,8 @@ services:
       AI_MAX_TOOL_CALLS: ${AI_MAX_TOOL_CALLS:-8}
       AI_WORKSPACE_TABLE_LIMIT: ${AI_WORKSPACE_TABLE_LIMIT:-50}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    ports:
-      - "${AI_CHAT_PORT:-8001}:8001"
+    # AI Chat is not exposed to host in production — accessed only via
+    # the internal Docker network (frontend reverse-proxy and nginx).
     depends_on:
       backend:
         condition: service_healthy
@@ -45,6 +47,8 @@ services:
     environment:
       BI_API_URL: http://backend:8000/api/v1
       SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://frontend:3000}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LLM_MODEL: ${LLM_MODEL:-openai/gpt-4o-mini}
       LLM_FALLBACK_CHAIN: ${LLM_FALLBACK_CHAIN:-}
@@ -66,8 +70,8 @@ services:
       OPENROUTER_API_KEY_5: ${OPENROUTER_API_KEY_5:-}
       OPENROUTER_SITE_URL: ${OPENROUTER_SITE_URL:-http://localhost:${FRONTEND_PORT:-3000}}
       OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-AppBI AI Agent}
-    ports:
-      - "${AI_AGENT_PORT:-8002}:8001"
+    # AI Agent is not exposed to host in production — accessed only via
+    # the internal Docker network (frontend reverse-proxy and nginx).
     depends_on:
       backend:
         condition: service_healthy

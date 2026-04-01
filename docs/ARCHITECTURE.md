@@ -98,7 +98,7 @@ appbi/
     ├── tailwind.config.js             # ✅ TailwindCSS config
     ├── postcss.config.js              # PostCSS config
     ├── next.config.js                 # Next.js config
-    ├── .env.local.example             # Environment template
+    ├── (env vars defined in root .env) # Environment from root .env.example
     ├── .gitignore
     └── README.md                      # Frontend quick start
 ```

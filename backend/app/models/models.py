@@ -151,6 +151,12 @@ class DashboardPublicLink(Base):
     filters_config = Column(JSON, nullable=True, default=list)
     is_active = Column(Boolean, nullable=False, default=True)
 
+    # Security & governance
+    expires_at = Column(DateTime(timezone=True), nullable=True)  # null = never expires
+    password_hash = Column(String(255), nullable=True)  # optional password protection
+    max_access_count = Column(Integer, nullable=True)  # null = unlimited
+    allowed_ips = Column(JSON, nullable=True, default=list)  # optional IP allowlist
+
     # Tracking
     access_count = Column(Integer, nullable=False, default=0)
     last_accessed_at = Column(DateTime(timezone=True), nullable=True)
@@ -162,6 +168,10 @@ class DashboardPublicLink(Base):
 
     # Relationships
     dashboard = relationship("Dashboard", back_populates="public_links")
+
+    @property
+    def has_password(self) -> bool:
+        return self.password_hash is not None
 
 
 class DashboardChart(Base):

@@ -1,11 +1,14 @@
 """
 API router for data source endpoints.
 """
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any
 import io
 import csv as csv_module
+
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.core import get_db
 from app.core.dependencies import (
@@ -36,6 +39,7 @@ import time
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/datasources", tags=["datasources"])
+_limiter = Limiter(key_func=get_remote_address)
 
 
 # ── Platform GCP credential info ──────────────────────────────────────────────
@@ -321,17 +325,19 @@ def test_data_source_connection(
 
 
 @router.post("/query", response_model=QueryExecuteResponse)
+@_limiter.limit("20/minute")
 def execute_query(
-    request: QueryExecuteRequest,
+    request: Request,
+    body: QueryExecuteRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Execute an ad-hoc SQL query against a data source."""
-    data_source = DataSourceCRUDService.get_by_id(db, request.data_source_id)
+    data_source = DataSourceCRUDService.get_by_id(db, body.data_source_id)
     if not data_source:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Data source with ID {request.data_source_id} not found"
+            detail=f"Data source with ID {body.data_source_id} not found"
         )
     require_view_access(db, current_user, data_source, "data_sources")
 
@@ -340,8 +346,8 @@ def execute_query(
         columns, data, execution_time_ms = DataSourceConnectionService.execute_query(
             data_source.type.value,
             data_source.config,
-            request.sql_query,
-            request.limit
+            body.sql_query,
+            body.limit
         )
         
         return QueryExecuteResponse(
@@ -354,7 +360,7 @@ def execute_query(
         logger.error(f"Query execution failed: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Query execution failed: {str(e)}"
+            detail="Query execution failed. Please check your SQL and try again."
         )
 
 
@@ -376,7 +382,7 @@ def get_schema_browser(
         return {"schemas": schemas}
     except Exception as e:
         logger.error(f"Schema browser failed for ds {data_source_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to retrieve schema. Please check the connection.")
 
 
 @router.get("/{data_source_id}/tables/{schema_name}/{table_name}")
@@ -400,7 +406,7 @@ def get_table_detail(
         return detail
     except Exception as e:
         logger.error(f"Table detail failed for {schema_name}.{table_name}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to retrieve table details.")
 
 
 @router.get("/{data_source_id}/tables/{schema_name}/{table_name}/watermarks")
@@ -422,7 +428,8 @@ def get_watermark_candidates(
         )
         return {"columns": candidates}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Watermark candidates failed for {schema_name}.{table_name}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve watermark candidates.")
 
 
 # ── Sync Config ───────────────────────────────────────────────────────────────
