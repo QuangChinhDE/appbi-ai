@@ -16,7 +16,7 @@ from app.core.dependencies import (
     get_effective_permission,
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
-from app.models.models import Chart, DashboardChart, Dashboard
+from app.models.models import Chart, DashboardChart, Dashboard, DashboardPublicLink
 from app.models.resource_share import ResourceType
 from app.models.user import User
 from app.schemas import (
@@ -26,6 +26,9 @@ from app.schemas import (
     DashboardResponse,
     DashboardAddChartRequest,
     DashboardUpdateLayoutRequest,
+    PublicLinkCreate,
+    PublicLinkUpdate,
+    PublicLinkResponse,
 )
 # Commented out - using hybrid approach with filters_config JSON field instead
 # from app.schemas.dashboard_filter import (
@@ -245,6 +248,108 @@ def unshare_dashboard(
     dash.public_filters_config = []
     db.commit()
     return {"share_token": None}
+
+
+# ============ Multi Public Links ============
+
+@router.get("/{dashboard_id}/public-links", response_model=List[PublicLinkResponse])
+def list_public_links(
+    dashboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all public links for a dashboard."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    require_view_access(db, current_user, dash, "dashboards")
+    links = (
+        db.query(DashboardPublicLink)
+        .filter(DashboardPublicLink.dashboard_id == dashboard_id)
+        .order_by(DashboardPublicLink.created_at.desc())
+        .all()
+    )
+    return links
+
+
+@router.post("/{dashboard_id}/public-links", response_model=PublicLinkResponse, status_code=status.HTTP_201_CREATED)
+def create_public_link(
+    dashboard_id: int,
+    request: PublicLinkCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create a new named public link with its own filters."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    link = DashboardPublicLink(
+        dashboard_id=dashboard_id,
+        name=request.name,
+        token=secrets.token_urlsafe(32),
+        filters_config=request.filters_config or [],
+        created_by=current_user.id,
+    )
+    db.add(link)
+    db.commit()
+    db.refresh(link)
+    return link
+
+
+@router.patch("/{dashboard_id}/public-links/{link_id}", response_model=PublicLinkResponse)
+def update_public_link(
+    dashboard_id: int,
+    link_id: int,
+    request: PublicLinkUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update name, filters, or active state of a public link."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    link = (
+        db.query(DashboardPublicLink)
+        .filter(DashboardPublicLink.id == link_id, DashboardPublicLink.dashboard_id == dashboard_id)
+        .first()
+    )
+    if not link:
+        raise HTTPException(status_code=404, detail="Public link not found")
+    if request.name is not None:
+        link.name = request.name
+    if request.filters_config is not None:
+        link.filters_config = request.filters_config
+    if request.is_active is not None:
+        link.is_active = request.is_active
+    db.commit()
+    db.refresh(link)
+    return link
+
+
+@router.delete("/{dashboard_id}/public-links/{link_id}", status_code=status.HTTP_200_OK)
+def delete_public_link(
+    dashboard_id: int,
+    link_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a public link permanently."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    link = (
+        db.query(DashboardPublicLink)
+        .filter(DashboardPublicLink.id == link_id, DashboardPublicLink.dashboard_id == dashboard_id)
+        .first()
+    )
+    if not link:
+        raise HTTPException(status_code=404, detail="Public link not found")
+    db.delete(link)
+    db.commit()
+    return {"deleted": True}
 
 
 # ============ Dashboard Filters ============

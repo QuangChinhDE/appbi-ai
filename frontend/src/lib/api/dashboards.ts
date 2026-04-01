@@ -74,4 +74,44 @@ export const dashboardApi = {
   unshare: async (id: number): Promise<void> => {
     await apiClient.delete(`/dashboards/${id}/share`);
   },
+
+  // ── Multi public links ────────────────────────────────────────
+  listPublicLinks: async (dashboardId: number): Promise<PublicLink[]> => {
+    const response = await apiClient.get(`/dashboards/${dashboardId}/public-links`);
+    return response.data;
+  },
+
+  createPublicLink: async (
+    dashboardId: number,
+    data: { name: string; filters_config?: any[] },
+  ): Promise<PublicLink> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/public-links`, data);
+    return response.data;
+  },
+
+  updatePublicLink: async (
+    dashboardId: number,
+    linkId: number,
+    data: { name?: string; filters_config?: any[]; is_active?: boolean },
+  ): Promise<PublicLink> => {
+    const response = await apiClient.patch(`/dashboards/${dashboardId}/public-links/${linkId}`, data);
+    return response.data;
+  },
+
+  deletePublicLink: async (dashboardId: number, linkId: number): Promise<void> => {
+    await apiClient.delete(`/dashboards/${dashboardId}/public-links/${linkId}`);
+  },
 };
+
+export interface PublicLink {
+  id: number;
+  dashboard_id: number;
+  name: string;
+  token: string;
+  filters_config: any[] | null;
+  is_active: boolean;
+  access_count: number;
+  last_accessed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}

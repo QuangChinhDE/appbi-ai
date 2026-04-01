@@ -96,13 +96,11 @@ export function ChartTile({
     if (e.key === 'Escape') setIsEditingTitle(false);
   };
 
-  // Notify parent when data is loaded — report dimension fields for global filter bar
+  // Notify parent when data is loaded — report ALL fields for PowerBI-style global filtering
   React.useEffect(() => {
     if (chartData?.data?.length && onDataLoaded) {
-      const rc = (chart?.config as any)?.roleConfig as ChartRoleConfig | undefined;
-      const dimensionFields = [rc?.dimension, rc?.breakdown, rc?.timeField]
-        .filter((f): f is string => !!f);
-      onDataLoaded(chartId, chartData.data, { dimensionFields });
+      const allFields = Object.keys(chartData.data[0]);
+      onDataLoaded(chartId, chartData.data, { dimensionFields: allFields });
     }
   }, [chartData?.data, onDataLoaded, chartId, chart?.config]);
 
@@ -132,9 +130,17 @@ export function ChartTile({
       rows = applyFiltersToRows(rows, dashboardFilters);
     }
     // Apply global dashboard filters to ALL chart types.
-    // Only apply a filter if its field actually exists in this chart's data.
+    // A filter matches a chart if its primary field OR any linkedField exists in the data.
     if (globalFilters.length > 0 && rows.length > 0) {
-      const applicable = globalFilters.filter(f => f.field in rows[0]);
+      const applicable = globalFilters
+        .map(f => {
+          const candidates = [f.field, ...(f.linkedFields ?? [])];
+          const match = candidates.find(c => c in rows[0]);
+          if (!match) return null;
+          // Remap field to the matched column name for this chart
+          return match !== f.field ? { ...f, field: match } : f;
+        })
+        .filter((f): f is BaseFilter => f !== null);
       if (applicable.length > 0) {
         rows = applyFiltersToRows(rows, applicable);
       }

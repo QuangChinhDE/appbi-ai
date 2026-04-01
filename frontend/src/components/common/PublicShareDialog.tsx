@@ -145,6 +145,7 @@ export function PublicShareDialog({
                   <DashboardFilterBar
                     columns={availableColumns}
                     columnChartCount={columnChartCount}
+                    distinctValues={{}}
                     filters={publicFilters}
                     onFiltersChange={setPublicFilters}
                   />

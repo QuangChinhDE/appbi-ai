@@ -134,6 +134,34 @@ class Dashboard(Base):
 
     # Relationships
     dashboard_charts = relationship("DashboardChart", back_populates="dashboard", cascade="all, delete-orphan")
+    public_links = relationship("DashboardPublicLink", back_populates="dashboard", cascade="all, delete-orphan")
+
+
+class DashboardPublicLink(Base):
+    """
+    A named public share link for a dashboard, each with its own filter set and access tracking.
+    One dashboard can have many public links with different filters.
+    """
+    __tablename__ = "dashboard_public_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dashboard_id = Column(Integer, ForeignKey("dashboards.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    token = Column(String(64), nullable=False, unique=True, index=True)
+    filters_config = Column(JSON, nullable=True, default=list)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    # Tracking
+    access_count = Column(Integer, nullable=False, default=0)
+    last_accessed_at = Column(DateTime(timezone=True), nullable=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    # Relationships
+    dashboard = relationship("Dashboard", back_populates="public_links")
 
 
 class DashboardChart(Base):

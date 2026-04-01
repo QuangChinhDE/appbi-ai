@@ -16,6 +16,11 @@ if (fs.existsSync(rootEnvPath)) {
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  // Prevent Next.js from stripping trailing slashes via 308 redirects.
+  // Without this, /api/v1/datasources/ gets redirected to /api/v1/datasources,
+  // then FastAPI redirects back with Location: http://backend:8000/... exposing
+  // the internal Docker hostname to the browser and causing CORS errors.
+  skipTrailingSlashRedirect: true,
   // Proxy requests to backend and AI services so all NEXT_PUBLIC_* URLs can be
   // relative paths (domain-agnostic). These rewrites are the fallback when there
   // is NO nginx in front (localhost dev). On production nginx intercepts first.
@@ -25,8 +30,9 @@ const nextConfig = {
     const chatBase = process.env.AI_CHAT_INTERNAL_URL || 'http://ai-chat-service:8001';
     const agentBase = process.env.AI_AGENT_INTERNAL_URL || 'http://ai-agent-service:8001';
     return [
-      // REST API → backend
-      { source: '/api/v1/:path*', destination: `${backendBase}/api/v1/:path*` },
+      // REST API proxying is handled by middleware.ts (preserves trailing
+      // slashes that next.config.js rewrites strip, avoiding FastAPI redirects
+      // that leak the internal Docker hostname).
       // AI Chat (HTTP + WebSocket)
       { source: '/chat/:path*', destination: `${chatBase}/chat/:path*` },
       // AI Agent

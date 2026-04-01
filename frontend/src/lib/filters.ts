@@ -22,7 +22,8 @@ export type FilterType = 'text' | 'number' | 'date' | 'dropdown';
  */
 export interface BaseFilter {
   id: string;                // unique per filter (e.g. uuid)
-  field: string;             // column name
+  field: string;             // primary column name
+  linkedFields?: string[];   // additional column names this filter also applies to (cross-chart linking)
   type: FilterType;          // 'date' | 'dropdown' | 'text' | 'number'
   operator: FilterOperator;  // default depends on type
   value: any;                // string | number | [min,max] | array
@@ -46,26 +47,29 @@ export function inferColumnTypeFromData(
   field: string,
   rows: Record<string, any>[]
 ): FilterType {
-  for (const row of rows) {
-    const val = row[field];
+  // Sample up to 20 rows for more reliable type detection
+  let seenNumber = false;
+  let seenText = false;
+  let seenDate = false;
+  const limit = Math.min(rows.length, 20);
+
+  for (let i = 0; i < limit; i++) {
+    const val = rows[i][field];
     if (val === null || val === undefined) continue;
 
-    // JS Date object
-    if (val instanceof Date) return 'date';
-
-    // Number
-    if (typeof val === 'number') return 'number';
-
-    // String heuristics
+    if (val instanceof Date) { seenDate = true; continue; }
+    if (typeof val === 'number') { seenNumber = true; continue; }
     if (typeof val === 'string') {
-      // ISO date patterns: YYYY-MM-DD or YYYY-MM-DDTHH:mm
-      if (/^\d{4}-\d{2}-\d{2}(T|$)/.test(val)) return 'date';
-      // Looks like a number string
-      if (val.trim() !== '' && !isNaN(Number(val))) return 'number';
-      return 'text';
+      if (/^\d{4}-\d{2}-\d{2}(T|$)/.test(val)) { seenDate = true; continue; }
+      if (val.trim() !== '' && !isNaN(Number(val))) { seenNumber = true; }
+      else { seenText = true; }
     }
-    break;
   }
+
+  // If any text (non-numeric, non-date) values seen, treat as text
+  if (seenDate && !seenText && !seenNumber) return 'date';
+  if (seenText) return 'text';
+  if (seenNumber) return 'number';
   return 'text';
 }
 
@@ -126,6 +130,18 @@ export function applyFiltersToRows(
 
       // handle null/undefined
       if (val === null || val === undefined) return false;
+
+      // Handle multi-value operators first (type-agnostic)
+      if (f.operator === 'in') {
+        const selected: string[] = Array.isArray(f.value) ? f.value : [];
+        if (!selected.length) return true; // empty selection = no filter
+        return selected.includes(String(val));
+      }
+      if (f.operator === 'not_in') {
+        const excluded: string[] = Array.isArray(f.value) ? f.value : [];
+        if (!excluded.length) return true;
+        return !excluded.includes(String(val));
+      }
 
       switch (f.type) {
         case 'date': {

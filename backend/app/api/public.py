@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core import get_db
-from app.models.models import Dashboard, DashboardChart
+from app.models.models import Dashboard, DashboardChart, DashboardPublicLink
 from app.schemas import DashboardResponse
 from app.services import ChartService
 
@@ -21,16 +21,38 @@ def _apply_filters_to_rows(rows: list[dict[str, Any]], filters: list[dict[str, A
     if not rows or not filters:
         return rows
 
-    def matches(row: dict[str, Any], f: dict[str, Any]) -> bool:
+    def _resolve_field(row: dict[str, Any], f: dict[str, Any]) -> str | None:
+        """Find the first matching field name for this filter in the row (primary or linkedFields)."""
         field = f.get("field")
+        if field and field in row:
+            return field
+        for lf in (f.get("linkedFields") or []):
+            if lf in row:
+                return lf
+        return None
+
+    def matches(row: dict[str, Any], f: dict[str, Any]) -> bool:
+        field = _resolve_field(row, f)
+        if not field:
+            return True  # filter doesn't apply to this row's columns
         operator = f.get("operator")
         filter_type = f.get("type")
         value = f.get("value")
-        if not field:
-            return True
         cell = row.get(field)
         if cell is None:
             return False
+
+        # Handle multi-value operators first (type-agnostic)
+        if operator == "in":
+            selected = [str(item) for item in (value if isinstance(value, list) else []) if item is not None]
+            if not selected:
+                return True
+            return str(cell) in selected
+        if operator == "not_in":
+            excluded = [str(item) for item in (value if isinstance(value, list) else []) if item is not None]
+            if not excluded:
+                return True
+            return str(cell) not in excluded
 
         if filter_type == "date":
             str_val = str(cell)[:10]
@@ -99,22 +121,44 @@ def _apply_filters_to_rows(rows: list[dict[str, Any]], filters: list[dict[str, A
     return [row for row in rows if all(matches(row, f) for f in filters)]
 
 
-def _get_dashboard_by_token(token: str, db: Session) -> Dashboard:
+def _get_dashboard_by_token(token: str, db: Session) -> tuple[Dashboard, list[dict]]:
+    """Look up dashboard by token. Checks new multi-link table first, falls back to legacy share_token.
+    Returns (dashboard, filters_config_for_this_link)."""
+    from datetime import datetime, timezone
+
+    # Try new multi-link table first
+    link = db.query(DashboardPublicLink).filter(
+        DashboardPublicLink.token == token,
+        DashboardPublicLink.is_active == True,
+    ).first()
+    if link:
+        dash = db.query(Dashboard).filter(Dashboard.id == link.dashboard_id).first()
+        if not dash:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found.")
+        # Track access
+        link.access_count = (link.access_count or 0) + 1
+        link.last_accessed_at = datetime.now(timezone.utc)
+        db.commit()
+        return dash, link.filters_config or []
+
+    # Fallback to legacy share_token on Dashboard model
     dash = db.query(Dashboard).filter(Dashboard.share_token == token).first()
     if not dash:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Shared dashboard not found or link has been revoked.",
         )
-    return dash
+    return dash, dash.public_filters_config or []
 
 
 @router.get("/dashboards/{token}", response_model=DashboardResponse)
 def get_public_dashboard(token: str, db: Session = Depends(get_db)):
     """Return dashboard structure for a public shared link. No auth required."""
-    dash = _get_dashboard_by_token(token, db)
+    dash, public_filters = _get_dashboard_by_token(token, db)
     # Public viewers get view-level permission (read-only, no edit actions)
     dash.user_permission = "view"
+    # Expose the link-specific filters so the frontend can display filter badges
+    dash.public_filters_config = public_filters
     return dash
 
 
@@ -125,7 +169,7 @@ def get_public_chart_data(token: str, chart_id: int, db: Session = Depends(get_d
     Validates that chart_id belongs to the shared dashboard so a stray token
     cannot be used to access arbitrary charts.
     """
-    dash = _get_dashboard_by_token(token, db)
+    dash, public_filters = _get_dashboard_by_token(token, db)
 
     # Confirm the chart belongs to this dashboard
     link = (
@@ -144,7 +188,6 @@ def get_public_chart_data(token: str, chart_id: int, db: Session = Depends(get_d
 
     try:
         result = ChartService.get_chart_data(db, chart_id)
-        public_filters = dash.public_filters_config or []
         rows = result.get("data")
         if isinstance(rows, list) and public_filters:
             result = {

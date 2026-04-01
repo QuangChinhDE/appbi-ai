@@ -35,7 +35,7 @@ export function TableVisualization({
 
   if (cols.length === 0 || rows.length === 0) {
     return (
-      <div className={clsx("bg-white rounded-lg shadow-sm ring-1 ring-gray-200 p-8", className)}>
+      <div className={clsx("p-8", className)}>
         <div className="text-center text-sm text-gray-500">
           No data to display.
         </div>
@@ -92,9 +92,8 @@ export function TableVisualization({
   };
 
   return (
-    <div className={clsx("bg-white rounded-lg shadow-sm ring-1 ring-gray-200 overflow-auto", className)}>
-      <div className="max-h-[480px] overflow-auto">
-        <table className="min-w-full text-sm border-collapse">
+    <div className={clsx("h-full overflow-auto", className)}>
+      <table className="min-w-full text-sm border-collapse">
           <thead className="bg-gray-50 sticky top-0 z-10">
             <tr>
               {cols.map((col) => (
@@ -143,7 +142,6 @@ export function TableVisualization({
             ))}
           </tbody>
         </table>
-      </div>
       
       {rows.length > maxRows && (
         <div className="px-4 py-2 bg-gray-50 border-t border-gray-200 text-xs text-gray-500 text-center">

@@ -12,6 +12,7 @@ import {
 } from 'recharts';
 import type { ChartRoleConfig, MetricConfig, AggFn } from './ExploreChartConfig';
 import { metricKey, metricLabel } from './ExploreChartConfig';
+import { TableVisualization } from '@/components/visualizations/TableVisualization';
 import { applyFiltersToRows } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 
@@ -253,6 +254,12 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
         </ScatterChart>
       </ResponsiveContainer>
     );
+  }
+
+  // ── TABLE ─────────────────────────────────────────────────────────────────
+  if (type === 'TABLE') {
+    const cols = roleConfig.selectedColumns ?? (data.length > 0 ? Object.keys(data[0]) : []);
+    return <TableVisualization data={data} columns={cols} />;
   }
 
   // For remaining types: need xField + at least 1 metric

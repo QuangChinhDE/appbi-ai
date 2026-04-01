@@ -21,14 +21,24 @@ function getSecret(): Uint8Array {
 }
 
 export async function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
+  const { pathname, search } = request.nextUrl;
+
+  // --- Reverse-proxy /api/v1/* to backend, preserving the exact path
+  //     including trailing slashes. This replaces the next.config.js rewrite
+  //     which strips trailing slashes, causing FastAPI to redirect with the
+  //     internal Docker hostname and breaking CORS. ---
+  if (pathname.startsWith('/api/v1/') || pathname === '/api/v1') {
+    const backendBase = (process.env.BACKEND_URL || 'http://backend:8000/api/v1')
+      .replace(/\/api\/v1\/?$/, '');
+    return NextResponse.rewrite(new URL(pathname + search, backendBase));
+  }
 
   // Allow public paths through
   if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
     return NextResponse.next();
   }
 
-  // Allow Next.js internals through
+  // Allow Next.js internals and other API routes (e.g. /api/auth/*) through
   if (pathname.startsWith('/_next') || pathname.startsWith('/favicon') || pathname.startsWith('/api/')) {
     return NextResponse.next();
   }

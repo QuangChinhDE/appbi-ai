@@ -17,7 +17,7 @@ import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { AddChartModal } from '@/components/dashboards/AddChartModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { ShareDialog } from '@/components/common/ShareDialog';
-import { PublicShareDialog } from '@/components/common/PublicShareDialog';
+import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { DashboardChartLayout } from '@/types/api';
 import type { BaseFilter, ColumnInfo } from '@/lib/filters';
@@ -68,6 +68,8 @@ export default function DashboardDetailPage() {
   const filtersSeededRef = React.useRef(false);
   const filtersSaveTimerRef = React.useRef<NodeJS.Timeout | null>(null);
   const filtersSnapshotRef = React.useRef<string>('[]');
+  const distinctValuesRef = React.useRef<Map<string, Set<string>>>(new Map());
+  const [distinctValues, setDistinctValues] = useState<Record<string, string[]>>({});
 
   const { data: dashboard, isLoading: isLoadingDashboard } = useDashboard(dashboardId);
   const { data: permData } = usePermissions();
@@ -243,6 +245,27 @@ export default function DashboardDetailPage() {
       if (merged.length === prev.length) return prev;
       return merged;
     });
+
+    // Collect distinct values per column for PowerBI-style multi-select filters
+    const dvRef = distinctValuesRef.current;
+    let dvChanged = false;
+    for (const field of fields) {
+      if (!dvRef.has(field)) { dvRef.set(field, new Set()); dvChanged = true; }
+      const set = dvRef.get(field)!;
+      const prevSize = set.size;
+      for (const row of data) {
+        const val = row[field];
+        if (val !== null && val !== undefined && String(val) !== '') {
+          set.add(String(val));
+        }
+      }
+      if (set.size !== prevSize) dvChanged = true;
+    }
+    if (dvChanged) {
+      const result: Record<string, string[]> = {};
+      dvRef.forEach((set, field) => { result[field] = Array.from(set).sort(); });
+      setDistinctValues(result);
+    }
   }, []);
 
   if (isLoadingDashboard) {
@@ -378,7 +401,7 @@ export default function DashboardDetailPage() {
                   className="flex items-center px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
                 >
                   <Globe className="h-4 w-4 mr-2" />
-                  {dashboard.share_token ? 'Public link' : 'Share link'}
+                  Public links
                 </button>
               )}
               {canShare && (
@@ -407,6 +430,7 @@ export default function DashboardDetailPage() {
         <DashboardFilterBar
           columns={availableColumns}
           columnChartCount={columnChartCount}
+          distinctValues={distinctValues}
           filters={globalFilters}
           onFiltersChange={setGlobalFilters}
         />
@@ -452,16 +476,14 @@ export default function DashboardDetailPage() {
           />
         )}
 
-        {/* Public link dialog */}
+        {/* Public links manager */}
         {isPublicShareOpen && dashboard && (
-          <PublicShareDialog
+          <PublicLinksManager
             dashboardId={dashboardId}
             dashboardName={dashboard.name}
-            currentToken={dashboard.share_token}
-            globalFilters={globalFilters}
-            currentPublicFilters={dashboard.public_filters_config as BaseFilter[] ?? []}
             availableColumns={availableColumns}
             columnChartCount={columnChartCount}
+            distinctValues={distinctValues}
             onClose={() => setIsPublicShareOpen(false)}
           />
         )}

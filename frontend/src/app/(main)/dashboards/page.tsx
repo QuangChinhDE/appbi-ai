@@ -13,7 +13,7 @@ import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { GettingStartedGuide } from '@/components/common/GettingStartedGuide';
-import { PublicShareDialog } from '@/components/common/PublicShareDialog';
+import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { Dashboard } from '@/types/api';
@@ -196,10 +196,10 @@ export default function DashboardsPage() {
                             <button
                               onClick={() => setPublicShareDash(dashboard)}
                               className="flex items-center gap-1 text-xs text-gray-400 transition-colors hover:text-purple-600"
-                              title="Share public link"
+                              title="Public links"
                             >
                               <Globe className="h-3.5 w-3.5" />
-                              {dashboard.share_token ? 'Link active' : 'Share'}
+                              Public links
                             </button>
                           )}
                           <button
@@ -297,11 +297,9 @@ export default function DashboardsPage() {
       )}
 
       {publicShareDash && (
-        <PublicShareDialog
+        <PublicLinksManager
           dashboardId={publicShareDash.id}
           dashboardName={publicShareDash.name}
-          currentToken={publicShareDash.share_token}
-          currentPublicFilters={publicShareDash.public_filters_config as any[] ?? []}
           onClose={() => setPublicShareDash(null)}
         />
       )}

@@ -218,7 +218,15 @@ export default function PublicDashboardPage() {
               const filteredRows = Array.isArray(cd?.data)
                 ? applyFiltersToRows(
                     cd.data,
-                    globalFilters.filter((filter) => cd.data.length > 0 && filter.field in cd.data[0]),
+                    globalFilters
+                      .map((filter) => {
+                        if (!cd.data.length) return null;
+                        const candidates = [filter.field, ...((filter as any).linkedFields ?? [])];
+                        const match = candidates.find(c => c in cd.data[0]);
+                        if (!match) return null;
+                        return match !== filter.field ? { ...filter, field: match } : filter;
+                      })
+                      .filter((f): f is BaseFilter => f !== null),
                   )
                 : [];
 

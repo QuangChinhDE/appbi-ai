@@ -6,6 +6,7 @@ import axios from 'axios';
 // NEXT_PUBLIC_API_URL is baked at build time as '/api/v1' (relative).
 // Next.js rewrites (localhost) or nginx (/api/ location) proxy it to the backend.
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
+const API_CLIENT_BUILD_STAMP = '2026-04-01-001';
 
 export const apiClient = axios.create({
   baseURL: API_URL,
@@ -18,7 +19,7 @@ export const apiClient = axios.create({
 // Request interceptor for logging
 apiClient.interceptors.request.use(
   (config) => {
-    console.log(`[API] ${config.method?.toUpperCase()} ${config.url}`);
+    console.log(`[API ${API_CLIENT_BUILD_STAMP}] ${config.method?.toUpperCase()} ${config.url}`);
     return config;
   },
   (error) => {
@@ -32,7 +33,7 @@ apiClient.interceptors.response.use(
     return response;
   },
   (error) => {
-    console.error('[API Error]', error.response?.data || error.message);
+    console.error(`[API Error ${API_CLIENT_BUILD_STAMP}]`, error.response?.data || error.message);
     if (error.response?.status === 401 && typeof window !== 'undefined') {
       window.location.href = '/login';
     }

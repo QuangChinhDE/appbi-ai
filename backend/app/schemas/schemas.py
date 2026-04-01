@@ -237,6 +237,35 @@ class DashboardShareRequest(BaseModel):
     public_filters_config: Optional[List[Dict[str, Any]]] = None
 
 
+class PublicLinkCreate(BaseModel):
+    """Schema for creating a named public link."""
+    name: str = Field(..., min_length=1, max_length=255)
+    filters_config: Optional[List[Dict[str, Any]]] = None
+
+
+class PublicLinkUpdate(BaseModel):
+    """Schema for updating a public link."""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    filters_config: Optional[List[Dict[str, Any]]] = None
+    is_active: Optional[bool] = None
+
+
+class PublicLinkResponse(BaseModel):
+    """Schema for public link response."""
+    id: int
+    dashboard_id: int
+    name: str
+    token: str
+    filters_config: Optional[List[Dict[str, Any]]] = None
+    is_active: bool
+    access_count: int
+    last_accessed_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class DashboardChartResponse(BaseModel):
     """Schema for dashboard chart response."""
     id: int
