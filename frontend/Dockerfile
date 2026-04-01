@@ -16,18 +16,12 @@ RUN npm install
 FROM node:18-alpine AS builder
 WORKDIR /app
 
-# Accept API URL as build-time argument so the browser bundle
-# points to the correct host endpoint (baked in at image build).
-ARG NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+# Accept only the public API base as a build-time argument.
+# It must stay relative so the same image works for localhost and custom domains.
+ARG NEXT_PUBLIC_API_URL=/api/v1
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ARG NEXT_PUBLIC_APP_URL=http://localhost:3000
 ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
-ARG NEXT_PUBLIC_AI_CHAT_WS_URL=ws://localhost:8001/chat/ws
-ENV NEXT_PUBLIC_AI_CHAT_WS_URL=$NEXT_PUBLIC_AI_CHAT_WS_URL
-ARG NEXT_PUBLIC_AI_CHAT_HTTP_URL=http://localhost:8001
-ENV NEXT_PUBLIC_AI_CHAT_HTTP_URL=$NEXT_PUBLIC_AI_CHAT_HTTP_URL
-ARG NEXT_PUBLIC_AI_AGENT_HTTP_URL=http://localhost:8002
-ENV NEXT_PUBLIC_AI_AGENT_HTTP_URL=$NEXT_PUBLIC_AI_AGENT_HTTP_URL
 
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
