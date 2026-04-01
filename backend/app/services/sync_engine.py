@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 import shutil
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -145,20 +145,49 @@ def _sync_one_table(
     strategy = tbl_cfg.get("strategy", "full_refresh")
     watermark_col: Optional[str] = tbl_cfg.get("watermark_column")
 
+    # Google Sheets and Manual datasources don't support incremental sync;
+    # force full_refresh so users aren't silently stuck with stale data.
+    ds_type_val = ds.type if isinstance(ds.type, str) else ds.type.value
+    if strategy == "incremental" and ds_type_val in ("google_sheets", "manual"):
+        logger.info(
+            "[sync ds=%d] %s.%s: incremental not supported for %s — falling back to full_refresh",
+            ds.id, schema_name, table_name, ds_type_val,
+        )
+        strategy = "full_refresh"
+
     if strategy == "incremental" and watermark_col:
         last_max = _get_watermark_max(ds.id, schema_name, table_name, watermark_col)
         if last_max is not None:
             if isinstance(last_max, datetime):
                 wm_literal = f"'{last_max.isoformat()}'"
+            elif isinstance(last_max, date):
+                # date objects must also be quoted (otherwise 2024-01-01 is
+                # interpreted as arithmetic 2024 - 1 - 1 = 2022 in BigQuery)
+                wm_literal = f"'{last_max.isoformat()}'"
             else:
                 wm_literal = str(last_max)
-            # Incremental needs a WHERE clause — kept as SQL for SQL databases.
-            # GSheets/Manual don't support watermark sync; they fall through to
-            # full_refresh on first run and are typically configured as such.
-            sql = (
-                f'SELECT * FROM "{schema_name}"."{table_name}"'
-                f' WHERE "{watermark_col}" > {wm_literal}'
-            )
+
+            # Build incremental SQL with correct quoting per datasource type
+            if ds_type_val == "bigquery":
+                from app.core.crypto import decrypt_config as _dec
+                _cfg = _dec(ds.config)
+                project_id = _cfg.get("project_id", "")
+                sql = (
+                    f"SELECT * FROM `{project_id}.{schema_name}.{table_name}`"
+                    f" WHERE `{watermark_col}` > {wm_literal}"
+                )
+            elif ds_type_val == "mysql":
+                sql = (
+                    f"SELECT * FROM `{schema_name}`.`{table_name}`"
+                    f" WHERE `{watermark_col}` > {wm_literal}"
+                )
+            else:
+                # PostgreSQL (and any other SQL datasource)
+                sql = (
+                    f'SELECT * FROM "{schema_name}"."{table_name}"'
+                    f' WHERE "{watermark_col}" > {wm_literal}'
+                )
+
             _, rows, _ = DataSourceConnectionService.execute_query(
                 ds.type, ds.config, sql, limit=None, timeout_seconds=300
             )

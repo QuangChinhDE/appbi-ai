@@ -92,7 +92,7 @@ def _scheduled_sync_task(data_source_id: int) -> None:
         job = SyncJob(
             data_source_id=data_source_id,
             status="running",
-            mode="full_refresh",
+            mode="scheduled",
             triggered_by="schedule",
             started_at=datetime.now(timezone.utc),
         )

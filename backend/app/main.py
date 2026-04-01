@@ -41,6 +41,29 @@ async def lifespan(app: FastAPI):
     from app.services.sync_engine import restore_synced_views
     restore_synced_views()
 
+    # Mark stale "running" sync jobs as failed so scheduled syncs aren't
+    # permanently blocked after a container restart or OOM kill.
+    from app.core.database import SessionLocal
+    from app.models import SyncJob
+    from datetime import datetime as _dt, timezone as _tz
+    _db = SessionLocal()
+    try:
+        stale_jobs = _db.query(SyncJob).filter(SyncJob.status == "running").all()
+        if stale_jobs:
+            _now = _dt.now(_tz.utc)
+            for sj in stale_jobs:
+                sj.status = "failed"
+                sj.error_message = "Marked failed: app restarted while job was running"
+                sj.finished_at = _now
+            _db.commit()
+            logging.getLogger(__name__).warning(
+                "Startup: marked %d stale sync job(s) as failed", len(stale_jobs)
+            )
+    except Exception as _e:
+        logging.getLogger(__name__).warning("Startup: stale job cleanup failed: %s", _e)
+    finally:
+        _db.close()
+
     # DataSource-level sync scheduler
     from app.services.sync_scheduler import startup as ds_scheduler_startup
     ds_scheduler_startup()

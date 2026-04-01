@@ -167,12 +167,17 @@ class DataSourceConnectionService:
     
     @staticmethod
     def _test_google_sheets(config: Dict[str, Any]) -> Tuple[bool, str]:
-        """Test Google Sheets connection."""
+        """Test Google Sheets connection by verifying API access to the spreadsheet."""
         try:
+            spreadsheet_id = (config.get("spreadsheet_id") or "").strip()
+            if not spreadsheet_id:
+                return False, "Spreadsheet ID is required"
             connector = create_google_sheets_connector(config)
-            if connector.test_connection():
-                return True, "Connection successful"
-            return False, "Failed to connect to Google Sheets"
+            if connector.test_connection(spreadsheet_id):
+                # Also verify we can list sheets (confirms read access)
+                sheets = connector.list_sheets(spreadsheet_id)
+                return True, f"Connection successful — {len(sheets)} sheet(s) found"
+            return False, "Failed to connect to Google Sheets. Check that the spreadsheet is shared with the service account."
         except Exception as e:
             return False, str(e)
     
@@ -1328,19 +1333,49 @@ class DataSourceConnectionService:
         table_name: str,
     ) -> List[Dict[str, str]]:
         """Return columns suitable as watermark (timestamp/date/integer types)."""
-        if ds_type != DataSourceType.POSTGRESQL.value:
+        from app.core.crypto import decrypt_config
+        config = decrypt_config(config)
+
+        # Google Sheets and Manual datasources have no typed columns — no watermark support
+        if ds_type in (DataSourceType.GOOGLE_SHEETS.value, DataSourceType.MANUAL.value):
             return []
-        detail = DataSourceConnectionService._pg_table_detail(config, schema_name, table_name, preview_rows=0)
+
         watermark_types = {
             "timestamp", "timestamptz", "timestamp with time zone",
-            "timestamp without time zone", "date", "integer", "bigint",
-            "int4", "int8",
+            "timestamp without time zone", "date", "datetime",
+            "integer", "bigint", "int4", "int8", "int64",
         }
-        return [
-            {"name": c["name"], "type": c["type"]}
-            for c in detail["columns"]
-            if any(wt in c["type"].lower() for wt in watermark_types)
-        ]
+
+        if ds_type == DataSourceType.POSTGRESQL.value:
+            detail = DataSourceConnectionService._pg_table_detail(config, schema_name, table_name, preview_rows=0)
+            return [
+                {"name": c["name"], "type": c["type"]}
+                for c in detail["columns"]
+                if any(wt in c["type"].lower() for wt in watermark_types)
+            ]
+
+        if ds_type == DataSourceType.BIGQUERY.value:
+            full_table = f"{schema_name}.{table_name}"
+            columns = DataSourceConnectionService._bq_list_columns(config, full_table)
+            bq_watermark_types = {
+                "timestamp", "datetime", "date", "integer", "int64", "numeric",
+            }
+            return [
+                {"name": c["name"], "type": c["type"]}
+                for c in columns
+                if c["type"].lower() in bq_watermark_types
+            ]
+
+        if ds_type == DataSourceType.MYSQL.value:
+            database = config.get("database", schema_name)
+            columns = DataSourceConnectionService._mysql_list_columns(config, database, table_name)
+            return [
+                {"name": c["name"], "type": c["type"]}
+                for c in columns
+                if any(wt in c["type"].lower() for wt in watermark_types)
+            ]
+
+        return []
 
     @staticmethod
     def list_columns(

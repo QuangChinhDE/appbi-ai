@@ -44,10 +44,13 @@ class GoogleSheetsConnector:
         except Exception as e:
             raise ValueError(f"Failed to initialize Google Sheets connector: {str(e)}")
     
-    def test_connection(self) -> bool:
-        """Test if connection to Google Sheets API is working"""
+    def test_connection(self, spreadsheet_id: str) -> bool:
+        """Test if connection to Google Sheets API is working by fetching spreadsheet metadata."""
         try:
-            # Just try to build the service, if it works connection is OK
+            self.service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id,
+                fields='properties.title',
+            ).execute()
             return True
         except Exception:
             return False
