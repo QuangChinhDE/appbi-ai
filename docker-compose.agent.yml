@@ -30,8 +30,10 @@ services:
       OPENROUTER_API_KEY_5: ${OPENROUTER_API_KEY_5:-}
       OPENROUTER_SITE_URL: ${OPENROUTER_SITE_URL:-http://localhost:${FRONTEND_PORT:-3000}}
       OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-AppBI AI Agent}
-    # AI Agent is not exposed to host in production — accessed only via
-    # the internal Docker network (frontend reverse-proxy and nginx).
+    ports:
+      # Bind to 127.0.0.1 so the agent service is reachable only via nginx,
+      # not directly from the public internet.
+      - "127.0.0.1:8002:8001"
     depends_on:
       backend:
         condition: service_healthy

@@ -67,9 +67,10 @@ services:
       OPENROUTER_EMBEDDING_DIMENSIONS: ${OPENROUTER_EMBEDDING_DIMENSIONS:-768}
     volumes:
       - appbi_data:/app/.data
-    # Backend is not exposed to host in production — accessed only via
-    # the internal Docker network (frontend reverse-proxy and nginx).
-    # For local development, use docker-compose.dev.yml which adds port mapping.
+    ports:
+      # Bind to 127.0.0.1 so the backend is reachable only via nginx,
+      # not directly from the public internet.
+      - "127.0.0.1:8000:8000"
     depends_on:
       db:
         condition: service_healthy

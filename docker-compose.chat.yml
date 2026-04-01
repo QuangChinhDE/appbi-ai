@@ -25,8 +25,10 @@ services:
       AI_MAX_TOOL_CALLS: ${AI_MAX_TOOL_CALLS:-8}
       AI_WORKSPACE_TABLE_LIMIT: ${AI_WORKSPACE_TABLE_LIMIT:-50}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    # AI Chat is not exposed to host in production — accessed only via
-    # the internal Docker network (frontend reverse-proxy and nginx).
+    ports:
+      # Bind to 127.0.0.1 so the chat service is reachable only via nginx,
+      # not directly from the public internet.
+      - "127.0.0.1:8001:8001"
     depends_on:
       backend:
         condition: service_healthy
