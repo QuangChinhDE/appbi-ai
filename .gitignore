@@ -23,6 +23,19 @@ out/
 .DS_Store
 *.log
 
+# Claude AI / Copilot agent internal files
+.claude/
+CLAUDE.md
+
+# Internal docs (not needed to run the project)
+docs/
+
+# Demo/test scripts (local only)
+seed_demo.py
+scope-foodball-demo.xlsx
+verify-docker.sh
+verify-docker.ps1
+
 # Test & debug scripts (local only — not for repo)
 test_*.py
 **/test_*.py

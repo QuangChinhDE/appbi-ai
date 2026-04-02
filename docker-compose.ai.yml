@@ -25,6 +25,10 @@ services:
       AI_MAX_TOOL_CALLS: ${AI_MAX_TOOL_CALLS:-8}
       AI_WORKSPACE_TABLE_LIMIT: ${AI_WORKSPACE_TABLE_LIMIT:-50}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      # Bind to 127.0.0.1 so the chat service is reachable only via nginx,
+      # not directly from the public internet.
+      - "127.0.0.1:${AI_CHAT_PORT:-8001}:8001"
     # AI Chat is not exposed to host in production — accessed only via
     # the internal Docker network (frontend reverse-proxy and nginx).
     depends_on:
@@ -70,6 +74,10 @@ services:
       OPENROUTER_API_KEY_5: ${OPENROUTER_API_KEY_5:-}
       OPENROUTER_SITE_URL: ${OPENROUTER_SITE_URL:-http://localhost:${FRONTEND_PORT:-3000}}
       OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-AppBI AI Agent}
+    ports:
+      # Bind to 127.0.0.1 so the agent service is reachable only via nginx,
+      # not directly from the public internet. Maps host 8002 → container 8001.
+      - "127.0.0.1:${AI_AGENT_PORT:-8002}:8001"
     # AI Agent is not exposed to host in production — accessed only via
     # the internal Docker network (frontend reverse-proxy and nginx).
     depends_on:

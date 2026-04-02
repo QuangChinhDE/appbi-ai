@@ -33,7 +33,7 @@ services:
     ports:
       # Bind to 127.0.0.1 so the agent service is reachable only via nginx,
       # not directly from the public internet.
-      - "127.0.0.1:8002:8001"
+      - "127.0.0.1:${AI_AGENT_PORT:-8002}:8001"
     depends_on:
       backend:
         condition: service_healthy

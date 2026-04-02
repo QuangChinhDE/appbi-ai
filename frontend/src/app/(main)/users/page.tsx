@@ -6,6 +6,20 @@ import { Plus, Edit2, UserX, ChevronDown } from 'lucide-react';
 import { usersApi } from '@/lib/api-client';
 import { toast } from 'sonner';
 
+/** Extract a human-readable message from an Axios error (handles Pydantic 422 arrays). */
+function extractApiError(err: any, fallback = 'An error occurred.'): string {
+  const detail = err?.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d: any) => (typeof d === 'string' ? d : d?.msg))
+      .filter(Boolean)
+      .map((m: string) => m.replace(/^Value error, /i, ''));
+    if (msgs.length) return msgs.join('; ');
+  }
+  return fallback;
+}
+
 type UserStatus = 'active' | 'deactivated';
 
 interface User {
@@ -39,7 +53,7 @@ export default function UsersPage() {
       toast.success('User deactivated');
     },
     onError: (err: any) => {
-      toast.error(err?.response?.data?.detail || 'Failed to deactivate user');
+      toast.error(extractApiError(err, 'Failed to deactivate user'));
     },
   });
 
@@ -164,8 +178,7 @@ function InviteModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
       toast.success(`User ${email} created successfully`);
       onSuccess();
     } catch (err: any) {
-      const detail = err?.response?.data?.detail;
-      setError(typeof detail === 'string' ? detail : 'Failed to create user.');
+      setError(extractApiError(err, 'Failed to create user.'));
     } finally {
       setLoading(false);
     }
@@ -257,7 +270,7 @@ function EditUserModal({
       toast.success('User updated');
       onSuccess();
     } catch (err: any) {
-      setError(err?.response?.data?.detail || 'Failed to update user.');
+      setError(extractApiError(err, 'Failed to update user.'));
     } finally {
       setLoading(false);
     }
