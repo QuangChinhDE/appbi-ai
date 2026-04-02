@@ -300,9 +300,28 @@ def _run_sync_job(data_source_id: int, job_id: int) -> None:
         sync_config = ds.sync_config or {}
         table_configs: Dict[str, Dict] = sync_config.get("tables", {})
         if not isinstance(table_configs, dict):
-            # Guard: sync_config.tables must be a dict {table_key: config}.
-            # If it's a list (malformed config), treat as empty — sync all tables with defaults.
             table_configs = {}
+
+        # Build a set of tables that the user has actually added to workspaces.
+        # Only these tables (plus any explicitly enabled in sync_config) will
+        # be synced — prevents pulling data the user never requested, which is
+        # critical when the datasource has many tables and the user may not
+        # have permission to read all of them.
+        from app.models import DatasetWorkspaceTable
+        workspace_tables = (
+            db.query(DatasetWorkspaceTable.source_table_name)
+            .filter(
+                DatasetWorkspaceTable.datasource_id == data_source_id,
+                DatasetWorkspaceTable.source_kind == "physical_table",
+                DatasetWorkspaceTable.enabled.is_(True),
+            )
+            .all()
+        )
+        # Normalise to a set of "schema.table" keys for fast lookup.
+        selected_table_keys: set = set()
+        for (stn,) in workspace_tables:
+            if stn:
+                selected_table_keys.add(stn.strip('"').strip("'").strip())
 
         schema_list = DataSourceConnectionService.get_schema_browser(ds.type, ds.config)
         if not schema_list:
@@ -315,10 +334,14 @@ def _run_sync_job(data_source_id: int, job_id: int) -> None:
                 table_key = f"{schema_name}.{table_name}"
                 tbl_cfg = table_configs.get(table_key, {})
 
-                # Skip disabled tables
-                if not tbl_cfg.get("enabled", True):
-                    logger.info(f"[sync ds={data_source_id}] {table_key} → skipped (disabled)")
-                    continue
+                # Sync only tables that the user explicitly selected in a
+                # workspace, OR that are explicitly enabled in sync_config.
+                # Tables not in either set are skipped — this prevents
+                # querying tables the user has no access to (e.g. BigQuery
+                # datasets with partial permissions).
+                if table_key not in selected_table_keys:
+                    if not tbl_cfg.get("enabled", False):
+                        continue
 
                 try:
                     count = _sync_one_table(ds, schema_name, table_name, tbl_cfg)
