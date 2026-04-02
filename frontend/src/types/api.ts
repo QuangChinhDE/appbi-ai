@@ -176,7 +176,7 @@ export interface SyncConfig {
 
 export interface SyncJob {
   id: number;
-  status: 'running' | 'success' | 'failed' | 'timeout';
+  status: 'running' | 'success' | 'failed' | 'timeout' | 'cancelled';
   mode: string;
   started_at: string;
   finished_at: string | null;

@@ -108,4 +108,17 @@ export const dataSourceApi = {
     const response = await apiClient.post(`/datasources/${id}/sync`);
     return response.data;
   },
+
+  cancelSync: async (dsId: number, jobId: number): Promise<{ message: string; job_id: number }> => {
+    const response = await apiClient.post(`/datasources/${dsId}/sync-jobs/${jobId}/cancel`);
+    return response.data;
+  },
+
+  /**
+   * Returns the SSE URL for streaming live sync logs.
+   * Must be used with EventSource (not axios).
+   */
+  syncLogsUrl: (dsId: number, jobId: number): string => {
+    return `/api/datasources/${dsId}/sync-jobs/${jobId}/logs`;
+  },
 };

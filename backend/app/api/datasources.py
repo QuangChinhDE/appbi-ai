@@ -562,3 +562,111 @@ def trigger_sync(
     run_sync(data_source_id, job.id)
     logger.info(f"Manual sync triggered for datasource {data_source_id}, job_id={job.id}")
     return {"job_id": job.id, "status": "running", "message": "Sync started"}
+
+
+@router.post("/{data_source_id}/sync-jobs/{job_id}/cancel")
+def cancel_sync_job(
+    data_source_id: int,
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Cancel a running sync job."""
+    from app.models import SyncJob
+    from app.services.sync_engine import cancel_sync
+
+    ds = DataSourceCRUDService.get_by_id(db, data_source_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Data source not found")
+    require_edit_access(db, current_user, ds, "data_sources")
+
+    job = db.query(SyncJob).filter(
+        SyncJob.id == job_id,
+        SyncJob.data_source_id == data_source_id,
+    ).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Sync job not found")
+    if job.status != "running":
+        raise HTTPException(status_code=409, detail=f"Job is not running (status={job.status})")
+
+    cancelled = cancel_sync(job_id)
+    if not cancelled:
+        raise HTTPException(status_code=409, detail="Job thread not found — may have already finished")
+
+    return {"message": "Cancel signal sent", "job_id": job_id}
+
+
+@router.get("/{data_source_id}/sync-jobs/{job_id}/logs")
+async def stream_sync_logs(
+    data_source_id: int,
+    job_id: int,
+    after: int = 0,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    SSE endpoint that streams real-time sync logs for *job_id*.
+
+    Query param `after` is the index of the last log entry the client received;
+    only newer entries are sent.  The stream closes when the job finishes.
+    """
+    import asyncio
+    import json
+    from fastapi.responses import StreamingResponse
+    from app.models import SyncJob
+    from app.services.sync_engine import get_sync_logs, get_table_progress
+
+    ds = DataSourceCRUDService.get_by_id(db, data_source_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Data source not found")
+    require_view_access(db, current_user, ds, "data_sources")
+
+    job = db.query(SyncJob).filter(
+        SyncJob.id == job_id,
+        SyncJob.data_source_id == data_source_id,
+    ).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Sync job not found")
+
+    async def event_generator():
+        cursor = after
+        while True:
+            entries = get_sync_logs(job_id, cursor)
+            if entries:
+                cursor += len(entries)
+                for entry in entries:
+                    yield f"data: {json.dumps(entry)}\n\n"
+
+            # Send table progress as a separate event type
+            progress = get_table_progress(job_id)
+            if progress:
+                yield f"event: progress\ndata: {json.dumps(progress)}\n\n"
+
+            # Check if job is done (re-query from DB)
+            from app.core.database import SessionLocal
+            check_db = SessionLocal()
+            try:
+                j = check_db.query(SyncJob).filter(SyncJob.id == job_id).first()
+                if j and j.status != "running":
+                    # Send final batch + done event
+                    final = get_sync_logs(job_id, cursor)
+                    if final:
+                        for entry in final:
+                            yield f"data: {json.dumps(entry)}\n\n"
+                    final_progress = get_table_progress(job_id)
+                    yield f"event: done\ndata: {json.dumps({'status': j.status, 'rows_synced': j.rows_synced, 'rows_failed': j.rows_failed, 'table_progress': final_progress})}\n\n"
+                    return
+            finally:
+                check_db.close()
+
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

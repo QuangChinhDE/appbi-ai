@@ -4,7 +4,6 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   Play,
   Save,
-  RefreshCw,
   CheckCircle,
   XCircle,
   Clock,
@@ -12,16 +11,20 @@ import {
   Loader2,
   ExternalLink,
   Table2,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import {
   useSyncConfig,
   useSaveSyncConfig,
   useSyncJobs,
   useTriggerSync,
+  useCancelSync,
   useDataSourceSchema,
   useWatermarkCandidates,
 } from '@/hooks/use-datasources';
 import TableDetailModal from './TableDetailModal';
+import SyncMonitorPanel from './SyncMonitorPanel';
 import type {
   SyncConfig,
   SyncScheduleConfig,
@@ -140,6 +143,13 @@ function StatusBadge({ status }: { status: string }) {
       </span>
     );
   }
+  if (status === 'cancelled') {
+    return (
+      <span className="inline-flex items-center gap-1 text-amber-600 text-xs font-medium">
+        <XCircle className="w-3 h-3" /> Cancelled
+      </span>
+    );
+  }
   if (status === 'timeout') {
     return (
       <span className="inline-flex items-center gap-1 text-amber-600 text-xs font-medium">
@@ -186,10 +196,13 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
   const { data: jobsData, isLoading: jobsLoading } = useSyncJobs(datasourceId, 5);
   const saveMutation = useSaveSyncConfig();
   const syncMutation = useTriggerSync();
+  const cancelMutation = useCancelSync();
 
   const [cfg, setCfg] = useState<SyncConfig>(defaultSyncConfig());
   const [saved, setSaved] = useState(false);
   const [tableModal, setTableModal] = useState<{ schema: string; name: string } | null>(null);
+  const [monitorJobId, setMonitorJobId] = useState<number | null>(null);
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
 
   // Load stored config into state
   useEffect(() => {
@@ -229,18 +242,37 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
   );
 
   const handleSave = async () => {
-    await saveMutation.mutateAsync({ id: datasourceId, config: cfg });
+    // Ensure every visible table has an explicit entry in cfg.tables so the
+    // backend doesn't skip them (backend defaults enabled to false).
+    const completeTables: Record<string, SyncTableConfig> = { ...cfg.tables };
+    allTables.forEach(({ schema, name }) => {
+      const key = tableKey(schema, name);
+      if (!completeTables[key]) {
+        completeTables[key] = { enabled: true, strategy: 'full_refresh' };
+      }
+    });
+    const completeConfig: SyncConfig = { ...cfg, tables: completeTables };
+    await saveMutation.mutateAsync({ id: datasourceId, config: completeConfig });
+    setCfg(completeConfig);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
 
-  const handleTriggerSync = () => syncMutation.mutate(datasourceId);
+  const handleTriggerSync = () => {
+    syncMutation.mutate(datasourceId);
+  };
 
   // ── Computed values ──────────────────────────────────────────────────────
 
   const schedule = cfg.schedule ?? defaultSyncConfig().schedule!;
   const cron = buildCron(schedule.type, schedule);
   const nextRun = schedule.enabled ? nextRunLabel(cron, schedule.timezone ?? 'UTC') : null;
+  const enabledTableCount = allTables.filter(({ schema, name }) => {
+    const key = tableKey(schema, name);
+    return (cfg.tables?.[key]?.enabled ?? true) !== false;
+  }).length;
+  const runningJob = (jobsData?.jobs ?? []).find((job) => job.status === 'running') ?? null;
+  const latestJob = (jobsData?.jobs ?? [])[0] ?? null;
 
   if (configLoading) {
     return (
@@ -254,156 +286,76 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
   return (
     <div className="space-y-6 pb-8">
 
-      {/* ── Section 1: Scheduled sync ───────────────────────────────────── */}
-      <section className="bg-white border border-gray-100 rounded-lg overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+      <section className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+        <div className="flex flex-col gap-4 border-b border-gray-100 bg-gradient-to-r from-slate-50 to-white px-5 py-5 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-gray-800">Scheduled sync</h3>
-            <p className="text-xs text-gray-400 mt-0.5">Tự động pull data từ source theo lịch</p>
+            <h2 className="text-base font-semibold text-gray-900">Sync control center</h2>
+            <p className="mt-1 text-sm text-gray-500">
+              Ưu tiên cấu hình bảng cần sync và theo dõi lịch sử chạy. Các tùy chỉnh nâng cao được gom riêng phía dưới.
+            </p>
           </div>
-          {/* Toggle */}
-          <button
-            onClick={() => updateSchedule({ enabled: !schedule.enabled })}
-            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-              schedule.enabled ? 'bg-blue-600' : 'bg-gray-200'
-            }`}
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                schedule.enabled ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={handleTriggerSync}
+              disabled={syncMutation.isPending}
+              className="flex items-center gap-2 rounded-md border border-gray-200 px-4 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+            >
+              {syncMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Play className="w-4 h-4" />
+              )}
+              Sync now
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saveMutation.isPending}
+              className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+            >
+              {saveMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : saved ? (
+                <CheckCircle className="w-4 h-4" />
+              ) : (
+                <Save className="w-4 h-4" />
+              )}
+              {saved ? 'Saved!' : 'Save settings'}
+            </button>
+          </div>
         </div>
 
-        {schedule.enabled && (
-          <div className="px-5 py-4 space-y-4">
-            {/* Schedule type */}
-            <div>
-              <label className="text-xs font-medium text-gray-500 mb-2 block">
-                Schedule type
-              </label>
-              <div className="flex gap-2">
-                {(['interval', 'daily', 'custom_cron'] as ScheduleType[]).map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => updateSchedule({ type: t })}
-                    className={`flex-1 py-2 px-3 rounded-lg border text-sm font-medium transition-colors ${
-                      schedule.type === t
-                        ? 'border-blue-500 bg-blue-50 text-blue-700'
-                        : 'border-gray-200 text-gray-600 hover:border-gray-300'
-                    }`}
-                  >
-                    {t === 'interval' && (
-                      <>
-                        <div className="font-semibold">Interval</div>
-                        <div className="text-xs font-normal opacity-70">Every X hours</div>
-                      </>
-                    )}
-                    {t === 'daily' && (
-                      <>
-                        <div className="font-semibold">Daily</div>
-                        <div className="text-xs font-normal opacity-70">Once per day</div>
-                      </>
-                    )}
-                    {t === 'custom_cron' && (
-                      <>
-                        <div className="font-semibold">Custom cron</div>
-                        <div className="text-xs font-normal opacity-70">Cron expression</div>
-                      </>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Interval settings */}
-            {schedule.type === 'interval' && (
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-medium text-gray-500 mb-1 block">
-                    Every (hours)
-                  </label>
-                  <select
-                    value={schedule.interval_hours ?? 6}
-                    onChange={(e) => updateSchedule({ interval_hours: parseInt(e.target.value) })}
-                    className="w-full border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    {[1, 2, 3, 4, 6, 8, 12, 24].map((h) => (
-                      <option key={h} value={h}>
-                        {h}h
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            )}
-
-            {/* Daily settings */}
-            {schedule.type === 'daily' && (
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-medium text-gray-500 mb-1 block">
-                    Time (UTC)
-                  </label>
-                  <select
-                    value={schedule.time ?? '02:00'}
-                    onChange={(e) => updateSchedule({ time: e.target.value })}
-                    className="w-full border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    {HOURS.map((h) => (
-                      <option key={h} value={h}>
-                        {h}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs font-medium text-gray-500 mb-1 block">
-                    Timezone
-                  </label>
-                  <select
-                    value={schedule.timezone ?? 'UTC'}
-                    onChange={(e) => updateSchedule({ timezone: e.target.value })}
-                    className="w-full border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    {TIMEZONES.map((tz) => (
-                      <option key={tz} value={tz}>
-                        {tz}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            )}
-
-            {/* Custom cron */}
-            {schedule.type === 'custom_cron' && (
-              <div>
-                <label className="text-xs font-medium text-gray-500 mb-1 block">
-                  Cron expression
-                </label>
-                <input
-                  type="text"
-                  value={schedule.cron_expression ?? '0 2 * * *'}
-                  onChange={(e) => updateSchedule({ cron_expression: e.target.value })}
-                  placeholder="0 2 * * *"
-                  className="w-full border border-gray-200 rounded-md px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-            )}
-
-            {/* Next run preview */}
-            {nextRun && (
-              <div className="text-xs text-blue-600 bg-blue-50 rounded-md px-3 py-2">
-                Tiếp theo: <span className="font-medium">{nextRun}</span>
-              </div>
-            )}
+        <div className="grid gap-3 px-5 py-4 md:grid-cols-3">
+          <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+            <div className="text-xs font-medium uppercase tracking-wide text-gray-500">Tables selected</div>
+            <div className="mt-1 text-2xl font-semibold text-gray-900">{enabledTableCount}/{allTables.length}</div>
+            <div className="mt-1 text-xs text-gray-500">Các bảng được bật sẽ tham gia vào đợt sync tiếp theo.</div>
           </div>
-        )}
+          <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+            <div className="text-xs font-medium uppercase tracking-wide text-gray-500">Current run</div>
+            <div className="mt-1 text-sm font-semibold text-gray-900">
+              {runningJob ? `Running • Job #${runningJob.id}` : latestJob ? `Last run • Job #${latestJob.id}` : 'No runs yet'}
+            </div>
+            <div className="mt-1 text-xs text-gray-500">
+              {runningJob
+                ? 'Bấm vào dòng trong Run history để xem log realtime.'
+                : latestJob
+                ? `${latestJob.status} • ${formatRows(latestJob.rows_synced)} rows`
+                : 'Chưa có lịch sử sync nào được ghi nhận.'}
+            </div>
+          </div>
+          <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+            <div className="text-xs font-medium uppercase tracking-wide text-gray-500">Schedule</div>
+            <div className="mt-1 text-sm font-semibold text-gray-900">
+              {schedule.enabled ? 'Enabled' : 'Manual only'}
+            </div>
+            <div className="mt-1 text-xs text-gray-500">
+              {schedule.enabled && nextRun ? nextRun : 'Lịch chạy tự động đang tắt.'}
+            </div>
+          </div>
+        </div>
       </section>
 
-      {/* ── Section 2: Sync strategy per table ─────────────────────────── */}
+      {/* ── Main section: Sync strategy per table ──────────────────────── */}
       <section className="bg-white border border-gray-100 rounded-lg overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-100">
           <div className="flex items-center justify-between">
@@ -552,114 +504,7 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
         </div>
       </section>
 
-      {/* ── Section 3: Retry & notification ────────────────────────────── */}
-      <section className="bg-white border border-gray-100 rounded-lg overflow-hidden">
-        <div className="px-5 py-4 border-b border-gray-100">
-          <h3 className="text-sm font-semibold text-gray-800">Retry &amp; notification</h3>
-        </div>
-        <div className="px-5 py-4 space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-xs font-medium text-gray-500 mb-1 block">
-                Max retry attempts
-              </label>
-              <select
-                value={cfg.retry?.max_attempts ?? 3}
-                onChange={(e) =>
-                  setCfg((c) => ({
-                    ...c,
-                    retry: { ...c.retry!, max_attempts: parseInt(e.target.value) },
-                  }))
-                }
-                className="w-full border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {[0, 1, 2, 3, 5].map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-xs font-medium text-gray-500 mb-1 block">
-                Backoff interval
-              </label>
-              <select
-                value={cfg.retry?.backoff_interval ?? '5m'}
-                onChange={(e) =>
-                  setCfg((c) => ({
-                    ...c,
-                    retry: { ...c.retry!, backoff_interval: e.target.value },
-                  }))
-                }
-                className="w-full border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {BACKOFF_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* On failure notification */}
-          <div>
-            <label className="text-xs font-medium text-gray-500 mb-2 block">
-              On failure notification
-            </label>
-            <div className="space-y-2">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={cfg.notification?.email_on_failure ?? true}
-                  onChange={(e) =>
-                    setCfg((c) => ({
-                      ...c,
-                      notification: {
-                        ...c.notification!,
-                        email_on_failure: e.target.checked,
-                      },
-                    }))
-                  }
-                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-700">Email to admin</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={!!(cfg.notification?.webhook_url)}
-                  onChange={(e) => {
-                    if (!e.target.checked) {
-                      setCfg((c) => ({
-                        ...c,
-                        notification: { ...c.notification!, webhook_url: '' },
-                      }));
-                    }
-                  }}
-                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-700">Webhook URL</span>
-              </label>
-              <input
-                type="url"
-                placeholder="https://hooks.slack.com/services/…"
-                value={cfg.notification?.webhook_url ?? ''}
-                onChange={(e) =>
-                  setCfg((c) => ({
-                    ...c,
-                    notification: { ...c.notification!, webhook_url: e.target.value },
-                  }))
-                }
-                className="w-full border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ml-6"
-              />
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ── Section 4: Run history ──────────────────────────────────────── */}
+      {/* ── Main section: Run history ──────────────────────────────────── */}
       <section className="bg-white border border-gray-100 rounded-lg overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
           <h3 className="text-sm font-semibold text-gray-800">Run history</h3>
@@ -684,12 +529,17 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
                 <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">Mode</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">Started</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">Duration</th>
-                <th className="text-right px-5 py-2.5 text-xs font-medium text-gray-500">Rows</th>
+                <th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">Rows</th>
+                <th className="text-right px-5 py-2.5 text-xs font-medium text-gray-500">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
               {(jobsData?.jobs ?? []).map((job) => (
-                <tr key={job.id} className="hover:bg-gray-50">
+                <tr
+                  key={job.id}
+                  className="cursor-pointer transition-colors hover:bg-blue-50"
+                  onClick={() => setMonitorJobId(job.id)}
+                >
                   <td className="px-5 py-3">
                     <StatusBadge status={job.status} />
                   </td>
@@ -707,7 +557,7 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
                   <td className="px-4 py-3 text-xs text-gray-500">
                     {formatDuration(job.duration_seconds)}
                   </td>
-                  <td className="px-5 py-3 text-right">
+                  <td className="px-4 py-3 text-right">
                     {job.status === 'failed' ? (
                       <span className="text-xs text-red-500 flex items-center justify-end gap-1">
                         <AlertTriangle className="w-3 h-3" />
@@ -721,6 +571,25 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
                       </span>
                     )}
                   </td>
+                  <td className="px-5 py-3 text-right">
+                    {job.status === 'running' ? (
+                      <div className="flex items-center justify-end gap-2">
+                        <span className="text-xs text-blue-600">Click row to view</span>
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            cancelMutation.mutate({ dsId: datasourceId, jobId: job.id });
+                          }}
+                          disabled={cancelMutation.isPending}
+                          className="text-xs text-red-500 hover:underline disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-blue-600">Click row to inspect</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -728,35 +597,271 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
         )}
       </section>
 
-      {/* ── Sticky action bar ───────────────────────────────────────────── */}
-      <div className="sticky bottom-0 bg-white border-t border-gray-100 -mx-0 px-0 py-3 flex items-center gap-3">
+      <section className="overflow-hidden rounded-lg border border-gray-100 bg-white">
         <button
-          onClick={handleTriggerSync}
-          disabled={syncMutation.isPending}
-          className="flex items-center gap-2 px-4 py-2 border border-gray-200 rounded-md text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          type="button"
+          onClick={() => setShowAdvancedOptions((value) => !value)}
+          className="flex w-full items-center justify-between px-5 py-4 text-left transition-colors hover:bg-gray-50"
         >
-          {syncMutation.isPending ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
+          <div>
+            <h3 className="text-sm font-semibold text-gray-800">Advanced sync options</h3>
+            <p className="mt-0.5 text-xs text-gray-400">
+              Schedule, retry và notification được gom vào đây để màn hình chính gọn hơn.
+            </p>
+          </div>
+          {showAdvancedOptions ? (
+            <ChevronUp className="h-4 w-4 text-gray-500" />
           ) : (
-            <Play className="w-4 h-4" />
+            <ChevronDown className="h-4 w-4 text-gray-500" />
           )}
-          Sync now
         </button>
-        <button
-          onClick={handleSave}
-          disabled={saveMutation.isPending}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700 disabled:opacity-50"
-        >
-          {saveMutation.isPending ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : saved ? (
-            <CheckCircle className="w-4 h-4" />
-          ) : (
-            <Save className="w-4 h-4" />
-          )}
-          {saved ? 'Saved!' : 'Save settings'}
-        </button>
-      </div>
+
+        {showAdvancedOptions && (
+          <div className="grid gap-6 border-t border-gray-100 px-5 py-5 lg:grid-cols-2">
+            <div className="rounded-lg border border-gray-200">
+              <div className="flex items-center justify-between border-b border-gray-100 px-4 py-4">
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-800">Scheduled sync</h4>
+                  <p className="mt-0.5 text-xs text-gray-400">Tự động pull data từ source theo lịch</p>
+                </div>
+                <button
+                  onClick={() => updateSchedule({ enabled: !schedule.enabled })}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    schedule.enabled ? 'bg-blue-600' : 'bg-gray-200'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                      schedule.enabled ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {schedule.enabled ? (
+                <div className="space-y-4 px-4 py-4">
+                  <div>
+                    <label className="mb-2 block text-xs font-medium text-gray-500">Schedule type</label>
+                    <div className="flex gap-2">
+                      {(['interval', 'daily', 'custom_cron'] as ScheduleType[]).map((t) => (
+                        <button
+                          key={t}
+                          onClick={() => updateSchedule({ type: t })}
+                          className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                            schedule.type === t
+                              ? 'border-blue-500 bg-blue-50 text-blue-700'
+                              : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                          }`}
+                        >
+                          {t === 'interval' && (
+                            <>
+                              <div className="font-semibold">Interval</div>
+                              <div className="text-xs font-normal opacity-70">Every X hours</div>
+                            </>
+                          )}
+                          {t === 'daily' && (
+                            <>
+                              <div className="font-semibold">Daily</div>
+                              <div className="text-xs font-normal opacity-70">Once per day</div>
+                            </>
+                          )}
+                          {t === 'custom_cron' && (
+                            <>
+                              <div className="font-semibold">Custom cron</div>
+                              <div className="text-xs font-normal opacity-70">Cron expression</div>
+                            </>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {schedule.type === 'interval' && (
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-500">Every (hours)</label>
+                      <select
+                        value={schedule.interval_hours ?? 6}
+                        onChange={(e) => updateSchedule({ interval_hours: parseInt(e.target.value) })}
+                        className="w-full rounded-md border border-gray-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        {[1, 2, 3, 4, 6, 8, 12, 24].map((h) => (
+                          <option key={h} value={h}>
+                            {h}h
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {schedule.type === 'daily' && (
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-gray-500">Time (UTC)</label>
+                        <select
+                          value={schedule.time ?? '02:00'}
+                          onChange={(e) => updateSchedule({ time: e.target.value })}
+                          className="w-full rounded-md border border-gray-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          {HOURS.map((h) => (
+                            <option key={h} value={h}>
+                              {h}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-gray-500">Timezone</label>
+                        <select
+                          value={schedule.timezone ?? 'UTC'}
+                          onChange={(e) => updateSchedule({ timezone: e.target.value })}
+                          className="w-full rounded-md border border-gray-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          {TIMEZONES.map((tz) => (
+                            <option key={tz} value={tz}>
+                              {tz}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  )}
+
+                  {schedule.type === 'custom_cron' && (
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-gray-500">Cron expression</label>
+                      <input
+                        type="text"
+                        value={schedule.cron_expression ?? '0 2 * * *'}
+                        onChange={(e) => updateSchedule({ cron_expression: e.target.value })}
+                        placeholder="0 2 * * *"
+                        className="w-full rounded-md border border-gray-200 px-3 py-1.5 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  )}
+
+                  {nextRun && (
+                    <div className="rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-600">
+                      Tiếp theo: <span className="font-medium">{nextRun}</span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="px-4 py-4 text-sm text-gray-500">Schedule đang tắt. Sync chỉ chạy khi bấm tay.</div>
+              )}
+            </div>
+
+            <div className="rounded-lg border border-gray-200">
+              <div className="border-b border-gray-100 px-4 py-4">
+                <h4 className="text-sm font-semibold text-gray-800">Retry &amp; notification</h4>
+                <p className="mt-0.5 text-xs text-gray-400">Tùy chỉnh retry và cảnh báo khi sync lỗi</p>
+              </div>
+              <div className="space-y-4 px-4 py-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-500">Max retry attempts</label>
+                    <select
+                      value={cfg.retry?.max_attempts ?? 3}
+                      onChange={(e) =>
+                        setCfg((c) => ({
+                          ...c,
+                          retry: { ...c.retry!, max_attempts: parseInt(e.target.value) },
+                        }))
+                      }
+                      className="w-full rounded-md border border-gray-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      {[0, 1, 2, 3, 5].map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-500">Backoff interval</label>
+                    <select
+                      value={cfg.retry?.backoff_interval ?? '5m'}
+                      onChange={(e) =>
+                        setCfg((c) => ({
+                          ...c,
+                          retry: { ...c.retry!, backoff_interval: e.target.value },
+                        }))
+                      }
+                      className="w-full rounded-md border border-gray-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      {BACKOFF_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-xs font-medium text-gray-500">On failure notification</label>
+                  <div className="space-y-2">
+                    <label className="flex cursor-pointer items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={cfg.notification?.email_on_failure ?? true}
+                        onChange={(e) =>
+                          setCfg((c) => ({
+                            ...c,
+                            notification: {
+                              ...c.notification!,
+                              email_on_failure: e.target.checked,
+                            },
+                          }))
+                        }
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="text-sm text-gray-700">Email to admin</span>
+                    </label>
+                    <label className="flex cursor-pointer items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={!!cfg.notification?.webhook_url}
+                        onChange={(e) => {
+                          if (!e.target.checked) {
+                            setCfg((c) => ({
+                              ...c,
+                              notification: { ...c.notification!, webhook_url: '' },
+                            }));
+                          }
+                        }}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="text-sm text-gray-700">Webhook URL</span>
+                    </label>
+                    <input
+                      type="url"
+                      placeholder="https://hooks.slack.com/services/…"
+                      value={cfg.notification?.webhook_url ?? ''}
+                      onChange={(e) =>
+                        setCfg((c) => ({
+                          ...c,
+                          notification: { ...c.notification!, webhook_url: e.target.value },
+                        }))
+                      }
+                      className="ml-6 w-full rounded-md border border-gray-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* ── Sync Monitor Panel ──────────────────────────────────────────── */}
+      {monitorJobId && (
+        <SyncMonitorPanel
+          datasourceId={datasourceId}
+          jobId={monitorJobId}
+          onClose={() => setMonitorJobId(null)}
+        />
+      )}
+
       {/* ── Table Detail Modal ─────────────────────────────────────── */}
       {tableModal && (
         <TableDetailModal

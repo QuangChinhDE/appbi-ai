@@ -68,9 +68,16 @@ class DuckDBEngine:
             cls._write_conn.execute(f"SET max_memory = '{MAX_MEMORY}'")
             cls._write_conn.execute(f"SET threads = {DUCKDB_THREADS}")
             if QUERY_TIMEOUT_SEC > 0:
-                cls._write_conn.execute(
-                    f"SET statement_timeout = '{QUERY_TIMEOUT_SEC}s'"
-                )
+                _dv = tuple(int(x) for x in duckdb.__version__.split(".")[:2])
+                if _dv >= (1, 3):
+                    cls._write_conn.execute(
+                        f"SET statement_timeout = '{QUERY_TIMEOUT_SEC}s'"
+                    )
+                else:
+                    logger.warning(
+                        "DuckDB %s does not support statement_timeout; skipping",
+                        duckdb.__version__,
+                    )
 
             # Read pool: cursor-based — each "connection" is a cursor from write_conn
             cls._read_pool = queue.Queue(maxsize=READ_POOL_SIZE)

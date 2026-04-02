@@ -155,3 +155,14 @@ export const useTriggerSync = () => {
     },
   });
 };
+
+export const useCancelSync = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ dsId, jobId }: { dsId: number; jobId: number }) =>
+      dataSourceApi.cancelSync(dsId, jobId),
+    onSuccess: (_data: unknown, { dsId }: { dsId: number; jobId: number }) => {
+      queryClient.invalidateQueries({ queryKey: ['datasources', dsId, 'sync-jobs'] });
+    },
+  });
+};
