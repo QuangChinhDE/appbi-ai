@@ -18,6 +18,10 @@ import type { BaseFilter } from '@/lib/filters';
 
 const PALETTE = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 
+/** Maximum data points to render in a chart (BAR/LINE/AREA/STACKED_BAR etc.).
+ *  Beyond this Recharts DOM rendering becomes unusably slow. */
+const MAX_CHART_POINTS = 2000;
+
 // ── Client-side group-by + aggregation (like PowerBI) ─────────────────────────
 function applyGroupByAgg(
   data: Record<string, any>[],
@@ -132,12 +136,11 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
   const xField = type === 'TIME_SERIES' ? (timeField || dimension) : dimension;
 
   // Compute aggregated data for all chart types that use dimension+metrics
-  const aggData = useMemo(() => {
-    if (!xField || metrics.length === 0) return data;
-    if (['SCATTER', 'KPI', 'TABLE'].includes(type)) return data;
+  const { aggData, truncated } = useMemo(() => {
+    if (!xField || metrics.length === 0) return { aggData: data, truncated: false };
+    if (['SCATTER', 'KPI', 'TABLE'].includes(type)) return { aggData: data, truncated: false };
     let agg: Record<string, any>[];
     if (preAggregated) {
-      // Backend already did GROUP BY — rows use aliased metric columns (e.g. "sum__field")
       agg = data;
     } else {
       agg = applyGroupByAgg(data, xField, metrics);
@@ -145,7 +148,9 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
     if (havingFilters.length > 0) {
       agg = applyFiltersToRows(agg, havingFilters);
     }
-    return agg;
+    const wasTruncated = agg.length > MAX_CHART_POINTS;
+    if (wasTruncated) agg = agg.slice(0, MAX_CHART_POINTS);
+    return { aggData: agg, truncated: wasTruncated };
   }, [data, type, xField, metrics, havingFilters, preAggregated]);
 
   // Pivot for breakdown-based charts (Bug 1+2 fix: added BAR and TIME_SERIES)
@@ -158,6 +163,13 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
   if (!data || data.length === 0) {
     return <EmptyState message="No data — run the query first." />;
   }
+
+  // Truncation banner — shown above the chart when data points exceed MAX_CHART_POINTS
+  const TruncationBanner = truncated ? (
+    <div className="px-3 py-1.5 bg-amber-50 border border-amber-200 rounded text-xs text-amber-700 mb-1">
+      Showing top {MAX_CHART_POINTS.toLocaleString()} of {data.length.toLocaleString()} groups. Add filters or choose a lower-cardinality dimension for the full picture.
+    </div>
+  ) : null;
 
   // ── KPI ───────────────────────────────────────────────────────────────────
   if (type === 'KPI') {
@@ -271,9 +283,12 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
   // ── STACKED BAR ───────────────────────────────────────────────────────────
   if (type === 'STACKED_BAR') {
     const { pivoted, seriesKeys } = breakdownResult ?? { pivoted: aggData, seriesKeys: [metricKey(metrics[0])] };
+    const displayData = pivoted.length > MAX_CHART_POINTS ? pivoted.slice(0, MAX_CHART_POINTS) : pivoted;
     return (
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={pivoted}>
+      <>
+        {TruncationBanner}
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={displayData}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey={xField} tick={{ fontSize: 11 }} />
           <YAxis tick={{ fontSize: 11 }} />
@@ -285,6 +300,7 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
           ))}
         </BarChart>
       </ResponsiveContainer>
+      </>
     );
   }
 
@@ -294,9 +310,12 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
       pivoted: aggData,
       seriesKeys: seriesMetrics.map(metricKey),
     };
+    const displayData = pivoted.length > MAX_CHART_POINTS ? pivoted.slice(0, MAX_CHART_POINTS) : pivoted;
     return (
-      <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={pivoted}>
+      <>
+        {TruncationBanner}
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={displayData}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey={xField} tick={{ fontSize: 11 }} />
           <YAxis tick={{ fontSize: 11 }} />
@@ -314,6 +333,7 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
           })}
         </AreaChart>
       </ResponsiveContainer>
+      </>
     );
   }
 
@@ -323,9 +343,12 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
       pivoted: aggData,
       seriesKeys: seriesMetrics.map(metricKey),
     };
+    const displayData = pivoted.length > MAX_CHART_POINTS ? pivoted.slice(0, MAX_CHART_POINTS) : pivoted;
     return (
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={pivoted}>
+      <>
+        {TruncationBanner}
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={displayData}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey={xField} tick={{ fontSize: 11 }} />
           <YAxis tick={{ fontSize: 11 }} />
@@ -338,11 +361,12 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
                 name={m ? metricLabel(m) : k}
                 stroke={PALETTE[i % PALETTE.length]}
                 strokeWidth={2}
-                dot={pivoted.length <= 60} />
+                dot={displayData.length <= 60} />
             );
           })}
         </LineChart>
       </ResponsiveContainer>
+      </>
     );
   }
 
@@ -352,9 +376,12 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
     pivoted: aggData,
     seriesKeys: seriesMetrics.map(metricKey),
   };
+  const displayBarData = barData.length > MAX_CHART_POINTS ? barData.slice(0, MAX_CHART_POINTS) : barData;
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      <BarChart data={barData}>
+    <>
+      {TruncationBanner}
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={displayBarData}>
         <CartesianGrid strokeDasharray="3 3" />
         <XAxis dataKey={xField} tick={{ fontSize: 11 }} />
         <YAxis tick={{ fontSize: 11 }} />
@@ -370,5 +397,6 @@ export function ExploreChart({ type, data, roleConfig, havingFilters = [], preAg
         })}
       </BarChart>
     </ResponsiveContainer>
+    </>
   );
 }

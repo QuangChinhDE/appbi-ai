@@ -162,6 +162,34 @@ def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filter
     sql = f"SELECT {', '.join(select_parts)} FROM {base_table}{where_sql}"
     if group_by_parts:
         sql += f" GROUP BY {', '.join(group_by_parts)}"
+
+    # BI best practice: ORDER BY the first metric DESC so the chart shows
+    # the most significant groups first, and cap at 10 000 groups to avoid
+    # sending millions of rows when a high-cardinality column is used as
+    # the dimension (e.g. customer_id with 10M unique values).
+    first_metric_alias = None
+    for m in metrics:
+        field = m.get('field', '')
+        agg = (m.get('agg') or 'sum').upper().replace(' ', '_')
+        if not field:
+            continue
+        if agg == 'COUNT_DISTINCT':
+            first_metric_alias = f'"count_distinct__{field}"'
+        elif agg == 'COUNT':
+            first_metric_alias = f'"count__{field}"'
+        elif agg == 'AVG':
+            first_metric_alias = f'"avg__{field}"'
+        elif agg == 'MIN':
+            first_metric_alias = f'"min__{field}"'
+        elif agg == 'MAX':
+            first_metric_alias = f'"max__{field}"'
+        else:
+            first_metric_alias = f'"sum__{field}"'
+        break
+
+    if first_metric_alias and group_by_parts:
+        sql += f" ORDER BY {first_metric_alias} DESC"
+    sql += " LIMIT 10000"
     return sql, True
 
 

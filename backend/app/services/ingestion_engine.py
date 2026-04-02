@@ -63,6 +63,9 @@ def pull_to_parquet(
     """
     Pull data from source via SQL and write to a Parquet file.
 
+    Uses streaming for SQL-based datasources (PostgreSQL, MySQL, BigQuery) to
+    keep memory usage at O(BATCH_SIZE) regardless of total row count.
+
     Args:
         ds_type: DataSource type string
         config: DataSource connection config
@@ -76,31 +79,29 @@ def pull_to_parquet(
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Pull all rows from source (uses existing connector infrastructure)
-    col_names, rows, _ = DataSourceConnectionService.execute_query(
-        ds_type, config, sql, limit=None, timeout_seconds=300,
-    )
+    # Try streaming for SQL datasources (constant-memory)
+    try:
+        col_names, batches = DataSourceConnectionService.stream_query(
+            ds_type, config, sql, timeout_seconds=3600,
+        )
+    except (AttributeError, TypeError):
+        # Fallback for datasource types that don't support streaming
+        col_names, rows, _ = DataSourceConnectionService.execute_query(
+            ds_type, config, sql, limit=None, timeout_seconds=300,
+        )
+        # Wrap in single-batch generator
+        batches = iter([rows]) if rows else iter([])
 
-    if not rows:
-        # Write an empty Parquet with schema
-        if columns_schema:
-            fields = [pa.field(c["name"], _infer_arrow_type(c.get("type", "string"))) for c in columns_schema]
-        else:
-            fields = [pa.field(c, pa.string()) for c in col_names]
-        schema = pa.schema(fields)
-        table = pa.table({f.name: pa.array([], type=f.type) for f in fields}, schema=schema)
-        pq.write_table(table, str(output_path), compression="snappy")
-        return {"rows": 0, "size_bytes": output_path.stat().st_size, "columns": col_names}
-
-    # Build Arrow table from rows (rows are list of dicts from execute_query)
-    # Process in batches to keep writer streaming
     writer: Optional[pq.ParquetWriter] = None
     total_rows = 0
+    last_arrow_table = None
 
     try:
-        for start in range(0, len(rows), BATCH_SIZE):
-            batch = rows[start : start + BATCH_SIZE]
+        for batch in batches:
+            if not batch:
+                continue
             arrow_table = pa.Table.from_pylist(batch)
+            last_arrow_table = arrow_table
 
             if writer is None:
                 writer = pq.ParquetWriter(
@@ -116,8 +117,19 @@ def pull_to_parquet(
         if writer:
             writer.close()
 
+    if total_rows == 0:
+        # Write an empty Parquet with schema
+        if columns_schema:
+            fields = [pa.field(c["name"], _infer_arrow_type(c.get("type", "string"))) for c in columns_schema]
+        else:
+            fields = [pa.field(c, pa.string()) for c in col_names]
+        schema = pa.schema(fields)
+        table = pa.table({f.name: pa.array([], type=f.type) for f in fields}, schema=schema)
+        pq.write_table(table, str(output_path), compression="snappy")
+        return {"rows": 0, "size_bytes": output_path.stat().st_size, "columns": col_names}
+
     result_columns = [
-        {"name": c, "type": str(arrow_table.schema.field(c).type) if c in arrow_table.column_names else "string"}
+        {"name": c, "type": str(last_arrow_table.schema.field(c).type) if last_arrow_table and c in last_arrow_table.column_names else "string"}
         for c in col_names
     ]
 

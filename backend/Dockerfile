@@ -25,9 +25,9 @@ COPY backend/alembic/ ./alembic/
 COPY backend/alembic.ini .
 
 # Copy seed script (used when SEED_DEMO_DATA=true)
-COPY seed_demo.py .
+# COPY seed_demo.py .
 # Copy demo data file used by seed
-COPY scope-foodball-demo.xlsx .
+# COPY scope-foodball-demo.xlsx .
 
 # Copy entrypoint script
 COPY backend/entrypoint.sh .

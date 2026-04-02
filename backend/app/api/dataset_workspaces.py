@@ -561,6 +561,8 @@ def preview_workspace_table(
 
         if preview_request.limit:
             query += f" LIMIT {preview_request.limit}"
+        else:
+            query += " LIMIT 1000"
         if preview_request.offset:
             query += f" OFFSET {preview_request.offset}"
 

@@ -2,8 +2,9 @@
 Data source connection service.
 Handles connecting to and querying external data sources.
 """
+import base64
 import time
-from typing import List, Dict, Any, Tuple
+from typing import Generator, Iterator, List, Dict, Any, Tuple
 import pymysql
 import psycopg2
 from google.cloud import bigquery
@@ -491,7 +492,249 @@ class DataSourceConnectionService:
             # Cleanup client if needed
             if client:
                 client.close()
-    
+
+    # ── Streaming methods (for sync / large-table ingestion) ──────────────────
+    # These return (columns, generator_of_row_batches) so callers can write
+    # data to Parquet incrementally without loading the entire result set into
+    # RAM.  Each yielded batch is a list of dicts with at most `batch_size`
+    # items.
+
+    STREAM_BATCH_SIZE = 10_000
+
+    @staticmethod
+    def _stream_postgresql(
+        config: Dict[str, Any],
+        sql_query: str,
+        timeout_seconds: int = 3600,
+    ) -> Tuple[List[str], Generator[List[Dict[str, Any]], None, None]]:
+        """Stream rows from PostgreSQL using a server-side cursor."""
+        conn = psycopg2.connect(
+            host=config.get("host"),
+            port=config.get("port", 5432),
+            database=config.get("database"),
+            user=config.get("username"),
+            password=config.get("password"),
+            connect_timeout=min(timeout_seconds, 10),
+        )
+        try:
+            conn.autocommit = False  # Required for server-side cursors
+            cursor = conn.cursor(name="sync_stream_cursor")
+            cursor.itersize = DataSourceConnectionService.STREAM_BATCH_SIZE
+
+            cursor.execute(f"SET statement_timeout = {timeout_seconds * 1000}")
+            schema = config.get("schema_name") or config.get("schema")
+            if schema:
+                conn.cursor().execute(f"SET search_path TO {schema}")
+            cursor.execute(sql_query)
+
+            columns = [desc[0] for desc in cursor.description]
+
+            def _gen():
+                try:
+                    while True:
+                        rows = cursor.fetchmany(DataSourceConnectionService.STREAM_BATCH_SIZE)
+                        if not rows:
+                            break
+                        yield [dict(zip(columns, r)) for r in rows]
+                finally:
+                    cursor.close()
+                    conn.close()
+
+            return columns, _gen()
+        except Exception:
+            conn.close()
+            raise
+
+    @staticmethod
+    def _stream_mysql(
+        config: Dict[str, Any],
+        sql_query: str,
+        timeout_seconds: int = 3600,
+    ) -> Tuple[List[str], Generator[List[Dict[str, Any]], None, None]]:
+        """Stream rows from MySQL using SSDictCursor (server-side streaming)."""
+        conn = pymysql.connect(
+            host=config.get("host"),
+            port=config.get("port", 3306),
+            database=config.get("database"),
+            user=config.get("username"),
+            password=config.get("password"),
+            connect_timeout=min(timeout_seconds, 10),
+            read_timeout=timeout_seconds,
+            write_timeout=timeout_seconds,
+        )
+        try:
+            cursor = conn.cursor(pymysql.cursors.SSCursor)
+            cursor.execute(sql_query)
+
+            columns = [desc[0] for desc in cursor.description]
+
+            def _gen():
+                try:
+                    while True:
+                        rows = cursor.fetchmany(DataSourceConnectionService.STREAM_BATCH_SIZE)
+                        if not rows:
+                            break
+                        yield [dict(zip(columns, r)) for r in rows]
+                finally:
+                    cursor.close()
+                    conn.close()
+
+            return columns, _gen()
+        except Exception:
+            conn.close()
+            raise
+
+    @staticmethod
+    def _stream_bigquery(
+        config: Dict[str, Any],
+        sql_query: str,
+        timeout_seconds: int = 3600,
+    ) -> Tuple[List[str], Generator[List[Dict[str, Any]], None, None]]:
+        """Stream rows from BigQuery using page iteration (constant memory)."""
+        credentials_info = json.loads(_resolve_gcp_credentials_json(config))
+        credentials = service_account.Credentials.from_service_account_info(credentials_info)
+        project_id = config.get("project_id")
+
+        client = bigquery.Client(credentials=credentials, project=project_id)
+
+        try:
+            logger.info("Streaming BigQuery query on project %s", project_id)
+            query_job = client.query(sql_query)
+            result_iter = query_job.result(
+                timeout=timeout_seconds,
+                page_size=DataSourceConnectionService.STREAM_BATCH_SIZE,
+            )
+
+            columns = [field.name for field in result_iter.schema]
+
+            def _gen():
+                try:
+                    batch: List[Dict[str, Any]] = []
+                    for row in result_iter:
+                        row_dict = {}
+                        for key, value in row.items():
+                            if isinstance(value, bytes):
+                                try:
+                                    row_dict[key] = value.decode("utf-8")
+                                except UnicodeDecodeError:
+                                    row_dict[key] = base64.b64encode(value).decode("ascii")
+                            else:
+                                row_dict[key] = value
+                        batch.append(row_dict)
+                        if len(batch) >= DataSourceConnectionService.STREAM_BATCH_SIZE:
+                            yield batch
+                            batch = []
+                    if batch:
+                        yield batch
+                finally:
+                    client.close()
+
+            return columns, _gen()
+        except Exception:
+            client.close()
+            raise
+
+    @staticmethod
+    def stream_table_data(
+        ds_type: str,
+        config: Dict[str, Any],
+        schema: str,
+        table: str,
+    ) -> Tuple[List[str], Generator[List[Dict[str, Any]], None, None]]:
+        """
+        Stream rows from a table in constant-memory batches.
+
+        Returns (column_names, generator_of_batches) where each batch is a
+        list of dicts with at most STREAM_BATCH_SIZE items.
+
+        For datasource types that don't support streaming (Google Sheets,
+        Manual), falls back to a single-batch wrapper around fetch_table_data.
+        """
+        from app.core.crypto import decrypt_config
+        raw_config = config  # keep original for fallback (fetch_table_data decrypts internally)
+        config = decrypt_config(config)
+
+        ds_type_val = ds_type if isinstance(ds_type, str) else ds_type.value
+
+        if ds_type_val == DataSourceType.POSTGRESQL.value:
+            real_schema = schema if schema != "default" else (
+                config.get("schema_name") or config.get("schema") or "public"
+            )
+            sql = f'SELECT * FROM "{real_schema}"."{table}"'
+            return DataSourceConnectionService._stream_postgresql(config, sql)
+
+        elif ds_type_val == DataSourceType.MYSQL.value:
+            real_schema = schema if schema != "default" else (
+                config.get("database") or schema
+            )
+            sql = f'SELECT * FROM `{real_schema}`.`{table}`'
+            return DataSourceConnectionService._stream_mysql(config, sql)
+
+        elif ds_type_val == DataSourceType.BIGQUERY.value:
+            project_id = config.get("project_id", "")
+            sql = f"SELECT * FROM `{project_id}.{schema}.{table}`"
+            return DataSourceConnectionService._stream_bigquery(config, sql)
+
+        else:
+            # Google Sheets / Manual — data is small, wrap in single batch
+            cols, rows = DataSourceConnectionService.fetch_table_data(
+                ds_type, raw_config, schema, table,
+            )
+
+            def _single_batch():
+                if rows:
+                    yield rows
+
+            return cols, _single_batch()
+
+    @staticmethod
+    def stream_query(
+        ds_type: str,
+        config: Dict[str, Any],
+        sql_query: str,
+        timeout_seconds: int = 3600,
+    ) -> Tuple[List[str], Generator[List[Dict[str, Any]], None, None]]:
+        """
+        Stream an arbitrary SQL query in constant-memory batches.
+
+        Used by sync engine for incremental queries (WHERE watermark > ...).
+        For datasource types without streaming support, falls back to
+        execute_query wrapped in a single batch.
+        """
+        from app.core.crypto import decrypt_config
+        from app.services.sql_validator import validate_select_only
+
+        validate_select_only(sql_query)
+        raw_config = config  # keep for fallback (execute_query decrypts internally)
+        config = decrypt_config(config)
+
+        ds_type_val = ds_type if isinstance(ds_type, str) else ds_type.value
+
+        if ds_type_val == DataSourceType.POSTGRESQL.value:
+            return DataSourceConnectionService._stream_postgresql(
+                config, sql_query, timeout_seconds,
+            )
+        elif ds_type_val == DataSourceType.MYSQL.value:
+            return DataSourceConnectionService._stream_mysql(
+                config, sql_query, timeout_seconds,
+            )
+        elif ds_type_val == DataSourceType.BIGQUERY.value:
+            return DataSourceConnectionService._stream_bigquery(
+                config, sql_query, timeout_seconds,
+            )
+        else:
+            # Fallback: load-all and wrap
+            col_names, rows, _ = DataSourceConnectionService.execute_query(
+                ds_type, raw_config, sql_query, limit=None,
+                timeout_seconds=timeout_seconds,
+            )
+
+            def _single():
+                if rows:
+                    yield rows
+
+            return col_names, _single()
+
     @staticmethod
     def infer_column_types(
         ds_type: str,

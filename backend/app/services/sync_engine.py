@@ -19,7 +19,7 @@ import shutil
 import threading
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -77,13 +77,58 @@ def _write_parquet(rows: List[Dict[str, Any]], output_path: Path) -> int:
             arrow_table = pa.Table.from_pylist(batch)
             if writer is None:
                 writer = pq.ParquetWriter(
-                    str(output_path), arrow_table.schema, compression="snappy"
+                    str(output_path), arrow_table.schema,
+                    compression="snappy",
+                    write_statistics=True,
                 )
             writer.write_table(arrow_table)
             total += len(batch)
     finally:
         if writer:
             writer.close()
+    return total
+
+
+def _write_parquet_from_stream(
+    batches: Generator[List[Dict[str, Any]], None, None],
+    output_path: Path,
+) -> int:
+    """
+    Write rows from a streaming generator to a Parquet file.
+
+    Each yielded item is a list of dicts (one batch).  Memory usage stays at
+    O(batch_size) regardless of total row count.
+
+    Returns the total number of rows written.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    writer: Optional[pq.ParquetWriter] = None
+    total = 0
+
+    try:
+        for batch in batches:
+            if not batch:
+                continue
+            arrow_table = pa.Table.from_pylist(batch)
+            if writer is None:
+                writer = pq.ParquetWriter(
+                    str(output_path), arrow_table.schema,
+                    compression="snappy",
+                    write_statistics=True,
+                )
+            writer.write_table(arrow_table)
+            total += len(batch)
+            if total % 100_000 == 0:
+                logger.info("  … streamed %s rows to %s", f"{total:,}", output_path.name)
+    finally:
+        if writer:
+            writer.close()
+
+    if total == 0:
+        # No rows received — write empty parquet
+        table = pa.table({"_empty": pa.array([], type=pa.string())})
+        pq.write_table(table, str(output_path), compression="snappy")
+
     return total
 
 
@@ -140,6 +185,11 @@ def _sync_one_table(
 ) -> int:
     """
     Sync a single table from the datasource into Parquet + DuckDB.
+
+    Uses streaming (constant-memory) fetching for SQL datasources so that
+    tables with hundreds of millions of rows can be synced without loading
+    the entire result set into RAM.
+
     Returns the number of rows synced.
     """
     strategy = tbl_cfg.get("strategy", "full_refresh")
@@ -161,8 +211,6 @@ def _sync_one_table(
             if isinstance(last_max, datetime):
                 wm_literal = f"'{last_max.isoformat()}'"
             elif isinstance(last_max, date):
-                # date objects must also be quoted (otherwise 2024-01-01 is
-                # interpreted as arithmetic 2024 - 1 - 1 = 2022 in BigQuery)
                 wm_literal = f"'{last_max.isoformat()}'"
             else:
                 wm_literal = str(last_max)
@@ -182,46 +230,45 @@ def _sync_one_table(
                     f" WHERE `{watermark_col}` > {wm_literal}"
                 )
             else:
-                # PostgreSQL (and any other SQL datasource)
                 sql = (
                     f'SELECT * FROM "{schema_name}"."{table_name}"'
                     f' WHERE "{watermark_col}" > {wm_literal}'
                 )
 
-            _, rows, _ = DataSourceConnectionService.execute_query(
-                ds.type, ds.config, sql, limit=None, timeout_seconds=300
+            # Stream incremental data instead of loading all into RAM
+            _, batches = DataSourceConnectionService.stream_query(
+                ds.type, ds.config, sql, timeout_seconds=3600,
             )
-            if not rows:
-                return 0
             ddir = _delta_dir(ds.id, schema_name, table_name)
             ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             delta_path = ddir / f"{ts}.parquet"
-            count = _write_parquet(rows, delta_path)
+            count = _write_parquet_from_stream(batches, delta_path)
+            if count == 0:
+                return 0
             _register_duckdb_view(ds.id, schema_name, table_name)
             return count
         else:
             # First run — fall through to full_refresh
             strategy = "full_refresh"
 
-    # full_refresh and append_only both fetch all rows from the source.
-    # Use fetch_table_data() so each connector uses its native API directly
-    # (no fake SQL generation + re-parsing inside GSheets / Manual connectors).
-    _, rows = DataSourceConnectionService.fetch_table_data(
-        ds.type, ds.config, schema_name, table_name
+    # full_refresh and append_only — stream rows from the source in
+    # constant-memory batches instead of loading everything into RAM.
+    _, batches = DataSourceConnectionService.stream_table_data(
+        ds.type, ds.config, schema_name, table_name,
     )
 
     if strategy == "append_only":
         ddir = _delta_dir(ds.id, schema_name, table_name)
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         delta_path = ddir / f"{ts}.parquet"
-        count = _write_parquet(rows, delta_path)
+        count = _write_parquet_from_stream(batches, delta_path)
     else:
         # full_refresh (default)
         ppath = _parquet_path(ds.id, schema_name, table_name)
         ddir = _delta_dir(ds.id, schema_name, table_name)
         if ddir.exists():
             shutil.rmtree(ddir)
-        count = _write_parquet(rows, ppath)
+        count = _write_parquet_from_stream(batches, ppath)
 
     _register_duckdb_view(ds.id, schema_name, table_name)
     return count

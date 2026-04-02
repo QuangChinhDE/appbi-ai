@@ -9,7 +9,8 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
     () => new QueryClient({
       defaultOptions: {
         queries: {
-          staleTime: 60 * 1000,
+          staleTime: 5 * 60 * 1000,   // data fresh for 5 min — avoids re-querying DuckDB on every mount
+          gcTime:   30 * 60 * 1000,    // keep cache for 30 min — dashboard tab switches reuse cache
           refetchOnWindowFocus: false,
         },
       },

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -115,6 +116,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 print("DEBUG: CORS middleware added")
+
+# Compress responses > 1 KB — chart data payloads shrink ~10× with gzip.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Rate limiting
 app.state.limiter = limiter
