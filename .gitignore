@@ -56,3 +56,5 @@ _quarantine/
 # Local large data / one-off bootstrap helpers
 2019-Nov.csv
 _create_ds.py
+README.md
+install-docker-and-run.sh
