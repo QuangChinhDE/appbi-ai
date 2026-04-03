@@ -22,10 +22,10 @@ export const useChart = (id: number) => {
   });
 };
 
-export const useChartData = (id: number) => {
+export const useChartData = (id: number, filters?: Record<string, unknown>[]) => {
   return useQuery({
-    queryKey: ['charts', id, 'data'],
-    queryFn: () => chartApi.getData(id),
+    queryKey: ['charts', id, 'data', filters ?? []],
+    queryFn: () => chartApi.getData(id, filters),
     enabled: !!id,
   });
 };

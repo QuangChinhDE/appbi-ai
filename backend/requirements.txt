@@ -30,6 +30,7 @@ cryptography>=42.0.8
 # Columnar storage & analytics
 duckdb==1.2.1
 pyarrow==18.1.0
+cachetools>=5.3.0
 
 # SQL validation
 sqlglot==26.16.2

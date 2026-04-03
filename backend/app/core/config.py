@@ -97,6 +97,13 @@ class Settings(BaseSettings):
     OPENROUTER_EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
     OPENROUTER_EMBEDDING_DIMENSIONS: int = 768
 
+    # Large data thresholds — tables exceeding these are auto-set to query_mode="live"
+    LARGE_TABLE_ROW_THRESHOLD: int = 50_000_000        # 50M rows
+    LARGE_TABLE_SIZE_THRESHOLD_GB: float = 5.0          # 5 GB
+    BQ_MAX_BYTES_SCANNED: int = 10 * 1024**3            # 10 GB dry-run guard
+    LIVE_QUERY_CACHE_TTL: int = 300                     # 5 minutes
+    LIVE_QUERY_CACHE_MAX_SIZE: int = 256                # max entries
+
     @property
     def active_description_model(self) -> str:
         return self.AI_DESCRIPTION_MODEL.strip() or "openai/gpt-4o-mini"

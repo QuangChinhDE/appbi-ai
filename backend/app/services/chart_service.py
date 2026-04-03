@@ -302,7 +302,7 @@ class ChartService:
         return True
     
     @staticmethod
-    def get_chart_data(db: Session, chart_id: int):
+    def get_chart_data(db: Session, chart_id: int, extra_filters: list | None = None):
         """Get chart configuration with data."""
         db_chart = ChartService.get_by_id(db, chart_id)
         if not db_chart:
@@ -322,11 +322,31 @@ class ChartService:
             if not datasource:
                 raise ValueError("Data source not found")
 
+            role_config = (db_chart.config or {}).get('roleConfig', {})
+            filters = (db_chart.config or {}).get('filters', [])
+
+            # ── LIVE mode: query source directly with aggregation ──
+            query_mode = getattr(db_table, 'query_mode', 'synced') or 'synced'
+            if query_mode == 'live':
+                from app.services.live_query_service import LiveQueryService
+                result = LiveQueryService.execute_chart_query(
+                    datasource, db_table, db_chart.chart_type,
+                    role_config, filters, extra_filters=extra_filters,
+                )
+                return {
+                    "chart": db_chart,
+                    "data": result["data"],
+                    "pre_aggregated": result["pre_aggregated"],
+                }
+
+            # ── SYNCED mode: use DuckDB local cache ──
             from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
             from app.services.duckdb_engine import DuckDBEngine
 
-            role_config = (db_chart.config or {}).get('roleConfig', {})
-            filters = (db_chart.config or {}).get('filters', [])
+            # Merge extra_filters from dashboard into stored filters
+            all_filters = list(filters or [])
+            if extra_filters:
+                all_filters.extend(extra_filters)
 
             if db_table.source_kind == "sql_query":
                 if not db_table.source_query:
@@ -336,7 +356,7 @@ class ChartService:
                 if rewritten:
                     try:
                         base_table = f"({rewritten}) AS _q"
-                        agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, filters)
+                        agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, all_filters)
                         rows = DuckDBEngine.query(agg_sql)
                         return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
                     except Exception:
@@ -353,7 +373,7 @@ class ChartService:
                 view_name = get_synced_view(datasource.id, db_table.source_table_name)
                 if view_name:
                     base_table = _apply_transformations(view_name, db_table.transformations)
-                    agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, filters)
+                    agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, all_filters)
                     rows = DuckDBEngine.query(agg_sql)
                     return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
                 # Live fallback: use fetch_table_data so table names with spaces work
@@ -392,11 +412,30 @@ class ChartService:
             if not datasource:
                 raise ValueError("Data source not found")
 
+            role_config = (db_chart.config or {}).get('roleConfig', {})
+            filters = (db_chart.config or {}).get('filters', [])
+
+            # ── LIVE mode: query source directly with aggregation ──
+            query_mode = getattr(db_table, 'query_mode', 'synced') or 'synced'
+            if query_mode == 'live':
+                from app.services.live_query_service import LiveQueryService
+                result = LiveQueryService.execute_chart_query(
+                    datasource, db_table, db_chart.chart_type,
+                    role_config, filters, extra_filters=extra_filters,
+                )
+                return {
+                    "chart": db_chart,
+                    "data": result["data"],
+                    "pre_aggregated": result["pre_aggregated"],
+                }
+
+            # ── SYNCED mode: use DuckDB local cache ──
             from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
             from app.services.duckdb_engine import DuckDBEngine
 
-            role_config = (db_chart.config or {}).get('roleConfig', {})
-            filters = (db_chart.config or {}).get('filters', [])
+            all_filters = list(filters or [])
+            if extra_filters:
+                all_filters.extend(extra_filters)
 
             if db_table.source_kind == "sql_query":
                 if not db_table.source_query:
@@ -406,7 +445,7 @@ class ChartService:
                 if rewritten:
                     try:
                         base_table = f"({rewritten}) AS _q"
-                        agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, filters)
+                        agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, all_filters)
                         rows = DuckDBEngine.query(agg_sql)
                         return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
                     except Exception:
@@ -423,7 +462,7 @@ class ChartService:
                 view_name = get_synced_view(datasource.id, db_table.source_table_name)
                 if view_name:
                     base_table = _apply_transformations(view_name, db_table.transformations)
-                    agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, filters)
+                    agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, all_filters)
                     rows = DuckDBEngine.query(agg_sql)
                     return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
                 # Live fallback: use fetch_table_data so table names with spaces work

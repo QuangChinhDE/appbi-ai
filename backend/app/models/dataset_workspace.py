@@ -1,7 +1,7 @@
 """
 Dataset Workspace Models - Table-based dataset like NocoDB/Airtable
 """
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, JSON
+from sqlalchemy import Column, Integer, BigInteger, String, Boolean, DateTime, ForeignKey, Text, JSON
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -44,6 +44,11 @@ class DatasetWorkspaceTable(Base):
     source_query = Column(Text, nullable=True)  # For sql_query: SELECT statement
     display_name = Column(String(255), nullable=False)  # User-friendly name
     
+    # Query routing — "synced" = DuckDB (default), "live" = direct source query
+    query_mode = Column(String(20), default="synced", nullable=False, server_default="synced")
+    estimated_row_count = Column(BigInteger, nullable=True)  # From source INFORMATION_SCHEMA
+    estimated_size_bytes = Column(BigInteger, nullable=True)  # From source INFORMATION_SCHEMA
+
     # Status and config
     enabled = Column(Boolean, default=True, nullable=True)
     transformations = Column(JSON, default=None, nullable=True)  # Transform steps

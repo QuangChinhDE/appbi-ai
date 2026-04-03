@@ -38,8 +38,12 @@ export const chartApi = {
     await apiClient.delete(`/charts/${id}`);
   },
 
-  getData: async (id: number): Promise<ChartDataResponse> => {
-    const response = await apiClient.get(`/charts/${id}/data`);
+  getData: async (id: number, filters?: Record<string, unknown>[]): Promise<ChartDataResponse> => {
+    const params: Record<string, string> = {};
+    if (filters && filters.length > 0) {
+      params.filters = JSON.stringify(filters);
+    }
+    const response = await apiClient.get(`/charts/${id}/data`, { params });
     return response.data;
   },
 

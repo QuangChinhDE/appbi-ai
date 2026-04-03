@@ -350,6 +350,42 @@ def add_table_to_workspace(
         if not db_table:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
+        # ── Auto-detect table size and set query_mode ──
+        if db_table.source_kind == "physical_table" and db_table.source_table_name:
+            try:
+                from app.services.live_query_service import LiveQueryService
+                ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+                stn = db_table.source_table_name.strip().strip('"').strip("'")
+                if "." in stn:
+                    schema_name, tbl_name = stn.split(".", 1)
+                    schema_name = schema_name.strip('"').strip("'")
+                    tbl_name = tbl_name.strip('"').strip("'")
+                else:
+                    schema_name = "public" if ds_type == "postgresql" else ""
+                    tbl_name = stn
+
+                size_info = LiveQueryService.get_table_size_metadata(
+                    ds_type, datasource.config, schema_name, tbl_name,
+                )
+                if size_info.get("estimated_row_count") or size_info.get("estimated_size_bytes"):
+                    db_table.estimated_row_count = size_info.get("estimated_row_count")
+                    db_table.estimated_size_bytes = size_info.get("estimated_size_bytes")
+                    if LiveQueryService.should_use_live_mode(
+                        size_info.get("estimated_row_count"),
+                        size_info.get("estimated_size_bytes"),
+                    ):
+                        db_table.query_mode = "live"
+                        logger.info(
+                            "Table %s auto-set to live mode (rows=%s, bytes=%s)",
+                            db_table.source_table_name,
+                            size_info.get("estimated_row_count"),
+                            size_info.get("estimated_size_bytes"),
+                        )
+                    db.commit()
+                    db.refresh(db_table)
+            except Exception as e:
+                logger.warning("Size detection failed for table %s: %s", db_table.source_table_name, e)
+
         # Queue a single AI-description pipeline to avoid duplicate generate/embed work.
         DescriptionPipelineService.enqueue_table_pipeline(
             background_tasks,
@@ -371,6 +407,9 @@ def add_table_to_workspace(
             "transformations": db_table.transformations,
             "columns_cache": db_table.columns_cache,
             "sample_cache": db_table.sample_cache,
+            "query_mode": getattr(db_table, 'query_mode', 'synced') or 'synced',
+            "estimated_row_count": getattr(db_table, 'estimated_row_count', None),
+            "estimated_size_bytes": getattr(db_table, 'estimated_size_bytes', None),
             "created_at": db_table.created_at.isoformat() if db_table.created_at else None,
             "updated_at": db_table.updated_at.isoformat() if db_table.updated_at else None,
         }
@@ -528,7 +567,75 @@ def preview_workspace_table(
     datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
     if not datasource:
         raise HTTPException(status_code=404, detail="Datasource not found")
+
+    # ── LIVE mode: preview directly from source ──
+    query_mode = getattr(db_table, 'query_mode', 'synced') or 'synced'
+    if query_mode == 'live':
+        try:
+            from app.services.live_query_service import LiveQueryService, _build_base_table_ref, _dialect_for_ds_type
+            ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+            dialect = _dialect_for_ds_type(ds_type)
+            limit = preview_request.limit or 1000
+            limit = min(limit, 1000)
+
+            if db_table.source_kind == "sql_query" and db_table.source_query:
+                from app.services.sql_validator import validate_select_only
+                validate_select_only(db_table.source_query)
+                sql = f"SELECT * FROM ({db_table.source_query}) AS _q LIMIT {limit}"
+            else:
+                base_ref = _build_base_table_ref(ds_type, datasource.config, db_table.source_table_name, dialect)
+                sql = f"SELECT * FROM {base_ref} LIMIT {limit}"
+
+            _, rows, _ = DataSourceConnectionService.execute_query(
+                datasource.type, datasource.config, sql, timeout_seconds=30,
+            )
+
+            columns = list(rows[0].keys()) if rows else []
+            column_metadata = []
+            for i, col in enumerate(columns):
+                col_type = _infer_column_type(col, i, rows)
+                column_metadata.append(WorkspaceColumnMetadata(name=col, type=col_type, nullable=True))
+
+            type_overrides = db_table.type_overrides or {}
+            for col_meta in column_metadata:
+                if col_meta.name in type_overrides:
+                    col_meta.type = type_overrides[col_meta.name]
+
+            def serialize_value(val):
+                from datetime import datetime, date
+                from decimal import Decimal
+                if isinstance(val, (datetime, date)):
+                    return val.isoformat()
+                if isinstance(val, Decimal):
+                    return float(val)
+                return val
+
+            serializable_rows = []
+            for row in rows[:500]:
+                if isinstance(row, dict):
+                    serializable_rows.append({k: serialize_value(v) for k, v in row.items()})
+                else:
+                    serializable_rows.append([serialize_value(v) for v in row])
+
+            DatasetWorkspaceCRUDService.update_table_cache(
+                db, table_id,
+                columns_cache={"columns": [col.model_dump() for col in column_metadata]},
+                sample_cache=serializable_rows,
+            )
+
+            return TablePreviewResponse(
+                columns=column_metadata,
+                rows=rows,
+                total=len(rows),
+                has_more=len(rows) >= limit,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("Failed to live-preview table: %s", e)
+            raise HTTPException(status_code=500, detail="Failed to preview table from live source.")
     
+    # ── SYNCED mode: use DuckDB ──
     # Build base query — requires DuckDB synced view (raises 422 NOT_SYNCED if not synced)
     from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
     from app.services.duckdb_engine import DuckDBEngine
@@ -679,7 +786,55 @@ def execute_workspace_table_query(
     datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
     if not datasource:
         raise HTTPException(status_code=404, detail="Datasource not found")
+
+    # ── LIVE mode: execute aggregation directly against source ──
+    query_mode = getattr(db_table, 'query_mode', 'synced') or 'synced'
+    if query_mode == 'live':
+        try:
+            from app.services.live_query_service import LiveQueryService, build_live_agg_query, _build_base_table_ref, _dialect_for_ds_type
+            ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+            dialect = _dialect_for_ds_type(ds_type)
+
+            # Build role_config from execute_request
+            role_config = {}
+            if execute_request.dimensions:
+                role_config["dimension"] = execute_request.dimensions[0]
+            if execute_request.measures:
+                role_config["metrics"] = [
+                    {"field": m.field, "agg": m.function} for m in execute_request.measures
+                ]
+
+            # Build filters from execute_request
+            filters = []
+            if execute_request.filters:
+                for f in execute_request.filters:
+                    filters.append({
+                        "field": f.field,
+                        "operator": f.operator.lower(),
+                        "value": f.value,
+                    })
+
+            result = LiveQueryService.execute_chart_query(
+                datasource, db_table, "TABLE", role_config, filters,
+            )
+            rows = result["data"]
+
+            columns = list(rows[0].keys()) if rows else []
+            column_metadata = [
+                WorkspaceColumnMetadata(name=col, type="string", nullable=True)
+                for col in columns
+            ]
+
+            return ExecuteQueryResponse(columns=column_metadata, rows=rows)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("Failed to execute live query: %s", e)
+            raise HTTPException(status_code=500, detail="Failed to execute query on live source.")
     
+    # ── SYNCED mode: use DuckDB ──
     # Build base_table — requires synced DuckDB view
     from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
     from app.services.duckdb_engine import DuckDBEngine

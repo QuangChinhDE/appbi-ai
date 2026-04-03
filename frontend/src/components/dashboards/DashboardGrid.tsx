@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { Responsive, WidthProvider, Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
@@ -9,8 +9,41 @@ import { ChartErrorBoundary } from './ChartErrorBoundary';
 import { DashboardChart } from '@/types/api';
 import { DashboardFilter } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
+import { Loader2 } from 'lucide-react';
 
 const ResponsiveGridLayout = WidthProvider(Responsive);
+
+/** Wrapper that defers rendering children until the element is visible. */
+function LazyChartSlot({ children }: { children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '200px' }, // start loading 200px before in view
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  if (!visible) {
+    return (
+      <div ref={ref} className="h-full bg-white rounded-lg border border-gray-200 flex items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-gray-300" />
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+}
 
 interface DashboardGridProps {
   dashboardId: number;
@@ -92,18 +125,20 @@ export function DashboardGrid({
       {dashboardCharts.map((dc) => (
         <div key={dc.id.toString()}>
           <ChartErrorBoundary chartId={dc.chart_id}>
-            <ChartTile
-              chartId={dc.chart_id}
-              dashboardChartId={dc.id}
-              dashboardId={dashboardId}
-              currentLayout={dc.layout as Record<string, any>}
-              onRemove={onRemoveChart}
-              isRemoving={removingChartId === dc.id}
-              dashboardFilters={dashboardFilters}
-              globalFilters={globalFilters}
-              onDataLoaded={onChartDataLoaded}
-              instanceParameters={dc.parameters ?? {}}
-            />
+            <LazyChartSlot>
+              <ChartTile
+                chartId={dc.chart_id}
+                dashboardChartId={dc.id}
+                dashboardId={dashboardId}
+                currentLayout={dc.layout as Record<string, any>}
+                onRemove={onRemoveChart}
+                isRemoving={removingChartId === dc.id}
+                dashboardFilters={dashboardFilters}
+                globalFilters={globalFilters}
+                onDataLoaded={onChartDataLoaded}
+                instanceParameters={dc.parameters ?? {}}
+              />
+            </LazyChartSlot>
           </ChartErrorBoundary>
         </div>
       ))}

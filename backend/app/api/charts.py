@@ -1,7 +1,8 @@
 """
 API router for chart endpoints.
 """
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+import json
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional
 
@@ -370,18 +371,29 @@ def delete_chart(
 @router.get("/{chart_id}/data", response_model=ChartDataResponse)
 def get_chart_data(
     chart_id: int,
+    filters: Optional[str] = Query(None, description="JSON-encoded list of {field, operator, value} filter objects"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Get chart configuration with data."""
+    """Get chart configuration with data. Accepts optional dashboard filters."""
     chart = ChartService.get_by_id(db, chart_id)
     if not chart:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chart not found")
     perm = get_effective_permission(db, current_user, chart, "explore_charts")
     if perm == "none":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    extra_filters = None
+    if filters:
+        try:
+            extra_filters = json.loads(filters)
+            if not isinstance(extra_filters, list):
+                raise ValueError("filters must be a JSON array")
+        except (json.JSONDecodeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=f"Invalid filters parameter: {e}")
+
     try:
-        result = ChartService.get_chart_data(db, chart_id)
+        result = ChartService.get_chart_data(db, chart_id, extra_filters=extra_filters)
         return ChartDataResponse(**result)
     except ValueError as e:
         raise HTTPException(

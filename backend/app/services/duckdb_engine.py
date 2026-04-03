@@ -87,10 +87,20 @@ class DuckDBEngine:
                         duckdb.__version__,
                     )
 
-            # Read pool: cursor-based — each "connection" is a cursor from write_conn
+            # Read pool: independent read-only connections for true concurrent reads.
+            # DuckDB >= 1.0 supports multiple concurrent read_only connections.
             cls._read_pool = queue.Queue(maxsize=READ_POOL_SIZE)
             for _ in range(READ_POOL_SIZE):
-                cls._read_pool.put(cls._write_conn.cursor())
+                rc = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+                try:
+                    rc.execute(f"SET max_memory = '{MAX_MEMORY}'")
+                    rc.execute(f"SET threads = {DUCKDB_THREADS}")
+                    rc.execute("SET enable_object_cache = true")
+                    rc.execute("SET preserve_insertion_order = false")
+                    cls._read_pool.put(rc)
+                except Exception:
+                    rc.close()
+                    raise
 
             cls._initialized = True
             logger.info(
@@ -202,28 +212,46 @@ class DuckDBEngine:
 
     @classmethod
     def _refresh_read_pool(cls) -> None:
-        """Drain and recreate read cursors so they see new VIEWs.
+        """Drain and recreate read connections so they see new VIEWs.
 
-        Uses a swap strategy: build new cursors first, then swap the pool
-        atomically so in-flight reads can finish on old cursors while new
-        borrows immediately get fresh cursors.
+        Uses a swap strategy: build new connections first, then swap the pool
+        atomically so in-flight reads can finish on old connections while new
+        borrows immediately get fresh connections.
         """
         if cls._read_pool is None:
             return
 
-        # Build replacement cursors BEFORE acquiring the lock so the
-        # critical section is as short as possible.
-        new_cursors = [cls._write_conn.cursor() for _ in range(READ_POOL_SIZE)]
+        # Build replacement read-only connections BEFORE acquiring the lock
+        new_conns = []
+        try:
+            for _ in range(READ_POOL_SIZE):
+                rc = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+                try:
+                    rc.execute(f"SET max_memory = '{MAX_MEMORY}'")
+                    rc.execute(f"SET threads = {DUCKDB_THREADS}")
+                    rc.execute("SET enable_object_cache = true")
+                    rc.execute("SET preserve_insertion_order = false")
+                    new_conns.append(rc)
+                except Exception:
+                    rc.close()
+                    raise
+        except Exception as e:
+            # Close any successfully created connections on failure
+            for c in new_conns:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+            logger.error("Failed to refresh read pool: %s", e)
+            return
 
         with cls._write_lock:
             old_pool = cls._read_pool
             cls._read_pool = queue.Queue(maxsize=READ_POOL_SIZE)
-            for c in new_cursors:
+            for c in new_conns:
                 cls._read_pool.put(c)
 
-        # Close old cursors outside the lock — reads that borrowed before
-        # the swap will finish naturally and put the old cursor back into
-        # old_pool which nobody reads from anymore.  We drain it here.
+        # Close old connections outside the lock
         while not old_pool.empty():
             try:
                 old_pool.get_nowait().close()

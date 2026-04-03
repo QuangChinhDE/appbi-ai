@@ -1142,9 +1142,10 @@ def _run_sync_job(data_source_id: int, job_id: int) -> None:
             table_configs = {}
 
         # Build a set of tables that the user has actually added to workspaces.
+        # Skip tables with query_mode="live" — they are queried directly.
         from app.models import DatasetWorkspaceTable
         workspace_tables = (
-            db.query(DatasetWorkspaceTable.source_table_name)
+            db.query(DatasetWorkspaceTable.source_table_name, DatasetWorkspaceTable.query_mode)
             .filter(
                 DatasetWorkspaceTable.datasource_id == data_source_id,
                 DatasetWorkspaceTable.source_kind == "physical_table",
@@ -1153,9 +1154,14 @@ def _run_sync_job(data_source_id: int, job_id: int) -> None:
             .all()
         )
         selected_table_keys: set = set()
-        for (stn,) in workspace_tables:
+        live_table_keys: set = set()
+        for stn, qmode in workspace_tables:
             if stn:
-                selected_table_keys.add(stn.strip('"').strip("'").strip())
+                key = stn.strip('"').strip("'").strip()
+                if (qmode or "synced") == "live":
+                    live_table_keys.add(key)
+                else:
+                    selected_table_keys.add(key)
 
         schema_list = DataSourceConnectionService.get_schema_browser(ds.type, ds.config)
         if not schema_list:
@@ -1169,6 +1175,9 @@ def _run_sync_job(data_source_id: int, job_id: int) -> None:
                 table_name: str = table_entry["name"]
                 table_key = f"{schema_name}.{table_name}"
                 tbl_cfg = table_configs.get(table_key, {})
+                if table_key in live_table_keys:
+                    logger.info("[sync ds=%d] Skipping %s (query_mode=live)", data_source_id, table_key)
+                    continue
                 if table_key not in selected_table_keys:
                     if not tbl_cfg.get("enabled", False):
                         continue

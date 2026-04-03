@@ -40,7 +40,28 @@ export function ChartTile({
 }: ChartTileProps) {
   const queryClient = useQueryClient();
   const { data: chart, isLoading: isLoadingChart } = useChart(chartId);
-  const { data: chartData, isLoading: isLoadingData } = useChartData(chartId);
+
+  // Build server-side filters from dashboard + global filters for server-side push-down
+  const serverFilters = useMemo(() => {
+    const filters: Record<string, unknown>[] = [];
+    for (const gf of globalFilters) {
+      if (gf.value === undefined || gf.value === null || gf.value === '') continue;
+      filters.push({ field: gf.field, operator: gf.operator, value: gf.value });
+      // Also push linked fields
+      if (gf.linkedFields) {
+        for (const lf of gf.linkedFields) {
+          filters.push({ field: lf, operator: gf.operator, value: gf.value });
+        }
+      }
+    }
+    for (const df of dashboardFilters) {
+      if (df.value === undefined || df.value === null || df.value === '') continue;
+      filters.push({ field: df.field, operator: df.operator, value: df.value });
+    }
+    return filters.length > 0 ? filters : undefined;
+  }, [globalFilters, dashboardFilters]);
+
+  const { data: chartData, isLoading: isLoadingData } = useChartData(chartId, serverFilters);
 
   // Title editing state
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -120,24 +141,23 @@ export function ChartTile({
   }, [chart?.config]);
 
   // Apply Explore-style filters (from stored config) then dashboard filters client-side
+  // When pre_aggregated, backend already applied all filters in SQL — skip client-side
   const filteredData = useMemo(() => {
     if (rawRows.length === 0) return rawRows;
-    // When backend pre-aggregated, it already applied stored filters in SQL — skip client-side re-apply
-    let rows = (!preAggregated && exploreConfig?.filters?.length)
+    if (preAggregated) return rawRows;
+    // Non-pre-aggregated fallback: apply filters client-side
+    let rows = exploreConfig?.filters?.length
       ? applyFilters(rawRows, exploreConfig.filters)
       : rawRows;
     if (!exploreConfig && dashboardFilters.length > 0) {
       rows = applyFiltersToRows(rows, dashboardFilters);
     }
-    // Apply global dashboard filters to ALL chart types.
-    // A filter matches a chart if its primary field OR any linkedField exists in the data.
     if (globalFilters.length > 0 && rows.length > 0) {
       const applicable = globalFilters
         .map(f => {
           const candidates = [f.field, ...(f.linkedFields ?? [])];
           const match = candidates.find(c => c in rows[0]);
           if (!match) return null;
-          // Remap field to the matched column name for this chart
           return match !== f.field ? { ...f, field: match } : f;
         })
         .filter((f): f is BaseFilter => f !== null);
