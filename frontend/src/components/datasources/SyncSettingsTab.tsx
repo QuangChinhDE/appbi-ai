@@ -258,8 +258,30 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
     setTimeout(() => setSaved(false), 2000);
   };
 
-  const handleTriggerSync = () => {
-    syncMutation.mutate(datasourceId);
+  const handleTriggerSync = async () => {
+    // Auto-save table config before triggering sync so the backend knows
+    // which tables to include (defaults every visible table to enabled).
+    const completeTables: Record<string, SyncTableConfig> = { ...cfg.tables };
+    allTables.forEach(({ schema, name }) => {
+      const key = tableKey(schema, name);
+      if (!completeTables[key]) {
+        completeTables[key] = { enabled: true, strategy: 'full_refresh' };
+      }
+    });
+    const hasUnsaved = allTables.some(({ schema, name }) => {
+      const key = tableKey(schema, name);
+      return !(cfg.tables?.[key]);
+    });
+    if (hasUnsaved) {
+      const completeConfig: SyncConfig = { ...cfg, tables: completeTables };
+      await saveMutation.mutateAsync({ id: datasourceId, config: completeConfig });
+      setCfg(completeConfig);
+    }
+    syncMutation.mutate(datasourceId, {
+      onSuccess: (data: any) => {
+        if (data?.job_id) setMonitorJobId(data.job_id);
+      },
+    });
   };
 
   // ── Computed values ──────────────────────────────────────────────────────

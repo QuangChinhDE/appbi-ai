@@ -116,7 +116,7 @@ export function ChartTile({
     if (rc.metrics?.length > 0 && typeof (rc.metrics as any)[0] === 'string') {
       rc.metrics = (rc.metrics as unknown as string[]).map(f => ({ field: f, agg: 'sum' as AggFn }));
     }
-    return { chartType: config.chartType as string, roleConfig: rc, filters: config.filters ?? [] };
+    return { chartType: config.chartType as string, roleConfig: rc, filters: config.filters ?? [], styleConfig: config.styleConfig };
   }, [chart?.config]);
 
   // Apply Explore-style filters (from stored config) then dashboard filters client-side
@@ -371,6 +371,7 @@ export function ChartTile({
             type={exploreConfig.chartType}
             data={filteredData}
             roleConfig={exploreConfig.roleConfig}
+            styleConfig={exploreConfig.styleConfig}
             havingFilters={havingFilters}
             preAggregated={preAggregated}
           />
@@ -379,6 +380,7 @@ export function ChartTile({
             chartType={chart.chart_type}
             data={filteredData}
             config={legacyChartConfig}
+            styleConfig={(chart?.config as any)?.styleConfig}
           />
         )}
       </div>

@@ -1,20 +1,71 @@
 'use client';
 
-import React, { useCallback } from 'react';
-import { X } from 'lucide-react';
+import React, { useCallback, useState } from 'react';
+import { X, ChevronDown } from 'lucide-react';
+import { CHART_PALETTES, type ChartPaletteName } from '@/lib/chartColors';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export type ExploreChartType =
-  | 'TABLE' | 'BAR' | 'GROUPED_BAR' | 'STACKED_BAR'
-  | 'LINE' | 'AREA' | 'TIME_SERIES'
+  | 'TABLE' | 'BAR' | 'HORIZONTAL_BAR' | 'GROUPED_BAR' | 'STACKED_BAR'
+  | 'LINE' | 'AREA' | 'TIME_SERIES' | 'BAR_LINE'
   | 'PIE' | 'SCATTER' | 'KPI';
 
 export type AggFn = 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct';
+
+export type NumberFormat = 'auto' | 'number' | 'compact' | 'percent' | 'currency';
+export type LegendPosition = 'top' | 'bottom' | 'left' | 'right' | 'none';
 
 export interface MetricConfig {
   field: string;
   agg: AggFn;
 }
+
+export interface ChartStyleConfig {
+  // Data labels
+  showDataLabels?: boolean;
+  dataLabelPosition?: 'top' | 'center' | 'inside' | 'outside';
+  // Number formatting
+  numberFormat?: NumberFormat;
+  currencySymbol?: string;
+  decimalPlaces?: number;
+  // Axis
+  xAxisLabel?: string;
+  yAxisLabel?: string;
+  yAxisMin?: number | '';
+  yAxisMax?: number | '';
+  // Legend
+  legendPosition?: LegendPosition;
+  // Grid
+  showGrid?: boolean;
+  // Palette
+  palette?: ChartPaletteName;
+  // Font
+  fontSize?: number;
+  // Bar
+  barRadius?: number;
+  // Line
+  showDots?: boolean;
+  lineStyle?: 'solid' | 'dashed';
+}
+
+export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
+  showDataLabels: false,
+  dataLabelPosition: 'top',
+  numberFormat: 'compact',
+  currencySymbol: '$',
+  decimalPlaces: 1,
+  xAxisLabel: '',
+  yAxisLabel: '',
+  yAxisMin: '',
+  yAxisMax: '',
+  legendPosition: 'bottom',
+  showGrid: true,
+  palette: 'default',
+  fontSize: 12,
+  barRadius: 4,
+  showDots: true,
+  lineStyle: 'solid',
+};
 
 export interface ChartRoleConfig {
   dimension?: string;
@@ -41,17 +92,19 @@ export function metricKey(m: MetricConfig): string {
 }
 
 // ── Chart type list ───────────────────────────────────────────────────────────
-const CHART_TYPE_GRID: { value: ExploreChartType; label: string }[] = [
-  { value: 'TABLE',       label: 'Table' },
-  { value: 'BAR',         label: 'Bar' },
-  { value: 'GROUPED_BAR', label: 'Grouped Bar' },
-  { value: 'STACKED_BAR', label: 'Stacked Bar' },
-  { value: 'LINE',        label: 'Line' },
-  { value: 'AREA',        label: 'Area' },
-  { value: 'TIME_SERIES', label: 'Time Series' },
-  { value: 'PIE',         label: 'Pie' },
-  { value: 'SCATTER',     label: 'Scatter' },
-  { value: 'KPI',         label: 'KPI' },
+const CHART_TYPE_GRID: { value: ExploreChartType; label: string; icon: string }[] = [
+  { value: 'TABLE',          label: 'Table',          icon: '📋' },
+  { value: 'BAR',            label: 'Bar',            icon: '📊' },
+  { value: 'HORIZONTAL_BAR', label: 'Horizontal Bar', icon: '📊' },
+  { value: 'GROUPED_BAR',    label: 'Grouped Bar',    icon: '📊' },
+  { value: 'STACKED_BAR',    label: 'Stacked Bar',    icon: '📊' },
+  { value: 'BAR_LINE',       label: 'Bar + Line',     icon: '📈' },
+  { value: 'LINE',           label: 'Line',           icon: '📈' },
+  { value: 'AREA',           label: 'Area',           icon: '📈' },
+  { value: 'TIME_SERIES',    label: 'Time Series',    icon: '📈' },
+  { value: 'PIE',            label: 'Pie',            icon: '🍩' },
+  { value: 'SCATTER',        label: 'Scatter',        icon: '⊙' },
+  { value: 'KPI',            label: 'KPI',            icon: '🔢' },
 ];
 
 const AGG_OPTIONS: { value: AggFn; label: string }[] = [
@@ -77,6 +130,39 @@ function isTimelike(c: Col): boolean {
   return (
     ['date', 'datetime', 'timestamp', 'time'].includes((c.type ?? '').toLowerCase()) ||
     /(date|time|_at|created|updated|day|month|year|start|end|deadline)/.test(n)
+  );
+}
+
+// ── Disclosure (collapsible section) ──────────────────────────────────────────
+function Disclosure({ title, defaultOpen = false, children }: {
+  title: string; defaultOpen?: boolean; children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="border-t border-gray-100 pt-2">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between py-1 group"
+      >
+        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{title}</span>
+        <ChevronDown className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && <div className="mt-2 space-y-3">{children}</div>}
+    </div>
+  );
+}
+
+// ── Toggle switch ─────────────────────────────────────────────────────────────
+function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <div className="flex items-center justify-between">
+      <label className="text-xs font-semibold text-gray-600">{label}</label>
+      <button onClick={() => onChange(!checked)}
+        className={`relative w-8 h-4.5 rounded-full transition-colors ${checked ? 'bg-blue-500' : 'bg-gray-300'}`}>
+        <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-4' : 'translate-x-0.5'}`} />
+      </button>
+    </div>
   );
 }
 
@@ -190,17 +276,23 @@ function MetricSlot({
 interface ExploreChartConfigProps {
   chartType: ExploreChartType;
   roleConfig: ChartRoleConfig;
+  styleConfig: ChartStyleConfig;
   availableColumns: Col[];
   onChartTypeChange: (t: ExploreChartType) => void;
   onRoleConfigChange: (c: ChartRoleConfig) => void;
+  onStyleConfigChange: (c: ChartStyleConfig) => void;
 }
 
 export function ExploreChartConfig({
-  chartType, roleConfig, availableColumns, onChartTypeChange, onRoleConfigChange,
+  chartType, roleConfig, styleConfig, availableColumns, onChartTypeChange, onRoleConfigChange, onStyleConfigChange,
 }: ExploreChartConfigProps) {
   const upd = useCallback(
     (patch: Partial<ChartRoleConfig>) => onRoleConfigChange({ ...roleConfig, ...patch }),
     [roleConfig, onRoleConfigChange]
+  );
+  const updStyle = useCallback(
+    (patch: Partial<ChartStyleConfig>) => onStyleConfigChange({ ...styleConfig, ...patch }),
+    [styleConfig, onStyleConfigChange]
   );
 
   const allCols  = availableColumns;
@@ -218,28 +310,37 @@ export function ExploreChartConfig({
   const sx  = roleConfig.scatterX  || '';
   const sy  = roleConfig.scatterY  || '';
 
-  return (
-    <div className="p-4 space-y-4">
+  const isBarType = ['BAR', 'HORIZONTAL_BAR', 'GROUPED_BAR', 'STACKED_BAR', 'BAR_LINE'].includes(chartType);
+  const isLineType = ['LINE', 'TIME_SERIES', 'AREA', 'BAR_LINE'].includes(chartType);
+  const hasAxis = !['PIE', 'KPI', 'TABLE'].includes(chartType);
 
-      {/* Chart type dropdown */}
+  return (
+    <div className="p-4 space-y-3">
+
+      {/* ── Chart Type ── visual grid ── */}
       <div>
         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Chart Type</p>
-        <select
-          value={chartType}
-          onChange={e => onChartTypeChange(e.target.value as ExploreChartType)}
-          className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-        >
-          {CHART_TYPE_GRID.map(({ value, label }) => (
-            <option key={value} value={value}>{label}</option>
+        <div className="grid grid-cols-4 gap-1">
+          {CHART_TYPE_GRID.map(({ value, label, icon }) => (
+            <button key={value} onClick={() => onChartTypeChange(value)}
+              className={`flex flex-col items-center gap-0.5 px-1 py-1.5 rounded-md text-[10px] leading-tight transition-colors border
+                ${chartType === value
+                  ? 'border-blue-400 bg-blue-50 text-blue-700 font-semibold'
+                  : 'border-transparent hover:bg-gray-50 text-gray-600'
+                }`}
+              title={label}
+            >
+              <span className="text-sm">{icon}</span>
+              <span className="truncate w-full text-center">{label}</span>
+            </button>
           ))}
-        </select>
+        </div>
       </div>
 
-      {/* TABLE: column visibility picker */}
+      {/* ── TABLE: column picker ── */}
       {chartType === 'TABLE' && availableColumns.length > 0 && (
-        <div className="space-y-2 pt-2 border-t border-gray-100">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Columns</p>
+        <Disclosure title="Columns" defaultOpen>
+          <div className="flex items-center justify-between mb-1">
             <button
               onClick={() => {
                 const allSelected = !roleConfig.selectedColumns || roleConfig.selectedColumns.length === availableColumns.length;
@@ -271,18 +372,17 @@ export function ExploreChartConfig({
               );
             })}
           </div>
-        </div>
+        </Disclosure>
       )}
 
-      {/* Field mapping */}
+      {/* ── Field Mapping ── */}
       {chartType !== 'TABLE' && (
-        <div className="space-y-3 pt-2 border-t border-gray-100">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Field Mapping</p>
+        <Disclosure title="Field Mapping" defaultOpen>
 
-          {chartType === 'BAR' && <>
-            <SelectSlot label="X Axis" hint="group by" required value={dim} options={dimOrAll}
+          {(chartType === 'BAR' || chartType === 'HORIZONTAL_BAR') && <>
+            <SelectSlot label={chartType === 'HORIZONTAL_BAR' ? 'Y Axis' : 'X Axis'} hint="group by" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Values (Y)" required value={roleConfig.metrics} options={numOrAll}
+            <MetricSlot label={chartType === 'HORIZONTAL_BAR' ? 'Values (X)' : 'Values (Y)'} required value={roleConfig.metrics} options={numOrAll}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="optional" value={brk} options={dimOrAll}
               placeholder="— none —"
@@ -302,6 +402,16 @@ export function ExploreChartConfig({
             <MetricSlot label="Value (Y)" required single value={roleConfig.metrics} options={numOrAll}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Stack by" required value={brk} options={dimOrAll}
+              placeholder="— select field —"
+              onChange={v => upd({ breakdown: v || undefined })} />
+          </>}
+
+          {chartType === 'BAR_LINE' && <>
+            <SelectSlot label="X Axis" hint="group by" required value={dim} options={dimOrAll}
+              onChange={v => upd({ dimension: v || undefined })} />
+            <MetricSlot label="Bar Values" hint="shown as bars" required value={roleConfig.metrics} options={numOrAll}
+              onChange={v => upd({ metrics: v })} />
+            <SelectSlot label="Line Value" hint="shown as line" required value={brk} options={numOrAll.map(c => ({ ...c }))}
               placeholder="— select field —"
               onChange={v => upd({ breakdown: v || undefined })} />
           </>}
@@ -361,7 +471,142 @@ export function ExploreChartConfig({
               onChange={v => upd({ metrics: v })} />
           </>}
 
-        </div>
+        </Disclosure>
+      )}
+
+      {/* ── Appearance: General ── */}
+      {chartType !== 'TABLE' && (
+        <Disclosure title="General" defaultOpen>
+          {/* Color palette — compact horizontal row */}
+          <div>
+            <label className="text-xs font-semibold text-gray-600 mb-1.5 block">Color Palette</label>
+            <div className="space-y-1">
+              {CHART_PALETTES.map(p => (
+                <button key={p.name} onClick={() => updStyle({ palette: p.name })}
+                  className={`w-full flex items-center gap-2 px-2 py-1 rounded-md border text-xs transition-colors ${
+                    (styleConfig.palette || 'default') === p.name
+                      ? 'border-blue-400 bg-blue-50'
+                      : 'border-gray-200 hover:border-gray-300'
+                  }`}>
+                  <div className="flex gap-0.5">
+                    {p.colors.slice(0, 6).map((c, i) => (
+                      <div key={i} className="w-3 h-3 rounded-sm" style={{ backgroundColor: c }} />
+                    ))}
+                  </div>
+                  <span className="text-gray-700">{p.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Data labels */}
+          {chartType !== 'KPI' && chartType !== 'SCATTER' && (
+            <Toggle label="Data Labels" checked={styleConfig.showDataLabels ?? false}
+              onChange={v => updStyle({ showDataLabels: v })} />
+          )}
+
+          {/* Number format */}
+          {chartType !== 'KPI' && (
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">Number Format</label>
+              <select value={styleConfig.numberFormat || 'compact'}
+                onChange={e => updStyle({ numberFormat: e.target.value as NumberFormat })}
+                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
+                <option value="auto">Auto (raw)</option>
+                <option value="compact">Compact (1.2K, 3.4M)</option>
+                <option value="number">Full Number (1,234)</option>
+                <option value="percent">Percent (%)</option>
+                <option value="currency">Currency ($)</option>
+              </select>
+            </div>
+          )}
+
+          {/* Legend position */}
+          {chartType !== 'KPI' && (
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">Legend</label>
+              <select value={styleConfig.legendPosition || 'bottom'}
+                onChange={e => updStyle({ legendPosition: e.target.value as LegendPosition })}
+                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
+                <option value="top">Top</option>
+                <option value="bottom">Bottom</option>
+                <option value="left">Left</option>
+                <option value="right">Right</option>
+                <option value="none">Hidden</option>
+              </select>
+            </div>
+          )}
+
+          <Toggle label="Grid Lines" checked={styleConfig.showGrid ?? true}
+            onChange={v => updStyle({ showGrid: v })} />
+        </Disclosure>
+      )}
+
+      {/* ── Appearance: Axis ── */}
+      {hasAxis && (
+        <Disclosure title="Axis">
+          <div>
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">X Axis Label</label>
+            <input type="text" value={styleConfig.xAxisLabel || ''} placeholder="auto"
+              onChange={e => updStyle({ xAxisLabel: e.target.value })}
+              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">Y Axis Label</label>
+            <input type="text" value={styleConfig.yAxisLabel || ''} placeholder="auto"
+              onChange={e => updStyle({ yAxisLabel: e.target.value })}
+              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">Y Min</label>
+              <input type="number" value={styleConfig.yAxisMin ?? ''} placeholder="auto"
+                onChange={e => updStyle({ yAxisMin: e.target.value === '' ? '' : Number(e.target.value) })}
+                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">Y Max</label>
+              <input type="number" value={styleConfig.yAxisMax ?? ''} placeholder="auto"
+                onChange={e => updStyle({ yAxisMax: e.target.value === '' ? '' : Number(e.target.value) })}
+                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">Font Size: {styleConfig.fontSize || 12}px</label>
+            <input type="range" min={9} max={18} step={1} value={styleConfig.fontSize || 12}
+              onChange={e => updStyle({ fontSize: Number(e.target.value) })}
+              className="w-full h-1.5 bg-gray-200 rounded-lg accent-blue-500 cursor-pointer" />
+          </div>
+        </Disclosure>
+      )}
+
+      {/* ── Appearance: Bar options ── */}
+      {isBarType && (
+        <Disclosure title="Bar Options">
+          <div>
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">Bar Radius: {styleConfig.barRadius ?? 4}px</label>
+            <input type="range" min={0} max={12} step={1} value={styleConfig.barRadius ?? 4}
+              onChange={e => updStyle({ barRadius: Number(e.target.value) })}
+              className="w-full h-1.5 bg-gray-200 rounded-lg accent-blue-500 cursor-pointer" />
+          </div>
+        </Disclosure>
+      )}
+
+      {/* ── Appearance: Line options ── */}
+      {isLineType && (
+        <Disclosure title="Line Options">
+          <Toggle label="Show Dots" checked={styleConfig.showDots ?? true}
+            onChange={v => updStyle({ showDots: v })} />
+          <div>
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">Line Style</label>
+            <select value={styleConfig.lineStyle || 'solid'}
+              onChange={e => updStyle({ lineStyle: e.target.value as 'solid' | 'dashed' })}
+              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
+              <option value="solid">Solid</option>
+              <option value="dashed">Dashed</option>
+            </select>
+          </div>
+        </Disclosure>
       )}
     </div>
   );

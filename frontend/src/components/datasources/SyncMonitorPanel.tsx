@@ -137,49 +137,69 @@ export default function SyncMonitorPanel({ datasourceId, jobId, onClose }: Props
     }
   }, [logs, autoScroll]);
 
-  // SSE connection
+  // SSE connection with auto-reconnect for long-running syncs
   useEffect(() => {
-    const url = dataSourceApi.syncLogsUrl(datasourceId, jobId);
-    const eventSource = new EventSource(url, { withCredentials: true });
-    setStreamError(null);
+    let eventSource: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
 
-    eventSource.onmessage = (event) => {
-      try {
-        const entry: LogEntry = JSON.parse(event.data);
-        setLogs((prev) => [...prev, entry]);
-      } catch {
-        // ignore unparseable
-      }
-    };
+    function connect(cursor: number) {
+      if (cancelled) return;
+      const base = dataSourceApi.syncLogsUrl(datasourceId, jobId);
+      const url = cursor > 0 ? `${base}?after=${cursor}` : base;
+      eventSource = new EventSource(url, { withCredentials: true });
+      setStreamError(null);
 
-    eventSource.addEventListener('progress', (event) => {
-      try {
-        const progress = JSON.parse((event as MessageEvent).data);
-        setTableProgress(progress);
-      } catch {
-        // ignore
-      }
-    });
+      eventSource.onmessage = (event) => {
+        try {
+          const entry: LogEntry = JSON.parse(event.data);
+          setLogs((prev) => [...prev, entry]);
+        } catch {
+          // ignore unparseable
+        }
+      };
 
-    eventSource.addEventListener('done', (event) => {
-      try {
-        const data = JSON.parse((event as MessageEvent).data);
-        setJobStatus(data.status);
-        setTableProgress((prev) => finalizeTableProgress(data.table_progress ?? prev, data.status));
-        setStreamError(null);
-      } catch {
-        // ignore
-      }
-      eventSource.close();
-    });
+      eventSource.addEventListener('progress', (event) => {
+        try {
+          const progress = JSON.parse((event as MessageEvent).data);
+          setTableProgress(progress);
+        } catch {
+          // ignore
+        }
+      });
 
-    eventSource.onerror = () => {
-      setStreamError('Log stream disconnected. The job may still be running.');
-      eventSource.close();
-    };
+      eventSource.addEventListener('done', (event) => {
+        try {
+          const data = JSON.parse((event as MessageEvent).data);
+          setJobStatus(data.status);
+          setTableProgress((prev) => finalizeTableProgress(data.table_progress ?? prev, data.status));
+          setStreamError(null);
+        } catch {
+          // ignore
+        }
+        eventSource?.close();
+      });
+
+      eventSource.onerror = () => {
+        eventSource?.close();
+        if (cancelled) return;
+        setStreamError('Log stream disconnected — reconnecting…');
+        // Reconnect after 3s, resuming from current cursor position
+        reconnectTimer = setTimeout(() => {
+          setLogs((prev) => {
+            connect(prev.length);
+            return prev;
+          });
+        }, 3000);
+      };
+    }
+
+    connect(0);
 
     return () => {
-      eventSource.close();
+      cancelled = true;
+      eventSource?.close();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
     };
   }, [datasourceId, jobId]);
 

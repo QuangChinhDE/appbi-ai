@@ -13,11 +13,13 @@ import {
   PieChart,
   Pie,
   Cell,
+  ComposedChart,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
   Legend,
+  LabelList,
   ResponsiveContainer,
   ZAxis,
 } from 'recharts';
@@ -25,6 +27,30 @@ import { ChartType } from '@/types/api';
 import { TableVisualization } from '@/components/visualizations/TableVisualization';
 import { KpiCard } from '@/components/visualizations/KpiCard';
 import { getPalette, buildDimensionColorMap, ChartPaletteName, DEFAULT_CHART_THEME } from '@/lib/chartColors';
+import type { ChartStyleConfig, NumberFormat } from '@/components/explore/ExploreChartConfig';
+import { DEFAULT_STYLE_CONFIG } from '@/components/explore/ExploreChartConfig';
+
+function formatNumber(value: any, fmt: NumberFormat): string {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (isNaN(n)) return String(value ?? '');
+  switch (fmt) {
+    case 'compact': {
+      const abs = Math.abs(n);
+      if (abs >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+      if (abs >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+      if (abs >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+      return n.toLocaleString();
+    }
+    case 'percent':
+      return `${(n * 100).toFixed(1)}%`;
+    case 'currency':
+      return `$${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+    case 'number':
+      return n.toLocaleString();
+    default:
+      return n.toLocaleString();
+  }
+}
 
 interface ChartPreviewProps {
   chartType: ChartType;
@@ -45,6 +71,7 @@ interface ChartPreviewProps {
     showGrid?: boolean;
     stacked?: boolean;
   };
+  styleConfig?: ChartStyleConfig;
 }
 
 const DEFAULT_COLORS = [
@@ -58,9 +85,10 @@ const DEFAULT_COLORS = [
   '#f97316', // orange-500
 ];
 
-export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
-  // Get palette
-  const paletteName = (config.palette as ChartPaletteName) ?? DEFAULT_CHART_THEME.defaultPalette;
+export function ChartPreview({ chartType, data, config, styleConfig }: ChartPreviewProps) {
+  const style = useMemo(() => ({ ...DEFAULT_STYLE_CONFIG, ...styleConfig }), [styleConfig]);
+  // Get palette — styleConfig palette takes precedence
+  const paletteName = (style.palette as ChartPaletteName) ?? (config.palette as ChartPaletteName) ?? DEFAULT_CHART_THEME.defaultPalette;
   const palette = getPalette(paletteName);
 
   // Build dimension color map if color_by_dimension is set
@@ -88,8 +116,31 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
     return palette.colors[index % palette.colors.length];
   };
 
-  const showLegend = config.showLegend !== false;
-  const showGrid = config.showGrid !== false;
+  const showLegend = config.showLegend !== false && (style.legendPosition ?? 'bottom') !== 'none';
+  const showGrid = config.showGrid !== false && (style.showGrid ?? true);
+
+  const numFmt = style.numberFormat ?? 'compact';
+  const fontSize = style.fontSize ?? 12;
+  const barRadius = style.barRadius ?? 4;
+  const showDataLabels = style.showDataLabels ?? false;
+  const showDots = style.showDots ?? true;
+  const lineStyle = style.lineStyle ?? 'solid';
+  const xAxisLabel = style.xAxisLabel || undefined;
+  const yAxisLabel = style.yAxisLabel || undefined;
+  const legendPosition = style.legendPosition ?? 'bottom';
+
+  const yDomain: [number | 'auto', number | 'auto'] = [
+    typeof style.yAxisMin === 'number' ? style.yAxisMin : 'auto',
+    typeof style.yAxisMax === 'number' ? style.yAxisMax : 'auto',
+  ];
+  const yTickFormatter = (v: any) => formatNumber(v, numFmt);
+  const legendProps = showLegend
+    ? {
+        layout: (legendPosition === 'left' || legendPosition === 'right' ? 'vertical' : 'horizontal') as 'vertical' | 'horizontal',
+        verticalAlign: (legendPosition === 'top' ? 'top' : legendPosition === 'bottom' ? 'bottom' : 'middle') as 'top' | 'middle' | 'bottom',
+        align: (legendPosition === 'left' ? 'left' : legendPosition === 'right' ? 'right' : 'center') as 'left' | 'center' | 'right',
+      }
+    : null;
 
   if (!data || data.length === 0) {
     return (
@@ -112,18 +163,19 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            <XAxis dataKey={config.xField} />
-            <YAxis />
-            <Tooltip />
-            {showLegend && <Legend />}
+            <XAxis dataKey={config.xField} tick={{ fontSize: fontSize }} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
+            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize: fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
+            <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
+            {showLegend && legendProps && <Legend {...legendProps} />}
             {usesDimensionColoring && config.yFields.length === 1 ? (
               // Single measure with dimension-based coloring
-              <Bar dataKey={config.yFields[0]}>
+              <Bar dataKey={config.yFields[0]} radius={[barRadius, barRadius, 0, 0]}>
                 {data.map((entry, index) => {
                   const key = String(entry[config.color_by_dimension!]);
                   const fill = dimensionColorMap?.[key] ?? palette.colors[index % palette.colors.length];
                   return <Cell key={`cell-${index}`} fill={fill} />;
                 })}
+                {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
               </Bar>
             ) : (
               // Series-based coloring (default)
@@ -132,7 +184,10 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
                   key={field}
                   dataKey={field}
                   fill={getSeriesColor(field, index)}
-                />
+                  radius={[barRadius, barRadius, 0, 0]}
+                >
+                  {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
+                </Bar>
               ))
             )}
           </BarChart>
@@ -151,10 +206,10 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            <XAxis dataKey={config.xField} />
-            <YAxis />
-            <Tooltip />
-            {showLegend && <Legend />}
+            <XAxis dataKey={config.xField} tick={{ fontSize: fontSize }} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
+            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize: fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
+            <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
+            {showLegend && legendProps && <Legend {...legendProps} />}
             {config.yFields.map((field, index) => (
               <Line
                 key={field}
@@ -162,7 +217,11 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
                 dataKey={field}
                 stroke={getSeriesColor(field, index)}
                 strokeWidth={2}
-              />
+                dot={showDots}
+                strokeDasharray={lineStyle === 'dashed' ? '5 5' : undefined}
+              >
+                {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
+              </Line>
             ))}
           </LineChart>
         </ResponsiveContainer>
@@ -180,10 +239,10 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            <XAxis dataKey={config.xField} />
-            <YAxis />
-            <Tooltip />
-            {showLegend && <Legend />}
+            <XAxis dataKey={config.xField} tick={{ fontSize: fontSize }} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
+            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize: fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
+            <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
+            {showLegend && legendProps && <Legend {...legendProps} />}
             {config.yFields.map((field, index) => (
               <Area
                 key={field}
@@ -192,7 +251,10 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
                 stroke={getSeriesColor(field, index)}
                 fill={getSeriesColor(field, index)}
                 fillOpacity={0.6}
-              />
+                dot={showDots}
+              >
+                {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
+              </Area>
             ))}
           </AreaChart>
         </ResponsiveContainer>
@@ -212,17 +274,18 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            <XAxis dataKey={config.xField} />
-            <YAxis />
-            <Tooltip />
-            {showLegend && <Legend />}
+            <XAxis dataKey={config.xField} tick={{ fontSize: fontSize }} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
+            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize: fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
+            <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
+            {showLegend && legendProps && <Legend {...legendProps} />}
             {usesDimensionColoring && config.yFields.length === 1 ? (
-              <Bar dataKey={config.yFields[0]}>
+              <Bar dataKey={config.yFields[0]} radius={[barRadius, barRadius, 0, 0]}>
                 {data.map((entry, index) => {
                   const key = String(entry[config.color_by_dimension!]);
                   const fill = dimensionColorMap?.[key] ?? palette.colors[index % palette.colors.length];
                   return <Cell key={`cell-${index}`} fill={fill} />;
                 })}
+                {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
               </Bar>
             ) : (
               config.yFields.map((field, index) => (
@@ -230,7 +293,10 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
                   key={field}
                   dataKey={field}
                   fill={getSeriesColor(field, index)}
-                />
+                  radius={[barRadius, barRadius, 0, 0]}
+                >
+                  {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
+                </Bar>
               ))
             )}
           </BarChart>
@@ -250,17 +316,20 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            <XAxis dataKey={config.xField} />
-            <YAxis />
-            <Tooltip />
-            {showLegend && <Legend />}
+            <XAxis dataKey={config.xField} tick={{ fontSize: fontSize }} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
+            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize: fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
+            <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
+            {showLegend && legendProps && <Legend {...legendProps} />}
             {config.yFields.map((field, index) => (
               <Bar
                 key={field}
                 dataKey={field}
                 stackId="stack"
                 fill={getSeriesColor(field, index)}
-              />
+                radius={index === config.yFields!.length - 1 ? [barRadius, barRadius, 0, 0] : undefined}
+              >
+                {showDataLabels && <LabelList position="center" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 2, fill: '#fff' }} />}
+              </Bar>
             ))}
           </BarChart>
         </ResponsiveContainer>
@@ -280,11 +349,11 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            <XAxis dataKey={config.xField} name={config.xField} />
-            <YAxis dataKey={config.yFields[0]} name={config.yFields[0]} />
+            <XAxis dataKey={config.xField} name={config.xField} tick={{ fontSize: fontSize }} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
+            <YAxis dataKey={config.yFields[0]} name={config.yFields[0]} tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize: fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
             <ZAxis range={[60, 400]} />
-            <Tooltip cursor={{ strokeDasharray: '3 3' }} />
-            {showLegend && <Legend />}
+            <Tooltip cursor={{ strokeDasharray: '3 3' }} formatter={(v: any) => formatNumber(v, numFmt)} />
+            {showLegend && legendProps && <Legend {...legendProps} />}
             {usesDimensionColoring ? (
               <Scatter
                 name={config.yFields[0]}
@@ -329,7 +398,7 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
               cx="50%"
               cy="50%"
               outerRadius={120}
-              label
+              label={showDataLabels ? ({ name, value }: any) => `${name}: ${formatNumber(value, numFmt)}` : true}
             >
               {data.map((entry, index) => {
                 let fill: string;
@@ -344,8 +413,8 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
                 return <Cell key={`cell-${index}`} fill={fill} />;
               })}
             </Pie>
-            <Tooltip />
-            {showLegend && <Legend />}
+            <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
+            {showLegend && legendProps && <Legend {...legendProps} />}
           </PieChart>
         </ResponsiveContainer>
       </div>
@@ -364,27 +433,92 @@ export function ChartPreview({ chartType, data, config }: ChartPreviewProps) {
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis
               dataKey={config.timeField}
+              tick={{ fontSize: fontSize }}
               tickFormatter={(value) => {
                 // Format timestamp to readable date
                 const date = new Date(value);
                 return date.toLocaleDateString();
               }}
+              label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined}
             />
-            <YAxis />
+            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize: fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
             <Tooltip
               labelFormatter={(value) => {
                 const date = new Date(value);
                 return date.toLocaleString();
               }}
+              formatter={(v: any) => formatNumber(v, numFmt)}
             />
-            {showLegend && <Legend />}
+            {showLegend && legendProps && <Legend {...legendProps} />}
             <Line
               type="monotone"
               dataKey={config.valueField}
               stroke={config.color || getSeriesColor(config.valueField, 0)}
               strokeWidth={2}
-            />
+              dot={showDots}
+              strokeDasharray={lineStyle === 'dashed' ? '5 5' : undefined}
+            >
+              {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
+            </Line>
           </LineChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  // Render Horizontal Bar Chart
+  if (chartType === ChartType.HORIZONTAL_BAR && config.xField && config.yFields) {
+    return (
+      <div className="h-full">
+        {config.title && (
+          <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
+        )}
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={data} layout="vertical">
+            {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+            <YAxis dataKey={config.xField} type="category" tick={{ fontSize }} width={100}
+              label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
+            <XAxis type="number" tickFormatter={yTickFormatter} tick={{ fontSize }}
+              label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
+            <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
+            {showLegend && legendProps && <Legend {...legendProps} />}
+            {config.yFields.map((field, index) => (
+              <Bar key={field} dataKey={field} fill={getSeriesColor(field, index)}
+                radius={[0, barRadius, barRadius, 0]}>
+                {showDataLabels && <LabelList position="right" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
+              </Bar>
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  // Render Bar + Line Combo Chart
+  if (chartType === ChartType.BAR_LINE && config.xField && config.yFields && config.yFields.length >= 2) {
+    const barFields = config.yFields.slice(0, -1);
+    const lineField = config.yFields[config.yFields.length - 1];
+    return (
+      <div className="h-full">
+        {config.title && (
+          <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
+        )}
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={data}>
+            {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+            <XAxis dataKey={config.xField} tick={{ fontSize }} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
+            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
+            <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
+            {showLegend && legendProps && <Legend {...legendProps} />}
+            {barFields.map((field, index) => (
+              <Bar key={field} dataKey={field} fill={getSeriesColor(field, index)}
+                radius={[barRadius, barRadius, 0, 0]}>
+                {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
+              </Bar>
+            ))}
+            <Line type="monotone" dataKey={lineField} stroke={getSeriesColor(lineField, barFields.length)}
+              strokeWidth={2} dot={showDots} strokeDasharray={lineStyle === 'dashed' ? '5 5' : undefined} />
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
     );

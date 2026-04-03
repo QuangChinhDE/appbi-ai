@@ -13,7 +13,7 @@ import { ExploreChart } from '@/components/explore/ExploreChart';
 import { FilterBuilder, type Filter } from '@/components/explore/FilterBuilder';
 import { useChart, useCreateChart, useUpdateChart, useUpsertChartMetadata, useReplaceChartParameters } from '@/hooks/use-charts';
 import { applyFilters } from '@/lib/explore-utils';
-import { ExploreChartConfig, type ExploreChartType, type ChartRoleConfig, type AggFn } from '@/components/explore/ExploreChartConfig';
+import { ExploreChartConfig, type ExploreChartType, type ChartRoleConfig, type ChartStyleConfig, type AggFn, DEFAULT_STYLE_CONFIG } from '@/components/explore/ExploreChartConfig';
 import { toast } from 'sonner';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ChartDescriptionPanel } from '@/components/explore/ChartDescriptionPanel';
@@ -41,6 +41,7 @@ export default function ExploreDetailPage() {
   const [filters, setFilters] = useState<Filter[]>([]);
   const [chartType, setChartType] = useState<ChartType>('TABLE');
   const [chartRoleConfig, setChartRoleConfig] = useState<ChartRoleConfig>({ metrics: [] });
+  const [chartStyleConfig, setChartStyleConfig] = useState<ChartStyleConfig>({ ...DEFAULT_STYLE_CONFIG });
   const [isSourceOpen, setIsSourceOpen] = useState(true);
   const [chartNameInput, setChartNameInput] = useState('');
   const [isEditingName, setIsEditingName] = useState(isNew);
@@ -90,6 +91,9 @@ export default function ExploreDetailPage() {
     }
     setFilters(config?.filters ?? []);
     setChartType(config?.chartType ?? 'TABLE');
+    if (config?.styleConfig) {
+      setChartStyleConfig({ ...DEFAULT_STYLE_CONFIG, ...config.styleConfig });
+    }
     if (config?.roleConfig) {
       const rc = config.roleConfig as ChartRoleConfig;
       // Migrate legacy metrics format (string[] → {field, agg}[])
@@ -180,6 +184,7 @@ export default function ExploreDetailPage() {
       filters,
       chartType,
       roleConfig: chartRoleConfig,
+      styleConfig: chartStyleConfig,
     };
 
     const metaPayload: ChartMetadataUpsert = {
@@ -440,9 +445,11 @@ export default function ExploreDetailPage() {
                   <ExploreChartConfig
                     chartType={chartType}
                     roleConfig={chartRoleConfig}
+                    styleConfig={chartStyleConfig}
                     availableColumns={previewData?.columns || []}
                     onChartTypeChange={setChartType}
                     onRoleConfigChange={setChartRoleConfig}
+                    onStyleConfigChange={setChartStyleConfig}
                   />
                 )}
               </div>
@@ -727,6 +734,7 @@ export default function ExploreDetailPage() {
                       type={chartType}
                       data={displayData?.rows || []}
                       roleConfig={chartRoleConfig}
+                      styleConfig={chartStyleConfig}
                     />
                   </div>
                 )}

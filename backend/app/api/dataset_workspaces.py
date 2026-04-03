@@ -600,8 +600,11 @@ def preview_workspace_table(
         def serialize_value(val):
             """Convert non-JSON-serializable values to strings"""
             from datetime import datetime, date
+            from decimal import Decimal
             if isinstance(val, (datetime, date)):
                 return val.isoformat()
+            if isinstance(val, Decimal):
+                return float(val)
             return val
         
         # Convert rows to serializable format

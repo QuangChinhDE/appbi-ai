@@ -518,21 +518,50 @@ class DataSourceConnectionService:
         )
         try:
             conn.autocommit = False  # Required for server-side cursors
-            cursor = conn.cursor(name="sync_stream_cursor")
-            cursor.itersize = DataSourceConnectionService.STREAM_BATCH_SIZE
 
-            cursor.execute(f"SET statement_timeout = {timeout_seconds * 1000}")
+            # SET commands must run on a regular cursor, not the named
+            # (server-side) one — psycopg2 wraps named-cursor queries in
+            # DECLARE ... CURSOR FOR ..., which causes a syntax error.
+            setup_cur = conn.cursor()
+            setup_cur.execute(f"SET statement_timeout = {timeout_seconds * 1000}")
             schema = config.get("schema_name") or config.get("schema")
             if schema:
-                conn.cursor().execute(f"SET search_path TO {schema}")
+                setup_cur.execute(f"SET search_path TO {schema}")
+            setup_cur.close()
+
+            cursor = conn.cursor(name="sync_stream_cursor")
+            cursor.itersize = DataSourceConnectionService.STREAM_BATCH_SIZE
             cursor.execute(sql_query)
 
-            columns = [desc[0] for desc in cursor.description]
+            # Server-side (named) cursors don't populate .description
+            # until the first fetch, so we must fetch before reading it.
+            first_batch = cursor.fetchmany(
+                DataSourceConnectionService.STREAM_BATCH_SIZE
+            )
+
+            if cursor.description:
+                columns = [desc[0] for desc in cursor.description]
+            else:
+                # Empty result — get column names via a regular cursor.
+                cursor.close()
+                meta_cur = conn.cursor()
+                meta_cur.execute(sql_query + " LIMIT 0")
+                columns = [desc[0] for desc in meta_cur.description]
+                meta_cur.close()
+                # No data to stream — return empty generator
+                def _empty():
+                    conn.close()
+                    return
+                    yield  # noqa: make this a generator
+                return columns, _empty()
 
             def _gen():
                 try:
+                    yield [dict(zip(columns, r)) for r in first_batch]
                     while True:
-                        rows = cursor.fetchmany(DataSourceConnectionService.STREAM_BATCH_SIZE)
+                        rows = cursor.fetchmany(
+                            DataSourceConnectionService.STREAM_BATCH_SIZE
+                        )
                         if not rows:
                             break
                         yield [dict(zip(columns, r)) for r in rows]
