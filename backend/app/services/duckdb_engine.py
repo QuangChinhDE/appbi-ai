@@ -38,8 +38,10 @@ DUCKDB_PATH = DATA_DIR / "duckdb.duckdb"
 READ_POOL_SIZE = int(os.environ.get("DUCKDB_READ_POOL_SIZE", "8"))
 QUERY_TIMEOUT_SEC = int(os.environ.get("DUCKDB_QUERY_TIMEOUT", "120"))
 MAX_RESULT_ROWS = int(os.environ.get("DUCKDB_MAX_RESULT_ROWS", "500000"))
-MAX_MEMORY = os.environ.get("DUCKDB_MAX_MEMORY", "4GB")
-DUCKDB_THREADS = os.environ.get("DUCKDB_THREADS", "4")
+MAX_MEMORY = os.environ.get("DUCKDB_MAX_MEMORY", "8GB")
+# Default threads: auto-detect CPU count for best parallelism on large tables.
+_cpu_count = os.cpu_count() or 4
+DUCKDB_THREADS = os.environ.get("DUCKDB_THREADS", str(min(_cpu_count, 16)))
 
 
 class DuckDBEngine:
@@ -67,6 +69,12 @@ class DuckDBEngine:
             # prevent a single query from hogging all RAM or CPU.
             cls._write_conn.execute(f"SET max_memory = '{MAX_MEMORY}'")
             cls._write_conn.execute(f"SET threads = {DUCKDB_THREADS}")
+            # Cache Parquet file metadata across queries — critical for large
+            # tables where re-reading footer metadata on every query is slow.
+            cls._write_conn.execute("SET enable_object_cache = true")
+            # Allow result reordering for better parallel scan performance
+            # (charts don't require insertion-order guarantees).
+            cls._write_conn.execute("SET preserve_insertion_order = false")
             if QUERY_TIMEOUT_SEC > 0:
                 _dv = tuple(int(x) for x in duckdb.__version__.split(".")[:2])
                 if _dv >= (1, 3):

@@ -50,15 +50,38 @@ def _build_where_clause(filters) -> str:
             parts.append(f'{qf} < {_sql_literal(value)}')
         elif op == 'lte':
             parts.append(f'{qf} <= {_sql_literal(value)}')
+        elif op == 'between' and isinstance(value, list) and len(value) >= 2:
+            lo, hi = value[0], value[1]
+            if lo and hi:
+                parts.append(f'{qf} BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}')
+            elif lo:
+                parts.append(f'{qf} >= {_sql_literal(lo)}')
+            elif hi:
+                parts.append(f'{qf} <= {_sql_literal(hi)}')
         elif op == 'in' and isinstance(value, list):
             vals = ', '.join(_sql_literal(v) for v in value)
             parts.append(f'{qf} IN ({vals})')
+        elif op == 'in' and isinstance(value, str) and value:
+            # Legacy comma-separated string format
+            vals = ', '.join(_sql_literal(v.strip()) for v in value.split(',') if v.strip())
+            if vals:
+                parts.append(f'{qf} IN ({vals})')
         elif op == 'not_in' and isinstance(value, list):
             vals = ', '.join(_sql_literal(v) for v in value)
             parts.append(f'{qf} NOT IN ({vals})')
+        elif op == 'not_in' and isinstance(value, str) and value:
+            vals = ', '.join(_sql_literal(v.strip()) for v in value.split(',') if v.strip())
+            if vals:
+                parts.append(f'{qf} NOT IN ({vals})')
         elif op == 'contains' and value is not None:
             esc = str(value).replace("'", "''")
             parts.append(f"{qf} LIKE '%{esc}%'")
+        elif op == 'starts_with' and value is not None:
+            esc = str(value).replace("'", "''")
+            parts.append(f"{qf} LIKE '{esc}%'")
+        elif op == 'not_contains' and value is not None:
+            esc = str(value).replace("'", "''")
+            parts.append(f"{qf} NOT LIKE '%{esc}%'")
         elif op == 'is_null':
             parts.append(f'{qf} IS NULL')
         elif op == 'is_not_null':

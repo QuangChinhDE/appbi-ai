@@ -6,6 +6,7 @@ O(BATCH_SIZE) regardless of total row count.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -20,7 +21,9 @@ logger = get_logger(__name__)
 
 # Single source of truth — resolved by config.py
 DATA_DIR = settings.data_dir_path
-BATCH_SIZE = 10_000
+# Larger batches reduce source DB round-trips and create bigger Parquet row
+# groups (one write_table() call = one row group = BATCH_SIZE rows).
+BATCH_SIZE = int(os.environ.get("SYNC_STREAM_BATCH_SIZE", "50000"))
 
 
 def _infer_arrow_type(py_type_str: str) -> pa.DataType:

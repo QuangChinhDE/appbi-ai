@@ -474,7 +474,8 @@ export default function ExploreDetailPage() {
                     <FilterBuilder
                       filters={filters}
                       onChange={setFilters}
-                      availableFields={previewData?.columns?.map((c) => c.name) || []}
+                      columns={previewData?.columns || []}
+                      dataRows={previewData?.rows || []}
                     />
                   </div>
                 )}

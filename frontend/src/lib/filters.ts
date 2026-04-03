@@ -60,7 +60,9 @@ export function inferColumnTypeFromData(
     if (val instanceof Date) { seenDate = true; continue; }
     if (typeof val === 'number') { seenNumber = true; continue; }
     if (typeof val === 'string') {
-      if (/^\d{4}-\d{2}-\d{2}(T|$)/.test(val)) { seenDate = true; continue; }
+      // Match ISO dates (YYYY-MM-DD), ISO datetimes with T (YYYY-MM-DDTHH:MM:SS),
+      // and common datetime strings with space separator (YYYY-MM-DD HH:MM:SS)
+      if (/^\d{4}-\d{2}-\d{2}([ T]|$)/.test(val)) { seenDate = true; continue; }
       if (val.trim() !== '' && !isNaN(Number(val))) { seenNumber = true; }
       else { seenText = true; }
     }

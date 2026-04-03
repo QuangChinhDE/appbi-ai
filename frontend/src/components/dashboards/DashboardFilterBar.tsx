@@ -3,6 +3,7 @@
 import React, { useState, useMemo } from 'react';
 import { Plus, X, Filter, ChevronDown, ChevronRight, Search, Link2 } from 'lucide-react';
 import { BaseFilter, FilterOperator, FilterType, ColumnInfo } from '@/lib/filters';
+import { DateInput } from '@/components/ui/DateInput';
 
 // ─── Type badge helpers ────────────────────────────────────────
 const TYPE_BADGE: Record<FilterType, string> = { text: 'T', number: '#', date: '📅', dropdown: '≡' };
@@ -673,25 +674,22 @@ function DateBody({
       </select>
       {f.operator === 'between' ? (
         <div className="space-y-1.5">
-          <input
-            type="date"
+          <DateInput
             value={Array.isArray(f.value) ? f.value[0] ?? '' : ''}
-            onChange={e => onUpdateValue([e.target.value, Array.isArray(f.value) ? f.value[1] ?? '' : ''])}
-            className="w-full text-xs border border-gray-200 rounded px-2 py-1 bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+            onChange={d => onUpdateValue([d, Array.isArray(f.value) ? f.value[1] ?? '' : ''])}
+            placeholder="Từ ngày DD/MM/YYYY"
           />
-          <input
-            type="date"
+          <DateInput
             value={Array.isArray(f.value) ? f.value[1] ?? '' : ''}
-            onChange={e => onUpdateValue([Array.isArray(f.value) ? f.value[0] ?? '' : '', e.target.value])}
-            className="w-full text-xs border border-gray-200 rounded px-2 py-1 bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+            onChange={d => onUpdateValue([Array.isArray(f.value) ? f.value[0] ?? '' : '', d])}
+            placeholder="Đến ngày DD/MM/YYYY"
           />
         </div>
       ) : (
-        <input
-          type="date"
+        <DateInput
           value={typeof f.value === 'string' ? f.value : ''}
-          onChange={e => onUpdateValue(e.target.value)}
-          className="w-full text-xs border border-gray-200 rounded px-2 py-1 bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+          onChange={d => onUpdateValue(d)}
+          placeholder="DD/MM/YYYY"
         />
       )}
     </div>

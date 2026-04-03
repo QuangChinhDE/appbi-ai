@@ -85,6 +85,45 @@ const DEFAULT_COLORS = [
   '#f97316', // orange-500
 ];
 
+// ── X-axis smart helpers (mirrors ExploreChart) ───────────────────────────────
+const SCROLL_THRESHOLD = 40;
+const MIN_ITEM_WIDTH   = 38;
+
+function buildXAxisProps(count: number, fontSize: number, xAxisLabel?: string) {
+  const angle       = count > 60 ? -45 : count > 25 ? -30 : 0;
+  const height      = count > 25 ? 60 : 30;
+  const textAnchor: 'end' | 'middle' = angle !== 0 ? 'end' : 'middle';
+  const interval    = count > SCROLL_THRESHOLD
+    ? 0
+    : count > 80
+      ? Math.ceil(count / 30)
+      : count > 40
+        ? Math.ceil(count / 40)
+        : 'preserveStartEnd';
+  const labelOffset = angle !== 0 ? -10 : -5;
+  return { angle, height, textAnchor, interval, labelOffset };
+}
+
+function wrapScrollable(el: React.ReactNode, count: number): React.ReactNode {
+  if (count <= SCROLL_THRESHOLD) {
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        {el as React.ReactElement}
+      </ResponsiveContainer>
+    );
+  }
+  const chartWidth = Math.max(count * MIN_ITEM_WIDTH, 700);
+  return (
+    <div style={{ width: '100%', height: '100%', overflowX: 'auto', overflowY: 'hidden' }}>
+      <div style={{ width: chartWidth, height: '100%' }}>
+        <ResponsiveContainer width="100%" height="100%">
+          {el as React.ReactElement}
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
 export function ChartPreview({ chartType, data, config, styleConfig }: ChartPreviewProps) {
   const style = useMemo(() => ({ ...DEFAULT_STYLE_CONFIG, ...styleConfig }), [styleConfig]);
   // Get palette — styleConfig palette takes precedence
@@ -152,19 +191,18 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
 
   // Render Bar Chart
   if (chartType === ChartType.BAR && config.xField && config.yFields) {
-    // If color_by_dimension is set and it's the xField, color each bar by category
     const usesDimensionColoring = dimensionColorMap && config.color_by_dimension === config.xField;
-    
+    const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(data.length, fontSize, xAxisLabel);
     return (
       <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
-        <ResponsiveContainer width="100%" height="100%">
+        {wrapScrollable(
           <BarChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            <XAxis dataKey={config.xField} tick={{ fontSize: fontSize }} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
-            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize: fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
+            <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
+            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
             <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
             {showLegend && legendProps && <Legend {...legendProps} />}
             {usesDimensionColoring && config.yFields.length === 1 ? (
@@ -190,24 +228,24 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
                 </Bar>
               ))
             )}
-          </BarChart>
-        </ResponsiveContainer>
+          </BarChart>,
+          data.length,
+        )}
       </div>
     );
   }
-
-  // Render Line Chart
   if (chartType === ChartType.LINE && config.xField && config.yFields) {
+    const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(data.length, fontSize, xAxisLabel);
     return (
       <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
-        <ResponsiveContainer width="100%" height="100%">
+        {wrapScrollable(
           <LineChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            <XAxis dataKey={config.xField} tick={{ fontSize: fontSize }} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
-            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize: fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
+            <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
+            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
             <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
             {showLegend && legendProps && <Legend {...legendProps} />}
             {config.yFields.map((field, index) => (
@@ -223,24 +261,26 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
                 {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
               </Line>
             ))}
-          </LineChart>
-        </ResponsiveContainer>
+          </LineChart>,
+          data.length,
+        )}
       </div>
     );
   }
 
   // Render Area Chart
   if (chartType === ChartType.AREA && config.xField && config.yFields) {
+    const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(data.length, fontSize, xAxisLabel);
     return (
       <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
-        <ResponsiveContainer width="100%" height="100%">
+        {wrapScrollable(
           <AreaChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            <XAxis dataKey={config.xField} tick={{ fontSize: fontSize }} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
-            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize: fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
+            <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
+            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
             <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
             {showLegend && legendProps && <Legend {...legendProps} />}
             {config.yFields.map((field, index) => (
@@ -256,8 +296,9 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
                 {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
               </Area>
             ))}
-          </AreaChart>
-        </ResponsiveContainer>
+          </AreaChart>,
+          data.length,
+        )}
       </div>
     );
   }
@@ -265,17 +306,17 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
   // Render Grouped Bar Chart
   if (chartType === ChartType.GROUPED_BAR && config.xField && config.yFields) {
     const usesDimensionColoring = dimensionColorMap && config.color_by_dimension === config.xField;
-    
+    const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(data.length, fontSize, xAxisLabel);
     return (
       <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
-        <ResponsiveContainer width="100%" height="100%">
+        {wrapScrollable(
           <BarChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            <XAxis dataKey={config.xField} tick={{ fontSize: fontSize }} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
-            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize: fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
+            <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
+            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
             <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
             {showLegend && legendProps && <Legend {...legendProps} />}
             {usesDimensionColoring && config.yFields.length === 1 ? (
@@ -299,25 +340,26 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
                 </Bar>
               ))
             )}
-          </BarChart>
-        </ResponsiveContainer>
+          </BarChart>,
+          data.length,
+        )}
       </div>
     );
   }
 
   // Render Stacked Bar Chart
   if (chartType === ChartType.STACKED_BAR && config.xField && config.yFields) {
-    // For stacked bar, dimension coloring applies to the series (not individual bars)
+    const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(data.length, fontSize, xAxisLabel);
     return (
       <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
-        <ResponsiveContainer width="100%" height="100%">
+        {wrapScrollable(
           <BarChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            <XAxis dataKey={config.xField} tick={{ fontSize: fontSize }} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
-            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize: fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
+            <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
+            <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
             <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
             {showLegend && legendProps && <Legend {...legendProps} />}
             {config.yFields.map((field, index) => (
@@ -331,8 +373,9 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
                 {showDataLabels && <LabelList position="center" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 2, fill: '#fff' }} />}
               </Bar>
             ))}
-          </BarChart>
-        </ResponsiveContainer>
+          </BarChart>,
+          data.length,
+        )}
       </div>
     );
   }
@@ -468,28 +511,40 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
 
   // Render Horizontal Bar Chart
   if (chartType === ChartType.HORIZONTAL_BAR && config.xField && config.yFields) {
+    const MIN_ROW_HEIGHT = 32;
+    const isVertScroll = data.length > SCROLL_THRESHOLD;
+    const chartHeight  = isVertScroll ? Math.max(data.length * MIN_ROW_HEIGHT, 400) : undefined;
+    const inner = (
+      <BarChart data={data} layout="vertical">
+        {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+        <YAxis dataKey={config.xField} type="category" tick={{ fontSize }} width={120}
+          label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
+        <XAxis type="number" tickFormatter={yTickFormatter} tick={{ fontSize }}
+          label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
+        <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
+        {showLegend && legendProps && <Legend {...legendProps} />}
+        {config.yFields.map((field, index) => (
+          <Bar key={field} dataKey={field} fill={getSeriesColor(field, index)}
+            radius={[0, barRadius, barRadius, 0]}>
+            {showDataLabels && <LabelList position="right" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
+          </Bar>
+        ))}
+      </BarChart>
+    );
     return (
       <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} layout="vertical">
-            {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            <YAxis dataKey={config.xField} type="category" tick={{ fontSize }} width={100}
-              label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
-            <XAxis type="number" tickFormatter={yTickFormatter} tick={{ fontSize }}
-              label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
-            <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
-            {showLegend && legendProps && <Legend {...legendProps} />}
-            {config.yFields.map((field, index) => (
-              <Bar key={field} dataKey={field} fill={getSeriesColor(field, index)}
-                radius={[0, barRadius, barRadius, 0]}>
-                {showDataLabels && <LabelList position="right" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
-              </Bar>
-            ))}
-          </BarChart>
-        </ResponsiveContainer>
+        {isVertScroll ? (
+          <div style={{ width: '100%', height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
+            <div style={{ width: '100%', height: chartHeight }}>
+              <ResponsiveContainer width="100%" height="100%">{inner}</ResponsiveContainer>
+            </div>
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">{inner}</ResponsiveContainer>
+        )}
       </div>
     );
   }
@@ -498,15 +553,16 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
   if (chartType === ChartType.BAR_LINE && config.xField && config.yFields && config.yFields.length >= 2) {
     const barFields = config.yFields.slice(0, -1);
     const lineField = config.yFields[config.yFields.length - 1];
+    const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(data.length, fontSize, xAxisLabel);
     return (
       <div className="h-full">
         {config.title && (
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
-        <ResponsiveContainer width="100%" height="100%">
+        {wrapScrollable(
           <ComposedChart data={data}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            <XAxis dataKey={config.xField} tick={{ fontSize }} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
+            <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
             <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
             <Tooltip formatter={(v: any) => formatNumber(v, numFmt)} />
             {showLegend && legendProps && <Legend {...legendProps} />}
@@ -518,8 +574,9 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
             ))}
             <Line type="monotone" dataKey={lineField} stroke={getSeriesColor(lineField, barFields.length)}
               strokeWidth={2} dot={showDots} strokeDasharray={lineStyle === 'dashed' ? '5 5' : undefined} />
-          </ComposedChart>
-        </ResponsiveContainer>
+          </ComposedChart>,
+          data.length,
+        )}
       </div>
     );
   }

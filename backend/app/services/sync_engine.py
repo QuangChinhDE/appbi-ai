@@ -39,7 +39,10 @@ from app.services.ingestion_engine import DATA_DIR
 
 logger = get_logger(__name__)
 
-BATCH_SIZE = 10_000
+# Batch size for writing already-fetched rows into Parquet (legacy path).
+# Each write_table() call creates one Parquet row group; 50K rows per group
+# balances DuckDB zone-map granularity against metadata overhead.
+BATCH_SIZE = int(os.environ.get("SYNC_STREAM_BATCH_SIZE", "50000"))
 _MAX_LOG_LINES = 2_000  # ring-buffer size per job
 
 # Number of parallel writer threads for sharded Parquet write.

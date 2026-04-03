@@ -3,6 +3,7 @@ Data source connection service.
 Handles connecting to and querying external data sources.
 """
 import base64
+import os
 import time
 from typing import Generator, Iterator, List, Dict, Any, Tuple
 import pymysql
@@ -498,8 +499,9 @@ class DataSourceConnectionService:
     # data to Parquet incrementally without loading the entire result set into
     # RAM.  Each yielded batch is a list of dicts with at most `batch_size`
     # items.
-
-    STREAM_BATCH_SIZE = 10_000
+    # Larger batches = fewer DB round-trips AND larger Parquet row groups,
+    # which dramatically speeds DuckDB zone-map pushdown on 100M+ row tables.
+    STREAM_BATCH_SIZE = int(os.environ.get("SYNC_STREAM_BATCH_SIZE", "50000"))
 
     @staticmethod
     def _stream_postgresql(

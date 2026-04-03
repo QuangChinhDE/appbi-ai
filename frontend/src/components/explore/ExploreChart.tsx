@@ -22,6 +22,56 @@ import { getPalette, type ChartPaletteName } from '@/lib/chartColors';
  *  Beyond this Recharts DOM rendering becomes unusably slow. */
 const MAX_CHART_POINTS = 2000;
 
+// ── X-axis smart helpers ──────────────────────────────────────────────────────
+/** Number of items beyond which bars are rendered in a scrollable container. */
+const SCROLL_THRESHOLD = 40;
+/** Minimum px allocated per bar/category when the chart is scrollable. */
+const MIN_ITEM_WIDTH = 38;
+
+/**
+ * Return XAxis props that adapt angle, height and tick interval to the number
+ * of data points so labels never overlap regardless of screen size.
+ */
+function buildXAxisProps(count: number, fontSize: number, xAxisLabel?: string) {
+  const angle   = count > 60 ? -45 : count > 25 ? -30 : 0;
+  const height  = count > 25 ? 60 : 30;
+  const textAnchor: 'end' | 'middle' = angle !== 0 ? 'end' : 'middle';
+  // When scrollable we show every tick; otherwise thin out high-cardinality axes.
+  const interval = count > SCROLL_THRESHOLD
+    ? 0
+    : count > 80
+      ? Math.ceil(count / 30)
+      : count > 40
+        ? Math.ceil(count / 40)
+        : 'preserveStartEnd';
+  return { angle, height, textAnchor, interval, labelOffset: angle !== 0 ? -10 : -5, xAxisLabel };
+}
+
+/**
+ * Wrap a Recharts chart element in a horizontally-scrollable container when
+ * the number of categories exceeds SCROLL_THRESHOLD. The chart is given
+ * sufficient horizontal space so every bar/point has breathing room.
+ */
+function wrapScrollable(el: React.ReactNode, count: number): React.ReactNode {
+  if (count <= SCROLL_THRESHOLD) {
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        {el as React.ReactElement}
+      </ResponsiveContainer>
+    );
+  }
+  const chartWidth = Math.max(count * MIN_ITEM_WIDTH, 700);
+  return (
+    <div style={{ width: '100%', height: '100%', overflowX: 'auto', overflowY: 'hidden' }}>
+      <div style={{ width: chartWidth, height: '100%' }}>
+        <ResponsiveContainer width="100%" height="100%">
+          {el as React.ReactElement}
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
 // ── Number formatting ─────────────────────────────────────────────────────────
 function formatNumber(value: any, style?: ChartStyleConfig): string {
   const n = Number(value);
@@ -222,10 +272,18 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
   const xAxisLabel = style.xAxisLabel || undefined;
   const yAxisLabel = style.yAxisLabel || undefined;
 
-  const renderXAxis = (dataKey: string) => (
-    <XAxis dataKey={dataKey} tick={{ fontSize }}
-      label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5, fontSize } : undefined} />
-  );
+  const renderXAxis = (dataKey: string, count: number = aggData.length) => {
+    const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(count, fontSize, xAxisLabel);
+    return (
+      <XAxis
+        dataKey={dataKey}
+        tick={{ fontSize, angle, textAnchor } as any}
+        height={height}
+        interval={interval as any}
+        label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset, fontSize } : undefined}
+      />
+    );
+  };
   const renderYAxis = () => (
     <YAxis tick={{ fontSize }} tickFormatter={yAxisTickFormatter(style)} domain={yDomain}
       label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
@@ -353,10 +411,10 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
     return (
       <>
         {TruncationBanner}
-        <ResponsiveContainer width="100%" height="100%">
+        {wrapScrollable(
           <BarChart data={displayData}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            {renderXAxis(xField)}
+            {renderXAxis(xField, displayData.length)}
             {renderYAxis()}
             <Tooltip formatter={tooltipFormatter(seriesMetrics, style)} />
             {renderLegend()}
@@ -369,8 +427,9 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
                 )}
               </Bar>
             ))}
-          </BarChart>
-        </ResponsiveContainer>
+          </BarChart>,
+          displayData.length,
+        )}
       </>
     );
   }
@@ -385,10 +444,10 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
     return (
       <>
         {TruncationBanner}
-        <ResponsiveContainer width="100%" height="100%">
+        {wrapScrollable(
           <AreaChart data={displayData}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            {renderXAxis(xField)}
+            {renderXAxis(xField, displayData.length)}
             {renderYAxis()}
             <Tooltip formatter={tooltipFormatter(seriesMetrics, style)} />
             {renderLegend()}
@@ -404,8 +463,9 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
                   strokeDasharray={lineDash} />
               );
             })}
-          </AreaChart>
-        </ResponsiveContainer>
+          </AreaChart>,
+          displayData.length,
+        )}
       </>
     );
   }
@@ -420,10 +480,10 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
     return (
       <>
         {TruncationBanner}
-        <ResponsiveContainer width="100%" height="100%">
+        {wrapScrollable(
           <LineChart data={displayData}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            {renderXAxis(xField)}
+            {renderXAxis(xField, displayData.length)}
             {renderYAxis()}
             <Tooltip formatter={tooltipFormatter(seriesMetrics, style)} />
             {renderLegend()}
@@ -442,8 +502,9 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
                 </Line>
               );
             })}
-          </LineChart>
-        </ResponsiveContainer>
+          </LineChart>,
+          displayData.length,
+        )}
       </>
     );
   }
@@ -455,33 +516,50 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
       seriesKeys: seriesMetrics.map(metricKey),
     };
     const displayData = barData.length > MAX_CHART_POINTS ? barData.slice(0, MAX_CHART_POINTS) : barData;
+    const MIN_ROW_HEIGHT = 32; // px per row for horizontal bars
+    const chartHeight = displayData.length > SCROLL_THRESHOLD
+      ? Math.max(displayData.length * MIN_ROW_HEIGHT, 400)
+      : undefined; // let ResponsiveContainer fill parent
+    const innerChart = (
+      <BarChart data={displayData} layout="vertical">
+        {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+        <YAxis dataKey={xField} type="category" tick={{ fontSize }} width={120}
+          label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
+        <XAxis type="number" tick={{ fontSize }} tickFormatter={yAxisTickFormatter(style)}
+          label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5, fontSize } : undefined} />
+        <Tooltip formatter={tooltipFormatter(seriesMetrics, style)} />
+        {renderLegend()}
+        {barKeys.map((k, i) => {
+          const m = seriesMetrics.find(m => metricKey(m) === k);
+          return (
+            <Bar key={k} dataKey={k}
+              name={m ? metricLabel(m) : k}
+              fill={PALETTE[i % PALETTE.length]}
+              radius={[0, barRadius, barRadius, 0]}>
+              {showDataLabels && (
+                <LabelList dataKey={k} position="right" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
+              )}
+            </Bar>
+          );
+        })}
+      </BarChart>
+    );
     return (
       <>
         {TruncationBanner}
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={displayData} layout="vertical">
-            {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            <YAxis dataKey={xField} type="category" tick={{ fontSize }} width={100}
-              label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
-            <XAxis type="number" tick={{ fontSize }} tickFormatter={yAxisTickFormatter(style)}
-              label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5, fontSize } : undefined} />
-            <Tooltip formatter={tooltipFormatter(seriesMetrics, style)} />
-            {renderLegend()}
-            {barKeys.map((k, i) => {
-              const m = seriesMetrics.find(m => metricKey(m) === k);
-              return (
-                <Bar key={k} dataKey={k}
-                  name={m ? metricLabel(m) : k}
-                  fill={PALETTE[i % PALETTE.length]}
-                  radius={[0, barRadius, barRadius, 0]}>
-                  {showDataLabels && (
-                    <LabelList dataKey={k} position="right" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
-                  )}
-                </Bar>
-              );
-            })}
-          </BarChart>
-        </ResponsiveContainer>
+        {displayData.length > SCROLL_THRESHOLD ? (
+          <div style={{ width: '100%', height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
+            <div style={{ width: '100%', height: chartHeight }}>
+              <ResponsiveContainer width="100%" height="100%">
+                {innerChart}
+              </ResponsiveContainer>
+            </div>
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">
+            {innerChart}
+          </ResponsiveContainer>
+        )}
       </>
     );
   }
@@ -507,10 +585,10 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
     return (
       <>
         {TruncationBanner}
-        <ResponsiveContainer width="100%" height="100%">
+        {wrapScrollable(
           <ComposedChart data={displayData}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            {renderXAxis(xField!)}
+            {renderXAxis(xField!, displayData.length)}
             {renderYAxis()}
             <Tooltip formatter={(value: any, name: string) => {
               return [formatNumber(value, style), name === barKey ? metricLabel(m) : breakdown];
@@ -527,8 +605,9 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
               dot={showDots && displayData.length <= 60}
               strokeDasharray={lineDash}
               yAxisId={0} />
-          </ComposedChart>
-        </ResponsiveContainer>
+          </ComposedChart>,
+          displayData.length,
+        )}
       </>
     );
   }
@@ -542,10 +621,10 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
   return (
     <>
       {TruncationBanner}
-      <ResponsiveContainer width="100%" height="100%">
+      {wrapScrollable(
         <BarChart data={displayBarData}>
           {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-          {renderXAxis(xField)}
+          {renderXAxis(xField, displayBarData.length)}
           {renderYAxis()}
           <Tooltip formatter={tooltipFormatter(seriesMetrics, style)} />
           {renderLegend()}
@@ -562,8 +641,9 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
               </Bar>
             );
           })}
-        </BarChart>
-      </ResponsiveContainer>
+        </BarChart>,
+        displayBarData.length,
+      )}
     </>
   );
 }
