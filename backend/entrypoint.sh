@@ -4,7 +4,7 @@ set -e
 echo "==> Waiting for PostgreSQL to be ready..."
 
 # Wait until pg_isready succeeds (uses DB_HOST / POSTGRES_USER / POSTGRES_DB)
-until pg_isready -h "${DB_HOST:-db}" -U "${POSTGRES_USER:-appbi}" -d "${POSTGRES_DB:-appbi}" -q; do
+until pg_isready -h "${DB_HOST:-appbi-db}" -U "${POSTGRES_USER:-appbi}" -d "${POSTGRES_DB:-appbi}" -q; do
   >&2 echo "    PostgreSQL is unavailable — retrying in 2s"
   sleep 2
 done
@@ -20,8 +20,7 @@ export DATA_DIR="${DATA_DIR:-/app/.data}"
 # Create all required data subdirectories so storage is ready on first boot.
 mkdir -p \
   "${DATA_DIR}/synced" \
-  "${DATA_DIR}/datasets" \
-  "${DATA_DIR}/workspaces"
+  "${DATA_DIR}/datasets"
 echo "==> Data directory: ${DATA_DIR} (subdirs ready)"
 
 # ------------------------------------------------------------------
@@ -69,7 +68,7 @@ password = os.environ.get("ADMIN_PASSWORD", "123456")
 name     = os.environ.get("ADMIN_NAME", "Admin")
 
 full_perms = json.dumps({
-    "data_sources": "full", "workspaces": "full",
+    "data_sources": "full", "datasets": "full",
     "explore_charts": "full", "dashboards": "full",
     "ai_chat": "full", "user_management": "full", "settings": "full"
 })
@@ -85,6 +84,15 @@ with engine.connect() as conn:
         conn.commit()
         print(f"==> Admin user created: {email}")
     else:
+        # Fix legacy "workspaces" key → "datasets" in existing users' permissions
+        fixed = conn.execute(text(
+            "UPDATE users SET permissions = permissions - 'workspaces' "
+            "|| jsonb_build_object('datasets', permissions->'workspaces') "
+            "WHERE permissions ? 'workspaces'"
+        )).rowcount
+        conn.commit()
+        if fixed:
+            print(f"==> Fixed permissions key 'workspaces' → 'datasets' for {fixed} user(s).")
         print(f"==> Users table already has rows — skipping admin seed.")
 PYEOF
 

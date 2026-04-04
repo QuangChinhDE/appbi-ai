@@ -1,151 +1,151 @@
-"""CRUD service for Dataset Workspaces (Table-based Datasets)"""
+"""CRUD service for Datasets (Table-based Datasets)"""
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_
 
-from app.models.dataset_workspace import DatasetWorkspace, DatasetWorkspaceTable
-from app.schemas.dataset_workspace import (
-    WorkspaceCreate,
-    WorkspaceUpdate,
+from app.models.dataset import Dataset, DatasetTable
+from app.schemas.dataset import (
+    DatasetCreate,
+    DatasetUpdate,
     TableCreate,
     TableUpdate,
 )
 
 
-class DatasetWorkspaceCRUDService:
-    """Service for Dataset Workspace CRUD operations"""
+class DatasetCRUDService:
+    """Service for Dataset CRUD operations"""
     
-    # ===== Workspace Methods =====
+    # ===== Dataset Methods =====
     
     @staticmethod
-    def get_all_workspaces(
+    def get_all_datasets(
         db: Session,
         skip: int = 0,
         limit: int = 100
-    ) -> List[DatasetWorkspace]:
-        """Get all workspaces with pagination"""
-        return db.query(DatasetWorkspace)\
-            .order_by(DatasetWorkspace.updated_at.desc())\
+    ) -> List[Dataset]:
+        """Get all datasets with pagination"""
+        return db.query(Dataset)\
+            .order_by(Dataset.updated_at.desc())\
             .offset(skip)\
             .limit(limit)\
             .all()
     
     @staticmethod
-    def get_workspace_by_id(
+    def get_dataset_by_id(
         db: Session,
-        workspace_id: int,
+        dataset_id: int,
         include_tables: bool = False
-    ) -> Optional[DatasetWorkspace]:
-        """Get workspace by ID, optionally with tables"""
-        query = db.query(DatasetWorkspace)
+    ) -> Optional[Dataset]:
+        """Get dataset by ID, optionally with tables"""
+        query = db.query(Dataset)
         
         if include_tables:
-            query = query.options(joinedload(DatasetWorkspace.tables))
+            query = query.options(joinedload(Dataset.tables))
         
-        return query.filter(DatasetWorkspace.id == workspace_id).first()
+        return query.filter(Dataset.id == dataset_id).first()
     
     @staticmethod
-    def create_workspace(
+    def create_dataset(
         db: Session,
-        workspace: WorkspaceCreate,
+        dataset_in: DatasetCreate,
         owner_id=None,
-    ) -> DatasetWorkspace:
-        """Create a new workspace"""
-        db_workspace = DatasetWorkspace(
-            name=workspace.name,
-            description=workspace.description,
+    ) -> Dataset:
+        """Create a new dataset"""
+        db_dataset = Dataset(
+            name=dataset_in.name,
+            description=dataset_in.description,
             owner_id=owner_id,
         )
-        db.add(db_workspace)
+        db.add(db_dataset)
         db.commit()
-        db.refresh(db_workspace)
-        return db_workspace
+        db.refresh(db_dataset)
+        return db_dataset
     
     @staticmethod
-    def update_workspace(
+    def update_dataset(
         db: Session,
-        workspace_id: int,
-        workspace: WorkspaceUpdate
-    ) -> Optional[DatasetWorkspace]:
-        """Update a workspace"""
-        db_workspace = db.query(DatasetWorkspace)\
-            .filter(DatasetWorkspace.id == workspace_id)\
+        dataset_id: int,
+        dataset_in: DatasetUpdate
+    ) -> Optional[Dataset]:
+        """Update a dataset"""
+        db_dataset_obj = db.query(Dataset)\
+            .filter(Dataset.id == dataset_id)\
             .first()
         
-        if not db_workspace:
+        if not db_dataset:
             return None
         
         # Update only provided fields
-        update_data = workspace.model_dump(exclude_unset=True)
+        update_data = dataset_in.model_dump(exclude_unset=True)
         for key, value in update_data.items():
-            setattr(db_workspace, key, value)
+            setattr(db_dataset, key, value)
         
         db.commit()
-        db.refresh(db_workspace)
-        return db_workspace
+        db.refresh(db_dataset)
+        return db_dataset
     
     @staticmethod
-    def delete_workspace(db: Session, workspace_id: int) -> bool:
-        """Delete a workspace (cascade deletes tables)"""
-        db_workspace = db.query(DatasetWorkspace)\
-            .filter(DatasetWorkspace.id == workspace_id)\
+    def delete_dataset(db: Session, dataset_id: int) -> bool:
+        """Delete a dataset (cascade deletes tables)"""
+        db_dataset_obj = db.query(Dataset)\
+            .filter(Dataset.id == dataset_id)\
             .first()
         
-        if not db_workspace:
+        if not db_dataset_obj:
             return False
         
-        db.delete(db_workspace)
+        db.delete(db_dataset_obj)
         db.commit()
         return True
     
     # ===== Table Methods =====
     
     @staticmethod
-    def get_workspace_tables(
+    def get_dataset_tables(
         db: Session,
-        workspace_id: int
-    ) -> List[DatasetWorkspaceTable]:
-        """Get all tables in a workspace"""
-        return db.query(DatasetWorkspaceTable)\
-            .filter(DatasetWorkspaceTable.workspace_id == workspace_id)\
-            .order_by(DatasetWorkspaceTable.created_at)\
+        dataset_id: int
+    ) -> List[DatasetTable]:
+        """Get all tables in a dataset"""
+        return db.query(DatasetTable)\
+            .filter(DatasetTable.dataset_id == dataset_id)\
+            .order_by(DatasetTable.created_at)\
             .all()
     
     @staticmethod
     def get_table_by_id(
         db: Session,
         table_id: int
-    ) -> Optional[DatasetWorkspaceTable]:
+    ) -> Optional[DatasetTable]:
         """Get a table by ID"""
-        return db.query(DatasetWorkspaceTable)\
-            .filter(DatasetWorkspaceTable.id == table_id)\
+        return db.query(DatasetTable)\
+            .filter(DatasetTable.id == table_id)\
             .first()
     
     @staticmethod
-    def add_table_to_workspace(
+    def add_table_to_dataset(
         db: Session,
-        workspace_id: int,
+        dataset_id: int,
         table: TableCreate
-    ) -> Optional[DatasetWorkspaceTable]:
-        """Add a table to a workspace"""
-        # Check if workspace exists
-        workspace = db.query(DatasetWorkspace)\
-            .filter(DatasetWorkspace.id == workspace_id)\
+    ) -> Optional[DatasetTable]:
+        """Add a table to a dataset"""
+        # Check if dataset exists
+        dataset_obj = db.query(Dataset)\
+            .filter(Dataset.id == dataset_id)\
             .first()
         
-        if not workspace:
+        if not dataset_obj:
             return None
         
-        # Check if table already exists in this workspace.
+        # Check if table already exists in this dataset.
         # Only deduplicate physical_table sources (by table name).
         # sql_query sources are always allowed to be created independently.
         if table.source_table_name is not None:
-            existing = db.query(DatasetWorkspaceTable)\
+            existing = db.query(DatasetTable)\
                 .filter(
                     and_(
-                        DatasetWorkspaceTable.workspace_id == workspace_id,
-                        DatasetWorkspaceTable.datasource_id == table.datasource_id,
-                        DatasetWorkspaceTable.source_table_name == table.source_table_name
+                        DatasetTable.dataset_id == dataset_id,
+                        DatasetTable.datasource_id == table.datasource_id,
+                        DatasetTable.source_table_name == table.source_table_name
                     )
                 )\
                 .first()
@@ -162,8 +162,8 @@ class DatasetWorkspaceCRUDService:
             else:
                 display_name = "Untitled Table"
         
-        db_table = DatasetWorkspaceTable(
-            workspace_id=workspace_id,
+        db_table = DatasetTable(
+            dataset_id=dataset_id,
             datasource_id=table.datasource_id,
             source_kind=table.source_kind,
             source_table_name=table.source_table_name,
@@ -183,10 +183,10 @@ class DatasetWorkspaceCRUDService:
         db: Session,
         table_id: int,
         table_update: TableUpdate
-    ) -> Optional[DatasetWorkspaceTable]:
+    ) -> Optional[DatasetTable]:
         """Update a table"""
-        db_table = db.query(DatasetWorkspaceTable)\
-            .filter(DatasetWorkspaceTable.id == table_id)\
+        db_table = db.query(DatasetTable)\
+            .filter(DatasetTable.id == table_id)\
             .first()
         
         if not db_table:
@@ -203,9 +203,9 @@ class DatasetWorkspaceCRUDService:
     
     @staticmethod
     def delete_table(db: Session, table_id: int) -> bool:
-        """Remove a table from workspace"""
-        db_table = db.query(DatasetWorkspaceTable)\
-            .filter(DatasetWorkspaceTable.id == table_id)\
+        """Remove a table from dataset"""
+        db_table = db.query(DatasetTable)\
+            .filter(DatasetTable.id == table_id)\
             .first()
         
         if not db_table:
@@ -221,10 +221,10 @@ class DatasetWorkspaceCRUDService:
         table_id: int,
         columns_cache: Optional[Dict[str, Any]] = None,
         sample_cache: Optional[List[Dict[str, Any]]] = None
-    ) -> Optional[DatasetWorkspaceTable]:
+    ) -> Optional[DatasetTable]:
         """Update table cache after preview"""
-        db_table = db.query(DatasetWorkspaceTable)\
-            .filter(DatasetWorkspaceTable.id == table_id)\
+        db_table = db.query(DatasetTable)\
+            .filter(DatasetTable.id == table_id)\
             .first()
         
         if not db_table:

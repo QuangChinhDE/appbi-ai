@@ -302,7 +302,7 @@ export interface Chart {
   id: number;
   name: string;
   description?: string;
-  workspace_table_id?: number | null;
+  dataset_table_id?: number | null;
   chart_type: ChartType;
   config: ChartConfig;
   owner_id?: string;
@@ -317,7 +317,7 @@ export interface Chart {
 export interface ChartCreate {
   name: string;
   description?: string;
-  workspace_table_id?: number | null;
+  dataset_table_id?: number | null;
   chart_type: ChartType;
   config: ChartConfig;
 }
@@ -327,7 +327,7 @@ export interface ChartUpdate {
   description?: string | null;
   chart_type?: ChartType;
   config?: ChartConfig;
-  workspace_table_id?: number | null;
+  dataset_table_id?: number | null;
 }
 
 export interface DashboardChartLayout {

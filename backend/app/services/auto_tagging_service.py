@@ -483,12 +483,12 @@ class AutoTaggingService:
 
     @staticmethod
     def describe_table_detailed(db: Session, table_id: int) -> Tuple[bool, Optional[str]]:
-        """Generate and store AI description fields for a workspace table."""
+        """Generate and store AI description fields for a dataset table."""
         try:
-            from app.models.dataset_workspace import DatasetWorkspaceTable
+            from app.models.dataset import DatasetTable
 
-            table = db.query(DatasetWorkspaceTable).filter(
-                DatasetWorkspaceTable.id == table_id
+            table = db.query(DatasetTable).filter(
+                DatasetTable.id == table_id
             ).first()
             if not table:
                 return False, "Table not found"
@@ -535,7 +535,7 @@ class AutoTaggingService:
     def tag_chart_detailed(db: Session, chart_id: int) -> Tuple[bool, Optional[str]]:
         """Generate and upsert semantic metadata plus AI description fields for a chart."""
         try:
-            from app.models.dataset_workspace import DatasetWorkspaceTable
+            from app.models.dataset import DatasetTable
             from app.models.models import Chart, ChartMetadata
 
             chart = db.query(Chart).filter(Chart.id == chart_id).first()
@@ -543,9 +543,9 @@ class AutoTaggingService:
                 return False, "Chart not found"
 
             table = None
-            if chart.workspace_table_id:
-                table = db.query(DatasetWorkspaceTable).filter(
-                    DatasetWorkspaceTable.id == chart.workspace_table_id
+            if chart.dataset_table_id:
+                table = db.query(DatasetTable).filter(
+                    DatasetTable.id == chart.dataset_table_id
                 ).first()
 
             result = LLMClient.complete_json(

@@ -33,14 +33,14 @@ class AIFeedback(Base):
     user_query = Column(Text, nullable=False)
 
     # What AI matched (may be wrong) — optional, AI service can omit
-    ai_matched_resource_type = Column(String(50), nullable=True)  # "chart"|"workspace_table"
+    ai_matched_resource_type = Column(String(50), nullable=True)  # "chart"|"dataset_table"
     ai_matched_resource_id = Column(Integer, nullable=True)
 
     # What the user says is correct
     feedback_type = Column(String(30), nullable=False)
     # Values: "wrong_table" | "wrong_chart" | "unclear" | "other"
 
-    correct_resource_type = Column(String(50), nullable=True)  # "chart"|"workspace_table"
+    correct_resource_type = Column(String(50), nullable=True)  # "chart"|"dataset_table"
     correct_resource_id = Column(Integer, nullable=True)
 
     notes = Column(Text, nullable=True)

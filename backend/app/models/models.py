@@ -80,8 +80,8 @@ class Chart(Base):
     name = Column(String(255), unique=True, nullable=False, index=True)
     description = Column(Text, nullable=True)
     
-    # Foreign key to workspace table (alternative source to dataset)
-    workspace_table_id = Column(Integer, ForeignKey("dataset_workspace_tables.id", ondelete="SET NULL"), nullable=True)
+    # Foreign key to dataset table
+    dataset_table_id = Column(Integer, ForeignKey("dataset_tables.id", ondelete="SET NULL"), nullable=True)
     
     # Chart type
     chart_type = Column(Enum(ChartType), nullable=False)
@@ -101,7 +101,7 @@ class Chart(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     
     # Relationships
-    workspace_table = relationship("DatasetWorkspaceTable", foreign_keys=[workspace_table_id])
+    dataset_table = relationship("DatasetTable", foreign_keys=[dataset_table_id])
     dashboard_charts = relationship("DashboardChart", back_populates="chart", cascade="all, delete-orphan")
     chart_meta = relationship("ChartMetadata", back_populates="chart", uselist=False, cascade="all, delete-orphan")
     parameters = relationship("ChartParameter", back_populates="chart", cascade="all, delete-orphan")

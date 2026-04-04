@@ -1,5 +1,5 @@
 """
-SchemaChangeService - detect column schema changes for workspace tables.
+SchemaChangeService - detect column schema changes for dataset tables.
 
 This service is intentionally pure: it compares the previous known schema with
 the newly computed one and returns a structured diff. The caller owns all side

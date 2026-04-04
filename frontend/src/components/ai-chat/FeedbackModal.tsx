@@ -28,7 +28,7 @@ const FEEDBACK_TYPES = [
 interface ResourceOption {
   id: number;
   label: string;
-  type: 'chart' | 'workspace_table';
+  type: 'chart' | 'dataset_table';
 }
 
 export function FeedbackModal({
@@ -51,7 +51,7 @@ export function FeedbackModal({
     if (!search.trim()) return;
     setIsSearching(true);
     try {
-      const resourceType = feedbackType === 'wrong_chart' ? 'chart' : 'workspace_table';
+      const resourceType = feedbackType === 'wrong_chart' ? 'chart' : 'dataset_table';
       if (resourceType === 'chart') {
         const res = await apiClient.get(`/charts/search?q=${encodeURIComponent(search)}&limit=8`);
         setSearchResults(
@@ -63,13 +63,13 @@ export function FeedbackModal({
         );
       } else {
         const res = await apiClient.get(
-          `/dataset-workspaces/tables/search?q=${encodeURIComponent(search)}&limit=8`
+          `/datasets/tables/search?q=${encodeURIComponent(search)}&limit=8`
         );
         setSearchResults(
           (res.data ?? []).map((t: any) => ({
             id: t.id,
             label: t.display_name || t.source_table_name,
-            type: 'workspace_table' as const,
+            type: 'dataset_table' as const,
           }))
         );
       }

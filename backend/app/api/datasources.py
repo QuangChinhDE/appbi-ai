@@ -20,7 +20,7 @@ from app.core.dependencies import (
     get_effective_permission,
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
-from app.models import DataSource, DatasetWorkspace
+from app.models import DataSource, Dataset
 from app.models.resource_share import ResourceType
 from app.models.user import User
 from app.schemas import (
@@ -251,7 +251,7 @@ def delete_data_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Delete a data source, blocked if any datasets or workspaces still reference it."""
+    """Delete a data source, blocked if any datasets still reference it."""
     datasource = db.query(DataSource).filter(DataSource.id == data_source_id).first()
     if not datasource:
         raise HTTPException(
@@ -260,18 +260,18 @@ def delete_data_source(
         )
     require_full_access(db, current_user, datasource, "data_sources")
 
-    blocking_workspaces = db.query(DatasetWorkspace).filter(
-        DatasetWorkspace.id.in_(
-            db.query(DatasetWorkspace.id)
-            .join(DatasetWorkspace.tables)
+    blocking_datasets = db.query(Dataset).filter(
+        Dataset.id.in_(
+            db.query(Dataset.id)
+            .join(Dataset.tables)
             .filter_by(datasource_id=data_source_id)
             .distinct()
         )
     ).all()
 
     constraints = [
-        {"type": "workspace", "id": w.id, "name": w.name}
-        for w in blocking_workspaces
+        {"type": "dataset", "id": ds.id, "name": ds.name}
+        for ds in blocking_datasets
     ]
 
     if constraints:

@@ -15,7 +15,6 @@ class ResourceType(str, enum.Enum):
     DASHBOARD = "dashboard"
     CHART = "chart"
     DATASET = "dataset"
-    WORKSPACE = "workspace"
     DATASET_MODEL = "dataset_model"
     DATASOURCE = "datasource"
     CHAT_SESSION = "chat_session"

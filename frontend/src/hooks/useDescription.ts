@@ -43,45 +43,45 @@ export interface ChartDescription {
   stale_reason: string | null;
 }
 
-export function useTableDescription(workspaceId: number | null, tableId: number | null) {
+export function useTableDescription(datasetId: number | null, tableId: number | null) {
   return useQuery<TableDescription>({
-    queryKey: ['table-description', workspaceId, tableId],
+    queryKey: ['table-description', datasetId, tableId],
     queryFn: async () => {
       const res = await apiClient.get(
-        `/dataset-workspaces/${workspaceId}/tables/${tableId}/description`
+        `/datasets/${datasetId}/tables/${tableId}/description`
       );
       return res.data;
     },
-    enabled: !!workspaceId && !!tableId,
+    enabled: !!datasetId && !!tableId,
     staleTime: 5_000,
     refetchOnMount: 'always',
   });
 }
 
-export function useUpdateTableDescription(workspaceId: number, tableId: number) {
+export function useUpdateTableDescription(datasetId: number, tableId: number) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: Partial<TableDescription>) =>
       apiClient
-        .put(`/dataset-workspaces/${workspaceId}/tables/${tableId}/description`, body)
+        .put(`/datasets/${datasetId}/tables/${tableId}/description`, body)
         .then((r) => r.data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['table-description', workspaceId, tableId] });
+      queryClient.invalidateQueries({ queryKey: ['table-description', datasetId, tableId] });
     },
   });
 }
 
-export function useRegenerateTableDescription(workspaceId: number, tableId: number) {
+export function useRegenerateTableDescription(datasetId: number, tableId: number) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () =>
       apiClient
-        .post(`/dataset-workspaces/${workspaceId}/tables/${tableId}/description/regenerate`, {})
+        .post(`/datasets/${datasetId}/tables/${tableId}/description/regenerate`, {})
         .then((r) => r.data),
     onSuccess: () => {
       // Invalidate after a short delay to give background task time to start
       setTimeout(() => {
-        queryClient.invalidateQueries({ queryKey: ['table-description', workspaceId, tableId] });
+        queryClient.invalidateQueries({ queryKey: ['table-description', datasetId, tableId] });
       }, 3000);
     },
   });

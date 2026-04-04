@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class SelectedTableRef(BaseModel):
-    workspace_id: int
+    dataset_id: int
     table_id: int
 
 
@@ -121,8 +121,8 @@ class ThesisArtifact(BaseModel):
 
 
 class DatasetFitArtifactItem(BaseModel):
-    workspace_id: int
-    workspace_name: str
+    dataset_id: int
+    dataset_name: str
     table_id: int
     table_name: str
     fit_score: float
@@ -135,8 +135,8 @@ class DatasetFitArtifactItem(BaseModel):
 
 
 class ProfilingArtifactItem(BaseModel):
-    workspace_id: int
-    workspace_name: str
+    dataset_id: int
+    dataset_name: str
     table_id: int
     table_name: str
     row_sample_count: int
@@ -240,9 +240,9 @@ class AgentChartPlan(BaseModel):
     key: str
     title: str
     chart_type: str
-    workspace_id: int
-    workspace_table_id: int
-    workspace_name: str
+    dataset_id: int
+    dataset_table_id: int
+    dataset_name: str
     table_name: str
     rationale: str
     insight_goal: Optional[str] = None
@@ -256,9 +256,9 @@ class AgentChartPlan(BaseModel):
 
 class AgentSectionPlan(BaseModel):
     title: str
-    workspace_id: int
-    workspace_table_id: int
-    workspace_name: str
+    dataset_id: int
+    dataset_table_id: int
+    dataset_name: str
     table_name: str
     intent: str
     why_this_section: Optional[str] = None

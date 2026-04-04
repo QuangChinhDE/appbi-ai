@@ -1,4 +1,4 @@
-"""API endpoints for Dataset Workspaces (Table-based Datasets)"""
+"""API endpoints for Datasets (Table-based Datasets)"""
 from typing import List, Optional
 from decimal import Decimal
 import re
@@ -16,14 +16,14 @@ from app.core.dependencies import (
     get_effective_permission,
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
-from app.models import DataSource, Chart, DatasetWorkspace, DatasetWorkspaceTable
+from app.models import DataSource, Chart, Dataset, DatasetTable
 from app.models.resource_share import ResourceType
 from app.models.user import User
 from app.schemas import (
-    WorkspaceCreate,
-    WorkspaceUpdate,
-    WorkspaceResponse,
-    WorkspaceWithTables,
+    DatasetCreate,
+    DatasetUpdate,
+    DatasetResponse,
+    DatasetWithTables,
     TableCreate,
     TableUpdate,
     TableResponse,
@@ -32,10 +32,10 @@ from app.schemas import (
     ExecuteQueryRequest,
     ExecuteQueryResponse,
     DatasourceTable,
-    WorkspaceColumnMetadata,
+    DatasetColumnMetadata,
 )
 from app.services import (
-    DatasetWorkspaceCRUDService,
+    DatasetCRUDService,
     DataSourceConnectionService,
     EmbeddingService,
 )
@@ -137,7 +137,7 @@ def _serialize_table_description(table) -> dict:
     }
 
 
-# ===== Table Vector Search (must be before /{workspace_id} routes) =====
+# ===== Table Vector Search (must be before /{dataset_id} routes) =====
 
 @router.get("/tables/search", response_model=List[dict])
 def search_tables_vector(
@@ -146,30 +146,30 @@ def search_tables_vector(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Vector similarity search across workspace tables accessible to the user."""
+    """Vector similarity search across dataset tables accessible to the user."""
     from app.services.embedding_service import EmbeddingService
-    from app.models.dataset_workspace import DatasetWorkspaceTable
+    from app.models.dataset import DatasetTable
 
-    # Build set of workspace IDs the user is allowed to see
-    accessible_ws_ids = {
-        ws.id
-        for ws in _owned_or_shared(db, DatasetWorkspace, ResourceType.WORKSPACE, current_user).all()
+    # Build set of dataset IDs the user is allowed to see
+    accessible_ds_ids = {
+        ds.id
+        for ds in _owned_or_shared(db, Dataset, ResourceType.DATASET, current_user).all()
     }
 
     hits = EmbeddingService.search_similar(
-        db, q, resource_type="workspace_table", limit=limit
+        db, q, resource_type="dataset_table", limit=limit
     )
     if not hits:
         return []
     table_ids = [h["resource_id"] for h in hits]
-    tables = db.query(DatasetWorkspaceTable).filter(
-        DatasetWorkspaceTable.id.in_(table_ids)
+    tables = db.query(DatasetTable).filter(
+        DatasetTable.id.in_(table_ids)
     ).all()
     table_map = {t.id: t for t in tables}
     results = []
     for h in hits:
         t = table_map.get(h["resource_id"])
-        if t and t.workspace_id in accessible_ws_ids:
+        if t and t.dataset_id in accessible_ds_ids:
             cols = []
             if t.column_stats:
                 cols = list(t.column_stats.keys())
@@ -180,7 +180,7 @@ def search_tables_vector(
                 cols = [c.get("name", c) if isinstance(c, dict) else c for c in cc]
             results.append({
                 "id": t.id,
-                "workspace_id": t.workspace_id,
+                "dataset_id": t.dataset_id,
                 "display_name": t.display_name,
                 "auto_description": t.auto_description,
                 "columns": cols,
@@ -189,98 +189,98 @@ def search_tables_vector(
     return results
 
 
-# ===== Workspace Endpoints =====
+# ===== Dataset Endpoints =====
 
-@router.get("/", response_model=List[WorkspaceResponse])
-def list_workspaces(
+@router.get("/", response_model=List[DatasetResponse])
+def list_datasets(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List dataset workspaces visible to the current user."""
+    """List datasets visible to the current user."""
     items = (
-        _owned_or_shared(db, DatasetWorkspace, ResourceType.WORKSPACE, current_user)
+        _owned_or_shared(db, Dataset, ResourceType.DATASET, current_user)
         .offset(skip)
         .limit(limit)
         .all()
     )
     for item in items:
-        item.user_permission = get_effective_permission(db, current_user, item, "workspaces")
+        item.user_permission = get_effective_permission(db, current_user, item, "datasets")
     stamp_owner_emails(db, items)
     return items
 
 
-@router.post("/", response_model=WorkspaceResponse, status_code=201)
-def create_workspace(
-    workspace: WorkspaceCreate,
+@router.post("/", response_model=DatasetResponse, status_code=201)
+def create_dataset(
+    dataset_in: DatasetCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("workspaces", "edit")),
+    current_user: User = Depends(require_permission("datasets", "edit")),
 ):
-    """Create a new dataset workspace"""
-    db_workspace = DatasetWorkspaceCRUDService.create_workspace(db, workspace, owner_id=current_user.id)
-    return db_workspace
+    """Create a new dataset"""
+    db_dataset = DatasetCRUDService.create_dataset(db, dataset_in, owner_id=current_user.id)
+    return db_dataset
 
 
-@router.get("/{workspace_id}", response_model=WorkspaceWithTables)
-def get_workspace(
-    workspace_id: int,
+@router.get("/{dataset_id}", response_model=DatasetWithTables)
+def get_dataset(
+    dataset_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Get a dataset workspace by ID with its tables"""
-    workspace = DatasetWorkspaceCRUDService.get_workspace_by_id(
-        db, workspace_id, include_tables=True
+    """Get a dataset by ID with its tables"""
+    dataset_obj = DatasetCRUDService.get_dataset_by_id(
+        db, dataset_id, include_tables=True
     )
     
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
     
-    workspace.user_permission = require_view_access(db, current_user, workspace, "workspaces")
-    return workspace
+    dataset_obj.user_permission = require_view_access(db, current_user, dataset_obj, "datasets")
+    return dataset_obj
 
 
-@router.put("/{workspace_id}", response_model=WorkspaceResponse)
-def update_workspace(
-    workspace_id: int,
-    workspace: WorkspaceUpdate,
+@router.put("/{dataset_id}", response_model=DatasetResponse)
+def update_dataset(
+    dataset_id: int,
+    dataset_in: DatasetUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Update a dataset workspace"""
-    ws = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
-    if not ws:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    require_edit_access(db, current_user, ws, "workspaces")
-    db_workspace = DatasetWorkspaceCRUDService.update_workspace(
-        db, workspace_id, workspace
+    """Update a dataset"""
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, ds, "datasets")
+    db_dataset = DatasetCRUDService.update_dataset(
+        db, dataset_id, dataset_in
     )
-    return db_workspace
+    return db_dataset
 
 
-@router.delete("/{workspace_id}", status_code=204)
-def delete_workspace(
-    workspace_id: int,
+@router.delete("/{dataset_id}", status_code=204)
+def delete_dataset(
+    dataset_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Delete a dataset workspace, blocked if any of its tables are used by charts."""
-    workspace = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    require_full_access(db, current_user, workspace, "workspaces")
+    """Delete a dataset, blocked if any of its tables are used by charts."""
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_full_access(db, current_user, dataset_obj, "datasets")
 
-    table_ids = [t.id for t in db.query(DatasetWorkspaceTable).filter(
-        DatasetWorkspaceTable.workspace_id == workspace_id
+    table_ids = [t.id for t in db.query(DatasetTable).filter(
+        DatasetTable.dataset_id == dataset_id
     ).all()]
 
     if table_ids:
-        blocking_charts = db.query(Chart).filter(Chart.workspace_table_id.in_(table_ids)).all()
+        blocking_charts = db.query(Chart).filter(Chart.dataset_table_id.in_(table_ids)).all()
         if blocking_charts:
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "message": f"Workspace \"{workspace.name}\" có bảng đang được sử dụng trong {len(blocking_charts)} biểu đồ và không thể xóa.",
+                    "message": f"Dataset \"{dataset_obj.name}\" có bảng đang được sử dụng trong {len(blocking_charts)} biểu đồ và không thể xóa.",
                     "constraints": [
                         {"type": "chart", "id": c.id, "name": c.name}
                         for c in blocking_charts
@@ -288,45 +288,45 @@ def delete_workspace(
                 },
             )
 
-    success = DatasetWorkspaceCRUDService.delete_workspace(db, workspace_id)
+    success = DatasetCRUDService.delete_dataset(db, dataset_id)
     if not success:
-        raise HTTPException(status_code=404, detail="Workspace not found")
+        raise HTTPException(status_code=404, detail="Dataset not found")
 
 
 # ===== Table Endpoints =====
 
-@router.get("/{workspace_id}/tables", response_model=List[TableResponse])
-def list_workspace_tables(
-    workspace_id: int,
+@router.get("/{dataset_id}/tables", response_model=List[TableResponse])
+def list_dataset_tables(
+    dataset_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List all tables in a workspace"""
-    workspace = DatasetWorkspaceCRUDService.get_workspace_by_id(db, workspace_id)
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    perm = get_effective_permission(db, current_user, workspace, "workspaces")
+    """List all tables in a dataset"""
+    dataset_obj = DatasetCRUDService.get_dataset_by_id(db, dataset_id)
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
     if perm == "none":
         raise HTTPException(status_code=403, detail="Access denied")
 
-    tables = DatasetWorkspaceCRUDService.get_workspace_tables(db, workspace_id)
+    tables = DatasetCRUDService.get_dataset_tables(db, dataset_id)
     return tables
 
 
-@router.post("/{workspace_id}/tables", status_code=201)
-def add_table_to_workspace(
-    workspace_id: int,
+@router.post("/{dataset_id}/tables", status_code=201)
+def add_table_to_dataset(
+    dataset_id: int,
     table: TableCreate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Add a table to a workspace"""
+    """Add a table to a dataset"""
     try:
-        ws = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
-        if not ws:
-            raise HTTPException(status_code=404, detail="Workspace not found")
-        require_edit_access(db, current_user, ws, "workspaces")
+        ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if not ds:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        require_edit_access(db, current_user, ds, "datasets")
 
         # Validate datasource exists
         datasource = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
@@ -343,12 +343,12 @@ def add_table_to_workspace(
             except QueryValidationError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid SQL query: {str(e)}")
         
-        db_table = DatasetWorkspaceCRUDService.add_table_to_workspace(
-            db, workspace_id, table
+        db_table = DatasetCRUDService.add_table_to_dataset(
+            db, dataset_id, table
         )
         
         if not db_table:
-            raise HTTPException(status_code=404, detail="Workspace not found")
+            raise HTTPException(status_code=404, detail="Dataset not found")
 
         # ── Auto-detect table size and set query_mode ──
         if db_table.source_kind == "physical_table" and db_table.source_table_name:
@@ -397,7 +397,7 @@ def add_table_to_workspace(
         # Return plain dict instead of model to avoid serialization issues
         return {
             "id": db_table.id,
-            "workspace_id": db_table.workspace_id,
+            "dataset_id": db_table.dataset_id,
             "datasource_id": db_table.datasource_id,
             "source_kind": db_table.source_kind,
             "source_table_name": db_table.source_table_name,
@@ -416,28 +416,28 @@ def add_table_to_workspace(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Failed to add table to workspace")
-        raise HTTPException(status_code=500, detail="Failed to add table to workspace.")
+        logger.exception("Failed to add table to dataset")
+        raise HTTPException(status_code=500, detail="Failed to add table to dataset.")
 
 
-@router.put("/{workspace_id}/tables/{table_id}", response_model=TableResponse)
-def update_workspace_table(
-    workspace_id: int,
+@router.put("/{dataset_id}/tables/{table_id}", response_model=TableResponse)
+def update_dataset_table(
+    dataset_id: int,
     table_id: int,
     table_update: TableUpdate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Update a table in a workspace"""
-    ws = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
-    if not ws:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    require_edit_access(db, current_user, ws, "workspaces")
-    # Verify table belongs to workspace
-    db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, table_id)
-    if not db_table or db_table.workspace_id != workspace_id:
-        raise HTTPException(status_code=404, detail="Table not found in this workspace")
+    """Update a table in a dataset"""
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, ds, "datasets")
+    # Verify table belongs to dataset
+    db_table = DatasetCRUDService.get_table_by_id(db, table_id)
+    if not db_table or db_table.dataset_id != dataset_id:
+        raise HTTPException(status_code=404, detail="Table not found in this dataset")
 
     # Validate SQL query if source_query is being updated
     if table_update.source_query is not None:
@@ -447,7 +447,7 @@ def update_workspace_table(
         except QueryValidationError as e:
             raise HTTPException(status_code=400, detail=f"Invalid SQL query: {str(e)}")
 
-    updated_table = DatasetWorkspaceCRUDService.update_table(
+    updated_table = DatasetCRUDService.update_table(
         db, table_id, table_update
     )
 
@@ -461,42 +461,42 @@ def update_workspace_table(
     return updated_table
 
 
-@router.delete("/{workspace_id}/tables/{table_id}", status_code=204)
-def remove_table_from_workspace(
-    workspace_id: int,
+@router.delete("/{dataset_id}/tables/{table_id}", status_code=204)
+def remove_table_from_dataset(
+    dataset_id: int,
     table_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Remove a table from a workspace, after checking for chart/formula dependencies"""
-    ws = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
-    if not ws:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    require_edit_access(db, current_user, ws, "workspaces")
-    # Verify table belongs to workspace
-    db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, table_id)
-    if not db_table or db_table.workspace_id != workspace_id:
-        raise HTTPException(status_code=404, detail="Table not found in this workspace")
+    """Remove a table from a dataset, after checking for chart/formula dependencies"""
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, ds, "datasets")
+    # Verify table belongs to dataset
+    db_table = DatasetCRUDService.get_table_by_id(db, table_id)
+    if not db_table or db_table.dataset_id != dataset_id:
+        raise HTTPException(status_code=404, detail="Table not found in this dataset")
 
     # ------------------------------------------------------------------
     # Check 1: charts that directly reference this table
     # ------------------------------------------------------------------
     blocking_charts = (
         db.query(Chart)
-        .filter(Chart.workspace_table_id == table_id)
+        .filter(Chart.dataset_table_id == table_id)
         .all()
     )
 
     # ------------------------------------------------------------------
-    # Check 2: other tables in this workspace whose js_formula
+    # Check 2: other tables in this dataset whose js_formula
     # transformations reference this table by its display label
     # ------------------------------------------------------------------
     table_label = db_table.display_name or db_table.source_table_name or str(table_id)
     other_tables = (
-        db.query(DatasetWorkspaceTable)
+        db.query(DatasetTable)
         .filter(
-            DatasetWorkspaceTable.workspace_id == workspace_id,
-            DatasetWorkspaceTable.id != table_id,
+            DatasetTable.dataset_id == dataset_id,
+            DatasetTable.id != table_id,
         )
         .all()
     )
@@ -533,35 +533,35 @@ def remove_table_from_workspace(
             },
         )
 
-    EmbeddingService.delete_embedding(db, "workspace_table", table_id)
-    success = DatasetWorkspaceCRUDService.delete_table(db, table_id)
+    EmbeddingService.delete_embedding(db, "dataset_table", table_id)
+    success = DatasetCRUDService.delete_table(db, table_id)
 
     if not success:
         raise HTTPException(status_code=404, detail="Table not found")
 
 
 @router.post(
-    "/{workspace_id}/tables/{table_id}/preview",
+    "/{dataset_id}/tables/{table_id}/preview",
     response_model=TablePreviewResponse
 )
-def preview_workspace_table(
-    workspace_id: int,
+def preview_dataset_table(
+    dataset_id: int,
     table_id: int,
     preview_request: TablePreviewRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Preview data from a workspace table with transformations"""
-    workspace = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    perm = get_effective_permission(db, current_user, workspace, "workspaces")
+    """Preview data from a dataset table with transformations"""
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
     if perm == "none":
         raise HTTPException(status_code=403, detail="Access denied")
 
-    db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, table_id)
-    if not db_table or db_table.workspace_id != workspace_id:
-        raise HTTPException(status_code=404, detail="Table not found in this workspace")
+    db_table = DatasetCRUDService.get_table_by_id(db, table_id)
+    if not db_table or db_table.dataset_id != dataset_id:
+        raise HTTPException(status_code=404, detail="Table not found in this dataset")
     
     # Get datasource
     datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
@@ -594,7 +594,7 @@ def preview_workspace_table(
             column_metadata = []
             for i, col in enumerate(columns):
                 col_type = _infer_column_type(col, i, rows)
-                column_metadata.append(WorkspaceColumnMetadata(name=col, type=col_type, nullable=True))
+                column_metadata.append(DatasetColumnMetadata(name=col, type=col_type, nullable=True))
 
             type_overrides = db_table.type_overrides or {}
             for col_meta in column_metadata:
@@ -617,7 +617,7 @@ def preview_workspace_table(
                 else:
                     serializable_rows.append([serialize_value(v) for v in row])
 
-            DatasetWorkspaceCRUDService.update_table_cache(
+            DatasetCRUDService.update_table_cache(
                 db, table_id,
                 columns_cache={"columns": [col.model_dump() for col in column_metadata]},
                 sample_cache=serializable_rows,
@@ -685,7 +685,7 @@ def preview_workspace_table(
         for i, col in enumerate(columns):
             col_type = _infer_column_type(col, i, rows)
             column_metadata.append(
-                WorkspaceColumnMetadata(
+                DatasetColumnMetadata(
                     name=col,
                     type=col_type,
                     nullable=True
@@ -723,7 +723,7 @@ def preview_workspace_table(
                 serializable_rows.append([serialize_value(v) for v in row])
         
         # Cache results
-        DatasetWorkspaceCRUDService.update_table_cache(
+        DatasetCRUDService.update_table_cache(
             db,
             table_id,
             columns_cache={"columns": [col.model_dump() for col in column_metadata]},
@@ -760,27 +760,27 @@ def preview_workspace_table(
 
 
 @router.post(
-    "/{workspace_id}/tables/{table_id}/execute",
+    "/{dataset_id}/tables/{table_id}/execute",
     response_model=ExecuteQueryResponse
 )
-def execute_workspace_table_query(
-    workspace_id: int,
+def execute_dataset_table_query(
+    dataset_id: int,
     table_id: int,
     execute_request: ExecuteQueryRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Execute query on workspace table with dimensions, measures, and filters"""
-    workspace = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    perm = get_effective_permission(db, current_user, workspace, "workspaces")
+    """Execute query on dataset table with dimensions, measures, and filters"""
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
     if perm == "none":
         raise HTTPException(status_code=403, detail="Access denied")
 
-    db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, table_id)
-    if not db_table or db_table.workspace_id != workspace_id:
-        raise HTTPException(status_code=404, detail="Table not found in this workspace")
+    db_table = DatasetCRUDService.get_table_by_id(db, table_id)
+    if not db_table or db_table.dataset_id != dataset_id:
+        raise HTTPException(status_code=404, detail="Table not found in this dataset")
 
     # Get datasource
     datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
@@ -821,7 +821,7 @@ def execute_workspace_table_query(
 
             columns = list(rows[0].keys()) if rows else []
             column_metadata = [
-                WorkspaceColumnMetadata(name=col, type="string", nullable=True)
+                DatasetColumnMetadata(name=col, type="string", nullable=True)
                 for col in columns
             ]
 
@@ -985,7 +985,7 @@ def execute_workspace_table_query(
                     col_type = "number"
 
             column_metadata.append(
-                WorkspaceColumnMetadata(
+                DatasetColumnMetadata(
                     name=col,
                     type=col_type,
                     nullable=True
@@ -1009,24 +1009,24 @@ def execute_workspace_table_query(
 
 # ===== Table Description Endpoints =====
 
-@router.get("/{workspace_id}/tables/{table_id}/description")
+@router.get("/{dataset_id}/tables/{table_id}/description")
 def get_table_description(
-    workspace_id: int,
+    dataset_id: int,
     table_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Get AI-generated description and knowledge fields for a workspace table."""
-    workspace = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    perm = get_effective_permission(db, current_user, workspace, "workspaces")
+    """Get AI-generated description and knowledge fields for a dataset table."""
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
     if perm == "none":
         raise HTTPException(status_code=403, detail="Access denied")
 
-    table = db.query(DatasetWorkspaceTable).filter(
-        DatasetWorkspaceTable.id == table_id,
-        DatasetWorkspaceTable.workspace_id == workspace_id,
+    table = db.query(DatasetTable).filter(
+        DatasetTable.id == table_id,
+        DatasetTable.dataset_id == dataset_id,
     ).first()
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
@@ -1034,9 +1034,9 @@ def get_table_description(
     return _serialize_table_description(table)
 
 
-@router.put("/{workspace_id}/tables/{table_id}/description")
+@router.put("/{dataset_id}/tables/{table_id}/description")
 def update_table_description(
-    workspace_id: int,
+    dataset_id: int,
     table_id: int,
     body: dict,
     background_tasks: BackgroundTasks,
@@ -1044,14 +1044,14 @@ def update_table_description(
     current_user: User = Depends(get_current_user),
 ):
     """Update description fields manually. Sets description_source='user' and re-embeds."""
-    ws = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
-    if not ws:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    require_edit_access(db, current_user, ws, "workspaces")
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, ds, "datasets")
 
-    table = db.query(DatasetWorkspaceTable).filter(
-        DatasetWorkspaceTable.id == table_id,
-        DatasetWorkspaceTable.workspace_id == workspace_id,
+    table = db.query(DatasetTable).filter(
+        DatasetTable.id == table_id,
+        DatasetTable.dataset_id == dataset_id,
     ).first()
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
@@ -1084,23 +1084,23 @@ def update_table_description(
     return _serialize_table_description(table)
 
 
-@router.post("/{workspace_id}/tables/{table_id}/description/regenerate")
+@router.post("/{dataset_id}/tables/{table_id}/description/regenerate")
 def regenerate_table_description(
-    workspace_id: int,
+    dataset_id: int,
     table_id: int,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Force-regenerate AI description for a table, then re-embed."""
-    ws = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == workspace_id).first()
-    if not ws:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    require_edit_access(db, current_user, ws, "workspaces")
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, ds, "datasets")
 
-    table = db.query(DatasetWorkspaceTable).filter(
-        DatasetWorkspaceTable.id == table_id,
-        DatasetWorkspaceTable.workspace_id == workspace_id,
+    table = db.query(DatasetTable).filter(
+        DatasetTable.id == table_id,
+        DatasetTable.dataset_id == dataset_id,
     ).first()
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
@@ -1191,3 +1191,262 @@ def list_datasource_table_columns(
     except Exception as e:
         logger.error(f"Failed to list columns for ds {datasource_id} table {table}: {e}")
         raise HTTPException(status_code=500, detail="Failed to list columns.")
+
+
+# ============ Dataset Data Model (Semantic Layer) ============
+
+@router.post(
+    "/{dataset_id}/generate-model",
+    summary="Auto-generate semantic model from dataset tables",
+)
+def generate_model(
+    dataset_id: int,
+    force: bool = Query(False, description="Force regenerate (overwrite existing)"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Scan all tables in the dataset and auto-generate:
+    - SemanticView per table (dimensions + measures from columns_cache)
+    - SemanticModel for the dataset
+    - SemanticExplores with auto-detected JOINs
+    """
+    from app.services.dataset_model_service import generate_dataset_model
+
+    dataset_obj = db.query(Dataset).filter(
+        Dataset.id == dataset_id
+    ).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, dataset_obj, "datasets")
+
+    try:
+        result = generate_dataset_model(db, dataset_id, force=force)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to generate model for dataset {dataset_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate model: {str(e)}",
+        )
+
+
+@router.get(
+    "/{dataset_id}/model",
+    summary="Get the semantic model for a dataset",
+)
+def get_dataset_model_endpoint(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the full semantic model for Visual Model UI:
+    - All views (with dimensions/measures)
+    - All explores (with join definitions)
+    """
+    from app.services.dataset_model_service import get_dataset_model
+
+    dataset_obj = db.query(Dataset).filter(
+        Dataset.id == dataset_id
+    ).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, dataset_obj, "datasets")
+
+    result = get_dataset_model(db, dataset_id)
+    if not result:
+        return {
+            "model_id": None,
+            "dataset_id": dataset_id,
+            "dataset_name": dataset_obj.name,
+            "views": [],
+            "explores": [],
+            "generated": False,
+        }
+    return result
+
+
+@router.put(
+    "/{dataset_id}/model/views/{view_id}",
+    summary="Update a semantic view (dimensions/measures)",
+)
+def update_dataset_view(
+    dataset_id: int,
+    view_id: int,
+    update_data: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Update dimensions/measures/description of a semantic view.
+    Used by the Visual Model editor.
+    """
+    from app.models.semantic import SemanticView
+
+    dataset_obj = db.query(Dataset).filter(
+        Dataset.id == dataset_id
+    ).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, dataset_obj, "datasets")
+
+    view = db.query(SemanticView).filter(SemanticView.id == view_id).first()
+    if not view:
+        raise HTTPException(status_code=404, detail="View not found")
+
+    # Validate the view belongs to this dataset's tables
+    table = db.query(DatasetTable).filter(
+        DatasetTable.id == view.dataset_table_id,
+        DatasetTable.dataset_id == dataset_id,
+    ).first()
+    if not table and view.dataset_table_id is not None:
+        raise HTTPException(status_code=403, detail="View does not belong to this dataset")
+
+    allowed_fields = {"dimensions", "measures", "description", "name"}
+    for key, value in update_data.items():
+        if key in allowed_fields:
+            setattr(view, key, value)
+
+    db.commit()
+    db.refresh(view)
+
+    return {
+        "id": view.id,
+        "name": view.name,
+        "dataset_table_id": view.dataset_table_id,
+        "sql_table_name": view.sql_table_name,
+        "dimensions": view.dimensions or [],
+        "measures": view.measures or [],
+        "description": view.description,
+    }
+
+
+@router.put(
+    "/{dataset_id}/model/explores/{explore_id}",
+    summary="Update a semantic explore (joins)",
+)
+def update_dataset_explore(
+    dataset_id: int,
+    explore_id: int,
+    update_data: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Update joins/description of a semantic explore.
+    Used by the Visual Model editor for join management.
+    """
+    from app.models.semantic import SemanticExplore, SemanticModel
+
+    dataset_obj = db.query(Dataset).filter(
+        Dataset.id == dataset_id
+    ).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, dataset_obj, "datasets")
+
+    explore = db.query(SemanticExplore).filter(SemanticExplore.id == explore_id).first()
+    if not explore:
+        raise HTTPException(status_code=404, detail="Explore not found")
+
+    # Validate explore belongs to this dataset's model
+    model = db.query(SemanticModel).filter(
+        SemanticModel.id == explore.model_id,
+        SemanticModel.dataset_id == dataset_id,
+    ).first()
+    if not model:
+        raise HTTPException(status_code=403, detail="Explore does not belong to this dataset")
+
+    allowed_fields = {"joins", "description", "name"}
+    for key, value in update_data.items():
+        if key in allowed_fields:
+            setattr(explore, key, value)
+
+    db.commit()
+    db.refresh(explore)
+
+    return {
+        "id": explore.id,
+        "name": explore.name,
+        "base_view_name": explore.base_view_name,
+        "base_view_id": explore.base_view_id,
+        "joins": explore.joins or [],
+        "description": explore.description,
+    }
+
+
+@router.post(
+    "/{dataset_id}/model/joins",
+    summary="Add or update a relationship between two tables",
+)
+def add_model_join(
+    dataset_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Add or update a join/relationship between two semantic views.
+    Body: {from_view_id, to_view_id, from_column, to_column, join_type, relationship}
+    """
+    from app.services.dataset_model_service import add_join
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, dataset_obj, "datasets")
+
+    required = {"from_view_id", "to_view_id", "from_column", "to_column"}
+    missing = required - set(payload.keys())
+    if missing:
+        raise HTTPException(status_code=422, detail=f"Missing fields: {missing}")
+
+    try:
+        result = add_join(
+            db,
+            dataset_id=dataset_id,
+            from_view_id=int(payload["from_view_id"]),
+            to_view_id=int(payload["to_view_id"]),
+            from_column=payload["from_column"],
+            to_column=payload["to_column"],
+            join_type=payload.get("join_type", "left"),
+            relationship=payload.get("relationship", "many_to_one"),
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to add join for dataset {dataset_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete(
+    "/{dataset_id}/model/joins",
+    summary="Remove a relationship between two tables",
+)
+def remove_model_join(
+    dataset_id: int,
+    from_view_id: int = Query(..., description="SemanticView ID of the source table"),
+    to_view_name: str = Query(..., description="View name of the target table"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Remove a join/relationship from one semantic view to another."""
+    from app.services.dataset_model_service import remove_join
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, dataset_obj, "datasets")
+
+    try:
+        result = remove_join(db, dataset_id, from_view_id, to_view_name)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to remove join for dataset {dataset_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

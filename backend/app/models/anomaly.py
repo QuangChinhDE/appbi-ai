@@ -20,7 +20,7 @@ class MonitoredMetric(Base):
     __tablename__ = "monitored_metrics"
 
     id = Column(Integer, primary_key=True, index=True)
-    workspace_table_id = Column(Integer, ForeignKey("dataset_workspace_tables.id", ondelete="CASCADE"), nullable=False)
+    dataset_table_id = Column(Integer, ForeignKey("dataset_tables.id", ondelete="CASCADE"), nullable=False)
     metric_column = Column(String(200), nullable=False)
     aggregation = Column(String(20), nullable=False, default="sum")
     time_column = Column(String(200), nullable=True)
@@ -34,7 +34,7 @@ class MonitoredMetric(Base):
 
     # Relationships
     alerts = relationship("AnomalyAlert", back_populates="metric", cascade="all, delete-orphan")
-    workspace_table = relationship("DatasetWorkspaceTable", foreign_keys=[workspace_table_id])
+    dataset_table = relationship("DatasetTable", foreign_keys=[dataset_table_id])
     owner = relationship("User", foreign_keys=[owner_id])
 
 

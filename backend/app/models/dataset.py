@@ -1,5 +1,5 @@
 """
-Dataset Workspace Models - Table-based dataset like NocoDB/Airtable
+Dataset Models - Table-based dataset like NocoDB/Airtable
 """
 from sqlalchemy import Column, Integer, BigInteger, String, Boolean, DateTime, ForeignKey, Text, JSON
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -9,12 +9,12 @@ from datetime import datetime
 from app.core.database import Base
 
 
-class DatasetWorkspace(Base):
+class Dataset(Base):
     """
-    Dataset Workspace - like NocoDB Base or Airtable Base
-    A workspace contains multiple tables from various datasources
+    Dataset - like NocoDB Base or Airtable Base
+    A dataset contains multiple tables from various datasources
     """
-    __tablename__ = "dataset_workspaces"
+    __tablename__ = "datasets"
     
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
@@ -24,18 +24,18 @@ class DatasetWorkspace(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
     
     # Relationship
-    tables = relationship("DatasetWorkspaceTable", back_populates="workspace", cascade="all, delete-orphan")
+    tables = relationship("DatasetTable", back_populates="dataset", cascade="all, delete-orphan")
 
 
-class DatasetWorkspaceTable(Base):
+class DatasetTable(Base):
     """
-    Table in a dataset workspace
+    Table in a dataset
     References a physical table/view from a datasource
     """
-    __tablename__ = "dataset_workspace_tables"
+    __tablename__ = "dataset_tables"
     
     id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("dataset_workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
     datasource_id = Column(Integer, ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True)
     
     # Source specification
@@ -82,4 +82,4 @@ class DatasetWorkspaceTable(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
 
     # Relationships
-    workspace = relationship("DatasetWorkspace", back_populates="tables")
+    dataset = relationship("Dataset", back_populates="tables")

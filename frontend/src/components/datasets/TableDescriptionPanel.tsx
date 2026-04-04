@@ -24,7 +24,7 @@ import type { DescriptionGenerationStatus } from '@/hooks/useDescription';
 import { toast } from 'sonner';
 
 interface Props {
-  workspaceId: number;
+  datasetId: number;
   tableId: number;
   canEdit: boolean;
 }
@@ -71,11 +71,11 @@ function formatTimestamp(value: string | null): string | null {
   return parsed.toLocaleString();
 }
 
-export function TableDescriptionPanel({ workspaceId, tableId, canEdit }: Props) {
+export function TableDescriptionPanel({ datasetId, tableId, canEdit }: Props) {
   const queryClient = useQueryClient();
-  const { data, isLoading } = useTableDescription(workspaceId, tableId);
-  const updateMut = useUpdateTableDescription(workspaceId, tableId);
-  const regenMut = useRegenerateTableDescription(workspaceId, tableId);
+  const { data, isLoading } = useTableDescription(datasetId, tableId);
+  const updateMut = useUpdateTableDescription(datasetId, tableId);
+  const regenMut = useRegenerateTableDescription(datasetId, tableId);
 
   const [descDraft, setDescDraft] = useState('');
   const [commonQsDraft, setCommonQsDraft] = useState<string[]>([]);
@@ -100,10 +100,10 @@ export function TableDescriptionPanel({ workspaceId, tableId, canEdit }: Props) 
   useEffect(() => {
     if (!isProcessing) return;
     const timer = setInterval(() => {
-      queryClient.invalidateQueries({ queryKey: ['table-description', workspaceId, tableId] });
+      queryClient.invalidateQueries({ queryKey: ['table-description', datasetId, tableId] });
     }, 2000);
     return () => clearInterval(timer);
-  }, [isProcessing, queryClient, tableId, workspaceId]);
+  }, [isProcessing, queryClient, tableId, datasetId]);
 
   useEffect(() => {
     if (!data) return;

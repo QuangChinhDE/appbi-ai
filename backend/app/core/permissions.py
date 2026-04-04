@@ -10,7 +10,7 @@ Filter behaviour per level:
   edit  → own items + shared items (can create/update/delete own items)
   full  → all items in the module (unrestricted)
 
-Module keys: data_sources, datasets, workspaces, explore_charts,
+Module keys: data_sources, datasets, explore_charts,
              dashboards, ai_chat, settings
 """
 from __future__ import annotations
@@ -31,7 +31,7 @@ LEVEL_ORDER: Dict[str, int] = {"none": 0, "view": 1, "edit": 2, "full": 3}
 _RESOURCE_TO_MODULE: Dict[str, str] = {
     "dashboard": "dashboards",
     "chart": "explore_charts",
-    "workspace": "workspaces",
+    "dataset": "datasets",
     "datasource": "data_sources",
     "chat_session": "ai_chat",
 }

@@ -14,7 +14,7 @@
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { X, Loader2, AlertCircle, Play, ChevronDown, ChevronRight, Info } from 'lucide-react';
-import type { WorkspaceTable, Transformation } from '@/hooks/use-dataset-workspaces';
+import type { DatasetTable, Transformation } from '@/hooks/use-datasets';
 import * as formulajs from 'formulajs';
 
 // ─── formula evaluator ──────────────────────────────────────────────────────────────────────
@@ -150,7 +150,7 @@ const FUNCTION_GROUPS: { group: string; fns: { name: string; desc: string; examp
   {
     group: 'Lookup bảng khác',
     fns: [
-      { name: 'LOOKUP', desc: 'Tìm giá trị từ bảng khác trong workspace', example: 'LOOKUP([ma_kh],"Khách_hàng","ma_kh","ten_kh")' },
+      { name: 'LOOKUP', desc: 'Tìm giá trị từ bảng khác trong dataset', example: 'LOOKUP([ma_kh],"Khách_hàng","ma_kh","ten_kh")' },
       { name: 'VLOOKUP', desc: 'Alias của LOOKUP (cú pháp tương tự)', example: 'VLOOKUP([product_id],"Sản_phẩm","id","tên")' },
     ],
   },
@@ -214,7 +214,7 @@ export interface ColumnGroup {
 }
 
 interface AddColumnModalProps {
-  table: WorkspaceTable;
+  table: DatasetTable;
   /**
    * Flat list used when no grouping needed.
    * If columnGroups is also supplied, columnGroups takes priority.

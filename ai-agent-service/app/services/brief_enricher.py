@@ -136,7 +136,7 @@ async def enrich_brief(
     """Call the LLM to enrich *baseline* with domain-aware KPIs, questions, etc.
 
     *table_descriptions* is a list of dicts, each with at least:
-        workspace_id, table_id, table_name, auto_description,
+        dataset_id, table_id, table_name, auto_description,
         column_descriptions, common_questions, columns.
 
     If the LLM call fails the original *baseline* is returned unchanged.

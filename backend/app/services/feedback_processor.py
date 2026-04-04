@@ -32,7 +32,7 @@ class FeedbackProcessor:
             return
 
         try:
-            if feedback.correct_resource_type == "workspace_table":
+            if feedback.correct_resource_type == "dataset_table":
                 FeedbackProcessor._process_table_feedback(
                     db, feedback.correct_resource_id, user_query
                 )
@@ -49,11 +49,11 @@ class FeedbackProcessor:
 
     @staticmethod
     def _process_table_feedback(db: Session, table_id: int, user_query: str) -> None:
-        from app.models.dataset_workspace import DatasetWorkspaceTable
+        from app.models.dataset import DatasetTable
         from app.services.embedding_service import EmbeddingService
 
-        table = db.query(DatasetWorkspaceTable).filter(
-            DatasetWorkspaceTable.id == table_id
+        table = db.query(DatasetTable).filter(
+            DatasetTable.id == table_id
         ).first()
         if not table:
             return

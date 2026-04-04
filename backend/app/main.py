@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
     # This runs on EVERY startup so the folder structure is always correct
     # regardless of which machine the project is cloned to.
     data_root = settings.data_dir_path
-    for sub in ("synced", "workspaces"):
+    for sub in ("synced", "datasets"):
         (data_root / sub).mkdir(parents=True, exist_ok=True)
 
     import logging

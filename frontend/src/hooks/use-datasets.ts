@@ -1,5 +1,5 @@
 /**
- * React Query hooks for Dataset Workspaces API
+ * React Query hooks for Dataset Datasets API
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Query } from '@tanstack/react-query';
@@ -7,7 +7,7 @@ import { apiClient as api } from '@/lib/api-client';
 
 // ===== Types =====
 
-export interface DatasetWorkspace {
+export interface Dataset {
   id: number;
   name: string;
   description?: string;
@@ -25,9 +25,9 @@ export interface Transformation {
   params: Record<string, any>;
 }
 
-export interface WorkspaceTable {
+export interface DatasetTable {
   id: number;
-  workspace_id: number;
+  dataset_id: number;
   datasource_id: number;
   source_kind: "physical_table" | "sql_query";
   source_table_name?: string;
@@ -43,16 +43,16 @@ export interface WorkspaceTable {
   updated_at: string;
 }
 
-export interface WorkspaceWithTables extends DatasetWorkspace {
-  tables: WorkspaceTable[];
+export interface DatasetWithTables extends Dataset {
+  tables: DatasetTable[];
 }
 
-export interface CreateWorkspaceInput {
+export interface CreateDatasetInput {
   name: string;
   description?: string;
 }
 
-export interface UpdateWorkspaceInput {
+export interface UpdateDatasetInput {
   name?: string;
   description?: string;
 }
@@ -131,15 +131,15 @@ export interface DatasourceColumn {
 
 // ===== Query Keys =====
 
-export const workspaceKeys = {
-  all: ['dataset-workspaces'] as const,
-  lists: () => [...workspaceKeys.all, 'list'] as const,
-  list: (filters?: Record<string, any>) => [...workspaceKeys.lists(), filters] as const,
-  details: () => [...workspaceKeys.all, 'detail'] as const,
-  detail: (id: number) => [...workspaceKeys.details(), id] as const,
-  tables: (workspaceId: number) => [...workspaceKeys.detail(workspaceId), 'tables'] as const,
-  tablePreview: (workspaceId: number, tableId: number) => 
-    [...workspaceKeys.detail(workspaceId), 'table', tableId, 'preview'] as const,
+export const datasetKeys = {
+  all: ['datasets'] as const,
+  lists: () => [...datasetKeys.all, 'list'] as const,
+  list: (filters?: Record<string, any>) => [...datasetKeys.lists(), filters] as const,
+  details: () => [...datasetKeys.all, 'detail'] as const,
+  detail: (id: number) => [...datasetKeys.details(), id] as const,
+  tables: (datasetId: number) => [...datasetKeys.detail(datasetId), 'tables'] as const,
+  tablePreview: (datasetId: number, tableId: number) => 
+    [...datasetKeys.detail(datasetId), 'table', tableId, 'preview'] as const,
 };
 
 export const datasourceTableKeys = {
@@ -151,14 +151,14 @@ export const datasourceTableKeys = {
 // ===== Hooks =====
 
 /**
- * Get all dataset workspaces
+ * Get all dataset datasets
  */
-export function useWorkspaces(skip = 0, limit = 100) {
+export function useDatasets(skip = 0, limit = 100) {
   return useQuery({
-    queryKey: workspaceKeys.list({ skip, limit }),
+    queryKey: datasetKeys.list({ skip, limit }),
     queryFn: async () => {
-      const response = await api.get<DatasetWorkspace[]>(
-        `/dataset-workspaces/?skip=${skip}&limit=${limit}`
+      const response = await api.get<Dataset[]>(
+        `/datasets/?skip=${skip}&limit=${limit}`
       );
       return response.data;
     },
@@ -166,111 +166,111 @@ export function useWorkspaces(skip = 0, limit = 100) {
 }
 
 /**
- * Get a single workspace with tables
+ * Get a single dataset with tables
  */
-export function useWorkspace(workspaceId: number | null) {
+export function useDataset(datasetId: number | null) {
   return useQuery({
-    queryKey: workspaceKeys.detail(workspaceId!),
+    queryKey: datasetKeys.detail(datasetId!),
     queryFn: async () => {
-      const response = await api.get<WorkspaceWithTables>(
-        `/dataset-workspaces/${workspaceId}`
+      const response = await api.get<DatasetWithTables>(
+        `/datasets/${datasetId}`
       );
       return response.data;
     },
-    enabled: workspaceId !== null,
+    enabled: datasetId !== null,
   });
 }
 
 /**
- * Get tables in a workspace
+ * Get tables in a dataset
  */
-export function useWorkspaceTables(workspaceId: number | null) {
+export function useDatasetTables(datasetId: number | null) {
   return useQuery({
-    queryKey: workspaceKeys.tables(workspaceId!),
+    queryKey: datasetKeys.tables(datasetId!),
     queryFn: async () => {
-      const response = await api.get<WorkspaceTable[]>(
-        `/dataset-workspaces/${workspaceId}/tables`
+      const response = await api.get<DatasetTable[]>(
+        `/datasets/${datasetId}/tables`
       );
       return response.data;
     },
-    enabled: workspaceId !== null,
+    enabled: datasetId !== null,
   });
 }
 
 /**
- * Create a new workspace
+ * Create a new dataset
  */
-export function useCreateWorkspace() {
+export function useCreateDataset() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: async (input: CreateWorkspaceInput) => {
-      const response = await api.post<DatasetWorkspace>(
-        '/dataset-workspaces/',
+    mutationFn: async (input: CreateDatasetInput) => {
+      const response = await api.post<Dataset>(
+        '/datasets/',
         input
       );
       return response.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: workspaceKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.lists() });
     },
   });
 }
 
 /**
- * Update a workspace
+ * Update a dataset
  */
-export function useUpdateWorkspace() {
+export function useUpdateDataset() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: async ({ id, input }: { id: number; input: UpdateWorkspaceInput }) => {
-      const response = await api.put<DatasetWorkspace>(
-        `/dataset-workspaces/${id}`,
+    mutationFn: async ({ id, input }: { id: number; input: UpdateDatasetInput }) => {
+      const response = await api.put<Dataset>(
+        `/datasets/${id}`,
         input
       );
       return response.data;
     },
-    onSuccess: (_data: DatasetWorkspace, variables: { id: number; input: UpdateWorkspaceInput }) => {
-      queryClient.invalidateQueries({ queryKey: workspaceKeys.detail(variables.id) });
-      queryClient.invalidateQueries({ queryKey: workspaceKeys.lists() });
+    onSuccess: (_data: Dataset, variables: { id: number; input: UpdateDatasetInput }) => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.detail(variables.id) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.lists() });
     },
   });
 }
 
 /**
- * Delete a workspace
+ * Delete a dataset
  */
-export function useDeleteWorkspace() {
+export function useDeleteDataset() {
   const queryClient = useQueryClient();
   
   return useMutation({
     mutationFn: async (id: number) => {
-      await api.delete(`/dataset-workspaces/${id}`);
+      await api.delete(`/datasets/${id}`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: workspaceKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.lists() });
     },
   });
 }
 
 /**
- * Add a table to workspace
+ * Add a table to dataset
  */
-export function useAddTableToWorkspace() {
+export function useAddTableToDataset() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: async ({ workspaceId, input }: { workspaceId: number; input: AddTableInput }) => {
-      const response = await api.post<WorkspaceTable>(
-        `/dataset-workspaces/${workspaceId}/tables`,
+    mutationFn: async ({ datasetId, input }: { datasetId: number; input: AddTableInput }) => {
+      const response = await api.post<DatasetTable>(
+        `/datasets/${datasetId}/tables`,
         input
       );
       return response.data;
     },
-    onSuccess: (_data: WorkspaceTable, variables: { workspaceId: number; input: AddTableInput }) => {
-      queryClient.invalidateQueries({ queryKey: workspaceKeys.detail(variables.workspaceId) });
-      queryClient.invalidateQueries({ queryKey: workspaceKeys.tables(variables.workspaceId) });
+    onSuccess: (_data: DatasetTable, variables: { datasetId: number; input: AddTableInput }) => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.detail(variables.datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.tables(variables.datasetId) });
     },
   });
 }
@@ -283,40 +283,40 @@ export function useUpdateTable() {
   
   return useMutation({
     mutationFn: async ({ 
-      workspaceId, 
+      datasetId, 
       tableId, 
       input 
     }: { 
-      workspaceId: number; 
+      datasetId: number; 
       tableId: number; 
       input: UpdateTableInput 
     }) => {
-      const response = await api.put<WorkspaceTable>(
-        `/dataset-workspaces/${workspaceId}/tables/${tableId}`,
+      const response = await api.put<DatasetTable>(
+        `/datasets/${datasetId}/tables/${tableId}`,
         input
       );
       return response.data;
     },
-    onSuccess: (_data: WorkspaceTable, variables: { workspaceId: number; tableId: number; input: UpdateTableInput }) => {
-      queryClient.invalidateQueries({ queryKey: workspaceKeys.detail(variables.workspaceId) });
-      queryClient.invalidateQueries({ queryKey: workspaceKeys.tables(variables.workspaceId) });
+    onSuccess: (_data: DatasetTable, variables: { datasetId: number; tableId: number; input: UpdateTableInput }) => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.detail(variables.datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.tables(variables.datasetId) });
     },
   });
 }
 
 /**
- * Remove a table from workspace
+ * Remove a table from dataset
  */
 export function useRemoveTable() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: async ({ workspaceId, tableId }: { workspaceId: number; tableId: number }) => {
-      await api.delete(`/dataset-workspaces/${workspaceId}/tables/${tableId}`);
+    mutationFn: async ({ datasetId, tableId }: { datasetId: number; tableId: number }) => {
+      await api.delete(`/datasets/${datasetId}/tables/${tableId}`);
     },
-    onSuccess: (_data: void, variables: { workspaceId: number; tableId: number }) => {
-      queryClient.invalidateQueries({ queryKey: workspaceKeys.detail(variables.workspaceId) });
-      queryClient.invalidateQueries({ queryKey: workspaceKeys.tables(variables.workspaceId) });
+    onSuccess: (_data: void, variables: { datasetId: number; tableId: number }) => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.detail(variables.datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.tables(variables.datasetId) });
     },
   });
 }
@@ -325,20 +325,20 @@ export function useRemoveTable() {
  * Preview table data
  */
 export function useTablePreview(
-  workspaceId: number | null,
+  datasetId: number | null,
   tableId: number | null,
   request: TablePreviewRequest = {}
 ) {
   return useQuery({
-    queryKey: [...workspaceKeys.tablePreview(workspaceId!, tableId!), request],
+    queryKey: [...datasetKeys.tablePreview(datasetId!, tableId!), request],
     queryFn: async () => {
       const response = await api.post<TablePreviewResponse>(
-        `/dataset-workspaces/${workspaceId}/tables/${tableId}/preview`,
+        `/datasets/${datasetId}/tables/${tableId}/preview`,
         request
       );
       return response.data;
     },
-    enabled: workspaceId !== null && tableId !== null,
+    enabled: datasetId !== null && tableId !== null,
     // Retry every 5s while the table is not yet synced (422) so the UI
     // automatically recovers once the background sync thread finishes.
     refetchInterval: (query: Query<TablePreviewResponse, any, TablePreviewResponse, readonly unknown[]>) => {
@@ -362,7 +362,7 @@ export function useDatasourceTableColumns(datasourceId: number | null, tableName
     queryKey: ['datasource-columns', datasourceId, tableName],
     queryFn: async () => {
       const response = await api.get<{ columns: DatasourceColumn[] }>(
-        `/dataset-workspaces/datasources/${datasourceId}/tables/columns?table=${encodeURIComponent(tableName!)}`
+        `/datasets/datasources/${datasourceId}/tables/columns?table=${encodeURIComponent(tableName!)}`
       );
       return response.data.columns;
     },
@@ -383,7 +383,7 @@ export function useDatasourceTables(datasourceId: number | null, search?: string
       }
       
       const response = await api.get<DatasourceTable[]>(
-        `/dataset-workspaces/datasources/${datasourceId}/tables?${params.toString()}`
+        `/datasets/datasources/${datasourceId}/tables?${params.toString()}`
       );
       return response.data;
     },
@@ -392,22 +392,22 @@ export function useDatasourceTables(datasourceId: number | null, search?: string
 }
 
 /**
- * Execute query on workspace table with aggregations
+ * Execute query on dataset table with aggregations
  */
-export function useExecuteWorkspaceTableQuery(
-  workspaceId: number | null,
+export function useExecuteDatasetTableQuery(
+  datasetId: number | null,
   tableId: number | null,
   request: ExecuteQueryRequest
 ) {
   return useQuery({
-    queryKey: [...workspaceKeys.tablePreview(workspaceId!, tableId!), request],
+    queryKey: [...datasetKeys.tablePreview(datasetId!, tableId!), request],
     queryFn: async () => {
       const response = await api.post<ExecuteQueryResponse>(
-        `/dataset-workspaces/${workspaceId}/tables/${tableId}/execute`,
+        `/datasets/${datasetId}/tables/${tableId}/execute`,
         request
       );
       return response.data;
     },
-    enabled: workspaceId !== null && tableId !== null,
+    enabled: datasetId !== null && tableId !== null,
   });
 }

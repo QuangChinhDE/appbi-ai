@@ -43,14 +43,14 @@ from app.schemas.schemas import (
     ErrorResponse,
 )
 
-from app.schemas.dataset_workspace import (
-    # Dataset Workspace (Table-based)
-    WorkspaceBase,
-    WorkspaceCreate,
-    WorkspaceUpdate,
-    WorkspaceResponse,
-    WorkspaceWithTables,
-    WorkspaceTableBase,
+from app.schemas.dataset import (
+    # Dataset (Table-based)
+    DatasetBase,
+    DatasetCreate,
+    DatasetUpdate,
+    DatasetResponse,
+    DatasetWithTables,
+    DatasetTableBase,
     TableCreate,
     TableUpdate,
     TableResponse,
@@ -61,7 +61,7 @@ from app.schemas.dataset_workspace import (
     AggregationSpec,
     FilterCondition,
     OrderBySpec,
-    ColumnMetadata as WorkspaceColumnMetadata,
+    ColumnMetadata as DatasetColumnMetadata,
     DatasourceTable,
 )
 from app.schemas.agent_report import (
@@ -115,13 +115,13 @@ __all__ = [
     # Error
     "ErrorResponse",
     
-    # Dataset Workspace (Table-based)
-    "WorkspaceBase",
-    "WorkspaceCreate",
-    "WorkspaceUpdate",
-    "WorkspaceResponse",
-    "WorkspaceWithTables",
-    "WorkspaceTableBase",
+    # Dataset (Table-based)
+    "DatasetBase",
+    "DatasetCreate",
+    "DatasetUpdate",
+    "DatasetResponse",
+    "DatasetWithTables",
+    "DatasetTableBase",
     "TableCreate",
     "TableUpdate",
     "TableResponse",
@@ -131,7 +131,7 @@ __all__ = [
     "ExecuteQueryResponse",
     "AggregationSpec",
     "FilterCondition",
-    "WorkspaceColumnMetadata",
+    "DatasetColumnMetadata",
     "DatasourceTable",
 
     # AI Agent saved reports

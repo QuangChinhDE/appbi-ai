@@ -9,17 +9,17 @@
 import React, { useState } from 'react';
 import { X, Database, Code, Loader2, AlertCircle } from 'lucide-react';
 import { useDataSources } from '@/hooks/use-datasources';
-import { useAddTableToWorkspace, useUpdateTable } from '@/hooks/use-dataset-workspaces';
-import type { AddTableInput, WorkspaceTable } from '@/hooks/use-dataset-workspaces';
+import { useAddTableToDataset, useUpdateTable } from '@/hooks/use-datasets';
+import type { AddTableInput, DatasetTable } from '@/hooks/use-datasets';
 import { PhysicalTableTab } from './PhysicalTableTab';
 import { QueryTableTab } from './QueryTableTab';
 
 interface AddTableModalProps {
-  workspaceId: number;
+  datasetId: number;
   isOpen: boolean;
   onClose: () => void;
-  onSuccess?: (created?: WorkspaceTable) => void;
-  existingTable?: WorkspaceTable | null;
+  onSuccess?: (created?: DatasetTable) => void;
+  existingTable?: DatasetTable | null;
 }
 
 type TabType = 'physical' | 'query';
@@ -33,7 +33,7 @@ function EditPhysicalForm({
   saveError,
   onSave,
 }: {
-  existingTable: WorkspaceTable;
+  existingTable: DatasetTable;
   datasourceName: string;
   isLoading: boolean;
   saveError: string | null;
@@ -75,7 +75,7 @@ function EditPhysicalForm({
           disabled={isLoading}
           autoFocus
         />
-        <p className="text-xs text-gray-500 mt-1">This name will be shown in the workspace</p>
+        <p className="text-xs text-gray-500 mt-1">This name will be shown in the dataset</p>
       </div>
 
       {saveError && (
@@ -101,10 +101,10 @@ function EditPhysicalForm({
 
 // ─── Main modal ───────────────────────────────────────────────────────────────
 
-export function AddTableModal({ workspaceId, isOpen, onClose, onSuccess, existingTable }: AddTableModalProps) {
+export function AddTableModal({ datasetId, isOpen, onClose, onSuccess, existingTable }: AddTableModalProps) {
   const [activeTab, setActiveTab] = useState<TabType>('physical');
   const [saveError, setSaveError] = useState<string | null>(null);
-  const addTableMutation = useAddTableToWorkspace();
+  const addTableMutation = useAddTableToDataset();
   const updateTableMutation = useUpdateTable();
   const isEditMode = !!existingTable;
   const isPending = addTableMutation.isPending || updateTableMutation.isPending;
@@ -122,7 +122,7 @@ export function AddTableModal({ workspaceId, isOpen, onClose, onSuccess, existin
   }, [isOpen]);
 
   const handleAddTable = async (input: AddTableInput) => {
-    const created = await addTableMutation.mutateAsync({ workspaceId, input });
+    const created = await addTableMutation.mutateAsync({ datasetId, input });
     onSuccess?.(created);
     onClose();
   };
@@ -132,7 +132,7 @@ export function AddTableModal({ workspaceId, isOpen, onClose, onSuccess, existin
     setSaveError(null);
     try {
       await updateTableMutation.mutateAsync({
-        workspaceId,
+        datasetId,
         tableId: existingTable.id,
         input: {
           display_name: displayName,

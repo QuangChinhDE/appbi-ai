@@ -141,7 +141,7 @@ class EmbeddingService:
     @staticmethod
     def build_table_text(table) -> str:
         """
-        Build rich searchable text for a workspace table.
+        Build rich searchable text for a dataset table.
         Incorporates knowledge system fields: column_descriptions, query_aliases,
         common_questions for significantly better embedding search quality.
         """
@@ -222,18 +222,18 @@ class EmbeddingService:
 
     @staticmethod
     def embed_chart(db: Session, chart_id: int) -> bool:
-        """Embed a chart (with its workspace table). Safe to call in background."""
+        """Embed a chart (with its dataset table). Safe to call in background."""
         try:
-            from app.models.dataset_workspace import DatasetWorkspaceTable
+            from app.models.dataset import DatasetTable
             from app.models.models import Chart
 
             chart = db.query(Chart).filter(Chart.id == chart_id).first()
             if not chart:
                 return False
             table = None
-            if chart.workspace_table_id:
-                table = db.query(DatasetWorkspaceTable).filter(
-                    DatasetWorkspaceTable.id == chart.workspace_table_id
+            if chart.dataset_table_id:
+                table = db.query(DatasetTable).filter(
+                    DatasetTable.id == chart.dataset_table_id
                 ).first()
             source_text = EmbeddingService.build_chart_text(chart, table)
             return EmbeddingService.upsert_embedding(db, "chart", chart_id, source_text)
@@ -243,17 +243,17 @@ class EmbeddingService:
 
     @staticmethod
     def embed_table(db: Session, table_id: int) -> bool:
-        """Embed a workspace table. Safe to call in background."""
+        """Embed a dataset table. Safe to call in background."""
         try:
-            from app.models.dataset_workspace import DatasetWorkspaceTable
+            from app.models.dataset import DatasetTable
 
-            table = db.query(DatasetWorkspaceTable).filter(
-                DatasetWorkspaceTable.id == table_id
+            table = db.query(DatasetTable).filter(
+                DatasetTable.id == table_id
             ).first()
             if not table:
                 return False
             source_text = EmbeddingService.build_table_text(table)
-            return EmbeddingService.upsert_embedding(db, "workspace_table", table_id, source_text)
+            return EmbeddingService.upsert_embedding(db, "dataset_table", table_id, source_text)
         except Exception as exc:
             logger.warning("EmbeddingService: embed_table %s failed - %s", table_id, exc)
             return False

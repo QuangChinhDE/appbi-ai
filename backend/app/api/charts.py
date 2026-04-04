@@ -42,7 +42,7 @@ from app.core.logging import get_logger
 
 class AIChartPreviewRequest(BaseModel):
     """Request body for AI chart preview/create."""
-    workspace_table_id: int
+    dataset_table_id: int
     chart_type: str
     config: Dict[str, Any] = {}
     name: str = "AI Chart"
@@ -53,20 +53,20 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/charts", tags=["charts"])
 
 
-def _get_workspace_for_chart_table(db: Session, workspace_table_id: int):
-    """Resolve the parent workspace for a chart source table."""
-    from app.models.dataset_workspace import DatasetWorkspace
-    from app.services.dataset_workspace_crud import DatasetWorkspaceCRUDService
+def _get_dataset_for_chart_table(db: Session, dataset_table_id: int):
+    """Resolve the parent dataset for a chart source table."""
+    from app.models.dataset import Dataset
+    from app.services.dataset_crud import DatasetCRUDService
 
-    db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, workspace_table_id)
+    db_table = DatasetCRUDService.get_table_by_id(db, dataset_table_id)
     if not db_table:
-        raise HTTPException(status_code=404, detail="Workspace table not found")
+        raise HTTPException(status_code=404, detail="Dataset table not found")
 
-    workspace = db.query(DatasetWorkspace).filter(DatasetWorkspace.id == db_table.workspace_id).first()
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
+    dataset_obj = db.query(Dataset).filter(Dataset.id == db_table.dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
 
-    return workspace, db_table
+    return dataset_obj, db_table
 
 
 def _serialize_chart_description(meta) -> dict:
@@ -166,8 +166,8 @@ def ai_chart_preview(
     from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
     from app.services.duckdb_engine import DuckDBEngine
 
-    workspace, db_table = _get_workspace_for_chart_table(db, payload.workspace_table_id)
-    require_view_access(db, current_user, workspace, "workspaces")
+    dataset_obj, db_table = _get_dataset_for_chart_table(db, payload.dataset_table_id)
+    require_view_access(db, current_user, dataset_obj, "datasets")
     if payload.save:
         perms = current_user.permissions or {}
         if perms.get("explore_charts", "none") not in ("edit", "full"):
@@ -238,7 +238,7 @@ def ai_chart_preview(
         chart_create = ChartCreate(
             name=payload.name,
             description=payload.description,
-            workspace_table_id=payload.workspace_table_id,
+            dataset_table_id=payload.dataset_table_id,
             chart_type=ct,
             config=config,
         )
@@ -282,8 +282,8 @@ def create_chart(
 ):
     """Create a new chart."""
     try:
-        workspace, _ = _get_workspace_for_chart_table(db, chart.workspace_table_id)
-        require_view_access(db, current_user, workspace, "workspaces")
+        dataset_obj, _ = _get_dataset_for_chart_table(db, chart.dataset_table_id)
+        require_view_access(db, current_user, dataset_obj, "datasets")
         new_chart = ChartService.create(db, chart, owner_id=current_user.id)
         DescriptionPipelineService.enqueue_chart_pipeline(
             background_tasks,
@@ -309,9 +309,9 @@ def update_chart(
     if not chart_obj:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chart with ID {chart_id} not found")
     require_edit_access(db, current_user, chart_obj, "explore_charts")
-    if chart_update.workspace_table_id is not None:
-        workspace, _ = _get_workspace_for_chart_table(db, chart_update.workspace_table_id)
-        require_view_access(db, current_user, workspace, "workspaces")
+    if chart_update.dataset_table_id is not None:
+        dataset_obj, _ = _get_dataset_for_chart_table(db, chart_update.dataset_table_id)
+        require_view_access(db, current_user, dataset_obj, "datasets")
     try:
         chart = ChartService.update(db, chart_id, chart_update)
         DescriptionPipelineService.enqueue_chart_pipeline(

@@ -11,7 +11,7 @@ from datetime import datetime
 class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     message: str = Field(..., min_length=1, max_length=4000)
-    context: Optional[Dict[str, Any]] = None   # {workspace_id, chart_ids, ...}
+    context: Optional[Dict[str, Any]] = None   # {dataset_id, chart_ids, ...}
 
 
 # ── Outbound streaming events ──────────────────────────────────────────────────

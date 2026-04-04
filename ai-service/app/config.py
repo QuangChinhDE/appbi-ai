@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # Session
     ai_session_ttl_minutes: int = Field(30, alias="AI_SESSION_TTL_MINUTES")
     ai_max_tool_calls: int = Field(8, alias="AI_MAX_TOOL_CALLS")
-    ai_workspace_table_limit: int = Field(50, alias="AI_WORKSPACE_TABLE_LIMIT")
+    ai_dataset_table_limit: int = Field(50, alias="AI_DATASET_TABLE_LIMIT")
 
     # Auth — must match backend SECRET_KEY
     secret_key: str = Field("dev-secret-key-change-in-production", alias="SECRET_KEY")

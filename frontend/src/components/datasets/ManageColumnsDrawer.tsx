@@ -5,10 +5,10 @@
 
 import React, { useState, useEffect } from 'react';
 import { X, Loader2, Trash2, Cpu } from 'lucide-react';
-import type { WorkspaceTable, Transformation } from '@/hooks/use-dataset-workspaces';
+import type { DatasetTable, Transformation } from '@/hooks/use-datasets';
 
 interface ManageColumnsDrawerProps {
-  table: WorkspaceTable;
+  table: DatasetTable;
   allColumns: string[];
   /** Names of columns produced by js_formula transformations — these can be deleted */
   computedColumns?: string[];

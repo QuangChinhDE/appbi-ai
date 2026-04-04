@@ -39,9 +39,9 @@ SUPPORTED_CHART_TYPES = {"KPI", "BAR", "LINE", "AREA", "PIE", "TABLE", "TIME_SER
 
 @dataclass
 class TableContext:
-    workspace_id: int
-    workspace_name: str
-    workspace_description: Optional[str]
+    dataset_id: int
+    dataset_name: str
+    dataset_description: Optional[str]
     table_id: int
     table_name: str
     columns: List[Dict[str, Any]]
@@ -202,21 +202,21 @@ def _count_field(columns: List[Dict[str, Any]]) -> str:
 async def load_table_contexts(brief: AgentBriefRequest, token: str) -> List[TableContext]:
     contexts: List[TableContext] = []
     for ref in brief.selected_tables:
-        workspace = await bi_client.get_workspace(ref.workspace_id, token)
-        table = next((item for item in workspace.get("tables", []) if item.get("id") == ref.table_id), None)
+        dataset = await bi_client.get_dataset(ref.dataset_id, token)
+        table = next((item for item in dataset.get("tables", []) if item.get("id") == ref.table_id), None)
         if table is None:
             raise HTTPException(
                 status_code=404,
-                detail=f"Table {ref.table_id} not found in workspace {ref.workspace_id}",
+                detail=f"Table {ref.table_id} not found in dataset {ref.dataset_id}",
             )
-        preview = await bi_client.preview_workspace_table(ref.workspace_id, ref.table_id, limit=40, token=token)
-        description = await bi_client.get_table_description(ref.workspace_id, ref.table_id, token)
+        preview = await bi_client.preview_dataset_table(ref.dataset_id, ref.table_id, limit=40, token=token)
+        description = await bi_client.get_table_description(ref.dataset_id, ref.table_id, token)
         columns = _normalize_columns(table.get("columns_cache", {}).get("columns") or preview.get("columns", []))
         contexts.append(
             TableContext(
-                workspace_id=ref.workspace_id,
-                workspace_name=workspace.get("name", f"Workspace {ref.workspace_id}"),
-                workspace_description=workspace.get("description"),
+                dataset_id=ref.dataset_id,
+                dataset_name=dataset.get("name", f"Dataset {ref.dataset_id}"),
+                dataset_description=dataset.get("description"),
                 table_id=ref.table_id,
                 table_name=table.get("display_name") or table.get("source_table_name") or f"Table {ref.table_id}",
                 columns=columns,
@@ -233,7 +233,7 @@ def _table_descriptions_for_enrichment(contexts: List[TableContext]) -> List[Dic
     for ctx in contexts:
         desc = ctx.table_description or {}
         result.append({
-            "workspace_id": ctx.workspace_id,
+            "dataset_id": ctx.dataset_id,
             "table_id": ctx.table_id,
             "table_name": ctx.table_name,
             "auto_description": desc.get("auto_description") or "",
@@ -333,8 +333,8 @@ def _profile_prompt_payload(profile: TableProfile) -> Dict[str, Any]:
             dimension_cardinality[dim] = count
 
     return {
-        "workspace_id": profile.context.workspace_id,
-        "workspace_name": profile.context.workspace_name,
+        "dataset_id": profile.context.dataset_id,
+        "dataset_name": profile.context.dataset_name,
         "table_id": profile.context.table_id,
         "table_name": profile.context.table_name,
         "table_kind": profile.table_kind,
@@ -864,7 +864,7 @@ def _build_chart_config(profile: TableProfile, chart_request: Dict[str, Any]) ->
 
     if chart_type == "KPI":
         return {
-            "workspace_id": profile.context.workspace_id,
+            "dataset_id": profile.context.dataset_id,
             "chartType": "KPI",
             "roleConfig": {"metrics": [metric]},
             "filters": [],
@@ -874,7 +874,7 @@ def _build_chart_config(profile: TableProfile, chart_request: Dict[str, Any]) ->
         if not time_field:
             return None
         return {
-            "workspace_id": profile.context.workspace_id,
+            "dataset_id": profile.context.dataset_id,
             "chartType": "TIME_SERIES",
             "roleConfig": {
                 "timeField": time_field,
@@ -892,7 +892,7 @@ def _build_chart_config(profile: TableProfile, chart_request: Dict[str, Any]) ->
             if breakdown:
                 role_config["breakdown"] = breakdown
         return {
-            "workspace_id": profile.context.workspace_id,
+            "dataset_id": profile.context.dataset_id,
             "chartType": chart_type,
             "roleConfig": role_config,
             "filters": [],
@@ -902,7 +902,7 @@ def _build_chart_config(profile: TableProfile, chart_request: Dict[str, Any]) ->
         if not dimension:
             return None
         return {
-            "workspace_id": profile.context.workspace_id,
+            "dataset_id": profile.context.dataset_id,
             "chartType": "PIE",
             "roleConfig": {
                 "dimension": dimension,
@@ -913,7 +913,7 @@ def _build_chart_config(profile: TableProfile, chart_request: Dict[str, Any]) ->
 
     selected_columns = [column["name"] for column in profile.typed_columns[: min(8, len(profile.typed_columns))]]
     return {
-        "workspace_id": profile.context.workspace_id,
+        "dataset_id": profile.context.dataset_id,
         "chartType": "TABLE",
         "roleConfig": {"selectedColumns": selected_columns},
         "filters": [],
@@ -1020,15 +1020,15 @@ def _materialize_strategy(
                 else f"Skipped chart '{raw_chart.get('title', chart_type)}' for {profile.context.table_name} because required fields were missing."
             )
             return None
-        key = f"{_slugify(profile.context.workspace_name)}-{_slugify(profile.context.table_name)}-{section_index}-{chart_index}"
+        key = f"{_slugify(profile.context.dataset_name)}-{_slugify(profile.context.table_name)}-{section_index}-{chart_index}"
         charts.append(
             AgentChartPlan(
                 key=key,
                 title=raw_chart.get("title") or f"{profile.context.table_name} {chart_type.title()}",
                 chart_type=chart_type,
-                workspace_id=profile.context.workspace_id,
-                workspace_table_id=profile.context.table_id,
-                workspace_name=profile.context.workspace_name,
+                dataset_id=profile.context.dataset_id,
+                dataset_table_id=profile.context.table_id,
+                dataset_name=profile.context.dataset_name,
                 table_name=profile.context.table_name,
                 rationale=raw_chart.get("insight_goal")
                 or raw_chart.get("why_this_chart")
@@ -1068,16 +1068,16 @@ def _materialize_strategy(
                     else f"Skipped chart '{raw_chart.get('title', chart_type)}' for {profile.context.table_name} because required fields were missing."
                 )
                 continue
-            key = f"{_slugify(profile.context.workspace_name)}-{_slugify(profile.context.table_name)}-{section_index}-{chart_index}"
+            key = f"{_slugify(profile.context.dataset_name)}-{_slugify(profile.context.table_name)}-{section_index}-{chart_index}"
             section_chart_keys.append(key)
             charts.append(
                 AgentChartPlan(
                     key=key,
                     title=raw_chart.get("title") or f"{profile.context.table_name} {chart_type.title()}",
                     chart_type=chart_type,
-                    workspace_id=profile.context.workspace_id,
-                    workspace_table_id=profile.context.table_id,
-                    workspace_name=profile.context.workspace_name,
+                    dataset_id=profile.context.dataset_id,
+                    dataset_table_id=profile.context.table_id,
+                    dataset_name=profile.context.dataset_name,
                     table_name=profile.context.table_name,
                     rationale=raw_chart.get("insight_goal")
                     or raw_chart.get("why_this_chart")
@@ -1108,10 +1108,10 @@ def _materialize_strategy(
         if section_chart_keys:
             sections.append(
                 AgentSectionPlan(
-                    title=raw_section.get("title") or f"{profile.context.workspace_name} / {profile.context.table_name}",
-                    workspace_id=profile.context.workspace_id,
-                    workspace_table_id=profile.context.table_id,
-                    workspace_name=profile.context.workspace_name,
+                    title=raw_section.get("title") or f"{profile.context.dataset_name} / {profile.context.table_name}",
+                    dataset_id=profile.context.dataset_id,
+                    dataset_table_id=profile.context.table_id,
+                    dataset_name=profile.context.dataset_name,
                     table_name=profile.context.table_name,
                     intent=raw_section.get("intent") or (f"Phân tích {profile.context.table_name}" if vi else f"Analyze {profile.context.table_name}"),
                     why_this_section=raw_section.get("why_this_section"),
@@ -1136,9 +1136,9 @@ def _materialize_strategy(
             sections.append(
                 AgentSectionPlan(
                     title="Tóm tắt điều hành" if vi else "Executive summary",
-                    workspace_id=fallback_profile.context.workspace_id,
-                    workspace_table_id=fallback_profile.context.table_id,
-                    workspace_name=fallback_profile.context.workspace_name,
+                    dataset_id=fallback_profile.context.dataset_id,
+                    dataset_table_id=fallback_profile.context.table_id,
+                    dataset_name=fallback_profile.context.dataset_name,
                     table_name=fallback_profile.context.table_name,
                     intent=(
                         f"Giữ mạch luận điểm trung tâm: {thesis.central_thesis}"
@@ -1378,9 +1378,9 @@ async def generate_agent_plan_stream(brief: AgentBriefRequest, token: str) -> As
     yield _plan_event(
         "phase",
         "collect_context",
-        "Đang kiểm tra các bảng đã chọn trong workspace và dữ liệu mẫu."
+        "Đang kiểm tra các bảng đã chọn trong dataset và dữ liệu mẫu."
         if vi
-        else "Inspecting the selected workspace tables and sample data.",
+        else "Inspecting the selected dataset tables and sample data.",
     )
     contexts = await load_table_contexts(brief, token)
 

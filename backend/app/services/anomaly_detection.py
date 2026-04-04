@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.models.anomaly import AnomalyAlert, MonitoredMetric
-from app.models.dataset_workspace import DatasetWorkspaceTable
+from app.models.dataset import DatasetTable
 from app.models.models import DataSource
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ class AnomalyDetectionService:
         from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
         from app.services.duckdb_engine import DuckDBEngine
 
-        table: DatasetWorkspaceTable = metric.workspace_table
+        table: DatasetTable = metric.dataset_table
         if not table:
             return []
         datasource: DataSource = db.query(DataSource).filter(

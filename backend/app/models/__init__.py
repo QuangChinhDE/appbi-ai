@@ -19,9 +19,9 @@ from app.models.semantic import (
     SemanticModel,
     SemanticExplore,
 )
-from app.models.dataset_workspace import (
-    DatasetWorkspace,
-    DatasetWorkspaceTable,
+from app.models.dataset import (
+    Dataset,
+    DatasetTable,
 )
 from app.models.anomaly import (
     MonitoredMetric,
@@ -50,8 +50,8 @@ __all__ = [
     "ChartParameter",
     "SemanticView",
     "SemanticModel",
-    "DatasetWorkspace",
-    "DatasetWorkspaceTable",
+    "Dataset",
+    "DatasetTable",
     "SemanticExplore",
     "SyncJob",
     "MonitoredMetric",

@@ -107,7 +107,7 @@ class ChartBase(BaseModel):
     """Base schema for chart."""
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    workspace_table_id: Optional[int] = Field(None, description="Workspace table source")
+    dataset_table_id: Optional[int] = Field(None, description="Dataset table source")
     chart_type: ChartTypeSchema
     config: Dict[str, Any] = Field(..., description="Chart configuration")
 
@@ -117,9 +117,9 @@ class ChartCreate(ChartBase):
 
     @model_validator(mode='after')
     def validate_source(self):
-        """workspace_table_id must be set."""
-        if self.workspace_table_id is None:
-            raise ValueError("workspace_table_id must be provided")
+        """dataset_table_id must be set."""
+        if self.dataset_table_id is None:
+            raise ValueError("dataset_table_id must be provided")
         return self
 
 
@@ -129,7 +129,7 @@ class ChartUpdate(BaseModel):
     description: Optional[str] = None
     chart_type: Optional[ChartTypeSchema] = None
     config: Optional[Dict[str, Any]] = None
-    workspace_table_id: Optional[int] = None
+    dataset_table_id: Optional[int] = None
 
 
 # ─── Chart Metadata Schemas ────────────────────────────────────────────────────

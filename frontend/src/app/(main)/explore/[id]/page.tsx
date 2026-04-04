@@ -6,8 +6,9 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Save, ArrowLeft, ChevronDown, ChevronUp, Pencil, Check, Search, Plus, Trash2, Tag, Settings2, Bot, X } from 'lucide-react';
-import { useWorkspace, useTablePreview } from '@/hooks/use-dataset-workspaces';
+import { useDataset, useTablePreview } from '@/hooks/use-datasets';
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
+import { ExploreColumnPanel } from '@/components/explore/ExploreColumnPanel';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { FilterBuilder, type Filter } from '@/components/explore/FilterBuilder';
@@ -36,7 +37,7 @@ export default function ExploreDetailPage() {
   const isNew = params.id === 'new';
   const chartId = isNew ? null : Number(params.id);
 
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number | null>(null);
+  const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(null);
   const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
   const [filters, setFilters] = useState<Filter[]>([]);
   const [chartType, setChartType] = useState<ChartType>('TABLE');
@@ -51,6 +52,7 @@ export default function ExploreDetailPage() {
 
   const [isConfigOpen, setIsConfigOpen] = useState(true);
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
+  const [resultTab, setResultTab] = useState<'results' | 'chart' | 'sql'>('chart');
 
   // ── Metadata state ───────────────────────────────────────────────────────
   const [isMetaOpen, setIsMetaOpen] = useState(false);
@@ -73,7 +75,7 @@ export default function ExploreDetailPage() {
   const replaceParams = useReplaceChartParameters();
 
   const { data: chart, isLoading: isChartLoading } = useChart(chartId ?? 0);
-  const { data: workspace } = useWorkspace(selectedWorkspaceId);
+  const { data: dataset } = useDataset(selectedDatasetId);
   const resPerms = getResourcePermissions(isNew ? 'full' : chart?.user_permission);
 
   // Load existing chart config into editor state on first data arrival
@@ -82,11 +84,11 @@ export default function ExploreDetailPage() {
     if (!chart) return;
 
     const config = chart.config as any;
-    if (chart.workspace_table_id) {
-      setSelectedTableId(chart.workspace_table_id);
-      if (config?.workspace_id) setSelectedWorkspaceId(config.workspace_id);
-    } else if (config?.source?.kind === 'workspace_table') {
-      setSelectedWorkspaceId(config.source.workspaceId);
+    if (chart.dataset_table_id) {
+      setSelectedTableId(chart.dataset_table_id);
+      if (config?.dataset_id) setSelectedDatasetId(config.dataset_id);
+    } else if (config?.source?.kind === 'dataset_table') {
+      setSelectedDatasetId(config.source.datasetId);
       setSelectedTableId(config.source.tableId);
     }
     setFilters(config?.filters ?? []);
@@ -130,7 +132,7 @@ export default function ExploreDetailPage() {
     isLoading,
     error,
     refetch,
-  } = useTablePreview(selectedWorkspaceId, selectedTableId, {});
+  } = useTablePreview(selectedDatasetId, selectedTableId, {});
 
   const displayData = useMemo(() => {
     if (!previewData) return previewData;
@@ -138,12 +140,12 @@ export default function ExploreDetailPage() {
     return { ...previewData, rows: applyFilters(previewData.rows, filters) };
   }, [previewData, filters]);
 
-  // Auto-select first table when workspace changes
+  // Auto-select first table when dataset changes
   useEffect(() => {
-    if (workspace?.tables && workspace.tables.length > 0 && !selectedTableId) {
-      setSelectedTableId(workspace.tables[0].id);
+    if (dataset?.tables && dataset.tables.length > 0 && !selectedTableId) {
+      setSelectedTableId(dataset.tables[0].id);
     }
-  }, [workspace?.tables, selectedTableId]);
+  }, [dataset?.tables, selectedTableId]);
 
   // Reset config when user manually changes the table (skip during initial chart load)
   const isInitialTableSet = useRef(false);
@@ -176,11 +178,11 @@ export default function ExploreDetailPage() {
 
   const handleSaveLook = async () => {
     if (!selectedTableId) {
-      toast.error('Please select a workspace table first');
+      toast.error('Please select a dataset table first');
       return;
     }
     const exploreConfig = {
-      workspace_id: selectedWorkspaceId,
+      dataset_id: selectedDatasetId,
       filters,
       chartType,
       roleConfig: chartRoleConfig,
@@ -204,7 +206,7 @@ export default function ExploreDetailPage() {
             name: chartNameInput.trim() || undefined,
             description: chartDescInput.trim() || null,
             chart_type: chartType as any,
-            workspace_table_id: selectedTableId,
+            dataset_table_id: selectedTableId,
             config: exploreConfig as unknown as import('@/types/api').ChartConfig,
           },
         });
@@ -224,7 +226,7 @@ export default function ExploreDetailPage() {
           name,
           description: chartDescInput.trim() || undefined,
           chart_type: chartType as any,
-          workspace_table_id: selectedTableId,
+          dataset_table_id: selectedTableId,
           config: exploreConfig as unknown as import('@/types/api').ChartConfig,
         });
         await Promise.all([
@@ -262,7 +264,7 @@ export default function ExploreDetailPage() {
     setParamRows((p) => p.map((r) => (r._key === key ? { ...r, [field]: value } : r)));
   const removeParamRow = (key: string) => setParamRows((p) => p.filter((r) => r._key !== key));
 
-  const selectedTable = workspace?.tables?.find((t: any) => t.id === selectedTableId);
+  const selectedTable = dataset?.tables?.find((t: any) => t.id === selectedTableId);
 
   // Show loading skeleton while fetching existing chart
   if (!isNew && isChartLoading) {
@@ -334,7 +336,7 @@ export default function ExploreDetailPage() {
             </div>
             {selectedTable && (
               <p className="text-sm text-gray-500 mt-0.5 ml-[calc(1rem+4px+8px)]">
-                {workspace?.name} / {(selectedTable as any).display_name || 'Table'}
+                {dataset?.name} / {(selectedTable as any).display_name || 'Table'}
               </p>
             )}
             {/* Description — inline editable */}
@@ -421,9 +423,9 @@ export default function ExploreDetailPage() {
             {isSourceOpen && (
               <div className="px-4 pb-4">
                 <ExploreSourceSelector
-                  selectedWorkspaceId={selectedWorkspaceId}
+                  selectedDatasetId={selectedDatasetId}
                   selectedTableId={selectedTableId}
-                  onWorkspaceChange={setSelectedWorkspaceId}
+                  onDatasetChange={setSelectedDatasetId}
                   onTableChange={setSelectedTableId}
                 />
               </div>
@@ -432,6 +434,14 @@ export default function ExploreDetailPage() {
 
           {selectedTableId && (
             <div className="flex-1 overflow-y-auto">
+              {/* ── Columns panel (from semantic model) ─────────────── */}
+              <div className="border-b">
+                <ExploreColumnPanel
+                  datasetId={selectedDatasetId}
+                  selectedTableId={selectedTableId}
+                />
+              </div>
+
               {/* ── Chart Config panel ─────────────────────────────────── */}
               <div className="border-b">
                 <button
@@ -692,13 +702,49 @@ export default function ExploreDetailPage() {
 
         {/* Main Content */}
         <div className="flex-1 flex flex-col overflow-hidden">
+          {/* Result Tabs */}
+          {selectedTableId && (
+            <div className="bg-white border-b px-4 flex items-center gap-0 shrink-0">
+              <button
+                onClick={() => setResultTab('results')}
+                className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
+                  resultTab === 'results'
+                    ? 'border-blue-600 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Results
+              </button>
+              <button
+                onClick={() => setResultTab('chart')}
+                className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
+                  resultTab === 'chart'
+                    ? 'border-blue-600 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Chart
+              </button>
+              <button
+                onClick={() => setResultTab('sql')}
+                className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
+                  resultTab === 'sql'
+                    ? 'border-blue-600 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                SQL
+              </button>
+            </div>
+          )}
+
           <div className="flex-1 overflow-hidden p-4">
             {!selectedTableId ? (
               <div className="h-full flex items-center justify-center">
                 <div className="text-center">
                   <Search className="w-12 h-12 text-gray-400 mx-auto mb-3" />
                   <h3 className="text-lg font-medium text-gray-900 mb-1">No table selected</h3>
-                  <p className="text-sm text-gray-500">Select a workspace and table to start exploring</p>
+                  <p className="text-sm text-gray-500">Select a dataset and table to start exploring</p>
                 </div>
               </div>
             ) : isLoading ? (
@@ -717,7 +763,41 @@ export default function ExploreDetailPage() {
               </div>
             ) : (
               <div className="h-full bg-white rounded-lg border border-gray-200 overflow-hidden">
-                {chartType === 'TABLE' ? (
+                {resultTab === 'sql' ? (
+                  /* ── SQL Tab ── */
+                  <div className="p-4 h-full overflow-auto">
+                    <pre className="text-xs text-gray-700 font-mono bg-gray-50 p-4 rounded-lg border whitespace-pre-wrap">
+                      {selectedTable
+                        ? `-- Auto-generated SQL for "${(selectedTable as any).display_name || 'table'}"\nSELECT${
+                            chartRoleConfig.dimension ? `\n  ${chartRoleConfig.dimension},` : ''
+                          }${
+                            chartRoleConfig.metrics?.length
+                              ? '\n' + chartRoleConfig.metrics.map((m) => `  ${m.agg?.toUpperCase() || 'SUM'}(${m.field})`).join(',\n')
+                              : '\n  *'
+                          }\nFROM ${(selectedTable as any).source_table_name || 'table'}${
+                            filters.length > 0 ? `\nWHERE ${filters.map((f) => `${f.field} ${f.operator} '${f.value}'`).join('\n  AND ')}` : ''
+                          }${
+                            chartRoleConfig.dimension ? `\nGROUP BY ${chartRoleConfig.dimension}` : ''
+                          }${
+                            chartRoleConfig.dimension ? `\nORDER BY ${chartRoleConfig.dimension}` : ''
+                          }`
+                        : '-- Select a table to see SQL'}
+                    </pre>
+                  </div>
+                ) : resultTab === 'results' ? (
+                  /* ── Results Tab (always table grid) ── */
+                  (() => {
+                    const sel = chartRoleConfig.selectedColumns;
+                    const cols =
+                      sel && sel.length > 0
+                        ? (displayData?.columns || []).filter((c) => sel.includes(c.name))
+                        : displayData?.columns || [];
+                    const rows = (displayData?.rows || []).map((row) =>
+                      sel && sel.length > 0 ? Object.fromEntries(sel.map((k) => [k, row[k]])) : row
+                    );
+                    return <DatasetTableGrid columns={cols} rows={rows} />;
+                  })()
+                ) : chartType === 'TABLE' ? (
                   (() => {
                     const sel = chartRoleConfig.selectedColumns;
                     const cols =

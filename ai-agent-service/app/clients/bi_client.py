@@ -24,23 +24,23 @@ class BIClient:
         response.raise_for_status()
         return response.json()
 
-    async def get_workspace(self, workspace_id: int, token: str) -> Dict[str, Any]:
+    async def get_dataset(self, dataset_id: int, token: str) -> Dict[str, Any]:
         response = await self._http.get(
-            f"{self._base}/dataset-workspaces/{workspace_id}",
+            f"{self._base}/datasets/{dataset_id}",
             headers=self._auth_headers(token),
         )
         response.raise_for_status()
         return response.json()
 
-    async def preview_workspace_table(
+    async def preview_dataset_table(
         self,
-        workspace_id: int,
+        dataset_id: int,
         table_id: int,
         limit: int = 40,
         token: str = "",
     ) -> Dict[str, Any]:
         response = await self._http.post(
-            f"{self._base}/dataset-workspaces/{workspace_id}/tables/{table_id}/preview",
+            f"{self._base}/datasets/{dataset_id}/tables/{table_id}/preview",
             json={"limit": limit},
             headers=self._auth_headers(token),
         )
@@ -49,12 +49,12 @@ class BIClient:
 
     async def get_table_description(
         self,
-        workspace_id: int,
+        dataset_id: int,
         table_id: int,
         token: str,
     ) -> Dict[str, Any]:
         response = await self._http.get(
-            f"{self._base}/dataset-workspaces/{workspace_id}/tables/{table_id}/description",
+            f"{self._base}/datasets/{dataset_id}/tables/{table_id}/description",
             headers=self._auth_headers(token),
         )
         response.raise_for_status()
@@ -65,7 +65,7 @@ class BIClient:
         *,
         name: str,
         description: Optional[str],
-        workspace_table_id: int,
+        dataset_table_id: int,
         chart_type: str,
         config: Dict[str, Any],
         token: str,
@@ -75,7 +75,7 @@ class BIClient:
             json={
                 "name": name,
                 "description": description,
-                "workspace_table_id": workspace_table_id,
+                "dataset_table_id": dataset_table_id,
                 "chart_type": chart_type.upper(),
                 "config": config,
             },

@@ -37,7 +37,7 @@ import {
   useCreateAgentReportSpec,
   useUpdateAgentReportSpec,
 } from '@/hooks/use-agent-report-specs';
-import { useWorkspaces, WorkspaceWithTables } from '@/hooks/use-dataset-workspaces';
+import { useDatasets, DatasetWithTables } from '@/hooks/use-datasets';
 import apiClient from '@/lib/api-client';
 import { getAiAgentHttpUrl } from '@/lib/ai-services';
 import {
@@ -85,7 +85,7 @@ import { BuildStep } from '@/components/ai-reports/steps/BuildStep';
 import { CollapsibleGuideCard } from '@/components/ai-reports/steps/shared/CollapsibleGuideCard';
 import { WizardRenderErrorBoundary } from '@/components/ai-reports/WizardRenderErrorBoundary';
 
-type PlanWorkspaceTab = 'plan' | 'sections' | 'charts';
+type PlanDatasetTab = 'plan' | 'sections' | 'charts';
 type ProcessPhaseStatus = 'done' | 'active' | 'pending' | 'error';
 const WIZARD_STEP_ORDER: WizardStep[] = ['select', 'brief', 'plan', 'building'];
 
@@ -165,8 +165,8 @@ function formatProcessPhaseLabel(phase: string, language: 'en' | 'vi') {
   return phase.replace(/_/g, ' ');
 }
 
-function getPlanWorkspaceTabs(language: 'en' | 'vi'): Array<{
-  key: PlanWorkspaceTab;
+function getPlanDatasetTabs(language: 'en' | 'vi'): Array<{
+  key: PlanDatasetTab;
   label: string;
   caption: string;
 }> {
@@ -277,13 +277,13 @@ export function AIReportWizard({
   };
   const initialBrief = useMemo(() => makeInitialBriefState(language), [language]);
   const stepMeta = useMemo(() => getStepMeta(language), [language]);
-  const planWorkspaceTabs = useMemo(() => getPlanWorkspaceTabs(language), [language]);
+  const planDatasetTabs = useMemo(() => getPlanDatasetTabs(language), [language]);
   const [step, setStep] = useState<WizardStep>('select');
   const [activeSpecId, setActiveSpecId] = useState<number | null>(initialSpecId);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [tableSearch, setTableSearch] = useState('');
-  const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<number[]>([]);
-  const [planWorkspaceTab, setPlanWorkspaceTab] = useState<PlanWorkspaceTab>('plan');
+  const [expandedDatasetIds, setExpandedDatasetIds] = useState<number[]>([]);
+  const [planDatasetTab, setPlanDatasetTab] = useState<PlanDatasetTab>('plan');
   const [domainId, setDomainId] = useState<AgentDomainId>(initialBrief.domainId);
   const [goal, setGoal] = useState(initialBrief.goal);
   const [audience, setAudience] = useState(initialBrief.audience);
@@ -321,7 +321,7 @@ export function AIReportWizard({
   }
 
   const queryClient = useQueryClient();
-  const { data: workspaces = [] } = useWorkspaces();
+  const { data: datasets = [] } = useDatasets();
   const activeSpecQuery = useAgentReportSpec(activeSpecId);
   const createSpecMutation = useCreateAgentReportSpec();
   const updateSpecMutation = useUpdateAgentReportSpec();
@@ -340,78 +340,78 @@ export function AIReportWizard({
     },
   });
 
-  const workspaceDetailsQuery = useQuery<WorkspaceWithTables[]>({
-    queryKey: ['agent-workspace-details', workspaces.map((workspace) => workspace.id).join('-')],
-    enabled: isActive && workspaces.length > 0,
+  const datasetDetailsQuery = useQuery<DatasetWithTables[]>({
+    queryKey: ['agent-dataset-details', datasets.map((dataset) => dataset.id).join('-')],
+    enabled: isActive && datasets.length > 0,
     queryFn: async () => {
       const responses = await Promise.all(
-        workspaces.map((workspace) => apiClient.get<WorkspaceWithTables>(`/dataset-workspaces/${workspace.id}`)),
+        datasets.map((dataset) => apiClient.get<DatasetWithTables>(`/datasets/${dataset.id}`)),
       );
       return responses.map((response) => response.data);
     },
   });
 
   const tables = useMemo(() => {
-    return (workspaceDetailsQuery.data ?? []).flatMap((workspace) =>
-      (workspace.tables ?? []).map((table) => ({
-        workspace_id: workspace.id,
-        workspace_name: workspace.name,
+    return (datasetDetailsQuery.data ?? []).flatMap((dataset) =>
+      (dataset.tables ?? []).map((table) => ({
+        dataset_id: dataset.id,
+        dataset_name: dataset.name,
         table_id: table.id,
         table_name: table.display_name,
         source_kind: table.source_kind,
       })),
     );
-  }, [workspaceDetailsQuery.data]);
+  }, [datasetDetailsQuery.data]);
 
   const selectedTables = useMemo(() => {
     return selectedKeys
       .map((key) => {
-        const [workspaceId, tableId] = key.split(':').map(Number);
-        return { workspace_id: workspaceId, table_id: tableId };
+        const [datasetId, tableId] = key.split(':').map(Number);
+        return { dataset_id: datasetId, table_id: tableId };
       })
-      .filter((item) => Number.isFinite(item.workspace_id) && Number.isFinite(item.table_id));
+      .filter((item) => Number.isFinite(item.dataset_id) && Number.isFinite(item.table_id));
   }, [selectedKeys]);
 
   const selectedTableCards = useMemo(() => {
     return selectedTables.map((item) => {
       const table = tables.find(
-        (candidate) => candidate.workspace_id === item.workspace_id && candidate.table_id === item.table_id,
+        (candidate) => candidate.dataset_id === item.dataset_id && candidate.table_id === item.table_id,
       );
       return {
-        key: `${item.workspace_id}:${item.table_id}`,
-        workspaceName: table?.workspace_name ?? `Workspace ${item.workspace_id}`,
+        key: `${item.dataset_id}:${item.table_id}`,
+        datasetName: table?.dataset_name ?? `Dataset ${item.dataset_id}`,
         tableName: table?.table_name ?? `Table ${item.table_id}`,
       };
     });
   }, [selectedTables, tables]);
 
   const normalizedTableSearch = tableSearch.trim().toLowerCase();
-  const workspaceSelectionGroups = useMemo(() => {
-    return (workspaceDetailsQuery.data ?? [])
-      .map((workspace) => {
-        const workspaceMatch =
-          workspace.name.toLowerCase().includes(normalizedTableSearch) ||
-          (workspace.description ?? '').toLowerCase().includes(normalizedTableSearch);
-        const visibleTables = (workspace.tables ?? []).filter((table) => {
+  const datasetSelectionGroups = useMemo(() => {
+    return (datasetDetailsQuery.data ?? [])
+      .map((dataset) => {
+        const datasetMatch =
+          dataset.name.toLowerCase().includes(normalizedTableSearch) ||
+          (dataset.description ?? '').toLowerCase().includes(normalizedTableSearch);
+        const visibleTables = (dataset.tables ?? []).filter((table) => {
           if (!normalizedTableSearch) return true;
           return (
-            workspaceMatch ||
+            datasetMatch ||
             table.display_name.toLowerCase().includes(normalizedTableSearch) ||
             table.source_kind.toLowerCase().includes(normalizedTableSearch) ||
             (table.source_table_name ?? '').toLowerCase().includes(normalizedTableSearch)
           );
         });
-        const selectedCount = (workspace.tables ?? []).filter((table) =>
-          selectedKeys.includes(`${workspace.id}:${table.id}`),
+        const selectedCount = (dataset.tables ?? []).filter((table) =>
+          selectedKeys.includes(`${dataset.id}:${table.id}`),
         ).length;
         const visibleSelectedCount = visibleTables.filter((table) =>
-          selectedKeys.includes(`${workspace.id}:${table.id}`),
+          selectedKeys.includes(`${dataset.id}:${table.id}`),
         ).length;
 
         return {
-          workspace,
+          dataset,
           visibleTables,
-          totalTables: workspace.tables?.length ?? 0,
+          totalTables: dataset.tables?.length ?? 0,
           selectedCount,
           visibleSelectedCount,
         };
@@ -421,12 +421,12 @@ export function AIReportWizard({
         if (right.selectedCount !== left.selectedCount) {
           return right.selectedCount - left.selectedCount;
         }
-        return left.workspace.name.localeCompare(right.workspace.name);
+        return left.dataset.name.localeCompare(right.dataset.name);
       });
-  }, [normalizedTableSearch, selectedKeys, workspaceDetailsQuery.data]);
+  }, [normalizedTableSearch, selectedKeys, datasetDetailsQuery.data]);
 
-  const selectedWorkspaceCount = useMemo(
-    () => new Set(selectedTables.map((item) => item.workspace_id)).size,
+  const selectedDatasetCount = useMemo(
+    () => new Set(selectedTables.map((item) => item.dataset_id)).size,
     [selectedTables],
   );
   const selectedDomain = useMemo(
@@ -434,8 +434,8 @@ export function AIReportWizard({
     [domainId],
   );
   const visibleTableCount = useMemo(
-    () => workspaceSelectionGroups.reduce((total, group) => total + group.visibleTables.length, 0),
-    [workspaceSelectionGroups],
+    () => datasetSelectionGroups.reduce((total, group) => total + group.visibleTables.length, 0),
+    [datasetSelectionGroups],
   );
 
   const briefPayload = useMemo<AgentBriefRequest>(
@@ -542,7 +542,7 @@ export function AIReportWizard({
             retryBuild: 'Thử build lại',
             selectedScope: 'Phạm vi đã chọn',
             selectedTables: 'Bảng đã chọn',
-            selectedWorkspaces: 'Workspace đã chọn',
+            selectedDatasets: 'Dataset đã chọn',
             questionsSupplied: 'Câu hỏi đã nhập',
             clearAll: 'Bỏ chọn tất cả',
             removeFromSelection: 'Bỏ khỏi phạm vi',
@@ -572,21 +572,21 @@ export function AIReportWizard({
               'Chỉnh title, scope và chart giữ lại.',
               'Build dashboard cuối cùng khi draft đã ổn.',
             ],
-            workspaces: 'Workspace',
+            datasets: 'Dataset',
             availableTables: 'Bảng khả dụng',
-            searchPlaceholder: 'Tìm workspace hoặc bảng...',
+            searchPlaceholder: 'Tìm dataset hoặc bảng...',
             expandAll: 'Mở rộng tất cả',
             collapseAll: 'Thu gọn tất cả',
-            loadingTables: 'Đang tải workspace và bảng...',
-            noWorkspaceTables: 'Chưa có bảng nào trong workspace.',
-            noWorkspaceTablesDesc: 'Cần có ít nhất một bảng trước khi dùng AI Reports.',
+            loadingTables: 'Đang tải dataset và bảng...',
+            noDatasetTables: 'Chưa có bảng nào trong dataset.',
+            noDatasetTablesDesc: 'Cần có ít nhất một bảng trước khi dùng AI Reports.',
             noMatch: 'Không có bảng nào khớp với tìm kiếm hiện tại.',
-            noMatchDesc: 'Thử tìm theo tên workspace, tên bảng hoặc loại nguồn.',
+            noMatchDesc: 'Thử tìm theo tên dataset, tên bảng hoặc loại nguồn.',
             selectionTipsTitle: 'Mẹo chọn phạm vi',
             selectionTipsDesc: 'Mở ra khi cần nhắc nhanh, hoặc thu gọn lại để nhường chỗ cho danh sách bảng.',
             selectionTipsBullets: [
               'Chỉ chọn các bảng report thực sự cần.',
-              'Dùng tìm kiếm khi có nhiều workspace hoặc tên bảng gần nhau.',
+              'Dùng tìm kiếm khi có nhiều dataset hoặc tên bảng gần nhau.',
               'Kiểm tra phạm vi đã chọn trước khi sang brief.',
             ],
             briefGuideTitle: 'Brief cho Agent như đang làm việc cùng một analyst',
@@ -621,8 +621,8 @@ export function AIReportWizard({
             readReport: 'Đọc report',
             editInDashboard: 'Chỉnh trong dashboard',
             chartsBuilt: 'chart đã build',
-            reviewWorkspace: 'Không gian duyệt draft',
-            reviewWorkspaceDesc: 'Đọc Plan trước để nắm chiến lược, rồi chỉnh sửa sections và charts.',
+            reviewDataset: 'Không gian duyệt draft',
+            reviewDatasetDesc: 'Đọc Plan trước để nắm chiến lược, rồi chỉnh sửa sections và charts.',
           }
         : {
             title: 'Build an AI report from a business brief',
@@ -647,7 +647,7 @@ export function AIReportWizard({
             retryBuild: 'Retry build',
             selectedScope: 'Selected scope',
             selectedTables: 'Selected tables',
-            selectedWorkspaces: 'Selected workspaces',
+            selectedDatasets: 'Selected datasets',
             questionsSupplied: 'Questions supplied',
             clearAll: 'Clear all',
             removeFromSelection: 'Remove from selection',
@@ -678,21 +678,21 @@ export function AIReportWizard({
               'Edit titles, scope, and included charts.',
               'Generate the final dashboard when the draft looks right.',
             ],
-            workspaces: 'Workspaces',
+            datasets: 'Datasets',
             availableTables: 'Available tables',
-            searchPlaceholder: 'Search workspaces or tables...',
+            searchPlaceholder: 'Search datasets or tables...',
             expandAll: 'Expand all',
             collapseAll: 'Collapse all',
-            loadingTables: 'Loading workspaces and tables...',
-            noWorkspaceTables: 'No workspace tables are available yet.',
-            noWorkspaceTablesDesc: 'Add at least one workspace table before using AI Reports.',
+            loadingTables: 'Loading datasets and tables...',
+            noDatasetTables: 'No dataset tables are available yet.',
+            noDatasetTablesDesc: 'Add at least one dataset table before using AI Reports.',
             noMatch: 'No tables match your current search.',
-            noMatchDesc: 'Try a workspace name, table name, or source type.',
+            noMatchDesc: 'Try a dataset name, table name, or source type.',
             selectionTipsTitle: 'Selection tips',
             selectionTipsDesc: 'Keep this open when you need a quick reminder, or collapse it to leave more room for the table list.',
             selectionTipsBullets: [
               'Prefer only the tables the dashboard truly needs.',
-              'Use search when you have many workspaces or similar table names.',
+              'Use search when you have many datasets or similar table names.',
               'Review the selected scope on the right before moving to the brief.',
             ],
             briefGuideTitle: 'Brief the Agent like an analyst partner',
@@ -727,8 +727,8 @@ export function AIReportWizard({
             readReport: 'Read report',
             editInDashboard: 'Edit in dashboard',
             chartsBuilt: 'charts built',
-            reviewWorkspace: 'Review workspace',
-            reviewWorkspaceDesc: 'Review the Plan tab first to understand the strategy, then edit sections and charts.',
+            reviewDataset: 'Review dataset',
+            reviewDatasetDesc: 'Review the Plan tab first to understand the strategy, then edit sections and charts.',
           },
     [isVietnamese],
   );
@@ -743,15 +743,15 @@ export function AIReportWizard({
             : 'Keep the working set tight so the Agent stays focused and the review later is easier to trust.',
           bullets: [
             isVietnamese
-              ? 'Chỉ chọn những workspace và bảng thực sự thuộc về report này.'
-              : 'Pick only the workspaces and tables that truly belong in this report.',
+              ? 'Chỉ chọn những dataset và bảng thực sự thuộc về report này.'
+              : 'Pick only the datasets and tables that truly belong in this report.',
             isVietnamese
               ? 'Dùng panel phạm vi đã chọn để sanity-check lần cuối trước khi sang bước tiếp.'
               : 'Use the selected scope panel as the final sanity check before moving on.',
           ],
           stats: [
             { label: wizardText.selectedTables, value: String(selectedTables.length) },
-            { label: isVietnamese ? 'Workspace trong phạm vi' : 'Workspaces in scope', value: String(selectedWorkspaceCount) },
+            { label: isVietnamese ? 'Dataset trong phạm vi' : 'Datasets in scope', value: String(selectedDatasetCount) },
           ],
         };
       case 'brief':
@@ -829,7 +829,7 @@ export function AIReportWizard({
     events.length,
     selectedDomain?.label,
     selectedTables.length,
-    selectedWorkspaceCount,
+    selectedDatasetCount,
     step,
   ]);
   const readinessChecks = useMemo(
@@ -862,7 +862,7 @@ export function AIReportWizard({
       setActiveSpecId(initialSpecId);
       setSelectedKeys([]);
       setTableSearch('');
-      setExpandedWorkspaceIds([]);
+      setExpandedDatasetIds([]);
       setDomainId(initialBrief.domainId);
       setGoal(initialBrief.goal);
       setAudience(initialBrief.audience);
@@ -877,7 +877,7 @@ export function AIReportWizard({
       setAgentError(null);
       setIsBuildRunning(false);
       setBuildMode('new_dashboard');
-      setPlanWorkspaceTab('plan');
+      setPlanDatasetTab('plan');
     }
   }, [initialBrief, initialSpecId, isActive]);
 
@@ -886,19 +886,19 @@ export function AIReportWizard({
   }, [initialSpecId]);
 
   useEffect(() => {
-    if (!isActive || !workspaceDetailsQuery.data?.length) return;
+    if (!isActive || !datasetDetailsQuery.data?.length) return;
 
-    setExpandedWorkspaceIds((prev) => {
-      const validIds = prev.filter((id) => workspaceDetailsQuery.data.some((workspace) => workspace.id === id));
+    setExpandedDatasetIds((prev) => {
+      const validIds = prev.filter((id) => datasetDetailsQuery.data.some((dataset) => dataset.id === id));
       if (validIds.length > 0) {
         return validIds;
       }
 
-      return workspaceDetailsQuery.data
+      return datasetDetailsQuery.data
         .slice(0, 3)
-        .map((workspace) => workspace.id);
+        .map((dataset) => dataset.id);
     });
-  }, [isActive, workspaceDetailsQuery.data]);
+  }, [isActive, datasetDetailsQuery.data]);
 
   useEffect(() => {
     const spec = activeSpec;
@@ -908,7 +908,7 @@ export function AIReportWizard({
     const selected = Array.isArray(spec.selected_tables_snapshot) ? spec.selected_tables_snapshot : [];
     setSelectedKeys(
       selected
-        .map((item) => `${item.workspace_id}:${item.table_id}`)
+        .map((item) => `${item.dataset_id}:${item.table_id}`)
         .filter((item) => item !== 'undefined:undefined'),
     );
     const restoredDomainId = getDomainCatalogItem(
@@ -944,7 +944,7 @@ export function AIReportWizard({
       setGeneratedPlan(editable);
       setDraftPlan(cloneEditablePlan(editable));
       setBuildMode(spec.latest_dashboard_id ? 'replace_existing' : 'new_dashboard');
-      setPlanWorkspaceTab('plan');
+      setPlanDatasetTab('plan');
       setStep(resolvedStep);
       if (spec.status !== 'running') {
         setEvents([]);
@@ -1047,7 +1047,7 @@ export function AIReportWizard({
       const editable = normalizePlan(data);
       setGeneratedPlan(editable);
       setDraftPlan(cloneEditablePlan(editable));
-      setPlanWorkspaceTab('plan');
+      setPlanDatasetTab('plan');
       setStep('plan');
       setAgentError(null);
       if (activeSpecId) {
@@ -1197,21 +1197,21 @@ export function AIReportWizard({
     }
   }
 
-  function toggleTable(workspaceId: number, tableId: number) {
-    const key = `${workspaceId}:${tableId}`;
+  function toggleTable(datasetId: number, tableId: number) {
+    const key = `${datasetId}:${tableId}`;
     setSelectedKeys((prev) =>
       prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key],
     );
   }
 
-  function toggleWorkspaceExpanded(workspaceId: number) {
-    setExpandedWorkspaceIds((prev) =>
-      prev.includes(workspaceId) ? prev.filter((item) => item !== workspaceId) : [...prev, workspaceId],
+  function toggleDatasetExpanded(datasetId: number) {
+    setExpandedDatasetIds((prev) =>
+      prev.includes(datasetId) ? prev.filter((item) => item !== datasetId) : [...prev, datasetId],
     );
   }
 
-  function setWorkspaceTableSelection(workspaceId: number, tableIds: number[], shouldSelect: boolean) {
-    const keys = tableIds.map((tableId) => `${workspaceId}:${tableId}`);
+  function setDatasetTableSelection(datasetId: number, tableIds: number[], shouldSelect: boolean) {
+    const keys = tableIds.map((tableId) => `${datasetId}:${tableId}`);
     setSelectedKeys((prev) => {
       const next = new Set(prev);
       keys.forEach((key) => {
@@ -1541,19 +1541,19 @@ export function AIReportWizard({
                 }
                 // Fetch table descriptions in parallel for the BriefStep sidebar
                 Promise.allSettled(
-                  selectedTables.map(async (ref: { workspace_id: number; table_id: number }) => {
+                  selectedTables.map(async (ref: { dataset_id: number; table_id: number }) => {
                     try {
                       const { data } = await apiClient.get(
-                        `/dataset-workspaces/${ref.workspace_id}/tables/${ref.table_id}/description`,
+                        `/datasets/${ref.dataset_id}/tables/${ref.table_id}/description`,
                       );
                       const tbl = tables.find(
-                        (t: { workspace_id: number; table_id: number }) => t.workspace_id === ref.workspace_id && t.table_id === ref.table_id,
+                        (t: { dataset_id: number; table_id: number }) => t.dataset_id === ref.dataset_id && t.table_id === ref.table_id,
                       );
                       return {
-                        key: `${ref.workspace_id}:${ref.table_id}`,
-                        workspaceId: ref.workspace_id,
+                        key: `${ref.dataset_id}:${ref.table_id}`,
+                        datasetId: ref.dataset_id,
                         tableId: ref.table_id,
-                        workspaceName: tbl?.workspace_name ?? `Workspace ${ref.workspace_id}`,
+                        datasetName: tbl?.dataset_name ?? `Dataset ${ref.dataset_id}`,
                         tableName: tbl?.table_name ?? `Table ${ref.table_id}`,
                         autoDescription: data?.auto_description ?? null,
                         columnDescriptions: data?.column_descriptions ?? null,
@@ -1733,26 +1733,26 @@ export function AIReportWizard({
           <SelectTablesStep
             isVietnamese={isVietnamese}
             wizardText={wizardText}
-            workspaceDetailsQuery={workspaceDetailsQuery}
+            datasetDetailsQuery={datasetDetailsQuery}
             tables={tables}
             tableSearch={tableSearch}
             setTableSearch={setTableSearch}
-            setExpandedWorkspaceIds={setExpandedWorkspaceIds}
-            workspaceSelectionGroups={workspaceSelectionGroups}
+            setExpandedDatasetIds={setExpandedDatasetIds}
+            datasetSelectionGroups={datasetSelectionGroups}
             normalizedTableSearch={normalizedTableSearch}
             visibleTableCount={visibleTableCount}
-            toggleWorkspaceExpanded={toggleWorkspaceExpanded}
-            setWorkspaceTableSelection={setWorkspaceTableSelection}
+            toggleDatasetExpanded={toggleDatasetExpanded}
+            setDatasetTableSelection={setDatasetTableSelection}
             selectedKeys={selectedKeys}
             toggleTable={toggleTable}
             selectedTableCards={selectedTableCards}
             clearSelectedTables={clearSelectedTables}
             selectedTables={selectedTables}
-            selectedWorkspaceCount={selectedWorkspaceCount}
+            selectedDatasetCount={selectedDatasetCount}
             setSelectedKeys={setSelectedKeys}
             openGuides={openGuides}
             toggleGuide={toggleGuide}
-            expandedWorkspaceIds={expandedWorkspaceIds}
+            expandedDatasetIds={expandedDatasetIds}
           />
         )}
         {step === 'brief' && (
@@ -1808,9 +1808,9 @@ export function AIReportWizard({
             enabledChartCount={enabledChartCount}
             buildMode={buildMode}
             setBuildMode={setBuildMode}
-            planWorkspaceTabs={planWorkspaceTabs}
-            planWorkspaceTab={planWorkspaceTab}
-            setPlanWorkspaceTab={setPlanWorkspaceTab}
+            planDatasetTabs={planDatasetTabs}
+            planDatasetTab={planDatasetTab}
+            setPlanDatasetTab={setPlanDatasetTab}
             describeChartConfig={describeChartConfig}
             sectionActiveCount={sectionActiveCount}
             openGuides={openGuides}

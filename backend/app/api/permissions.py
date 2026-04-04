@@ -26,7 +26,6 @@ router = APIRouter(prefix="/permissions", tags=["permissions"])
 MODULES = [
     "data_sources",
     "datasets",
-    "workspaces",
     "explore_charts",
     "dashboards",
     "ai_chat",
@@ -38,7 +37,6 @@ MODULES = [
 MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
     "data_sources":   ["none", "view", "edit", "full"],
     "datasets":       ["none", "view", "edit", "full"],
-    "workspaces":     ["none", "view", "edit", "full"],
     "explore_charts": ["none", "view", "edit", "full"],
     "dashboards":     ["none", "view", "edit", "full"],
     "ai_chat":        ["none", "view", "edit", "full"],
@@ -54,7 +52,6 @@ PRESETS: Dict[str, Dict[str, str]] = {
     "admin": {
         "data_sources": "full",
         "datasets": "full",
-        "workspaces": "full",
         "explore_charts": "full",
         "dashboards": "full",
         "ai_chat": "full",
@@ -64,7 +61,6 @@ PRESETS: Dict[str, Dict[str, str]] = {
     "editor": {
         "data_sources": "view",
         "datasets": "edit",
-        "workspaces": "edit",
         "explore_charts": "edit",
         "dashboards": "edit",
         "ai_chat": "edit",
@@ -74,7 +70,6 @@ PRESETS: Dict[str, Dict[str, str]] = {
     "viewer": {
         "data_sources": "view",
         "datasets": "view",
-        "workspaces": "view",
         "explore_charts": "view",
         "dashboards": "view",
         "ai_chat": "view",
@@ -84,7 +79,6 @@ PRESETS: Dict[str, Dict[str, str]] = {
     "minimal": {
         "data_sources": "none",
         "datasets": "none",
-        "workspaces": "none",
         "explore_charts": "none",
         "dashboards": "view",
         "ai_chat": "none",

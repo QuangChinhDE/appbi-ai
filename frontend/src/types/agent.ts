@@ -30,7 +30,7 @@ export type AgentReportRunStatus =
   | 'failed';
 
 export interface SelectedTableRef {
-  workspace_id: number;
+  dataset_id: number;
   table_id: number;
 }
 
@@ -84,8 +84,8 @@ export interface ThesisArtifact {
 }
 
 export interface DatasetFitArtifactItem {
-  workspace_id: number;
-  workspace_name: string;
+  dataset_id: number;
+  dataset_name: string;
   table_id: number;
   table_name: string;
   fit_score: number;
@@ -98,8 +98,8 @@ export interface DatasetFitArtifactItem {
 }
 
 export interface ProfilingArtifactItem {
-  workspace_id: number;
-  workspace_name: string;
+  dataset_id: number;
+  dataset_name: string;
   table_id: number;
   table_name: string;
   row_sample_count: number;
@@ -219,9 +219,9 @@ export interface AgentChartPlan {
   key: string;
   title: string;
   chart_type: string;
-  workspace_id: number;
-  workspace_table_id: number;
-  workspace_name: string;
+  dataset_id: number;
+  dataset_table_id: number;
+  dataset_name: string;
   table_name: string;
   rationale: string;
   insight_goal?: string | null;
@@ -235,9 +235,9 @@ export interface AgentChartPlan {
 
 export interface AgentSectionPlan {
   title: string;
-  workspace_id: number;
-  workspace_table_id: number;
-  workspace_name: string;
+  dataset_id: number;
+  dataset_table_id: number;
+  dataset_name: string;
   table_name: string;
   intent: string;
   why_this_section?: string | null;

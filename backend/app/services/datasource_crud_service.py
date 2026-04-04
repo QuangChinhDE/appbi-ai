@@ -106,7 +106,7 @@ class DataSourceCRUDService:
             update_data = data_source_update.model_dump(exclude_unset=True)
 
             # Re-snapshot sheets if config is being updated for a GG Sheets or Manual datasource.
-            # Track whether config actually changed so we know to invalidate workspace caches.
+            # Track whether config actually changed so we know to invalidate dataset-table caches.
             config_refreshed = False
             if 'config' in update_data:
                 from app.core.crypto import encrypt_config, MASKED_PLACEHOLDER, _SENSITIVE_FIELDS
@@ -137,16 +137,16 @@ class DataSourceCRUDService:
             for field, value in update_data.items():
                 setattr(db_data_source, field, value)
 
-            # When the underlying data changes, invalidate all workspace-table caches that
+            # When the underlying data changes, invalidate all dataset-table caches that
             # reference this datasource so the next preview re-reads from the fresh snapshot.
             # This prevents stale column names showing in the UI after columns are added/removed.
             if config_refreshed:
-                from app.models.dataset_workspace import DatasetWorkspaceTable
-                db.query(DatasetWorkspaceTable).filter(
-                    DatasetWorkspaceTable.datasource_id == db_data_source.id
+                from app.models.dataset import DatasetTable
+                db.query(DatasetTable).filter(
+                    DatasetTable.datasource_id == db_data_source.id
                 ).update({'columns_cache': None, 'sample_cache': None})
                 logger.info(
-                    f"Invalidated workspace table caches for datasource id={db_data_source.id}"
+                    f"Invalidated dataset table caches for datasource id={db_data_source.id}"
                 )
 
             db.commit()

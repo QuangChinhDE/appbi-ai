@@ -61,9 +61,9 @@ export interface BriefPreset {
 
 export interface TableDescriptionCard {
   key: string;
-  workspaceId: number;
+  datasetId: number;
   tableId: number;
-  workspaceName: string;
+  datasetName: string;
   tableName: string;
   autoDescription: string | null;
   columnDescriptions: Record<string, string> | null;

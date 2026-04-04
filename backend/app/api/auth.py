@@ -133,11 +133,17 @@ def login(
             detail="Account is deactivated",
         )
 
-    # Update last login
-    from sqlalchemy.sql import func
-    user.last_login_at = func.now()
+    # Update last login. Capture PK before commit (PK is never expired by SQLAlchemy).
+    from datetime import datetime, timezone
+    user_pk = user.id
+    user.last_login_at = datetime.now(timezone.utc)
     db.commit()
-    db.refresh(user)
+    # Re-query after commit — bypasses identity-map expiry and avoids
+    # both ObjectDeletedError and InvalidRequestError from db.refresh().
+    user = db.query(User).filter(User.id == user_pk).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="User not found after login commit")
 
     token = create_access_token(user)
     refresh = create_refresh_token(user)

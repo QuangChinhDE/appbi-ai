@@ -1,5 +1,5 @@
 """
-TableStatsService - compute column-level statistics for workspace tables.
+TableStatsService - compute column-level statistics for dataset tables.
 
 Approach: fetch a sample of rows via the synced DuckDB view, compute stats
 in-memory, and persist the latest schema snapshot. This service only updates
@@ -113,7 +113,7 @@ class TableStatsService:
     @staticmethod
     def update_table_stats(db: Session, table_id: int) -> Dict[str, Any]:
         """
-        Compute and persist column stats for a workspace table.
+        Compute and persist column stats for a dataset table.
 
         Returns a structured payload:
             {
@@ -127,14 +127,14 @@ class TableStatsService:
 
         Safe to call in a background task - all errors are caught.
         """
-        from app.models.dataset_workspace import DatasetWorkspaceTable
+        from app.models.dataset import DatasetTable
         from app.models.models import DataSource
         from app.services.duckdb_engine import DuckDBEngine
         from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
 
         try:
-            table = db.query(DatasetWorkspaceTable).filter(
-                DatasetWorkspaceTable.id == table_id
+            table = db.query(DatasetTable).filter(
+                DatasetTable.id == table_id
             ).first()
             if not table:
                 logger.warning("TableStats: table %s not found", table_id)

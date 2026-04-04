@@ -76,8 +76,8 @@ def build_dataset_fit_report(parsed_brief: ParsedBriefArtifact, profiles: list[A
 
         items.append(
             DatasetFitArtifactItem(
-                workspace_id=profile.context.workspace_id,
-                workspace_name=profile.context.workspace_name,
+                dataset_id=profile.context.dataset_id,
+                dataset_name=profile.context.dataset_name,
                 table_id=profile.context.table_id,
                 table_name=profile.context.table_name,
                 fit_score=_fit_score(parsed_brief, profile),

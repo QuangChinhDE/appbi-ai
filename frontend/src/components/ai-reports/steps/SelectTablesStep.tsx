@@ -5,26 +5,26 @@ export function SelectTablesStep(props: any) {
   const {
     isVietnamese,
     wizardText,
-    workspaceDetailsQuery,
+    datasetDetailsQuery,
     tables,
     tableSearch,
     setTableSearch,
-    setExpandedWorkspaceIds,
-    workspaceSelectionGroups,
+    setExpandedDatasetIds,
+    datasetSelectionGroups,
     normalizedTableSearch,
     visibleTableCount,
-    toggleWorkspaceExpanded,
-    setWorkspaceTableSelection,
+    toggleDatasetExpanded,
+    setDatasetTableSelection,
     selectedKeys,
     toggleTable,
     selectedTableCards,
     clearSelectedTables,
     selectedTables,
-    selectedWorkspaceCount,
+    selectedDatasetCount,
     setSelectedKeys,
     openGuides,
     toggleGuide,
-    expandedWorkspaceIds,
+    expandedDatasetIds,
   } = props;
 
   return (
@@ -78,7 +78,7 @@ export function SelectTablesStep(props: any) {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setExpandedWorkspaceIds(workspaceSelectionGroups.map((group) => group.workspace.id))}
+            onClick={() => setExpandedDatasetIds(datasetSelectionGroups.map((group) => group.dataset.id))}
             disabled={Boolean(normalizedTableSearch)}
             className="rounded-md border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -86,7 +86,7 @@ export function SelectTablesStep(props: any) {
           </button>
           <button
             type="button"
-            onClick={() => setExpandedWorkspaceIds([])}
+            onClick={() => setExpandedDatasetIds([])}
             disabled={Boolean(normalizedTableSearch)}
             className="rounded-md border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -96,41 +96,41 @@ export function SelectTablesStep(props: any) {
       </div>
 
       {/* Loading / Empty states */}
-      {workspaceDetailsQuery.isLoading && (
+      {datasetDetailsQuery.isLoading && (
         <div className="flex items-center gap-2 rounded-lg border border-gray-200 p-5 text-gray-600">
           <Loader2 className="h-4 w-4 animate-spin" />
           {wizardText.loadingTables}
         </div>
       )}
 
-      {!workspaceDetailsQuery.isLoading && tables.length === 0 && (
+      {!datasetDetailsQuery.isLoading && tables.length === 0 && (
         <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-8 text-center">
-          <p className="text-base font-medium text-gray-900">{wizardText.noWorkspaceTables}</p>
-          <p className="mt-2 text-sm text-gray-500">{wizardText.noWorkspaceTablesDesc}</p>
+          <p className="text-base font-medium text-gray-900">{wizardText.noDatasetTables}</p>
+          <p className="mt-2 text-sm text-gray-500">{wizardText.noDatasetTablesDesc}</p>
         </div>
       )}
 
-      {!workspaceDetailsQuery.isLoading && tables.length > 0 && workspaceSelectionGroups.length === 0 && (
+      {!datasetDetailsQuery.isLoading && tables.length > 0 && datasetSelectionGroups.length === 0 && (
         <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-8 text-center">
           <p className="text-base font-medium text-gray-900">{wizardText.noMatch}</p>
           <p className="mt-2 text-sm text-gray-500">{wizardText.noMatchDesc}</p>
         </div>
       )}
 
-      {/* Workspace groups with inline table rows */}
+      {/* Dataset groups with inline table rows */}
       <div className="space-y-4">
-        {workspaceSelectionGroups.map((group) => {
-          const isExpanded = normalizedTableSearch ? true : expandedWorkspaceIds.includes(group.workspace.id);
+        {datasetSelectionGroups.map((group) => {
+          const isExpanded = normalizedTableSearch ? true : expandedDatasetIds.includes(group.dataset.id);
           const allVisibleSelected =
             group.visibleTables.length > 0 && group.visibleSelectedCount === group.visibleTables.length;
 
           return (
-            <div key={group.workspace.id} className="rounded-xl border border-gray-200 bg-white shadow-sm">
-              {/* Workspace header */}
+            <div key={group.dataset.id} className="rounded-xl border border-gray-200 bg-white shadow-sm">
+              {/* Dataset header */}
               <div className="flex items-center justify-between gap-3 px-5 py-4">
                 <button
                   type="button"
-                  onClick={() => toggleWorkspaceExpanded(group.workspace.id)}
+                  onClick={() => toggleDatasetExpanded(group.dataset.id)}
                   disabled={Boolean(normalizedTableSearch)}
                   className="flex items-center gap-3 text-left disabled:cursor-default"
                 >
@@ -138,9 +138,9 @@ export function SelectTablesStep(props: any) {
                     {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                   </span>
                   <div>
-                    <h4 className="text-sm font-semibold text-gray-900">{group.workspace.name}</h4>
-                    {group.workspace.description && (
-                      <p className="mt-0.5 text-xs text-gray-500">{group.workspace.description}</p>
+                    <h4 className="text-sm font-semibold text-gray-900">{group.dataset.name}</h4>
+                    {group.dataset.description && (
+                      <p className="mt-0.5 text-xs text-gray-500">{group.dataset.description}</p>
                     )}
                   </div>
                 </button>
@@ -153,8 +153,8 @@ export function SelectTablesStep(props: any) {
                   <button
                     type="button"
                     onClick={() =>
-                      setWorkspaceTableSelection(
-                        group.workspace.id,
+                      setDatasetTableSelection(
+                        group.dataset.id,
                         group.visibleTables.map((table) => table.id),
                         !allVisibleSelected,
                       )
@@ -172,12 +172,12 @@ export function SelectTablesStep(props: any) {
               {isExpanded && (
                 <div className="border-t border-gray-100">
                   {group.visibleTables.map((table) => {
-                    const key = `${group.workspace.id}:${table.id}`;
+                    const key = `${group.dataset.id}:${table.id}`;
                     const checked = selectedKeys.includes(key);
                     return (
                       <button
                         key={table.id}
-                        onClick={() => toggleTable(group.workspace.id, table.id)}
+                        onClick={() => toggleTable(group.dataset.id, table.id)}
                         className={`flex w-full items-center gap-4 border-b border-gray-50 px-5 py-3 text-left transition last:border-b-0 ${
                           checked
                             ? 'bg-blue-50/60'

@@ -140,14 +140,14 @@ _MODEL_TO_RESOURCE_TYPE = {
     "DataSource": ResourceType.DATASOURCE,
     "Chart": ResourceType.CHART,
     "Dashboard": ResourceType.DASHBOARD,
-    "DatasetWorkspace": ResourceType.WORKSPACE,
+    "Dataset": ResourceType.DATASET,
 }
 
 _MODEL_TO_MODULE = {
     "DataSource": "data_sources",
     "Chart": "explore_charts",
     "Dashboard": "dashboards",
-    "DatasetWorkspace": "workspaces",
+    "Dataset": "datasets",
 }
 
 

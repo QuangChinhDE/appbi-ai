@@ -36,7 +36,6 @@ interface UserRecord {
 const MODULE_LABELS: Record<string, string> = {
   data_sources:   'Data sources',
   datasets:       'Datasets',
-  workspaces:     'Workspaces',
   explore_charts: 'Explore + charts',
   dashboards:     'Dashboards',
   ai_chat:        'AI chat',

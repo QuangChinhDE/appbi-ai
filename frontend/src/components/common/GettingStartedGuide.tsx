@@ -14,7 +14,7 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import { useDataSources } from '@/hooks/use-datasources';
-import { useWorkspaces } from '@/hooks/use-dataset-workspaces';
+import { useDatasets } from '@/hooks/use-datasets';
 import { useAgentReportSpecs } from '@/hooks/use-agent-report-specs';
 
 const DISMISS_KEY = 'appbi:getting-started-dismissed';
@@ -47,12 +47,12 @@ export function GettingStartedGuide({ locale = 'en' }: { locale?: string }) {
   }, []);
 
   const { data: datasources } = useDataSources();
-  const { data: workspaces } = useWorkspaces();
+  const { data: datasets } = useDatasets();
   const { data: reports } = useAgentReportSpecs();
 
   const hasDatasource = (datasources?.length ?? 0) > 0;
-  const hasWorkspace = (workspaces?.length ?? 0) > 0;
-  const hasTable = (workspaces ?? []).some(
+  const hasDataset = (datasets?.length ?? 0) > 0;
+  const hasTable = (datasets ?? []).some(
     (ws: any) => (ws.tables?.length ?? ws.table_count ?? 0) > 0,
   );
   const hasReport = (reports?.length ?? 0) > 0;
@@ -70,14 +70,14 @@ export function GettingStartedGuide({ locale = 'en' }: { locale?: string }) {
         'Click "New data source" and choose a type: PostgreSQL, MySQL, BigQuery, Google Sheets, or Manual (CSV/Excel upload)',
         'Fill in connection details and click "Test Connection" to verify',
         'After creating, open the data source and click "Sync" to import tables into the system',
-        'Once synced, your tables will appear in Workspaces when you add them',
+        'Once synced, your tables will appear in Datasets when you add them',
       ],
       detailsVi: [
         'Vào Data Sources trên sidebar',
         'Nhấn "New data source" và chọn loại: PostgreSQL, MySQL, BigQuery, Google Sheets, hoặc Manual (tải CSV/Excel)',
         'Điền thông tin kết nối và nhấn "Test Connection" để kiểm tra',
         'Sau khi tạo xong, mở data source và nhấn "Sync" để đồng bộ danh sách bảng vào hệ thống',
-        'Sau khi sync, các bảng sẽ xuất hiện trong Workspaces khi bạn thêm table',
+        'Sau khi sync, các bảng sẽ xuất hiện trong Datasets khi bạn thêm table',
       ],
       href: '/datasources',
       btnLabel: 'Go to Data Sources',
@@ -85,53 +85,53 @@ export function GettingStartedGuide({ locale = 'en' }: { locale?: string }) {
       done: hasDatasource,
     },
     {
-      key: 'workspace',
+      key: 'dataset',
       icon: Database,
-      title: 'Step 2: Create a workspace',
-      titleVi: 'Bước 2: Tạo workspace',
-      desc: 'A workspace groups related tables together for analysis. Think of it like a project folder.',
-      descVi: 'Workspace nhóm các bảng liên quan lại với nhau để phân tích. Giống như một thư mục dự án.',
+      title: 'Step 2: Create a dataset',
+      titleVi: 'Bước 2: Tạo dataset',
+      desc: 'A dataset groups related tables together for analysis. Think of it like a project folder.',
+      descVi: 'Dataset nhóm các bảng liên quan lại với nhau để phân tích. Giống như một thư mục dự án.',
       details: [
-        'Go to Workspaces in the sidebar',
-        'Click "New workspace" and give it a name (e.g. "Sales Analysis Q4")',
-        'A workspace can hold tables from different data sources',
-        'You can share workspaces with team members later',
+        'Go to Datasets in the sidebar',
+        'Click "New dataset" and give it a name (e.g. "Sales Analysis Q4")',
+        'A dataset can hold tables from different data sources',
+        'You can share datasets with team members later',
       ],
       detailsVi: [
-        'Vào Workspaces trên sidebar',
-        'Nhấn "New workspace" và đặt tên (VD: "Phân tích doanh thu Q4")',
-        'Một workspace có thể chứa bảng từ nhiều data source khác nhau',
-        'Bạn có thể chia sẻ workspace với đồng nghiệp sau',
+        'Vào Datasets trên sidebar',
+        'Nhấn "New dataset" và đặt tên (VD: "Phân tích doanh thu Q4")',
+        'Một dataset có thể chứa bảng từ nhiều data source khác nhau',
+        'Bạn có thể chia sẻ dataset với đồng nghiệp sau',
       ],
-      href: '/dataset-workspaces',
-      btnLabel: 'Go to Workspaces',
-      btnLabelVi: 'Đi tới Workspaces',
-      done: hasWorkspace,
+      href: '/datasets',
+      btnLabel: 'Go to Datasets',
+      btnLabelVi: 'Đi tới Datasets',
+      done: hasDataset,
     },
     {
       key: 'table',
       icon: Table2,
-      title: 'Step 3: Add tables to workspace',
-      titleVi: 'Bước 3: Thêm bảng vào workspace',
-      desc: 'Select which tables from your data source to include in the workspace.',
-      descVi: 'Chọn những bảng nào từ data source để đưa vào workspace.',
+      title: 'Step 3: Add tables to dataset',
+      titleVi: 'Bước 3: Thêm bảng vào dataset',
+      desc: 'Select which tables from your data source to include in the dataset.',
+      descVi: 'Chọn những bảng nào từ data source để đưa vào dataset.',
       details: [
-        'Open the workspace you just created',
+        'Open the dataset you just created',
         'Click "Add table" and pick from your connected data sources',
         'Choose "Physical table" to import directly, or "SQL query" to write custom SQL',
         'Preview data to make sure it looks right, then save',
         'Add as many tables as you need for your analysis',
       ],
       detailsVi: [
-        'Mở workspace vừa tạo',
+        'Mở dataset vừa tạo',
         'Nhấn "Add table" và chọn từ các data source đã kết nối',
         'Chọn "Physical table" để import trực tiếp, hoặc "SQL query" để viết SQL tuỳ chỉnh',
         'Xem trước dữ liệu để đảm bảo đúng, rồi lưu',
         'Thêm bao nhiêu bảng tuỳ ý cho nhu cầu phân tích',
       ],
-      href: '/dataset-workspaces',
-      btnLabel: 'Go to Workspaces',
-      btnLabelVi: 'Đi tới Workspaces',
+      href: '/datasets',
+      btnLabel: 'Go to Datasets',
+      btnLabelVi: 'Đi tới Datasets',
       done: hasTable,
     },
     {
@@ -143,7 +143,7 @@ export function GettingStartedGuide({ locale = 'en' }: { locale?: string }) {
       descVi: 'Để AI tự động phân tích dữ liệu và tạo dashboard hoàn chỉnh với biểu đồ và insight.',
       details: [
         'Go to AI Reports in the sidebar and click "New report"',
-        'Select tables — choose the workspace tables you want to analyze',
+        'Select tables — choose the dataset tables you want to analyze',
         'Write a brief — describe what you want: goals, audience, timeframe',
         'Review plan — AI proposes chart sections and layout, you can adjust',
         'Build — AI creates all charts, generates insights, and assembles the dashboard',
@@ -151,7 +151,7 @@ export function GettingStartedGuide({ locale = 'en' }: { locale?: string }) {
       ],
       detailsVi: [
         'Vào AI Reports trên sidebar và nhấn "New report"',
-        'Chọn bảng — chọn các bảng workspace muốn phân tích',
+        'Chọn bảng — chọn các bảng dataset muốn phân tích',
         'Viết brief — mô tả mục tiêu, người đọc, khung thời gian',
         'Xem kế hoạch — AI đề xuất các section biểu đồ, bạn có thể chỉnh sửa',
         'Build — AI tạo toàn bộ biểu đồ, sinh insight, và ghép thành dashboard',
@@ -171,7 +171,7 @@ export function GettingStartedGuide({ locale = 'en' }: { locale?: string }) {
   useEffect(() => {
     const firstIncomplete = steps.findIndex((s) => !s.done);
     if (firstIncomplete >= 0) setActiveStep(firstIncomplete);
-  }, [hasDatasource, hasWorkspace, hasTable, hasReport]);
+  }, [hasDatasource, hasDataset, hasTable, hasReport]);
 
   if (dismissed || allDone) return null;
 
@@ -467,12 +467,12 @@ export function GettingStartedModal({
   const [activeStep, setActiveStep] = useState(0);
 
   const { data: datasources } = useDataSources();
-  const { data: workspaces } = useWorkspaces();
+  const { data: datasets } = useDatasets();
   const { data: reports } = useAgentReportSpecs();
 
   const hasDatasource = (datasources?.length ?? 0) > 0;
-  const hasWorkspace = (workspaces?.length ?? 0) > 0;
-  const hasTable = (workspaces ?? []).some(
+  const hasDataset = (datasets?.length ?? 0) > 0;
+  const hasTable = (datasets ?? []).some(
     (ws: any) => (ws.tables?.length ?? ws.table_count ?? 0) > 0,
   );
   const hasReport = (reports?.length ?? 0) > 0;
@@ -488,27 +488,27 @@ export function GettingStartedModal({
       href: '/datasources', btnLabel: 'Go to Data Sources', btnLabelVi: 'Đi tới Data Sources', done: hasDatasource,
     },
     {
-      key: 'workspace', icon: Database,
-      title: 'Step 2: Create a workspace', titleVi: 'Bước 2: Tạo workspace',
-      desc: 'A workspace groups related tables together for analysis.', descVi: 'Workspace nhóm các bảng liên quan lại với nhau để phân tích.',
-      details: ['Go to Workspaces in the sidebar', 'Click "New workspace" and give it a name (e.g. "Sales Analysis Q4")', 'A workspace can hold tables from different data sources', 'You can share workspaces with team members later'],
-      detailsVi: ['Vào Workspaces trên sidebar', 'Nhấn "New workspace" và đặt tên (VD: "Phân tích doanh thu Q4")', 'Một workspace có thể chứa bảng từ nhiều data source khác nhau', 'Bạn có thể chia sẻ workspace với đồng nghiệp sau'],
-      href: '/dataset-workspaces', btnLabel: 'Go to Workspaces', btnLabelVi: 'Đi tới Workspaces', done: hasWorkspace,
+      key: 'dataset', icon: Database,
+      title: 'Step 2: Create a dataset', titleVi: 'Bước 2: Tạo dataset',
+      desc: 'A dataset groups related tables together for analysis.', descVi: 'Dataset nhóm các bảng liên quan lại với nhau để phân tích.',
+      details: ['Go to Datasets in the sidebar', 'Click "New dataset" and give it a name (e.g. "Sales Analysis Q4")', 'A dataset can hold tables from different data sources', 'You can share datasets with team members later'],
+      detailsVi: ['Vào Datasets trên sidebar', 'Nhấn "New dataset" và đặt tên (VD: "Phân tích doanh thu Q4")', 'Một dataset có thể chứa bảng từ nhiều data source khác nhau', 'Bạn có thể chia sẻ dataset với đồng nghiệp sau'],
+      href: '/datasets', btnLabel: 'Go to Datasets', btnLabelVi: 'Đi tới Datasets', done: hasDataset,
     },
     {
       key: 'table', icon: Table2,
-      title: 'Step 3: Add tables to workspace', titleVi: 'Bước 3: Thêm bảng vào workspace',
-      desc: 'Select which tables from your data source to include.', descVi: 'Chọn những bảng nào từ data source để đưa vào workspace.',
-      details: ['Open the workspace you just created', 'Click "Add table" and pick from your connected data sources', 'Choose "Physical table" to import directly, or "SQL query" for custom SQL', 'Preview data to make sure it looks right, then save', 'Add as many tables as you need for your analysis'],
-      detailsVi: ['Mở workspace vừa tạo', 'Nhấn "Add table" và chọn từ các data source đã kết nối', 'Chọn "Physical table" để import trực tiếp, hoặc "SQL query" để viết SQL tuỳ chỉnh', 'Xem trước dữ liệu để đảm bảo đúng, rồi lưu', 'Thêm bao nhiêu bảng tuỳ ý cho nhu cầu phân tích'],
-      href: '/dataset-workspaces', btnLabel: 'Go to Workspaces', btnLabelVi: 'Đi tới Workspaces', done: hasTable,
+      title: 'Step 3: Add tables to dataset', titleVi: 'Bước 3: Thêm bảng vào dataset',
+      desc: 'Select which tables from your data source to include.', descVi: 'Chọn những bảng nào từ data source để đưa vào dataset.',
+      details: ['Open the dataset you just created', 'Click "Add table" and pick from your connected data sources', 'Choose "Physical table" to import directly, or "SQL query" for custom SQL', 'Preview data to make sure it looks right, then save', 'Add as many tables as you need for your analysis'],
+      detailsVi: ['Mở dataset vừa tạo', 'Nhấn "Add table" và chọn từ các data source đã kết nối', 'Chọn "Physical table" để import trực tiếp, hoặc "SQL query" để viết SQL tuỳ chỉnh', 'Xem trước dữ liệu để đảm bảo đúng, rồi lưu', 'Thêm bao nhiêu bảng tuỳ ý cho nhu cầu phân tích'],
+      href: '/datasets', btnLabel: 'Go to Datasets', btnLabelVi: 'Đi tới Datasets', done: hasTable,
     },
     {
       key: 'report', icon: Bot,
       title: 'Step 4: Build an AI Report', titleVi: 'Bước 4: Tạo AI Report',
       desc: 'Let AI automatically analyze your data and build a complete dashboard.', descVi: 'Để AI tự động phân tích dữ liệu và tạo dashboard hoàn chỉnh.',
-      details: ['Go to AI Reports in the sidebar and click "New report"', 'Select tables — choose the workspace tables you want to analyze', 'Write a brief — describe what you want: goals, audience, timeframe', 'Review plan — AI proposes chart sections and layout, you can adjust', 'Build — AI creates all charts, generates insights, and assembles the dashboard', 'Your finished dashboard appears in the Dashboards page!'],
-      detailsVi: ['Vào AI Reports trên sidebar và nhấn "New report"', 'Chọn bảng — chọn các bảng workspace muốn phân tích', 'Viết brief — mô tả mục tiêu, người đọc, khung thời gian', 'Xem kế hoạch — AI đề xuất các section biểu đồ, bạn có thể chỉnh sửa', 'Build — AI tạo toàn bộ biểu đồ, sinh insight, và ghép thành dashboard', 'Dashboard hoàn chỉnh sẽ xuất hiện trong trang Dashboards!'],
+      details: ['Go to AI Reports in the sidebar and click "New report"', 'Select tables — choose the dataset tables you want to analyze', 'Write a brief — describe what you want: goals, audience, timeframe', 'Review plan — AI proposes chart sections and layout, you can adjust', 'Build — AI creates all charts, generates insights, and assembles the dashboard', 'Your finished dashboard appears in the Dashboards page!'],
+      detailsVi: ['Vào AI Reports trên sidebar và nhấn "New report"', 'Chọn bảng — chọn các bảng dataset muốn phân tích', 'Viết brief — mô tả mục tiêu, người đọc, khung thời gian', 'Xem kế hoạch — AI đề xuất các section biểu đồ, bạn có thể chỉnh sửa', 'Build — AI tạo toàn bộ biểu đồ, sinh insight, và ghép thành dashboard', 'Dashboard hoàn chỉnh sẽ xuất hiện trong trang Dashboards!'],
       href: '/ai-reports', btnLabel: 'Go to AI Reports', btnLabelVi: 'Đi tới AI Reports', done: hasReport,
     },
   ];
@@ -516,7 +516,7 @@ export function GettingStartedModal({
   useEffect(() => {
     const idx = steps.findIndex((s) => !s.done);
     if (idx >= 0) setActiveStep(idx);
-  }, [hasDatasource, hasWorkspace, hasTable, hasReport]);
+  }, [hasDatasource, hasDataset, hasTable, hasReport]);
 
   if (!open) return null;
 

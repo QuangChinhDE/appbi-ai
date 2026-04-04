@@ -237,18 +237,18 @@ class ChartService:
     @staticmethod
     def create(db: Session, chart: ChartCreate, owner_id=None) -> Chart:
         """Create a new chart."""
-        if chart.workspace_table_id is not None:
-            # Verify workspace table exists
-            from app.services.dataset_workspace_crud import DatasetWorkspaceCRUDService
-            table = DatasetWorkspaceCRUDService.get_table_by_id(db, chart.workspace_table_id)
+        if chart.dataset_table_id is not None:
+            # Verify dataset table exists
+            from app.services.dataset_crud import DatasetCRUDService
+            table = DatasetCRUDService.get_table_by_id(db, chart.dataset_table_id)
             if not table:
-                raise ValueError(f"Workspace table with ID {chart.workspace_table_id} not found")
+                raise ValueError(f"Dataset table with ID {chart.dataset_table_id} not found")
 
         try:
             db_chart = Chart(
                 name=chart.name,
                 description=chart.description,
-                workspace_table_id=chart.workspace_table_id,
+                dataset_table_id=chart.dataset_table_id,
                 chart_type=ChartType(chart.chart_type.value),
                 config=chart.config,
                 owner_id=owner_id,
@@ -308,15 +308,15 @@ class ChartService:
         if not db_chart:
             raise ValueError(f"Chart with ID {chart_id} not found")
 
-        # Prefer direct workspace_table_id FK over config-embedded source
-        if db_chart.workspace_table_id is not None:
-            from app.services.dataset_workspace_crud import DatasetWorkspaceCRUDService
+        # Prefer direct dataset_table_id FK over config-embedded source
+        if db_chart.dataset_table_id is not None:
+            from app.services.dataset_crud import DatasetCRUDService
             from app.services.datasource_service import DataSourceConnectionService
             from app.models.models import DataSource
 
-            db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, db_chart.workspace_table_id)
+            db_table = DatasetCRUDService.get_table_by_id(db, db_chart.dataset_table_id)
             if not db_table:
-                raise ValueError("Workspace table not found")
+                raise ValueError("Dataset table not found")
 
             datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
             if not datasource:
@@ -391,22 +391,22 @@ class ChartService:
             else:
                 raise ValueError(f"Unsupported source_kind: {db_table.source_kind}")
 
-        # Fallback: check config for legacy workspace_table source
+        # Fallback: check config for legacy dataset_table source
         config = db_chart.config or {}
-        if isinstance(config, dict) and config.get('source', {}).get('kind') == 'workspace_table':
-            from app.services.dataset_workspace_crud import DatasetWorkspaceCRUDService
+        if isinstance(config, dict) and config.get('source', {}).get('kind') == 'dataset_table':
+            from app.services.dataset_crud import DatasetCRUDService
             from app.services.datasource_service import DataSourceConnectionService
             from app.models.models import DataSource
 
-            workspace_id = config['source'].get('workspaceId')
+            dataset_id = config['source'].get('datasetId')
             table_id = config['source'].get('tableId')
 
-            if not workspace_id or not table_id:
-                raise ValueError("Invalid workspace table source in chart config")
+            if not dataset_id or not table_id:
+                raise ValueError("Invalid dataset table source in chart config")
 
-            db_table = DatasetWorkspaceCRUDService.get_table_by_id(db, table_id)
-            if not db_table or db_table.workspace_id != workspace_id:
-                raise ValueError("Table not found in workspace")
+            db_table = DatasetCRUDService.get_table_by_id(db, table_id)
+            if not db_table or db_table.dataset_id != dataset_id:
+                raise ValueError("Table not found in dataset")
 
             datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
             if not datasource:

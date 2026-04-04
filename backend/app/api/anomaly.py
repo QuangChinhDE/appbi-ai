@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core import get_db
 from app.core.dependencies import get_current_user, require_permission, require_view_access
-from app.models.dataset_workspace import DatasetWorkspace, DatasetWorkspaceTable
+from app.models.dataset import Dataset, DatasetTable
 from app.models.anomaly import AnomalyAlert, MonitoredMetric
 from app.models.user import User
 from app.services.anomaly_detection import AnomalyDetectionService
@@ -24,7 +24,7 @@ router = APIRouter(prefix="/anomaly", tags=["anomaly"])
 # ── Pydantic schemas ────────────────────────────────────────────────────────────
 
 class MonitoredMetricCreate(BaseModel):
-    workspace_table_id: int
+    dataset_table_id: int
     metric_column: str
     aggregation: str = "sum"
     time_column: Optional[str] = None
@@ -35,7 +35,7 @@ class MonitoredMetricCreate(BaseModel):
 
 class MonitoredMetricResponse(BaseModel):
     id: int
-    workspace_table_id: int
+    dataset_table_id: int
     metric_column: str
     aggregation: str
     time_column: Optional[str]
@@ -87,20 +87,20 @@ def create_monitored_metric(
     current_user: User = Depends(require_permission("ai_chat", "edit")),
 ):
     """Create a new monitored metric."""
-    table = db.query(DatasetWorkspaceTable).filter(
-        DatasetWorkspaceTable.id == payload.workspace_table_id
+    table = db.query(DatasetTable).filter(
+        DatasetTable.id == payload.dataset_table_id
     ).first()
     if not table:
-        raise HTTPException(status_code=404, detail="Workspace table not found")
-    workspace = db.query(DatasetWorkspace).filter(
-        DatasetWorkspace.id == table.workspace_id
+        raise HTTPException(status_code=404, detail="Dataset table not found")
+    dataset_obj = db.query(Dataset).filter(
+        Dataset.id == table.dataset_id
     ).first()
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    require_view_access(db, current_user, workspace, "workspaces")
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, dataset_obj, "datasets")
 
     metric = MonitoredMetric(
-        workspace_table_id=payload.workspace_table_id,
+        dataset_table_id=payload.dataset_table_id,
         metric_column=payload.metric_column,
         aggregation=payload.aggregation,
         time_column=payload.time_column,
@@ -175,8 +175,8 @@ def list_anomaly_alerts(
     for alert in alerts:
         a = AnomalyAlertResponse.model_validate(alert)
         a.metric_column = alert.metric.metric_column if alert.metric else None
-        if alert.metric and alert.metric.workspace_table:
-            a.table_name = alert.metric.workspace_table.display_name
+        if alert.metric and alert.metric.dataset_table:
+            a.table_name = alert.metric.dataset_table.display_name
         result.append(a)
     return result
 

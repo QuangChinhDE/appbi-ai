@@ -13,7 +13,6 @@ from app.core.database import Base
 class Module(str, enum.Enum):
     DATASOURCE = "datasource"
     DATASET = "dataset"
-    WORKSPACE = "workspace"
     CHART = "chart"
     DASHBOARD = "dashboard"
     CHAT = "chat"

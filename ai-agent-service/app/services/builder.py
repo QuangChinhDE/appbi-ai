@@ -115,14 +115,14 @@ def _build_layouts(plan: AgentPlanResponse) -> Dict[str, Dict[str, int]]:
 
 def _normalize_chart_payload(chart: AgentChartPlan, run_suffix: str) -> Dict[str, Any]:
     config = dict(chart.config or {})
-    config["workspace_id"] = chart.workspace_id
+    config["dataset_id"] = chart.dataset_id
     config["chartType"] = chart.chart_type.upper()
     config["roleConfig"] = config.get("roleConfig") or {}
     config["filters"] = config.get("filters") or []
     return {
         "name": f"{chart.title} [{run_suffix}]",
         "description": chart.why_this_chart or chart.rationale,
-        "workspace_table_id": chart.workspace_table_id,
+        "dataset_table_id": chart.dataset_table_id,
         "chart_type": chart.chart_type.upper(),
         "config": config,
     }

@@ -1,7 +1,7 @@
 """
 Phase 2 Light — Minimal Context Builder.
 
-Per-turn: vector-search for the top-N workspace tables and charts most
+Per-turn: vector-search for the top-N dataset tables and charts most
 relevant to the current user message, then inject ONLY those into the
 system prompt instead of the full database schema dump.
 
@@ -42,11 +42,11 @@ class ContextPackage:
             lines.append("_(vector search unavailable — showing all accessible tables)_\n")
 
         if self.tables:
-            lines.append("### Workspace Tables")
+            lines.append("### Dataset Tables")
             for t in self.tables:
                 lines.append(
                     f"- **{t['display_name']}** "
-                    f"(workspace_id={t['workspace_id']}, table_id={t['id']})"
+                    f"(dataset_id={t['dataset_id']}, table_id={t['id']})"
                 )
                 if t.get("auto_description"):
                     lines.append(f"  Description: {t['auto_description']}")
@@ -119,10 +119,10 @@ async def build_context(
     # ── Fallback: load all tables if embeddings returned nothing ──────────────
     if not pkg.tables:
         try:
-            workspaces = await bi_client.list_workspaces(token=token)
-            for ws in workspaces:
+            datasets = await bi_client.list_datasets(token=token)
+            for ws in datasets:
                 try:
-                    ws_detail = await bi_client.get_workspace(ws["id"], token=token)
+                    ws_detail = await bi_client.get_dataset(ws["id"], token=token)
                     for tbl in ws_detail.get("tables", []):
                         cols = []
                         if tbl.get("column_stats"):
@@ -138,7 +138,7 @@ async def build_context(
                             ]
                         pkg.tables.append({
                             "id": tbl["id"],
-                            "workspace_id": ws["id"],
+                            "dataset_id": ws["id"],
                             "display_name": tbl.get("display_name", tbl.get("name", "")),
                             "auto_description": tbl.get("auto_description"),
                             "columns": cols,

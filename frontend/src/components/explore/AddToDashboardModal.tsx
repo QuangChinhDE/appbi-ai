@@ -13,7 +13,7 @@ interface AddToDashboardModalProps {
   lookConfig: {
     source: {
       kind: string;
-      workspaceId: number | null;
+      datasetId: number | null;
       tableId: number | null;
     };
     dimensions: string[];

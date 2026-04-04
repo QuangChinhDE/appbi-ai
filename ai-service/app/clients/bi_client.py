@@ -58,10 +58,10 @@ class BIClient:
     async def search_similar_tables(
         self, query: str, limit: int = 5, token: str = ""
     ) -> List[Dict[str, Any]]:
-        """Vector similarity search over workspace tables. Returns list of {id, workspace_id, display_name, columns, similarity}."""
+        """Vector similarity search over dataset tables. Returns list of {id, dataset_id, display_name, columns, similarity}."""
         try:
             r = await self._http.get(
-                f"{self._base}/dataset-workspaces/tables/search",
+                f"{self._base}/datasets/tables/search",
                 params={"q": query, "limit": limit},
                 headers=self._auth_headers(token),
             )
@@ -95,28 +95,28 @@ class BIClient:
         r.raise_for_status()
         return r.json()
 
-    # ── Workspaces ─────────────────────────────────────────────────────────────
+    # ── Datasets ─────────────────────────────────────────────────────────────
 
-    async def list_workspaces(self, token: str = "") -> List[Dict[str, Any]]:
-        r = await self._http.get(f"{self._base}/dataset-workspaces/", headers=self._auth_headers(token))
+    async def list_datasets(self, token: str = "") -> List[Dict[str, Any]]:
+        r = await self._http.get(f"{self._base}/datasets/", headers=self._auth_headers(token))
         r.raise_for_status()
         return r.json()
 
-    async def get_workspace(self, workspace_id: int, token: str = "") -> Dict[str, Any]:
-        """Returns workspace with its tables (including columns)."""
-        r = await self._http.get(f"{self._base}/dataset-workspaces/{workspace_id}", headers=self._auth_headers(token))
+    async def get_dataset(self, dataset_id: int, token: str = "") -> Dict[str, Any]:
+        """Returns dataset with its tables (including columns)."""
+        r = await self._http.get(f"{self._base}/datasets/{dataset_id}", headers=self._auth_headers(token))
         r.raise_for_status()
         return r.json()
 
-    async def preview_workspace_table(
+    async def preview_dataset_table(
         self,
-        workspace_id: int,
+        dataset_id: int,
         table_id: int,
         limit: int = 50,
         token: str = "",
     ) -> Dict[str, Any]:
         r = await self._http.post(
-            f"{self._base}/dataset-workspaces/{workspace_id}/tables/{table_id}/preview",
+            f"{self._base}/datasets/{dataset_id}/tables/{table_id}/preview",
             json={"limit": limit},
             headers=self._auth_headers(token),
         )
@@ -125,7 +125,7 @@ class BIClient:
 
     async def execute_table_query(
         self,
-        workspace_id: int,
+        dataset_id: int,
         table_id: int,
         dimensions: Optional[List[str]] = None,
         measures: Optional[List[Dict[str, str]]] = None,
@@ -134,7 +134,7 @@ class BIClient:
         limit: int = 100,
         token: str = "",
     ) -> Dict[str, Any]:
-        """Run an aggregated query on a workspace table (GROUP BY + aggregations)."""
+        """Run an aggregated query on a dataset table (GROUP BY + aggregations)."""
         body: Dict[str, Any] = {"limit": limit}
         if dimensions:
             body["dimensions"] = dimensions
@@ -145,7 +145,7 @@ class BIClient:
         if order_by:
             body["order_by"] = order_by
         r = await self._http.post(
-            f"{self._base}/dataset-workspaces/{workspace_id}/tables/{table_id}/execute",
+            f"{self._base}/datasets/{dataset_id}/tables/{table_id}/execute",
             json=body,
             headers=self._auth_headers(token),
         )
@@ -156,7 +156,7 @@ class BIClient:
 
     async def ai_chart_preview(
         self,
-        workspace_table_id: int,
+        dataset_table_id: int,
         chart_type: str,
         config: Dict[str, Any],
         name: str = "AI Chart",
@@ -168,7 +168,7 @@ class BIClient:
         r = await self._http.post(
             f"{self._base}/charts/ai-preview",
             json={
-                "workspace_table_id": workspace_table_id,
+                "dataset_table_id": dataset_table_id,
                 "chart_type": chart_type,
                 "config": config,
                 "name": name,
@@ -183,7 +183,7 @@ class BIClient:
     async def create_chart(
         self,
         name: str,
-        workspace_table_id: int,
+        dataset_table_id: int,
         chart_type: str,
         config: Dict[str, Any],
         description: Optional[str] = None,
@@ -194,7 +194,7 @@ class BIClient:
             f"{self._base}/charts/",
             json={
                 "name": name,
-                "workspace_table_id": workspace_table_id,
+                "dataset_table_id": dataset_table_id,
                 "chart_type": chart_type.upper(),
                 "config": config,
                 "description": description,

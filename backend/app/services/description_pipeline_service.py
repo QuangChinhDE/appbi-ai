@@ -119,10 +119,10 @@ class DescriptionPipelineService:
         trigger: str = "auto",
         force: bool = False,
     ) -> None:
-        from app.models.dataset_workspace import DatasetWorkspaceTable
+        from app.models.dataset import DatasetTable
 
-        table = db.query(DatasetWorkspaceTable).filter(
-            DatasetWorkspaceTable.id == table_id
+        table = db.query(DatasetTable).filter(
+            DatasetTable.id == table_id
         ).first()
         if not table:
             return
@@ -164,11 +164,11 @@ class DescriptionPipelineService:
         force: bool = False,
         session_factory: Callable[[], Any] = SessionLocal,
     ) -> None:
-        from app.models.dataset_workspace import DatasetWorkspaceTable
+        from app.models.dataset import DatasetTable
 
         with _managed_session(session_factory) as db:
-            table = db.query(DatasetWorkspaceTable).filter(
-                DatasetWorkspaceTable.id == table_id
+            table = db.query(DatasetTable).filter(
+                DatasetTable.id == table_id
             ).first()
             if not table:
                 return
@@ -179,8 +179,8 @@ class DescriptionPipelineService:
             db.commit()
 
             stats_result = TableStatsService.update_table_stats(db, table_id)
-            table = db.query(DatasetWorkspaceTable).filter(
-                DatasetWorkspaceTable.id == table_id
+            table = db.query(DatasetTable).filter(
+                DatasetTable.id == table_id
             ).first()
             if not table:
                 return
@@ -199,8 +199,8 @@ class DescriptionPipelineService:
                 return
 
             ok, error = AutoTaggingService.describe_table_detailed(db, table_id)
-            table = db.query(DatasetWorkspaceTable).filter(
-                DatasetWorkspaceTable.id == table_id
+            table = db.query(DatasetTable).filter(
+                DatasetTable.id == table_id
             ).first()
             if not table:
                 return
@@ -214,8 +214,8 @@ class DescriptionPipelineService:
                 return
 
             EmbeddingService.embed_table(db, table_id)
-            table = db.query(DatasetWorkspaceTable).filter(
-                DatasetWorkspaceTable.id == table_id
+            table = db.query(DatasetTable).filter(
+                DatasetTable.id == table_id
             ).first()
             if not table:
                 return

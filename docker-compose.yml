@@ -27,7 +27,9 @@ services:
       retries: 12
       start_period: 10s
     networks:
-      - appbi-net
+      appbi-net:
+        aliases:
+          - appbi-db
 
   backend:
     build:
@@ -35,8 +37,8 @@ services:
       dockerfile: backend/Dockerfile
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+psycopg2://${DB_USER:-appbi}:${DB_PASSWORD:-appbi}@db:5432/${DB_NAME:-appbi}
-      DB_HOST: db
+      DATABASE_URL: postgresql+psycopg2://${DB_USER:-appbi}:${DB_PASSWORD:-appbi}@appbi-db:5432/${DB_NAME:-appbi}
+      DB_HOST: appbi-db
       POSTGRES_USER: ${DB_USER:-appbi}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-appbi}
       POSTGRES_DB: ${DB_NAME:-appbi}

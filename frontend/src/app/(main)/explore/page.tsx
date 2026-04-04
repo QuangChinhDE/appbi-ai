@@ -118,7 +118,7 @@ export default function ExplorePage() {
             <div className="flex flex-col items-center justify-center h-64 text-center">
               <BarChart3 className="w-14 h-14 text-gray-300 mb-4" />
               <h3 className="text-lg font-medium text-gray-700 mb-1">No saved charts yet</h3>
-              <p className="text-sm text-gray-500 mb-4">Create your first chart from a workspace table</p>
+              <p className="text-sm text-gray-500 mb-4">Create your first chart from a dataset table</p>
               <button
                 onClick={() => router.push('/explore/new')}
                 className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"

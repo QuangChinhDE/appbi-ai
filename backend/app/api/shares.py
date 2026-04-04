@@ -2,7 +2,7 @@
 Sharing endpoints + cascade share logic.
 
 Cascade share when sharing a dashboard:
-  Dashboard → Charts → (workspace_table_id → workspace)
+  Dashboard → Charts → (dataset_table_id → dataset)
 """
 
 import uuid
@@ -16,7 +16,7 @@ from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_full_access
 from app.models.models import Chart, Dashboard, DashboardChart, DataSource
 from app.models.chat_session import ChatSession
-from app.models.dataset_workspace import DatasetWorkspace, DatasetWorkspaceTable
+from app.models.dataset import Dataset, DatasetTable
 from app.models.resource_share import ResourceShare, ResourceType, SharePermission
 from app.models.user import User, UserStatus
 from app.schemas.auth import ShareAllTeamRequest, ShareCreate, ShareResponse, ShareUpdate
@@ -60,11 +60,11 @@ def cascade_share_dashboard(
     shared_by: uuid.UUID,
 ) -> None:
     """
-    Share a dashboard and cascade-share all its charts + their datasets/workspaces.
+    Share a dashboard and cascade-share all its charts + their datasets.
     """
     _upsert_share(db, ResourceType.DASHBOARD, dashboard_id, user_id, permission, shared_by)
 
-    workspace_ids: set[int] = set()
+    dataset_ids: set[int] = set()
 
     dc_rows = (
         db.query(DashboardChart)
@@ -77,15 +77,15 @@ def cascade_share_dashboard(
             continue
         _upsert_share(db, ResourceType.CHART, chart.id, user_id, permission, shared_by)
 
-        if chart.workspace_table_id:
-            wt = db.query(DatasetWorkspaceTable).filter(
-                DatasetWorkspaceTable.id == chart.workspace_table_id
+        if chart.dataset_table_id:
+            wt = db.query(DatasetTable).filter(
+                DatasetTable.id == chart.dataset_table_id
             ).first()
             if wt:
-                workspace_ids.add(wt.workspace_id)
+                dataset_ids.add(wt.dataset_id)
 
-    for wid in workspace_ids:
-        _upsert_share(db, ResourceType.WORKSPACE, wid, user_id, permission, shared_by)
+    for wid in dataset_ids:
+        _upsert_share(db, ResourceType.DATASET, wid, user_id, permission, shared_by)
 
     db.commit()
 
@@ -102,18 +102,18 @@ def _require_dashboard_cascade_access(db: Session, current_user: User, dashboard
         if not chart:
             continue
         require_full_access(db, current_user, chart, "explore_charts")
-        if not chart.workspace_table_id:
+        if not chart.dataset_table_id:
             continue
-        workspace_table = db.query(DatasetWorkspaceTable).filter(
-            DatasetWorkspaceTable.id == chart.workspace_table_id
+        dataset_table_ref = db.query(DatasetTable).filter(
+            DatasetTable.id == chart.dataset_table_id
         ).first()
-        if not workspace_table:
+        if not dataset_table_ref:
             continue
-        workspace = db.query(DatasetWorkspace).filter(
-            DatasetWorkspace.id == workspace_table.workspace_id
+        dataset_obj = db.query(Dataset).filter(
+            Dataset.id == dataset_table_ref.dataset_id
         ).first()
-        if workspace:
-            require_full_access(db, current_user, workspace, "workspaces")
+        if dataset_obj:
+            require_full_access(db, current_user, dataset_obj, "datasets")
 
 
 def _revoke_cascade(
@@ -122,7 +122,7 @@ def _revoke_cascade(
     user_id: uuid.UUID,
 ) -> None:
     """
-    Revoke dashboard share and cascade-revoke charts/datasets/workspaces that
+    Revoke dashboard share and cascade-revoke charts/datasets that
     were ONLY shared via this dashboard (no direct share record).
     """
     # Collect resources linked to dashboard
@@ -132,22 +132,22 @@ def _revoke_cascade(
         .all()
     )
     child_records: list[tuple[ResourceType, int]] = []
-    workspace_ids: set[int] = set()
+    dataset_ids: set[int] = set()
 
     for dc in dc_rows:
         chart = db.query(Chart).filter(Chart.id == dc.chart_id).first()
         if not chart:
             continue
         child_records.append((ResourceType.CHART, chart.id))
-        if chart.workspace_table_id:
-            wt = db.query(DatasetWorkspaceTable).filter(
-                DatasetWorkspaceTable.id == chart.workspace_table_id
+        if chart.dataset_table_id:
+            wt = db.query(DatasetTable).filter(
+                DatasetTable.id == chart.dataset_table_id
             ).first()
             if wt:
-                workspace_ids.add(wt.workspace_id)
+                dataset_ids.add(wt.dataset_id)
 
-    for wid in workspace_ids:
-        child_records.append((ResourceType.WORKSPACE, wid))
+    for wid in dataset_ids:
+        child_records.append((ResourceType.DATASET, wid))
 
     # Delete cascade shares
     for rtype, rid in child_records:
@@ -173,7 +173,7 @@ _RESOURCE_MODEL_MAP = {
     ResourceType.DASHBOARD: (Dashboard, "dashboards", "id"),
     ResourceType.CHART: (Chart, "explore_charts", "id"),
     ResourceType.DATASOURCE: (DataSource, "data_sources", "id"),
-    ResourceType.WORKSPACE: (DatasetWorkspace, "workspaces", "id"),
+    ResourceType.DATASET: (Dataset, "datasets", "id"),
     ResourceType.CHAT_SESSION: (ChatSession, "ai_chat", "session_id"),
 }
 
@@ -230,7 +230,7 @@ def add_share(
 ):
     """
     Share a resource with a user.
-    Dashboards trigger cascade-share of charts + datasets/workspaces.
+    Dashboards trigger cascade-share of charts + datasets.
     """
     _check_share_ownership(db, current_user, resource_type, resource_id)
 

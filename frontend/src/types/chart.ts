@@ -28,7 +28,7 @@ export interface Chart {
   id: number;
   name: string;
   description?: string;
-  workspace_table_id?: number | null;
+  dataset_table_id?: number | null;
   chart_type: ChartType;
   config: ChartConfig;
   created_at?: string;
@@ -39,7 +39,7 @@ export interface Chart {
 export interface ChartCreate {
   name: string;
   description?: string;
-  workspace_table_id?: number | null;
+  dataset_table_id?: number | null;
   chart_type: ChartType;
   config: ChartConfig;
 }
@@ -47,7 +47,7 @@ export interface ChartCreate {
 export interface ChartUpdate {
   name?: string;
   description?: string;
-  workspace_table_id?: number | null;
+  dataset_table_id?: number | null;
   chart_type?: ChartType;
   config?: ChartConfig;
 }

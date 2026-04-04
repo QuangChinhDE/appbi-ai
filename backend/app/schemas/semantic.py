@@ -42,6 +42,7 @@ class JoinDefinition(BaseModel):
 class SemanticViewBase(BaseModel):
     name: str
     sql_table_name: Optional[str] = None
+    dataset_table_id: Optional[int] = None
     dimensions: List[DimensionDefinition] = []
     measures: List[MeasureDefinition] = []
     description: Optional[str] = None
@@ -54,6 +55,7 @@ class SemanticViewCreate(SemanticViewBase):
 class SemanticViewUpdate(BaseModel):
     name: Optional[str] = None
     sql_table_name: Optional[str] = None
+    dataset_table_id: Optional[int] = None
     dimensions: Optional[List[DimensionDefinition]] = None
     measures: Optional[List[MeasureDefinition]] = None
     description: Optional[str] = None
@@ -104,6 +106,7 @@ class SemanticExplore(SemanticExploreBase):
 # Semantic Model
 class SemanticModelBase(BaseModel):
     name: str
+    dataset_id: Optional[int] = None
     description: Optional[str] = None
 
 
@@ -113,6 +116,7 @@ class SemanticModelCreate(SemanticModelBase):
 
 class SemanticModelUpdate(BaseModel):
     name: Optional[str] = None
+    dataset_id: Optional[int] = None
     description: Optional[str] = None
 
 
@@ -124,6 +128,46 @@ class SemanticModel(SemanticModelBase):
 
     class Config:
         from_attributes = True
+
+
+# ── Dataset Model Response (aggregated view for Visual Model UI) ──────────
+
+class DatasetModelView(BaseModel):
+    """A semantic view with its source table info for Visual Model UI"""
+    id: int
+    name: str
+    dataset_table_id: Optional[int] = None
+    table_display_name: Optional[str] = None
+    sql_table_name: Optional[str] = None
+    dimensions: List[DimensionDefinition] = []
+    measures: List[MeasureDefinition] = []
+    description: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class DatasetModelExplore(BaseModel):
+    """An explore with resolved join info"""
+    id: int
+    name: str
+    base_view_name: str
+    base_view_id: int
+    joins: List[JoinDefinition] = []
+    description: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class DatasetModelResponse(BaseModel):
+    """Full dataset data model for Visual Model UI"""
+    model_id: Optional[int] = None
+    dataset_id: int
+    dataset_name: str
+    views: List[DatasetModelView] = []
+    explores: List[DatasetModelExplore] = []
+    generated: bool = False  # True if model was auto-generated this request
 
 
 # Query Request & Response

@@ -6,8 +6,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Loader2, AlertCircle, X, Plus, ChevronDown, Code } from 'lucide-react';
 import { useDataSources } from '@/hooks/use-datasources';
-import { useDatasourceTables, useDatasourceTableColumns } from '@/hooks/use-dataset-workspaces';
-import type { AddTableInput } from '@/hooks/use-dataset-workspaces';
+import { useDatasourceTables, useDatasourceTableColumns } from '@/hooks/use-datasets';
+import type { AddTableInput } from '@/hooks/use-datasets';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

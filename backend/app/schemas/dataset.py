@@ -1,31 +1,31 @@
-"""Schemas for Dataset Workspaces (Table-based Datasets)"""
+"""Schemas for Datasets (Table-based Datasets)"""
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel, Field, model_validator
 from uuid import UUID
 
 
-# ===== Workspace Schemas =====
+# ===== Dataset Schemas =====
 
-class WorkspaceBase(BaseModel):
-    """Base workspace schema"""
+class DatasetBase(BaseModel):
+    """Base dataset schema"""
     name: str = Field(..., min_length=1, max_length=200)
     description: Optional[str] = None
 
 
-class WorkspaceCreate(WorkspaceBase):
-    """Schema for creating a new workspace"""
+class DatasetCreate(DatasetBase):
+    """Schema for creating a new dataset"""
     pass
 
 
-class WorkspaceUpdate(BaseModel):
-    """Schema for updating a workspace"""
+class DatasetUpdate(BaseModel):
+    """Schema for updating a dataset"""
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     description: Optional[str] = None
 
 
-class WorkspaceResponse(WorkspaceBase):
-    """Schema for workspace response"""
+class DatasetResponse(DatasetBase):
+    """Schema for dataset response"""
     id: int
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
@@ -37,17 +37,17 @@ class WorkspaceResponse(WorkspaceBase):
         from_attributes = True
 
 
-# ===== Workspace Table Schemas =====
+# ===== Dataset Table Schemas =====
 
-class WorkspaceTableBase(BaseModel):
+class DatasetTableBase(BaseModel):
     """Base table schema"""
     display_name: str = Field(..., description="User-friendly name, e.g., 'Orders'")
     enabled: bool = Field(default=True)
     transformations: Optional[List[Dict[str, Any]]] = Field(default=None, description="List of transformation steps")
 
 
-class TableCreate(WorkspaceTableBase):
-    """Schema for adding a table to workspace"""
+class TableCreate(DatasetTableBase):
+    """Schema for adding a table to dataset"""
     datasource_id: int
     source_kind: str = Field(default="physical_table", description="'physical_table' or 'sql_query'")
     source_table_name: Optional[str] = Field(None, description="Full table name for physical_table")
@@ -77,10 +77,10 @@ class TableUpdate(BaseModel):
     column_formats: Optional[Dict[str, Any]] = Field(default=None, description="Full display format config per column")
 
 
-class TableResponse(WorkspaceTableBase):
+class TableResponse(DatasetTableBase):
     """Schema for table response"""
     id: int
-    workspace_id: int
+    dataset_id: int
     datasource_id: int
     source_kind: str
     source_table_name: Optional[str] = None
@@ -97,10 +97,10 @@ class TableResponse(WorkspaceTableBase):
         from_attributes = True
 
 
-# ===== Workspace with Tables =====
+# ===== Dataset with Tables =====
 
-class WorkspaceWithTables(WorkspaceResponse):
-    """Workspace response including its tables"""
+class DatasetWithTables(DatasetResponse):
+    """Dataset response including its tables"""
     tables: List[TableResponse] = []
 
 

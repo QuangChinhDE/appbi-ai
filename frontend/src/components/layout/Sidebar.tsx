@@ -40,7 +40,7 @@ interface SidebarProps {
 
 const ALL_NAV_ITEMS: NavItem[] = [
   { labelKey: 'sidebar.nav.datasources', href: '/datasources', icon: <Plug className="h-5 w-5" />, module: 'data_sources' },
-  { labelKey: 'sidebar.nav.workspaces', href: '/dataset-workspaces', icon: <Database className="h-5 w-5" />, module: 'workspaces' },
+  { labelKey: 'sidebar.nav.datasets', href: '/datasets', icon: <Database className="h-5 w-5" />, module: 'datasets' },
   { labelKey: 'sidebar.nav.explore', href: '/explore', icon: <Search className="h-5 w-5" />, module: 'explore_charts' },
   { labelKey: 'sidebar.nav.dashboards', href: '/dashboards', icon: <LayoutDashboard className="h-5 w-5" />, module: 'dashboards' },
   { labelKey: 'sidebar.nav.aiReports', href: '/ai-reports', icon: <Bot className="h-5 w-5" />, module: 'ai_agent' },

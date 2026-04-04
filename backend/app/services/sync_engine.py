@@ -1141,21 +1141,21 @@ def _run_sync_job(data_source_id: int, job_id: int) -> None:
         if not isinstance(table_configs, dict):
             table_configs = {}
 
-        # Build a set of tables that the user has actually added to workspaces.
+        # Build a set of tables that the user has actually added to datasets.
         # Skip tables with query_mode="live" — they are queried directly.
-        from app.models import DatasetWorkspaceTable
-        workspace_tables = (
-            db.query(DatasetWorkspaceTable.source_table_name, DatasetWorkspaceTable.query_mode)
+        from app.models import DatasetTable
+        dataset_tables = (
+            db.query(DatasetTable.source_table_name, DatasetTable.query_mode)
             .filter(
-                DatasetWorkspaceTable.datasource_id == data_source_id,
-                DatasetWorkspaceTable.source_kind == "physical_table",
-                DatasetWorkspaceTable.enabled.is_(True),
+                DatasetTable.datasource_id == data_source_id,
+                DatasetTable.source_kind == "physical_table",
+                DatasetTable.enabled.is_(True),
             )
             .all()
         )
         selected_table_keys: set = set()
         live_table_keys: set = set()
-        for stn, qmode in workspace_tables:
+        for stn, qmode in dataset_tables:
             if stn:
                 key = stn.strip('"').strip("'").strip()
                 if (qmode or "synced") == "live":

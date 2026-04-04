@@ -88,14 +88,14 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "list_workspace_tables",
-            "description": "List all workspace tables with their column names and types. Call this before query_table to know exact column names available.",
+            "name": "list_dataset_tables",
+            "description": "List all dataset tables with their column names and types. Call this before query_table to know exact column names available.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "workspace_id": {
+                    "dataset_id": {
                         "type": "integer",
-                        "description": "Optional: filter to a specific workspace ID"
+                        "description": "Optional: filter to a specific dataset ID"
                     }
                 },
                 "required": []
@@ -107,18 +107,18 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "query_table",
             "description": (
-                "Run an aggregated analytical query on a workspace table. "
+                "Run an aggregated analytical query on a dataset table. "
                 "Supports GROUP BY (dimensions), aggregations (measures: sum/avg/count/min/max/count_distinct), "
                 "WHERE filters, ORDER BY, and LIMIT. "
-                "Always prefer this over run_workspace_table to avoid loading raw data. "
+                "Always prefer this over run_dataset_table to avoid loading raw data. "
                 "Measure result columns are aliased as {field}_{function} (e.g. total_points_sum). "
                 "Use order_by with the aliased measure name to rank results."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "workspace_id": {"type": "integer", "description": "Workspace ID"},
-                    "table_id": {"type": "integer", "description": "Table ID within the workspace"},
+                    "dataset_id": {"type": "integer", "description": "Dataset ID"},
+                    "table_id": {"type": "integer", "description": "Table ID within the dataset"},
                     "dimensions": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -171,38 +171,38 @@ TOOL_SCHEMAS = [
                         "description": "Max rows to return (default 20, max 200)"
                     }
                 },
-                "required": ["workspace_id", "table_id"]
+                "required": ["dataset_id", "table_id"]
             }
         }
     },
     {
         "type": "function",
         "function": {
-            "name": "run_workspace_table",
+            "name": "run_dataset_table",
             "description": (
-                "Fetch a sample of raw rows from a workspace table (no aggregation). "
+                "Fetch a sample of raw rows from a dataset table (no aggregation). "
                 f"Use only for exploring data shape/samples. "
                 "PREFER query_table for any analytical question. "
-                f"Returns up to {settings.ai_workspace_table_limit} rows."
+                f"Returns up to {settings.ai_dataset_table_limit} rows."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "workspace_id": {
+                    "dataset_id": {
                         "type": "integer",
-                        "description": "Workspace ID"
+                        "description": "Dataset ID"
                     },
                     "table_id": {
                         "type": "integer",
-                        "description": "Table ID within the workspace"
+                        "description": "Table ID within the dataset"
                     },
                     "limit": {
                         "type": "integer",
                         "default": 50,
-                        "description": f"Number of rows to fetch (max {settings.ai_workspace_table_limit})"
+                        "description": f"Number of rows to fetch (max {settings.ai_dataset_table_limit})"
                     }
                 },
-                "required": ["workspace_id", "table_id"]
+                "required": ["dataset_id", "table_id"]
             }
         }
     },
@@ -211,9 +211,9 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "create_chart",
             "description": (
-                "Create a new chart visualization from a workspace table. "
+                "Create a new chart visualization from a dataset table. "
                 "Use when no existing chart matches what the user needs and you have identified the right table and columns. "
-                "Call list_workspace_tables first to get workspace_id and table_id. "
+                "Call list_dataset_tables first to get dataset_id and table_id. "
                 "With save=false returns a chart preview; save=true persists the chart permanently."
             ),
             "parameters": {
@@ -223,13 +223,13 @@ TOOL_SCHEMAS = [
                         "type": "string",
                         "description": "Chart title (descriptive, e.g. 'Revenue by Region')"
                     },
-                    "workspace_id": {
+                    "dataset_id": {
                         "type": "integer",
-                        "description": "Workspace ID (from list_workspace_tables)"
+                        "description": "Dataset ID (from list_dataset_tables)"
                     },
                     "table_id": {
                         "type": "integer",
-                        "description": "Table ID within the workspace (from list_workspace_tables)"
+                        "description": "Table ID within the dataset (from list_dataset_tables)"
                     },
                     "chart_type": {
                         "type": "string",
@@ -273,7 +273,7 @@ TOOL_SCHEMAS = [
                         "description": "If true, save chart permanently to the system. Default false (preview only)."
                     }
                 },
-                "required": ["name", "workspace_id", "table_id", "chart_type", "config"]
+                "required": ["name", "dataset_id", "table_id", "chart_type", "config"]
             }
         }
     },
@@ -282,7 +282,7 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "explore_data",
             "description": (
-                "Profile a workspace table to discover patterns, distributions, and data quality. "
+                "Profile a dataset table to discover patterns, distributions, and data quality. "
                 "Use when user says 'tell me about this data', 'what columns does this table have?', "
                 "'anything interesting?', or before creating charts. "
                 "Returns column stats, sample values, cardinality, null rates, and data patterns."
@@ -290,13 +290,13 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "workspace_id": {
+                    "dataset_id": {
                         "type": "integer",
-                        "description": "Workspace ID (from list_workspace_tables)"
+                        "description": "Dataset ID (from list_dataset_tables)"
                     },
                     "table_id": {
                         "type": "integer",
-                        "description": "Table ID to profile (from list_workspace_tables)"
+                        "description": "Table ID to profile (from list_dataset_tables)"
                     },
                     "analysis_type": {
                         "type": "string",
@@ -313,7 +313,7 @@ TOOL_SCHEMAS = [
                         "description": "Specific columns to analyze. If empty, analyze all (up to 10)."
                     }
                 },
-                "required": ["workspace_id", "table_id"]
+                "required": ["dataset_id", "table_id"]
             }
         }
     },
@@ -329,9 +329,9 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "workspace_id": {
+                    "dataset_id": {
                         "type": "integer",
-                        "description": "Workspace ID"
+                        "description": "Dataset ID"
                     },
                     "table_id": {
                         "type": "integer",
@@ -361,7 +361,7 @@ TOOL_SCHEMAS = [
                         "description": "Columns to group by for drill-down analysis (e.g. ['Country', 'Confederation'])"
                     }
                 },
-                "required": ["workspace_id", "table_id", "metric_column", "aggregation", "dimension_columns"]
+                "required": ["dataset_id", "table_id", "metric_column", "aggregation", "dimension_columns"]
             }
         }
     },
@@ -370,7 +370,7 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "create_dashboard",
             "description": (
-                "Automatically generate a complete dashboard with multiple charts from workspace tables. "
+                "Automatically generate a complete dashboard with multiple charts from dataset tables. "
                 "Use when user asks 'build me a dashboard', 'create a dashboard for X', "
                 "'I need a monitoring page'. Auto-selects chart types based on data schema."
             ),
@@ -386,13 +386,13 @@ TOOL_SCHEMAS = [
                         "items": {
                             "type": "object",
                             "properties": {
-                                "workspace_id": {"type": "integer"},
+                                "dataset_id": {"type": "integer"},
                                 "table_id": {"type": "integer"},
                                 "table_name": {"type": "string"}
                             },
-                            "required": ["workspace_id", "table_id"]
+                            "required": ["dataset_id", "table_id"]
                         },
-                        "description": "Tables to use (from list_workspace_tables). Include workspace_id + table_id."
+                        "description": "Tables to use (from list_dataset_tables). Include dataset_id + table_id."
                     },
                     "chart_count": {
                         "type": "integer",
@@ -575,20 +575,20 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
         ]
         return {"count": len(results), "dashboards": results}
 
-    # ── list_workspace_tables ──────────────────────────────────────────────────
-    elif name == "list_workspace_tables":
-        workspace_id_filter = args.get("workspace_id")
-        workspaces = await bi_client.list_workspaces(token=token)
+    # ── list_dataset_tables ──────────────────────────────────────────────────
+    elif name == "list_dataset_tables":
+        dataset_id_filter = args.get("dataset_id")
+        datasets = await bi_client.list_datasets(token=token)
 
         result = []
-        for ws in workspaces:
-            if workspace_id_filter and ws["id"] != workspace_id_filter:
+        for ws in datasets:
+            if dataset_id_filter and ws["id"] != dataset_id_filter:
                 continue
-            full_ws = await bi_client.get_workspace(ws["id"], token=token)
+            full_ws = await bi_client.get_dataset(ws["id"], token=token)
             tables = full_ws.get("tables", [])
             result.append({
-                "workspace_id": ws["id"],
-                "workspace_name": ws["name"],
+                "dataset_id": ws["id"],
+                "dataset_name": ws["name"],
                 "tables": [
                     {
                         "table_id": t["id"],
@@ -607,11 +607,11 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
                 ],
             })
 
-        return {"workspaces": result}
+        return {"datasets": result}
 
     # ── query_table ────────────────────────────────────────────────────────────
     elif name == "query_table":
-        workspace_id = int(args["workspace_id"])
+        dataset_id = int(args["dataset_id"])
         table_id = int(args["table_id"])
         dimensions = args.get("dimensions") or []
         measures = args.get("measures") or []
@@ -620,7 +620,7 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
         limit = min(int(args.get("limit", 20)), 200)
 
         result = await bi_client.execute_table_query(
-            workspace_id=workspace_id,
+            dataset_id=dataset_id,
             table_id=table_id,
             dimensions=dimensions if dimensions else None,
             measures=measures if measures else None,
@@ -634,22 +634,22 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
         columns = [c.get("name", c) if isinstance(c, dict) else c for c in result.get("columns", [])]
         rows = result.get("rows", [])
         return {
-            "workspace_id": workspace_id,
+            "dataset_id": dataset_id,
             "table_id": table_id,
             "columns": columns,
             "rows": rows,
             "row_count": len(rows),
         }
 
-    # ── run_workspace_table ────────────────────────────────────────────────────
-    elif name == "run_workspace_table":
-        workspace_id = int(args["workspace_id"])
+    # ── run_dataset_table ────────────────────────────────────────────────────
+    elif name == "run_dataset_table":
+        dataset_id = int(args["dataset_id"])
         table_id = int(args["table_id"])
-        limit = min(int(args.get("limit", settings.ai_workspace_table_limit)), settings.ai_workspace_table_limit)
+        limit = min(int(args.get("limit", settings.ai_dataset_table_limit)), settings.ai_dataset_table_limit)
 
-        result = await bi_client.preview_workspace_table(workspace_id, table_id, limit=limit, token=token)
+        result = await bi_client.preview_dataset_table(dataset_id, table_id, limit=limit, token=token)
         return {
-            "workspace_id": workspace_id,
+            "dataset_id": dataset_id,
             "table_id": table_id,
             "columns": result.get("columns", []),
             "rows": result.get("rows", []),
@@ -659,7 +659,7 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
     # ── create_chart ───────────────────────────────────────────────────────────
     elif name == "create_chart":
         import datetime as _dt
-        workspace_id = int(args["workspace_id"])
+        dataset_id = int(args["dataset_id"])
         table_id = int(args["table_id"])
         chart_type = args.get("chart_type", "BAR").upper()
         config = args.get("config") or {}
@@ -677,7 +677,7 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
 
         # Execute query to get chart data
         exec_result = await bi_client.execute_table_query(
-            workspace_id=workspace_id,
+            dataset_id=dataset_id,
             table_id=table_id,
             dimensions=dimensions or None,
             measures=measures or None,
@@ -691,7 +691,7 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
         if save:
             try:
                 saved_chart = await bi_client.ai_chart_preview(
-                    workspace_table_id=table_id,
+                    dataset_table_id=table_id,
                     chart_type=chart_type,
                     config=config,
                     name=chart_name,
@@ -712,19 +712,19 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
             "chart_id": chart_id,
             "saved": saved,
             "config": config,
-            "workspace_id": workspace_id,
+            "dataset_id": dataset_id,
             "table_id": table_id,
         }
 
     # ── explore_data ───────────────────────────────────────────────────────────
     elif name == "explore_data":
-        workspace_id = int(args["workspace_id"])
+        dataset_id = int(args["dataset_id"])
         table_id = int(args["table_id"])
         analysis_type = args.get("analysis_type", "overview")
         focus_columns: List[str] = args.get("focus_columns") or []
 
         # Step 1: get a sample to discover columns
-        sample = await bi_client.preview_workspace_table(workspace_id, table_id, limit=50, token=token)
+        sample = await bi_client.preview_dataset_table(dataset_id, table_id, limit=50, token=token)
         columns_raw = sample.get("columns", [])
         all_columns = [c if isinstance(c, str) else c.get("name", str(c)) for c in columns_raw]
         rows_sample = sample.get("rows", [])
@@ -753,7 +753,7 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
             return {
                 "analysis_type": "overview",
                 "table_id": table_id,
-                "workspace_id": workspace_id,
+                "dataset_id": dataset_id,
                 "sample_rows": total_rows_in_sample,
                 "columns": all_columns,
                 "column_stats": col_stats,
@@ -770,7 +770,7 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
             for col in categorical_cols:
                 try:
                     dist = await bi_client.execute_table_query(
-                        workspace_id=workspace_id,
+                        dataset_id=dataset_id,
                         table_id=table_id,
                         dimensions=[col],
                         measures=[{"field": col, "function": "count"}],
@@ -807,7 +807,7 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
             metric_col = numeric_cols[0]
             try:
                 trend = await bi_client.execute_table_query(
-                    workspace_id=workspace_id,
+                    dataset_id=dataset_id,
                     table_id=table_id,
                     dimensions=[time_col],
                     measures=[{"field": metric_col, "function": "sum"}, {"field": metric_col, "function": "count"}],
@@ -830,7 +830,7 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
     # ── explain_insight ────────────────────────────────────────────────────────
     elif name == "explain_insight":
         import datetime as _dt
-        workspace_id = int(args["workspace_id"])
+        dataset_id = int(args["dataset_id"])
         table_id = int(args["table_id"])
         metric_col = args["metric_column"]
         agg = args.get("aggregation", "sum")
@@ -845,7 +845,7 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
             for dim in dimension_cols[:5]:
                 try:
                     res = await bi_client.execute_table_query(
-                        workspace_id=workspace_id,
+                        dataset_id=dataset_id,
                         table_id=table_id,
                         dimensions=[dim],
                         measures=[{"field": metric_col, "function": agg}],
@@ -903,12 +903,12 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
         # ── Overall metric current vs previous ──
         try:
             curr_res = await bi_client.execute_table_query(
-                workspace_id=workspace_id, table_id=table_id,
+                dataset_id=dataset_id, table_id=table_id,
                 measures=[{"field": metric_col, "function": agg}],
                 filters=curr_filters, limit=1, token=token,
             )
             prev_res = await bi_client.execute_table_query(
-                workspace_id=workspace_id, table_id=table_id,
+                dataset_id=dataset_id, table_id=table_id,
                 measures=[{"field": metric_col, "function": agg}],
                 filters=prev_filters, limit=1, token=token,
             )
@@ -924,7 +924,7 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
         for dim in dimension_cols[:5]:
             try:
                 curr_dim = await bi_client.execute_table_query(
-                    workspace_id=workspace_id, table_id=table_id,
+                    dataset_id=dataset_id, table_id=table_id,
                     dimensions=[dim],
                     measures=[{"field": metric_col, "function": agg}],
                     filters=curr_filters,
@@ -932,7 +932,7 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
                     limit=10, token=token,
                 )
                 prev_dim = await bi_client.execute_table_query(
-                    workspace_id=workspace_id, table_id=table_id,
+                    dataset_id=dataset_id, table_id=table_id,
                     dimensions=[dim],
                     measures=[{"field": metric_col, "function": agg}],
                     filters=prev_filters,
@@ -984,15 +984,15 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
         chart_count = min(int(args.get("chart_count", 6)), 8)
 
         if not tables_arg:
-            return {"error": "No tables provided. Call list_workspace_tables first to find table IDs."}
+            return {"error": "No tables provided. Call list_dataset_tables first to find table IDs."}
 
         # Analyse first table to understand schema
         first = tables_arg[0]
-        ws_id = int(first["workspace_id"])
+        ws_id = int(first["dataset_id"])
         tbl_id = int(first["table_id"])
         tbl_name = first.get("table_name", f"table_{tbl_id}")
 
-        sample = await bi_client.preview_workspace_table(ws_id, tbl_id, limit=20, token=token)
+        sample = await bi_client.preview_dataset_table(ws_id, tbl_id, limit=20, token=token)
         all_cols = [c if isinstance(c, str) else c.get("name", str(c)) for c in sample.get("columns", [])]
         rows_sample = sample.get("rows", [])
 
@@ -1057,7 +1057,7 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
         for i, (chart_type, chart_name, chart_cfg) in enumerate(chart_specs):
             try:
                 preview = await bi_client.ai_chart_preview(
-                    workspace_table_id=tbl_id,
+                    dataset_table_id=tbl_id,
                     chart_type=chart_type,
                     config=chart_cfg,
                     name=chart_name,

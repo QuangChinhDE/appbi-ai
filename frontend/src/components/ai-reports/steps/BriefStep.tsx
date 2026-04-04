@@ -289,7 +289,7 @@ export function BriefStep(props: any) {
                   return (
                     <div key={item.key}>
                       <p className="text-sm font-medium text-gray-900">{item.tableName}</p>
-                      <p className="text-[11px] text-gray-400">{item.workspaceName}</p>
+                      <p className="text-[11px] text-gray-400">{item.datasetName}</p>
                       {desc?.autoDescription && (
                         <p className="mt-1 text-xs leading-relaxed text-gray-500">{desc.autoDescription}</p>
                       )}

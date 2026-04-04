@@ -23,7 +23,7 @@ class FeedbackCreate(BaseModel):
     message_id: Optional[str] = None
     user_query: str
     feedback_type: str  # "wrong_table" | "wrong_chart" | "unclear" | "other"
-    correct_resource_type: Optional[str] = None   # "chart" | "workspace_table"
+    correct_resource_type: Optional[str] = None   # "chart" | "dataset_table"
     correct_resource_id: Optional[int] = None
     ai_matched_resource_type: Optional[str] = None
     ai_matched_resource_id: Optional[int] = None
@@ -93,11 +93,11 @@ def get_feedback_stats(
     positive = base_q.filter(FB.is_positive == True).with_entities(func.count(FB.id)).scalar() or 0
     negative = total - positive
 
-    # Top corrected workspace tables (respects month filter)
+    # Top corrected dataset tables (respects month filter)
     top_tables = (
         base_q.with_entities(FB.correct_resource_id, func.count(FB.id).label("cnt"))
         .filter(
-            FB.correct_resource_type == "workspace_table",
+            FB.correct_resource_type == "dataset_table",
             FB.correct_resource_id.isnot(None),
         )
         .group_by(FB.correct_resource_id)

@@ -23,7 +23,7 @@ services:
       OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-AppBI AI Chat}
       AI_SESSION_TTL_MINUTES: ${AI_SESSION_TTL_MINUTES:-30}
       AI_MAX_TOOL_CALLS: ${AI_MAX_TOOL_CALLS:-8}
-      AI_WORKSPACE_TABLE_LIMIT: ${AI_WORKSPACE_TABLE_LIMIT:-50}
+      AI_DATASET_TABLE_LIMIT: ${AI_DATASET_TABLE_LIMIT:-50}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     ports:
       # Bind to 127.0.0.1 so the chat service is reachable only via nginx,

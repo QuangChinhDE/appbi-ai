@@ -6,8 +6,8 @@
 import React, { useState, useMemo } from 'react';
 import { Search, Database, CheckSquare, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import { useDataSources } from '@/hooks/use-datasources';
-import { useDatasourceTables } from '@/hooks/use-dataset-workspaces';
-import type { DatasourceTable, AddTableInput } from '@/hooks/use-dataset-workspaces';
+import { useDatasourceTables } from '@/hooks/use-datasets';
+import type { DatasourceTable, AddTableInput } from '@/hooks/use-datasets';
 
 interface PhysicalTableTabProps {
   onAddTable: (input: AddTableInput) => Promise<void>;
@@ -206,7 +206,7 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             disabled={isLoading}
           />
-          <p className="text-xs text-gray-500 mt-1">This name will be shown in the workspace</p>
+          <p className="text-xs text-gray-500 mt-1">This name will be shown in the dataset</p>
         </div>
       )}
 

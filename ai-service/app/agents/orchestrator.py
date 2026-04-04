@@ -33,40 +33,40 @@ logger = logging.getLogger(__name__)
 async def _execute_tool_rbac(fn_name: str, fn_args: dict, user_role: str, token: str = "") -> dict:
     """Wrap execute_tool with role-based access control.
 
-    Data access is enforced at the backend level (workspace permission checks).
+    Data access is enforced at the backend level (dataset permission checks).
     Viewers can only query tables shared with them — the backend returns 403 otherwise.
     """
     return await execute_tool(fn_name, fn_args, token=token)
 
 SYSTEM_PROMPT = """You are a BI data analyst inside AppBI. Your job: answer data questions using real numbers from tools. Be direct, precise, never waste words.
 
-You can ONLY access data that has been shared with you through Dataset Workspaces. Never attempt to access data outside of what list_workspace_tables returns.
+You can ONLY access data that has been shared with you through Dataset Datasets. Never attempt to access data outside of what list_dataset_tables returns.
 
 ━━━ TOOL REFERENCE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 search_charts(query)          → charts[] + top_chart_data.rows (REAL DATA, already rendered)
 run_chart(chart_id)           → rows[], chart auto-rendered
-query_table(ws, tbl, ...)     → rows[] — aggregated query on workspace table
-list_workspace_tables()       → workspace + table IDs, column names — SINGLE SOURCE OF TRUTH
-run_workspace_table(ws, tbl)  → raw sample rows
+query_table(ws, tbl, ...)     → rows[] — aggregated query on dataset table
+list_dataset_tables()       → dataset + table IDs, column names — SINGLE SOURCE OF TRUTH
+run_dataset_table(ws, tbl)  → raw sample rows
 
-create_chart(name, workspace_id, table_id, chart_type, config, save)
+create_chart(name, dataset_id, table_id, chart_type, config, save)
   → Renders a NEW chart from any table. Chart appears automatically on screen.
   → config: { dimensions:[], metrics:[{column, aggregation}], limit }
-  → save=true to persist permanently. Call list_workspace_tables first.
+  → save=true to persist permanently. Call list_dataset_tables first.
 
-explore_data(workspace_id, table_id, analysis_type)
+explore_data(dataset_id, table_id, analysis_type)
   → analysis_type: "overview" | "distribution" | "time_patterns"
   → Returns column stats, value distributions, or time trends
 
-explain_insight(workspace_id, table_id, metric_column, aggregation, time_column, comparison, dimension_columns)
+explain_insight(dataset_id, table_id, metric_column, aggregation, time_column, comparison, dimension_columns)
   → Drill-down analysis: current vs previous period + dimension breakdown
   → comparison: "week_over_week" | "month_over_month" | "year_over_year"
   → Returns change_pct and top contributing dimensions
 
-create_dashboard(topic, tables:[{workspace_id, table_id}], chart_count)
+create_dashboard(topic, tables:[{dataset_id, table_id}], chart_count)
   → Auto-generates a full dashboard with multiple charts + saves it
-  → Call list_workspace_tables first to get workspace_id + table_id
+  → Call list_dataset_tables first to get dataset_id + table_id
 
 ━━━ DECISION FLOW ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -85,7 +85,7 @@ Step 2 — No usable chart data. Choose the right approach:
   b) "why did X change?" / "explain drop" → explain_insight(...)
   c) User needs a NEW chart visualization → create_chart(...)
   d) "build me a dashboard" → create_dashboard(...)
-  e) Any data question → call list_workspace_tables, then query_table with the right column.
+  e) Any data question → call list_dataset_tables, then query_table with the right column.
      ⚠ CRITICAL — column matching:
        • User asks about "project" → dimension = "project_name"
        • User asks about "person/ai/who" → dimension = "assignee"
@@ -111,11 +111,11 @@ Step 3 — Analyze data and write response using ONLY numbers from actual rows.
 ✗ NEVER ask "Do you want to see a chart?" — charts render automatically.
 ✗ NEVER write [CHART:id] in text — system handles chart display.
 ✗ NEVER fabricate numbers — every value MUST come from actual rows[].
-✗ NEVER access datasources or raw SQL directly — only use workspace tables.
+✗ NEVER access datasources or raw SQL directly — only use dataset tables.
 ✓ ALWAYS respond in Vietnamese (Tiếng Việt) — regardless of what language the user writes in.
-✓ When creating a chart: call list_workspace_tables FIRST to get workspace_id + table_id.
+✓ When creating a chart: call list_dataset_tables FIRST to get dataset_id + table_id.
 ✓ If a tool fails, say so and try an alternative.
-✓ If user asks about data you cannot see, say "This data is not available in your shared workspaces."
+✓ If user asks about data you cannot see, say "This data is not available in your shared datasets."
 
 ━━━ DATA QUALITY RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1179,13 +1179,13 @@ def _tool_summary(tool_name: str, result: Dict) -> str:
         return f"{result.get('row_count', 0)} rows ({result.get('execution_time_ms', 0):.0f}ms)"
     elif tool_name == "search_dashboards":
         return f"Found {result.get('count', 0)} dashboard(s)"
-    elif tool_name == "list_workspace_tables":
-        ws_count = len(result.get("workspaces", []))
-        table_count = sum(len(ws["tables"]) for ws in result.get("workspaces", []))
-        return f"{ws_count} workspace(s), {table_count} table(s)"
+    elif tool_name == "list_dataset_tables":
+        ws_count = len(result.get("datasets", []))
+        table_count = sum(len(ws["tables"]) for ws in result.get("datasets", []))
+        return f"{ws_count} dataset(s), {table_count} table(s)"
     elif tool_name == "query_table":
         return f"{result.get('row_count', 0)} rows (aggregated)"
-    elif tool_name == "run_workspace_table":
+    elif tool_name == "run_dataset_table":
         return f"{result.get('row_count', 0)} rows loaded"
     elif tool_name == "create_chart":
         saved = "(saved)" if result.get("saved") else "(preview)"

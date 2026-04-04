@@ -1,5 +1,5 @@
 /**
- * Dataset Workspaces List Page
+ * Dataset Datasets List Page
  */
 'use client';
 
@@ -14,64 +14,64 @@ import { PageListLayout } from '@/components/common/PageListLayout';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { useI18n } from '@/providers/LanguageProvider';
 import { 
-  useWorkspaces, 
-  useCreateWorkspace, 
-  useDeleteWorkspace,
-  type CreateWorkspaceInput,
-} from '@/hooks/use-dataset-workspaces';
+  useDatasets, 
+  useCreateDataset, 
+  useDeleteDataset,
+  type CreateDatasetInput,
+} from '@/hooks/use-datasets';
 
-export default function DatasetWorkspacesPage() {
+export default function DatasetsPage() {
   const router = useRouter();
   const { t, locale } = useI18n();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   
-  const { data: workspaces, isLoading, error } = useWorkspaces();
+  const { data: datasets, isLoading, error } = useDatasets();
   const { data: permData } = usePermissions();
-  const canEdit = hasPermission(permData?.permissions, 'workspaces', 'edit');
-  const createMutation = useCreateWorkspace();
-  const deleteMutation = useDeleteWorkspace();
-  const workspaceItems = workspaces ?? [];
-  const documentedWorkspaces = workspaceItems.filter((workspace) => Boolean(workspace.description?.trim())).length;
-  const updatedThisWeek = workspaceItems.filter((workspace) => {
-    const updatedAt = new Date(workspace.updated_at).getTime();
+  const canEdit = hasPermission(permData?.permissions, 'datasets', 'edit');
+  const createMutation = useCreateDataset();
+  const deleteMutation = useDeleteDataset();
+  const datasetItems = datasets ?? [];
+  const documentedDatasets = datasetItems.filter((dataset) => Boolean(dataset.description?.trim())).length;
+  const updatedThisWeek = datasetItems.filter((dataset) => {
+    const updatedAt = new Date(dataset.updated_at).getTime();
     return Number.isFinite(updatedAt) && Date.now() - updatedAt <= 7 * 24 * 60 * 60 * 1000;
   }).length;
-  const [workspaceToDelete, setWorkspaceToDelete] = useState<{ id: number; name: string } | null>(null);
+  const [datasetToDelete, setDatasetToDelete] = useState<{ id: number; name: string } | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
-  const [isDeletingWorkspace, setIsDeletingWorkspace] = useState(false);
+  const [isDeletingDataset, setIsDeletingDataset] = useState(false);
 
-  const handleCreateWorkspace = async (input: CreateWorkspaceInput) => {
+  const handleCreateDataset = async (input: CreateDatasetInput) => {
     try {
-      const workspace = await createMutation.mutateAsync(input);
+      const dataset = await createMutation.mutateAsync(input);
       setIsCreateModalOpen(false);
-      router.push(`/dataset-workspaces/${workspace.id}`);
+      router.push(`/datasets/${dataset.id}`);
     } catch (error) {
-      console.error('Failed to create workspace:', error);
-      alert('Failed to create workspace. Please try again.');
+      console.error('Failed to create dataset:', error);
+      alert('Failed to create dataset. Please try again.');
     }
   };
 
-  const handleDeleteWorkspace = (id: number, name: string) => {
-    setWorkspaceToDelete({ id, name });
+  const handleDeleteDataset = (id: number, name: string) => {
+    setDatasetToDelete({ id, name });
     setDeleteConstraints(null);
   };
 
-  const confirmDeleteWorkspace = async () => {
-    if (!workspaceToDelete) return;
-    setIsDeletingWorkspace(true);
+  const confirmDeleteDataset = async () => {
+    if (!datasetToDelete) return;
+    setIsDeletingDataset(true);
     try {
-      await deleteMutation.mutateAsync(workspaceToDelete.id);
-      setWorkspaceToDelete(null);
+      await deleteMutation.mutateAsync(datasetToDelete.id);
+      setDatasetToDelete(null);
     } catch (error: any) {
       const detail = error.response?.data?.detail;
       if (detail?.constraints) {
         setDeleteConstraints(detail.constraints);
       } else {
-        alert(`Failed to delete workspace: ${detail || error.message}`);
-        setWorkspaceToDelete(null);
+        alert(`Failed to delete dataset: ${detail || error.message}`);
+        setDatasetToDelete(null);
       }
     } finally {
-      setIsDeletingWorkspace(false);
+      setIsDeletingDataset(false);
     }
   };
 
@@ -85,7 +85,7 @@ export default function DatasetWorkspacesPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <h2 className="text-xl font-semibold text-gray-900 mb-2">Failed to load workspaces</h2>
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">Failed to load datasets</h2>
           <p className="text-gray-600">
             {error instanceof Error ? error.message : 'An unexpected error occurred'}
           </p>
@@ -97,29 +97,29 @@ export default function DatasetWorkspacesPage() {
   return (
     <>
       <PageListLayout
-        title={t('module.workspaces.title')}
+        title={t('module.datasets.title')}
         description="Table-based datasets for exploring and analyzing data from your datasources"
         overview={(
           <ModuleOverview
             icon={Database}
-            title={t('overview.workspaces.title')}
-            description={t('overview.workspaces.description')}
-            badges={[t('overview.workspaces.badge1'), t('overview.workspaces.badge2'), t('overview.workspaces.badge3')]}
+            title={t('overview.datasets.title')}
+            description={t('overview.datasets.description')}
+            badges={[t('overview.datasets.badge1'), t('overview.datasets.badge2'), t('overview.datasets.badge3')]}
             stats={[
               {
-                label: t('overview.workspaces.count'),
-                value: workspaceItems.length,
-                helper: t('overview.workspaces.countHelper'),
+                label: t('overview.datasets.count'),
+                value: datasetItems.length,
+                helper: t('overview.datasets.countHelper'),
               },
               {
-                label: t('overview.workspaces.documented'),
-                value: documentedWorkspaces,
-                helper: t('overview.workspaces.documentedHelper'),
+                label: t('overview.datasets.documented'),
+                value: documentedDatasets,
+                helper: t('overview.datasets.documentedHelper'),
               },
               {
-                label: t('overview.workspaces.updated'),
+                label: t('overview.datasets.updated'),
                 value: updatedThisWeek,
-                helper: t('overview.workspaces.updatedHelper'),
+                helper: t('overview.datasets.updatedHelper'),
               },
             ]}
           />
@@ -130,7 +130,7 @@ export default function DatasetWorkspacesPage() {
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
           >
             <Plus className="w-4 h-4" />
-            {t('action.newWorkspace')}
+            {t('action.newDataset')}
           </button>
         ) : undefined}
         isLoading={isLoading}
@@ -139,24 +139,24 @@ export default function DatasetWorkspacesPage() {
         defaultView="grid"
       >
         {({ viewMode, filterText }) => {
-          const filtered = (workspaces ?? []).filter((w: any) =>
+          const filtered = (datasets ?? []).filter((w: any) =>
             w.name.toLowerCase().includes(filterText.toLowerCase())
           );
 
-          if (!workspaces || workspaces.length === 0) {
+          if (!datasets || datasets.length === 0) {
             return (
               <div className="text-center py-12">
                 <Database className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-                <h2 className="text-xl font-semibold text-gray-900 mb-2">No workspaces yet</h2>
+                <h2 className="text-xl font-semibold text-gray-900 mb-2">No datasets yet</h2>
                 <p className="text-gray-600 mb-6">
-                  Create your first dataset workspace to start exploring tables from your datasources
+                  Create your first dataset dataset to start exploring tables from your datasources
                 </p>
                 <button
                   onClick={() => setIsCreateModalOpen(true)}
                   className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
                 >
                   <Plus className="w-5 h-5" />
-                  Create Workspace
+                  Create Dataset
                 </button>
               </div>
             );
@@ -166,7 +166,7 @@ export default function DatasetWorkspacesPage() {
             return (
               <div className="flex flex-col items-center justify-center h-48 text-center">
                 <Search className="w-8 h-8 text-gray-300 mb-2" />
-                <p className="text-sm text-gray-500">No workspaces matching "<strong>{filterText}</strong>"</p>
+                <p className="text-sm text-gray-500">No datasets matching "<strong>{filterText}</strong>"</p>
               </div>
             );
           }
@@ -174,13 +174,13 @@ export default function DatasetWorkspacesPage() {
           if (viewMode === 'grid') {
             return (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {filtered.map((workspace: any) => (
+                {filtered.map((dataset: any) => (
                   <div
-                    key={workspace.id}
+                    key={dataset.id}
                     className="bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all group"
                   >
                     <button
-                      onClick={() => router.push(`/dataset-workspaces/${workspace.id}`)}
+                      onClick={() => router.push(`/datasets/${dataset.id}`)}
                       className="w-full p-6 text-left"
                     >
                       <div className="flex items-start justify-between mb-3">
@@ -189,29 +189,29 @@ export default function DatasetWorkspacesPage() {
                             <Database className="w-5 h-5 text-blue-600" />
                           </div>
                           <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">
-                            {workspace.name}
+                            {dataset.name}
                           </h3>
-                          <OwnerBadge email={workspace.owner_email} />
+                          <OwnerBadge email={dataset.owner_email} />
                         </div>
                         <ChevronRight className="w-5 h-5 text-gray-400 group-hover:text-blue-600 transition-colors" />
                       </div>
-                      {workspace.description && (
-                        <p className="text-sm text-gray-600 mb-4 line-clamp-2">{workspace.description}</p>
+                      {dataset.description && (
+                        <p className="text-sm text-gray-600 mb-4 line-clamp-2">{dataset.description}</p>
                       )}
                       <div className="flex items-center gap-4 text-xs text-gray-500">
                         <div className="flex items-center gap-1">
                           <Calendar className="w-3 h-3" />
-                          <span>{new Date(workspace.updated_at).toLocaleDateString(locale)}</span>
+                          <span>{new Date(dataset.updated_at).toLocaleDateString(locale)}</span>
                         </div>
                       </div>
                     </button>
                     <div className="px-6 py-3 border-t bg-gray-50 flex items-center justify-end gap-2">
-                      {getResourcePermissions(workspace.user_permission).canDelete && (
+                      {getResourcePermissions(dataset.user_permission).canDelete && (
                       <button
-                        onClick={(e) => { e.stopPropagation(); handleDeleteWorkspace(workspace.id, workspace.name); }}
+                        onClick={(e) => { e.stopPropagation(); handleDeleteDataset(dataset.id, dataset.name); }}
                         disabled={deleteMutation.isPending}
                         className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
-                        title="Delete workspace"
+                        title="Delete dataset"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -226,35 +226,35 @@ export default function DatasetWorkspacesPage() {
           // List view
           return (
             <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100">
-              {filtered.map((workspace: any) => (
-                <div key={workspace.id} className="flex items-center px-5 py-4 hover:bg-gray-50 group">
+              {filtered.map((dataset: any) => (
+                <div key={dataset.id} className="flex items-center px-5 py-4 hover:bg-gray-50 group">
                   <div className="p-2 bg-blue-50 rounded-lg mr-3 flex-shrink-0">
                     <Database className="w-4 h-4 text-blue-600" />
                   </div>
                   <button
-                    onClick={() => router.push(`/dataset-workspaces/${workspace.id}`)}
+                    onClick={() => router.push(`/datasets/${dataset.id}`)}
                     className="flex-1 text-left min-w-0"
                   >
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium text-gray-900 hover:text-blue-600 transition-colors">
-                        {workspace.name}
+                        {dataset.name}
                       </span>
-                      <OwnerBadge email={workspace.owner_email} />
+                      <OwnerBadge email={dataset.owner_email} />
                     </div>
-                    {workspace.description && (
-                      <p className="text-xs text-gray-500 mt-0.5 truncate">{workspace.description}</p>
+                    {dataset.description && (
+                      <p className="text-xs text-gray-500 mt-0.5 truncate">{dataset.description}</p>
                     )}
                   </button>
                   <span className="text-xs text-gray-400 mr-4 flex-shrink-0 flex items-center gap-1">
                     <Calendar className="w-3 h-3" />
-                    {new Date(workspace.updated_at).toLocaleDateString()}
+                    {new Date(dataset.updated_at).toLocaleDateString()}
                   </span>
-                  {getResourcePermissions(workspace.user_permission).canDelete && (
+                  {getResourcePermissions(dataset.user_permission).canDelete && (
                   <button
-                    onClick={() => handleDeleteWorkspace(workspace.id, workspace.name)}
+                    onClick={() => handleDeleteDataset(dataset.id, dataset.name)}
                     disabled={deleteMutation.isPending}
                     className="opacity-0 group-hover:opacity-100 p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-all disabled:opacity-50"
-                    title="Delete workspace"
+                    title="Delete dataset"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -267,35 +267,35 @@ export default function DatasetWorkspacesPage() {
       </PageListLayout>
 
       {isCreateModalOpen && (
-        <CreateWorkspaceModal
+        <CreateDatasetModal
           onClose={() => setIsCreateModalOpen(false)}
-          onCreate={handleCreateWorkspace}
+          onCreate={handleCreateDataset}
           isLoading={createMutation.isPending}
         />
       )}
 
-      {workspaceToDelete && (
+      {datasetToDelete && (
         <DeleteConstraintModal
-          itemName={workspaceToDelete.name}
-          itemTypeLabel="workspace"
+          itemName={datasetToDelete.name}
+          itemTypeLabel="dataset"
           constraints={deleteConstraints}
-          isDeleting={isDeletingWorkspace}
-          onConfirm={confirmDeleteWorkspace}
-          onClose={() => { setWorkspaceToDelete(null); setDeleteConstraints(null); }}
+          isDeleting={isDeletingDataset}
+          onConfirm={confirmDeleteDataset}
+          onClose={() => { setDatasetToDelete(null); setDeleteConstraints(null); }}
         />
       )}
     </>
   );
 }
 
-// Create Workspace Modal Component
-interface CreateWorkspaceModalProps {
+// Create Dataset Modal Component
+interface CreateDatasetModalProps {
   onClose: () => void;
-  onCreate: (input: CreateWorkspaceInput) => void;
+  onCreate: (input: CreateDatasetInput) => void;
   isLoading: boolean;
 }
 
-function CreateWorkspaceModal({ onClose, onCreate, isLoading }: CreateWorkspaceModalProps) {
+function CreateDatasetModal({ onClose, onCreate, isLoading }: CreateDatasetModalProps) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
 
@@ -315,9 +315,9 @@ function CreateWorkspaceModal({ onClose, onCreate, isLoading }: CreateWorkspaceM
         <form onSubmit={handleSubmit}>
           {/* Header */}
           <div className="px-6 py-4 border-b">
-            <h2 className="text-xl font-semibold text-gray-900">Create Workspace</h2>
+            <h2 className="text-xl font-semibold text-gray-900">Create Dataset</h2>
             <p className="text-sm text-gray-500 mt-1">
-              Create a new dataset workspace to organize your tables
+              Create a new dataset dataset to organize your tables
             </p>
           </div>
 
@@ -332,7 +332,7 @@ function CreateWorkspaceModal({ onClose, onCreate, isLoading }: CreateWorkspaceM
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="My Dataset Workspace"
+                placeholder="My Dataset Dataset"
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 required
                 autoFocus
@@ -377,7 +377,7 @@ function CreateWorkspaceModal({ onClose, onCreate, isLoading }: CreateWorkspaceM
                   Creating...
                 </>
               ) : (
-                'Create Workspace'
+                'Create Dataset'
               )}
             </button>
           </div>

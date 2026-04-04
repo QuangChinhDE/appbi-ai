@@ -103,8 +103,8 @@ def build_profiling_report(profiles: list[Any], language: str | None = None) -> 
 
         report.append(
             ProfilingArtifactItem(
-                workspace_id=profile.context.workspace_id,
-                workspace_name=profile.context.workspace_name,
+                dataset_id=profile.context.dataset_id,
+                dataset_name=profile.context.dataset_name,
                 table_id=profile.context.table_id,
                 table_name=profile.context.table_name,
                 row_sample_count=len(rows),

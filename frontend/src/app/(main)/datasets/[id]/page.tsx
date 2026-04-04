@@ -1,5 +1,5 @@
 /**
- * Workspace Detail Page - Shows workspace with sidebar tables and grid preview
+ * Dataset Detail Page - Shows dataset with sidebar tables and grid preview
  */
 'use client';
 
@@ -20,8 +20,9 @@ import {
   ChevronLeft as ChevronLeftPag,
   ChevronRight,
   Bot,
+  Sigma,
 } from 'lucide-react';
-import { useWorkspace, useTablePreview, useUpdateTable, useRemoveTable } from '@/hooks/use-dataset-workspaces';
+import { useDataset, useTablePreview, useUpdateTable, useRemoveTable } from '@/hooks/use-datasets';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
 import { AddTableModal } from '@/components/datasets/AddTableModalV2';
 import { ManageColumnsDrawer } from '@/components/datasets/ManageColumnsDrawer';
@@ -29,7 +30,10 @@ import { AddColumnModal, buildFNS } from '@/components/datasets/AddColumnModal';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { TableDescriptionPanel } from '@/components/datasets/TableDescriptionPanel';
 import { AppModalShell } from '@/components/common/AppModalShell';
-import type { Transformation } from '@/hooks/use-dataset-workspaces';
+import { DataModelCanvas } from '@/components/datasets/DataModelCanvas';
+import { DimensionMeasureEditor } from '@/components/datasets/DimensionMeasureEditor';
+import type { Transformation } from '@/hooks/use-datasets';
+import type { DatasetModelView } from '@/hooks/use-dataset-model';
 
 // Inline Excel formula evaluator (mirrors AddColumnModal's evalExcelFormula)
 function evalExcelFormulaInPage(
@@ -72,11 +76,11 @@ function evalExcelFormulaInPage(
   }
 }
 
-export default function WorkspaceDetailPage() {
+export default function DatasetDetailPage() {
   const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const workspaceId = params?.id ? Number(params.id) : null;
+  const datasetId = params?.id ? Number(params.id) : null;
 
   const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
   const [previewLimit, setPreviewLimit] = useState(200);
@@ -91,16 +95,18 @@ export default function WorkspaceDetailPage() {
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingTable, setIsDeletingTable] = useState(false);
   const [isDescModalOpen, setIsDescModalOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<'tables' | 'model'>('tables');
+  const [editingView, setEditingView] = useState<DatasetModelView | null>(null);
 
-  // Fetch workspace with tables
+  // Fetch dataset with tables
   const { 
-    data: workspace, 
-    isLoading: loadingWorkspace,
-    error: workspaceError,
-    refetch: refetchWorkspace,
-  } = useWorkspace(workspaceId);
+    data: dataset, 
+    isLoading: loadingDataset,
+    error: datasetError,
+    refetch: refetchDataset,
+  } = useDataset(datasetId);
 
-  const resPerms = getResourcePermissions(workspace?.user_permission);
+  const resPerms = getResourcePermissions(dataset?.user_permission);
 
   // Fetch table preview
   const previewOffset = (page - 1) * previewLimit;
@@ -109,29 +115,29 @@ export default function WorkspaceDetailPage() {
     isLoading: loadingPreview,
     error: previewError,
     refetch: refetchPreview,
-  } = useTablePreview(workspaceId, selectedTableId, { limit: previewLimit, offset: previewOffset });
+  } = useTablePreview(datasetId, selectedTableId, { limit: previewLimit, offset: previewOffset });
 
   // Filter tables by search
   const filteredTables = useMemo(() => {
-    if (!workspace?.tables) return [];
-    if (!tableSearchQuery) return workspace.tables;
+    if (!dataset?.tables) return [];
+    if (!tableSearchQuery) return dataset.tables;
     
     const query = tableSearchQuery.toLowerCase();
-    return workspace.tables.filter((table: any) => 
+    return dataset.tables.filter((table: any) => 
       table.display_name?.toLowerCase().includes(query) ||
       table.source_table_name.toLowerCase().includes(query)
     );
-  }, [workspace?.tables, tableSearchQuery]);
+  }, [dataset?.tables, tableSearchQuery]);
 
   // Auto-select table: prefer ?table= URL param, then first table
   React.useEffect(() => {
-    if (workspace?.tables && workspace.tables.length > 0 && !selectedTableId) {
+    if (dataset?.tables && dataset.tables.length > 0 && !selectedTableId) {
       const fromUrl = searchParams.get('table');
       const urlId = fromUrl ? Number(fromUrl) : null;
-      const match = urlId && workspace.tables.find((t: any) => t.id === urlId);
-      setSelectedTableId(match ? urlId : workspace.tables[0].id);
+      const match = urlId && dataset.tables.find((t: any) => t.id === urlId);
+      setSelectedTableId(match ? urlId : dataset.tables[0].id);
     }
-  }, [workspace?.tables, selectedTableId, searchParams]);
+  }, [dataset?.tables, selectedTableId, searchParams]);
 
   // Reset to page 1 when switching table or changing page size
   React.useEffect(() => {
@@ -144,40 +150,40 @@ export default function WorkspaceDetailPage() {
 
   // Handle table addition success — select and surface the new table in the URL
   const handleTableAddSuccess = (created?: { id: number }) => {
-    refetchWorkspace();
+    refetchDataset();
     if (created?.id) {
       setSelectedTableId(created.id);
-      router.replace(`/dataset-workspaces/${workspaceId}?table=${created.id}`, { scroll: false });
+      router.replace(`/datasets/${datasetId}?table=${created.id}`, { scroll: false });
     }
   };
 
   // Handle transformations save
   const handleSaveTransformations = async (transformations: Transformation[]) => {
-    if (!workspaceId || !selectedTableId) return;
+    if (!datasetId || !selectedTableId) return;
 
     await updateTableMutation.mutateAsync({
-      workspaceId,
+      datasetId,
       tableId: selectedTableId,
       input: { transformations },
     });
 
     // Refresh preview to show updated data
     refetchPreview();
-    refetchWorkspace();
+    refetchDataset();
   };
 
   // Handle table deletion with dependency check
   const handleDeleteTable = async () => {
-    if (!workspaceId || !tableToDelete) return;
+    if (!datasetId || !tableToDelete) return;
     setIsDeletingTable(true);
     try {
       await removeTableMutation.mutateAsync({
-        workspaceId,
+        datasetId,
         tableId: tableToDelete.id,
       });
       // Select another table if the deleted one was selected
       if (selectedTableId === tableToDelete.id) {
-        const remaining = (workspace?.tables ?? []).filter((t: any) => t.id !== tableToDelete.id);
+        const remaining = (dataset?.tables ?? []).filter((t: any) => t.id !== tableToDelete.id);
         setSelectedTableId(remaining.length > 0 ? remaining[0].id : null);
       }
       setTableToDelete(null);
@@ -197,7 +203,7 @@ export default function WorkspaceDetailPage() {
 
   // Handle full format change (decimal places, separator, etc.) — persists to DB
   const handleColumnFormatChange = async (colName: string, fmt: Record<string, any> | null) => {
-    if (!workspaceId || !selectedTableId) return;
+    if (!datasetId || !selectedTableId) return;
     const current: Record<string, any> = (selectedTable as any)?.column_formats ?? {};
     let updated: Record<string, any>;
     if (fmt === null) {
@@ -207,16 +213,16 @@ export default function WorkspaceDetailPage() {
       updated = { ...current, [colName]: fmt };
     }
     await updateTableMutation.mutateAsync({
-      workspaceId,
+      datasetId,
       tableId: selectedTableId,
       input: { column_formats: updated },
     });
-    refetchWorkspace();
+    refetchDataset();
   };
 
   // Handle deleting a computed column directly from the grid format popover
   const handleDeleteColumn = async (colName: string) => {
-    if (!workspaceId || !selectedTableId || !selectedTable) return;
+    if (!datasetId || !selectedTableId || !selectedTable) return;
     const existing: Transformation[] = selectedTable.transformations || [];
     const updated = existing.filter(
       (t) =>
@@ -233,11 +239,11 @@ export default function WorkspaceDetailPage() {
       return t;
     });
     await updateTableMutation.mutateAsync({
-      workspaceId,
+      datasetId,
       tableId: selectedTableId,
       input: { transformations: withSelectFixed },
     });
-    refetchWorkspace();
+    refetchDataset();
     refetchPreview();
   };
 
@@ -253,7 +259,7 @@ export default function WorkspaceDetailPage() {
 
   // Handle column type override from format panel
   const handleTypeOverride = async (colName: string, backendType: string | null) => {
-    if (!workspaceId || !selectedTableId) return;
+    if (!datasetId || !selectedTableId) return;
     const current: Record<string, string> = (selectedTable as any)?.type_overrides ?? {};
     let updated: Record<string, string>;
     if (backendType === null) {
@@ -263,15 +269,15 @@ export default function WorkspaceDetailPage() {
       updated = { ...current, [colName]: backendType };
     }
     await updateTableMutation.mutateAsync({
-      workspaceId,
+      datasetId,
       tableId: selectedTableId,
       input: { type_overrides: updated },
     });
-    refetchWorkspace();
+    refetchDataset();
     refetchPreview();
   };
 
-  const selectedTable = workspace?.tables?.find((t: any) => t.id === selectedTableId);
+  const selectedTable = dataset?.tables?.find((t: any) => t.id === selectedTableId);
 
   // Names of columns produced by js_formula OR add_column transformations (deletable in drawer)
   const computedColumnNames = useMemo(() => {
@@ -289,16 +295,16 @@ export default function WorkspaceDetailPage() {
    * Keyed by each other table's display label; value = their sample_cache rows.
    * sample_cache holds the first 10 rows cached on last preview.
    */
-  const workspaceLookupData = useMemo(() => {
+  const datasetLookupData = useMemo(() => {
     const result: Record<string, Record<string, any>[]> = {};
-    for (const t of workspace?.tables ?? []) {
+    for (const t of dataset?.tables ?? []) {
       if (t.id === selectedTableId) continue; // skip current table
       const label = (t as any).display_name || (t as any).source_table_name || String(t.id);
       const rows: Record<string, any>[] = (t as any).sample_cache ?? [];
       if (rows.length > 0) result[label] = rows;
     }
     return result;
-  }, [workspace?.tables, selectedTableId]);
+  }, [dataset?.tables, selectedTableId]);
 
   // Apply js_formula transformations client-side on top of server preview rows
   const computedPreviewData = useMemo(() => {
@@ -310,7 +316,7 @@ export default function WorkspaceDetailPage() {
 
     const augmentedRows = previewData.rows.map((row, idx) => {
       const out = { ...row };
-      const fns = buildFNS(workspaceLookupData);
+      const fns = buildFNS(datasetLookupData);
       for (const step of jsSteps) {
         try {
           const { code, formula, newField } = step.params as { code?: string; formula?: string; newField: string };
@@ -336,7 +342,7 @@ export default function WorkspaceDetailPage() {
       rows: augmentedRows,
       columns: [...previewData.columns, ...addedCols],
     };
-  }, [previewData, selectedTable?.transformations, workspaceLookupData]);
+  }, [previewData, selectedTable?.transformations, datasetLookupData]);
 
   /**
    * Column groups for the formula modal:
@@ -348,7 +354,7 @@ export default function WorkspaceDetailPage() {
     const groups: { sourceLabel: string; columns: string[] }[] = [
       { sourceLabel: (selectedTable as any)?.display_name || (selectedTable as any)?.source_table_name || 'Bảng hiện tại', columns: currentCols },
     ];
-    for (const t of workspace?.tables ?? []) {
+    for (const t of dataset?.tables ?? []) {
       if (t.id === selectedTableId) continue;
       const label = (t as any).display_name || (t as any).source_table_name || String(t.id);
       const cachedCols: string[] = ((t as any).columns_cache?.columns ?? []).map((c: any) => c.name);
@@ -357,21 +363,21 @@ export default function WorkspaceDetailPage() {
       }
     }
     return groups.filter((g) => g.columns.length > 0);
-  }, [computedPreviewData?.columns, workspace?.tables, selectedTableId, selectedTable]);
+  }, [computedPreviewData?.columns, dataset?.tables, selectedTableId, selectedTable]);
 
-  if (loadingWorkspace) {
+  if (loadingDataset) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
           <Loader2 className="w-8 h-8 animate-spin text-blue-600 mx-auto mb-3" />
-          <p className="text-gray-600">Loading workspace...</p>
+          <p className="text-gray-600">Loading dataset...</p>
         </div>
       </div>
     );
   }
 
   // Error state
-  if (workspaceError || !workspace) {
+  if (datasetError || !dataset) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center max-w-md">
@@ -380,15 +386,15 @@ export default function WorkspaceDetailPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <h2 className="text-xl font-semibold text-gray-900 mb-2">Workspace not found</h2>
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">Dataset not found</h2>
           <p className="text-gray-600 mb-4">
-            {workspaceError instanceof Error ? workspaceError.message : 'Could not load workspace'}
+            {datasetError instanceof Error ? datasetError.message : 'Could not load dataset'}
           </p>
           <button
-            onClick={() => router.push('/dataset-workspaces')}
+            onClick={() => router.push('/datasets')}
             className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
           >
-            Back to Workspaces
+            Back to Datasets
           </button>
         </div>
       </div>
@@ -402,18 +408,18 @@ export default function WorkspaceDetailPage() {
         {/* Sidebar Header */}
         <div className="p-4 border-b">
           <button
-            onClick={() => router.push('/dataset-workspaces')}
+            onClick={() => router.push('/datasets')}
             className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 mb-3 transition-colors"
           >
             <ChevronLeft className="w-4 h-4" />
-            Back to Workspaces
+            Back to Datasets
           </button>
           
           <h1 className="text-lg font-semibold text-gray-900 mb-1">
-            {workspace.name}
+            {dataset.name}
           </h1>
-          {workspace.description && (
-            <p className="text-sm text-gray-600">{workspace.description}</p>
+          {dataset.description && (
+            <p className="text-sm text-gray-600">{dataset.description}</p>
           )}
         </div>
 
@@ -449,7 +455,7 @@ export default function WorkspaceDetailPage() {
                   }`}
                   onClick={() => {
                     setSelectedTableId(table.id);
-                    router.replace(`/dataset-workspaces/${workspaceId}?table=${table.id}`, { scroll: false });
+                    router.replace(`/datasets/${datasetId}?table=${table.id}`, { scroll: false });
                   }}
                 >
                   <Database className="w-4 h-4 flex-shrink-0 text-gray-400" />
@@ -525,7 +531,46 @@ export default function WorkspaceDetailPage() {
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col bg-gray-50 overflow-hidden">
-        {workspace.tables.length === 0 ? (
+        {/* Tab Bar */}
+        <div className="bg-white border-b px-6 flex items-center gap-0 shrink-0">
+          <button
+            onClick={() => setActiveTab('tables')}
+            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'tables'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <Database className="w-4 h-4" />
+              Tables
+            </span>
+          </button>
+          <button
+            onClick={() => setActiveTab('model')}
+            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'model'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <Sigma className="w-4 h-4" />
+              Model
+            </span>
+          </button>
+        </div>
+
+        {activeTab === 'model' ? (
+          /* ── Model Tab ── */
+          <div className="flex-1 overflow-hidden">
+            <DataModelCanvas
+              datasetId={datasetId!}
+              canEdit={resPerms.canEdit}
+              onEditView={(view) => setEditingView(view)}
+            />
+          </div>
+        ) : dataset.tables.length === 0 ? (
           // Empty state - no tables
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center max-w-md px-4">
@@ -536,7 +581,7 @@ export default function WorkspaceDetailPage() {
                 No tables yet
               </h2>
               <p className="text-gray-600 mb-6">
-                Add a table from your datasources to get started with this workspace
+                Add a table from your datasources to get started with this dataset
               </p>
               {resPerms.canEdit && (
               <button
@@ -687,7 +732,7 @@ export default function WorkspaceDetailPage() {
 
       {/* Add Table Modal */}
       <AddTableModal
-        workspaceId={workspaceId!}
+        datasetId={datasetId!}
         isOpen={isAddTableModalOpen}
         onClose={() => { setIsAddTableModalOpen(false); setEditingTable(null); }}
         onSuccess={handleTableAddSuccess}
@@ -713,7 +758,7 @@ export default function WorkspaceDetailPage() {
           allColumns={(computedPreviewData?.columns || []).map((c) => c.name)}
           columnGroups={modalColumnGroups}
           previewRows={computedPreviewData?.rows || []}
-          lookupData={workspaceLookupData}
+          lookupData={datasetLookupData}
           isOpen={isAddColumnModalOpen}
           onClose={() => { setIsAddColumnModalOpen(false); setEditingColumnStep(null); }}
           onSave={handleSaveTransformations}
@@ -802,7 +847,7 @@ export default function WorkspaceDetailPage() {
       )}
 
       {/* AI Description Modal */}
-      {isDescModalOpen && selectedTableId && workspaceId && (
+      {isDescModalOpen && selectedTableId && datasetId && (
         <AppModalShell
           onClose={() => setIsDescModalOpen(false)}
           title="AI Description"
@@ -812,8 +857,17 @@ export default function WorkspaceDetailPage() {
           panelClassName="max-h-[85vh]"
           bodyClassName="p-6"
         >
-          <TableDescriptionPanel workspaceId={workspaceId} tableId={selectedTableId} canEdit={resPerms.canEdit} />
+          <TableDescriptionPanel datasetId={datasetId} tableId={selectedTableId} canEdit={resPerms.canEdit} />
         </AppModalShell>
+      )}
+
+      {/* Dimension/Measure Editor Panel */}
+      {editingView && datasetId && (
+        <DimensionMeasureEditor
+          datasetId={datasetId}
+          view={editingView}
+          onClose={() => setEditingView(null)}
+        />
       )}
     </div>
   );

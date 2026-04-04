@@ -2,7 +2,7 @@
 API package initialization.
 """
 from fastapi import APIRouter
-from app.api import auth, datasources, charts, dashboards, dataset_workspaces, users, shares, permissions, anomaly, feedback, chat_sessions, agent_report_specs, public
+from app.api import auth, datasources, charts, dashboards, datasets, users, shares, permissions, anomaly, feedback, chat_sessions, agent_report_specs, public
 from app.routers import semantic
 
 # Create main API router
@@ -16,7 +16,7 @@ api_router.include_router(permissions.router)
 
 # Data routes
 api_router.include_router(datasources.router)
-api_router.include_router(dataset_workspaces.router, prefix="/dataset-workspaces", tags=["dataset-workspaces"])
+api_router.include_router(datasets.router, prefix="/datasets", tags=["datasets"])
 api_router.include_router(charts.router)
 api_router.include_router(dashboards.router)
 api_router.include_router(semantic.router)
