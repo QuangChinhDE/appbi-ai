@@ -457,7 +457,8 @@ export function QueryTableTab({
   const validateQuery = (sql: string): string | null => {
     const trimmed = sql.trim();
     if (!trimmed) return 'Query không được để trống';
-    if (!trimmed.toLowerCase().startsWith('select')) return 'Query phải bắt đầu bằng SELECT';
+    const normalized = trimmed.toLowerCase();
+    if (!(normalized.startsWith('select') || normalized.startsWith('with'))) return 'Query phải bắt đầu bằng SELECT hoặc WITH';
     const dangerous = ['delete', 'drop', 'truncate', 'alter', 'create', 'insert', 'update'];
     for (const kw of dangerous) {
       if (new RegExp(`\\b${kw}\\b`, 'i').test(trimmed)) return `Từ khóa không được phép: ${kw.toUpperCase()}`;
@@ -695,7 +696,7 @@ export function QueryTableTab({
               </div>
             )}
             <div className="mt-2 space-y-0.5">
-              <p className="text-xs text-gray-500">• Chỉ cho phép câu lệnh SELECT</p>
+              <p className="text-xs text-gray-500">• Chỉ cho phép câu lệnh SELECT hoặc WITH (CTE)</p>
               <p className="text-xs text-gray-500">• Không dùng dấu ; hoặc comment SQL</p>
             </div>
           </div>

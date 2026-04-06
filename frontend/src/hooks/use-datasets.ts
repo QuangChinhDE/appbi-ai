@@ -2,7 +2,6 @@
  * React Query hooks for Dataset Datasets API
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Query } from '@tanstack/react-query';
 import { apiClient as api } from '@/lib/api-client';
 
 // ===== Types =====
@@ -102,14 +101,24 @@ export interface AggregationSpec {
 
 export interface FilterCondition {
   field: string;
-  operator: '=' | '!=' | '>' | '<' | '>=' | '<=' | 'LIKE' | 'IN';
-  value: string;
+  operator:
+    | '=' | '!=' | '>' | '<' | '>=' | '<=' | 'LIKE' | 'IN'
+    | 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte'
+    | 'contains' | 'not_contains' | 'starts_with'
+    | 'between' | 'not_in' | 'is_null' | 'is_not_null';
+  value?: any;
+}
+
+export interface OrderBySpec {
+  field: string;
+  direction: 'ASC' | 'DESC';
 }
 
 export interface ExecuteQueryRequest {
   dimensions?: string[];
   measures?: AggregationSpec[];
   filters?: FilterCondition[];
+  order_by?: OrderBySpec[];
   limit?: number;
 }
 
@@ -339,16 +348,7 @@ export function useTablePreview(
       return response.data;
     },
     enabled: datasetId !== null && tableId !== null,
-    // Retry every 5s while the table is not yet synced (422) so the UI
-    // automatically recovers once the background sync thread finishes.
-    refetchInterval: (query: Query<TablePreviewResponse, any, TablePreviewResponse, readonly unknown[]>) => {
-      const err = query.state.error as any;
-      if (err?.response?.status === 422) return 5000;
-      return false;
-    },
     retry: (failureCount: number, error: any) => {
-      // Keep retrying 422 (not synced) indefinitely; stop on other errors.
-      if (error?.response?.status === 422) return true;
       return failureCount < 2;
     },
   });
@@ -409,5 +409,25 @@ export function useExecuteDatasetTableQuery(
       return response.data;
     },
     enabled: datasetId !== null && tableId !== null,
+  });
+}
+
+export function useExecuteDatasetTableQueryMutation() {
+  return useMutation({
+    mutationFn: async ({
+      datasetId,
+      tableId,
+      request,
+    }: {
+      datasetId: number;
+      tableId: number;
+      request: ExecuteQueryRequest;
+    }) => {
+      const response = await api.post<ExecuteQueryResponse>(
+        `/datasets/${datasetId}/tables/${tableId}/execute`,
+        request
+      );
+      return response.data;
+    },
   });
 }

@@ -77,6 +77,9 @@ class DashboardChartItem(BaseModel):
     """Item representing a chart in a dashboard with its layout."""
     chart_id: int = Field(..., description="ID of the chart to display")
     layout: DashboardChartLayout = Field(..., description="Layout configuration")
+    parameters: Optional[Dict[str, Any]] = Field(
+        None, description="Runtime parameter values for this chart instance"
+    )
 
 
 class DashboardLayoutUpdate(BaseModel):

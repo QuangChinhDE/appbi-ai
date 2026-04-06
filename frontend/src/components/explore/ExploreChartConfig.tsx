@@ -4,7 +4,7 @@ import React, { useCallback, useState } from 'react';
 import { X, ChevronDown } from 'lucide-react';
 import { CHART_PALETTES, type ChartPaletteName } from '@/lib/chartColors';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Types ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 export type ExploreChartType =
   | 'TABLE' | 'BAR' | 'HORIZONTAL_BAR' | 'GROUPED_BAR' | 'STACKED_BAR'
   | 'LINE' | 'AREA' | 'TIME_SERIES' | 'BAR_LINE'
@@ -18,6 +18,7 @@ export type LegendPosition = 'top' | 'bottom' | 'left' | 'right' | 'none';
 export interface MetricConfig {
   field: string;
   agg: AggFn;
+  outputField?: string;
 }
 
 export interface ChartStyleConfig {
@@ -70,7 +71,10 @@ export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
 export interface ChartRoleConfig {
   dimension?: string;
   metrics: MetricConfig[];
+  /** Legacy breakdown dimension for stacked/pivoted charts. */
   breakdown?: string;
+  /** Additive BAR_LINE contract: one aggregated metric rendered as a line. */
+  lineMetric?: MetricConfig;
   timeField?: string;
   scatterX?: string;
   scatterY?: string;
@@ -91,20 +95,62 @@ export function metricKey(m: MetricConfig): string {
   return `${m.agg}__${m.field}`;
 }
 
-// ── Chart type list ───────────────────────────────────────────────────────────
+export function normalizeMetricConfig(metric: MetricConfig | string | null | undefined): MetricConfig | null {
+  if (!metric) return null;
+  if (typeof metric === 'string') {
+    const field = metric.trim();
+    return field ? { field, agg: 'sum' } : null;
+  }
+
+  const field = metric.field?.trim();
+  if (!field) return null;
+  return {
+    field,
+    agg: metric.agg ?? 'sum',
+    outputField: metric.outputField?.trim() || undefined,
+  };
+}
+
+export function normalizeRoleConfig(chartType: string, roleConfig: ChartRoleConfig | null | undefined): ChartRoleConfig {
+  const normalizedMetrics = (roleConfig?.metrics ?? [])
+    .map(metric => normalizeMetricConfig(metric as MetricConfig | string))
+    .filter((metric): metric is MetricConfig => metric !== null);
+
+  let lineMetric = normalizeMetricConfig(roleConfig?.lineMetric);
+  if (!lineMetric && chartType === 'BAR_LINE' && roleConfig?.breakdown) {
+    lineMetric = { field: roleConfig.breakdown, agg: 'sum' };
+  }
+
+  return {
+    ...(roleConfig ?? EMPTY_ROLE_CONFIG),
+    metrics: normalizedMetrics,
+    ...(lineMetric ? { lineMetric } : {}),
+  };
+}
+
+export function getRoleConfigDimensionFields(chartType: string, roleConfig: ChartRoleConfig | null | undefined): string[] {
+  const normalized = normalizeRoleConfig(chartType, roleConfig);
+  const fields = [normalized.dimension, normalized.timeField];
+  if (chartType !== 'BAR_LINE' && normalized.breakdown) {
+    fields.push(normalized.breakdown);
+  }
+  return fields.filter((field): field is string => Boolean(field));
+}
+
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Chart type list ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 const CHART_TYPE_GRID: { value: ExploreChartType; label: string; icon: string }[] = [
-  { value: 'TABLE',          label: 'Table',          icon: '📋' },
-  { value: 'BAR',            label: 'Bar',            icon: '📊' },
-  { value: 'HORIZONTAL_BAR', label: 'Horizontal Bar', icon: '📊' },
-  { value: 'GROUPED_BAR',    label: 'Grouped Bar',    icon: '📊' },
-  { value: 'STACKED_BAR',    label: 'Stacked Bar',    icon: '📊' },
-  { value: 'BAR_LINE',       label: 'Bar + Line',     icon: '📈' },
-  { value: 'LINE',           label: 'Line',           icon: '📈' },
-  { value: 'AREA',           label: 'Area',           icon: '📈' },
-  { value: 'TIME_SERIES',    label: 'Time Series',    icon: '📈' },
-  { value: 'PIE',            label: 'Pie',            icon: '🍩' },
-  { value: 'SCATTER',        label: 'Scatter',        icon: '⊙' },
-  { value: 'KPI',            label: 'KPI',            icon: '🔢' },
+  { value: 'TABLE',          label: 'Table',          icon: 'TB' },
+  { value: 'BAR',            label: 'Bar',            icon: 'BR' },
+  { value: 'HORIZONTAL_BAR', label: 'Horizontal Bar', icon: 'HB' },
+  { value: 'GROUPED_BAR',    label: 'Grouped Bar',    icon: 'GB' },
+  { value: 'STACKED_BAR',    label: 'Stacked Bar',    icon: 'SB' },
+  { value: 'BAR_LINE',       label: 'Bar + Line',     icon: 'BL' },
+  { value: 'LINE',           label: 'Line',           icon: 'LN' },
+  { value: 'AREA',           label: 'Area',           icon: 'AR' },
+  { value: 'TIME_SERIES',    label: 'Time Series',    icon: 'TS' },
+  { value: 'PIE',            label: 'Pie',            icon: 'PI' },
+  { value: 'SCATTER',        label: 'Scatter',        icon: 'XY' },
+  { value: 'KPI',            label: 'KPI',            icon: 'KP' },
 ];
 
 const AGG_OPTIONS: { value: AggFn; label: string }[] = [
@@ -116,7 +162,7 @@ const AGG_OPTIONS: { value: AggFn; label: string }[] = [
   { value: 'count_distinct', label: 'COUNT DISTINCT' },
 ];
 
-// ── Column helpers ────────────────────────────────────────────────────────────
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Column helpers ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 type Col = { name: string; type: string };
 
 function isNumeric(c: Col): boolean {
@@ -133,7 +179,7 @@ function isTimelike(c: Col): boolean {
   );
 }
 
-// ── Disclosure (collapsible section) ──────────────────────────────────────────
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Disclosure (collapsible section) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function Disclosure({ title, defaultOpen = false, children }: {
   title: string; defaultOpen?: boolean; children: React.ReactNode;
 }) {
@@ -153,7 +199,7 @@ function Disclosure({ title, defaultOpen = false, children }: {
   );
 }
 
-// ── Toggle switch ─────────────────────────────────────────────────────────────
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Toggle switch ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <div className="flex items-center justify-between">
@@ -166,9 +212,9 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
   );
 }
 
-// ── SelectSlot ────────────────────────────────────────────────────────────────
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ SelectSlot ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function SelectSlot({
-  label, required, hint, value, options, placeholder = '— none —', onChange,
+  label, required, hint, value, options, placeholder = 'none', onChange,
 }: {
   label: string; required?: boolean; hint?: string; value: string;
   options: Col[]; placeholder?: string; onChange: (v: string) => void;
@@ -179,7 +225,7 @@ function SelectSlot({
       <label className="flex items-center gap-1 text-xs font-semibold text-gray-600 mb-1">
         {label}
         {required && <span className="text-red-400">*</span>}
-        {hint && <span className="text-gray-400 font-normal">— {hint}</span>}
+        {hint && <span className="text-gray-400 font-normal">- {hint}</span>}
       </label>
       <select
         value={value}
@@ -195,7 +241,7 @@ function SelectSlot({
   );
 }
 
-// ── MetricSlot — PowerBI-style pill with per-field aggregation ────────────────
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MetricSlot ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â PowerBI-style pill with per-field aggregation ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function MetricSlot({
   label, required, hint, single, value, options, onChange,
 }: {
@@ -225,7 +271,7 @@ function MetricSlot({
       <label className="flex items-center gap-1 text-xs font-semibold text-gray-600 mb-1.5">
         {label}
         {required && <span className="text-red-400">*</span>}
-        {hint && <span className="text-gray-400 font-normal">— {hint}</span>}
+        {hint && <span className="text-gray-400 font-normal">- {hint}</span>}
       </label>
 
       {/* Metric pills */}
@@ -264,7 +310,7 @@ function MetricSlot({
             missing ? 'border-red-300 bg-red-50 text-red-400' : 'border-dashed border-gray-300 text-gray-400'
           }`}
         >
-          <option value="">{available.length === 0 ? '— all fields added —' : '+ add field...'}</option>
+          <option value="">{available.length === 0 ? 'all fields added' : '+ add field...'}</option>
           {available.map(o => <option key={o.name} value={o.name}>{o.name}</option>)}
         </select>
       )}
@@ -272,7 +318,7 @@ function MetricSlot({
   );
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Main ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 interface ExploreChartConfigProps {
   chartType: ExploreChartType;
   roleConfig: ChartRoleConfig;
@@ -299,16 +345,18 @@ export function ExploreChartConfig({
   const numCols  = allCols.filter(isNumeric);
   const dimCols  = allCols.filter(c => !isNumeric(c));
   const timeCols = allCols.filter(isTimelike);
+  const normalizedRoleConfig = normalizeRoleConfig(chartType, roleConfig);
 
   const dimOrAll  = dimCols.length  > 0 ? dimCols  : allCols;
   const numOrAll  = numCols.length  > 0 ? numCols  : allCols;
   const timeOrAll = timeCols.length > 0 ? timeCols : allCols;
 
-  const dim = roleConfig.dimension || '';
-  const brk = roleConfig.breakdown || '';
-  const tf  = roleConfig.timeField || '';
-  const sx  = roleConfig.scatterX  || '';
-  const sy  = roleConfig.scatterY  || '';
+  const dim = normalizedRoleConfig.dimension || '';
+  const brk = normalizedRoleConfig.breakdown || '';
+  const tf  = normalizedRoleConfig.timeField || '';
+  const sx  = normalizedRoleConfig.scatterX  || '';
+  const sy  = normalizedRoleConfig.scatterY  || '';
+  const lineMetric = normalizedRoleConfig.lineMetric ? [normalizedRoleConfig.lineMetric] : [];
 
   const isBarType = ['BAR', 'HORIZONTAL_BAR', 'GROUPED_BAR', 'STACKED_BAR', 'BAR_LINE'].includes(chartType);
   const isLineType = ['LINE', 'TIME_SERIES', 'AREA', 'BAR_LINE'].includes(chartType);
@@ -317,7 +365,7 @@ export function ExploreChartConfig({
   return (
     <div className="p-4 space-y-3">
 
-      {/* ── Chart Type ── visual grid ── */}
+      {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Chart Type ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ visual grid ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       <div>
         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Chart Type</p>
         <div className="grid grid-cols-4 gap-1">
@@ -337,30 +385,30 @@ export function ExploreChartConfig({
         </div>
       </div>
 
-      {/* ── TABLE: column picker ── */}
+      {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ TABLE: column picker ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {chartType === 'TABLE' && availableColumns.length > 0 && (
         <Disclosure title="Columns" defaultOpen>
           <div className="flex items-center justify-between mb-1">
             <button
               onClick={() => {
-                const allSelected = !roleConfig.selectedColumns || roleConfig.selectedColumns.length === availableColumns.length;
+                const allSelected = !normalizedRoleConfig.selectedColumns || normalizedRoleConfig.selectedColumns.length === availableColumns.length;
                 upd({ selectedColumns: allSelected ? [] : availableColumns.map(c => c.name) });
               }}
               className="text-xs text-blue-600 hover:text-blue-800"
             >
-              {!roleConfig.selectedColumns || roleConfig.selectedColumns.length === availableColumns.length ? 'Deselect all' : 'Select all'}
+              {!normalizedRoleConfig.selectedColumns || normalizedRoleConfig.selectedColumns.length === availableColumns.length ? 'Deselect all' : 'Select all'}
             </button>
           </div>
           <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
             {availableColumns.map(col => {
-              const checked = !roleConfig.selectedColumns || roleConfig.selectedColumns.includes(col.name);
+              const checked = !normalizedRoleConfig.selectedColumns || normalizedRoleConfig.selectedColumns.includes(col.name);
               return (
                 <label key={col.name} className="flex items-center gap-2 py-1 px-2 rounded hover:bg-gray-50 cursor-pointer group">
                   <input
                     type="checkbox"
                     checked={checked}
                     onChange={() => {
-                      const current = roleConfig.selectedColumns ?? availableColumns.map(c => c.name);
+                      const current = normalizedRoleConfig.selectedColumns ?? availableColumns.map(c => c.name);
                       const next = checked ? current.filter(n => n !== col.name) : [...current, col.name];
                       upd({ selectedColumns: next });
                     }}
@@ -375,109 +423,109 @@ export function ExploreChartConfig({
         </Disclosure>
       )}
 
-      {/* ── Field Mapping ── */}
+      {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Field Mapping ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {chartType !== 'TABLE' && (
         <Disclosure title="Field Mapping" defaultOpen>
 
           {(chartType === 'BAR' || chartType === 'HORIZONTAL_BAR') && <>
             <SelectSlot label={chartType === 'HORIZONTAL_BAR' ? 'Y Axis' : 'X Axis'} hint="group by" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label={chartType === 'HORIZONTAL_BAR' ? 'Values (X)' : 'Values (Y)'} required value={roleConfig.metrics} options={numOrAll}
+            <MetricSlot label={chartType === 'HORIZONTAL_BAR' ? 'Values (X)' : 'Values (Y)'} required value={normalizedRoleConfig.metrics} options={numOrAll}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="optional" value={brk} options={dimOrAll}
-              placeholder="— none —"
+              placeholder="none"
               onChange={v => upd({ breakdown: v || undefined })} />
           </>}
 
           {chartType === 'GROUPED_BAR' && <>
             <SelectSlot label="X Axis" hint="group by" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Values (Y)" hint="each = one bar group" required value={roleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Values (Y)" hint="each = one bar group" required value={normalizedRoleConfig.metrics} options={numOrAll}
               onChange={v => upd({ metrics: v })} />
           </>}
 
           {chartType === 'STACKED_BAR' && <>
             <SelectSlot label="X Axis" hint="group by" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Value (Y)" required single value={roleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Value (Y)" required single value={normalizedRoleConfig.metrics} options={numOrAll}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Stack by" required value={brk} options={dimOrAll}
-              placeholder="— select field —"
+              placeholder="select field"
               onChange={v => upd({ breakdown: v || undefined })} />
           </>}
 
           {chartType === 'BAR_LINE' && <>
             <SelectSlot label="X Axis" hint="group by" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Bar Values" hint="shown as bars" required value={roleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Bar Values" hint="shown as bars" required value={normalizedRoleConfig.metrics} options={numOrAll}
               onChange={v => upd({ metrics: v })} />
-            <SelectSlot label="Line Value" hint="shown as line" required value={brk} options={numOrAll.map(c => ({ ...c }))}
-              placeholder="— select field —"
-              onChange={v => upd({ breakdown: v || undefined })} />
+            <MetricSlot label="Line Value" hint="shown as line" required single value={lineMetric} options={numOrAll}
+              onChange={v => upd({ lineMetric: v[0], breakdown: undefined })} />
           </>}
+
 
           {chartType === 'LINE' && <>
             <SelectSlot label="X Axis" required value={dim} options={allCols}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Values (Y)" required value={roleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="optional" value={brk} options={dimOrAll}
-              placeholder="— none —"
+              placeholder="none"
               onChange={v => upd({ breakdown: v || undefined })} />
           </>}
 
           {chartType === 'AREA' && <>
             <SelectSlot label="X Axis" required value={dim} options={allCols}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Values (Y)" required value={roleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="optional" value={brk} options={dimOrAll}
-              placeholder="— none —"
+              placeholder="none"
               onChange={v => upd({ breakdown: v || undefined })} />
           </>}
 
           {chartType === 'TIME_SERIES' && <>
             <SelectSlot label="Time Field (X)" required value={tf} options={timeOrAll}
-              placeholder="— select time field —"
+              placeholder="select time field"
               onChange={v => upd({ timeField: v || undefined })} />
-            <MetricSlot label="Values (Y)" required value={roleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="optional" value={brk} options={dimOrAll}
-              placeholder="— none —"
+              placeholder="none"
               onChange={v => upd({ breakdown: v || undefined })} />
           </>}
 
           {chartType === 'PIE' && <>
             <SelectSlot label="Legend" hint="slice label" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Value" hint="slice size" required single value={roleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Value" hint="slice size" required single value={normalizedRoleConfig.metrics} options={numOrAll}
               onChange={v => upd({ metrics: v })} />
           </>}
 
           {chartType === 'SCATTER' && <>
             <SelectSlot label="X Axis" hint="numeric" required value={sx} options={numOrAll}
-              placeholder="— select X —"
+              placeholder="select X"
               onChange={v => upd({ scatterX: v || undefined })} />
             <SelectSlot label="Y Axis" hint="numeric" required value={sy} options={numOrAll}
-              placeholder="— select Y —"
+              placeholder="select Y"
               onChange={v => upd({ scatterY: v || undefined })} />
             <SelectSlot label="Label" hint="optional" value={dim} options={dimOrAll}
-              placeholder="— none —"
+              placeholder="none"
               onChange={v => upd({ dimension: v || undefined })} />
           </>}
 
           {chartType === 'KPI' && <>
-            <MetricSlot label="Value" required single value={roleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll}
               onChange={v => upd({ metrics: v })} />
           </>}
 
         </Disclosure>
       )}
 
-      {/* ── Appearance: General ── */}
+      {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Appearance: General ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {chartType !== 'TABLE' && (
         <Disclosure title="General" defaultOpen>
-          {/* Color palette — compact horizontal row */}
+          {/* Color palette ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â compact horizontal row */}
           <div>
             <label className="text-xs font-semibold text-gray-600 mb-1.5 block">Color Palette</label>
             <div className="space-y-1">
@@ -542,7 +590,7 @@ export function ExploreChartConfig({
         </Disclosure>
       )}
 
-      {/* ── Appearance: Axis ── */}
+      {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Appearance: Axis ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {hasAxis && (
         <Disclosure title="Axis">
           <div>
@@ -580,7 +628,7 @@ export function ExploreChartConfig({
         </Disclosure>
       )}
 
-      {/* ── Appearance: Bar options ── */}
+      {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Appearance: Bar options ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {isBarType && (
         <Disclosure title="Bar Options">
           <div>
@@ -592,7 +640,7 @@ export function ExploreChartConfig({
         </Disclosure>
       )}
 
-      {/* ── Appearance: Line options ── */}
+      {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Appearance: Line options ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {isLineType && (
         <Disclosure title="Line Options">
           <Toggle label="Show Dots" checked={styleConfig.showDots ?? true}

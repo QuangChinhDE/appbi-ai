@@ -430,6 +430,7 @@ export interface QueryExecuteRequest {
   data_source_id: number;
   sql_query: string;
   limit?: number;
+  timeout_seconds?: number;
 }
 
 export interface QueryExecuteResponse {

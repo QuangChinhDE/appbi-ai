@@ -3,6 +3,7 @@ Dataset Model Service
 Auto-generates semantic layer (views, model, explores) from dataset tables.
 Each dataset = 1 Data Mart with its own semantic model.
 """
+import re
 from typing import List, Optional, Tuple
 from sqlalchemy.orm import Session
 from app.models.semantic import SemanticView, SemanticModel, SemanticExplore
@@ -25,6 +26,9 @@ _NUMERIC_TYPES = {"integer", "int", "float", "number", "numeric", "decimal", "bi
 
 # FK naming heuristics: columns ending with these suffixes are likely foreign keys
 _FK_SUFFIXES = ("_id", "_pk", "_fk", "_key")
+
+
+_JOIN_SQL_ON_RE = re.compile(r"\$\{TABLE\}\.([^\s=]+)\s*=\s*\$\{[^}]+\}\.([^\s=]+)")
 
 
 def _singularize(name: str) -> str:
@@ -119,6 +123,45 @@ def _classify_columns(columns_cache) -> Tuple[list, list]:
     return dimensions, measures
 
 
+def _clean_join_identifier(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    return str(raw).strip().strip('"').strip("`").strip("[]")
+
+
+def _parse_join_columns(sql_on: str | None) -> tuple[str | None, str | None]:
+    if not sql_on:
+        return None, None
+    match = _JOIN_SQL_ON_RE.search(sql_on)
+    if not match:
+        return None, None
+    return _clean_join_identifier(match.group(1)), _clean_join_identifier(match.group(2))
+
+
+def _normalize_join(join: dict, base_view_name: str, base_fields: set[str] | None = None) -> dict | None:
+    normalized = dict(join)
+    from_column = _clean_join_identifier(normalized.get("from_column"))
+    to_column = _clean_join_identifier(normalized.get("to_column"))
+
+    if not from_column or not to_column:
+        parsed_from, parsed_to = _parse_join_columns(normalized.get("sql_on"))
+        from_column = from_column or parsed_from
+        to_column = to_column or parsed_to
+
+    if normalized.get("from_view") and normalized.get("from_view") != base_view_name:
+        return None
+
+    if base_fields is not None and from_column and from_column not in base_fields:
+        return None
+
+    normalized["from_view"] = base_view_name
+    if from_column:
+        normalized["from_column"] = from_column
+    if to_column:
+        normalized["to_column"] = to_column
+    return normalized
+
+
 def _detect_joins(tables: List[DatasetTable]) -> list:
     """
     Detect potential joins between tables using FK naming conventions.
@@ -144,8 +187,9 @@ def _detect_joins(tables: List[DatasetTable]) -> list:
         else:
             continue
         for col in columns:
-            col_name = col.get("name", "").lower()
-            if not any(col_name.endswith(suffix) for suffix in _FK_SUFFIXES):
+            raw_col_name = col.get("name", "")
+            col_name = raw_col_name.lower()
+            if not raw_col_name or not any(col_name.endswith(suffix) for suffix in _FK_SUFFIXES):
                 continue
 
             # Extract referenced table name from FK column
@@ -172,14 +216,13 @@ def _detect_joins(tables: List[DatasetTable]) -> list:
                         "name": ref_display,
                         "view": ref_display,
                         "type": "left",
-                        "sql_on": f"${{TABLE}}.{col_name} = ${{{ref_display}}}.id",
+                        "sql_on": f"${{TABLE}}.{raw_col_name} = ${{{ref_display}}}.id",
                         "relationship": "many_to_one",
+                        "from_view": current_display,
+                        "from_column": raw_col_name,
+                        "to_column": "id",
                         "_source_table": current_display,  # Internal, stripped before save
                     })
-
-    # Strip internal fields
-    for j in joins:
-        j.pop("_source_table", None)
 
     return joins
 
@@ -312,9 +355,12 @@ def generate_dataset_model(
                     "type": j["type"],
                     "sql_on": j["sql_on"],
                     "relationship": j["relationship"],
+                    "from_view": view.name,
+                    "from_column": j.get("from_column"),
+                    "to_column": j.get("to_column"),
                 }
                 for j in detected_joins
-                if j.get("name") != view.name  # Don't join to self
+                if j.get("_source_table") == view.name and j.get("view") != view.name
             ]
 
             # Only create explore if model exists
@@ -381,8 +427,20 @@ def get_dataset_model(db: Session, dataset_id: int) -> Optional[dict]:
     )
 
     views_data = []
+    view_field_map: dict[str, set[str]] = {}
     for v in views:
         table = table_map.get(v.dataset_table_id) if v.dataset_table_id else None
+        dimension_names = {
+            item.get("name")
+            for item in (v.dimensions or [])
+            if isinstance(item, dict) and item.get("name")
+        }
+        measure_names = {
+            item.get("name")
+            for item in (v.measures or [])
+            if isinstance(item, dict) and item.get("name")
+        }
+        view_field_map[v.name] = {name for name in dimension_names | measure_names if name}
         views_data.append({
             "id": v.id,
             "name": v.name,
@@ -396,12 +454,18 @@ def get_dataset_model(db: Session, dataset_id: int) -> Optional[dict]:
 
     explores_data = []
     for e in explores:
+        normalized_joins = []
+        base_fields = view_field_map.get(e.base_view_name, set())
+        for join in e.joins or []:
+            normalized_join = _normalize_join(join, e.base_view_name, base_fields)
+            if normalized_join:
+                normalized_joins.append(normalized_join)
         explores_data.append({
             "id": e.id,
             "name": e.name,
             "base_view_name": e.base_view_name,
             "base_view_id": e.base_view_id,
-            "joins": e.joins or [],
+            "joins": normalized_joins,
             "description": e.description,
         })
 
@@ -451,7 +515,7 @@ def add_join(
 
     model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
     if not model:
-        raise ValueError("No semantic model found — generate the model first")
+        raise ValueError("No semantic model found - generate the model first")
 
     explore = db.query(SemanticExplore).filter(
         SemanticExplore.model_id == model.id,
@@ -476,11 +540,22 @@ def add_join(
         "type": join_type,
         "sql_on": f"${{TABLE}}.{from_column} = ${{{to_view.name}}}.{to_column}",
         "relationship": relationship,
+        "from_view": from_view.name,
+        "from_column": from_column,
+        "to_column": to_column,
     }
 
-    # Update existing join to the same target, or append
+    # Update an exact existing join, otherwise append so one pair of tables can
+    # carry multiple explicit relationships on different columns.
     for i, j in enumerate(joins):
-        if j.get("view") == to_view.name:
+        existing_from, existing_to = _parse_join_columns(j.get("sql_on"))
+        join_from = _clean_join_identifier(j.get("from_column")) or existing_from
+        join_to = _clean_join_identifier(j.get("to_column")) or existing_to
+        if (
+            j.get("view") == to_view.name
+            and join_from == from_column
+            and join_to == to_column
+        ):
             joins[i] = new_join
             break
     else:
@@ -501,8 +576,10 @@ def remove_join(
     dataset_id: int,
     from_view_id: int,
     to_view_name: str,
+    from_column: str | None = None,
+    to_column: str | None = None,
 ) -> dict:
-    """Remove a join from one semantic view to another by target view name."""
+    """Remove a join from one semantic view to another."""
     model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
     if not model:
         raise ValueError("No semantic model found for this dataset")
@@ -514,7 +591,21 @@ def remove_join(
     if not explore:
         raise ValueError("Explore not found for this view")
 
-    explore.joins = [j for j in (explore.joins or []) if j.get("view") != to_view_name]
+    normalized_from = _clean_join_identifier(from_column)
+    normalized_to = _clean_join_identifier(to_column)
+
+    def should_remove(join: dict) -> bool:
+        if join.get("view") != to_view_name:
+            return False
+        if normalized_from is None and normalized_to is None:
+            return True
+
+        parsed_from, parsed_to = _parse_join_columns(join.get("sql_on"))
+        join_from = _clean_join_identifier(join.get("from_column")) or parsed_from
+        join_to = _clean_join_identifier(join.get("to_column")) or parsed_to
+        return join_from == normalized_from and join_to == normalized_to
+
+    explore.joins = [j for j in (explore.joins or []) if not should_remove(j)]
     db.commit()
     return {
         "explore_id": explore.id,

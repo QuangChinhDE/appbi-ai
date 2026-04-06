@@ -1,13 +1,13 @@
 'use client';
 
 import React, { useMemo, useState, useRef, useEffect } from 'react';
-import { X, Loader2, Pencil, Check, SlidersHorizontal, Plus } from 'lucide-react';
+import { X, Loader2, Pencil, Check, SlidersHorizontal } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { applyFilters } from '@/lib/explore-utils';
-import type { ChartRoleConfig, AggFn, MetricConfig } from '@/components/explore/ExploreChartConfig';
-import { metricKey, metricLabel } from '@/components/explore/ExploreChartConfig';
+import type { ChartRoleConfig } from '@/components/explore/ExploreChartConfig';
+import { getRoleConfigDimensionFields, metricKey, metricLabel, normalizeRoleConfig } from '@/components/explore/ExploreChartConfig';
 import { DashboardFilter, applyFiltersToRows } from '@/lib/filters';
 import type { BaseFilter, FilterOperator } from '@/lib/filters';
 import { dashboardApi } from '@/lib/api/dashboards';
@@ -26,6 +26,31 @@ interface ChartTileProps {
   instanceParameters?: Record<string, any>;
 }
 
+const NUMERIC_MAPPING_TYPES = new Set(['number', 'integer', 'float', 'double', 'decimal', 'numeric', 'bigint', 'int']);
+const DATE_MAPPING_TYPES = new Set(['date', 'datetime', 'timestamp', 'time']);
+
+function resolveParameterMappingType(param: {
+  parameter_type?: string | null;
+  column_mapping?: { type?: string | null } | null;
+}) {
+  const mappingType = (param.column_mapping?.type ?? '').toLowerCase();
+  if (mappingType && mappingType !== 'string') return mappingType;
+
+  const parameterType = (param.parameter_type ?? '').toLowerCase();
+  if (parameterType === 'time_range') return 'date';
+  if (parameterType === 'measure') return 'number';
+  return mappingType || 'string';
+}
+
+function coerceParameterAtom(rawValue: unknown, mappingType: string) {
+  if (rawValue === undefined || rawValue === null) return rawValue;
+  if (NUMERIC_MAPPING_TYPES.has(mappingType)) {
+    const num = typeof rawValue === 'number' ? rawValue : Number(String(rawValue).trim());
+    return Number.isFinite(num) ? num : String(rawValue).trim();
+  }
+  return typeof rawValue === 'string' ? rawValue.trim() : rawValue;
+}
+
 export function ChartTile({ 
   chartId, 
   dashboardChartId,
@@ -41,9 +66,60 @@ export function ChartTile({
   const queryClient = useQueryClient();
   const { data: chart, isLoading: isLoadingChart } = useChart(chartId);
 
+  const parameterFilters = useMemo(() => {
+    if (!chart?.parameters?.length || !instanceParameters) return [];
+
+    const filters: Record<string, unknown>[] = [];
+    for (const param of chart.parameters) {
+      const mappedColumn = param.column_mapping?.column;
+      const rawValue = instanceParameters[param.parameter_name];
+      if (!mappedColumn || rawValue === undefined || rawValue === null) continue;
+
+      const mappingType = resolveParameterMappingType(param);
+      const isDateType = DATE_MAPPING_TYPES.has(mappingType);
+      const textValue = typeof rawValue === 'string' ? rawValue.trim() : '';
+      if (typeof rawValue === 'string' && !textValue) continue;
+
+      const isRangeValue = typeof rawValue === 'string'
+        && (textValue.includes('..') || (isDateType && textValue.includes(',')));
+      if (isRangeValue) {
+        const parts = (textValue.includes('..') ? textValue.split('..') : textValue.split(','))
+          .map(part => part.trim())
+          .filter(Boolean);
+        if (parts.length > 0) {
+          filters.push({
+            field: mappedColumn,
+            operator: 'between',
+            value: [
+              parts[0] ? coerceParameterAtom(parts[0], mappingType) : null,
+              parts[1] ? coerceParameterAtom(parts[1], mappingType) : null,
+            ],
+          });
+          continue;
+        }
+      }
+
+      if (Array.isArray(rawValue) || (typeof rawValue === 'string' && textValue.includes(','))) {
+        const values = (Array.isArray(rawValue) ? rawValue : textValue.split(','))
+          .map(part => String(part).trim())
+          .filter(Boolean)
+          .map(part => coerceParameterAtom(part, mappingType));
+        if (values.length > 0) {
+          filters.push({ field: mappedColumn, operator: 'in', value: values });
+          continue;
+        }
+      }
+
+      filters.push({ field: mappedColumn, operator: 'eq', value: coerceParameterAtom(rawValue, mappingType) });
+    }
+
+    return filters;
+  }, [chart?.parameters, instanceParameters]);
+
   // Build server-side filters from dashboard + global filters for server-side push-down
   const serverFilters = useMemo(() => {
     const filters: Record<string, unknown>[] = [];
+    filters.push(...parameterFilters);
     for (const gf of globalFilters) {
       if (gf.value === undefined || gf.value === null || gf.value === '') continue;
       filters.push({ field: gf.field, operator: gf.operator, value: gf.value });
@@ -59,7 +135,7 @@ export function ChartTile({
       filters.push({ field: df.field, operator: df.operator, value: df.value });
     }
     return filters.length > 0 ? filters : undefined;
-  }, [globalFilters, dashboardFilters]);
+  }, [globalFilters, dashboardFilters, parameterFilters]);
 
   const { data: chartData, isLoading: isLoadingData } = useChartData(chartId, serverFilters);
 
@@ -117,31 +193,32 @@ export function ChartTile({
     if (e.key === 'Escape') setIsEditingTitle(false);
   };
 
-  // Notify parent when data is loaded — report ALL fields for PowerBI-style global filtering
-  React.useEffect(() => {
-    if (chartData?.data?.length && onDataLoaded) {
-      const allFields = Object.keys(chartData.data[0]);
-      onDataLoaded(chartId, chartData.data, { dimensionFields: allFields });
-    }
-  }, [chartData?.data, onDataLoaded, chartId, chart?.config]);
-
-  const rawRows: Record<string, any>[] = chartData?.data ?? [];
-  const preAggregated = chartData?.pre_aggregated ?? false;
-
   // Detect whether this is an Explore-format chart (has roleConfig)
   const exploreConfig = useMemo(() => {
     const config = chart?.config as any;
     if (!config?.roleConfig) return null;
-    const rc = config.roleConfig as ChartRoleConfig;
-    // Migrate legacy string[] metrics
-    if (rc.metrics?.length > 0 && typeof (rc.metrics as any)[0] === 'string') {
-      rc.metrics = (rc.metrics as unknown as string[]).map(f => ({ field: f, agg: 'sum' as AggFn }));
+    const chartType = (config.chartType as string) || String(chart?.chart_type ?? '');
+    const rc = normalizeRoleConfig(chartType, config.roleConfig as ChartRoleConfig);
+    return { chartType, roleConfig: rc, filters: config.filters ?? [], styleConfig: config.styleConfig };
+  }, [chart?.config, chart?.chart_type]);
+
+  // Notify parent when data is loaded â€” only expose true dimension fields to the global filter bar
+  React.useEffect(() => {
+    if (chartData?.data?.length && onDataLoaded) {
+      const dimensionFields = exploreConfig
+        ? getRoleConfigDimensionFields(exploreConfig.chartType, exploreConfig.roleConfig)
+            .filter(field => field in chartData.data[0])
+        : Object.keys(chartData.data[0]);
+      onDataLoaded(chartId, chartData.data, { dimensionFields });
     }
-    return { chartType: config.chartType as string, roleConfig: rc, filters: config.filters ?? [], styleConfig: config.styleConfig };
-  }, [chart?.config]);
+  }, [chartData?.data, onDataLoaded, chartId, exploreConfig]);
+
+  const rawRows: Record<string, any>[] = chartData?.data ?? [];
+  const preAggregated = chartData?.pre_aggregated ?? false;
+
 
   // Apply Explore-style filters (from stored config) then dashboard filters client-side
-  // When pre_aggregated, backend already applied all filters in SQL — skip client-side
+  // When pre_aggregated, backend already applied all filters in SQL Ã¢â‚¬â€ skip client-side
   const filteredData = useMemo(() => {
     if (rawRows.length === 0) return rawRows;
     if (preAggregated) return rawRows;
@@ -224,7 +301,7 @@ export function ChartTile({
 
   return (
     <div className="h-full bg-white rounded-lg border border-gray-200 p-3 overflow-hidden relative group flex flex-col">
-      {/* Remove button — outside drag handle so clicks always register */}
+      {/* Remove button Ã¢â‚¬â€ outside drag handle so clicks always register */}
       {onRemove && (
       <button
         onMouseDown={e => e.stopPropagation()}
@@ -349,11 +426,11 @@ export function ChartTile({
               className="text-xs border border-gray-300 rounded px-1.5 py-0.5 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-400"
             >
               <option value="gt">&gt; greater than</option>
-              <option value="gte">≥ greater or equal</option>
+              <option value="gte">Ã¢â€°Â¥ greater or equal</option>
               <option value="lt">&lt; less than</option>
-              <option value="lte">≤ less or equal</option>
+              <option value="lte">Ã¢â€°Â¤ less or equal</option>
               <option value="eq">= equals</option>
-              <option value="neq">≠ not equals</option>
+              <option value="neq">Ã¢â€°Â  not equals</option>
             </select>
             <input
               type="number"
@@ -407,3 +484,9 @@ export function ChartTile({
     </div>
   );
 }
+
+
+
+
+
+

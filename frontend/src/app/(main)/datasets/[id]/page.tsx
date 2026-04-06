@@ -34,6 +34,7 @@ import { DataModelCanvas } from '@/components/datasets/DataModelCanvas';
 import { DimensionMeasureEditor } from '@/components/datasets/DimensionMeasureEditor';
 import type { Transformation } from '@/hooks/use-datasets';
 import type { DatasetModelView } from '@/hooks/use-dataset-model';
+import { toast } from 'sonner';
 
 // Inline Excel formula evaluator (mirrors AddColumnModal's evalExcelFormula)
 function evalExcelFormulaInPage(
@@ -74,6 +75,21 @@ function evalExcelFormulaInPage(
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e) };
   }
+}
+
+function formatTypeToBackendType(formatType: string): string | null {
+  if (formatType === 'number' || formatType === 'currency' || formatType === 'percentage') return 'float';
+  if (formatType === 'date') return 'date';
+  if (formatType === 'datetime') return 'datetime';
+  if (formatType === 'text') return 'string';
+  return null;
+}
+
+function extractDatasetErrorMessage(error: any, fallback: string): string {
+  const detail = error?.response?.data?.detail;
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (detail?.message) return detail.message;
+  return error?.message || fallback;
 }
 
 export default function DatasetDetailPage() {
@@ -204,20 +220,39 @@ export default function DatasetDetailPage() {
   // Handle full format change (decimal places, separator, etc.) — persists to DB
   const handleColumnFormatChange = async (colName: string, fmt: Record<string, any> | null) => {
     if (!datasetId || !selectedTableId) return;
-    const current: Record<string, any> = (selectedTable as any)?.column_formats ?? {};
-    let updated: Record<string, any>;
-    if (fmt === null) {
-      updated = { ...current };
-      delete updated[colName];
-    } else {
-      updated = { ...current, [colName]: fmt };
+    const currentFormats: Record<string, any> = (selectedTable as any)?.column_formats ?? {};
+    const currentOverrides: Record<string, string> = (selectedTable as any)?.type_overrides ?? {};
+    const updatedFormats: Record<string, any> = { ...currentFormats };
+    if (fmt === null) delete updatedFormats[colName];
+    else updatedFormats[colName] = fmt;
+
+    const nextBackendType =
+      fmt === null || jsFormulaColumnNames.has(colName)
+        ? null
+        : formatTypeToBackendType(String(fmt.formatType ?? 'default'));
+
+    const updatedOverrides: Record<string, string> = { ...currentOverrides };
+    if (nextBackendType === null) delete updatedOverrides[colName];
+    else updatedOverrides[colName] = nextBackendType;
+
+    const overrideChanged = (currentOverrides[colName] ?? null) !== nextBackendType;
+
+    try {
+      await updateTableMutation.mutateAsync({
+        datasetId,
+        tableId: selectedTableId,
+        input: {
+          column_formats: updatedFormats,
+          type_overrides: updatedOverrides,
+        },
+      });
+      refetchDataset();
+      if (overrideChanged) refetchPreview();
+    } catch (error: any) {
+      const message = extractDatasetErrorMessage(error, 'Khong the cap nhat dinh dang cot');
+      toast.error(message);
+      throw new Error(message);
     }
-    await updateTableMutation.mutateAsync({
-      datasetId,
-      tableId: selectedTableId,
-      input: { column_formats: updated },
-    });
-    refetchDataset();
   };
 
   // Handle deleting a computed column directly from the grid format popover
@@ -257,26 +292,6 @@ export default function DatasetDetailPage() {
     setIsAddColumnModalOpen(true);
   };
 
-  // Handle column type override from format panel
-  const handleTypeOverride = async (colName: string, backendType: string | null) => {
-    if (!datasetId || !selectedTableId) return;
-    const current: Record<string, string> = (selectedTable as any)?.type_overrides ?? {};
-    let updated: Record<string, string>;
-    if (backendType === null) {
-      updated = { ...current };
-      delete updated[colName];
-    } else {
-      updated = { ...current, [colName]: backendType };
-    }
-    await updateTableMutation.mutateAsync({
-      datasetId,
-      tableId: selectedTableId,
-      input: { type_overrides: updated },
-    });
-    refetchDataset();
-    refetchPreview();
-  };
-
   const selectedTable = dataset?.tables?.find((t: any) => t.id === selectedTableId);
 
   // Names of columns produced by js_formula OR add_column transformations (deletable in drawer)
@@ -288,6 +303,14 @@ export default function DatasetDetailPage() {
         t.params?.newField
       )
       .map((t: any) => t.params.newField as string);
+  }, [selectedTable?.transformations]);
+
+  const jsFormulaColumnNames = useMemo(() => {
+    return new Set(
+      (selectedTable?.transformations ?? [])
+        .filter((t: any) => t.type === 'js_formula' && t.enabled !== false && t.params?.newField)
+        .map((t: any) => t.params.newField as string)
+    );
   }, [selectedTable?.transformations]);
 
   /**
@@ -690,7 +713,6 @@ export default function DatasetDetailPage() {
                   onEditColumn={resPerms.canEdit ? handleEditColumn : undefined}
                   computedColumns={computedColumnNames}
                   typeOverrides={(selectedTable as any)?.type_overrides}
-                  onTypeOverride={handleTypeOverride}
                   columnFormatsDb={(selectedTable as any)?.column_formats}
                   onColumnFormatChange={handleColumnFormatChange}
                 />

@@ -9,6 +9,12 @@ from app.models import Chart, ChartType, ChartMetadata, ChartParameter
 from app.schemas import ChartCreate, ChartUpdate
 from app.schemas import ChartMetadataUpsert, ChartParameterCreate, ChartParameterUpdate
 from app.core.logging import get_logger
+from app.services.chart_contracts import (
+    normalize_chart_role_config,
+    normalize_filter_conditions,
+    normalize_filter_operator,
+)
+from app.services.runtime_modes import resolve_dataset_query_mode
 
 logger = get_logger(__name__)
 
@@ -31,9 +37,9 @@ def _build_where_clause(filters) -> str:
     if not filters:
         return ''
     parts = []
-    for f in (filters or []):
+    for f in normalize_filter_conditions(filters):
         field = f.get('field', '')
-        op = (f.get('operator') or 'eq').lower()
+        op = normalize_filter_operator(f.get('operator'))
         value = f.get('value')
         if not field:
             continue
@@ -73,6 +79,9 @@ def _build_where_clause(filters) -> str:
             vals = ', '.join(_sql_literal(v.strip()) for v in value.split(',') if v.strip())
             if vals:
                 parts.append(f'{qf} NOT IN ({vals})')
+        elif op == 'like' and value is not None:
+            esc = str(value).replace("'", "''")
+            parts.append(f"{qf} LIKE '%{esc}%'")
         elif op == 'contains' and value is not None:
             esc = str(value).replace("'", "''")
             parts.append(f"{qf} LIKE '%{esc}%'")
@@ -124,10 +133,12 @@ def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filter
         return f'SELECT * FROM {base_table} LIMIT 1000', False
 
     ctype = str(getattr(chart_type, 'value', chart_type) or '').upper()
+    role_config = normalize_chart_role_config(chart_type, role_config)
     dimension = role_config.get('dimension')
     time_field = role_config.get('timeField')
     metrics = role_config.get('metrics') or []
     breakdown = role_config.get('breakdown')
+    line_metric = role_config.get('lineMetric')
     selected_cols = role_config.get('selectedColumns')
 
     where_clause = _build_where_clause(filters)
@@ -150,6 +161,9 @@ def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filter
     group_field = dimension or time_field
     if not metrics:
         return f'SELECT * FROM {base_table}{where_sql} LIMIT 1000', False
+    metric_defs = list(metrics)
+    if ctype == 'BAR_LINE' and line_metric:
+        metric_defs.append(line_metric)
 
     select_parts = []
     group_by_parts = []
@@ -157,15 +171,20 @@ def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filter
     if group_field:
         select_parts.append(f'"{group_field}"')
         group_by_parts.append(f'"{group_field}"')
-    if breakdown:
+    if breakdown and ctype != 'BAR_LINE':
         select_parts.append(f'"{breakdown}"')
         group_by_parts.append(f'"{breakdown}"')
 
-    for m in metrics:
+    seen_metric_aliases: set[str] = set()
+    for m in metric_defs:
         field = m.get('field', '')
         agg = (m.get('agg') or 'sum').upper().replace(' ', '_')
         if not field:
             continue
+        alias_name = f'{agg.lower()}__{field}'
+        if alias_name in seen_metric_aliases:
+            continue
+        seen_metric_aliases.add(alias_name)
         if agg == 'COUNT_DISTINCT':
             select_parts.append(f'COUNT(DISTINCT "{field}") AS "count_distinct__{field}"')
         elif agg == 'COUNT':
@@ -311,7 +330,7 @@ class ChartService:
         # Prefer direct dataset_table_id FK over config-embedded source
         if db_chart.dataset_table_id is not None:
             from app.services.dataset_crud import DatasetCRUDService
-            from app.services.datasource_service import DataSourceConnectionService
+            from app.services.live_query_service import LiveQueryService
             from app.models.models import DataSource
 
             db_table = DatasetCRUDService.get_table_by_id(db, db_chart.dataset_table_id)
@@ -326,7 +345,7 @@ class ChartService:
             filters = (db_chart.config or {}).get('filters', [])
 
             # ── LIVE mode: query source directly with aggregation ──
-            query_mode = getattr(db_table, 'query_mode', 'synced') or 'synced'
+            query_mode = resolve_dataset_query_mode(db_table)
             if query_mode == 'live':
                 from app.services.live_query_service import LiveQueryService
                 result = LiveQueryService.execute_chart_query(
@@ -361,11 +380,11 @@ class ChartService:
                         return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
                     except Exception:
                         pass  # fall through to live query
-                # Live fallback: execute SQL directly against the datasource
-                _, rows, _ = DataSourceConnectionService.execute_query(
-                    datasource.type, datasource.config, db_table.source_query, limit=1000
+                result = LiveQueryService.execute_chart_query(
+                    datasource, db_table, db_chart.chart_type,
+                    role_config, filters, extra_filters=extra_filters,
                 )
-                return {"chart": db_chart, "data": rows, "pre_aggregated": False}
+                return {"chart": db_chart, "data": result["data"], "pre_aggregated": result["pre_aggregated"]}
             elif db_table.source_kind == "physical_table":
                 if not db_table.source_table_name:
                     raise ValueError("Table has no physical table name")
@@ -376,18 +395,11 @@ class ChartService:
                     agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, all_filters)
                     rows = DuckDBEngine.query(agg_sql)
                     return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
-                # Live fallback: use fetch_table_data so table names with spaces work
-                stn = db_table.source_table_name.strip().strip('"').strip("'")
-                if "." in stn:
-                    _schema, _table = stn.split(".", 1)
-                    _schema = _schema.strip('"').strip("'")
-                    _table = _table.strip('"').strip("'")
-                else:
-                    _schema, _table = "default", stn
-                _, rows = DataSourceConnectionService.fetch_table_data(
-                    datasource.type, datasource.config, _schema, _table, limit=1000
+                result = LiveQueryService.execute_chart_query(
+                    datasource, db_table, db_chart.chart_type,
+                    role_config, filters, extra_filters=extra_filters,
                 )
-                return {"chart": db_chart, "data": rows, "pre_aggregated": False}
+                return {"chart": db_chart, "data": result["data"], "pre_aggregated": result["pre_aggregated"]}
             else:
                 raise ValueError(f"Unsupported source_kind: {db_table.source_kind}")
 
@@ -395,7 +407,7 @@ class ChartService:
         config = db_chart.config or {}
         if isinstance(config, dict) and config.get('source', {}).get('kind') == 'dataset_table':
             from app.services.dataset_crud import DatasetCRUDService
-            from app.services.datasource_service import DataSourceConnectionService
+            from app.services.live_query_service import LiveQueryService
             from app.models.models import DataSource
 
             dataset_id = config['source'].get('datasetId')
@@ -416,7 +428,7 @@ class ChartService:
             filters = (db_chart.config or {}).get('filters', [])
 
             # ── LIVE mode: query source directly with aggregation ──
-            query_mode = getattr(db_table, 'query_mode', 'synced') or 'synced'
+            query_mode = resolve_dataset_query_mode(db_table)
             if query_mode == 'live':
                 from app.services.live_query_service import LiveQueryService
                 result = LiveQueryService.execute_chart_query(
@@ -450,11 +462,11 @@ class ChartService:
                         return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
                     except Exception:
                         pass  # fall through to live query
-                # Live fallback: execute SQL directly against the datasource
-                _, rows, _ = DataSourceConnectionService.execute_query(
-                    datasource.type, datasource.config, db_table.source_query, limit=1000
+                result = LiveQueryService.execute_chart_query(
+                    datasource, db_table, db_chart.chart_type,
+                    role_config, filters, extra_filters=extra_filters,
                 )
-                return {"chart": db_chart, "data": rows, "pre_aggregated": False}
+                return {"chart": db_chart, "data": result["data"], "pre_aggregated": result["pre_aggregated"]}
             elif db_table.source_kind == "physical_table":
                 if not db_table.source_table_name:
                     raise ValueError("Table has no physical table")
@@ -465,18 +477,11 @@ class ChartService:
                     agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, all_filters)
                     rows = DuckDBEngine.query(agg_sql)
                     return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
-                # Live fallback: use fetch_table_data so table names with spaces work
-                stn = db_table.source_table_name.strip().strip('"').strip("'")
-                if "." in stn:
-                    _schema, _table = stn.split(".", 1)
-                    _schema = _schema.strip('"').strip("'")
-                    _table = _table.strip('"').strip("'")
-                else:
-                    _schema, _table = "default", stn
-                _, rows = DataSourceConnectionService.fetch_table_data(
-                    datasource.type, datasource.config, _schema, _table, limit=1000
+                result = LiveQueryService.execute_chart_query(
+                    datasource, db_table, db_chart.chart_type,
+                    role_config, filters, extra_filters=extra_filters,
                 )
-                return {"chart": db_chart, "data": rows, "pre_aggregated": False}
+                return {"chart": db_chart, "data": result["data"], "pre_aggregated": result["pre_aggregated"]}
             else:
                 raise ValueError(f"Unsupported source_kind: {db_table.source_kind}")
 

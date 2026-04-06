@@ -1,7 +1,8 @@
 """API endpoints for Datasets (Table-based Datasets)"""
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from decimal import Decimal
 import re
+from types import SimpleNamespace
 from datetime import datetime, date
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -39,11 +40,18 @@ from app.services import (
     DataSourceConnectionService,
     EmbeddingService,
 )
+from app.services.chart_contracts import normalize_filter_conditions
 from app.services.description_pipeline_service import (
     DescriptionPipelineService,
     resolve_session_factory,
 )
 from app.core.logging import get_logger
+from app.services.runtime_modes import datasource_sync_enabled, resolve_dataset_query_mode
+from app.services.live_query_service import build_live_base_query_plan
+from app.services.type_override_service import (
+    audit_type_overrides,
+    normalize_type_overrides,
+)
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -118,6 +126,56 @@ def _infer_column_type(col: str, col_index: int, rows: list) -> str:
         return "date"
 
     return "string"
+
+
+def _build_columns_cache_payload(
+    db_table,
+    column_metadata: List[DatasetColumnMetadata],
+    source_columns: List[str] | None = None,
+) -> Dict[str, Any]:
+    existing = db_table.columns_cache if isinstance(db_table.columns_cache, dict) else {}
+    payload: Dict[str, Any] = {
+        **existing,
+        "columns": [col.model_dump() for col in column_metadata],
+    }
+    source_cols = [str(column) for column in (source_columns or []) if str(column).strip()]
+    if source_cols:
+        payload["source_columns"] = source_cols
+        payload["source_signature"] = {
+            "source_kind": getattr(db_table, "source_kind", None),
+            "source_table_name": getattr(db_table, "source_table_name", None),
+            "source_query": getattr(db_table, "source_query", None),
+        }
+    return payload
+
+
+def _format_type_audit_error(audits: List[Dict[str, Any]]) -> str:
+    parts: List[str] = []
+    for audit in audits:
+        column = audit.get("column") or "unknown"
+        invalid_count = int(audit.get("invalid_count") or 0)
+        examples = [str(value) for value in (audit.get("invalid_examples") or [])]
+        if examples:
+            parts.append(
+                f'{column}: {invalid_count} giá trị không hợp lệ. Ví dụ: {", ".join(examples)}'
+            )
+        else:
+            parts.append(f"{column}: {invalid_count} giá trị không hợp lệ.")
+    return "Không thể đổi kiểu cột vì dữ liệu không cast an toàn. " + " | ".join(parts)
+
+
+def _build_table_draft(db_table, table_update) -> Any:
+    update_data = table_update.model_dump(exclude_unset=True)
+    return SimpleNamespace(
+        id=getattr(db_table, "id", None),
+        source_kind=getattr(db_table, "source_kind", None),
+        source_table_name=getattr(db_table, "source_table_name", None),
+        source_query=update_data.get("source_query", getattr(db_table, "source_query", None)),
+        display_name=update_data.get("display_name", getattr(db_table, "display_name", None)),
+        transformations=update_data.get("transformations", getattr(db_table, "transformations", None)),
+        type_overrides=update_data.get("type_overrides", getattr(db_table, "type_overrides", None)),
+        columns_cache=getattr(db_table, "columns_cache", None),
+    )
 
 
 def _serialize_table_description(table) -> dict:
@@ -350,8 +408,13 @@ def add_table_to_dataset(
         if not db_table:
             raise HTTPException(status_code=404, detail="Dataset not found")
 
+        if not datasource_sync_enabled():
+            db_table.query_mode = "live"
+            db.commit()
+            db.refresh(db_table)
+
         # ── Auto-detect table size and set query_mode ──
-        if db_table.source_kind == "physical_table" and db_table.source_table_name:
+        if datasource_sync_enabled() and db_table.source_kind == "physical_table" and db_table.source_table_name:
             try:
                 from app.services.live_query_service import LiveQueryService
                 ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
@@ -385,6 +448,27 @@ def add_table_to_dataset(
                     db.refresh(db_table)
             except Exception as e:
                 logger.warning("Size detection failed for table %s: %s", db_table.source_table_name, e)
+        elif db_table.source_kind == "physical_table" and db_table.source_table_name:
+            try:
+                from app.services.live_query_service import LiveQueryService
+                ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+                stn = db_table.source_table_name.strip().strip('"').strip("'")
+                if "." in stn:
+                    schema_name, tbl_name = stn.split(".", 1)
+                    schema_name = schema_name.strip('"').strip("'")
+                    tbl_name = tbl_name.strip('"').strip("'")
+                else:
+                    schema_name = "public" if ds_type == "postgresql" else ""
+                    tbl_name = stn
+                size_info = LiveQueryService.get_table_size_metadata(
+                    ds_type, datasource.config, schema_name, tbl_name,
+                )
+                db_table.estimated_row_count = size_info.get("estimated_row_count")
+                db_table.estimated_size_bytes = size_info.get("estimated_size_bytes")
+                db.commit()
+                db.refresh(db_table)
+            except Exception as e:
+                logger.warning("Size detection failed for live-only table %s: %s", db_table.source_table_name, e)
 
         # Queue a single AI-description pipeline to avoid duplicate generate/embed work.
         DescriptionPipelineService.enqueue_table_pipeline(
@@ -446,6 +530,54 @@ def update_dataset_table(
             table_update.source_query = QueryValidator.validate_and_clean(table_update.source_query)
         except QueryValidationError as e:
             raise HTTPException(status_code=400, detail=f"Invalid SQL query: {str(e)}")
+
+    if table_update.type_overrides is not None:
+        normalized_overrides = normalize_type_overrides(table_update.type_overrides)
+        current_overrides = normalize_type_overrides(getattr(db_table, "type_overrides", None))
+        changed_overrides = {
+            column: target_type
+            for column, target_type in normalized_overrides.items()
+            if current_overrides.get(column) != target_type
+        }
+
+        if changed_overrides:
+            datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+            if not datasource:
+                raise HTTPException(status_code=404, detail="Datasource not found")
+            table_draft = _build_table_draft(db_table, table_update)
+
+            try:
+                plan = build_live_base_query_plan(
+                    datasource,
+                    table_draft,
+                    apply_type_overrides=False,
+                )
+                audits = audit_type_overrides(
+                    datasource=datasource,
+                    table_identifier=table_draft.source_table_name or table_draft.display_name,
+                    base_query=plan.sql,
+                    candidate_overrides=changed_overrides,
+                    available_columns=plan.output_columns,
+                    dialect=(
+                        datasource.type.value
+                        if hasattr(datasource.type, "value")
+                        else str(datasource.type)
+                    ),
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+
+            invalid_audits = [audit.to_dict() for audit in audits if audit.invalid_count > 0]
+            if invalid_audits:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": _format_type_audit_error(invalid_audits),
+                        "type_audit": invalid_audits,
+                    },
+                )
+
+        table_update.type_overrides = normalized_overrides
 
     updated_table = DatasetCRUDService.update_table(
         db, table_id, table_update
@@ -569,28 +701,20 @@ def preview_dataset_table(
         raise HTTPException(status_code=404, detail="Datasource not found")
 
     # ── LIVE mode: preview directly from source ──
-    query_mode = getattr(db_table, 'query_mode', 'synced') or 'synced'
+    query_mode = resolve_dataset_query_mode(db_table)
     if query_mode == 'live':
         try:
-            from app.services.live_query_service import LiveQueryService, _build_base_table_ref, _dialect_for_ds_type
-            ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-            dialect = _dialect_for_ds_type(ds_type)
+            from app.services.live_query_service import LiveQueryService
             limit = preview_request.limit or 1000
             limit = min(limit, 1000)
-
-            if db_table.source_kind == "sql_query" and db_table.source_query:
-                from app.services.sql_validator import validate_select_only
-                validate_select_only(db_table.source_query)
-                sql = f"SELECT * FROM ({db_table.source_query}) AS _q LIMIT {limit}"
-            else:
-                base_ref = _build_base_table_ref(ds_type, datasource.config, db_table.source_table_name, dialect)
-                sql = f"SELECT * FROM {base_ref} LIMIT {limit}"
-
-            _, rows, _ = DataSourceConnectionService.execute_query(
-                datasource.type, datasource.config, sql, timeout_seconds=30,
+            result = LiveQueryService.execute_preview_query(
+                datasource=datasource,
+                db_table=db_table,
+                limit=limit,
+                offset=preview_request.offset or 0,
             )
-
-            columns = list(rows[0].keys()) if rows else []
+            rows = result["rows"]
+            columns = result["columns"]
             column_metadata = []
             for i, col in enumerate(columns):
                 col_type = _infer_column_type(col, i, rows)
@@ -619,7 +743,11 @@ def preview_dataset_table(
 
             DatasetCRUDService.update_table_cache(
                 db, table_id,
-                columns_cache={"columns": [col.model_dump() for col in column_metadata]},
+                columns_cache=_build_columns_cache_payload(
+                    db_table,
+                    column_metadata,
+                    source_columns=result.get("source_columns") or [],
+                ),
                 sample_cache=serializable_rows,
             )
 
@@ -631,6 +759,8 @@ def preview_dataset_table(
             )
         except HTTPException:
             raise
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.error("Failed to live-preview table: %s", e)
             raise HTTPException(status_code=500, detail="Failed to preview table from live source.")
@@ -788,41 +918,51 @@ def execute_dataset_table_query(
         raise HTTPException(status_code=404, detail="Datasource not found")
 
     # ── LIVE mode: execute aggregation directly against source ──
-    query_mode = getattr(db_table, 'query_mode', 'synced') or 'synced'
+    query_mode = resolve_dataset_query_mode(db_table)
     if query_mode == 'live':
         try:
-            from app.services.live_query_service import LiveQueryService, build_live_agg_query, _build_base_table_ref, _dialect_for_ds_type
-            ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-            dialect = _dialect_for_ds_type(ds_type)
+            from app.services.live_query_service import LiveQueryService
 
-            # Build role_config from execute_request
-            role_config = {}
-            if execute_request.dimensions:
-                role_config["dimension"] = execute_request.dimensions[0]
-            if execute_request.measures:
-                role_config["metrics"] = [
-                    {"field": m.field, "agg": m.function} for m in execute_request.measures
-                ]
-
-            # Build filters from execute_request
-            filters = []
-            if execute_request.filters:
-                for f in execute_request.filters:
-                    filters.append({
+            measures = [
+                {"field": m.field, "agg": m.function}
+                for m in (execute_request.measures or [])
+            ]
+            filters = normalize_filter_conditions(
+                [
+                    {
                         "field": f.field,
-                        "operator": f.operator.lower(),
+                        "operator": f.operator,
                         "value": f.value,
-                    })
-
-            result = LiveQueryService.execute_chart_query(
-                datasource, db_table, "TABLE", role_config, filters,
+                    }
+                    for f in (execute_request.filters or [])
+                ]
             )
-            rows = result["data"]
+            order_by = [
+                {
+                    "field": ob.field,
+                    "direction": ob.direction,
+                }
+                for ob in (execute_request.order_by or [])
+            ]
+
+            rows = LiveQueryService.execute_dataset_query(
+                datasource=datasource,
+                db_table=db_table,
+                dimensions=execute_request.dimensions or [],
+                measures=measures,
+                filters=filters,
+                order_by=order_by,
+                limit=execute_request.limit,
+            )
 
             columns = list(rows[0].keys()) if rows else []
             column_metadata = [
-                DatasetColumnMetadata(name=col, type="string", nullable=True)
-                for col in columns
+                DatasetColumnMetadata(
+                    name=col,
+                    type=_infer_column_type(col, idx, rows),
+                    nullable=True,
+                )
+                for idx, col in enumerate(columns)
             ]
 
             return ExecuteQueryResponse(columns=column_metadata, rows=rows)
@@ -905,30 +1045,76 @@ def execute_dataset_table_query(
     # Build query — inline values with SQL-safe escaping (single-quote doubling).
     # DuckDB does not support psycopg2-style %s placeholders; column names are
     # already injection-safe (validated whitelist + double-quoted identifiers).
-    def _quote_value(v: str) -> str:
-        """Wrap a string value in single quotes, escaping internal single quotes."""
+    def _sql_literal(v: Any) -> str:
+        """Render a SQL literal for the synced DuckDB path."""
+        if v is None:
+            return "NULL"
+        if isinstance(v, bool):
+            return "TRUE" if v else "FALSE"
+        if isinstance(v, (int, float, Decimal)) and not isinstance(v, bool):
+            return str(v)
         return "'" + str(v).replace("'", "''") + "'"
 
     query = f"SELECT {select_clause} FROM {base_table}"
 
     # Add WHERE clause
     if execute_request.filters:
+        normalized_filters = normalize_filter_conditions(
+            [
+                {
+                    "field": item.field,
+                    "operator": item.operator,
+                    "value": item.value,
+                }
+                for item in execute_request.filters
+            ]
+        )
         where_conditions = []
-        for filter_cond in execute_request.filters:
-            quoted_field = _validate_column(filter_cond.field, "filter field")
-            # operator validated by Pydantic enum: = != > < >= <= LIKE IN
-            op = filter_cond.operator.upper()
-            if op == 'LIKE':
-                safe_val = filter_cond.value.replace("'", "''")
-                where_conditions.append(f"{quoted_field} LIKE '%{safe_val}%'")
-            elif op == 'IN':
-                values = [v.strip() for v in filter_cond.value.split(',') if v.strip()]
+        for filter_cond in normalized_filters:
+            quoted_field = _validate_column(filter_cond["field"], "filter field")
+            op = str(filter_cond.get("operator") or "").lower()
+            value = filter_cond.get("value")
+            if op == "eq":
+                where_conditions.append(f"{quoted_field} = {_sql_literal(value)}")
+            elif op == "neq":
+                where_conditions.append(f"{quoted_field} != {_sql_literal(value)}")
+            elif op == "gt":
+                where_conditions.append(f"{quoted_field} > {_sql_literal(value)}")
+            elif op == "gte":
+                where_conditions.append(f"{quoted_field} >= {_sql_literal(value)}")
+            elif op == "lt":
+                where_conditions.append(f"{quoted_field} < {_sql_literal(value)}")
+            elif op == "lte":
+                where_conditions.append(f"{quoted_field} <= {_sql_literal(value)}")
+            elif op == "between" and isinstance(value, list) and len(value) >= 2:
+                lo, hi = value[0], value[1]
+                if lo not in ("", None) and hi not in ("", None):
+                    where_conditions.append(f"{quoted_field} BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}")
+                elif lo not in ("", None):
+                    where_conditions.append(f"{quoted_field} >= {_sql_literal(lo)}")
+                elif hi not in ("", None):
+                    where_conditions.append(f"{quoted_field} <= {_sql_literal(hi)}")
+            elif op in {"in", "not_in"}:
+                values = value if isinstance(value, list) else []
+                if isinstance(value, str):
+                    values = [v.strip() for v in value.split(",") if v.strip()]
                 if not values:
                     continue
-                quoted_values = ", ".join(_quote_value(v) for v in values)
-                where_conditions.append(f"{quoted_field} IN ({quoted_values})")
-            else:
-                where_conditions.append(f"{quoted_field} {filter_cond.operator} {_quote_value(filter_cond.value)}")
+                quoted_values = ", ".join(_sql_literal(v) for v in values)
+                comparator = "NOT IN" if op == "not_in" else "IN"
+                where_conditions.append(f"{quoted_field} {comparator} ({quoted_values})")
+            elif op in {"like", "contains", "not_contains", "starts_with"} and value is not None:
+                escaped = str(value).replace("'", "''")
+                if op == "starts_with":
+                    where_conditions.append(f"{quoted_field} LIKE '{escaped}%'")
+                elif op == "not_contains":
+                    where_conditions.append(f"{quoted_field} NOT LIKE '%{escaped}%'")
+                else:
+                    where_conditions.append(f"{quoted_field} LIKE '%{escaped}%'")
+            elif op == "is_null":
+                where_conditions.append(f"{quoted_field} IS NULL")
+            elif op == "is_not_null":
+                where_conditions.append(f"{quoted_field} IS NOT NULL")
 
         if where_conditions:
             query += " WHERE " + " AND ".join(where_conditions)
@@ -1431,6 +1617,8 @@ def remove_model_join(
     dataset_id: int,
     from_view_id: int = Query(..., description="SemanticView ID of the source table"),
     to_view_name: str = Query(..., description="View name of the target table"),
+    from_column: Optional[str] = Query(None, description="Optional source column for an exact join match"),
+    to_column: Optional[str] = Query(None, description="Optional target column for an exact join match"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1443,7 +1631,14 @@ def remove_model_join(
     require_edit_access(db, current_user, dataset_obj, "datasets")
 
     try:
-        result = remove_join(db, dataset_id, from_view_id, to_view_name)
+        result = remove_join(
+            db,
+            dataset_id,
+            from_view_id,
+            to_view_name,
+            from_column=from_column,
+            to_column=to_column,
+        )
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

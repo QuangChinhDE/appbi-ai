@@ -37,37 +37,42 @@ async def lifespan(app: FastAPI):
     import logging
     logging.getLogger(__name__).info("Data directory: %s", data_root)
 
-    # Re-register any Parquet files written by previous runs so DuckDB views
-    # are immediately available without requiring a manual re-sync.
-    from app.services.sync_engine import restore_synced_views
-    restore_synced_views()
+    if settings.ENABLE_DATASOURCE_SYNC:
+        # Re-register any Parquet files written by previous runs so DuckDB views
+        # are immediately available without requiring a manual re-sync.
+        from app.services.sync_engine import restore_synced_views
+        restore_synced_views()
 
-    # Mark stale "running" sync jobs as failed so scheduled syncs aren't
-    # permanently blocked after a container restart or OOM kill.
-    from app.core.database import SessionLocal
-    from app.models import SyncJob
-    from datetime import datetime as _dt, timezone as _tz
-    _db = SessionLocal()
-    try:
-        stale_jobs = _db.query(SyncJob).filter(SyncJob.status == "running").all()
-        if stale_jobs:
-            _now = _dt.now(_tz.utc)
-            for sj in stale_jobs:
-                sj.status = "failed"
-                sj.error_message = "Marked failed: app restarted while job was running"
-                sj.finished_at = _now
-            _db.commit()
-            logging.getLogger(__name__).warning(
-                "Startup: marked %d stale sync job(s) as failed", len(stale_jobs)
-            )
-    except Exception as _e:
-        logging.getLogger(__name__).warning("Startup: stale job cleanup failed: %s", _e)
-    finally:
-        _db.close()
+        # Mark stale "running" sync jobs as failed so scheduled syncs aren't
+        # permanently blocked after a container restart or OOM kill.
+        from app.core.database import SessionLocal
+        from app.models import SyncJob
+        from datetime import datetime as _dt, timezone as _tz
+        _db = SessionLocal()
+        try:
+            stale_jobs = _db.query(SyncJob).filter(SyncJob.status == "running").all()
+            if stale_jobs:
+                _now = _dt.now(_tz.utc)
+                for sj in stale_jobs:
+                    sj.status = "failed"
+                    sj.error_message = "Marked failed: app restarted while job was running"
+                    sj.finished_at = _now
+                _db.commit()
+                logging.getLogger(__name__).warning(
+                    "Startup: marked %d stale sync job(s) as failed", len(stale_jobs)
+                )
+        except Exception as _e:
+            logging.getLogger(__name__).warning("Startup: stale job cleanup failed: %s", _e)
+        finally:
+            _db.close()
 
-    # DataSource-level sync scheduler
-    from app.services.sync_scheduler import startup as ds_scheduler_startup
-    ds_scheduler_startup()
+        # DataSource-level sync scheduler
+        from app.services.sync_scheduler import startup as ds_scheduler_startup
+        ds_scheduler_startup()
+    else:
+        logging.getLogger(__name__).info(
+            "Datasource sync disabled; AppBI is running in live-query-only mode"
+        )
 
     # Anomaly detection daily scheduler (Phase 4)
     from app.services.anomaly_scheduler import startup as anomaly_scheduler_startup
@@ -80,8 +85,9 @@ async def lifespan(app: FastAPI):
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
-    from app.services.sync_scheduler import shutdown as ds_scheduler_shutdown
-    ds_scheduler_shutdown()
+    if settings.ENABLE_DATASOURCE_SYNC:
+        from app.services.sync_scheduler import shutdown as ds_scheduler_shutdown
+        ds_scheduler_shutdown()
 
     from app.services.anomaly_scheduler import shutdown as anomaly_scheduler_shutdown
     anomaly_scheduler_shutdown()

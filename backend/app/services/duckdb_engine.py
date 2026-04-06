@@ -87,11 +87,14 @@ class DuckDBEngine:
                         duckdb.__version__,
                     )
 
-            # Read pool: independent read-only connections for true concurrent reads.
-            # DuckDB >= 1.0 supports multiple concurrent read_only connections.
+            # Read pool: independent read-write connections for concurrent reads.
+            # Using read_only=False for all pool connections avoids DuckDB 1.2+
+            # "different configuration" errors when mixing read_only=True and
+            # read_only=False connections to the same file. Writes are still
+            # serialized via _write_lock so correctness is preserved.
             cls._read_pool = queue.Queue(maxsize=READ_POOL_SIZE)
             for _ in range(READ_POOL_SIZE):
-                rc = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+                rc = duckdb.connect(str(DUCKDB_PATH), read_only=False)
                 try:
                     rc.execute(f"SET max_memory = '{MAX_MEMORY}'")
                     rc.execute(f"SET threads = {DUCKDB_THREADS}")
@@ -212,20 +215,33 @@ class DuckDBEngine:
 
     @classmethod
     def _refresh_read_pool(cls) -> None:
-        """Drain and recreate read connections so they see new VIEWs.
+        """Drain, close, then recreate read connections so they see new VIEWs.
 
-        Uses a swap strategy: build new connections first, then swap the pool
-        atomically so in-flight reads can finish on old connections while new
-        borrows immediately get fresh connections.
+        Closes old connections BEFORE opening new ones to avoid DuckDB 1.2+
+        "different configuration" error that occurs when too many connections
+        are open simultaneously. During the brief window between close and
+        re-open, read_conn() callers will block on queue.get(timeout=30).
         """
         if cls._read_pool is None:
             return
 
-        # Build replacement read-only connections BEFORE acquiring the lock
+        # Step 1: swap out the pool so new borrows block on the empty queue
+        with cls._write_lock:
+            old_pool = cls._read_pool
+            cls._read_pool = queue.Queue(maxsize=READ_POOL_SIZE)
+
+        # Step 2: drain and close all old connections BEFORE opening new ones
+        while not old_pool.empty():
+            try:
+                old_pool.get_nowait().close()
+            except Exception:
+                pass
+
+        # Step 3: create fresh connections and fill the new pool
         new_conns = []
         try:
             for _ in range(READ_POOL_SIZE):
-                rc = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+                rc = duckdb.connect(str(DUCKDB_PATH), read_only=False)
                 try:
                     rc.execute(f"SET max_memory = '{MAX_MEMORY}'")
                     rc.execute(f"SET threads = {DUCKDB_THREADS}")
@@ -236,7 +252,6 @@ class DuckDBEngine:
                     rc.close()
                     raise
         except Exception as e:
-            # Close any successfully created connections on failure
             for c in new_conns:
                 try:
                     c.close()
@@ -246,17 +261,8 @@ class DuckDBEngine:
             return
 
         with cls._write_lock:
-            old_pool = cls._read_pool
-            cls._read_pool = queue.Queue(maxsize=READ_POOL_SIZE)
             for c in new_conns:
                 cls._read_pool.put(c)
-
-        # Close old connections outside the lock
-        while not old_pool.empty():
-            try:
-                old_pool.get_nowait().close()
-            except Exception:
-                pass
 
     @classmethod
     def shutdown(cls) -> None:

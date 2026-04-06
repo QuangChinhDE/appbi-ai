@@ -3,12 +3,13 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useParams, useSearchParams } from 'next/navigation';
-import { ArrowLeft, Loader2, Settings, RefreshCw, Pencil } from 'lucide-react';
+import { ArrowLeft, Loader2, Settings, RefreshCw, Pencil, Zap } from 'lucide-react';
 import { useDataSource, useUpdateDataSource } from '@/hooks/use-datasources';
 import DataSourceForm from '@/components/datasources/DataSourceForm';
 import SyncSettingsTab from '@/components/datasources/SyncSettingsTab';
 import type { DataSourceCreate } from '@/types/api';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import { DATASOURCE_SYNC_ENABLED, LIVE_QUERY_ONLY_MODE } from '@/lib/feature-flags';
 
 type Tab = 'connection' | 'sync';
 
@@ -39,7 +40,7 @@ export default function DataSourceDetailPage() {
   const resPerms = getResourcePermissions(dataSource?.user_permission);
 
   // Read initial tab from ?tab= query param — fallback to 'connection' for unknown values
-  const validTabs: Tab[] = ['connection', 'sync'];
+  const validTabs: Tab[] = DATASOURCE_SYNC_ENABLED ? ['connection', 'sync'] : ['connection'];
   const paramTab = searchParams.get('tab') as Tab;
   const initialTab: Tab = validTabs.includes(paramTab) ? paramTab : 'connection';
   const [activeTab, setActiveTab] = useState<Tab>(initialTab);
@@ -93,11 +94,13 @@ export default function DataSourceDetailPage() {
       label: 'Connection',
       icon: <Settings className="w-3.5 h-3.5" />,
     },
-    {
-      id: 'sync',
-      label: 'Sync settings',
-      icon: <RefreshCw className="w-3.5 h-3.5" />,
-    },
+    ...(DATASOURCE_SYNC_ENABLED
+      ? [{
+          id: 'sync' as Tab,
+          label: 'Sync settings',
+          icon: <RefreshCw className="w-3.5 h-3.5" />,
+        }]
+      : []),
   ];
 
   return (
@@ -133,6 +136,17 @@ export default function DataSourceDetailPage() {
           </Link>
           )}
         </div>
+        {LIVE_QUERY_ONLY_MODE && (
+          <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <Zap className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-medium">Live query mode</p>
+              <p className="mt-1 text-amber-800">
+                Tables are queried directly from the source. Local sync is disabled for this deployment.
+              </p>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Tabs card — stretches to fill remaining viewport height */}
@@ -168,7 +182,7 @@ export default function DataSourceDetailPage() {
             </div>
           )}
 
-          {activeTab === 'sync' && (
+          {DATASOURCE_SYNC_ENABLED && activeTab === 'sync' && (
             <div className="h-full overflow-y-auto p-6">
               <SyncSettingsTab datasourceId={datasourceId} />
             </div>

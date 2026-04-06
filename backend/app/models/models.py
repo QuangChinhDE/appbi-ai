@@ -25,6 +25,7 @@ class DataSourceType(str, enum.Enum):
 class ChartType(str, enum.Enum):
     """Supported chart types."""
     BAR = "BAR"
+    HORIZONTAL_BAR = "HORIZONTAL_BAR"
     LINE = "LINE"
     PIE = "PIE"
     TIME_SERIES = "TIME_SERIES"
@@ -32,6 +33,7 @@ class ChartType(str, enum.Enum):
     AREA = "AREA"
     STACKED_BAR = "STACKED_BAR"
     GROUPED_BAR = "GROUPED_BAR"
+    BAR_LINE = "BAR_LINE"
     SCATTER = "SCATTER"
     KPI = "KPI"
 

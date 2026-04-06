@@ -24,6 +24,7 @@ class DataSourceTypeSchema(str, Enum):
 class ChartTypeSchema(str, Enum):
     """Chart types."""
     BAR = "BAR"
+    HORIZONTAL_BAR = "HORIZONTAL_BAR"
     LINE = "LINE"
     PIE = "PIE"
     TIME_SERIES = "TIME_SERIES"
@@ -31,6 +32,7 @@ class ChartTypeSchema(str, Enum):
     AREA = "AREA"
     STACKED_BAR = "STACKED_BAR"
     GROUPED_BAR = "GROUPED_BAR"
+    BAR_LINE = "BAR_LINE"
     SCATTER = "SCATTER"
     KPI = "KPI"
 

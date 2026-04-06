@@ -30,6 +30,9 @@ export interface JoinDefinition {
   type: 'left' | 'inner' | 'right' | 'full';
   sql_on: string;
   relationship?: 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many';
+  from_view?: string;
+  from_column?: string;
+  to_column?: string;
 }
 
 export interface DatasetModelView {
@@ -209,6 +212,8 @@ export interface RemoveJoinParams {
   datasetId: number;
   fromViewId: number;
   toViewName: string;
+  fromColumn?: string;
+  toColumn?: string;
 }
 
 export function useRemoveJoin() {
@@ -221,6 +226,8 @@ export function useRemoveJoin() {
           params: {
             from_view_id: params.fromViewId,
             to_view_name: params.toViewName,
+            from_column: params.fromColumn,
+            to_column: params.toColumn,
           },
         }
       );

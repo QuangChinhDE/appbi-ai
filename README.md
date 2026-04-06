@@ -1,76 +1,92 @@
-# AppBI — Self-Hosted Business Intelligence Platform
+# AppBI
 
-**AppBI** is a fully self-hosted BI platform for connecting data sources, building dataset models, creating interactive charts and dashboards, and running AI-assisted analysis flows. Deploy the full stack in minutes with a single `docker compose up` command.
+AppBI is a self-hosted business intelligence platform for connecting data sources, modeling datasets, building charts and dashboards, and running AI-assisted analysis workflows.
 
----
+You can run the core stack locally with a single Docker Compose command, then add optional AI services when needed.
 
 ## Features
 
 ### Core BI
-- **Data Sources** — Connect PostgreSQL, MySQL, BigQuery, Google Sheets, or upload CSV/Excel files
-- **Dataset Modeling** — Visual ERD canvas with drag-and-drop table cards, relationship lines (1:1, 1:N, N:1, N:N), auto-detected FK joins, and full manual add/edit/delete of relationships
-- **Semantic Layer** — Auto-generated dimensions and measures per table; supports custom SQL and hidden fields
-- **Explore** — Interactive chart builder with aggregation push-down to DuckDB, smart X-axis scroll, and DD/MM/YYYY date filtering
-- **Dashboards** — Drag-and-drop grid, global dimension filters, per-chart HAVING filters
-- **Public Links** — Password-protected dashboard sharing, multi-link per dashboard, iframe embed via `/embed/{token}`
-- **Resource Sharing** — Share dashboards, charts, datasets, datasources, and chat sessions with specific users
-- **Permissions** — Module permission matrix (`none / view / edit / full`) per user per module
+- Data Sources: PostgreSQL, MySQL, BigQuery, Google Sheets, and manual CSV/Excel uploads
+- Dataset Modeling: visual ERD canvas, relationship management, semantic fields, hidden fields, and manual join editing
+- Query Modes: live-query-first execution by default, with optional datasource sync / DuckDB caching
+- Explore: drag-and-drop chart builder plus generated SQL and editable custom SQL in the same workflow
+- Dashboards: drag-and-drop layout, public filters, embed links, per-chart parameters, and shared access control
+- Permissions: module-level `none / view / edit / full` permission model
 
-### Chart Types
-`BAR` · `STACKED_BAR` · `GROUPED_BAR` · `LINE` · `AREA` · `TIME_SERIES` · `PIE` · `SCATTER` · `TABLE` · `KPI`
+### Explore / Charting
+- Generated SQL and custom SQL can be switched inside Explore without losing chart context
+- Custom SQL results now sync back into chart semantics more reliably
+- Supported chart types:
+  `BAR`, `HORIZONTAL_BAR`, `GROUPED_BAR`, `STACKED_BAR`, `BAR_LINE`, `LINE`, `AREA`, `TIME_SERIES`, `PIE`, `SCATTER`, `TABLE`, `KPI`
 
-### AI Capabilities
-- **AI Chat** — Conversational data exploration with tool-calling, streaming responses, and persistent session history
-- **AI Agent** — Structured brief → enriched plan → dashboard build in one guided wizard
-- **AI Description** — Automatic description generation for dataset tables and charts
-- **Anomaly Detection** — Proactive metric monitoring with z-score alerting
-- **AI Feedback** — Flag incorrect AI responses for correction tracking
+### AI
+- AI Chat for conversational analysis
+- AI Agent flow for guided report generation
+- AI-generated descriptions for charts and dataset tables
+- Embedding-backed semantic search for charts and tables
+- Feedback pipeline for improving generated descriptions and aliases
 
----
+## Recent Updates
+
+This README update reflects the current worktree changes since the previous docs update.
+
+### 1. Live-query-first runtime mode
+- Datasource sync is now feature-flagged with `ENABLE_DATASOURCE_SYNC` and `NEXT_PUBLIC_ENABLE_DATASOURCE_SYNC`
+- When sync is disabled, AppBI runs in live-query-only mode and hides or disables datasource sync actions
+- Dataset tables resolve their effective `query_mode` at runtime, so deployments can switch behavior cleanly without schema drift in the UI
+
+### 2. Smarter dataset execution for large tables
+- Dataset tables now carry query-mode metadata such as `query_mode`, estimated row count, and estimated size
+- Large physical tables can be routed to live query execution instead of forced sync
+- Table preview, chart execution, and stats services now respect the live/synced routing model
+
+### 3. Type overrides and better dataset previews
+- Dataset tables support user-defined type overrides
+- Runtime casts are applied more consistently so previews and live queries reflect the chosen column type
+- The dataset grid includes stronger display formatting behavior for typed values
+
+### 4. Explore rebuild for SQL + chart round-tripping
+- Explore now separates generated-query state from custom-SQL state
+- Custom SQL can be edited, run, and returned to chart view without snapping back to the previous generated result
+- The custom SQL flow now avoids duplicate `LIMIT` injection
+- Query errors surface the real backend reason instead of a generic failure toast
+- After running custom SQL, Explore infers chart semantics from the SQL result more reliably, including dimension and aggregate intent
+- `Use Generated` now regenerates from the latest synced chart semantics instead of jumping back to stale config
+
+### 5. New chart types and chart runtime improvements
+- Added `HORIZONTAL_BAR` and `BAR_LINE` across backend schemas, migrations, chart config, and rendering
+- Explore chart config and runtime adapters were updated to support richer pre-aggregated chart flows
+- Dashboard chart tiles now handle parameter-driven server-side filtering more cleanly
+
+### 6. Dataset model and dashboard UX improvements
+- Data model canvas received a larger ERD/relationship handling update
+- Add-chart and chart-tile flows were refined for dashboard editing
+- Public dashboard and embed pages were updated to better surface applied public filters
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    nginx (port 443 / 80)                     │
-│  /        → frontend:3000     /api/v1/* → backend:8000       │
-│  /chat/*  → ai-chat:8001      /agent/* → ai-agent:8002       │
-└──────────────────────────┬──────────────────────────────────┘
-                           │  internal Docker network (appbi-net)
-        ┌──────────────────┼──────────────────────┐
-        │                  │                      │
-   ┌────▼────┐        ┌────▼────┐           ┌─────▼──────┐
-   │frontend │        │backend  │           │     db      │
-   │ :3000   │◄───────│ :8000   │◄──────────│ PostgreSQL  │
-   └─────────┘        └────┬────┘           │ + pgvector  │
-                           │                └────────────┘
-             ┌─────────────┴─────────────┐
-             │                           │
-      ┌──────▼──────┐             ┌──────▼──────┐
-      │ ai-chat-svc │             │ai-agent-svc │
-      │   :8001     │             │   :8002     │
-      └─────────────┘             └─────────────┘
-```
+### Core services
+- `frontend`: Next.js 14 application
+- `backend`: FastAPI API, auth, dataset/query logic, chart execution
+- `db`: PostgreSQL 16 with pgvector
 
-| Service       | Internal port | Description                        |
-|---------------|---------------|------------------------------------|
-| frontend      | 3000          | Next.js 14 UI                      |
-| backend       | 8000          | FastAPI — BI API, auth, sync, query |
-| db            | 5432          | PostgreSQL 16 + pgvector            |
-| ai-chat-svc   | 8001          | Streaming AI chat _(optional)_      |
-| ai-agent-svc  | 8002          | AI report agent _(optional)_        |
+### Optional AI services
+- `ai-service`: streaming AI chat service
+- `ai-agent-service`: guided AI report / dashboard generation service
 
-All ports bind to `127.0.0.1` by default. In production, nginx routes external traffic.
-
----
+### Query path overview
+- Live mode: query the source directly
+- Synced mode: query cached data through DuckDB when datasource sync is enabled
 
 ## Quick Start
 
 ### Prerequisites
-- Docker ≥ 24 and Docker Compose v2
-- A machine with at least 2 GB RAM
+- Docker 24+
+- Docker Compose v2
+- At least 2 GB RAM for local development
 
-### 1. Clone & configure
+### 1. Clone the repo
 
 ```bash
 git clone https://github.com/QuangChinhDE/appbi-ai.git
@@ -78,126 +94,131 @@ cd appbi-ai
 cp .env.example .env
 ```
 
-Edit `.env` and fill in every `CHANGE_ME` value:
+### 2. Configure environment variables
+
+Edit `.env` and replace every `CHANGE_ME` value.
+
+Important variables:
 
 | Variable | Description |
 |---|---|
 | `DB_PASSWORD` | PostgreSQL password |
-| `SECRET_KEY` | JWT signing key — run `openssl rand -hex 32` |
-| `ENCRYPTION_KEY` | Fernet key for credentials — run `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
-| `NEXTAUTH_SECRET` | NextAuth secret — run `openssl rand -hex 32` |
-| `NEXT_PUBLIC_APP_URL` | Public URL of the app (e.g. `https://yourbi.example.com`) |
+| `SECRET_KEY` | JWT signing key |
+| `ENCRYPTION_KEY` | Credential encryption key |
+| `NEXTAUTH_SECRET` | NextAuth secret |
+| `NEXT_PUBLIC_APP_URL` | Public app URL |
+| `ENABLE_DATASOURCE_SYNC` | Backend flag for datasource sync / DuckDB mode |
+| `NEXT_PUBLIC_ENABLE_DATASOURCE_SYNC` | Frontend flag for showing sync UI |
 
-### 2. Start the core stack
+### 3. Start the core stack
 
 ```bash
 docker compose up -d --build
 ```
 
-The app will be available at **http://localhost:3000** (or your configured domain).
+AppBI will be available at `http://localhost:3000` by default.
 
-Default admin credentials are set by `FIRST_ADMIN_EMAIL` / `FIRST_ADMIN_PASSWORD` in `.env`.
+Default admin credentials are seeded from:
+- `FIRST_ADMIN_EMAIL`
+- `FIRST_ADMIN_PASSWORD`
 
-### 3. Optional AI services
+### 4. Optional AI services
 
 ```bash
-# Both AI Chat + AI Agent
+# AI Chat + AI Agent
 docker compose -f docker-compose.yml -f docker-compose.ai.yml up -d --build
 
-# Chat only
+# AI Chat only
 docker compose -f docker-compose.yml -f docker-compose.chat.yml up -d --build
 
-# Agent only
+# AI Agent only
 docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d --build
 ```
 
-AI services require an `OPENAI_API_KEY` (or compatible endpoint) in `.env`.
-
-### 4. Development (hot-reload)
+### 5. Development mode
 
 ```bash
-docker compose -f docker-compose.dev.yml up --build -d
+docker compose -f docker-compose.dev.yml up -d --build
 ```
 
----
+## Deployment Modes
+
+### Default mode: live-query-first
+- `ENABLE_DATASOURCE_SYNC=false`
+- Datasource sync endpoints stay disabled
+- Dataset execution runs directly against the source
+
+### Sync-enabled mode
+- `ENABLE_DATASOURCE_SYNC=true`
+- DuckDB-backed sync flows and schedulers are enabled
+- Tables can use synced execution where appropriate
 
 ## Tech Stack
 
 | Layer | Technology |
 |---|---|
-| Frontend | Next.js 14, React 18, TypeScript, Tailwind CSS, Radix UI, TanStack Query v5 |
-| Backend | Python 3.11, FastAPI, SQLAlchemy 2.0, Alembic, APScheduler |
-| Database | PostgreSQL 16 + pgvector |
-| Query Engine | DuckDB (in-process analytics layer) |
-| AI Layer | OpenAI API (GPT-4o / compatible), LangGraph, streaming SSE |
-| Infrastructure | Docker Compose, nginx |
-
----
+| Frontend | Next.js 14, React 18, TypeScript, Tailwind CSS, TanStack Query |
+| Backend | FastAPI, SQLAlchemy 2, Alembic, APScheduler |
+| Database | PostgreSQL 16, pgvector |
+| Query Engine | DuckDB |
+| AI | OpenAI-compatible APIs, LangGraph, SSE streaming |
+| Infra | Docker Compose, nginx |
 
 ## Project Structure
 
-```
+```text
 appbi-ai/
-├── backend/                  # FastAPI application
-│   ├── app/
-│   │   ├── api/              # REST endpoints (auth, datasets, charts, dashboards…)
-│   │   ├── models/           # SQLAlchemy ORM models
-│   │   ├── schemas/          # Pydantic request/response schemas
-│   │   └── services/         # Business logic (sync, query, ML, AI pipeline…)
-│   ├── alembic/              # Database migrations
-│   └── Dockerfile
-├── frontend/                 # Next.js 14 application
-│   └── src/
-│       ├── app/              # App Router pages
-│       ├── components/       # UI components (canvas, charts, dialogs…)
-│       └── hooks/            # React Query data-fetching hooks
-├── ai-service/               # Streaming AI chat service (optional)
-├── ai-agent-service/         # AI report agent service (optional)
-├── docker-compose.yml        # Core stack (db + backend + frontend)
-├── docker-compose.ai.yml     # Overlay: both AI services
-├── docker-compose.chat.yml   # Overlay: AI chat only
-├── docker-compose.agent.yml  # Overlay: AI agent only
-├── docker-compose.dev.yml    # Development (hot-reload) variant
-├── nginx.conf                # Reverse proxy config
-└── .env.example              # Environment variable template
+|-- backend/
+|   |-- app/
+|   |   |-- api/
+|   |   |-- models/
+|   |   |-- schemas/
+|   |   `-- services/
+|   `-- alembic/
+|-- frontend/
+|   `-- src/
+|       |-- app/
+|       |-- components/
+|       |-- hooks/
+|       `-- lib/
+|-- ai-service/
+|-- ai-agent-service/
+|-- docker-compose.yml
+|-- docker-compose.dev.yml
+|-- docker-compose.ai.yml
+|-- docker-compose.chat.yml
+|-- docker-compose.agent.yml
+`-- .env.example
 ```
-
----
-
-## Environment Variables
-
-Copy `.env.example` → `.env` and fill in all `CHANGE_ME` values before starting.
-
-The `.env` file is **never committed** to version control. `.env.example` documents every variable with descriptions and safe defaults.
-
-Key sections:
-1. **Database** — `DB_USER`, `DB_PASSWORD`, `DB_NAME`
-2. **Security** — `SECRET_KEY`, `ENCRYPTION_KEY`, `NEXTAUTH_SECRET`
-3. **Frontend** — `NEXT_PUBLIC_APP_URL`, `NEXTAUTH_URL`
-4. **AI** — `OPENAI_API_KEY`, model configs, token limits
-5. **Admin seed** — `FIRST_ADMIN_EMAIL`, `FIRST_ADMIN_PASSWORD`
-
----
 
 ## Database Migrations
 
-Migrations run automatically on backend startup via Alembic.
+Run manually if needed:
 
-To run manually:
 ```bash
 docker compose exec backend alembic upgrade head
 ```
 
----
+Recent migration additions include:
+- dataset table query mode metadata
+- new chart enum values for `HORIZONTAL_BAR` and `BAR_LINE`
+
+## Verification
+
+Useful verification commands for this codebase:
+
+```bash
+docker compose exec -T backend python -m compileall app
+docker compose exec -T frontend npm run build
+```
 
 ## Contributing
 
-1. Fork the repo and create a feature branch
-2. Make changes; ensure the TypeScript build passes: `cd frontend && ./node_modules/.bin/tsc --noEmit`
-3. Submit a pull request with a clear description
-
----
+1. Create a feature branch
+2. Make your changes
+3. Run the relevant build or test commands
+4. Open a pull request with a clear summary
 
 ## License
 
-Proprietary — All rights reserved. Contact the maintainers for licensing inquiries.
+Proprietary. Contact the maintainers for licensing questions.

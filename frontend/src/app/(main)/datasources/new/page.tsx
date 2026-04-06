@@ -3,10 +3,11 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Settings, RefreshCw, Lock } from 'lucide-react';
+import { ArrowLeft, Settings, RefreshCw, Lock, Zap } from 'lucide-react';
 import DataSourceForm from '@/components/datasources/DataSourceForm';
 import { useCreateDataSource } from '@/hooks/use-datasources';
 import type { DataSourceCreate } from '@/types/api';
+import { DATASOURCE_SYNC_ENABLED, LIVE_QUERY_ONLY_MODE } from '@/lib/feature-flags';
 
 type Tab = 'connection' | 'sync';
 
@@ -18,8 +19,7 @@ export default function NewDataSourcePage() {
   const handleCreate = async (data: DataSourceCreate, _meta: { configModified: boolean }) => {
     try {
       const created = await createMutation.mutateAsync(data);
-      // Redirect to detail page with Tables tab active so user can explore immediately
-      router.push(`/datasources/${created.id}?tab=sync`);
+      router.push(`/datasources/${created.id}?tab=connection`);
     } catch (error: any) {
       alert(`Failed to create data source: ${error.response?.data?.detail || error.message}`);
     }
@@ -32,12 +32,14 @@ export default function NewDataSourcePage() {
       icon: <Settings className="w-3.5 h-3.5" />,
       locked: false,
     },
-    {
-      id: 'sync',
-      label: 'Sync settings',
-      icon: <RefreshCw className="w-3.5 h-3.5" />,
-      locked: true,
-    },
+    ...(DATASOURCE_SYNC_ENABLED
+      ? [{
+          id: 'sync' as Tab,
+          label: 'Sync settings',
+          icon: <RefreshCw className="w-3.5 h-3.5" />,
+          locked: true,
+        }]
+      : []),
   ];
 
   return (
@@ -56,9 +58,20 @@ export default function NewDataSourcePage() {
         <div className="mb-4">
           <h1 className="text-2xl font-bold text-gray-900">New Data Source</h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            Configure connection, explore tables and set up sync schedule.
+            Configure the connection and query source data live.
           </p>
         </div>
+        {LIVE_QUERY_ONLY_MODE && (
+          <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <Zap className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-medium">Live query mode</p>
+              <p className="mt-1 text-amber-800">
+                New sources use direct querying only. Sync setup is hidden for now.
+              </p>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Tabs card — stretches to fill remaining viewport height */}

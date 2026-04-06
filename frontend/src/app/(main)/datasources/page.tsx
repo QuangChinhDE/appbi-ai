@@ -38,6 +38,13 @@ const DS_TYPE_COLOR: Record<string, string> = {
 
 type View = 'list' | 'query';
 
+function extractQueryErrorMessage(error: any, fallback = 'Failed to run query'): string {
+  const detail = error?.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (detail?.message) return detail.message;
+  return error?.message || fallback;
+}
+
 export default function DataSourcesPage() {
   const router = useRouter();
   const { t } = useI18n();
@@ -118,7 +125,7 @@ export default function DataSourcesPage() {
       const result = await executeMutation.mutateAsync(params);
       setQueryResult(result);
     } catch (error: any) {
-      setQueryError(error.response?.data?.detail || error.message);
+      setQueryError(extractQueryErrorMessage(error));
     }
   };
 

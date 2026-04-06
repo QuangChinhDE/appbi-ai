@@ -68,7 +68,7 @@ class DatasetCRUDService:
         dataset_in: DatasetUpdate
     ) -> Optional[Dataset]:
         """Update a dataset"""
-        db_dataset_obj = db.query(Dataset)\
+        db_dataset = db.query(Dataset)\
             .filter(Dataset.id == dataset_id)\
             .first()
         

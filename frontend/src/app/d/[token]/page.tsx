@@ -19,10 +19,11 @@ import {
 import type { Dashboard, DashboardChart, ChartDataResponse } from '@/types/api';
 import type { BaseFilter, ColumnInfo } from '@/lib/filters';
 import { applyFiltersToRows, inferColumnTypeFromData } from '@/lib/filters';
+import { getRoleConfigDimensionFields } from '@/components/explore/ExploreChartConfig';
 
 const ResponsiveGridLayout = WidthProvider(Responsive);
 
-// ── Password gate component ────────────────────────────────────────────────
+// â”€â”€ Password gate component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function PasswordGate({
   onSubmit,
   error,
@@ -90,11 +91,11 @@ function PasswordGate({
             className="mt-4 w-full flex items-center justify-center gap-2 rounded-lg bg-blue-600 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
           >
             {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />}
-            {submitting ? 'Verifying…' : isReauth ? 'Continue viewing' : 'Unlock dashboard'}
+            {submitting ? 'Verifyingâ€¦' : isReauth ? 'Continue viewing' : 'Unlock dashboard'}
           </button>
 
           <p className="mt-3 text-center text-[11px] text-gray-400">
-            Sessions last 2 hours · Powered by AppBI
+            Sessions last 2 hours Â· Powered by AppBI
           </p>
         </div>
       </div>
@@ -102,7 +103,7 @@ function PasswordGate({
   );
 }
 
-// ── Session expired overlay ────────────────────────────────────────────────
+// â”€â”€ Session expired overlay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function SessionExpiredOverlay({ onReauth }: { onReauth: () => void }) {
   return (
     <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/30 backdrop-blur-[2px] pb-12 sm:items-center sm:pb-0">
@@ -125,7 +126,7 @@ function SessionExpiredOverlay({ onReauth }: { onReauth: () => void }) {
   );
 }
 
-// ── Main page ──────────────────────────────────────────────────────────────
+// â”€â”€ Main page â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export default function PublicDashboardPage() {
   const params = useParams();
   const token = params.token as string;
@@ -139,13 +140,13 @@ export default function PublicDashboardPage() {
   const [availableColumns, setAvailableColumns] = useState<ColumnInfo[]>([]);
   const filtersInitializedRef = useRef(false);
 
-  // ── Auth state ──────────────────────────────────────────────────────
-  // 'unknown'       → haven't attempted load yet
-  // 'loading'       → loading dashboard/charts
-  // 'password_gate' → 401 received, show password form
-  // 'reauth'        → session expired, user needs to re-enter password
-  // 'loaded'        → dashboard loaded successfully
-  // 'error'         → non-auth error
+  // â”€â”€ Auth state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // 'unknown'       â†’ haven't attempted load yet
+  // 'loading'       â†’ loading dashboard/charts
+  // 'password_gate' â†’ 401 received, show password form
+  // 'reauth'        â†’ session expired, user needs to re-enter password
+  // 'loaded'        â†’ dashboard loaded successfully
+  // 'error'         â†’ non-auth error
   type PageState = 'unknown' | 'loading' | 'password_gate' | 'reauth' | 'loaded' | 'error';
   const [pageState, setPageState] = useState<PageState>('unknown');
   const [authError, setAuthError] = useState<string | null>(null);
@@ -172,7 +173,7 @@ export default function PublicDashboardPage() {
 
   useEffect(() => () => clearSessionTimer(), []);
 
-  // ── Load dashboard (with optional session token) ────────────────────
+  // â”€â”€ Load dashboard (with optional session token) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const loadDashboard = useCallback(
     async (sessionToken?: string) => {
       setPageState('loading');
@@ -228,7 +229,7 @@ export default function PublicDashboardPage() {
     [token, scheduleSessionExpiry],
   );
 
-  // ── Initial load ────────────────────────────────────────────────────
+  // â”€â”€ Initial load â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (!token) return;
     setMounted(true);
@@ -236,7 +237,7 @@ export default function PublicDashboardPage() {
     loadDashboard(stored ?? undefined);
   }, [token, loadDashboard]);
 
-  // ── Password submit handler ─────────────────────────────────────────
+  // â”€â”€ Password submit handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handlePasswordSubmit = useCallback(
     async (password: string) => {
       setAuthSubmitting(true);
@@ -268,7 +269,7 @@ export default function PublicDashboardPage() {
     setAuthError(null);
   }, []);
 
-  // ── Column inference ────────────────────────────────────────────────
+  // â”€â”€ Column inference â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const columnChartCount = useMemo(() => {
     const tracker = new Map<string, Set<number>>();
     Object.entries(chartData).forEach(([chartIdRaw, payload]) => {
@@ -276,7 +277,7 @@ export default function PublicDashboardPage() {
       const rows = Array.isArray(payload?.data) ? payload.data : [];
       if (!rows.length) return;
       const roleConfig = (payload.chart?.config as any)?.roleConfig ?? {};
-      const dimensionFields = [roleConfig.dimension, roleConfig.breakdown, roleConfig.timeField]
+      const dimensionFields = getRoleConfigDimensionFields(payload.chart?.chart_type ?? payload.chart?.config?.chartType ?? '', roleConfig)
         .filter((field): field is string => Boolean(field) && field in rows[0]);
       const fields = dimensionFields.length > 0 ? dimensionFields : Object.keys(rows[0]);
       fields.forEach((field) => {
@@ -293,7 +294,7 @@ export default function PublicDashboardPage() {
       const rows = Array.isArray(payload?.data) ? payload.data : [];
       if (!rows.length) return;
       const roleConfig = (payload.chart?.config as any)?.roleConfig ?? {};
-      const dimensionFields = [roleConfig.dimension, roleConfig.breakdown, roleConfig.timeField]
+      const dimensionFields = getRoleConfigDimensionFields(payload.chart?.chart_type ?? payload.chart?.config?.chartType ?? '', roleConfig)
         .filter((field): field is string => Boolean(field) && field in rows[0]);
       const fields = dimensionFields.length > 0 ? dimensionFields : Object.keys(rows[0]);
       fields.forEach((field) => {
@@ -305,12 +306,12 @@ export default function PublicDashboardPage() {
     setAvailableColumns(Array.from(columns.values()).sort((left, right) => left.name.localeCompare(right.name)));
   }, [chartData]);
 
-  // ── Render ──────────────────────────────────────────────────────────
+  // â”€â”€ Render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (!mounted || pageState === 'unknown') {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50">
         <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
-        <span className="ml-3 text-sm text-gray-600">Loading dashboard…</span>
+        <span className="ml-3 text-sm text-gray-600">Loading dashboardâ€¦</span>
       </div>
     );
   }
@@ -344,7 +345,7 @@ export default function PublicDashboardPage() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50">
         <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
-        <span className="ml-3 text-sm text-gray-600">Loading dashboard…</span>
+        <span className="ml-3 text-sm text-gray-600">Loading dashboardâ€¦</span>
       </div>
     );
   }
@@ -391,7 +392,7 @@ export default function PublicDashboardPage() {
             <div className="flex flex-wrap gap-2">
               {globalFilters.map((filter) => (
                 <span key={filter.id} className="rounded-full border border-blue-200 bg-white px-2.5 py-1 text-xs text-blue-800">
-                  {filter.label ?? filter.field}: {Array.isArray(filter.value) ? filter.value.join(' – ') : String(filter.value ?? '')}
+                  {filter.label ?? filter.field}: {Array.isArray(filter.value) ? filter.value.join(' â€“ ') : String(filter.value ?? '')}
                 </span>
               ))}
             </div>
@@ -482,7 +483,7 @@ export default function PublicDashboardPage() {
       </main>
 
       <footer className="border-t border-gray-200 py-4 text-center text-xs text-gray-400">
-        Powered by AppBI · Read-only shared view
+        Powered by AppBI Â· Read-only shared view
       </footer>
     </div>
   );

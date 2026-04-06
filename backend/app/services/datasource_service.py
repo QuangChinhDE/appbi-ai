@@ -4,6 +4,7 @@ Handles connecting to and querying external data sources.
 """
 import base64
 import os
+import re
 import time
 from typing import Generator, Iterator, List, Dict, Any, Tuple
 import pymysql
@@ -42,6 +43,33 @@ def _resolve_gcp_credentials_json(config: Dict[str, Any]) -> str:
         "No GCP credentials found. Either provide credentials_json in the "
         "datasource config or set GCP_SERVICE_ACCOUNT_JSON in the platform .env."
     )
+
+
+_TRAILING_ROW_LIMIT_RE = re.compile(
+    r"(?:\bLIMIT\s+\d+\s*(?:OFFSET\s+\d+\s*)?|\bOFFSET\s+\d+\s+LIMIT\s+\d+\s*|\bFETCH\s+FIRST\s+\d+\s+ROWS?\s+ONLY)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _normalize_sql_query(sql_query: str) -> str:
+    """Trim trailing semicolons/whitespace so LIMIT handling stays stable."""
+    return sql_query.rstrip().rstrip(";").rstrip()
+
+
+def _query_has_explicit_row_limit(sql_query: str) -> bool:
+    """Return True when the SQL already ends with a row limiting clause."""
+    return bool(_TRAILING_ROW_LIMIT_RE.search(_normalize_sql_query(sql_query)))
+
+
+def _apply_optional_limit(sql_query: str, limit: int | None) -> str:
+    """
+    Append LIMIT only when the caller requested one and the SQL does not
+    already end with LIMIT / FETCH FIRST.
+    """
+    normalized = _normalize_sql_query(sql_query)
+    if not limit or _query_has_explicit_row_limit(normalized):
+        return normalized
+    return f"{normalized} LIMIT {int(limit)}"
 
 
 class DataSourceConnectionService:
@@ -196,6 +224,7 @@ class DataSourceConnectionService:
         limit: int = None,
         timeout_seconds: int = 30,
         query_params: list = None,
+        skip_bigquery_cost_check: bool = False,
     ) -> Tuple[List[str], List[Dict[str, Any]], float]:
         """
         Execute a SQL query against a data source.
@@ -207,6 +236,7 @@ class DataSourceConnectionService:
             limit: Optional row limit
             timeout_seconds: Query timeout in seconds (default: 30)
             query_params: Optional list of parameter values for %s placeholders
+            skip_bigquery_cost_check: Skip dry-run scan guard for BigQuery callers
             
         Returns:
             Tuple of (columns, data, execution_time_ms)
@@ -228,7 +258,13 @@ class DataSourceConnectionService:
             elif ds_type == DataSourceType.MYSQL.value:
                 result = DataSourceConnectionService._execute_mysql(config, sql_query, limit, timeout_seconds, query_params)
             elif ds_type == DataSourceType.BIGQUERY.value:
-                result = DataSourceConnectionService._execute_bigquery(config, sql_query, limit, timeout_seconds)
+                result = DataSourceConnectionService._execute_bigquery(
+                    config,
+                    sql_query,
+                    limit,
+                    timeout_seconds,
+                    skip_cost_check=skip_bigquery_cost_check,
+                )
             elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
                 result = DataSourceConnectionService._execute_google_sheets(config, sql_query, limit)
             elif ds_type == DataSourceType.MANUAL.value:
@@ -367,9 +403,7 @@ class DataSourceConnectionService:
                 cursor.execute(f"SET search_path TO {schema}")
             
             # Apply limit if specified
-            query = sql_query
-            if limit:
-                query = f"{sql_query.rstrip(';')} LIMIT {limit}"
+            query = _apply_optional_limit(sql_query, limit)
             
             cursor.execute(query, query_params)
             
@@ -413,9 +447,7 @@ class DataSourceConnectionService:
             cursor = conn.cursor()
             
             # Apply limit if specified
-            query = sql_query
-            if limit:
-                query = f"{sql_query.rstrip(';')} LIMIT {limit}"
+            query = _apply_optional_limit(sql_query, limit)
             
             cursor.execute(query, query_params)
             
@@ -425,6 +457,8 @@ class DataSourceConnectionService:
             # Fetch data
             rows = cursor.fetchall()
             data = [dict(zip(columns, row)) for row in rows]
+
+            return columns, data
             
         finally:
             if cursor:
@@ -437,7 +471,8 @@ class DataSourceConnectionService:
         config: Dict[str, Any],
         sql_query: str,
         limit: int = None,
-        timeout_seconds: int = 30
+        timeout_seconds: int = 30,
+        skip_cost_check: bool = False,
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
         """Execute query against BigQuery."""
         client = None
@@ -452,9 +487,18 @@ class DataSourceConnectionService:
             )
             
             # Apply limit if specified
-            query = sql_query
-            if limit:
-                query = f"{sql_query.rstrip(';')} LIMIT {limit}"
+            query = _apply_optional_limit(sql_query, limit)
+
+            if not skip_cost_check:
+                estimated_bytes = DataSourceConnectionService._estimate_bigquery_bytes(config, query)
+                max_bytes = settings.BQ_MAX_BYTES_SCANNED
+                if estimated_bytes > max_bytes:
+                    gb_est = estimated_bytes / (1024**3)
+                    gb_max = max_bytes / (1024**3)
+                    raise ValueError(
+                        f"Query would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
+                        "Add filters or reduce selected columns before running it."
+                    )
             
             logger.info(f"Executing BigQuery query on project {project_id}")
             
@@ -491,6 +535,22 @@ class DataSourceConnectionService:
             raise
         finally:
             # Cleanup client if needed
+            if client:
+                client.close()
+
+    @staticmethod
+    def _estimate_bigquery_bytes(config: Dict[str, Any], sql_query: str) -> int:
+        """Dry-run a BigQuery query and return estimated bytes processed."""
+        client = None
+        try:
+            credentials_info = json.loads(_resolve_gcp_credentials_json(config))
+            credentials = service_account.Credentials.from_service_account_info(credentials_info)
+            project_id = config.get("project_id")
+            client = bigquery.Client(credentials=credentials, project=project_id)
+            job_config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
+            job = client.query(sql_query, job_config=job_config)
+            return int(job.total_bytes_processed or 0)
+        finally:
             if client:
                 client.close()
 

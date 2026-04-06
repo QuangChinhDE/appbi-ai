@@ -103,6 +103,7 @@ class Settings(BaseSettings):
     BQ_MAX_BYTES_SCANNED: int = 10 * 1024**3            # 10 GB dry-run guard
     LIVE_QUERY_CACHE_TTL: int = 300                     # 5 minutes
     LIVE_QUERY_CACHE_MAX_SIZE: int = 256                # max entries
+    ENABLE_DATASOURCE_SYNC: bool = False                # live-query-first mode
 
     @property
     def active_description_model(self) -> str:

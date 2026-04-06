@@ -14,7 +14,7 @@
 
 services:
   db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: appbi-db-dev
     environment:
       POSTGRES_USER: appbi
@@ -58,6 +58,8 @@ services:
       SEED_DEMO_DATA: "false"
       DATA_DIR: /app/.data
       DATASOURCE_ENCRYPTION_KEY: ${DATASOURCE_ENCRYPTION_KEY:-}
+      GCP_SERVICE_ACCOUNT_JSON: ${GCP_SERVICE_ACCOUNT_JSON:-}
+      GCP_SERVICE_ACCOUNT_EMAIL: ${GCP_SERVICE_ACCOUNT_EMAIL:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_SITE_URL: ${OPENROUTER_SITE_URL:-http://localhost:3000}
       OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-AppBI}

@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.services.schema_change_service import SchemaChangeService
+from app.services.runtime_modes import datasource_sync_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -129,8 +130,6 @@ class TableStatsService:
         """
         from app.models.dataset import DatasetTable
         from app.models.models import DataSource
-        from app.services.duckdb_engine import DuckDBEngine
-        from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
 
         try:
             table = db.query(DatasetTable).filter(
@@ -160,30 +159,42 @@ class TableStatsService:
                 for column in normalized_columns
             ]
 
-            if table.source_kind == "sql_query":
-                if not table.source_query:
-                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "missing_source_query"}
-                rewritten = rewrite_sql_for_duckdb(datasource.id, table.source_query)
-                if not rewritten:
-                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "not_synced"}
-                try:
-                    rows = DuckDBEngine.query(
-                        f"SELECT * FROM ({rewritten}) AS _q LIMIT {TableStatsService.SAMPLE_LIMIT}"
-                    )
-                except Exception:
-                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "duckdb_query_failed"}
+            if not datasource_sync_enabled():
+                cached_rows = table.sample_cache if isinstance(table.sample_cache, list) else []
+                rows = [
+                    row for row in cached_rows[:TableStatsService.SAMPLE_LIMIT]
+                    if isinstance(row, dict)
+                ]
+                if not rows:
+                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "missing_sample_cache"}
             else:
-                if not table.source_table_name:
-                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "missing_source_table_name"}
-                view_name = get_synced_view(datasource.id, table.source_table_name)
-                if not view_name:
-                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "not_synced"}
-                try:
-                    rows = DuckDBEngine.query(
-                        f"SELECT * FROM {view_name} LIMIT {TableStatsService.SAMPLE_LIMIT}"
-                    )
-                except Exception:
-                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "duckdb_query_failed"}
+                from app.services.duckdb_engine import DuckDBEngine
+                from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
+
+                if table.source_kind == "sql_query":
+                    if not table.source_query:
+                        return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "missing_source_query"}
+                    rewritten = rewrite_sql_for_duckdb(datasource.id, table.source_query)
+                    if not rewritten:
+                        return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "not_synced"}
+                    try:
+                        rows = DuckDBEngine.query(
+                            f"SELECT * FROM ({rewritten}) AS _q LIMIT {TableStatsService.SAMPLE_LIMIT}"
+                        )
+                    except Exception:
+                        return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "duckdb_query_failed"}
+                else:
+                    if not table.source_table_name:
+                        return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "missing_source_table_name"}
+                    view_name = get_synced_view(datasource.id, table.source_table_name)
+                    if not view_name:
+                        return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "not_synced"}
+                    try:
+                        rows = DuckDBEngine.query(
+                            f"SELECT * FROM {view_name} LIMIT {TableStatsService.SAMPLE_LIMIT}"
+                        )
+                    except Exception:
+                        return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "duckdb_query_failed"}
 
             if not rows:
                 return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "no_rows"}

@@ -15,8 +15,9 @@ COPY . .
 # Expose port
 EXPOSE 3000
 
-# Set environment
-ENV NODE_ENV development
+# Keep the image neutral: `next dev` already forces development mode,
+# while ad-hoc `next build` checks inside the same container should run
+# with Next's normal production semantics.
 ENV NEXT_TELEMETRY_DISABLED 1
 
 # Start dev server

@@ -11,13 +11,32 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.services.chart_contracts import (
+    normalize_chart_role_config,
+    normalize_filter_conditions,
+    normalize_filter_operator,
+)
 from app.services import query_cache
+from app.services.transformation_compiler import TransformationCompiler
+from app.services.sql_validator import validate_select_only
+from app.services.type_override_service import (
+    build_runtime_projection_query,
+    normalize_type_overrides,
+)
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class LiveBaseQueryPlan:
+    sql: str
+    source_columns: List[str]
+    output_columns: List[str]
 
 
 # ── SQL dialect helpers ──────────────────────────────────────────────────────
@@ -85,6 +104,150 @@ def _build_base_table_ref(
     return _quote_identifier(stn, dialect)
 
 
+def _build_source_select_query(
+    datasource,
+    db_table,
+    ds_type: str,
+    dialect: str,
+) -> str:
+    """Build the raw source SELECT used before dataset transformations."""
+    table_identifier = db_table.source_table_name or db_table.display_name
+    if db_table.source_kind == "sql_query" and db_table.source_query:
+        validate_select_only(db_table.source_query)
+        return f"SELECT * FROM ({db_table.source_query}) AS _source"
+    base_ref = _build_base_table_ref(ds_type, datasource.config, table_identifier, dialect)
+    return f"SELECT * FROM {base_ref}"
+
+
+def _source_signature(db_table) -> Dict[str, Any]:
+    return {
+        "source_kind": getattr(db_table, "source_kind", None),
+        "source_table_name": getattr(db_table, "source_table_name", None),
+        "source_query": getattr(db_table, "source_query", None),
+    }
+
+
+def _extract_cached_output_columns(db_table) -> list[str]:
+    raw_cols = getattr(db_table, "columns_cache", None)
+    if isinstance(raw_cols, dict) and "columns" in raw_cols:
+        raw_cols = raw_cols["columns"]
+    if not isinstance(raw_cols, list):
+        return []
+    result: list[str] = []
+    for col in raw_cols:
+        if isinstance(col, dict) and col.get("name"):
+            result.append(str(col["name"]))
+        elif isinstance(col, str):
+            result.append(str(col))
+    return result
+
+
+def _extract_cached_source_columns(db_table) -> list[str]:
+    raw_cache = getattr(db_table, "columns_cache", None)
+    if not isinstance(raw_cache, dict):
+        return []
+    if raw_cache.get("source_signature") != _source_signature(db_table):
+        return []
+    source_columns = raw_cache.get("source_columns")
+    if not isinstance(source_columns, list):
+        return []
+    return [str(column) for column in source_columns if str(column).strip()]
+
+
+def _infer_source_columns(datasource, ds_type: str, sql_query: str) -> list[str]:
+    """Infer raw source columns using connector metadata APIs where possible."""
+    from app.services.datasource_service import DataSourceConnectionService
+
+    try:
+        inferred = DataSourceConnectionService.infer_column_types(
+            ds_type,
+            datasource.config,
+            sql_query,
+        )
+    except Exception as exc:
+        logger.warning("Source column inference failed for live transformations: %s", exc)
+        return []
+
+    return [
+        str(col.get("name"))
+        for col in inferred
+        if isinstance(col, dict) and col.get("name")
+    ]
+
+
+def _resolve_source_columns(
+    datasource,
+    db_table,
+    ds_type: str,
+    base_query: str,
+) -> list[str]:
+    cached = _extract_cached_source_columns(db_table)
+    if cached:
+        logger.debug(
+            "Live schema cache HIT: ds=%s table=%s cols=%d",
+            getattr(datasource, "id", "?"),
+            getattr(db_table, "id", "?"),
+            len(cached),
+        )
+        return cached
+    inferred = _infer_source_columns(datasource, ds_type, base_query)
+    if inferred:
+        logger.debug(
+            "Live schema cache MISS: inferred source columns for ds=%s table=%s cols=%d",
+            getattr(datasource, "id", "?"),
+            getattr(db_table, "id", "?"),
+            len(inferred),
+        )
+        return inferred
+    return _extract_cached_output_columns(db_table)
+
+
+def build_live_base_query_plan(
+    datasource,
+    db_table,
+    *,
+    apply_type_overrides: bool = True,
+) -> LiveBaseQueryPlan:
+    """Build the live-mode SELECT, including transforms and runtime type casts."""
+    ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+    dialect = _dialect_for_ds_type(ds_type)
+    base_query = _build_source_select_query(datasource, db_table, ds_type, dialect)
+    source_columns = _resolve_source_columns(datasource, db_table, ds_type, base_query)
+    transformations = [
+        t for t in (getattr(db_table, "transformations", None) or [])
+        if t.get("enabled", True) and t.get("type") != "js_formula"
+    ]
+    compiled_sql = base_query
+    output_columns = list(source_columns)
+    if transformations:
+        compiled_sql, output_columns = TransformationCompiler.compile_transformations(
+            base_query,
+            transformations,
+            dialect=dialect,
+            available_columns=source_columns or None,
+        )
+
+    normalized_overrides = normalize_type_overrides(
+        getattr(db_table, "type_overrides", None) if apply_type_overrides else None
+    )
+    if normalized_overrides:
+        projection_columns = list(output_columns or _extract_cached_output_columns(db_table))
+        if projection_columns:
+            compiled_sql = build_runtime_projection_query(
+                compiled_sql,
+                projection_columns,
+                normalized_overrides,
+                dialect,
+            )
+            output_columns = projection_columns
+
+    return LiveBaseQueryPlan(
+        sql=compiled_sql,
+        source_columns=list(source_columns),
+        output_columns=list(output_columns),
+    )
+
+
 # ── WHERE clause builder (dialect-aware) ─────────────────────────────────────
 
 def _build_where_clause(filters: list, dialect: str) -> str:
@@ -93,9 +256,9 @@ def _build_where_clause(filters: list, dialect: str) -> str:
         return ""
     parts = []
     qi = _quote_identifier
-    for f in filters or []:
+    for f in normalize_filter_conditions(filters):
         field = f.get("field", "")
-        op = (f.get("operator") or "eq").lower()
+        op = normalize_filter_operator(f.get("operator"))
         value = f.get("value")
         if not field:
             continue
@@ -138,9 +301,15 @@ def _build_where_clause(filters: list, dialect: str) -> str:
             )
             if vals:
                 parts.append(f"{qf} NOT IN ({vals})")
+        elif op == "like" and value is not None:
+            esc = str(value).replace("'", "''")
+            parts.append(f"{qf} LIKE '%{esc}%'")
         elif op == "contains" and value is not None:
             esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
             parts.append(f"{qf} LIKE '%{esc}%' ESCAPE '\\'")
+        elif op == "not_contains" and value is not None:
+            esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
+            parts.append(f"{qf} NOT LIKE '%{esc}%' ESCAPE '\\'")
         elif op == "starts_with" and value is not None:
             esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
             parts.append(f"{qf} LIKE '{esc}%' ESCAPE '\\'")
@@ -159,6 +328,7 @@ def build_live_agg_query(
     role_config: dict,
     filters: list,
     dialect: str,
+    limit_override: Optional[int] = None,
 ) -> Tuple[str, bool]:
     """
     Build an aggregation query for direct source execution.
@@ -168,33 +338,38 @@ def build_live_agg_query(
     """
     qi = _quote_identifier
     ctype = str(getattr(chart_type, "value", chart_type) or "").upper()
+    role_config = normalize_chart_role_config(chart_type, role_config)
 
     where_clause = _build_where_clause(filters, dialect)
     where_sql = f" WHERE {where_clause}" if where_clause else ""
 
     if not role_config:
-        return f"SELECT * FROM {base_table}{where_sql} LIMIT 500", False
+        limit = limit_override or 500
+        return f"SELECT * FROM {base_table}{where_sql} LIMIT {int(limit)}", False
 
     dimension = role_config.get("dimension")
     time_field = role_config.get("timeField")
     metrics = role_config.get("metrics") or []
     breakdown = role_config.get("breakdown")
+    line_metric = role_config.get("lineMetric")
     selected_cols = role_config.get("selectedColumns")
 
     # TABLE: capped at 5000 rows
     if ctype == "TABLE":
         cols = ", ".join(qi(c, dialect) for c in selected_cols) if selected_cols else "*"
-        return f"SELECT {cols} FROM {base_table}{where_sql} LIMIT 5000", True
+        limit = limit_override or 5000
+        return f"SELECT {cols} FROM {base_table}{where_sql} LIMIT {int(limit)}", True
 
     # SCATTER: raw points up to 5000
     if ctype == "SCATTER":
         sx, sy = role_config.get("scatterX"), role_config.get("scatterY")
+        limit = limit_override or 5000
         if sx and sy:
             return (
-                f"SELECT {qi(sx, dialect)}, {qi(sy, dialect)} FROM {base_table}{where_sql} LIMIT 5000",
+                f"SELECT {qi(sx, dialect)}, {qi(sy, dialect)} FROM {base_table}{where_sql} LIMIT {int(limit)}",
                 True,
             )
-        return f"SELECT * FROM {base_table}{where_sql} LIMIT 5000", True
+        return f"SELECT * FROM {base_table}{where_sql} LIMIT {int(limit)}", True
 
     # All other types: GROUP BY aggregation (required for live mode)
     group_field = dimension or time_field
@@ -204,6 +379,9 @@ def build_live_agg_query(
             "Charts on large tables require at least one metric (aggregation). "
             "Please add a SUM, COUNT, AVG, MIN or MAX measure."
         )
+    metric_defs = list(metrics)
+    if ctype == "BAR_LINE" and line_metric:
+        metric_defs.append(line_metric)
 
     select_parts = []
     group_by_parts = []
@@ -211,17 +389,21 @@ def build_live_agg_query(
     if group_field:
         select_parts.append(qi(group_field, dialect))
         group_by_parts.append(qi(group_field, dialect))
-    if breakdown:
+    if breakdown and ctype != "BAR_LINE":
         select_parts.append(qi(breakdown, dialect))
         group_by_parts.append(qi(breakdown, dialect))
 
-    for m in metrics:
+    seen_metric_aliases: set[str] = set()
+    for m in metric_defs:
         field = m.get("field", "")
         agg = (m.get("agg") or "sum").upper().replace(" ", "_")
         if not field:
             continue
         qf = qi(field, dialect)
         alias_name = f"{agg.lower()}__{field}"
+        if alias_name in seen_metric_aliases:
+            continue
+        seen_metric_aliases.add(alias_name)
         alias = qi(alias_name, dialect)
         if agg == "COUNT_DISTINCT":
             select_parts.append(f"COUNT(DISTINCT {qf}) AS {alias}")
@@ -252,8 +434,83 @@ def build_live_agg_query(
         sql += f" ORDER BY {first_metric_alias} DESC"
 
     # Stricter limit for live queries
-    sql += " LIMIT 1000"
+    limit = limit_override or 1000
+    sql += f" LIMIT {int(limit)}"
     return sql, True
+
+
+def build_live_dataset_query(
+    base_table: str,
+    dimensions: list[str],
+    measures: list[dict],
+    filters: list,
+    order_by: list[dict],
+    limit: int,
+    dialect: str,
+) -> str:
+    """Build a dataset execute query that mirrors the synced DuckDB path."""
+    qi = _quote_identifier
+    dims = [d for d in (dimensions or []) if d]
+    metrics = [m for m in (measures or []) if m.get("field")]
+    orders = [o for o in (order_by or []) if o.get("field")]
+
+    select_parts: list[str] = []
+    group_by_parts: list[str] = []
+    measure_aliases: dict[str, str] = {}
+
+    for dim in dims:
+        quoted_dim = qi(dim, dialect)
+        select_parts.append(quoted_dim)
+        group_by_parts.append(quoted_dim)
+
+    for metric in metrics:
+        field = metric.get("field", "")
+        agg = (metric.get("agg") or metric.get("function") or "sum").upper().replace(" ", "_")
+        if not field:
+            continue
+
+        quoted_field = qi(field, dialect)
+        alias_name = f"{field}_{agg.lower()}"
+        alias = qi(alias_name, dialect)
+        measure_aliases[alias_name] = alias
+
+        if agg == "COUNT_DISTINCT":
+            select_parts.append(f"COUNT(DISTINCT {quoted_field}) AS {alias}")
+        elif agg in ("COUNT", "AVG", "MIN", "MAX", "SUM"):
+            select_parts.append(f"{agg}({quoted_field}) AS {alias}")
+        else:
+            select_parts.append(f"SUM({quoted_field}) AS {alias}")
+
+    if not select_parts:
+        select_parts.append("*")
+
+    where_clause = _build_where_clause(filters, dialect)
+    where_sql = f" WHERE {where_clause}" if where_clause else ""
+
+    sql = f"SELECT {', '.join(select_parts)} FROM {base_table}{where_sql}"
+
+    if dims and metrics:
+        sql += f" GROUP BY {', '.join(group_by_parts)}"
+
+    if orders:
+        order_parts: list[str] = []
+        for order in orders:
+            field = order.get("field", "")
+            direction = str(order.get("direction") or "DESC").upper()
+            direction = direction if direction in ("ASC", "DESC") else "DESC"
+
+            if field in measure_aliases:
+                quoted_order = measure_aliases[field]
+            else:
+                quoted_order = qi(field, dialect)
+
+            order_parts.append(f"{quoted_order} {direction}")
+
+        if order_parts:
+            sql += f" ORDER BY {', '.join(order_parts)}"
+
+    sql += f" LIMIT {int(limit)}"
+    return sql
 
 
 # ── BigQuery cost guard ──────────────────────────────────────────────────────
@@ -288,6 +545,82 @@ class LiveQueryService:
     """Execute aggregated chart queries directly against source databases."""
 
     @staticmethod
+    def execute_preview_query(
+        datasource,
+        db_table,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """Preview dataset rows directly from the source with cache + cost guard."""
+        ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+        dialect = _dialect_for_ds_type(ds_type)
+
+        from app.core.crypto import decrypt_config
+        config = decrypt_config(datasource.config)
+        table_identifier = db_table.source_table_name or db_table.display_name
+        limit = min(max(int(limit or 100), 1), 1000)
+        offset = max(int(offset or 0), 0)
+
+        cache_payload = {
+            "limit": limit,
+            "offset": offset,
+            "transformations": getattr(db_table, "transformations", None) or [],
+            "type_overrides": normalize_type_overrides(getattr(db_table, "type_overrides", None)),
+        }
+        cached = query_cache.get_cached(
+            datasource.id,
+            table_identifier,
+            "dataset_preview",
+            cache_payload,
+            [],
+        )
+        if cached is not None:
+            return cached
+
+        plan = build_live_base_query_plan(datasource, db_table, apply_type_overrides=True)
+        base_table = f"({plan.sql}) AS _appbi_live"
+        sql = f"SELECT * FROM {base_table} LIMIT {limit}"
+        if offset:
+            sql += f" OFFSET {offset}"
+
+        if ds_type == "bigquery":
+            estimated_bytes = _estimate_bigquery_bytes(config, sql)
+            max_bytes = settings.BQ_MAX_BYTES_SCANNED
+            if estimated_bytes > max_bytes:
+                gb_est = estimated_bytes / (1024**3)
+                gb_max = max_bytes / (1024**3)
+                raise ValueError(
+                    f"Preview would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
+                    "Reduce selected columns or switch to a narrower SQL source."
+                )
+
+        from app.services.datasource_service import DataSourceConnectionService
+
+        columns, rows, execution_time_ms = DataSourceConnectionService.execute_query(
+            ds_type,
+            datasource.config,
+            sql,
+            timeout_seconds=60 if ds_type == "bigquery" else 30,
+            skip_bigquery_cost_check=True,
+        )
+        result = {
+            "columns": columns,
+            "rows": rows,
+            "execution_time_ms": round(execution_time_ms, 1),
+            "source_columns": plan.source_columns,
+            "output_columns": plan.output_columns,
+        }
+        query_cache.set_cached(
+            datasource.id,
+            table_identifier,
+            "dataset_preview",
+            cache_payload,
+            [],
+            result,
+        )
+        return result
+
+    @staticmethod
     def execute_chart_query(
         datasource,
         db_table,
@@ -295,6 +628,7 @@ class LiveQueryService:
         role_config: dict,
         filters: list,
         extra_filters: list | None = None,
+        limit_override: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Execute a chart query against the live source database.
@@ -314,24 +648,28 @@ class LiveQueryService:
         all_filters = list(filters or [])
         if extra_filters:
             all_filters.extend(extra_filters)
+        all_filters = normalize_filter_conditions(all_filters)
+        normalized_role_config = normalize_chart_role_config(chart_type, role_config)
 
-        # Build table reference
         table_identifier = db_table.source_table_name or db_table.display_name
-        if db_table.source_kind == "sql_query" and db_table.source_query:
-            base_table = f"({db_table.source_query}) AS _q"
-        else:
-            base_table = _build_base_table_ref(ds_type, datasource.config, table_identifier, dialect)
+        plan = build_live_base_query_plan(datasource, db_table, apply_type_overrides=True)
+        base_table = f"({plan.sql}) AS _appbi_live"
+        cache_role_config = {
+            **normalized_role_config,
+            "_transformations": getattr(db_table, "transformations", None) or [],
+            "_type_overrides": normalize_type_overrides(getattr(db_table, "type_overrides", None)),
+        }
 
         # Check cache first
         cached = query_cache.get_cached(
-            datasource.id, table_identifier, chart_type, role_config, all_filters
+            datasource.id, table_identifier, chart_type, cache_role_config, all_filters
         )
         if cached is not None:
             return cached
 
         # Build aggregation SQL
         sql, pre_aggregated = build_live_agg_query(
-            base_table, chart_type, role_config, all_filters, dialect
+            base_table, chart_type, normalized_role_config, all_filters, dialect, limit_override=limit_override
         )
 
         # BigQuery cost guard
@@ -368,6 +706,7 @@ class LiveQueryService:
             datasource.config,
             sql,
             timeout_seconds=timeout,
+            skip_bigquery_cost_check=True,
         )
 
         execution_time_ms = (time.time() - start_time) * 1000
@@ -380,7 +719,7 @@ class LiveQueryService:
 
         # Store in cache
         query_cache.set_cached(
-            datasource.id, table_identifier, chart_type, role_config, all_filters, result
+            datasource.id, table_identifier, chart_type, cache_role_config, all_filters, result
         )
 
         logger.info(
@@ -393,6 +732,86 @@ class LiveQueryService:
         )
 
         return result
+
+    @staticmethod
+    def execute_dataset_query(
+        datasource,
+        db_table,
+        dimensions: list[str] | None,
+        measures: list[dict] | None,
+        filters: list | None,
+        order_by: list[dict] | None = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        """Execute dataset table query directly against the live source."""
+        ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+        dialect = _dialect_for_ds_type(ds_type)
+
+        from app.core.crypto import decrypt_config
+        config = decrypt_config(datasource.config)
+
+        table_identifier = db_table.source_table_name or db_table.display_name
+        plan = build_live_base_query_plan(datasource, db_table, apply_type_overrides=True)
+        base_table = f"({plan.sql}) AS _appbi_live"
+        normalized_filters = normalize_filter_conditions(list(filters or []))
+        cache_payload = {
+            "dimensions": list(dimensions or []),
+            "measures": list(measures or []),
+            "order_by": list(order_by or []),
+            "limit": int(limit),
+            "transformations": getattr(db_table, "transformations", None) or [],
+            "type_overrides": normalize_type_overrides(getattr(db_table, "type_overrides", None)),
+        }
+        cached = query_cache.get_cached(
+            datasource.id,
+            table_identifier,
+            "dataset_execute",
+            cache_payload,
+            normalized_filters,
+        )
+        if cached is not None:
+            return list(cached.get("rows") or [])
+
+        sql = build_live_dataset_query(
+            base_table=base_table,
+            dimensions=list(dimensions or []),
+            measures=list(measures or []),
+            filters=normalized_filters,
+            order_by=list(order_by or []),
+            limit=limit,
+            dialect=dialect,
+        )
+
+        if ds_type == "bigquery":
+            estimated_bytes = _estimate_bigquery_bytes(config, sql)
+            max_bytes = settings.BQ_MAX_BYTES_SCANNED
+            if estimated_bytes > max_bytes:
+                gb_est = estimated_bytes / (1024**3)
+                gb_max = max_bytes / (1024**3)
+                raise ValueError(
+                    f"Query would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
+                    f"Add filters (e.g. date range) to reduce the data scanned."
+                )
+
+        from app.services.datasource_service import DataSourceConnectionService
+
+        timeout = 60 if ds_type == "bigquery" else 30
+        _, rows, _ = DataSourceConnectionService.execute_query(
+            ds_type,
+            datasource.config,
+            sql,
+            timeout_seconds=timeout,
+            skip_bigquery_cost_check=True,
+        )
+        query_cache.set_cached(
+            datasource.id,
+            table_identifier,
+            "dataset_execute",
+            cache_payload,
+            normalized_filters,
+            {"rows": rows},
+        )
+        return rows
 
     @staticmethod
     def get_table_size_metadata(

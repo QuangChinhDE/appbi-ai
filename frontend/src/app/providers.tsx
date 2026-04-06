@@ -1,8 +1,13 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState } from 'react';
-import { Toaster } from 'sonner';
+
+const Toaster = dynamic(
+  () => import('sonner').then((module) => module.Toaster),
+  { ssr: false },
+);
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(

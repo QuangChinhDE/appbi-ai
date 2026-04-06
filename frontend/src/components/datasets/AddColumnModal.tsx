@@ -117,6 +117,9 @@ const FUNCTION_GROUPS: { group: string; fns: { name: string; desc: string; examp
       { name: 'MIN', desc: 'Nhỏ nhất', example: 'MIN([A],[B])' },
       { name: 'CEILING', desc: 'Làm tròn lên bội số', example: 'CEILING([Val],1000)' },
       { name: 'FLOOR', desc: 'Làm tròn xuống bội số', example: 'FLOOR([Val],1000)' },
+      { name: 'SAFE_NUMBER', desc: 'Đổi sang số an toàn', example: 'SAFE_NUMBER([raw_value],0)' },
+      { name: 'SAFE_FLOAT', desc: 'Đổi sang số thập phân an toàn', example: 'SAFE_FLOAT([raw_value],0)' },
+      { name: 'SAFE_INT', desc: 'Đổi sang số nguyên an toàn', example: 'SAFE_INT([raw_value],0)' },
     ],
   },
   {
@@ -165,6 +168,20 @@ for (const group of FUNCTION_GROUPS) {
     }
   }
 }
+
+const toSafeNumber = (value: any, fallback = 0) => {
+  if (value === null || value === undefined || String(value).trim() === '') return fallback;
+  const normalized = String(value).trim().replace(/,/g, '');
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+FNS_BASE['SAFE_NUMBER'] = (value: any, fallback = 0) => toSafeNumber(value, fallback);
+FNS_BASE['SAFE_FLOAT'] = (value: any, fallback = 0) => toSafeNumber(value, fallback);
+FNS_BASE['SAFE_INT'] = (value: any, fallback = 0) => {
+  const parsed = toSafeNumber(value, Number.NaN);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
+};
 
 /**
  * Build the full FNS map, optionally injecting LOOKUP bound to cross-table data.

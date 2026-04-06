@@ -18,8 +18,6 @@ export interface DatasetTableGridProps {
   onAddColumn?: () => void;
   /** User-defined type overrides loaded from DB: { colName: 'float' | 'date' | ... } */
   typeOverrides?: Record<string, string>;
-  /** Called when the user changes a column's format type so the parent can persist it */
-  onTypeOverride?: (colName: string, backendType: string | null) => void;
   /** Names of columns that were added via formula (can be deleted) */
   computedColumns?: string[];
   /** Called when user deletes a computed column */
@@ -29,7 +27,7 @@ export interface DatasetTableGridProps {
   /** Full display formats from DB, restored on mount */
   columnFormatsDb?: Record<string, ColFormat>;
   /** Called when user applies a format so parent can persist to DB */
-  onColumnFormatChange?: (colName: string, fmt: ColFormat | null) => void;
+  onColumnFormatChange?: (colName: string, fmt: ColFormat | null) => Promise<void> | void;
 }
 
 type DisplayUnit = 'none' | 'K' | 'M' | 'B';
@@ -244,9 +242,9 @@ interface FormatPanelProps {
   /** Raw column values from the current preview rows — used for type validation */
   values: any[];
   /** Called only when user explicitly clicks "Áp dụng" */
-  onApply: (fmt: ColFormat) => void;
+  onApply: (fmt: ColFormat) => Promise<void> | void;
   onClose: () => void;
-  onReset: () => void;
+  onReset: () => Promise<void> | void;
   /** If set, show a delete button for this computed column */
   onDelete?: () => void;
   /** If set, show an edit formula button for this computed column */
@@ -269,9 +267,15 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
     return f;
   };
   const [draft, setDraft] = useState<ColFormat>(() => initDraft(format));
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Sync draft when applied format changes from outside
-  useEffect(() => { setDraft(initDraft(format)); }, [format]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setDraft(initDraft(format));
+    setIsSaving(false);
+    setSaveError(null);
+  }, [format]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const handle = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -289,6 +293,33 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
   );
 
   const canApply = isDirty && validation.valid;
+  const handleApply = async () => {
+    if (!canApply || isSaving) return;
+    setSaveError(null);
+    setIsSaving(true);
+    try {
+      await onApply(draft);
+      onClose();
+    } catch (error: any) {
+      setSaveError(error?.message ?? 'Không thể lưu định dạng cột');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleReset = async () => {
+    if (isSaving) return;
+    setSaveError(null);
+    setIsSaving(true);
+    try {
+      await onReset();
+      onClose();
+    } catch (error: any) {
+      setSaveError(error?.message ?? 'Không thể đặt lại định dạng cột');
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   // Sub-option visibility based on what the user has SELECTED in draft (not inferred column type)
   const draftIsNum = draft.formatType === 'number' || draft.formatType === 'currency' || draft.formatType === 'percentage';
@@ -487,11 +518,17 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
         )}
 
         {/* Apply button — explicit save */}
+        {saveError && (
+          <div className="rounded border border-red-300 bg-red-50 p-2 text-[10px] text-red-700">
+            {saveError}
+          </div>
+        )}
+
         <button
-          onClick={() => { if (canApply) { onApply(draft); onClose(); } }}
-          disabled={!canApply}
+          onClick={handleApply}
+          disabled={!canApply || isSaving}
           className={`w-full py-1.5 rounded text-[11px] font-semibold transition-colors ${
-            canApply
+            canApply && !isSaving
               ? 'bg-blue-600 text-white hover:bg-blue-700'
               : !isDirty
               ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
@@ -503,7 +540,8 @@ function FormatPanel({ column, format, values, onApply, onClose, onReset, onDele
 
         {/* Reset */}
         <button
-          onClick={onReset}
+          onClick={handleReset}
+          disabled={isSaving}
           className="w-full text-center text-[10px] text-gray-400 hover:text-red-600 py-1.5 border border-dashed border-gray-300 rounded hover:border-red-300 transition-colors"
         >
           Đặt lại mặc định
@@ -543,7 +581,6 @@ export function DatasetTableGrid({
   onRetry,
   onAddColumn,
   typeOverrides,
-  onTypeOverride,
   computedColumns,
   onDeleteColumn,
   onEditColumn,
@@ -580,25 +617,18 @@ export function DatasetTableGrid({
 
   const getFormat = (name: string): ColFormat => columnFormats[name] ?? DEFAULT_FORMAT;
 
-  const setFormat = (name: string, fmt: ColFormat) => {
-    const prev = columnFormats[name] ?? DEFAULT_FORMAT;
+  const setFormat = async (name: string, fmt: ColFormat) => {
+    if (onColumnFormatChange) await onColumnFormatChange(name, fmt);
     setColumnFormats((s) => ({ ...s, [name]: fmt }));
-    // Notify parent to persist full format to DB
-    if (onColumnFormatChange) onColumnFormatChange(name, fmt);
-    // Also notify type override if type changed (keeps type inference in sync)
-    if (fmt.formatType !== prev.formatType && onTypeOverride) {
-      onTypeOverride(name, formatTypeToBackendType(fmt.formatType));
-    }
   };
 
-  const resetFormat = (name: string) => {
+  const resetFormat = async (name: string) => {
+    if (onColumnFormatChange) await onColumnFormatChange(name, null);
     setColumnFormats((s) => {
       const next = { ...s };
       delete next[name];
       return next;
     });
-    if (onColumnFormatChange) onColumnFormatChange(name, null);
-    if (onTypeOverride) onTypeOverride(name, null);
   };
 
   // Close popover on outside click
@@ -762,10 +792,7 @@ export function DatasetTableGrid({
                         values={rows.map((r) => r[column.name]).filter((v) => v !== null && v !== undefined)}
                         onApply={(f) => setFormat(column.name, f)}
                         onClose={() => setActiveFormatCol(null)}
-                        onReset={() => {
-                          resetFormat(column.name);
-                          setActiveFormatCol(null);
-                        }}
+                        onReset={() => resetFormat(column.name)}
                         onDelete={isComputed && onDeleteColumn ? () => {
                           setActiveFormatCol(null);
                           onDeleteColumn(column.name);

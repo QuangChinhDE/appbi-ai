@@ -149,8 +149,11 @@ class AggregationSpec(BaseModel):
 class FilterCondition(BaseModel):
     """Filter condition"""
     field: str
-    operator: str = Field(..., pattern="^(=|!=|>|<|>=|<=|LIKE|IN)$")
-    value: str
+    operator: str = Field(
+        ...,
+        pattern="^(=|!=|>|<|>=|<=|LIKE|IN|eq|neq|gt|gte|lt|lte|like|in|not_in|between|contains|not_contains|starts_with|is_null|is_not_null)$",
+    )
+    value: Any = None
 
 
 class OrderBySpec(BaseModel):

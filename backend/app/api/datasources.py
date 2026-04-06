@@ -35,11 +35,19 @@ from app.schemas import (
 from app.services import DataSourceCRUDService, DataSourceConnectionService
 from app.core.logging import get_logger
 from app.core.config import settings
-import time
+from app.services.runtime_modes import datasource_sync_enabled
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/datasources", tags=["datasources"])
 _limiter = Limiter(key_func=get_remote_address)
+
+
+def _build_query_error_detail(exc: Exception) -> dict:
+    """Return a user-facing query error payload without hiding the root cause."""
+    message = " ".join(str(exc).split()).strip()
+    return {
+        "message": message or "Query execution failed. Please check your SQL and try again.",
+    }
 
 
 # ── Platform GCP credential info ──────────────────────────────────────────────
@@ -342,12 +350,12 @@ def execute_query(
     require_view_access(db, current_user, data_source, "data_sources")
 
     try:
-        start_time = time.time()
         columns, data, execution_time_ms = DataSourceConnectionService.execute_query(
             data_source.type.value,
             data_source.config,
             body.sql_query,
-            body.limit
+            body.limit,
+            timeout_seconds=body.timeout_seconds or 30,
         )
         
         return QueryExecuteResponse(
@@ -357,10 +365,10 @@ def execute_query(
             execution_time_ms=execution_time_ms
         )
     except Exception as e:
-        logger.error(f"Query execution failed: {str(e)}")
+        logger.exception("Query execution failed for datasource %s", body.data_source_id)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Query execution failed. Please check your SQL and try again."
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_build_query_error_detail(e),
         )
 
 
@@ -445,7 +453,10 @@ def get_sync_config(
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
     require_view_access(db, current_user, ds, "data_sources")
-    return {"sync_config": ds.sync_config or {}}
+    return {
+        "sync_enabled": datasource_sync_enabled(),
+        "sync_config": ds.sync_config or {},
+    }
 
 
 @router.put("/{data_source_id}/sync-config")
@@ -462,6 +473,11 @@ def save_sync_config(
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
     require_edit_access(db, current_user, ds, "data_sources")
+    if not datasource_sync_enabled():
+        raise HTTPException(
+            status_code=409,
+            detail="Sync is disabled. This deployment runs in live-query mode only.",
+        )
     sync_config = body.get("sync_config", body)  # accept both {sync_config: {...}} and raw
     ds.sync_config = sync_config
     db.commit()
@@ -490,6 +506,8 @@ def list_sync_jobs(
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
     require_view_access(db, current_user, ds, "data_sources")
+    if not datasource_sync_enabled():
+        return {"sync_enabled": False, "jobs": []}
     jobs = (
         db.query(SyncJob)
         .filter(SyncJob.data_source_id == data_source_id)
@@ -534,6 +552,11 @@ def trigger_sync(
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
     require_edit_access(db, current_user, ds, "data_sources")
+    if not datasource_sync_enabled():
+        raise HTTPException(
+            status_code=409,
+            detail="Sync is disabled. This deployment runs in live-query mode only.",
+        )
 
     # Reject if a job is already running
     running = (
@@ -579,6 +602,11 @@ def cancel_sync_job(
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
     require_edit_access(db, current_user, ds, "data_sources")
+    if not datasource_sync_enabled():
+        raise HTTPException(
+            status_code=409,
+            detail="Sync is disabled. This deployment runs in live-query mode only.",
+        )
 
     job = db.query(SyncJob).filter(
         SyncJob.id == job_id,
@@ -620,6 +648,11 @@ async def stream_sync_logs(
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
     require_view_access(db, current_user, ds, "data_sources")
+    if not datasource_sync_enabled():
+        raise HTTPException(
+            status_code=409,
+            detail="Sync is disabled. This deployment runs in live-query mode only.",
+        )
 
     job = db.query(SyncJob).filter(
         SyncJob.id == job_id,

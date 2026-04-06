@@ -57,7 +57,8 @@ class DashboardService:
                 db_dashboard_chart = DashboardChart(
                     dashboard_id=db_dashboard.id,
                     chart_id=chart_item.chart_id,
-                    layout=chart_item.layout.model_dump()
+                    layout=chart_item.layout.model_dump(),
+                    parameters=chart_item.parameters or {},
                 )
                 db.add(db_dashboard_chart)
             

@@ -69,8 +69,8 @@ export function GettingStartedGuide({ locale = 'en' }: { locale?: string }) {
         'Go to Data Sources in the sidebar',
         'Click "New data source" and choose a type: PostgreSQL, MySQL, BigQuery, Google Sheets, or Manual (CSV/Excel upload)',
         'Fill in connection details and click "Test Connection" to verify',
-        'After creating, open the data source and click "Sync" to import tables into the system',
-        'Once synced, your tables will appear in Datasets when you add them',
+        'After creating, open the data source to preview schemas and sample rows directly from the source',
+        'Add the tables you need into a Dataset and AppBI will query them live',
       ],
       detailsVi: [
         'Vào Data Sources trên sidebar',
