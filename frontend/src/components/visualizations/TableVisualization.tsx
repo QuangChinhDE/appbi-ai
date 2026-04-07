@@ -79,9 +79,9 @@ export function TableVisualization({
     () => buildTableHeatmapStats(rows, heatmapRules),
     [heatmapRules, rows],
   );
-  const resolvedSummaryRows = useMemo(() => {
+  const resolvedSummaryRows = useMemo<TableSummaryRowConfig[]>(() => {
     if (showSummaryRow === false) {
-      return [] as TableSummaryRowConfig[];
+      return [];
     }
 
     if (summaryRows && summaryRows.length > 0) {
@@ -96,7 +96,7 @@ export function TableVisualization({
       }];
     }
 
-    return [] as TableSummaryRowConfig[];
+    return [];
   }, [showSummaryRow, summaryRows, summaryLabel, summaryLabelColumn]);
   const summaryRowsData = useMemo(() => {
     if (resolvedSummaryRows.length === 0) {
