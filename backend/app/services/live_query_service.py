@@ -132,12 +132,157 @@ def _parse_bigquery_dataset_and_table(
     return (default_dataset or None), parts[0]
 
 
-def _build_bigquery_partition_window_clause(partition_days_ago: int) -> str:
+def _parse_bigquery_partition_id_to_date(partition_id: str | None) -> Optional[dt_date]:
+    raw = str(partition_id or "").strip()
+    if not raw or raw in {"__NULL__", "__UNPARTITIONED__"}:
+        return None
+
+    formats = {
+        4: "%Y",
+        6: "%Y%m",
+        8: "%Y%m%d",
+        10: "%Y%m%d%H",
+    }
+    fmt = formats.get(len(raw))
+    if not fmt:
+        return None
+    try:
+        return datetime.strptime(raw, fmt).date()
+    except ValueError:
+        return None
+
+
+def _build_bigquery_partition_window_clause(
+    partition_days_ago: int,
+    partition_metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
     days_ago = max(int(partition_days_ago or 0), 0)
-    return (
-        "_PARTITIONDATE BETWEEN "
-        f"DATE_SUB(CURRENT_DATE(), INTERVAL {days_ago} DAY) AND CURRENT_DATE()"
-    )
+    partition_metadata = partition_metadata or {}
+    start_date_sql = f"DATE_SUB(CURRENT_DATE(), INTERVAL {days_ago} DAY)"
+    end_date_sql = "DATE_ADD(CURRENT_DATE(), INTERVAL 1 DAY)"
+
+    partition_field = str(partition_metadata.get("partition_field") or "").strip()
+    partition_field_type = str(partition_metadata.get("partition_field_type") or "").upper()
+
+    if partition_field:
+        quoted_field = _quote_identifier(partition_field, "bigquery")
+        if partition_field_type == "DATE":
+            return f"{quoted_field} >= {start_date_sql} AND {quoted_field} < {end_date_sql}"
+        if partition_field_type == "DATETIME":
+            return (
+                f"{quoted_field} >= DATETIME({start_date_sql}) "
+                f"AND {quoted_field} < DATETIME({end_date_sql})"
+            )
+        return (
+            f"{quoted_field} >= TIMESTAMP({start_date_sql}) "
+            f"AND {quoted_field} < TIMESTAMP({end_date_sql})"
+        )
+
+    if partition_metadata.get("uses_ingestion_time_partitioning"):
+        return (
+            f"_PARTITIONTIME >= TIMESTAMP({start_date_sql}) "
+            f"AND _PARTITIONTIME < TIMESTAMP({end_date_sql})"
+        )
+
+    return None
+
+
+def _get_bigquery_partition_metadata(
+    config: dict,
+    source_table_name: str,
+) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = {
+        "project_id": None,
+        "dataset_name": None,
+        "table_name": None,
+        "partition_field": None,
+        "partition_field_type": None,
+        "uses_ingestion_time_partitioning": False,
+        "earliest_partition_date": None,
+        "has_supported_partitioning": False,
+    }
+    try:
+        from google.cloud import bigquery
+        from google.oauth2 import service_account
+        from app.services.datasource_service import _resolve_gcp_credentials_json
+
+        dataset_name, table_name = _parse_bigquery_dataset_and_table(config, source_table_name)
+        project_id = str(config.get("project_id") or "").strip()
+        metadata.update({
+            "project_id": project_id or None,
+            "dataset_name": dataset_name,
+            "table_name": table_name,
+        })
+        if not project_id or not dataset_name or not table_name:
+            return metadata
+
+        credentials_info = json.loads(_resolve_gcp_credentials_json(config))
+        credentials = service_account.Credentials.from_service_account_info(credentials_info)
+        client = bigquery.Client(
+            credentials=credentials,
+            project=project_id,
+        )
+        try:
+            table_ref = f"{project_id}.{dataset_name}.{table_name}"
+            table = client.get_table(table_ref)
+            time_partitioning = getattr(table, "time_partitioning", None)
+            partition_field = str(getattr(time_partitioning, "field", "") or "").strip() or None
+            schema_by_name = {
+                str(field.name): str(field.field_type).upper()
+                for field in getattr(table, "schema", []) or []
+            }
+            metadata["partition_field"] = partition_field
+            metadata["partition_field_type"] = schema_by_name.get(partition_field) if partition_field else None
+            metadata["uses_ingestion_time_partitioning"] = bool(time_partitioning and not partition_field)
+            metadata["has_supported_partitioning"] = bool(
+                metadata["uses_ingestion_time_partitioning"]
+                or (partition_field and metadata["partition_field_type"] in {"DATE", "DATETIME", "TIMESTAMP"})
+            )
+
+            if metadata["has_supported_partitioning"]:
+                sql = (
+                    f"SELECT partition_id "
+                    f"FROM `{project_id}.{dataset_name}.INFORMATION_SCHEMA.PARTITIONS` "
+                    "WHERE table_name = @table_name "
+                    "AND partition_id NOT IN ('__NULL__', '__UNPARTITIONED__') "
+                    "ORDER BY partition_id ASC "
+                    "LIMIT 1"
+                )
+                job_config = bigquery.QueryJobConfig(
+                    query_parameters=[
+                        bigquery.ScalarQueryParameter("table_name", "STRING", table_name),
+                    ],
+                    use_query_cache=True,
+                )
+                rows = client.query(sql, job_config=job_config).result()
+                first_row = next(iter(rows), None)
+                if first_row is not None:
+                    try:
+                        metadata["earliest_partition_date"] = _parse_bigquery_partition_id_to_date(
+                            first_row["partition_id"]
+                        )
+                    except Exception:
+                        metadata["earliest_partition_date"] = None
+            return metadata
+        finally:
+            client.close()
+    except Exception as e:
+        logger.warning(
+            "Failed to read BigQuery partition metadata for %s: %s",
+            source_table_name,
+            e,
+        )
+        return metadata
+
+
+def _describe_bigquery_partition_target(partition_metadata: Optional[Dict[str, Any]]) -> str:
+    partition_metadata = partition_metadata or {}
+    partition_field = str(partition_metadata.get("partition_field") or "").strip()
+    if partition_field:
+        return partition_field
+    if partition_metadata.get("uses_ingestion_time_partitioning"):
+        return "_PARTITIONTIME"
+    return "unpartitioned"
 
 
 def _build_source_select_query(
@@ -146,6 +291,7 @@ def _build_source_select_query(
     ds_type: str,
     dialect: str,
     partition_days_ago: Optional[int] = None,
+    bigquery_partition_meta: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build the raw source SELECT used before dataset transformations."""
     table_identifier = db_table.source_table_name or db_table.display_name
@@ -160,7 +306,12 @@ def _build_source_select_query(
         and getattr(db_table, "source_kind", None) == "physical_table"
         and getattr(db_table, "source_table_name", None)
     ):
-        sql += f" WHERE {_build_bigquery_partition_window_clause(partition_days_ago)}"
+        partition_clause = _build_bigquery_partition_window_clause(
+            partition_days_ago,
+            bigquery_partition_meta,
+        )
+        if partition_clause:
+            sql += f" WHERE {partition_clause}"
     return sql
 
 
@@ -253,6 +404,7 @@ def build_live_base_query_plan(
     *,
     apply_type_overrides: bool = True,
     partition_days_ago: Optional[int] = None,
+    bigquery_partition_meta: Optional[Dict[str, Any]] = None,
 ) -> LiveBaseQueryPlan:
     """Build the live-mode SELECT, including transforms and runtime type casts."""
     ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
@@ -263,6 +415,7 @@ def build_live_base_query_plan(
         ds_type,
         dialect,
         partition_days_ago=partition_days_ago,
+        bigquery_partition_meta=bigquery_partition_meta,
     )
     source_columns = _resolve_source_columns(datasource, db_table, ds_type, base_query)
     transformations = [
@@ -629,53 +782,8 @@ def _get_bigquery_earliest_partition_date(
     config: dict,
     source_table_name: str,
 ) -> Optional[dt_date]:
-    """Return the oldest partition date for a BigQuery physical table."""
-    try:
-        from google.cloud import bigquery
-        from google.oauth2 import service_account
-        from app.services.datasource_service import _resolve_gcp_credentials_json
-
-        dataset_name, table_name = _parse_bigquery_dataset_and_table(config, source_table_name)
-        project_id = str(config.get("project_id") or "").strip()
-        if not project_id or not dataset_name or not table_name:
-            return None
-
-        credentials_info = json.loads(_resolve_gcp_credentials_json(config))
-        credentials = service_account.Credentials.from_service_account_info(credentials_info)
-        client = bigquery.Client(
-            credentials=credentials,
-            project=project_id,
-        )
-        try:
-            sql = (
-                f"SELECT MIN(SAFE.PARSE_DATE('%Y%m%d', partition_id)) AS earliest_partition_date "
-                f"FROM `{project_id}.{dataset_name}.INFORMATION_SCHEMA.PARTITIONS` "
-                "WHERE table_name = @table_name "
-                "AND partition_id NOT IN ('__NULL__', '__UNPARTITIONED__')"
-            )
-            job_config = bigquery.QueryJobConfig(
-                query_parameters=[
-                    bigquery.ScalarQueryParameter("table_name", "STRING", table_name),
-                ],
-                use_query_cache=True,
-            )
-            rows = client.query(sql, job_config=job_config).result()
-            first_row = next(iter(rows), None)
-            if first_row is None:
-                return None
-            try:
-                return first_row["earliest_partition_date"]
-            except Exception:
-                return None
-        finally:
-            client.close()
-    except Exception as e:
-        logger.warning(
-            "Failed to read BigQuery partition metadata for %s: %s",
-            source_table_name,
-            e,
-        )
-        return None
+    """Backward-compatible wrapper for callers needing only the earliest partition date."""
+    return _get_bigquery_partition_metadata(config, source_table_name).get("earliest_partition_date")
 
 
 def _build_preview_sql(base_sql: str, limit: int, offset: int) -> str:
@@ -729,28 +837,81 @@ class LiveQueryService:
             and getattr(db_table, "source_kind", None) == "physical_table"
             and getattr(db_table, "source_table_name", None)
         ):
-            earliest_partition_date = _get_bigquery_earliest_partition_date(
+            partition_metadata = _get_bigquery_partition_metadata(
                 config,
                 db_table.source_table_name,
             )
-            if earliest_partition_date is not None:
+            earliest_partition_date = partition_metadata.get("earliest_partition_date")
+            if partition_metadata.get("has_supported_partitioning") and earliest_partition_date is not None:
                 max_lookback_days = max(
                     0,
                     (datetime.utcnow().date() - earliest_partition_date).days,
                 )
-            else:
+            elif partition_metadata.get("has_supported_partitioning"):
                 max_lookback_days = max(
                     int(settings.BQ_PREVIEW_PARTITION_MAX_LOOKBACK_DAYS or 0),
                     0,
                 )
+            else:
+                max_lookback_days = None
 
             result: Dict[str, Any] | None = None
-            for partition_days_ago in range(max_lookback_days + 1):
+            if max_lookback_days is not None:
+                partition_target = _describe_bigquery_partition_target(partition_metadata)
+                for partition_days_ago in range(max_lookback_days + 1):
+                    plan = build_live_base_query_plan(
+                        datasource,
+                        db_table,
+                        apply_type_overrides=True,
+                        partition_days_ago=partition_days_ago,
+                        bigquery_partition_meta=partition_metadata,
+                    )
+                    sql = _build_preview_sql(plan.sql, limit, offset)
+                    estimated_bytes = _estimate_bigquery_bytes(config, sql)
+                    max_bytes = settings.BQ_MAX_BYTES_SCANNED
+                    if estimated_bytes > max_bytes:
+                        gb_est = estimated_bytes / (1024**3)
+                        gb_max = max_bytes / (1024**3)
+                        raise ValueError(
+                            f"Preview would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
+                            "Reduce selected columns or narrow the recent partition window."
+                        )
+
+                    columns, rows, execution_time_ms = DataSourceConnectionService.execute_query(
+                        ds_type,
+                        datasource.config,
+                        sql,
+                        timeout_seconds=60,
+                        skip_bigquery_cost_check=True,
+                    )
+                    result = {
+                        "columns": columns,
+                        "rows": rows,
+                        "execution_time_ms": round(execution_time_ms, 1),
+                        "source_columns": plan.source_columns,
+                        "output_columns": plan.output_columns,
+                        "partition_days_ago": partition_days_ago,
+                        "partition_target": partition_target,
+                    }
+                    if len(rows) >= limit or partition_days_ago >= max_lookback_days:
+                        break
+
+                    logger.info(
+                        "BigQuery preview widened to %d day(s) on %s for ds=%d table=%s offset=%d rows=%d/%d",
+                        partition_days_ago + 2,
+                        partition_target,
+                        datasource.id,
+                        table_identifier,
+                        offset,
+                        len(rows),
+                        limit,
+                    )
+
+            if result is None:
                 plan = build_live_base_query_plan(
                     datasource,
                     db_table,
                     apply_type_overrides=True,
-                    partition_days_ago=partition_days_ago,
                 )
                 sql = _build_preview_sql(plan.sql, limit, offset)
                 estimated_bytes = _estimate_bigquery_bytes(config, sql)
@@ -760,7 +921,7 @@ class LiveQueryService:
                     gb_max = max_bytes / (1024**3)
                     raise ValueError(
                         f"Preview would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
-                        "Reduce selected columns or narrow the recent partition window."
+                        "Reduce selected columns or narrow the source query."
                     )
 
                 columns, rows, execution_time_ms = DataSourceConnectionService.execute_query(
@@ -776,29 +937,8 @@ class LiveQueryService:
                     "execution_time_ms": round(execution_time_ms, 1),
                     "source_columns": plan.source_columns,
                     "output_columns": plan.output_columns,
-                    "partition_days_ago": partition_days_ago,
-                }
-                if len(rows) >= limit or partition_days_ago >= max_lookback_days:
-                    break
-
-                logger.info(
-                    "BigQuery preview widened to %d day(s) for ds=%d table=%s offset=%d rows=%d/%d",
-                    partition_days_ago + 2,
-                    datasource.id,
-                    table_identifier,
-                    offset,
-                    len(rows),
-                    limit,
-                )
-
-            if result is None:
-                result = {
-                    "columns": [],
-                    "rows": [],
-                    "execution_time_ms": 0.0,
-                    "source_columns": [],
-                    "output_columns": [],
-                    "partition_days_ago": 0,
+                    "partition_days_ago": None,
+                    "partition_target": "unpartitioned",
                 }
         else:
             plan = build_live_base_query_plan(datasource, db_table, apply_type_overrides=True)

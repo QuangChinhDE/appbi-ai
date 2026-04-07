@@ -128,7 +128,8 @@ If you set both flags to `true`, datasource sync features become available again
 The current runtime is tuned for live BigQuery access:
 
 - `BQ_MAX_BYTES_SCANNED=64424509440` (`60GB`)
-- BigQuery preview for dataset physical tables uses `_PARTITIONDATE`
+- BigQuery preview for dataset physical tables auto-detects the real time partition column from table metadata
+- If the table uses ingestion-time partitioning, preview falls back to `_PARTITIONTIME`
 - Preview starts from `CURRENT_DATE()`
 - If the current partition window does not return enough rows for the requested page, the backend automatically widens the window to include older dates
 - The widening stops as soon as the page is filled or the available partition history is exhausted
