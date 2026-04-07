@@ -352,10 +352,44 @@ def build_live_agg_query(
     metrics = role_config.get("metrics") or []
     breakdown = role_config.get("breakdown")
     line_metric = role_config.get("lineMetric")
+    table_mode = role_config.get("tableMode")
+    table_row_dimension = role_config.get("tableRowDimension")
+    table_column_dimension = role_config.get("tableColumnDimension")
+    table_pivot_metric = role_config.get("tablePivotMetric")
     selected_cols = role_config.get("selectedColumns")
 
     # TABLE: capped at 5000 rows
     if ctype == "TABLE":
+        if (
+            table_mode == "pivot"
+            and table_row_dimension
+            and table_column_dimension
+            and table_row_dimension != table_column_dimension
+            and isinstance(table_pivot_metric, dict)
+            and table_pivot_metric.get("field")
+        ):
+            metric_field = str(table_pivot_metric.get("field"))
+            metric_agg = str(table_pivot_metric.get("agg") or "sum").upper().replace(" ", "_")
+            quoted_metric_field = qi(metric_field, dialect)
+            quoted_alias = qi(f"{metric_agg.lower()}__{metric_field}", dialect)
+
+            if metric_agg == "COUNT_DISTINCT":
+                metric_sql = f"COUNT(DISTINCT {quoted_metric_field}) AS {quoted_alias}"
+            elif metric_agg in ("COUNT", "AVG", "MIN", "MAX", "SUM"):
+                metric_sql = f"{metric_agg}({quoted_metric_field}) AS {quoted_alias}"
+            else:
+                metric_sql = f"SUM({quoted_metric_field}) AS {quoted_alias}"
+
+            limit = limit_override or 5000
+            return (
+                f"SELECT {qi(table_row_dimension, dialect)}, {qi(table_column_dimension, dialect)}, {metric_sql} "
+                f"FROM {base_table}{where_sql} "
+                f"GROUP BY {qi(table_row_dimension, dialect)}, {qi(table_column_dimension, dialect)} "
+                f"ORDER BY {qi(table_row_dimension, dialect)} ASC, {qi(table_column_dimension, dialect)} ASC "
+                f"LIMIT {int(limit)}",
+                True,
+            )
+
         cols = ", ".join(qi(c, dialect) for c in selected_cols) if selected_cols else "*"
         limit = limit_override or 5000
         return f"SELECT {cols} FROM {base_table}{where_sql} LIMIT {int(limit)}", True

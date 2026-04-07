@@ -29,10 +29,35 @@ export interface SortConfig {
 export interface ConditionalFormatRule {
   field: string;
   operator: '>' | '<' | '=' | '>=' | '<=' | '!=';
-  value: number | string;
+  value?: number | string;
+  benchmarkField?: string;
   color?: string; // Text color
   backgroundColor?: string; // Background color
 }
+
+export interface TableHeatmapRule {
+  field: string;
+  steps?: number;
+  minColor?: string;
+  maxColor?: string;
+}
+
+export type TableSummaryCalculation =
+  | 'sum'
+  | 'avg'
+  | 'count'
+  | 'min'
+  | 'max'
+  | 'count_distinct';
+
+export interface TableSummaryRowConfig {
+  label: string;
+  calculation: TableSummaryCalculation;
+  columns?: string[];
+  labelColumn?: string;
+}
+
+export type ChartBenchmarkLineStyle = 'solid' | 'dashed';
 
 // Explore 2.0: Grouping configuration
 export interface GroupingConfig {

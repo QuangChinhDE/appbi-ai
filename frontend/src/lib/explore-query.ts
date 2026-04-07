@@ -2,6 +2,7 @@ import type { Filter } from '@/components/explore/FilterBuilder';
 import {
   metricKey,
   normalizeRoleConfig,
+  TABLE_PIVOT_COLUMN_LIMIT,
   type ChartRoleConfig,
   type ExploreChartType,
   type MetricConfig,
@@ -72,6 +73,52 @@ function metricOutputKeys(metric: MetricConfig): string[] {
   return Array.from(keys).filter(Boolean);
 }
 
+function resolveSqlDimensionOutputField(
+  outputColumns: string[],
+  parsedDimensions: ParsedSqlDimension[],
+  currentField: string | undefined,
+): string | undefined {
+  if (!currentField) return undefined;
+  if (outputColumns.includes(currentField)) {
+    return currentField;
+  }
+
+  const parsedMatch = parsedDimensions.find((dimension) => (
+    dimension.sourceField === currentField || dimension.outputField === currentField
+  ));
+  return parsedMatch?.outputField;
+}
+
+function resolveSqlMetricConfig(
+  outputColumns: string[],
+  parsedMetrics: ParsedSqlMetric[],
+  metric: MetricConfig | null | undefined,
+): MetricConfig | undefined {
+  if (!metric) return undefined;
+
+  const parsedMatch = parsedMetrics.find((parsedMetric) => (
+    parsedMetric.agg === metric.agg
+      && (
+        parsedMetric.sourceField === metric.field
+        || parsedMetric.outputField === metric.outputField
+        || parsedMetric.outputField === metric.field
+      )
+  ));
+  const matchingOutputField = metricOutputKeys({
+    ...metric,
+    ...(parsedMatch?.outputField ? { outputField: parsedMatch.outputField } : {}),
+  }).find((key) => outputColumns.includes(key));
+
+  if (!parsedMatch && !matchingOutputField) {
+    return undefined;
+  }
+
+  return {
+    ...metric,
+    outputField: parsedMatch?.outputField ?? matchingOutputField ?? metric.outputField,
+  };
+}
+
 function dedupeMetrics(metrics: MetricConfig[]): MetricConfig[] {
   const seen = new Set<string>();
   const deduped: MetricConfig[] = [];
@@ -82,6 +129,17 @@ function dedupeMetrics(metrics: MetricConfig[]): MetricConfig[] {
     deduped.push(metric);
   }
   return deduped;
+}
+
+function isTablePivotConfig(roleConfig: ChartRoleConfig | null | undefined): boolean {
+  return roleConfig?.tableMode === 'pivot'
+    && Boolean(roleConfig.tableRowDimension)
+    && Boolean(roleConfig.tableColumnDimension)
+    && Boolean(roleConfig.tablePivotMetric);
+}
+
+function buildTablePivotQueryLimit(limit: number): number {
+  return Math.min(10_000, Math.max(limit * TABLE_PIVOT_COLUMN_LIMIT, 1_000));
 }
 
 function normalizeFilterValue(filter: Filter): any {
@@ -358,8 +416,9 @@ export function inferRoleConfigFromCustomSql(args: {
   sql: string;
   chartType: ExploreChartType;
   columns: ColumnMetadata[];
+  currentRoleConfig?: ChartRoleConfig;
 }): CustomSqlRoleInference {
-  const { sql, chartType, columns } = args;
+  const { sql, chartType, columns, currentRoleConfig } = args;
   const outputColumns = columns.map((column) => column.name);
   const parsedItems = parseCustomSqlSelect(sql, outputColumns);
   if (parsedItems.length === 0) {
@@ -374,6 +433,33 @@ export function inferRoleConfigFromCustomSql(args: {
     .filter((item): item is ParsedSqlDimension => Boolean(item));
 
   if (chartType === 'TABLE') {
+    const normalizedCurrent = normalizeRoleConfig(chartType, currentRoleConfig);
+    if (isTablePivotConfig(normalizedCurrent)) {
+      const pivotMetric = resolveSqlMetricConfig(
+        outputColumns,
+        parsedMetrics,
+        normalizedCurrent.tablePivotMetric,
+      );
+
+      return {
+        customRoleConfig: {
+          ...normalizedCurrent,
+          selectedColumns: outputColumns,
+          tableRowDimension: resolveSqlDimensionOutputField(
+            outputColumns,
+            parsedDimensions,
+            normalizedCurrent.tableRowDimension,
+          ),
+          tableColumnDimension: resolveSqlDimensionOutputField(
+            outputColumns,
+            parsedDimensions,
+            normalizedCurrent.tableColumnDimension,
+          ),
+          tablePivotMetric: pivotMetric,
+        },
+      };
+    }
+
     const customRoleConfig: ChartRoleConfig = {
       metrics: [],
       selectedColumns: outputColumns,
@@ -481,6 +567,26 @@ export function buildExploreExecuteRequest(args: {
   }
 
   if (chartType === 'TABLE') {
+    if (isTablePivotConfig(normalized)) {
+      const rowDimension = normalized.tableRowDimension as string;
+      const columnDimension = normalized.tableColumnDimension as string;
+      const pivotMetric = normalized.tablePivotMetric as MetricConfig;
+
+      request.limit = buildTablePivotQueryLimit(limit);
+      request.dimensions = Array.from(new Set([rowDimension, columnDimension]));
+      request.measures = [{
+        field: pivotMetric.field,
+        function: pivotMetric.agg,
+      }];
+      request.order_by = [
+        { field: rowDimension, direction: 'ASC' },
+        ...(columnDimension !== rowDimension
+          ? [{ field: columnDimension, direction: 'ASC' as const }]
+          : []),
+      ];
+      return request;
+    }
+
     if (normalized.selectedColumns && normalized.selectedColumns.length > 0) {
       request.dimensions = normalized.selectedColumns;
     }
@@ -544,6 +650,7 @@ export function buildExploreSqlPreview(args: {
   }
 
   const request = buildExploreExecuteRequest({ chartType, roleConfig, filters, limit });
+  const normalizedRoleConfig = normalizeRoleConfig(chartType, roleConfig);
   const sourceSql = table.source_kind === 'sql_query' && table.source_query
     ? `(\n${table.source_query.trim()}\n) AS source_table`
     : (table.source_table_name || table.display_name || 'table');
@@ -569,6 +676,9 @@ export function buildExploreSqlPreview(args: {
 
   const sqlLines = [
     `-- Explore query for "${table.display_name || table.source_table_name || 'table'}"`,
+    ...(chartType === 'TABLE' && isTablePivotConfig(normalizedRoleConfig)
+      ? [`-- Pivot mode fetches grouped cells for up to ${TABLE_PIVOT_COLUMN_LIMIT} dynamic columns.`]
+      : []),
     `SELECT\n${selectParts.join(',\n')}`,
     `FROM ${sourceSql}`,
   ];
@@ -584,7 +694,7 @@ export function buildExploreSqlPreview(args: {
       `ORDER BY ${request.order_by.map((item) => `${item.field} ${item.direction}`).join(', ')}`,
     );
   }
-  sqlLines.push(`LIMIT ${limit}`);
+  sqlLines.push(`LIMIT ${request.limit ?? limit}`);
 
   return sqlLines.join('\n');
 }
@@ -621,6 +731,41 @@ export function buildExploreChartResult(args: {
 } {
   const { rows, columns, chartType, roleConfig, source } = args;
   const normalized = normalizeRoleConfig(chartType, roleConfig);
+
+  if (chartType === 'TABLE' && isTablePivotConfig(normalized) && normalized.tablePivotMetric) {
+    const pivotMetric = normalized.tablePivotMetric;
+    const aliasMap = new Map<string, string>();
+    for (const sourceKey of metricOutputKeys(pivotMetric)) {
+      aliasMap.set(sourceKey, metricKey(pivotMetric));
+    }
+
+    const chartRows = rows.map((row) => {
+      const nextRow = { ...row };
+      for (const [sourceKey, targetKey] of aliasMap.entries()) {
+        if (sourceKey in nextRow && targetKey !== sourceKey) {
+          nextRow[targetKey] = nextRow[sourceKey];
+        }
+      }
+      return nextRow;
+    });
+
+    const chartColumns = columns.map((column) => {
+      const normalizedName = aliasMap.get(column.name);
+      if (!normalizedName) return column;
+      return {
+        ...column,
+        name: normalizedName,
+        type: 'number',
+      };
+    });
+
+    const rowKeys = new Set(Object.keys(chartRows[0] ?? {}));
+    return {
+      rows: chartRows,
+      columns: chartColumns,
+      preAggregated: source === 'generated' || rowKeys.has(metricKey(pivotMetric)),
+    };
+  }
 
   if (!AGGREGATED_CHART_TYPES.has(chartType)) {
     return { rows, columns, preAggregated: false };

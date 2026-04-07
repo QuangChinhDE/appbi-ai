@@ -4,6 +4,7 @@ import {
   metricKey,
   metricLabel,
   normalizeRoleConfig,
+  TABLE_PIVOT_COLUMN_LIMIT,
   type ChartRoleConfig,
   type MetricConfig,
 } from './ExploreChartConfig';
@@ -19,6 +20,7 @@ export interface ChartSeriesDef {
 export interface ExploreChartModel {
   roleConfig: ChartRoleConfig;
   xField?: string;
+  tableData: Record<string, any>[];
   tableColumns: string[];
   truncated: boolean;
   totalPoints: number;
@@ -45,23 +47,78 @@ function dedupeMetrics(metrics: MetricConfig[]): MetricConfig[] {
   return deduped;
 }
 
+function metricOutputCandidates(metric: MetricConfig): string[] {
+  const candidates = new Set<string>([
+    metric.field,
+    metricKey(metric),
+    `${metric.agg}__${metric.field}`,
+    `${metric.field}_${metric.agg}`,
+    `${metric.agg}_${metric.field}`,
+    `${metric.field}__${metric.agg}`,
+  ]);
+  if (metric.outputField) {
+    candidates.add(metric.outputField);
+  }
+  return Array.from(candidates).filter(Boolean);
+}
+
+function resolveMetricValueField(
+  rows: Record<string, any>[],
+  metric: MetricConfig,
+  preAggregated = false,
+): string {
+  const candidates = preAggregated
+    ? metricOutputCandidates(metric)
+    : [metric.field, ...metricOutputCandidates(metric)];
+
+  return candidates.find((candidate) => rows.some((row) => candidate in row)) ?? metric.field;
+}
+
+function sortPivotKeys(values: string[]): string[] {
+  return [...values].sort((left, right) => {
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    const leftIsNumber = left.trim() !== '' && Number.isFinite(leftNumber);
+    const rightIsNumber = right.trim() !== '' && Number.isFinite(rightNumber);
+
+    if (leftIsNumber && rightIsNumber) {
+      return leftNumber - rightNumber;
+    }
+
+    return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
+  });
+}
+
+function sortPivotEntries<T>(entries: Array<[string, T]>): Array<[string, T]> {
+  return [...entries].sort(([left], [right]) => left.localeCompare(
+    right,
+    undefined,
+    { numeric: true, sensitivity: 'base' },
+  ));
+}
+
 function aggregateMetricValue(
   rows: Record<string, any>[],
   metric: MetricConfig,
   valueField: string = metric.field,
+  aggregatedInput = false,
 ): number {
   const values = rows.map(row => Number(row[valueField]) || 0);
   switch (metric.agg) {
     case 'avg':
       return values.reduce((sum, value) => sum + value, 0) / Math.max(values.length, 1);
     case 'count':
-      return rows.length;
+      return aggregatedInput
+        ? values.reduce((sum, value) => sum + value, 0)
+        : rows.length;
     case 'min':
       return values.length > 0 ? Math.min(...values) : 0;
     case 'max':
       return values.length > 0 ? Math.max(...values) : 0;
     case 'count_distinct':
-      return new Set(rows.map(row => row[valueField])).size;
+      return aggregatedInput
+        ? values.reduce((sum, value) => sum + value, 0)
+        : new Set(rows.map(row => row[valueField])).size;
     case 'sum':
     default:
       return values.reduce((sum, value) => sum + value, 0);
@@ -100,7 +157,7 @@ export function pivotByBreakdown(
   havingFilters: BaseFilter[] = [],
 ): { data: Record<string, any>[]; series: ChartSeriesDef[] } {
   const breakdownKeys = [...new Set(data.map(row => String(row[breakdownField] ?? '')))].slice(0, 12);
-  const valueField = preAggregated ? metricKey(metric) : metric.field;
+  const valueField = resolveMetricValueField(data, metric, preAggregated);
 
   const groupMap = new Map<string, Map<string, Record<string, any>[]>>();
   for (const row of data) {
@@ -119,7 +176,7 @@ export function pivotByBreakdown(
     });
     for (const [breakdownValue, rows] of breakdownMap.entries()) {
       if (!breakdownKeys.includes(breakdownValue)) continue;
-      result[breakdownValue] = aggregateMetricValue(rows, metric, valueField);
+      result[breakdownValue] = aggregateMetricValue(rows, metric, valueField, preAggregated);
     }
     return result;
   });
@@ -128,6 +185,67 @@ export function pivotByBreakdown(
   return {
     data: filtered,
     series: breakdownKeys.map(key => ({ key, label: key })),
+  };
+}
+
+function buildPivotTableModel(args: {
+  data: Record<string, any>[];
+  roleConfig: ChartRoleConfig;
+  preAggregated: boolean;
+}) {
+  const { data, roleConfig, preAggregated } = args;
+  const rowField = roleConfig.tableRowDimension;
+  const columnField = roleConfig.tableColumnDimension;
+  const metric = roleConfig.tablePivotMetric;
+
+  if (!rowField || !columnField || !metric || data.length === 0) {
+    const columns = roleConfig.selectedColumns ?? (data.length > 0 ? Object.keys(data[0]) : []);
+    return {
+      rows: data,
+      columns,
+    };
+  }
+
+  const valueField = resolveMetricValueField(data, metric, preAggregated);
+  const rowGroups = new Map<string, { rowValue: any; cells: Map<string, Record<string, any>[]> }>();
+  const pivotColumnValues = new Set<string>();
+
+  for (const row of data) {
+    const rowValue = row?.[rowField];
+    const rowKey = String(rowValue ?? '');
+    const columnValue = String(row?.[columnField] ?? '');
+
+    pivotColumnValues.add(columnValue);
+
+    if (!rowGroups.has(rowKey)) {
+      rowGroups.set(rowKey, {
+        rowValue,
+        cells: new Map(),
+      });
+    }
+
+    const group = rowGroups.get(rowKey)!;
+    if (!group.cells.has(columnValue)) {
+      group.cells.set(columnValue, []);
+    }
+    group.cells.get(columnValue)!.push(row);
+  }
+
+  const dynamicColumns = sortPivotKeys(Array.from(pivotColumnValues)).slice(0, TABLE_PIVOT_COLUMN_LIMIT);
+  const rows = sortPivotEntries(Array.from(rowGroups.entries())).map(([, { rowValue, cells }]) => {
+    const result: Record<string, any> = { [rowField]: rowValue };
+    dynamicColumns.forEach((columnValue) => {
+      const cellRows = cells.get(columnValue) ?? [];
+      result[columnValue] = cellRows.length > 0
+        ? aggregateMetricValue(cellRows, metric, valueField, preAggregated)
+        : null;
+    });
+    return result;
+  });
+
+  return {
+    rows,
+    columns: [rowField, ...dynamicColumns],
   };
 }
 
@@ -151,11 +269,16 @@ export function buildExploreChartModel(args: {
   const normalizedRoleConfig = normalizeRoleConfig(type, roleConfig);
   const { dimension, metrics, breakdown, lineMetric, timeField, scatterX, scatterY, selectedColumns } = normalizedRoleConfig;
   const xField = type === 'TIME_SERIES' ? (timeField || dimension) : dimension;
-  const tableColumns = selectedColumns ?? (data.length > 0 ? Object.keys(data[0]) : []);
+  const pivotTableModel = type === 'TABLE'
+    ? buildPivotTableModel({ data, roleConfig: normalizedRoleConfig, preAggregated })
+    : null;
+  const tableData = pivotTableModel?.rows ?? data;
+  const tableColumns = pivotTableModel?.columns ?? (selectedColumns ?? (data.length > 0 ? Object.keys(data[0]) : []));
 
   const emptyModel: ExploreChartModel = {
     roleConfig: normalizedRoleConfig,
     xField,
+    tableData,
     tableColumns,
     truncated: false,
     totalPoints: data.length,
@@ -183,7 +306,10 @@ export function buildExploreChartModel(args: {
   }
 
   if (type === 'TABLE') {
-    return emptyModel;
+    return {
+      ...emptyModel,
+      totalPoints: tableData.length,
+    };
   }
 
   if (type === 'SCATTER') {

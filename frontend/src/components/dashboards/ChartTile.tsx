@@ -7,7 +7,13 @@ import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { applyFilters } from '@/lib/explore-utils';
 import type { ChartRoleConfig } from '@/components/explore/ExploreChartConfig';
-import { getRoleConfigDimensionFields, metricKey, metricLabel, normalizeRoleConfig } from '@/components/explore/ExploreChartConfig';
+import {
+  getRoleConfigDimensionFields,
+  metricKey,
+  metricLabel,
+  normalizeChartStyleConfig,
+  normalizeRoleConfig,
+} from '@/components/explore/ExploreChartConfig';
 import { DashboardFilter, applyFiltersToRows } from '@/lib/filters';
 import type { BaseFilter, FilterOperator } from '@/lib/filters';
 import { dashboardApi } from '@/lib/api/dashboards';
@@ -199,7 +205,12 @@ export function ChartTile({
     if (!config?.roleConfig) return null;
     const chartType = (config.chartType as string) || String(chart?.chart_type ?? '');
     const rc = normalizeRoleConfig(chartType, config.roleConfig as ChartRoleConfig);
-    return { chartType, roleConfig: rc, filters: config.filters ?? [], styleConfig: config.styleConfig };
+    return {
+      chartType,
+      roleConfig: rc,
+      filters: config.filters ?? [],
+      styleConfig: normalizeChartStyleConfig(config.styleConfig, config.conditional_formatting),
+    };
   }, [chart?.config, chart?.chart_type]);
 
   // Notify parent when data is loaded â€” only expose true dimension fields to the global filter bar
@@ -477,7 +488,10 @@ export function ChartTile({
             chartType={chart.chart_type}
             data={filteredData}
             config={legacyChartConfig}
-            styleConfig={(chart?.config as any)?.styleConfig}
+            styleConfig={normalizeChartStyleConfig(
+              (chart?.config as any)?.styleConfig,
+              (chart?.config as any)?.conditional_formatting,
+            )}
           />
         )}
       </div>

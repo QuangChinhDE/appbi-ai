@@ -139,6 +139,10 @@ def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filter
     metrics = role_config.get('metrics') or []
     breakdown = role_config.get('breakdown')
     line_metric = role_config.get('lineMetric')
+    table_mode = role_config.get('tableMode')
+    table_row_dimension = role_config.get('tableRowDimension')
+    table_column_dimension = role_config.get('tableColumnDimension')
+    table_pivot_metric = role_config.get('tablePivotMetric')
     selected_cols = role_config.get('selectedColumns')
 
     where_clause = _build_where_clause(filters)
@@ -147,6 +151,39 @@ def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filter
     # TABLE: optional column selection, capped at 500 rows for HTTP delivery.
     # UI shows at most 50-200 rows; 500 gives headroom without sending MBs of JSON.
     if ctype == 'TABLE':
+        if (
+            table_mode == 'pivot'
+            and table_row_dimension
+            and table_column_dimension
+            and table_row_dimension != table_column_dimension
+            and isinstance(table_pivot_metric, dict)
+            and table_pivot_metric.get('field')
+        ):
+            metric_field = str(table_pivot_metric.get('field'))
+            metric_agg = str(table_pivot_metric.get('agg') or 'sum').upper().replace(' ', '_')
+            metric_alias = f'"{metric_agg.lower()}__{metric_field}"'
+            if metric_agg == 'COUNT_DISTINCT':
+                metric_sql = f'COUNT(DISTINCT "{metric_field}") AS {metric_alias}'
+            elif metric_agg == 'COUNT':
+                metric_sql = f'COUNT("{metric_field}") AS {metric_alias}'
+            elif metric_agg == 'AVG':
+                metric_sql = f'AVG("{metric_field}") AS {metric_alias}'
+            elif metric_agg == 'MIN':
+                metric_sql = f'MIN("{metric_field}") AS {metric_alias}'
+            elif metric_agg == 'MAX':
+                metric_sql = f'MAX("{metric_field}") AS {metric_alias}'
+            else:
+                metric_sql = f'SUM("{metric_field}") AS {metric_alias}'
+
+            sql = (
+                f'SELECT "{table_row_dimension}", "{table_column_dimension}", {metric_sql} '
+                f'FROM {base_table}{where_sql} '
+                f'GROUP BY "{table_row_dimension}", "{table_column_dimension}" '
+                f'ORDER BY "{table_row_dimension}" ASC, "{table_column_dimension}" ASC '
+                f'LIMIT 5000'
+            )
+            return sql, True
+
         cols = ', '.join(f'"{c}"' for c in selected_cols) if selected_cols else '*'
         return f'SELECT {cols} FROM {base_table}{where_sql} LIMIT 500', True
 

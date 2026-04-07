@@ -1,92 +1,124 @@
 # AppBI
 
-AppBI is a self-hosted business intelligence platform for connecting data sources, modeling datasets, building charts and dashboards, and running AI-assisted analysis workflows.
+AppBI is a self-hosted business intelligence platform for connecting data sources, modeling datasets, exploring data, building dashboards, and running optional AI-assisted workflows.
 
-You can run the core stack locally with a single Docker Compose command, then add optional AI services when needed.
+This repository is the runtime-focused app repo for the product. The core stack can be started with Docker Compose, while AI services can be added only when needed.
 
-## Features
+## Core Runtime
 
-### Core BI
-- Data Sources: PostgreSQL, MySQL, BigQuery, Google Sheets, and manual CSV/Excel uploads
-- Dataset Modeling: visual ERD canvas, relationship management, semantic fields, hidden fields, and manual join editing
-- Query Modes: live-query-first execution by default, with optional datasource sync / DuckDB caching
-- Explore: drag-and-drop chart builder plus generated SQL and editable custom SQL in the same workflow
-- Dashboards: drag-and-drop layout, public filters, embed links, per-chart parameters, and shared access control
-- Permissions: module-level `none / view / edit / full` permission model
+The main project runtime includes:
 
-### Explore / Charting
-- Generated SQL and custom SQL can be switched inside Explore without losing chart context
-- Custom SQL results now sync back into chart semantics more reliably
-- Supported chart types:
-  `BAR`, `HORIZONTAL_BAR`, `GROUPED_BAR`, `STACKED_BAR`, `BAR_LINE`, `LINE`, `AREA`, `TIME_SERIES`, `PIE`, `SCATTER`, `TABLE`, `KPI`
+- `frontend`: Next.js app for Explore, dashboards, sharing, and embedded views
+- `backend`: FastAPI API for auth, datasets, query execution, chart contracts, and chart runtime
+- `db`: PostgreSQL 16 with `pgvector`
 
-### AI
-- AI Chat for conversational analysis
-- AI Agent flow for guided report generation
-- AI-generated descriptions for charts and dataset tables
-- Embedding-backed semantic search for charts and tables
-- Feedback pipeline for improving generated descriptions and aliases
+Optional services:
 
-## Recent Updates
+- `ai-service`: AI chat / streaming assistant features
+- `ai-agent-service`: guided AI report and dashboard generation
 
-This README update reflects the current worktree changes since the previous docs update.
+## Main Capabilities
 
-### 1. Live-query-first runtime mode
-- Datasource sync is now feature-flagged with `ENABLE_DATASOURCE_SYNC` and `NEXT_PUBLIC_ENABLE_DATASOURCE_SYNC`
-- When sync is disabled, AppBI runs in live-query-only mode and hides or disables datasource sync actions
-- Dataset tables resolve their effective `query_mode` at runtime, so deployments can switch behavior cleanly without schema drift in the UI
+### Data and Modeling
 
-### 2. Smarter dataset execution for large tables
-- Dataset tables now carry query-mode metadata such as `query_mode`, estimated row count, and estimated size
-- Large physical tables can be routed to live query execution instead of forced sync
-- Table preview, chart execution, and stats services now respect the live/synced routing model
+- Connect PostgreSQL, MySQL, BigQuery, Google Sheets, and manual file uploads
+- Build datasets with semantic fields, hidden fields, joins, and ERD-style relationship editing
+- Support live-query-first execution with optional synced/cached execution paths
 
-### 3. Type overrides and better dataset previews
-- Dataset tables support user-defined type overrides
-- Runtime casts are applied more consistently so previews and live queries reflect the chosen column type
-- The dataset grid includes stronger display formatting behavior for typed values
+### Explore and Charts
 
-### 4. Explore rebuild for SQL + chart round-tripping
-- Explore now separates generated-query state from custom-SQL state
-- Custom SQL can be edited, run, and returned to chart view without snapping back to the previous generated result
-- The custom SQL flow now avoids duplicate `LIMIT` injection
-- Query errors surface the real backend reason instead of a generic failure toast
-- After running custom SQL, Explore infers chart semantics from the SQL result more reliably, including dimension and aggregate intent
-- `Use Generated` now regenerates from the latest synced chart semantics instead of jumping back to stale config
+- Generated query and custom SQL in one Explore workflow
+- Chart types:
+  `TABLE`, `BAR`, `HORIZONTAL_BAR`, `GROUPED_BAR`, `STACKED_BAR`, `BAR_LINE`, `LINE`, `AREA`, `TIME_SERIES`, `PIE`, `SCATTER`, `KPI`
+- Table now stays in standard mode by default, with optional advanced features:
+  - Dynamic pivot layout
+  - Multiple summary rows
+  - Sticky summary footer
+  - Conditional formatting
+  - Matrix heatmap
+- Optional benchmark line for supported charts:
+  - `BAR`
+  - `HORIZONTAL_BAR`
+  - `GROUPED_BAR`
+  - `STACKED_BAR`
+  - `LINE`
+  - `AREA`
+  - `TIME_SERIES`
+  - `BAR_LINE`
 
-### 5. New chart types and chart runtime improvements
-- Added `HORIZONTAL_BAR` and `BAR_LINE` across backend schemas, migrations, chart config, and rendering
-- Explore chart config and runtime adapters were updated to support richer pre-aggregated chart flows
-- Dashboard chart tiles now handle parameter-driven server-side filtering more cleanly
+### Dashboards and Sharing
 
-### 6. Dataset model and dashboard UX improvements
-- Data model canvas received a larger ERD/relationship handling update
-- Add-chart and chart-tile flows were refined for dashboard editing
-- Public dashboard and embed pages were updated to better surface applied public filters
+- Drag-and-drop dashboard layout
+- Public dashboard pages and embed mode
+- Shared chart rendering behavior across Explore, dashboard tiles, public, and embed views
 
-## Architecture
+### Permissions
 
-### Core services
-- `frontend`: Next.js 14 application
-- `backend`: FastAPI API, auth, dataset/query logic, chart execution
-- `db`: PostgreSQL 16 with pgvector
+- Module-level permissions: `none / view / edit / full`
+- Shared access control for dashboards and charts
 
-### Optional AI services
-- `ai-service`: streaming AI chat service
-- `ai-agent-service`: guided AI report / dashboard generation service
+## Recent Runtime-Ready Updates
 
-### Query path overview
-- Live mode: query the source directly
-- Synced mode: query cached data through DuckDB when datasource sync is enabled
+This README reflects the current working tree on top of the latest local repo base commit:
+
+- Base commit: `6ce52ef`
+- Commit title: `feat: ship live-query runtime and explore sync updates`
+
+### 1. Live-query runtime hardening
+
+- Dataset tables now resolve effective query mode at runtime
+- When datasource sync is globally disabled, existing synced tables with cached artifacts can still work
+- Preview and execution flows now behave more safely after restart/redeploy
+
+### 2. Dynamic pivot table for `TABLE`
+
+- `TABLE` supports dynamic pivot mode with:
+  - row dimension
+  - dynamic header dimension
+  - dynamic aggregated measure
+- Query generation and live-query execution both support grouped pivot fetches
+- Public and embed rendering use the same pivot-aware chart runtime
+
+### 3. Advanced table analytics
+
+- Standard table remains the default mode
+- Optional features can be enabled independently:
+  - conditional formatting
+  - heatmap
+  - summary rows
+- Summary rows support:
+  - multiple rows
+  - custom labels
+  - formula selection (`SUM`, `AVG`, `COUNT`, `MIN`, `MAX`, `COUNT DISTINCT`)
+  - per-row column targeting
+- Summary rows stay pinned at the bottom of the scroll area
+
+### 4. Optional benchmark lines for charts
+
+- Benchmark/reference line support was added for supported cartesian charts
+- Users can control:
+  - enable/disable
+  - benchmark value
+  - label
+  - line color
+  - line style
+- Feature is optional and does not change existing charts until enabled
+
+### 5. Explore / preview consistency
+
+- Explore now previews `TABLE` using the actual table renderer instead of a simplified grid
+- Dashboard tile, public page, and embed page now normalize style config more consistently
+- Table enhancements and benchmark line behavior stay aligned across rendering contexts
 
 ## Quick Start
 
 ### Prerequisites
+
 - Docker 24+
 - Docker Compose v2
 - At least 2 GB RAM for local development
 
-### 1. Clone the repo
+### 1. Clone and configure
 
 ```bash
 git clone https://github.com/QuangChinhDE/appbi-ai.git
@@ -94,75 +126,91 @@ cd appbi-ai
 cp .env.example .env
 ```
 
-### 2. Configure environment variables
-
-Edit `.env` and replace every `CHANGE_ME` value.
+Update `.env` and replace all `CHANGE_ME` values.
 
 Important variables:
 
-| Variable | Description |
-|---|---|
+| Variable | Purpose |
+| --- | --- |
 | `DB_PASSWORD` | PostgreSQL password |
 | `SECRET_KEY` | JWT signing key |
-| `ENCRYPTION_KEY` | Credential encryption key |
+| `ENCRYPTION_KEY` | Encryption key for stored credentials |
 | `NEXTAUTH_SECRET` | NextAuth secret |
-| `NEXT_PUBLIC_APP_URL` | Public app URL |
-| `ENABLE_DATASOURCE_SYNC` | Backend flag for datasource sync / DuckDB mode |
-| `NEXT_PUBLIC_ENABLE_DATASOURCE_SYNC` | Frontend flag for showing sync UI |
+| `NEXT_PUBLIC_APP_URL` | Frontend app URL |
+| `ENABLE_DATASOURCE_SYNC` | Backend sync / cached runtime flag |
+| `NEXT_PUBLIC_ENABLE_DATASOURCE_SYNC` | Frontend sync UI flag |
+| `FIRST_ADMIN_EMAIL` | Seed admin email |
+| `FIRST_ADMIN_PASSWORD` | Seed admin password |
 
-### 3. Start the core stack
+### 2. Start the core stack
 
 ```bash
 docker compose up -d --build
 ```
 
-AppBI will be available at `http://localhost:3000` by default.
+Core app URLs:
 
-Default admin credentials are seeded from:
-- `FIRST_ADMIN_EMAIL`
-- `FIRST_ADMIN_PASSWORD`
+- Frontend: `http://localhost:3000`
+- Backend API: `http://localhost:8000`
 
-### 4. Optional AI services
-
-```bash
-# AI Chat + AI Agent
-docker compose -f docker-compose.yml -f docker-compose.ai.yml up -d --build
-
-# AI Chat only
-docker compose -f docker-compose.yml -f docker-compose.chat.yml up -d --build
-
-# AI Agent only
-docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d --build
-```
-
-### 5. Development mode
+### 3. Development mode
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d --build
 ```
 
-## Deployment Modes
+### 4. Optional AI services
+
+```bash
+# Full AI add-ons
+docker compose -f docker-compose.yml -f docker-compose.ai.yml up -d --build
+
+# Chat only
+docker compose -f docker-compose.yml -f docker-compose.chat.yml up -d --build
+
+# Agent only
+docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d --build
+```
+
+## Runtime Modes
 
 ### Default mode: live-query-first
+
 - `ENABLE_DATASOURCE_SYNC=false`
-- Datasource sync endpoints stay disabled
-- Dataset execution runs directly against the source
+- Query execution prefers direct source access
+- Sync-related UI/actions stay disabled
 
 ### Sync-enabled mode
+
 - `ENABLE_DATASOURCE_SYNC=true`
-- DuckDB-backed sync flows and schedulers are enabled
-- Tables can use synced execution where appropriate
+- Synced execution paths are available
+- Tables can use cached/synced runtime where configured
 
-## Tech Stack
+## Deployment-Safe Commit Scope
 
-| Layer | Technology |
-|---|---|
-| Frontend | Next.js 14, React 18, TypeScript, Tailwind CSS, TanStack Query |
-| Backend | FastAPI, SQLAlchemy 2, Alembic, APScheduler |
-| Database | PostgreSQL 16, pgvector |
-| Query Engine | DuckDB |
-| AI | OpenAI-compatible APIs, LangGraph, SSE streaming |
-| Infra | Docker Compose, nginx |
+When preparing commits for the runtime repo, include only files that are needed to build or run the application.
+
+Recommended to commit:
+
+- `backend/`
+- `frontend/`
+- `docker-compose.yml`
+- `docker-compose.dev.yml`
+- `docker-compose.ai.yml`
+- `docker-compose.chat.yml`
+- `docker-compose.agent.yml`
+- `nginx.conf`
+- `.env.example`
+- `README.md`
+- `ai-service/` and `ai-agent-service/` only if those services are part of the deploy target
+
+Do not include local-only or non-runtime workspace content:
+
+- `cube/`
+- `TEMP_ACCESS_ISSUES.md`
+- `.pytest_cache/`
+- `.claude/`
+- local notes, ad-hoc docs, caches, screenshots, and temporary test artifacts
 
 ## Project Structure
 
@@ -170,17 +218,9 @@ docker compose -f docker-compose.dev.yml up -d --build
 appbi-ai/
 |-- backend/
 |   |-- app/
-|   |   |-- api/
-|   |   |-- models/
-|   |   |-- schemas/
-|   |   `-- services/
-|   `-- alembic/
+|   |-- alembic/
 |-- frontend/
 |   `-- src/
-|       |-- app/
-|       |-- components/
-|       |-- hooks/
-|       `-- lib/
 |-- ai-service/
 |-- ai-agent-service/
 |-- docker-compose.yml
@@ -188,36 +228,19 @@ appbi-ai/
 |-- docker-compose.ai.yml
 |-- docker-compose.chat.yml
 |-- docker-compose.agent.yml
-`-- .env.example
+|-- nginx.conf
+|-- .env.example
+`-- README.md
 ```
-
-## Database Migrations
-
-Run manually if needed:
-
-```bash
-docker compose exec backend alembic upgrade head
-```
-
-Recent migration additions include:
-- dataset table query mode metadata
-- new chart enum values for `HORIZONTAL_BAR` and `BAR_LINE`
 
 ## Verification
 
-Useful verification commands for this codebase:
+Useful validation commands:
 
 ```bash
 docker compose exec -T backend python -m compileall app
 docker compose exec -T frontend npm run build
 ```
-
-## Contributing
-
-1. Create a feature branch
-2. Make your changes
-3. Run the relevant build or test commands
-4. Open a pull request with a clear summary
 
 ## License
 

@@ -45,7 +45,10 @@ class ChartConfigBase(BaseModel):
     measure_configs: Optional[List[Dict[str, Any]]] = Field(None, description="Measure configs: [{field, agg, label}]")
     grouping: Optional[Dict[str, Any]] = Field(None, description="Grouping config: {rowDimensions: [], columnDimension: ''}")
     sorts: Optional[List[Dict[str, Any]]] = Field(None, description="Sort configs: [{field, direction, index}]")
-    conditional_formatting: Optional[List[Dict[str, Any]]] = Field(None, description="Conditional format rules: [{field, operator, value, color, backgroundColor}]")
+    conditional_formatting: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="Conditional format rules: [{field, operator, value|benchmarkField, color, backgroundColor}]",
+    )
     
     class Config:
         extra = "allow"  # Allow additional fields for extensibility

@@ -6,8 +6,16 @@ import {
   MeasureConfig, 
   SortConfig, 
   ConditionalFormatRule, 
+  TableHeatmapRule,
   GroupingConfig 
 } from '@/types/api';
+
+export interface TableHeatmapStats {
+  [field: string]: {
+    min: number;
+    max: number;
+  };
+}
 
 /**
  * Apply an aggregation function to an array of values
@@ -192,6 +200,135 @@ export function sortRows(rows: any[], sorts: SortConfig[] | null): any[] {
   });
 }
 
+export function parseNumericCellValue(value: any): number | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const normalized = trimmed.replace(/,/g, '');
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function buildTableHeatmapStats(
+  rows: Record<string, any>[],
+  rules: TableHeatmapRule[] | null,
+): TableHeatmapStats {
+  if (!rules || rules.length === 0 || rows.length === 0) {
+    return {};
+  }
+
+  const stats: TableHeatmapStats = {};
+
+  rules.forEach((rule) => {
+    const numericValues = rows
+      .map((row) => parseNumericCellValue(row?.[rule.field]))
+      .filter((value): value is number => value !== null);
+
+    if (numericValues.length === 0) {
+      return;
+    }
+
+    stats[rule.field] = {
+      min: Math.min(...numericValues),
+      max: Math.max(...numericValues),
+    };
+  });
+
+  return stats;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeHexColor(color: string): string {
+  const trimmed = color.trim();
+  if (/^#[0-9a-f]{6}$/i.test(trimmed)) return trimmed;
+  if (/^#[0-9a-f]{3}$/i.test(trimmed)) {
+    const chars = trimmed.slice(1).split('');
+    return `#${chars.map((char) => `${char}${char}`).join('')}`;
+  }
+  return '#dbeafe';
+}
+
+function hexToRgb(color: string): { r: number; g: number; b: number } {
+  const normalized = normalizeHexColor(color);
+  return {
+    r: parseInt(normalized.slice(1, 3), 16),
+    g: parseInt(normalized.slice(3, 5), 16),
+    b: parseInt(normalized.slice(5, 7), 16),
+  };
+}
+
+function rgbToHex({ r, g, b }: { r: number; g: number; b: number }): string {
+  const toHex = (value: number) => clamp(Math.round(value), 0, 255).toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function interpolateColor(from: string, to: string, ratio: number): string {
+  const start = hexToRgb(from);
+  const end = hexToRgb(to);
+  const safeRatio = clamp(ratio, 0, 1);
+  return rgbToHex({
+    r: start.r + (end.r - start.r) * safeRatio,
+    g: start.g + (end.g - start.g) * safeRatio,
+    b: start.b + (end.b - start.b) * safeRatio,
+  });
+}
+
+function getContrastingTextColor(backgroundColor: string): string {
+  const { r, g, b } = hexToRgb(backgroundColor);
+  const luminance = (0.299 * r) + (0.587 * g) + (0.114 * b);
+  return luminance > 170 ? '#0f172a' : '#f8fafc';
+}
+
+export function getHeatmapCellStyle(
+  value: any,
+  field: string,
+  rules: TableHeatmapRule[] | null,
+  stats: TableHeatmapStats,
+): { color?: string; backgroundColor?: string } {
+  if (!rules || rules.length === 0) {
+    return {};
+  }
+
+  const rule = rules.find((item) => item.field === field);
+  if (!rule) {
+    return {};
+  }
+
+  const numericValue = parseNumericCellValue(value);
+  const columnStats = stats[field];
+  if (numericValue === null || !columnStats) {
+    return {};
+  }
+
+  const steps = clamp(Math.round(rule.steps ?? 5), 2, 9);
+  const { min, max } = columnStats;
+  const rawRatio = max === min ? 0.5 : (numericValue - min) / (max - min);
+  const normalizedRatio = clamp(rawRatio, 0, 1);
+  const bucketIndex = Math.min(steps - 1, Math.floor(normalizedRatio * steps));
+  const bucketRatio = steps === 1 ? 1 : bucketIndex / (steps - 1);
+  const backgroundColor = interpolateColor(
+    rule.minColor ?? '#eff6ff',
+    rule.maxColor ?? '#1d4ed8',
+    bucketRatio,
+  );
+
+  return {
+    backgroundColor,
+    color: getContrastingTextColor(backgroundColor),
+  };
+}
+
 /**
  * Get cell style based on conditional formatting rules
  * 
@@ -203,7 +340,8 @@ export function sortRows(rows: any[], sorts: SortConfig[] | null): any[] {
 export function getCellStyle(
   value: any,
   field: string,
-  rules: ConditionalFormatRule[] | null
+  rules: ConditionalFormatRule[] | null,
+  row?: Record<string, any>,
 ): { color?: string; backgroundColor?: string } {
   if (!rules || rules.length === 0) {
     return {};
@@ -212,11 +350,16 @@ export function getCellStyle(
   const applicableRules = rules.filter(rule => rule.field === field);
   
   for (const rule of applicableRules) {
-    const numValue = typeof value === 'number' ? value : parseFloat(value);
-    const ruleValue = typeof rule.value === 'number' ? rule.value : parseFloat(rule.value);
+    const benchmarkValue = rule.benchmarkField ? row?.[rule.benchmarkField] : rule.value;
+    if (benchmarkValue === undefined || benchmarkValue === null || benchmarkValue === '') {
+      continue;
+    }
+
+    const numValue = parseNumericCellValue(value);
+    const ruleValue = parseNumericCellValue(benchmarkValue);
     
     // Skip if values can't be compared numerically and operator is numeric
-    if (isNaN(numValue) && ['>', '<', '>=', '<='].includes(rule.operator)) {
+    if (numValue === null && ['>', '<', '>=', '<='].includes(rule.operator)) {
       continue;
     }
     
@@ -224,22 +367,26 @@ export function getCellStyle(
     
     switch (rule.operator) {
       case '>':
-        matches = numValue > ruleValue;
+        matches = numValue !== null && ruleValue !== null && numValue > ruleValue;
         break;
       case '<':
-        matches = numValue < ruleValue;
+        matches = numValue !== null && ruleValue !== null && numValue < ruleValue;
         break;
       case '>=':
-        matches = numValue >= ruleValue;
+        matches = numValue !== null && ruleValue !== null && numValue >= ruleValue;
         break;
       case '<=':
-        matches = numValue <= ruleValue;
+        matches = numValue !== null && ruleValue !== null && numValue <= ruleValue;
         break;
       case '=':
-        matches = value == rule.value; // Loose equality
+        matches = numValue !== null && ruleValue !== null
+          ? numValue === ruleValue
+          : String(value ?? '') === String(benchmarkValue ?? '');
         break;
       case '!=':
-        matches = value != rule.value; // Loose inequality
+        matches = numValue !== null && ruleValue !== null
+          ? numValue !== ruleValue
+          : String(value ?? '') !== String(benchmarkValue ?? '');
         break;
     }
     

@@ -126,6 +126,16 @@ def normalize_chart_role_config(chart_type: str, role_config: dict | None) -> di
 
     ctype = str(getattr(chart_type, "value", chart_type) or "").upper()
     line_metric = normalize_metric_config(normalized.get("lineMetric"))
+    table_pivot_metric = normalize_metric_config(normalized.get("tablePivotMetric"))
+
+    normalized["tableMode"] = "pivot" if str(normalized.get("tableMode") or "").lower() == "pivot" else "standard"
+
+    for field_name in ("tableRowDimension", "tableColumnDimension"):
+        raw_value = normalized.get(field_name)
+        if isinstance(raw_value, str):
+            normalized[field_name] = raw_value.strip() or None
+        elif raw_value is None:
+            normalized[field_name] = None
 
     if ctype == "BAR_LINE" and not line_metric:
         legacy_breakdown = normalized.get("breakdown")
@@ -137,5 +147,9 @@ def normalize_chart_role_config(chart_type: str, role_config: dict | None) -> di
 
     if line_metric:
         normalized["lineMetric"] = line_metric
+    if table_pivot_metric:
+        normalized["tablePivotMetric"] = table_pivot_metric
+    else:
+        normalized.pop("tablePivotMetric", None)
 
     return normalized

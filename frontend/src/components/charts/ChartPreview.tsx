@@ -20,6 +20,7 @@ import {
   Tooltip,
   Legend,
   LabelList,
+  ReferenceLine,
   ResponsiveContainer,
   ZAxis,
 } from 'recharts';
@@ -28,7 +29,8 @@ import { TableVisualization } from '@/components/visualizations/TableVisualizati
 import { KpiCard } from '@/components/visualizations/KpiCard';
 import { getPalette, buildDimensionColorMap, ChartPaletteName, DEFAULT_CHART_THEME } from '@/lib/chartColors';
 import type { ChartStyleConfig, NumberFormat } from '@/components/explore/ExploreChartConfig';
-import { DEFAULT_STYLE_CONFIG } from '@/components/explore/ExploreChartConfig';
+import { normalizeChartStyleConfig } from '@/components/explore/ExploreChartConfig';
+import type { ConditionalFormatRule } from '@/types/api';
 
 function formatNumber(value: any, fmt: NumberFormat): string {
   const n = typeof value === 'number' ? value : Number(value);
@@ -70,6 +72,7 @@ interface ChartPreviewProps {
     showLegend?: boolean;
     showGrid?: boolean;
     stacked?: boolean;
+    conditional_formatting?: ConditionalFormatRule[];
   };
   styleConfig?: ChartStyleConfig;
 }
@@ -124,8 +127,17 @@ function wrapScrollable(el: React.ReactNode, count: number): React.ReactNode {
   );
 }
 
+function getBenchmarkValue(style?: ChartStyleConfig): number | null {
+  if (style?.benchmarkValue === '' || style?.benchmarkValue == null) return null;
+  const value = Number(style.benchmarkValue);
+  return Number.isFinite(value) ? value : null;
+}
+
 export function ChartPreview({ chartType, data, config, styleConfig }: ChartPreviewProps) {
-  const style = useMemo(() => ({ ...DEFAULT_STYLE_CONFIG, ...styleConfig }), [styleConfig]);
+  const style = useMemo(
+    () => normalizeChartStyleConfig(styleConfig, config.conditional_formatting),
+    [config.conditional_formatting, styleConfig],
+  );
   // Get palette — styleConfig palette takes precedence
   const paletteName = (style.palette as ChartPaletteName) ?? (config.palette as ChartPaletteName) ?? DEFAULT_CHART_THEME.defaultPalette;
   const palette = getPalette(paletteName);
@@ -164,6 +176,11 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
   const showDataLabels = style.showDataLabels ?? false;
   const showDots = style.showDots ?? true;
   const lineStyle = style.lineStyle ?? 'solid';
+  const benchmarkValue = getBenchmarkValue(style);
+  const showBenchmarkLine = Boolean(style.showBenchmarkLine && benchmarkValue !== null);
+  const benchmarkColor = style.benchmarkColor || '#dc2626';
+  const benchmarkDash = style.benchmarkLineStyle === 'solid' ? undefined : '6 4';
+  const benchmarkLabel = style.benchmarkLabel?.trim() || undefined;
   const xAxisLabel = style.xAxisLabel || undefined;
   const yAxisLabel = style.yAxisLabel || undefined;
   const legendPosition = style.legendPosition ?? 'bottom';
@@ -180,6 +197,27 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
         align: (legendPosition === 'left' ? 'left' : legendPosition === 'right' ? 'right' : 'center') as 'left' | 'center' | 'right',
       }
     : null;
+  const renderBenchmarkLine = (axis: 'x' | 'y') => {
+    if (!showBenchmarkLine || benchmarkValue === null) return null;
+
+    return (
+      <ReferenceLine
+        ifOverflow="extendDomain"
+        stroke={benchmarkColor}
+        strokeWidth={2}
+        strokeDasharray={benchmarkDash}
+        label={benchmarkLabel
+          ? {
+              value: benchmarkLabel,
+              position: 'insideTopRight',
+              fill: benchmarkColor,
+              fontSize: Math.max(fontSize - 1, 10),
+            }
+          : undefined}
+        {...(axis === 'x' ? { x: benchmarkValue } : { y: benchmarkValue })}
+      />
+    );
+  };
 
   if (!data || data.length === 0) {
     return (
@@ -228,6 +266,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
                 </Bar>
               ))
             )}
+            {renderBenchmarkLine('y')}
           </BarChart>,
           data.length,
         )}
@@ -261,6 +300,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
                 {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
               </Line>
             ))}
+            {renderBenchmarkLine('y')}
           </LineChart>,
           data.length,
         )}
@@ -296,6 +336,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
                 {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
               </Area>
             ))}
+            {renderBenchmarkLine('y')}
           </AreaChart>,
           data.length,
         )}
@@ -340,6 +381,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
                 </Bar>
               ))
             )}
+            {renderBenchmarkLine('y')}
           </BarChart>,
           data.length,
         )}
@@ -373,6 +415,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
                 {showDataLabels && <LabelList position="center" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 2, fill: '#fff' }} />}
               </Bar>
             ))}
+            {renderBenchmarkLine('y')}
           </BarChart>,
           data.length,
         )}
@@ -503,6 +546,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
             >
               {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
             </Line>
+            {renderBenchmarkLine('y')}
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -529,6 +573,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
             {showDataLabels && <LabelList position="right" formatter={(v: any) => formatNumber(v, numFmt)} style={{ fontSize: fontSize - 1 }} />}
           </Bar>
         ))}
+        {renderBenchmarkLine('x')}
       </BarChart>
     );
     return (
@@ -574,6 +619,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
             ))}
             <Line type="monotone" dataKey={lineField} stroke={getSeriesColor(lineField, barFields.length)}
               strokeWidth={2} dot={showDots} strokeDasharray={lineStyle === 'dashed' ? '5 5' : undefined} />
+            {renderBenchmarkLine('y')}
           </ComposedChart>,
           data.length,
         )}
@@ -593,6 +639,12 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
           data={data}
           columns={columns}
           maxRows={50}
+          conditionalFormatting={style.tableEnableConditionalFormatting ? style.tableConditionalFormatting : undefined}
+          heatmapRules={style.tableEnableHeatmap ? style.tableHeatmapRules : undefined}
+          summaryRows={style.tableSummaryRows}
+          showSummaryRow={style.tableShowSummaryRow}
+          summaryLabel={style.tableSummaryLabel}
+          summaryLabelColumn={style.tableSummaryLabelColumn}
         />
       </div>
     );

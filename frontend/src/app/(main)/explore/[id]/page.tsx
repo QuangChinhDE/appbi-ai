@@ -3,7 +3,7 @@
  */
 'use client';
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Save, ArrowLeft, ChevronDown, ChevronRight, Pencil, Check, Search, Plus, Trash2, Tag, Settings2, Bot, Play, RotateCcw, Database, Code2 } from 'lucide-react';
 import { useDataset, useTablePreview, useExecuteDatasetTableQueryMutation, type ColumnMetadata } from '@/hooks/use-datasets';
@@ -11,9 +11,19 @@ import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelecto
 import { ExploreColumnPanel } from '@/components/explore/ExploreColumnPanel';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
 import { ExploreChart } from '@/components/explore/ExploreChart';
+import { buildExploreChartModel } from '@/components/explore/chartDataAdapter';
 import { FilterBuilder, type Filter } from '@/components/explore/FilterBuilder';
 import { useChart, useCreateChart, useUpdateChart, useUpsertChartMetadata, useReplaceChartParameters } from '@/hooks/use-charts';
-import { ExploreChartConfig, type ExploreChartType, type ChartRoleConfig, type ChartStyleConfig, DEFAULT_STYLE_CONFIG, normalizeRoleConfig } from '@/components/explore/ExploreChartConfig';
+import {
+  ExploreChartConfig,
+  type ExploreChartType,
+  type ChartRoleConfig,
+  type ChartStyleConfig,
+  type MetricConfig,
+  DEFAULT_STYLE_CONFIG,
+  normalizeChartStyleConfig,
+  normalizeRoleConfig,
+} from '@/components/explore/ExploreChartConfig';
 import { toast } from 'sonner';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ChartDescriptionPanel } from '@/components/explore/ChartDescriptionPanel';
@@ -50,6 +60,7 @@ interface ExploreQueryState {
   columns: ColumnMetadata[];
   rows: Record<string, any>[];
   chartRows: Record<string, any>[];
+  chartColumns: ColumnMetadata[];
   chartPreAggregated: boolean;
   executionTimeMs?: number;
 }
@@ -62,9 +73,91 @@ function hasRoleConfigSelection(roleConfig: ChartRoleConfig | null | undefined):
     roleConfig?.scatterX ||
     roleConfig?.scatterY ||
     roleConfig?.lineMetric ||
+    roleConfig?.tableRowDimension ||
+    roleConfig?.tableColumnDimension ||
+    roleConfig?.tablePivotMetric ||
     roleConfig?.metrics?.length ||
     roleConfig?.selectedColumns?.length,
   );
+}
+
+function metricMatchesColumns(metric: MetricConfig | null | undefined, columnNames: Set<string>): boolean {
+  if (!metric) return false;
+
+  const candidates = [
+    metric.field,
+    metric.outputField,
+    `${metric.agg}__${metric.field}`,
+    `${metric.field}_${metric.agg}`,
+    `${metric.agg}_${metric.field}`,
+    `${metric.field}__${metric.agg}`,
+  ].filter((value): value is string => Boolean(value));
+
+  return candidates.some((candidate) => columnNames.has(candidate));
+}
+
+function normalizeTableDisplayColumns(
+  columns: ColumnMetadata[],
+  roleConfig: ChartRoleConfig,
+): ColumnMetadata[] {
+  if (roleConfig.tableMode !== 'pivot' || !roleConfig.tableRowDimension) {
+    return columns;
+  }
+
+  return columns.map((column, index) => (
+    index === 0
+      ? column
+      : { ...column, type: 'number' }
+  ));
+}
+
+function createDefaultTableRoleConfig(roleConfig: ChartRoleConfig): ChartRoleConfig {
+  return {
+    ...roleConfig,
+    dimension: undefined,
+    breakdown: undefined,
+    timeField: undefined,
+    scatterX: undefined,
+    scatterY: undefined,
+    lineMetric: undefined,
+    metrics: [],
+    tableMode: 'standard',
+    tableRowDimension: undefined,
+    tableColumnDimension: undefined,
+    tablePivotMetric: undefined,
+    selectedColumns: undefined,
+  };
+}
+
+function createDefaultTableStyleConfig(styleConfig: ChartStyleConfig): ChartStyleConfig {
+  return {
+    ...styleConfig,
+    tableEnableConditionalFormatting: false,
+    tableEnableHeatmap: false,
+    tableConditionalFormatting: undefined,
+    tableHeatmapRules: undefined,
+    tableShowSummaryRow: false,
+    tableSummaryLabel: DEFAULT_STYLE_CONFIG.tableSummaryLabel,
+    tableSummaryLabelColumn: undefined,
+    tableSummaryRows: undefined,
+  };
+}
+
+function getApiErrorMessage(error: any, fallback: string): string {
+  const detail = error?.response?.data?.detail ?? error?.response?.data;
+  if (typeof detail === 'string' && detail.trim()) {
+    const trimmed = detail.trim();
+    if (!trimmed.startsWith('<')) {
+      return trimmed;
+    }
+  }
+  if (detail?.message) {
+    return detail.message;
+  }
+  if (typeof error?.message === 'string' && error.message.trim()) {
+    return error.message;
+  }
+  return fallback;
 }
 
 function syncRoleConfigWithColumns(
@@ -91,10 +184,20 @@ function syncRoleConfigWithColumns(
     scatterX: normalized.scatterX && columnNames.has(normalized.scatterX) ? normalized.scatterX : undefined,
     scatterY: normalized.scatterY && columnNames.has(normalized.scatterY) ? normalized.scatterY : undefined,
     lineMetric:
-      normalized.lineMetric && columnNames.has(normalized.lineMetric.outputField ?? normalized.lineMetric.field)
+      normalized.lineMetric && metricMatchesColumns(normalized.lineMetric, columnNames)
         ? normalized.lineMetric
         : undefined,
-    metrics: normalized.metrics.filter((metric) => columnNames.has(metric.outputField ?? metric.field)),
+    metrics: normalized.metrics.filter((metric) => metricMatchesColumns(metric, columnNames)),
+    tableRowDimension: normalized.tableRowDimension && columnNames.has(normalized.tableRowDimension)
+      ? normalized.tableRowDimension
+      : undefined,
+    tableColumnDimension: normalized.tableColumnDimension && columnNames.has(normalized.tableColumnDimension)
+      ? normalized.tableColumnDimension
+      : undefined,
+    tablePivotMetric:
+      normalized.tablePivotMetric && metricMatchesColumns(normalized.tablePivotMetric, columnNames)
+        ? normalized.tablePivotMetric
+        : undefined,
     selectedColumns: normalized.selectedColumns?.filter((column) => columnNames.has(column)),
   };
 
@@ -103,6 +206,24 @@ function syncRoleConfigWithColumns(
   }
 
   if (chartType === 'TABLE') {
+    if (next.tableMode === 'pivot') {
+      const rowDimensionFallback = categoricalColumns[0]?.name ?? fallbackDimension;
+      const columnDimensionFallback = categoricalColumns.find((column) => column.name !== rowDimensionFallback)?.name
+        ?? columns.find((column) => column.name !== rowDimensionFallback)?.name;
+      const pivotMetricFallback = numericColumns.find((column) => (
+        column.name !== rowDimensionFallback && column.name !== columnDimensionFallback
+      ))?.name ?? fallbackMetric;
+
+      if (!next.tableRowDimension) {
+        next.tableRowDimension = rowDimensionFallback;
+      }
+      if (!next.tableColumnDimension || next.tableColumnDimension === next.tableRowDimension) {
+        next.tableColumnDimension = columnDimensionFallback;
+      }
+      if (!next.tablePivotMetric && pivotMetricFallback) {
+        next.tablePivotMetric = { field: pivotMetricFallback, agg: 'sum' };
+      }
+    }
     return next;
   }
 
@@ -211,9 +332,7 @@ export default function ExploreDetailPage() {
     }
     setFilters(config?.filters ?? []);
     setChartType(config?.chartType ?? 'TABLE');
-    if (config?.styleConfig) {
-      setChartStyleConfig({ ...DEFAULT_STYLE_CONFIG, ...config.styleConfig });
-    }
+    setChartStyleConfig(normalizeChartStyleConfig(config?.styleConfig, config?.conditional_formatting));
     if (config?.roleConfig) {
       const initialRoleConfig = normalizeRoleConfig(
         config?.chartType ?? chart.chart_type,
@@ -250,6 +369,13 @@ export default function ExploreDetailPage() {
     isLoading: isPreviewLoading,
     error: previewError,
   } = useTablePreview(selectedDatasetId, selectedTableId, {});
+  const previewErrorMessage = useMemo(
+    () => getApiErrorMessage(
+      previewError,
+      'Could not load table preview. The backend request did not complete.'
+    ),
+    [previewError],
+  );
   const selectedTable = dataset?.tables?.find((t: any) => t.id === selectedTableId) ?? null;
   const hasActiveTransforms = Boolean(selectedTable?.transformations?.some((step: any) => step.enabled));
   const normalizedGeneratedRoleConfig = useMemo(
@@ -321,9 +447,63 @@ export default function ExploreDetailPage() {
     return {
       ...activeQueryState,
       chartRows: chartResult.rows,
+      chartColumns: chartResult.columns,
       chartPreAggregated: chartResult.preAggregated,
     };
   }, [activeQueryState, chartType, normalizedCustomRoleConfig, sqlMode]);
+
+  const tableDisplayColumns = useMemo(() => {
+    if (chartType !== 'TABLE') {
+      return [];
+    }
+
+    if (displayedQueryState?.chartRows?.length) {
+      const tableModel = buildExploreChartModel({
+        type: 'TABLE',
+        data: displayedQueryState.chartRows,
+        roleConfig: normalizedRoleConfig,
+        preAggregated: displayedQueryState.chartPreAggregated,
+      });
+
+      return normalizeTableDisplayColumns(
+        inferQueryColumns(tableModel.tableColumns, tableModel.tableData),
+        normalizedRoleConfig,
+      );
+    }
+
+    const previewModel = buildExploreChartModel({
+      type: 'TABLE',
+      data: previewRows,
+      roleConfig: normalizedRoleConfig,
+      preAggregated: false,
+    });
+
+    return normalizeTableDisplayColumns(
+      inferQueryColumns(previewModel.tableColumns, previewModel.tableData),
+      normalizedRoleConfig,
+    );
+  }, [chartType, displayedQueryState?.chartPreAggregated, displayedQueryState?.chartRows, normalizedRoleConfig, previewRows]);
+
+  const handleChartTypeChange = useCallback((nextType: ChartType) => {
+    if (nextType === chartType) {
+      return;
+    }
+
+    setChartType(nextType);
+
+    if (nextType !== 'TABLE' || chartType === 'TABLE') {
+      return;
+    }
+
+    setGeneratedRoleConfig((prev) => createDefaultTableRoleConfig(prev));
+    setCustomRoleConfig((prev) => createDefaultTableRoleConfig(prev));
+    setChartStyleConfig((prev) => createDefaultTableStyleConfig(prev));
+    setGeneratedQueryState(null);
+    setCustomQueryState(null);
+    setGeneratedLastRunSignature('');
+    setCustomLastRunSignature('');
+    setQueryError(null);
+  }, [chartType]);
 
   // Auto-select first table when dataset changes
   useEffect(() => {
@@ -418,6 +598,7 @@ export default function ExploreDetailPage() {
           sql,
           chartType,
           columns,
+          currentRoleConfig: normalizedCustomRoleConfig,
         });
         const resolvedCustomRoleConfig = inferredRoleConfig.customRoleConfig
           ? normalizeRoleConfig(chartType, inferredRoleConfig.customRoleConfig)
@@ -467,6 +648,7 @@ export default function ExploreDetailPage() {
             columns,
             rows: response.data,
             chartRows: generatedChartResult.rows,
+            chartColumns: generatedChartResult.columns,
             chartPreAggregated: generatedChartResult.preAggregated,
             executionTimeMs: response.execution_time_ms,
           });
@@ -489,6 +671,7 @@ export default function ExploreDetailPage() {
           columns,
           rows: response.data,
           chartRows: chartResult.rows,
+          chartColumns: chartResult.columns,
           chartPreAggregated: chartResult.preAggregated,
           executionTimeMs: response.execution_time_ms,
         });
@@ -514,6 +697,7 @@ export default function ExploreDetailPage() {
           columns,
           rows: response.rows,
           chartRows: chartResult.rows,
+          chartColumns: chartResult.columns,
           chartPreAggregated: chartResult.preAggregated,
         });
         setGeneratedLastRunSignature(currentQuerySignature);
@@ -542,12 +726,16 @@ export default function ExploreDetailPage() {
       toast.error('Please select a dataset table first');
       return;
     }
+    const tableConditionalFormatting = chartStyleConfig.tableConditionalFormatting;
     const exploreConfig = {
       dataset_id: selectedDatasetId,
       filters,
       chartType,
       roleConfig: generatedRoleConfig,
       styleConfig: chartStyleConfig,
+      ...(chartType === 'TABLE' && tableConditionalFormatting?.length
+        ? { conditional_formatting: tableConditionalFormatting }
+        : {}),
     };
 
     const metaPayload: ChartMetadataUpsert = {
@@ -676,8 +864,11 @@ export default function ExploreDetailPage() {
     );
   } else if (previewError) {
     centerContent = (
-      <div className="h-full flex items-center justify-center text-red-600 text-sm">
-        Error loading source schema
+      <div className="h-full flex items-center justify-center px-6">
+        <div className="max-w-md text-center">
+          <p className="text-sm font-medium text-red-600">Could not load table preview</p>
+          <p className="mt-1 text-xs text-red-500/90">{previewErrorMessage}</p>
+        </div>
       </div>
     );
   }
@@ -724,8 +915,11 @@ export default function ExploreDetailPage() {
                   {chartNameInput || (chartId ? 'Chart' : 'New Chart')}
                 </span>
                 {resPerms.canEdit && (
-                  <button onClick={() => setIsEditingName(true)}
-                    className="opacity-0 group-hover/name:opacity-100 text-gray-400 hover:text-gray-600 transition-opacity">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingName(true)}
+                    className="rounded-md p-1 opacity-0 group-hover/name:opacity-100 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-opacity"
+                  >
                     <Pencil className="w-3 h-3" />
                   </button>
                 )}
@@ -739,7 +933,7 @@ export default function ExploreDetailPage() {
           </div>
 
           {/* Right actions */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 shrink-0 pr-2">
             {isEditingDesc ? (
               <input
                 autoFocus
@@ -758,8 +952,10 @@ export default function ExploreDetailPage() {
                 className="text-xs text-gray-600 border-b border-blue-400 bg-transparent outline-none px-0.5 w-52"
               />
             ) : resPerms.canEdit ? (
-              <div onClick={() => setIsEditingDesc(true)}
-                className="group/desc flex items-center gap-1 cursor-text text-xs text-gray-400 hover:text-gray-600">
+              <div
+                onClick={() => setIsEditingDesc(true)}
+                className="group/desc mr-1 flex items-center gap-1 rounded-md px-2 py-1 cursor-text text-xs text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              >
                 {chartDescInput || <span className="italic">Add note...</span>}
                 <Pencil className="w-3 h-3 opacity-0 group-hover/desc:opacity-100 transition-opacity" />
               </div>
@@ -980,8 +1176,16 @@ export default function ExploreDetailPage() {
                     </div>
                   </div>
                 ) : chartType === 'TABLE' ? (
-                  /* TABLE chart type: show grid in top area */
-                  <DatasetTableGrid columns={displayedQueryState.columns} rows={displayedQueryState.rows} />
+                  /* TABLE chart type: show actual table renderer so styling is previewed live */
+                  <div className="flex-1 p-4 min-h-0">
+                    <ExploreChart
+                      type={chartType}
+                      data={displayedQueryState.chartRows}
+                      roleConfig={normalizedRoleConfig}
+                      styleConfig={chartStyleConfig}
+                      preAggregated={displayedQueryState.chartPreAggregated}
+                    />
+                  </div>
                 ) : (
                   /* Chart visualization */
                   <div className="flex-1 p-4 min-h-0">
@@ -1042,7 +1246,8 @@ export default function ExploreDetailPage() {
               roleConfig={activeRoleConfig}
               styleConfig={chartStyleConfig}
               availableColumns={configColumns}
-              onChartTypeChange={setChartType}
+              tableDisplayColumns={tableDisplayColumns}
+              onChartTypeChange={handleChartTypeChange}
               onRoleConfigChange={sqlMode === 'custom' ? setCustomRoleConfig : setGeneratedRoleConfig}
               onStyleConfigChange={setChartStyleConfig}
             />

@@ -23,6 +23,7 @@ import { Lock, Loader2, AlertTriangle, Eye, EyeOff, RefreshCw } from 'lucide-rea
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
+import { normalizeChartStyleConfig } from '@/components/explore/ExploreChartConfig';
 import {
   publicDashboardApi,
   savePublicSession,
@@ -353,11 +354,23 @@ export default function EmbedDashboardPage() {
                           type={chart.chart_type}
                           data={filteredRows}
                           roleConfig={roleConfig}
+                          styleConfig={normalizeChartStyleConfig(
+                            (chart?.config as any)?.styleConfig,
+                            (chart?.config as any)?.conditional_formatting,
+                          )}
                           preAggregated={cd.pre_aggregated ?? false}
                         />
                       </div>
                     ) : (
-                      <ChartPreview chartType={chart.chart_type} data={filteredRows} config={(chart.config as any) ?? {}} />
+                      <ChartPreview
+                        chartType={chart.chart_type}
+                        data={filteredRows}
+                        config={(chart.config as any) ?? {}}
+                        styleConfig={normalizeChartStyleConfig(
+                          (chart?.config as any)?.styleConfig,
+                          (chart?.config as any)?.conditional_formatting,
+                        )}
+                      />
                     )}
                   </ChartErrorBoundary>
                 </div>
