@@ -98,9 +98,10 @@ class Settings(BaseSettings):
     OPENROUTER_EMBEDDING_DIMENSIONS: int = 768
 
     # Large data thresholds — tables exceeding these are auto-set to query_mode="live"
-    LARGE_TABLE_ROW_THRESHOLD: int = 50_000_000        # 50M rows
+    LARGE_TABLE_ROW_THRESHOLD: int = 50_000_000         # 50M rows
     LARGE_TABLE_SIZE_THRESHOLD_GB: float = 5.0          # 5 GB
-    BQ_MAX_BYTES_SCANNED: int = 10 * 1024**3            # 10 GB dry-run guard
+    BQ_MAX_BYTES_SCANNED: int = 60 * 1024**3            # 60 GB dry-run guard
+    BQ_PREVIEW_PARTITION_MAX_LOOKBACK_DAYS: int = 365   # fallback when partition metadata is unavailable
     LIVE_QUERY_CACHE_TTL: int = 300                     # 5 minutes
     LIVE_QUERY_CACHE_MAX_SIZE: int = 256                # max entries
     ENABLE_DATASOURCE_SYNC: bool = False                # live-query-first mode

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Play,
   Save,
@@ -212,12 +212,15 @@ export default function SyncSettingsTab({ datasourceId }: Props) {
   }, [configData]);
 
   // Collect table list from schema — include all synced types
-  const allTables: { schema: string; name: string }[] = [];
-  (schemaData?.schemas ?? []).forEach((s: SchemaEntry) => {
-    s.tables
-      .filter((t) => t.type !== 'view')   // skip pure views — they have no rows to sync
-      .forEach((t) => allTables.push({ schema: s.schema, name: t.name }));
-  });
+  const allTables = useMemo(() => {
+    const tables: { schema: string; name: string }[] = [];
+    (schemaData?.schemas ?? []).forEach((s: SchemaEntry) => {
+      s.tables
+        .filter((t) => t.type !== 'view')   // skip pure views — they have no rows to sync
+        .forEach((t) => tables.push({ schema: s.schema, name: t.name }));
+    });
+    return tables;
+  }, [schemaData?.schemas]);
 
   const tableKey = (schema: string, name: string) => `${schema}.${name}`;
 
@@ -912,27 +915,36 @@ function WatermarkSelect({
   value: string;
   onChange: (v: string) => void;
 }) {
-  const { data, isLoading } = useWatermarkCandidates(datasourceId, schema, table);
-
-  if (isLoading) return <Loader2 className="w-3 h-3 animate-spin text-gray-400" />;
-
+  const [shouldLoad, setShouldLoad] = useState(Boolean(value));
+  const { data, isLoading } = useWatermarkCandidates(datasourceId, schema, table, shouldLoad);
   const cols = data?.columns ?? [];
-  if (cols.length === 0) {
-    return <span className="text-xs text-gray-400">No suitable columns</span>;
-  }
+  const showEmptyState = shouldLoad && !isLoading && cols.length === 0;
 
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="border border-gray-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-    >
-      <option value="">— select —</option>
-      {cols.map((c) => (
-        <option key={c.name} value={c.name}>
-          {c.name} ({c.type})
-        </option>
-      ))}
-    </select>
+    <div className="flex items-center gap-2">
+      <select
+        value={value}
+        onFocus={() => setShouldLoad(true)}
+        onPointerDown={() => setShouldLoad(true)}
+        onChange={(e) => onChange(e.target.value)}
+        className="border border-gray-200 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+      >
+        {!shouldLoad && (
+          <option value="">
+            {value || 'Click to load columns'}
+          </option>
+        )}
+        {shouldLoad && <option value="">— select —</option>}
+        {cols.map((c) => (
+          <option key={c.name} value={c.name}>
+            {c.name} ({c.type})
+          </option>
+        ))}
+      </select>
+      {isLoading && <Loader2 className="w-3 h-3 animate-spin text-gray-400" />}
+      {showEmptyState && (
+        <span className="text-xs text-gray-400">No suitable columns</span>
+      )}
+    </div>
   );
 }

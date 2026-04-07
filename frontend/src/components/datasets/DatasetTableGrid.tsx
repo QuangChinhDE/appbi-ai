@@ -643,6 +643,30 @@ export function DatasetTableGrid({
     return () => document.removeEventListener('mousedown', handle);
   }, [activeFormatCol]);
 
+  const nonEmptyValuesByColumn = useMemo(() => {
+    const valuesByColumn: Record<string, any[]> = {};
+    for (const column of columns) {
+      valuesByColumn[column.name] = rows
+        .map((row) => row[column.name])
+        .filter((value) => value !== null && value !== undefined);
+    }
+    return valuesByColumn;
+  }, [columns, rows]);
+
+  const formattedRows = useMemo(() => {
+    return rows.map((row) => {
+      const formattedRow: Record<string, { text: string; isLong: boolean }> = {};
+      for (const column of columns) {
+        const text = applyFormat(row[column.name], getFormat(column.name), column.type);
+        formattedRow[column.name] = {
+          text,
+          isLong: text.length > 50,
+        };
+      }
+      return formattedRow;
+    });
+  }, [rows, columns, columnFormats]);
+
   // ---- Loading skeleton ----
   if (isLoading) {
     return (
@@ -789,7 +813,7 @@ export function DatasetTableGrid({
                       <FormatPanel
                         column={column}
                         format={getFormat(column.name)}
-                        values={rows.map((r) => r[column.name]).filter((v) => v !== null && v !== undefined)}
+                        values={nonEmptyValuesByColumn[column.name] ?? []}
                         onApply={(f) => setFormat(column.name, f)}
                         onClose={() => setActiveFormatCol(null)}
                         onReset={() => resetFormat(column.name)}
@@ -830,8 +854,8 @@ export function DatasetTableGrid({
                 <td className="w-16 px-4 py-3 text-sm text-gray-400 border-r font-mono">{rowIndex + 1}</td>
                 {columns.map((column) => {
                   const isComputed2 = computedColSet.has(column.name);
-                  const displayValue = applyFormat(row[column.name], getFormat(column.name), column.type);
-                  const isLong = displayValue.length > 50;
+                  const displayValue = formattedRows[rowIndex]?.[column.name]?.text ?? defaultRender(row[column.name]);
+                  const isLong = formattedRows[rowIndex]?.[column.name]?.isLong ?? displayValue.length > 50;
                   return (
                     <td
                       key={`${rowIndex}-${column.name}`}

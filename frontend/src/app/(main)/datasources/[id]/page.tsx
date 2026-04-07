@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState, startTransition } from 'react';
 import Link from 'next/link';
 import { useRouter, useParams, useSearchParams } from 'next/navigation';
 import { ArrowLeft, Loader2, Settings, RefreshCw, Pencil, Zap } from 'lucide-react';
@@ -12,6 +12,10 @@ import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { DATASOURCE_SYNC_ENABLED, LIVE_QUERY_ONLY_MODE } from '@/lib/feature-flags';
 
 type Tab = 'connection' | 'sync';
+
+function isValidTab(tab: string | null): tab is Tab {
+  return tab === 'connection' || (DATASOURCE_SYNC_ENABLED && tab === 'sync');
+}
 
 const TYPE_LABELS: Record<string, string> = {
   postgresql: 'PostgreSQL',
@@ -40,15 +44,29 @@ export default function DataSourceDetailPage() {
   const resPerms = getResourcePermissions(dataSource?.user_permission);
 
   // Read initial tab from ?tab= query param — fallback to 'connection' for unknown values
-  const validTabs: Tab[] = DATASOURCE_SYNC_ENABLED ? ['connection', 'sync'] : ['connection'];
   const paramTab = searchParams.get('tab') as Tab;
-  const initialTab: Tab = validTabs.includes(paramTab) ? paramTab : 'connection';
+  const initialTab: Tab = isValidTab(paramTab) ? paramTab : 'connection';
   const [activeTab, setActiveTab] = useState<Tab>(initialTab);
+
+  useEffect(() => {
+    const nextTab: Tab = isValidTab(paramTab) ? paramTab : 'connection';
+    if (nextTab !== activeTab) {
+      setActiveTab(nextTab);
+    }
+  }, [activeTab, paramTab]);
+
+  const syncTabInUrl = useCallback((tab: Tab) => {
+    if (typeof window === 'undefined') return;
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set('tab', tab);
+    window.history.replaceState(window.history.state, '', nextUrl.toString());
+  }, []);
 
   // Keep URL in sync with active tab so refreshing lands on the correct tab
   const switchTab = (tab: Tab) => {
-    setActiveTab(tab);
-    router.replace(`/datasources/${datasourceId}?tab=${tab}`, { scroll: false });
+    if (tab === activeTab) return;
+    startTransition(() => setActiveTab(tab));
+    syncTabInUrl(tab);
   };
 
   const handleUpdate = async (data: DataSourceCreate, meta: { configModified: boolean }) => {

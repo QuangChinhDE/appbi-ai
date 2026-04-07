@@ -3,7 +3,7 @@
  */
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback, startTransition } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import {
   Plus,
@@ -99,7 +99,7 @@ export default function DatasetDetailPage() {
   const datasetId = params?.id ? Number(params.id) : null;
 
   const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
-  const [previewLimit, setPreviewLimit] = useState(200);
+  const [previewLimit, setPreviewLimit] = useState(100);
   const [page, setPage] = useState(1);
   const [editingTable, setEditingTable] = useState<any | null>(null);
   const [isAddTableModalOpen, setIsAddTableModalOpen] = useState(false);
@@ -131,7 +131,12 @@ export default function DatasetDetailPage() {
     isLoading: loadingPreview,
     error: previewError,
     refetch: refetchPreview,
-  } = useTablePreview(datasetId, selectedTableId, { limit: previewLimit, offset: previewOffset });
+  } = useTablePreview(
+    datasetId,
+    selectedTableId,
+    { limit: previewLimit, offset: previewOffset },
+    { enabled: activeTab === 'tables' }
+  );
 
   // Filter tables by search
   const filteredTables = useMemo(() => {
@@ -164,12 +169,19 @@ export default function DatasetDetailPage() {
   const updateTableMutation = useUpdateTable();
   const removeTableMutation = useRemoveTable();
 
+  const replaceTableInUrl = useCallback((tableId: number) => {
+    if (typeof window === 'undefined') return;
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set('table', String(tableId));
+    window.history.replaceState(window.history.state, '', nextUrl.toString());
+  }, []);
+
   // Handle table addition success — select and surface the new table in the URL
   const handleTableAddSuccess = (created?: { id: number }) => {
     refetchDataset();
     if (created?.id) {
-      setSelectedTableId(created.id);
-      router.replace(`/datasets/${datasetId}?table=${created.id}`, { scroll: false });
+      startTransition(() => setSelectedTableId(created.id));
+      replaceTableInUrl(created.id);
     }
   };
 
@@ -337,20 +349,33 @@ export default function DatasetDetailPage() {
     );
     if (jsSteps.length === 0) return previewData;
 
+    const formulaHelpers = buildFNS(datasetLookupData);
+    const compiledSteps = jsSteps.map((step: any) => {
+      const { code, formula, newField } = step.params as { code?: string; formula?: string; newField: string };
+      let codeExecutor: ((row: Record<string, any>, idx: number) => any) | null = null;
+      if (code) {
+        const body = code.trim().includes('return') ? code : `return (${code})`;
+        // eslint-disable-next-line no-new-func
+        codeExecutor = new Function('$row', '$index', body) as (row: Record<string, any>, idx: number) => any;
+      }
+
+      return {
+        formula,
+        newField,
+        codeExecutor,
+      };
+    });
+
     const augmentedRows = previewData.rows.map((row, idx) => {
       const out = { ...row };
-      const fns = buildFNS(datasetLookupData);
-      for (const step of jsSteps) {
+      for (const step of compiledSteps) {
         try {
-          const { code, formula, newField } = step.params as { code?: string; formula?: string; newField: string };
+          const { formula, newField, codeExecutor } = step;
           if (formula) {
-            const result = evalExcelFormulaInPage(formula, out, fns);
+            const result = evalExcelFormulaInPage(formula, out, formulaHelpers);
             if (result.ok) out[newField] = result.value;
-          } else if (code) {
-            const body = code.trim().includes('return') ? code : `return (${code})`;
-            // eslint-disable-next-line no-new-func
-            const fn = new Function('$row', '$index', body);
-            out[newField] = fn(out, idx);
+          } else if (codeExecutor) {
+            out[newField] = codeExecutor(out, idx);
           }
         } catch {
           // leave column as undefined on error
@@ -359,7 +384,7 @@ export default function DatasetDetailPage() {
       return out;
     });
 
-    const addedCols = jsSteps.map((s: any) => ({ name: s.params.newField, type: 'string', nullable: true }));
+    const addedCols = compiledSteps.map((step) => ({ name: step.newField, type: 'string', nullable: true }));
     return {
       ...previewData,
       rows: augmentedRows,
@@ -477,8 +502,8 @@ export default function DatasetDetailPage() {
                       : 'hover:bg-gray-100 text-gray-900'
                   }`}
                   onClick={() => {
-                    setSelectedTableId(table.id);
-                    router.replace(`/datasets/${datasetId}?table=${table.id}`, { scroll: false });
+                    startTransition(() => setSelectedTableId(table.id));
+                    replaceTableInUrl(table.id);
                   }}
                 >
                   <Database className="w-4 h-4 flex-shrink-0 text-gray-400" />

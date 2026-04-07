@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import date as dt_date, datetime
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -104,11 +105,47 @@ def _build_base_table_ref(
     return _quote_identifier(stn, dialect)
 
 
+def _parse_bigquery_dataset_and_table(
+    config: dict,
+    source_table_name: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    stn = (source_table_name or "").strip().strip('"').strip("'").strip("`")
+    if not stn:
+        return None, None
+
+    parts = [
+        part.strip().strip("`").strip('"').strip("'")
+        for part in stn.split(".")
+        if part and str(part).strip()
+    ]
+    if len(parts) >= 3:
+        return parts[-2], parts[-1]
+    if len(parts) == 2:
+        return parts[0], parts[1]
+
+    default_dataset = (
+        config.get("dataset")
+        or config.get("default_dataset")
+        or ""
+    )
+    default_dataset = str(default_dataset).strip().strip("`").strip('"').strip("'")
+    return (default_dataset or None), parts[0]
+
+
+def _build_bigquery_partition_window_clause(partition_days_ago: int) -> str:
+    days_ago = max(int(partition_days_ago or 0), 0)
+    return (
+        "_PARTITIONDATE BETWEEN "
+        f"DATE_SUB(CURRENT_DATE(), INTERVAL {days_ago} DAY) AND CURRENT_DATE()"
+    )
+
+
 def _build_source_select_query(
     datasource,
     db_table,
     ds_type: str,
     dialect: str,
+    partition_days_ago: Optional[int] = None,
 ) -> str:
     """Build the raw source SELECT used before dataset transformations."""
     table_identifier = db_table.source_table_name or db_table.display_name
@@ -116,7 +153,15 @@ def _build_source_select_query(
         validate_select_only(db_table.source_query)
         return f"SELECT * FROM ({db_table.source_query}) AS _source"
     base_ref = _build_base_table_ref(ds_type, datasource.config, table_identifier, dialect)
-    return f"SELECT * FROM {base_ref}"
+    sql = f"SELECT * FROM {base_ref}"
+    if (
+        dialect == "bigquery"
+        and partition_days_ago is not None
+        and getattr(db_table, "source_kind", None) == "physical_table"
+        and getattr(db_table, "source_table_name", None)
+    ):
+        sql += f" WHERE {_build_bigquery_partition_window_clause(partition_days_ago)}"
+    return sql
 
 
 def _source_signature(db_table) -> Dict[str, Any]:
@@ -207,11 +252,18 @@ def build_live_base_query_plan(
     db_table,
     *,
     apply_type_overrides: bool = True,
+    partition_days_ago: Optional[int] = None,
 ) -> LiveBaseQueryPlan:
     """Build the live-mode SELECT, including transforms and runtime type casts."""
     ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
     dialect = _dialect_for_ds_type(ds_type)
-    base_query = _build_source_select_query(datasource, db_table, ds_type, dialect)
+    base_query = _build_source_select_query(
+        datasource,
+        db_table,
+        ds_type,
+        dialect,
+        partition_days_ago=partition_days_ago,
+    )
     source_columns = _resolve_source_columns(datasource, db_table, ds_type, base_query)
     transformations = [
         t for t in (getattr(db_table, "transformations", None) or [])
@@ -573,6 +625,66 @@ def _estimate_bigquery_bytes(config: dict, sql: str) -> int:
         return 0
 
 
+def _get_bigquery_earliest_partition_date(
+    config: dict,
+    source_table_name: str,
+) -> Optional[dt_date]:
+    """Return the oldest partition date for a BigQuery physical table."""
+    try:
+        from google.cloud import bigquery
+        from google.oauth2 import service_account
+        from app.services.datasource_service import _resolve_gcp_credentials_json
+
+        dataset_name, table_name = _parse_bigquery_dataset_and_table(config, source_table_name)
+        project_id = str(config.get("project_id") or "").strip()
+        if not project_id or not dataset_name or not table_name:
+            return None
+
+        credentials_info = json.loads(_resolve_gcp_credentials_json(config))
+        credentials = service_account.Credentials.from_service_account_info(credentials_info)
+        client = bigquery.Client(
+            credentials=credentials,
+            project=project_id,
+        )
+        try:
+            sql = (
+                f"SELECT MIN(SAFE.PARSE_DATE('%Y%m%d', partition_id)) AS earliest_partition_date "
+                f"FROM `{project_id}.{dataset_name}.INFORMATION_SCHEMA.PARTITIONS` "
+                "WHERE table_name = @table_name "
+                "AND partition_id NOT IN ('__NULL__', '__UNPARTITIONED__')"
+            )
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("table_name", "STRING", table_name),
+                ],
+                use_query_cache=True,
+            )
+            rows = client.query(sql, job_config=job_config).result()
+            first_row = next(iter(rows), None)
+            if first_row is None:
+                return None
+            try:
+                return first_row["earliest_partition_date"]
+            except Exception:
+                return None
+        finally:
+            client.close()
+    except Exception as e:
+        logger.warning(
+            "Failed to read BigQuery partition metadata for %s: %s",
+            source_table_name,
+            e,
+        )
+        return None
+
+
+def _build_preview_sql(base_sql: str, limit: int, offset: int) -> str:
+    sql = f"SELECT * FROM ({base_sql}) AS _appbi_live LIMIT {int(limit)}"
+    if offset:
+        sql += f" OFFSET {int(offset)}"
+    return sql
+
+
 # ── Main execution entry point ───────────────────────────────────────────────
 
 class LiveQueryService:
@@ -587,7 +699,6 @@ class LiveQueryService:
     ) -> Dict[str, Any]:
         """Preview dataset rows directly from the source with cache + cost guard."""
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-        dialect = _dialect_for_ds_type(ds_type)
 
         from app.core.crypto import decrypt_config
         config = decrypt_config(datasource.config)
@@ -611,39 +722,113 @@ class LiveQueryService:
         if cached is not None:
             return cached
 
-        plan = build_live_base_query_plan(datasource, db_table, apply_type_overrides=True)
-        base_table = f"({plan.sql}) AS _appbi_live"
-        sql = f"SELECT * FROM {base_table} LIMIT {limit}"
-        if offset:
-            sql += f" OFFSET {offset}"
-
-        if ds_type == "bigquery":
-            estimated_bytes = _estimate_bigquery_bytes(config, sql)
-            max_bytes = settings.BQ_MAX_BYTES_SCANNED
-            if estimated_bytes > max_bytes:
-                gb_est = estimated_bytes / (1024**3)
-                gb_max = max_bytes / (1024**3)
-                raise ValueError(
-                    f"Preview would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
-                    "Reduce selected columns or switch to a narrower SQL source."
-                )
-
         from app.services.datasource_service import DataSourceConnectionService
 
-        columns, rows, execution_time_ms = DataSourceConnectionService.execute_query(
-            ds_type,
-            datasource.config,
-            sql,
-            timeout_seconds=60 if ds_type == "bigquery" else 30,
-            skip_bigquery_cost_check=True,
-        )
-        result = {
-            "columns": columns,
-            "rows": rows,
-            "execution_time_ms": round(execution_time_ms, 1),
-            "source_columns": plan.source_columns,
-            "output_columns": plan.output_columns,
-        }
+        if (
+            ds_type == "bigquery"
+            and getattr(db_table, "source_kind", None) == "physical_table"
+            and getattr(db_table, "source_table_name", None)
+        ):
+            earliest_partition_date = _get_bigquery_earliest_partition_date(
+                config,
+                db_table.source_table_name,
+            )
+            if earliest_partition_date is not None:
+                max_lookback_days = max(
+                    0,
+                    (datetime.utcnow().date() - earliest_partition_date).days,
+                )
+            else:
+                max_lookback_days = max(
+                    int(settings.BQ_PREVIEW_PARTITION_MAX_LOOKBACK_DAYS or 0),
+                    0,
+                )
+
+            result: Dict[str, Any] | None = None
+            for partition_days_ago in range(max_lookback_days + 1):
+                plan = build_live_base_query_plan(
+                    datasource,
+                    db_table,
+                    apply_type_overrides=True,
+                    partition_days_ago=partition_days_ago,
+                )
+                sql = _build_preview_sql(plan.sql, limit, offset)
+                estimated_bytes = _estimate_bigquery_bytes(config, sql)
+                max_bytes = settings.BQ_MAX_BYTES_SCANNED
+                if estimated_bytes > max_bytes:
+                    gb_est = estimated_bytes / (1024**3)
+                    gb_max = max_bytes / (1024**3)
+                    raise ValueError(
+                        f"Preview would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
+                        "Reduce selected columns or narrow the recent partition window."
+                    )
+
+                columns, rows, execution_time_ms = DataSourceConnectionService.execute_query(
+                    ds_type,
+                    datasource.config,
+                    sql,
+                    timeout_seconds=60,
+                    skip_bigquery_cost_check=True,
+                )
+                result = {
+                    "columns": columns,
+                    "rows": rows,
+                    "execution_time_ms": round(execution_time_ms, 1),
+                    "source_columns": plan.source_columns,
+                    "output_columns": plan.output_columns,
+                    "partition_days_ago": partition_days_ago,
+                }
+                if len(rows) >= limit or partition_days_ago >= max_lookback_days:
+                    break
+
+                logger.info(
+                    "BigQuery preview widened to %d day(s) for ds=%d table=%s offset=%d rows=%d/%d",
+                    partition_days_ago + 2,
+                    datasource.id,
+                    table_identifier,
+                    offset,
+                    len(rows),
+                    limit,
+                )
+
+            if result is None:
+                result = {
+                    "columns": [],
+                    "rows": [],
+                    "execution_time_ms": 0.0,
+                    "source_columns": [],
+                    "output_columns": [],
+                    "partition_days_ago": 0,
+                }
+        else:
+            plan = build_live_base_query_plan(datasource, db_table, apply_type_overrides=True)
+            sql = _build_preview_sql(plan.sql, limit, offset)
+
+            if ds_type == "bigquery":
+                estimated_bytes = _estimate_bigquery_bytes(config, sql)
+                max_bytes = settings.BQ_MAX_BYTES_SCANNED
+                if estimated_bytes > max_bytes:
+                    gb_est = estimated_bytes / (1024**3)
+                    gb_max = max_bytes / (1024**3)
+                    raise ValueError(
+                        f"Preview would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
+                        "Reduce selected columns or switch to a narrower SQL source."
+                    )
+
+            columns, rows, execution_time_ms = DataSourceConnectionService.execute_query(
+                ds_type,
+                datasource.config,
+                sql,
+                timeout_seconds=60 if ds_type == "bigquery" else 30,
+                skip_bigquery_cost_check=True,
+            )
+            result = {
+                "columns": columns,
+                "rows": rows,
+                "execution_time_ms": round(execution_time_ms, 1),
+                "source_columns": plan.source_columns,
+                "output_columns": plan.output_columns,
+            }
         query_cache.set_cached(
             datasource.id,
             table_identifier,

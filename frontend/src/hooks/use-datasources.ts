@@ -79,7 +79,7 @@ export const useDataSourceSchema = (id: number, enabled = true) => {
     queryKey: ['datasources', id, 'schema'],
     queryFn: () => dataSourceApi.getSchema(id),
     enabled: !!id && enabled,
-    staleTime: 30_000,
+    staleTime: 5 * 60 * 1000,
   });
 };
 
@@ -101,12 +101,13 @@ export const useWatermarkCandidates = (
   id: number,
   schemaName: string,
   tableName: string,
+  enabled = true,
 ) => {
   return useQuery({
     queryKey: ['datasources', id, 'watermarks', schemaName, tableName],
     queryFn: () => dataSourceApi.getWatermarkCandidates(id, schemaName, tableName),
-    enabled: !!id && !!schemaName && !!tableName,
-    staleTime: 30_000,
+    enabled: !!id && !!schemaName && !!tableName && enabled,
+    staleTime: 5 * 60 * 1000,
   });
 };
 
@@ -133,12 +134,16 @@ export const useSaveSyncConfig = () => {
 
 // ── Sync Jobs hooks ───────────────────────────────────────────────────────────
 
-export const useSyncJobs = (id: number, limit = 10) => {
+export const useSyncJobs = (id: number, limit = 10, enabled = true) => {
   return useQuery({
     queryKey: ['datasources', id, 'sync-jobs', limit],
     queryFn: () => dataSourceApi.getSyncJobs(id, limit),
-    enabled: !!id,
-    refetchInterval: 10_000, // poll while running jobs may update
+    enabled: !!id && enabled,
+    refetchInterval: (query) => {
+      const data = query.state.data as { jobs?: Array<{ status?: string }> } | undefined;
+      const hasRunningJob = (data?.jobs ?? []).some((job) => job.status === 'running');
+      return hasRunningJob ? 10_000 : false;
+    },
   });
 };
 

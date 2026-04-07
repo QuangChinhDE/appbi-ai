@@ -1,122 +1,45 @@
 # AppBI
 
-AppBI is a self-hosted business intelligence platform for connecting data sources, modeling datasets, exploring data, building dashboards, and running optional AI-assisted workflows.
+AppBI is a self-hosted BI platform for connecting operational data sources, modeling datasets, exploring data, building dashboards, and optionally attaching AI workflows.
 
-This repository is the runtime-focused app repo for the product. The core stack can be started with Docker Compose, while AI services can be added only when needed.
+This repository is the runtime repo for the app. The main stack is:
 
-## Core Runtime
-
-The main project runtime includes:
-
-- `frontend`: Next.js app for Explore, dashboards, sharing, and embedded views
-- `backend`: FastAPI API for auth, datasets, query execution, chart contracts, and chart runtime
-- `db`: PostgreSQL 16 with `pgvector`
+- `frontend`: Next.js UI
+- `backend`: FastAPI API
+- `db`: PostgreSQL 16 + `pgvector`
 
 Optional services:
 
-- `ai-service`: AI chat / streaming assistant features
-- `ai-agent-service`: guided AI report and dashboard generation
+- `ai-service`
+- `ai-agent-service`
+
+## Current Runtime Notes
+
+Latest committed base in this repo is:
+
+- Commit: `911bc1a`
+- Title: `feat: ship advanced table analytics and chart benchmarks`
+
+Current local updates on top of that base focus on runtime behavior:
+
+- smoother dataset and datasource tab switching in the frontend
+- reduced unnecessary preview fetching and polling
+- lighter client-side table formatting work
+- BigQuery live preview guard raised from `10GB` to `60GB`
+- BigQuery dataset preview on physical tables now widens `_PARTITIONDATE` from today backwards until the requested page is filled
+
+Chart live queries keep their existing aggregation semantics. Only the BigQuery scan cap was raised for charts; chart queries are not auto-limited to recent partitions because that could silently change metrics.
 
 ## Main Capabilities
 
-### Data and Modeling
-
-- Connect PostgreSQL, MySQL, BigQuery, Google Sheets, and manual file uploads
-- Build datasets with semantic fields, hidden fields, joins, and ERD-style relationship editing
-- Support live-query-first execution with optional synced/cached execution paths
-
-### Explore and Charts
-
-- Generated query and custom SQL in one Explore workflow
-- Chart types:
-  `TABLE`, `BAR`, `HORIZONTAL_BAR`, `GROUPED_BAR`, `STACKED_BAR`, `BAR_LINE`, `LINE`, `AREA`, `TIME_SERIES`, `PIE`, `SCATTER`, `KPI`
-- Table now stays in standard mode by default, with optional advanced features:
-  - Dynamic pivot layout
-  - Multiple summary rows
-  - Sticky summary footer
-  - Conditional formatting
-  - Matrix heatmap
-- Optional benchmark line for supported charts:
-  - `BAR`
-  - `HORIZONTAL_BAR`
-  - `GROUPED_BAR`
-  - `STACKED_BAR`
-  - `LINE`
-  - `AREA`
-  - `TIME_SERIES`
-  - `BAR_LINE`
-
-### Dashboards and Sharing
-
-- Drag-and-drop dashboard layout
-- Public dashboard pages and embed mode
-- Shared chart rendering behavior across Explore, dashboard tiles, public, and embed views
-
-### Permissions
-
-- Module-level permissions: `none / view / edit / full`
-- Shared access control for dashboards and charts
-
-## Recent Runtime-Ready Updates
-
-This README reflects the current working tree on top of the latest local repo base commit:
-
-- Base commit: `6ce52ef`
-- Commit title: `feat: ship live-query runtime and explore sync updates`
-
-### 1. Live-query runtime hardening
-
-- Dataset tables now resolve effective query mode at runtime
-- When datasource sync is globally disabled, existing synced tables with cached artifacts can still work
-- Preview and execution flows now behave more safely after restart/redeploy
-
-### 2. Dynamic pivot table for `TABLE`
-
-- `TABLE` supports dynamic pivot mode with:
-  - row dimension
-  - dynamic header dimension
-  - dynamic aggregated measure
-- Query generation and live-query execution both support grouped pivot fetches
-- Public and embed rendering use the same pivot-aware chart runtime
-
-### 3. Advanced table analytics
-
-- Standard table remains the default mode
-- Optional features can be enabled independently:
-  - conditional formatting
-  - heatmap
-  - summary rows
-- Summary rows support:
-  - multiple rows
-  - custom labels
-  - formula selection (`SUM`, `AVG`, `COUNT`, `MIN`, `MAX`, `COUNT DISTINCT`)
-  - per-row column targeting
-- Summary rows stay pinned at the bottom of the scroll area
-
-### 4. Optional benchmark lines for charts
-
-- Benchmark/reference line support was added for supported cartesian charts
-- Users can control:
-  - enable/disable
-  - benchmark value
-  - label
-  - line color
-  - line style
-- Feature is optional and does not change existing charts until enabled
-
-### 5. Explore / preview consistency
-
-- Explore now previews `TABLE` using the actual table renderer instead of a simplified grid
-- Dashboard tile, public page, and embed page now normalize style config more consistently
-- Table enhancements and benchmark line behavior stay aligned across rendering contexts
+- Connect PostgreSQL, MySQL, BigQuery, Google Sheets, and manual tables
+- Build datasets from physical tables or SQL queries
+- Run in `live-query-first` mode by default
+- Explore with tables, pivot tables, chart benchmarks, summaries, and formatting
+- Build and share dashboards
+- Optional AI chat and AI agent services
 
 ## Quick Start
-
-### Prerequisites
-
-- Docker 24+
-- Docker Compose v2
-- At least 2 GB RAM for local development
 
 ### 1. Clone and configure
 
@@ -126,74 +49,132 @@ cd appbi-ai
 cp .env.example .env
 ```
 
-Update `.env` and replace all `CHANGE_ME` values.
+Then update `.env`.
 
-Important variables:
+Minimum variables to review before first run:
 
-| Variable | Purpose |
-| --- | --- |
-| `DB_PASSWORD` | PostgreSQL password |
-| `SECRET_KEY` | JWT signing key |
-| `ENCRYPTION_KEY` | Encryption key for stored credentials |
-| `NEXTAUTH_SECRET` | NextAuth secret |
-| `NEXT_PUBLIC_APP_URL` | Frontend app URL |
-| `ENABLE_DATASOURCE_SYNC` | Backend sync / cached runtime flag |
-| `NEXT_PUBLIC_ENABLE_DATASOURCE_SYNC` | Frontend sync UI flag |
-| `FIRST_ADMIN_EMAIL` | Seed admin email |
-| `FIRST_ADMIN_PASSWORD` | Seed admin password |
+- `DB_USER`
+- `DB_PASSWORD`
+- `DB_NAME`
+- `SECRET_KEY`
+- `DATASOURCE_ENCRYPTION_KEY`
+- `ADMIN_EMAIL`
+- `ADMIN_PASSWORD`
+- `CORS_ORIGINS`
 
-### 2. Start the core stack
+Optional but important depending on your setup:
+
+- `GCP_SERVICE_ACCOUNT_JSON`
+- `GCP_SERVICE_ACCOUNT_EMAIL`
+- `OPENROUTER_API_KEY` or `OPENROUTER_API_KEY_1..5`
+- `ENABLE_DATASOURCE_SYNC`
+- `NEXT_PUBLIC_ENABLE_DATASOURCE_SYNC`
+- `BQ_MAX_BYTES_SCANNED`
+
+### 2. Start the core production-style stack
 
 ```bash
 docker compose up -d --build
 ```
 
-Core app URLs:
+Default URLs:
 
 - Frontend: `http://localhost:3000`
-- Backend API: `http://localhost:8000`
+- Backend health: `http://localhost:8000/health`
 
-### 3. Development mode
+### 3. Start the hot-reload development stack
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d --build
 ```
 
-### 4. Optional AI services
+This dev stack mounts backend and frontend source code for live reload.
+
+### 4. Optional AI overlays
+
+Production-style stack:
 
 ```bash
-# Full AI add-ons
 docker compose -f docker-compose.yml -f docker-compose.ai.yml up -d --build
-
-# Chat only
 docker compose -f docker-compose.yml -f docker-compose.chat.yml up -d --build
-
-# Agent only
 docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d --build
+```
+
+Dev stack:
+
+```bash
+docker compose -f docker-compose.dev.yml -f docker-compose.ai.yml up -d --build
+docker compose -f docker-compose.dev.yml -f docker-compose.chat.yml up -d --build
+docker compose -f docker-compose.dev.yml -f docker-compose.agent.yml up -d --build
 ```
 
 ## Runtime Modes
 
-### Default mode: live-query-first
+### Default: live-query-first
+
+By default:
 
 - `ENABLE_DATASOURCE_SYNC=false`
-- Query execution prefers direct source access
-- Sync-related UI/actions stay disabled
+- `NEXT_PUBLIC_ENABLE_DATASOURCE_SYNC=false`
+
+That means datasets prefer querying the source directly instead of syncing data locally first.
 
 ### Sync-enabled mode
 
-- `ENABLE_DATASOURCE_SYNC=true`
-- Synced execution paths are available
-- Tables can use cached/synced runtime where configured
+If you set both flags to `true`, datasource sync features become available again and dataset tables can use synced artifacts where supported.
 
-## Deployment-Safe Commit Scope
+## BigQuery Live Mode
 
-When preparing commits for the runtime repo, include only files that are needed to build or run the application.
+The current runtime is tuned for live BigQuery access:
 
-Recommended to commit:
+- `BQ_MAX_BYTES_SCANNED=64424509440` (`60GB`)
+- BigQuery preview for dataset physical tables uses `_PARTITIONDATE`
+- Preview starts from `CURRENT_DATE()`
+- If the current partition window does not return enough rows for the requested page, the backend automatically widens the window to include older dates
+- The widening stops as soon as the page is filled or the available partition history is exhausted
 
-- `backend/`
-- `frontend/`
+This behavior is intended for large partitioned operational tables where live mode is preferred over full sync.
+
+## Useful Commands
+
+Start core stack:
+
+```bash
+docker compose up -d --build
+```
+
+Start dev stack:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --build
+```
+
+Rebuild backend only:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --build backend
+```
+
+Check running services:
+
+```bash
+docker compose ps
+```
+
+Backend health check:
+
+```bash
+curl http://localhost:8000/health
+```
+
+## What To Commit
+
+For deployment-ready commits in this repo, prefer staging only runtime files.
+
+Usually safe to commit:
+
+- `backend/**`
+- `frontend/**`
 - `docker-compose.yml`
 - `docker-compose.dev.yml`
 - `docker-compose.ai.yml`
@@ -202,44 +183,45 @@ Recommended to commit:
 - `nginx.conf`
 - `.env.example`
 - `README.md`
-- `ai-service/` and `ai-agent-service/` only if those services are part of the deploy target
+- `ai-service/**` and `ai-agent-service/**` when those services are part of the intended deploy
 
-Do not include local-only or non-runtime workspace content:
+Avoid pushing local-only or non-runtime workspace content:
 
+- `.env`
 - `cube/`
 - `TEMP_ACCESS_ISSUES.md`
 - `.pytest_cache/`
 - `.claude/`
-- local notes, ad-hoc docs, caches, screenshots, and temporary test artifacts
+- local notes
+- scratch files
+- ad-hoc debug scripts
+- temporary test files that are not meant to stay in the runtime repo
 
-## Project Structure
+## Current Commit Scope For This Working Tree
+
+If you want to push the current runtime changes, the relevant tracked files are:
+
+- `.env.example`
+- `README.md`
+- `backend/app/core/config.py`
+- `backend/app/services/live_query_service.py`
+- `frontend/src/app/(main)/datasets/[id]/page.tsx`
+- `frontend/src/app/(main)/datasources/[id]/page.tsx`
+- `frontend/src/components/datasets/DatasetTableGrid.tsx`
+- `frontend/src/components/datasources/SyncSettingsTab.tsx`
+- `frontend/src/hooks/use-datasets.ts`
+- `frontend/src/hooks/use-datasources.ts`
+- `frontend/src/lib/api-client.ts`
+
+Files currently present in the workspace but not recommended for this push:
+
+- `cube/`
+- `TEMP_ACCESS_ISSUES.md`
+
+## Suggested Commit Message
 
 ```text
-appbi-ai/
-|-- backend/
-|   |-- app/
-|   |-- alembic/
-|-- frontend/
-|   `-- src/
-|-- ai-service/
-|-- ai-agent-service/
-|-- docker-compose.yml
-|-- docker-compose.dev.yml
-|-- docker-compose.ai.yml
-|-- docker-compose.chat.yml
-|-- docker-compose.agent.yml
-|-- nginx.conf
-|-- .env.example
-`-- README.md
-```
-
-## Verification
-
-Useful validation commands:
-
-```bash
-docker compose exec -T backend python -m compileall app
-docker compose exec -T frontend npm run build
+feat: improve live BigQuery preview and smooth dataset navigation
 ```
 
 ## License

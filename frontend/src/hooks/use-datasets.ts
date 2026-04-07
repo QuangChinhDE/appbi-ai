@@ -87,6 +87,10 @@ export interface TablePreviewRequest {
   sort?: Record<string, string>;
 }
 
+export interface TablePreviewOptions {
+  enabled?: boolean;
+}
+
 export interface TablePreviewResponse {
   columns: ColumnMetadata[];
   rows: Record<string, any>[];
@@ -336,7 +340,8 @@ export function useRemoveTable() {
 export function useTablePreview(
   datasetId: number | null,
   tableId: number | null,
-  request: TablePreviewRequest = {}
+  request: TablePreviewRequest = {},
+  options: TablePreviewOptions = {}
 ) {
   return useQuery({
     queryKey: [...datasetKeys.tablePreview(datasetId!, tableId!), request],
@@ -347,7 +352,7 @@ export function useTablePreview(
       );
       return response.data;
     },
-    enabled: datasetId !== null && tableId !== null,
+    enabled: datasetId !== null && tableId !== null && (options.enabled ?? true),
     retry: (failureCount: number, error: any) => {
       return failureCount < 2;
     },
