@@ -6,6 +6,7 @@ import {
   Chart,
   ChartCreate,
   ChartUpdate,
+  ChartDataContext,
   ChartDataResponse,
   ChartMetadata,
   ChartMetadataUpsert,
@@ -38,10 +39,17 @@ export const chartApi = {
     await apiClient.delete(`/charts/${id}`);
   },
 
-  getData: async (id: number, filters?: Record<string, unknown>[]): Promise<ChartDataResponse> => {
+  getData: async (
+    id: number,
+    filters?: Record<string, unknown>[],
+    context: ChartDataContext = 'default',
+  ): Promise<ChartDataResponse> => {
     const params: Record<string, string> = {};
     if (filters && filters.length > 0) {
       params.filters = JSON.stringify(filters);
+    }
+    if (context !== 'default') {
+      params.context = context;
     }
     const response = await apiClient.get(`/charts/${id}/data`, { params });
     return response.data;

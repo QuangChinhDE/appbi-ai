@@ -13,6 +13,7 @@ import {
 } from 'recharts';
 import type { ChartRoleConfig, MetricConfig, ChartStyleConfig } from './ExploreChartConfig';
 import { metricKey, metricLabel, normalizeChartStyleConfig } from './ExploreChartConfig';
+import { KpiCard } from '@/components/visualizations/KpiCard';
 import { TableVisualization } from '@/components/visualizations/TableVisualization';
 import { applyFiltersToRows } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
@@ -217,9 +218,18 @@ export interface ExploreChartProps {
   havingFilters?: BaseFilter[];
   /** When true, backend already ran GROUP BY aggregation ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â skip client-side applyGroupByAgg */
   preAggregated?: boolean;
+  onSelectDataPoint?: (selection: { field: string; value: unknown } | null) => void;
 }
 
-export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havingFilters = [], preAggregated = false }: ExploreChartProps) {
+export function ExploreChart({
+  type,
+  data,
+  roleConfig,
+  styleConfig: _style,
+  havingFilters = [],
+  preAggregated = false,
+  onSelectDataPoint,
+}: ExploreChartProps) {
   const style = normalizeChartStyleConfig(_style);
   const PALETTE = getPalette((style.palette as ChartPaletteName) || 'default').colors;
   const fontSize = style.fontSize || 12;
@@ -324,15 +334,48 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
   };
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ KPI ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+  const emitSelection = (field: string | undefined, value: unknown) => {
+    if (!onSelectDataPoint || !field || value === undefined || value === null || value === '') return;
+    onSelectDataPoint({ field, value });
+  };
+  const handleCategoricalChartClick = (event: any) => {
+    const payload = event?.activePayload?.[0]?.payload;
+    const value = xField ? payload?.[xField] ?? event?.activeLabel : undefined;
+    emitSelection(xField, value);
+  };
+  const handlePieClick = (entry: any) => {
+    emitSelection(dimension, entry?.name);
+  };
+  const handleScatterClick = (event: any) => {
+    const payload = event?.payload ?? event?.activePayload?.[0]?.payload;
+    emitSelection(dimension, payload?.label);
+  };
+
   if (type === 'KPI') {
     if (!kpiMetric || kpiValue === undefined) return <EmptyState message="Add a Value field in Field Mapping." />;
-    const fmt = formatNumber(kpiValue, { ...style, numberFormat: 'compact' });
+    const cardLabel = style.kpiLabel?.trim() || metricLabel(kpiMetric);
+    const benchmarkValue = style.kpiBenchmarkValue === '' || style.kpiBenchmarkValue == null
+      ? null
+      : Number(style.kpiBenchmarkValue);
     return (
-      <div className="h-full flex items-center justify-center">
-        <div className="text-center">
-          <div className="text-6xl font-bold text-blue-600 tabular-nums">{fmt}</div>
-          <div className="text-sm text-gray-500 mt-3 font-medium uppercase tracking-wide">{metricLabel(kpiMetric)}</div>
-          <div className="text-xs text-gray-400 mt-1">{data.length.toLocaleString()} rows</div>
+      <div className="flex h-full items-center justify-center">
+        <div className="w-full max-w-xl">
+          <KpiCard
+            value={kpiValue}
+            label={cardLabel}
+            format={style.numberFormat ?? 'compact'}
+            decimalPlaces={style.decimalPlaces}
+            currencySymbol={style.currencySymbol}
+            contextTemplate={style.kpiContextTemplate}
+            benchmarkValue={benchmarkValue}
+            benchmarkLabel={style.kpiBenchmarkLabel}
+            showDelta={style.kpiShowDelta}
+            goalDirection={style.kpiGoalDirection}
+            accentColor={style.kpiAccentColor}
+            enableColorRules={style.kpiEnableColorRules}
+            colorRules={style.kpiColorRules}
+            rowCount={data.length}
+          />
         </div>
       </div>
     );
@@ -347,6 +390,7 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
         <PieChart>
           <Pie data={pieData} dataKey="value" nameKey="name"
             cx="50%" cy="45%" outerRadius="60%"
+            onClick={handlePieClick}
             label={showDataLabels
               ? ({ name, value, percent }) => percent > 0.03
                 ? `${name}: ${formatNumber(value, style)} (${(percent * 100).toFixed(0)}%)`
@@ -380,7 +424,7 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
     };
     return (
       <ResponsiveContainer width="100%" height="100%">
-        <ScatterChart>
+        <ScatterChart onClick={handleScatterClick}>
           {showGrid && <CartesianGrid strokeDasharray="3 3" />}
           <XAxis dataKey="x" name={scatterX} type="number" tick={{ fontSize }}
             label={{ value: style.xAxisLabel || scatterX, position: 'insideBottom', offset: -5, fontSize }} />
@@ -425,7 +469,7 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
       <>
         {TruncationBanner}
         {wrapScrollable(
-          <BarChart data={displayData}>
+          <BarChart data={displayData} onClick={handleCategoricalChartClick}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             {renderXAxis(xField, displayData.length)}
             {renderYAxis()}
@@ -456,7 +500,7 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
       <>
         {TruncationBanner}
         {wrapScrollable(
-          <AreaChart data={displayData}>
+          <AreaChart data={displayData} onClick={handleCategoricalChartClick}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             {renderXAxis(xField, displayData.length)}
             {renderYAxis()}
@@ -489,7 +533,7 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
       <>
         {TruncationBanner}
         {wrapScrollable(
-          <LineChart data={displayData}>
+          <LineChart data={displayData} onClick={handleCategoricalChartClick}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             {renderXAxis(xField, displayData.length)}
             {renderYAxis()}
@@ -526,7 +570,7 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
       ? Math.max(displayData.length * MIN_ROW_HEIGHT, 400)
       : undefined; // let ResponsiveContainer fill parent
     const innerChart = (
-      <BarChart data={displayData} layout="vertical">
+      <BarChart data={displayData} layout="vertical" onClick={handleCategoricalChartClick}>
         {showGrid && <CartesianGrid strokeDasharray="3 3" />}
         <YAxis dataKey={xField} type="category" tick={{ fontSize }} width={120}
           label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
@@ -580,7 +624,7 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
       <>
         {TruncationBanner}
         {wrapScrollable(
-          <ComposedChart data={displayData}>
+          <ComposedChart data={displayData} onClick={handleCategoricalChartClick}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             {renderXAxis(xField!, displayData.length)}
             {renderYAxis()}
@@ -614,7 +658,7 @@ export function ExploreChart({ type, data, roleConfig, styleConfig: _style, havi
     <>
       {TruncationBanner}
       {wrapScrollable(
-        <BarChart data={displayBarData}>
+        <BarChart data={displayBarData} onClick={handleCategoricalChartClick}>
           {showGrid && <CartesianGrid strokeDasharray="3 3" />}
           {renderXAxis(xField, displayBarData.length)}
           {renderYAxis()}

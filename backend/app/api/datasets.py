@@ -1455,6 +1455,38 @@ def get_dataset_model_endpoint(
     return result
 
 
+@router.get(
+    "/{dataset_id}/model/distinct-values",
+    summary="Get distinct values for a semantic field",
+)
+def get_dataset_model_distinct_values(
+    dataset_id: int,
+    field: str = Query(..., description="Qualified field name, e.g. orders.country"),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.services.dataset_model_service import get_distinct_field_values
+
+    dataset_obj = db.query(Dataset).filter(
+        Dataset.id == dataset_id
+    ).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, dataset_obj, "datasets")
+
+    try:
+        return {
+            "field": field,
+            "values": get_distinct_field_values(db, dataset_id, field, limit=limit),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to load distinct values for dataset {dataset_id} field {field}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load distinct values.")
+
+
 @router.put(
     "/{dataset_id}/model/views/{view_id}",
     summary="Update a semantic view (dimensions/measures)",

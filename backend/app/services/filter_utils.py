@@ -6,6 +6,7 @@ from typing import Dict, List, Any, Optional
 from sqlalchemy.orm import Session
 from app.models.semantic import SemanticView, SemanticExplore
 from app.models import Chart
+from app.services.chart_semantic_service import with_chart_semantic_binding
 
 
 class FilterUtils:
@@ -180,17 +181,43 @@ class FilterUtils:
             chart = db.query(Chart).filter(Chart.id == chart_id).first()
             if not chart:
                 return False
-            
-            # TODO: For now, check if chart uses semantic query
-            # In future, extract explore name from chart config
-            # For v1, we'll use a simple heuristic:
-            # Check if field appears in chart's dataset columns
-            
-            # For semantic charts, we need explore name
-            # For now, return True to allow all filters
-            # In production, extract explore from chart.config
-            
-            return True
+
+            config = with_chart_semantic_binding(
+                db,
+                chart.dataset_table_id,
+                chart.config if isinstance(chart.config, dict) else {},
+                auto_generate=True,
+            )
+            binding = config.get("semanticBinding") if isinstance(config.get("semanticBinding"), dict) else {}
+            if not filter_field:
+                return False
+
+            if "." not in filter_field:
+                role_config = config.get("roleConfig") if isinstance(config.get("roleConfig"), dict) else {}
+                chart_fields = {
+                    value
+                    for key, value in role_config.items()
+                    if isinstance(value, str) and key not in {"chartType"}
+                }
+                chart_fields.update(
+                    metric.get("field")
+                    for metric in (role_config.get("metrics") or [])
+                    if isinstance(metric, dict) and metric.get("field")
+                )
+                return filter_field in chart_fields
+
+            if filter_field in (binding.get("dimensionFields") or []):
+                return True
+            if filter_field in (binding.get("measureFields") or []):
+                return True
+            if filter_field in (binding.get("fieldMap") or {}).values():
+                return True
+
+            explore_name = binding.get("exploreName")
+            if isinstance(explore_name, str) and explore_name:
+                return FilterUtils.field_exists_in_explore(db, explore_name, filter_field)
+
+            return False
         
         except Exception:
             return False

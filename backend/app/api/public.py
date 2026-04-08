@@ -254,6 +254,8 @@ def get_public_dashboard(
     dash, public_filters = _get_dashboard_by_token(token, db, session_token=x_public_session)
     # Public viewers get view-level permission (read-only, no edit actions)
     dash.user_permission = "view"
+    for dashboard_chart in dash.dashboard_charts or []:
+        ChartService.hydrate_runtime_config(db, dashboard_chart.chart)
     # Expose the link-specific filters so the frontend can display filter badges
     dash.public_filters_config = public_filters
     return dash
@@ -292,7 +294,7 @@ def get_public_chart_data(
         )
 
     try:
-        result = ChartService.get_chart_data(db, chart_id)
+        result = ChartService.get_chart_data(db, chart_id, filter_context="dashboard")
         rows = result.get("data")
         if isinstance(rows, list) and public_filters:
             result = {

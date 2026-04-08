@@ -19,7 +19,7 @@ import {
 } from '@/lib/api/public';
 import type { Dashboard, DashboardChart, ChartDataResponse } from '@/types/api';
 import type { BaseFilter, ColumnInfo } from '@/lib/filters';
-import { applyFiltersToRows, inferColumnTypeFromData } from '@/lib/filters';
+import { applyFiltersToRows, inferColumnTypeFromData, resolveFilterForChartData } from '@/lib/filters';
 import { getRoleConfigDimensionFields } from '@/components/explore/ExploreChartConfig';
 
 const ResponsiveGridLayout = WidthProvider(Responsive);
@@ -438,13 +438,10 @@ export default function PublicDashboardPage() {
                 ? applyFiltersToRows(
                     cd.data,
                     globalFilters
-                      .map((filter) => {
-                        if (!cd.data.length) return null;
-                        const candidates = [filter.field, ...((filter as any).linkedFields ?? [])];
-                        const match = candidates.find(c => c in cd.data[0]);
-                        if (!match) return null;
-                        return match !== filter.field ? { ...filter, field: match } : filter;
-                      })
+                      .map((filter) => resolveFilterForChartData(filter, {
+                        binding: (chart?.config as any)?.semanticBinding ?? null,
+                        availableFields: cd.data.length ? Object.keys(cd.data[0]) : [],
+                      }))
                       .filter((f): f is BaseFilter => f !== null),
                   )
                 : [];

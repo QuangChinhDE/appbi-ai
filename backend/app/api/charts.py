@@ -115,6 +115,7 @@ def list_charts(
         .all()
     )
     for item in items:
+        ChartService.hydrate_runtime_config(db, item)
         item.user_permission = get_effective_permission(db, current_user, item, "explore_charts")
     stamp_owner_emails(db, items)
     return items
@@ -372,6 +373,7 @@ def delete_chart(
 def get_chart_data(
     chart_id: int,
     filters: Optional[str] = Query(None, description="JSON-encoded list of {field, operator, value} filter objects"),
+    context: Optional[str] = Query(None, description="Runtime filter context, e.g. dashboard"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -393,7 +395,12 @@ def get_chart_data(
             raise HTTPException(status_code=400, detail=f"Invalid filters parameter: {e}")
 
     try:
-        result = ChartService.get_chart_data(db, chart_id, extra_filters=extra_filters)
+        result = ChartService.get_chart_data(
+            db,
+            chart_id,
+            extra_filters=extra_filters,
+            filter_context=context,
+        )
         return ChartDataResponse(**result)
     except ValueError as e:
         raise HTTPException(

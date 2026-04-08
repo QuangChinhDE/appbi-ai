@@ -75,6 +75,7 @@ interface ChartPreviewProps {
     conditional_formatting?: ConditionalFormatRule[];
   };
   styleConfig?: ChartStyleConfig;
+  onSelectDataPoint?: (selection: { field: string; value: unknown } | null) => void;
 }
 
 const DEFAULT_COLORS = [
@@ -133,7 +134,7 @@ function getBenchmarkValue(style?: ChartStyleConfig): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-export function ChartPreview({ chartType, data, config, styleConfig }: ChartPreviewProps) {
+export function ChartPreview({ chartType, data, config, styleConfig, onSelectDataPoint }: ChartPreviewProps) {
   const style = useMemo(
     () => normalizeChartStyleConfig(styleConfig, config.conditional_formatting),
     [config.conditional_formatting, styleConfig],
@@ -218,6 +219,24 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
       />
     );
   };
+  const emitSelection = (field: string | undefined, value: unknown) => {
+    if (!onSelectDataPoint || !field || value === undefined || value === null || value === '') return;
+    onSelectDataPoint({ field, value });
+  };
+  const handleCategoricalChartClick = (event: any, field: string | undefined) => {
+    const payload = event?.activePayload?.[0]?.payload;
+    const value = field ? payload?.[field] ?? event?.activeLabel : undefined;
+    emitSelection(field, value);
+  };
+  const handlePieClick = (entry: any) => {
+    const labelField = config.color_by_dimension ?? config.labelField;
+    emitSelection(labelField, labelField ? entry?.payload?.[labelField] ?? entry?.name : entry?.name);
+  };
+  const handleScatterClick = (event: any) => {
+    const payload = event?.payload ?? event?.activePayload?.[0]?.payload;
+    const labelField = config.labelField ?? config.color_by_dimension;
+    emitSelection(labelField, labelField ? payload?.[labelField] : undefined);
+  };
 
   if (!data || data.length === 0) {
     return (
@@ -237,7 +256,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
         {wrapScrollable(
-          <BarChart data={data}>
+          <BarChart data={data} onClick={(event) => handleCategoricalChartClick(event, config.xField)}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
             <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
@@ -281,7 +300,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
         {wrapScrollable(
-          <LineChart data={data}>
+          <LineChart data={data} onClick={(event) => handleCategoricalChartClick(event, config.xField)}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
             <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
@@ -317,7 +336,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
         {wrapScrollable(
-          <AreaChart data={data}>
+          <AreaChart data={data} onClick={(event) => handleCategoricalChartClick(event, config.xField)}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
             <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
@@ -354,7 +373,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
         {wrapScrollable(
-          <BarChart data={data}>
+          <BarChart data={data} onClick={(event) => handleCategoricalChartClick(event, config.xField)}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
             <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
@@ -398,7 +417,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
         {wrapScrollable(
-          <BarChart data={data}>
+          <BarChart data={data} onClick={(event) => handleCategoricalChartClick(event, config.xField)}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
             <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
@@ -433,7 +452,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
         <ResponsiveContainer width="100%" height="100%">
-          <ScatterChart>
+          <ScatterChart onClick={handleScatterClick}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis dataKey={config.xField} name={config.xField} tick={{ fontSize: fontSize }} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
             <YAxis dataKey={config.yFields[0]} name={config.yFields[0]} tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize: fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
@@ -484,6 +503,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
               cx="50%"
               cy="50%"
               outerRadius={120}
+              onClick={handlePieClick}
               label={showDataLabels ? ({ name, value }: any) => `${name}: ${formatNumber(value, numFmt)}` : true}
             >
               {data.map((entry, index) => {
@@ -515,7 +535,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data}>
+          <LineChart data={data} onClick={(event) => handleCategoricalChartClick(event, config.timeField)}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis
               dataKey={config.timeField}
@@ -559,7 +579,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
     const isVertScroll = data.length > SCROLL_THRESHOLD;
     const chartHeight  = isVertScroll ? Math.max(data.length * MIN_ROW_HEIGHT, 400) : undefined;
     const inner = (
-      <BarChart data={data} layout="vertical">
+      <BarChart data={data} layout="vertical" onClick={(event) => handleCategoricalChartClick(event, config.xField)}>
         {showGrid && <CartesianGrid strokeDasharray="3 3" />}
         <YAxis dataKey={config.xField} type="category" tick={{ fontSize }} width={120}
           label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
@@ -605,7 +625,7 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
           <h3 className="text-lg font-semibold mb-4 text-center">{config.title}</h3>
         )}
         {wrapScrollable(
-          <ComposedChart data={data}>
+          <ComposedChart data={data} onClick={(event) => handleCategoricalChartClick(event, config.xField)}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" />}
             <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
             <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
@@ -651,16 +671,38 @@ export function ChartPreview({ chartType, data, config, styleConfig }: ChartPrev
   }
 
   // Render KPI Card
-  if (chartType === ChartType.KPI && config.valueField) {
-    const value = data[0]?.[config.valueField] ?? null;
-    const label = config.labelField ? String(data[0]?.[config.labelField] || config.title || 'KPI') : (config.title || 'KPI');
+  if (chartType === ChartType.KPI) {
+    const fallbackValueField = config.valueField
+      || config.yFields?.[0]
+      || Object.keys(data[0] ?? {}).find((field) => typeof data[0]?.[field] === 'number');
+    const value = fallbackValueField ? data[0]?.[fallbackValueField] ?? null : null;
+    const label = style.kpiLabel?.trim()
+      || (config.labelField ? String(data[0]?.[config.labelField] || '') : '')
+      || config.title
+      || fallbackValueField
+      || 'KPI';
+    const benchmarkValue = style.kpiBenchmarkValue === '' || style.kpiBenchmarkValue == null
+      ? null
+      : Number(style.kpiBenchmarkValue);
     
     return (
       <div className="w-full flex items-center justify-center" style={{ minHeight: '400px' }}>
-        <div className="w-full max-w-md">
+        <div className="w-full max-w-xl">
           <KpiCard
             value={value}
             label={label}
+            format={style.numberFormat ?? 'compact'}
+            decimalPlaces={style.decimalPlaces}
+            currencySymbol={style.currencySymbol}
+            contextTemplate={style.kpiContextTemplate}
+            benchmarkValue={benchmarkValue}
+            benchmarkLabel={style.kpiBenchmarkLabel}
+            showDelta={style.kpiShowDelta}
+            goalDirection={style.kpiGoalDirection}
+            accentColor={style.kpiAccentColor}
+            enableColorRules={style.kpiEnableColorRules}
+            colorRules={style.kpiColorRules}
+            rowCount={data.length}
           />
         </div>
       </div>

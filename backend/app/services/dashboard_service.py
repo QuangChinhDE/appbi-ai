@@ -25,9 +25,13 @@ class DashboardService:
     @staticmethod
     def get_by_id(db: Session, dashboard_id: int) -> Optional[Dashboard]:
         """Get a dashboard by ID."""
-        return db.query(Dashboard)\
+        dashboard = db.query(Dashboard)\
             .options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))\
             .filter(Dashboard.id == dashboard_id).first()
+        if dashboard:
+            for dashboard_chart in dashboard.dashboard_charts or []:
+                ChartService.hydrate_runtime_config(db, dashboard_chart.chart)
+        return dashboard
     
     @staticmethod
     def get_by_name(db: Session, name: str) -> Optional[Dashboard]:
@@ -65,7 +69,7 @@ class DashboardService:
             db.commit()
             db.refresh(db_dashboard)
             logger.info(f"Created dashboard: {dashboard.name}")
-            return db_dashboard
+            return DashboardService.get_by_id(db, db_dashboard.id)
         except IntegrityError:
             db.rollback()
             raise ValueError(f"Dashboard with name '{dashboard.name}' already exists")
@@ -89,7 +93,7 @@ class DashboardService:
             db.commit()
             db.refresh(db_dashboard)
             logger.info(f"Updated dashboard: {db_dashboard.name}")
-            return db_dashboard
+            return DashboardService.get_by_id(db, dashboard_id)
         except IntegrityError:
             db.rollback()
             raise ValueError(f"Dashboard with name '{dashboard_update.name}' already exists")
@@ -143,7 +147,7 @@ class DashboardService:
         db.commit()
         db.refresh(db_dashboard)
         logger.info(f"Added chart {chart_id} to dashboard {dashboard_id}")
-        return db_dashboard
+        return DashboardService.get_by_id(db, dashboard_id)
     
     @staticmethod
     def remove_chart(
@@ -168,7 +172,7 @@ class DashboardService:
         db.commit()
         db.refresh(db_dashboard)
         logger.info(f"Removed chart {chart_id} from dashboard {dashboard_id}")
-        return db_dashboard
+        return DashboardService.get_by_id(db, dashboard_id)
     
     @staticmethod
     def update_layout(
@@ -197,4 +201,4 @@ class DashboardService:
         db.commit()
         db.refresh(db_dashboard)
         logger.info(f"Updated layout for dashboard {dashboard_id}")
-        return db_dashboard
+        return DashboardService.get_by_id(db, dashboard_id)

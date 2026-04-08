@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Bot, Sparkles } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
+import { useQueries } from '@tanstack/react-query';
 import {
   useDashboard,
   useUpdateDashboard,
@@ -20,8 +21,9 @@ import { ShareDialog } from '@/components/common/ShareDialog';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { DashboardChartLayout } from '@/types/api';
-import type { BaseFilter, ColumnInfo } from '@/lib/filters';
-import { inferColumnTypeFromData } from '@/lib/filters';
+import type { BaseFilter, ColumnInfo, FilterType } from '@/lib/filters';
+import { getColumnKey, getFilterKey, inferColumnTypeFromData } from '@/lib/filters';
+import { fetchDatasetModel, fetchDatasetModelDistinctValues, modelKeys, type DatasetModelResponse } from '@/hooks/use-dataset-model';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { useAgentReportSpecs } from '@/hooks/use-agent-report-specs';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
@@ -46,6 +48,41 @@ function useDebounce<T extends (...args: any[]) => any>(
   );
 }
 
+function semanticDimensionToFilterType(type: string | undefined): FilterType {
+  switch ((type ?? '').toLowerCase()) {
+    case 'date':
+    case 'datetime':
+      return 'date';
+    case 'number':
+      return 'number';
+    case 'yesno':
+    case 'string':
+    default:
+      return 'dropdown';
+  }
+}
+
+function splitSemanticField(field: string): [string, string] | null {
+  if (!field.includes('.')) return null;
+  const [viewName, fieldName] = field.split('.', 2);
+  if (!viewName || !fieldName) return null;
+  return [viewName, fieldName];
+}
+
+function areFiltersEquivalent(left: BaseFilter | null, right: BaseFilter | null): boolean {
+  if (!left || !right) return false;
+  return getFilterKey(left) === getFilterKey(right)
+    && left.operator === right.operator
+    && JSON.stringify(left.value) === JSON.stringify(right.value);
+}
+
+function formatFilterValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).join(', ');
+  }
+  return String(value ?? '');
+}
+
 export default function DashboardDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -58,6 +95,10 @@ export default function DashboardDetailPage() {
   const [editedName, setEditedName] = useState('');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [globalFilters, setGlobalFilters] = useState<BaseFilter[]>([]);
+  const [crossFilterState, setCrossFilterState] = useState<{
+    sourceChartId: number;
+    filter: BaseFilter;
+  } | null>(null);
   const [availableColumns, setAvailableColumns] = useState<ColumnInfo[]>([]);
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   const [isPublicShareOpen, setIsPublicShareOpen] = useState(false);
@@ -72,6 +113,31 @@ export default function DashboardDetailPage() {
   const [distinctValues, setDistinctValues] = useState<Record<string, string[]>>({});
 
   const { data: dashboard, isLoading: isLoadingDashboard } = useDashboard(dashboardId);
+  const dashboardDatasetIds = React.useMemo(
+    () => Array.from(new Set(
+      (dashboard?.dashboard_charts ?? [])
+        .map((dc) => Number((dc.chart?.config as any)?.semanticBinding?.datasetId))
+        .filter((id) => Number.isFinite(id) && id > 0),
+    )),
+    [dashboard?.dashboard_charts],
+  );
+  const datasetModelQueries = useQueries({
+    queries: dashboardDatasetIds.map((datasetId) => ({
+      queryKey: modelKeys.detail(datasetId),
+      queryFn: () => fetchDatasetModel(datasetId),
+      enabled: !!dashboard,
+      staleTime: 5 * 60 * 1000,
+    })),
+  });
+  const datasetModelsById = React.useMemo(() => {
+    const map = new Map<number, DatasetModelResponse>();
+    datasetModelQueries.forEach((query, index) => {
+      if (query.data) {
+        map.set(dashboardDatasetIds[index], query.data);
+      }
+    });
+    return map;
+  }, [dashboardDatasetIds, datasetModelQueries]);
   const { data: permData } = usePermissions();
   const canViewAgentReports = hasPermission(permData?.permissions, 'ai_agent', 'view');
   const { data: agentReportSpecs = [] } = useAgentReportSpecs(canViewAgentReports);
@@ -91,6 +157,16 @@ export default function DashboardDetailPage() {
     filtersSnapshotRef.current = JSON.stringify(initial);
     setGlobalFilters(initial);
   }, [dashboard]);
+
+  React.useEffect(() => {
+    if (!crossFilterState) return;
+    const sourceExists = (dashboard?.dashboard_charts ?? []).some(
+      (dashboardChart) => dashboardChart.chart_id === crossFilterState.sourceChartId,
+    );
+    if (!sourceExists) {
+      setCrossFilterState(null);
+    }
+  }, [dashboard?.dashboard_charts, crossFilterState]);
 
   // Auto-save globalFilters to backend for editors (1.5s debounce, skips the initial seed)
   React.useEffect(() => {
@@ -144,6 +220,26 @@ export default function DashboardDetailPage() {
     setHasUnsavedChanges(true);
     debouncedSaveLayout(newLayout);
   };
+
+  const handleCrossFilterChange = useCallback((sourceChartId: number, filter: BaseFilter | null) => {
+    setCrossFilterState((current) => {
+      if (!filter) {
+        return current?.sourceChartId === sourceChartId ? null : current;
+      }
+
+      if (
+        current?.sourceChartId === sourceChartId &&
+        areFiltersEquivalent(current.filter, filter)
+      ) {
+        return null;
+      }
+
+      return {
+        sourceChartId,
+        filter,
+      };
+    });
+  }, []);
 
   const handleAddChart = async (chartId: number, layout: DashboardChartLayout, parameters?: Record<string, any>) => {
     try {
@@ -268,6 +364,95 @@ export default function DashboardDetailPage() {
     }
   }, []);
 
+  const semanticColumnsResult = React.useMemo(() => {
+    const columns = new Map<string, ColumnInfo>();
+    const counts = new Map<string, Set<number>>();
+
+    for (const dashboardChart of dashboard?.dashboard_charts ?? []) {
+      const binding = (dashboardChart.chart?.config as any)?.semanticBinding as
+        | {
+            datasetId?: number;
+            dimensionFields?: string[];
+            fieldMap?: Record<string, string>;
+          }
+        | undefined;
+
+      if (!binding?.datasetId) continue;
+      const model = datasetModelsById.get(binding.datasetId);
+      if (!model) continue;
+
+      const viewsByName = new Map(model.views.map((view) => [view.name, view]));
+      const candidateFields = binding.dimensionFields?.length
+        ? binding.dimensionFields
+        : Object.values(binding.fieldMap ?? {});
+
+      for (const semanticField of candidateFields) {
+        const parts = splitSemanticField(semanticField);
+        if (!parts) continue;
+        const [viewName, fieldName] = parts;
+        const view = viewsByName.get(viewName);
+        const dimension = view?.dimensions.find((item) => item.name === fieldName);
+        if (!dimension) continue;
+
+        const key = semanticField;
+        if (!columns.has(key)) {
+          columns.set(key, {
+            key,
+            name: fieldName,
+            label: `${viewName}.${dimension.label ?? fieldName}`,
+            type: semanticDimensionToFilterType(dimension.type),
+            datasetId: binding.datasetId,
+            semanticField,
+          });
+        }
+        if (!counts.has(key)) counts.set(key, new Set());
+        counts.get(key)!.add(dashboardChart.chart_id);
+      }
+    }
+
+    return {
+      columns: Array.from(columns.values()).sort((a, b) =>
+        (a.label ?? a.name).localeCompare(b.label ?? b.name),
+      ),
+      chartCount: new Map(Array.from(counts.entries()).map(([key, ids]) => [key, ids.size])),
+    };
+  }, [dashboard?.dashboard_charts, datasetModelsById]);
+
+  const semanticDistinctColumns = React.useMemo(
+    () => semanticColumnsResult.columns.filter(
+      (column) => Boolean(column.datasetId && column.semanticField)
+        && (column.type === 'dropdown' || column.type === 'text'),
+    ),
+    [semanticColumnsResult.columns],
+  );
+
+  const semanticDistinctQueries = useQueries({
+    queries: semanticDistinctColumns.map((column) => ({
+      queryKey: modelKeys.distinct(column.datasetId!, column.semanticField!),
+      queryFn: () => fetchDatasetModelDistinctValues(column.datasetId!, column.semanticField!),
+      enabled: Boolean(column.datasetId && column.semanticField),
+      staleTime: 5 * 60 * 1000,
+    })),
+  });
+
+  const semanticDistinctValues = React.useMemo(() => {
+    const values: Record<string, string[]> = {};
+    semanticDistinctColumns.forEach((column, index) => {
+      values[getColumnKey(column)] = semanticDistinctQueries[index]?.data?.values ?? [];
+    });
+    return values;
+  }, [semanticDistinctColumns, semanticDistinctQueries]);
+
+  const resolvedAvailableColumns = semanticColumnsResult.columns.length > 0
+    ? semanticColumnsResult.columns
+    : availableColumns;
+  const resolvedColumnChartCount = semanticColumnsResult.columns.length > 0
+    ? semanticColumnsResult.chartCount
+    : columnChartCount;
+  const resolvedDistinctValues = semanticColumnsResult.columns.length > 0
+    ? semanticDistinctValues
+    : distinctValues;
+
   if (isLoadingDashboard) {
     return (
       <div className="min-h-screen bg-gray-50">
@@ -302,6 +487,12 @@ export default function DashboardDetailPage() {
 
   const existingChartIds = dashboard.dashboard_charts?.map((dc) => dc.chart_id) || [];
   const linkedAgentReport = agentReportSpecs.find((spec) => spec.latest_dashboard_id === dashboardId);
+  const activeCrossFilter = crossFilterState?.filter ?? null;
+  const activeCrossFilterSourceTitle = crossFilterState
+    ? (dashboard.dashboard_charts?.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.layout?.custom_title
+      ?? dashboard.dashboard_charts?.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.chart?.name
+      ?? `Chart ${crossFilterState.sourceChartId}`)
+    : null;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -428,12 +619,30 @@ export default function DashboardDetailPage() {
 
         {/* Dashboard Filter Bar */}
         <DashboardFilterBar
-          columns={availableColumns}
-          columnChartCount={columnChartCount}
-          distinctValues={distinctValues}
+          columns={resolvedAvailableColumns}
+          columnChartCount={resolvedColumnChartCount}
+          distinctValues={resolvedDistinctValues}
           filters={globalFilters}
           onFiltersChange={setGlobalFilters}
         />
+
+        {activeCrossFilter && (
+          <div className="mb-4 flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <span className="font-medium">
+              Cross-filter from {activeCrossFilterSourceTitle}:
+            </span>
+            <span className="truncate">
+              {(activeCrossFilter.label ?? activeCrossFilter.semanticField ?? activeCrossFilter.field)} = {formatFilterValue(activeCrossFilter.value)}
+            </span>
+            <button
+              type="button"
+              onClick={() => setCrossFilterState(null)}
+              className="ml-auto rounded-md border border-amber-300 px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100"
+            >
+              Clear
+            </button>
+          </div>
+        )}
 
         {/* Dashboard Grid */}
         <DashboardGrid
@@ -443,7 +652,10 @@ export default function DashboardDetailPage() {
           onRemoveChart={canEditResource ? handleRemoveChart : undefined}
           removingChartId={removingChartId}
           globalFilters={globalFilters}
-          onChartDataLoaded={handleChartDataLoaded}
+          crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
+          crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}
+          onChartDataLoaded={semanticColumnsResult.columns.length > 0 ? undefined : handleChartDataLoaded}
+          onSelectCrossFilter={handleCrossFilterChange}
         />
 
         {/* Add Chart Modal */}
@@ -481,9 +693,9 @@ export default function DashboardDetailPage() {
           <PublicLinksManager
             dashboardId={dashboardId}
             dashboardName={dashboard.name}
-            availableColumns={availableColumns}
-            columnChartCount={columnChartCount}
-            distinctValues={distinctValues}
+            availableColumns={resolvedAvailableColumns}
+            columnChartCount={resolvedColumnChartCount}
+            distinctValues={resolvedDistinctValues}
             onClose={() => setIsPublicShareOpen(false)}
           />
         )}

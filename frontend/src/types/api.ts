@@ -58,6 +58,14 @@ export interface TableSummaryRowConfig {
 }
 
 export type ChartBenchmarkLineStyle = 'solid' | 'dashed';
+export type KpiGoalDirection = 'up' | 'down';
+
+export interface KpiValueColorRule {
+  operator: '>' | '<' | '=' | '>=' | '<=' | '!=';
+  value: number;
+  color: string;
+  label?: string;
+}
 
 // Explore 2.0: Grouping configuration
 export interface GroupingConfig {
@@ -299,6 +307,7 @@ export interface ChartConfig {
   measure_configs?: MeasureConfig[];
   
   filters?: any[];
+  baseFilters?: any[];
   xField?: string;
   yFields?: string[];
   labelField?: string;
@@ -319,8 +328,23 @@ export interface ChartConfig {
   grouping?: GroupingConfig; // Grouping and pivot configuration
   sorts?: SortConfig[]; // Multi-column sorting
   conditional_formatting?: ConditionalFormatRule[]; // Table cell formatting
+  semanticBinding?: ChartSemanticBinding;
   
   [key: string]: any; // Allow additional fields
+}
+
+export interface ChartSemanticBinding {
+  status: 'partial' | 'resolved';
+  datasetId: number;
+  datasetTableId: number;
+  modelId?: number | null;
+  exploreId?: number | null;
+  exploreName?: string | null;
+  baseViewId?: number | null;
+  baseViewName?: string | null;
+  fieldMap?: Record<string, string>;
+  dimensionFields?: string[];
+  measureFields?: string[];
 }
 
 export interface Chart {
@@ -464,6 +488,8 @@ export interface QueryExecuteResponse {
   row_count: number;
   execution_time_ms: number;
 }
+
+export type ChartDataContext = 'default' | 'dashboard';
 
 export interface ChartDataResponse {
   chart: Chart;

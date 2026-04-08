@@ -33,7 +33,7 @@ import {
 } from '@/lib/api/public';
 import type { Dashboard, DashboardChart, ChartDataResponse } from '@/types/api';
 import type { BaseFilter } from '@/lib/filters';
-import { applyFiltersToRows } from '@/lib/filters';
+import { applyFiltersToRows, resolveFilterForChartData } from '@/lib/filters';
 
 const ResponsiveGridLayout = WidthProvider(Responsive);
 
@@ -329,13 +329,10 @@ export default function EmbedDashboardPage() {
                 ? applyFiltersToRows(
                     cd.data,
                     globalFilters
-                      .map((filter) => {
-                        if (!cd.data.length) return null;
-                        const candidates = [filter.field, ...((filter as any).linkedFields ?? [])];
-                        const match = candidates.find(c => c in cd.data[0]);
-                        if (!match) return null;
-                        return match !== filter.field ? { ...filter, field: match } : filter;
-                      })
+                      .map((filter) => resolveFilterForChartData(filter, {
+                        binding: (chart?.config as any)?.semanticBinding ?? null,
+                        availableFields: cd.data.length ? Object.keys(cd.data[0]) : [],
+                      }))
                       .filter((f): f is BaseFilter => f !== null),
                   )
                 : [];

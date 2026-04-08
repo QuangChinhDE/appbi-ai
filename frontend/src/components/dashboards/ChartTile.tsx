@@ -14,10 +14,18 @@ import {
   normalizeChartStyleConfig,
   normalizeRoleConfig,
 } from '@/components/explore/ExploreChartConfig';
-import { DashboardFilter, applyFiltersToRows } from '@/lib/filters';
+import {
+  DashboardFilter,
+  applyFiltersToRows,
+  inferColumnTypeFromData,
+  resolveChartFieldForFilter,
+  resolveChartSemanticField,
+  resolveFilterForChartData,
+} from '@/lib/filters';
 import type { BaseFilter, FilterOperator } from '@/lib/filters';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { useQueryClient } from '@tanstack/react-query';
+import type { ChartSemanticBinding } from '@/types/api';
 
 interface ChartTileProps {
   chartId: number;
@@ -28,7 +36,10 @@ interface ChartTileProps {
   isRemoving?: boolean;
   dashboardFilters?: DashboardFilter[];
   globalFilters?: BaseFilter[];
+  crossFilters?: BaseFilter[];
   onDataLoaded?: (chartId: number, data: any[], meta: { dimensionFields: string[] }) => void;
+  onSelectCrossFilter?: (filter: BaseFilter | null) => void;
+  isCrossFilterSource?: boolean;
   instanceParameters?: Record<string, any>;
 }
 
@@ -66,11 +77,20 @@ export function ChartTile({
   isRemoving,
   dashboardFilters = [],
   globalFilters = [],
+  crossFilters = [],
   onDataLoaded,
+  onSelectCrossFilter,
+  isCrossFilterSource = false,
   instanceParameters,
 }: ChartTileProps) {
   const queryClient = useQueryClient();
   const { data: chart, isLoading: isLoadingChart } = useChart(chartId);
+  const chartSemanticBinding = useMemo(() => {
+    const config = chart?.config as any;
+    return (config?.semanticBinding && typeof config.semanticBinding === 'object')
+      ? config.semanticBinding as ChartSemanticBinding
+      : null;
+  }, [chart?.config]);
 
   const parameterFilters = useMemo(() => {
     if (!chart?.parameters?.length || !instanceParameters) return [];
@@ -126,11 +146,18 @@ export function ChartTile({
   const serverFilters = useMemo(() => {
     const filters: Record<string, unknown>[] = [];
     filters.push(...parameterFilters);
-    for (const gf of globalFilters) {
+    for (const gf of [...globalFilters, ...crossFilters]) {
       if (gf.value === undefined || gf.value === null || gf.value === '') continue;
-      filters.push({ field: gf.field, operator: gf.operator, value: gf.value });
-      // Also push linked fields
-      if (gf.linkedFields) {
+      const field = resolveChartFieldForFilter(gf, chartSemanticBinding);
+      if (!field) continue;
+      filters.push({
+        field,
+        operator: gf.operator,
+        value: gf.value,
+        semanticField: gf.semanticField,
+        datasetId: gf.datasetId,
+      });
+      if (!chartSemanticBinding && !gf.semanticField && gf.linkedFields) {
         for (const lf of gf.linkedFields) {
           filters.push({ field: lf, operator: gf.operator, value: gf.value });
         }
@@ -141,9 +168,9 @@ export function ChartTile({
       filters.push({ field: df.field, operator: df.operator, value: df.value });
     }
     return filters.length > 0 ? filters : undefined;
-  }, [globalFilters, dashboardFilters, parameterFilters]);
+  }, [globalFilters, crossFilters, dashboardFilters, parameterFilters, chartSemanticBinding]);
 
-  const { data: chartData, isLoading: isLoadingData } = useChartData(chartId, serverFilters);
+  const { data: chartData, isLoading: isLoadingData } = useChartData(chartId, serverFilters, 'dashboard');
 
   // Title editing state
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -208,7 +235,7 @@ export function ChartTile({
     return {
       chartType,
       roleConfig: rc,
-      filters: config.filters ?? [],
+      filters: config.baseFilters ?? [],
       styleConfig: normalizeChartStyleConfig(config.styleConfig, config.conditional_formatting),
     };
   }, [chart?.config, chart?.chart_type]);
@@ -240,21 +267,63 @@ export function ChartTile({
     if (!exploreConfig && dashboardFilters.length > 0) {
       rows = applyFiltersToRows(rows, dashboardFilters);
     }
-    if (globalFilters.length > 0 && rows.length > 0) {
-      const applicable = globalFilters
-        .map(f => {
-          const candidates = [f.field, ...(f.linkedFields ?? [])];
-          const match = candidates.find(c => c in rows[0]);
-          if (!match) return null;
-          return match !== f.field ? { ...f, field: match } : f;
-        })
+    const runtimeFilters = [...globalFilters, ...crossFilters];
+    if (runtimeFilters.length > 0 && rows.length > 0) {
+      const availableFields = Object.keys(rows[0] ?? {});
+      const applicable = runtimeFilters
+        .map(f => resolveFilterForChartData(f, {
+          binding: chartSemanticBinding,
+          availableFields,
+        }))
         .filter((f): f is BaseFilter => f !== null);
       if (applicable.length > 0) {
         rows = applyFiltersToRows(rows, applicable);
       }
     }
     return rows;
-  }, [rawRows, exploreConfig, dashboardFilters, globalFilters, preAggregated]);
+  }, [rawRows, exploreConfig, dashboardFilters, globalFilters, crossFilters, preAggregated, chartSemanticBinding]);
+
+  const handleCrossFilterSelection = React.useCallback((selection: { field: string; value: unknown } | null) => {
+    if (!onSelectCrossFilter) return;
+    if (!selection || selection.value === undefined || selection.value === null || selection.value === '') {
+      onSelectCrossFilter(null);
+      return;
+    }
+
+    const semanticField = resolveChartSemanticField(chartSemanticBinding, selection.field);
+    if (!semanticField || chartSemanticBinding?.datasetId == null) {
+      onSelectCrossFilter(null);
+      return;
+    }
+
+    const sampleRows = filteredData.length > 0 ? filteredData : rawRows;
+    const inferredType = inferColumnTypeFromData(selection.field, sampleRows);
+    const filterType = inferredType === 'date'
+      ? 'date'
+      : inferredType === 'number'
+        ? 'number'
+        : 'text';
+    const value = filterType === 'number'
+      ? Number(selection.value)
+      : String(selection.value);
+
+    if ((filterType === 'number' && Number.isNaN(value)) || value === '') {
+      onSelectCrossFilter(null);
+      return;
+    }
+
+    onSelectCrossFilter({
+      id: `cross-${chartId}-${selection.field}-${String(value)}`,
+      field: selection.field,
+      fieldKey: semanticField,
+      semanticField,
+      datasetId: chartSemanticBinding.datasetId,
+      type: filterType,
+      operator: 'eq',
+      value,
+      label: selection.field,
+    });
+  }, [onSelectCrossFilter, chartSemanticBinding, filteredData, rawRows, chartId]);
 
   // Available metric keys for HAVING filter
   const havingOptions = useMemo(() =>
@@ -311,7 +380,11 @@ export function ChartTile({
   }
 
   return (
-    <div className="h-full bg-white rounded-lg border border-gray-200 p-3 overflow-hidden relative group flex flex-col">
+    <div className={`h-full bg-white rounded-lg border p-3 overflow-hidden relative group flex flex-col ${
+      isCrossFilterSource
+        ? 'border-amber-300 ring-1 ring-amber-200'
+        : 'border-gray-200'
+    }`}>
       {/* Remove button Ã¢â‚¬â€ outside drag handle so clicks always register */}
       {onRemove && (
       <button
@@ -482,6 +555,9 @@ export function ChartTile({
             styleConfig={exploreConfig.styleConfig}
             havingFilters={havingFilters}
             preAggregated={preAggregated}
+            onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
+              ? handleCrossFilterSelection
+              : undefined}
           />
         ) : (
           <ChartPreview
@@ -492,6 +568,9 @@ export function ChartTile({
               (chart?.config as any)?.styleConfig,
               (chart?.config as any)?.conditional_formatting,
             )}
+            onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
+              ? handleCrossFilterSelection
+              : undefined}
           />
         )}
       </div>

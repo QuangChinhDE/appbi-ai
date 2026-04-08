@@ -5,7 +5,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { chartApi } from '@/lib/api/charts';
-import { ChartCreate, ChartUpdate, ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
+import { ChartCreate, ChartDataContext, ChartUpdate, ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
 
 export const useCharts = () => {
   return useQuery({
@@ -22,10 +22,14 @@ export const useChart = (id: number) => {
   });
 };
 
-export const useChartData = (id: number, filters?: Record<string, unknown>[]) => {
+export const useChartData = (
+  id: number,
+  filters?: Record<string, unknown>[],
+  context: ChartDataContext = 'default',
+) => {
   return useQuery({
-    queryKey: ['charts', id, 'data', filters ?? []],
-    queryFn: () => chartApi.getData(id, filters),
+    queryKey: ['charts', id, 'data', context, filters ?? []],
+    queryFn: () => chartApi.getData(id, filters, context),
     enabled: !!id,
   });
 };

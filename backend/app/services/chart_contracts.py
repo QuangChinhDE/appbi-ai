@@ -37,6 +37,12 @@ _OPERATOR_MAP = {
     "is_null": "is_null",
     "is_not_null": "is_not_null",
 }
+CHART_FILTER_CONTEXT_DEFAULT = "default"
+CHART_FILTER_CONTEXT_DASHBOARD = "dashboard"
+_VALID_CHART_FILTER_CONTEXTS = {
+    CHART_FILTER_CONTEXT_DEFAULT,
+    CHART_FILTER_CONTEXT_DASHBOARD,
+}
 
 
 def normalize_filter_operator(operator: str | None) -> str:
@@ -86,6 +92,49 @@ def normalize_filter_conditions(filters: list[dict] | None) -> list[dict]:
             }
         )
     return normalized
+
+
+def normalize_chart_filter_context(context: str | None) -> str:
+    raw = str(context or CHART_FILTER_CONTEXT_DEFAULT).strip().lower()
+    return raw if raw in _VALID_CHART_FILTER_CONTEXTS else CHART_FILTER_CONTEXT_DEFAULT
+
+
+def get_chart_editor_filters(config: dict[str, Any] | None) -> list[dict]:
+    if not isinstance(config, dict):
+        return []
+    return normalize_filter_conditions(config.get("filters"))
+
+
+def get_chart_base_filters(config: dict[str, Any] | None) -> list[dict]:
+    if not isinstance(config, dict):
+        return []
+    base_filters = config.get("baseFilters")
+    if not isinstance(base_filters, list):
+        return []
+    return normalize_filter_conditions(base_filters)
+
+
+def resolve_chart_query_filters(
+    config: dict[str, Any] | None,
+    context: str | None = None,
+) -> list[dict]:
+    normalized_context = normalize_chart_filter_context(context)
+    base_filters = get_chart_base_filters(config)
+    if base_filters:
+        return base_filters
+    if normalized_context == CHART_FILTER_CONTEXT_DASHBOARD:
+        return []
+    return get_chart_editor_filters(config)
+
+
+def merge_chart_query_filters(
+    config: dict[str, Any] | None,
+    extra_filters: list[dict] | None = None,
+    context: str | None = None,
+) -> list[dict]:
+    merged = list(resolve_chart_query_filters(config, context=context))
+    merged.extend(normalize_filter_conditions(extra_filters))
+    return merged
 
 
 def normalize_metric_config(metric: Any, default_agg: str = "sum") -> dict[str, Any] | None:

@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { Plus, X, Filter, ChevronDown, ChevronRight, Search, Link2 } from 'lucide-react';
-import { BaseFilter, FilterOperator, FilterType, ColumnInfo } from '@/lib/filters';
+import { BaseFilter, FilterOperator, FilterType, ColumnInfo, getColumnKey, getFilterKey } from '@/lib/filters';
 import { DateInput } from '@/components/ui/DateInput';
 
 // ─── Type badge helpers ────────────────────────────────────────
@@ -17,7 +17,7 @@ const TYPE_CLR: Record<FilterType, string> = {
 interface DashboardFilterBarProps {
   columns: ColumnInfo[];
   columnChartCount: Map<string, number>;
-  /** Distinct values per column, keyed by column name */
+  /** Distinct values per column, keyed by stable column key */
   distinctValues: Record<string, string[]>;
   filters: BaseFilter[];
   onFiltersChange: (filters: BaseFilter[]) => void;
@@ -42,40 +42,44 @@ export function DashboardFilterBar({
 
   // Set of all fields currently used by filters (primary only)
   const usedFields = useMemo(
-    () => new Set(filters.map(f => f.field)),
+    () => new Set(filters.map(f => getFilterKey(f))),
     [filters],
   );
 
   // Columns not yet added as filters
   const availableColumns = useMemo(
-    () => columns.filter(c => !usedFields.has(c.name)),
+    () => columns.filter(c => !usedFields.has(getColumnKey(c))),
     [columns, usedFields],
   );
 
   // ── Mutators ───────────────────────────────────────────────────
-  const addFilter = (fieldName: string) => {
-    const col = columns.find(c => c.name === fieldName);
+  const addFilter = (columnKey: string) => {
+    const col = columns.find(c => getColumnKey(c) === columnKey);
     if (!col) return;
-    if (usedFields.has(fieldName)) return;
+    if (usedFields.has(columnKey)) return;
 
     const isMultiSelect = col.type === 'text' || col.type === 'dropdown';
 
     // Auto-link: for date columns, auto-link ALL other date columns on the dashboard
     let linkedFields: string[] | undefined;
-    if (col.type === 'date') {
+    if (col.type === 'date' && !col.semanticField) {
       linkedFields = columns
-        .filter(c => c.type === 'date' && c.name !== fieldName && !usedFields.has(c.name))
-        .map(c => c.name);
+        .filter(c => c.type === 'date' && getColumnKey(c) !== columnKey && !usedFields.has(getColumnKey(c)))
+        .map(c => getColumnKey(c));
       if (!linkedFields.length) linkedFields = undefined;
     }
 
     const newFilter: BaseFilter = {
       id:           `gf-${Date.now()}`,
-      field:        fieldName,
+      field:        col.name,
+      fieldKey:     columnKey,
+      semanticField: col.semanticField,
+      datasetId:    col.datasetId,
       linkedFields,
       type:         col.type,
       operator:     isMultiSelect ? 'in' : col.type === 'date' ? 'between' : 'gte',
       value:        isMultiSelect ? [] : col.type === 'date' ? ['', ''] : '',
+      label:        col.label ?? col.name,
     };
     onFiltersChange([...filters, newFilter]);
     setAddingField(false);
@@ -134,7 +138,7 @@ export function DashboardFilterBar({
 
   // Compute total chart coverage per filter (primary + linked fields)
   const getFilterChartCount = (f: BaseFilter): number => {
-    const fields = [f.field, ...(f.linkedFields ?? [])];
+    const fields = [getFilterKey(f), ...(f.linkedFields ?? [])];
     let total = 0;
     for (const field of fields) {
       total += columnChartCount.get(field) ?? 0;
@@ -174,7 +178,7 @@ export function DashboardFilterBar({
                   key={f.id}
                   className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 border border-blue-200 text-blue-700 text-xs rounded-full"
                 >
-                  <span className="font-semibold">{f.field}</span>
+                  <span className="font-semibold">{f.label ?? f.field}</span>
                   {f.linkedFields && f.linkedFields.length > 0 && (
                     <Link2 className="w-3 h-3 text-blue-400" />
                   )}
@@ -216,21 +220,22 @@ export function DashboardFilterBar({
                     <p className="text-xs text-gray-400 mt-0.5">Date fields auto-link across all charts</p>
                   </div>
                   {availableColumns.map(col => {
-                    const count = columnChartCount.get(col.name) ?? 0;
-                    const sameTypeCount = col.type === 'date'
-                      ? columns.filter(c => c.type === 'date' && c.name !== col.name && !usedFields.has(c.name)).length
+                    const columnKey = getColumnKey(col);
+                    const count = columnChartCount.get(columnKey) ?? 0;
+                    const sameTypeCount = col.type === 'date' && !col.semanticField
+                      ? columns.filter(c => c.type === 'date' && getColumnKey(c) !== columnKey && !usedFields.has(getColumnKey(c))).length
                       : 0;
                     return (
                       <button
-                        key={col.name}
-                        onClick={() => addFilter(col.name)}
+                        key={columnKey}
+                        onClick={() => addFilter(columnKey)}
                         className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 flex items-center justify-between group"
                       >
                         <span className="flex items-center gap-2">
                           <span className={`text-xs font-mono w-4 text-center ${TYPE_CLR[col.type]}`}>
                             {TYPE_BADGE[col.type]}
                           </span>
-                          <span className="text-gray-700 group-hover:text-blue-700">{col.name}</span>
+                          <span className="text-gray-700 group-hover:text-blue-700">{col.label ?? col.name}</span>
                         </span>
                         <span className="flex items-center gap-2">
                           {sameTypeCount > 0 && (
@@ -351,24 +356,29 @@ function FilterCard({
 
   // Columns of the same type that could be linked (not the primary, not used as separate filters)
   const linkableColumns = useMemo(
-    () => allColumns.filter(c =>
-      c.type === f.type &&
-      c.name !== f.field &&
-      !usedFields.has(c.name)
+    () => (
+      f.semanticField
+        ? []
+        : allColumns.filter(c =>
+            !c.semanticField &&
+            c.type === f.type &&
+            getColumnKey(c) !== getFilterKey(f) &&
+            !usedFields.has(getColumnKey(c))
+          )
     ),
-    [allColumns, f.type, f.field, usedFields],
+    [allColumns, f, usedFields],
   );
 
   // Merge distinct values from primary + linked fields
   const mergedValues = useMemo(() => {
-    const primary = allDistinctValues[f.field] ?? [];
+    const primary = allDistinctValues[getFilterKey(f)] ?? [];
     if (!f.linkedFields?.length) return primary;
     const set = new Set(primary);
     f.linkedFields.forEach(lf => {
       (allDistinctValues[lf] ?? []).forEach(v => set.add(v));
     });
     return Array.from(set).sort();
-  }, [f.field, f.linkedFields, allDistinctValues]);
+  }, [f, allDistinctValues]);
 
   const filteredValues = useMemo(() => {
     if (!search) return mergedValues;
@@ -387,7 +397,7 @@ function FilterCard({
           <span className={`text-xs font-mono ${TYPE_CLR[f.type]}`}>
             {TYPE_BADGE[f.type]}
           </span>
-          <span className="text-sm font-semibold text-gray-800 truncate">{f.field}</span>
+          <span className="text-sm font-semibold text-gray-800 truncate">{f.label ?? f.field}</span>
           {selected.length > 0 && (
             <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full font-semibold flex-shrink-0">
               {selected.length}
@@ -472,11 +482,12 @@ function FilterCard({
                 Same filter value will apply to checked columns across charts:
               </p>
               {linkableColumns.map(col => {
-                const isLinked = f.linkedFields?.includes(col.name) ?? false;
-                const count = columnChartCount.get(col.name) ?? 0;
+                const columnKey = getColumnKey(col);
+                const isLinked = f.linkedFields?.includes(columnKey) ?? false;
+                const count = columnChartCount.get(columnKey) ?? 0;
                 return (
                   <label
-                    key={col.name}
+                    key={columnKey}
                     className={`flex items-center gap-2 px-1.5 py-1 rounded cursor-pointer text-xs ${
                       isLinked ? 'bg-teal-50 text-teal-800' : 'hover:bg-gray-100 text-gray-600'
                     }`}
@@ -484,13 +495,13 @@ function FilterCard({
                     <input
                       type="checkbox"
                       checked={isLinked}
-                      onChange={() => onToggleLinkedField(col.name)}
+                      onChange={() => onToggleLinkedField(columnKey)}
                       className="w-3.5 h-3.5 rounded border-gray-300 text-teal-600 focus:ring-teal-500 focus:ring-1"
                     />
                     <span className={`font-mono text-xs ${TYPE_CLR[col.type]}`}>
                       {TYPE_BADGE[col.type]}
                     </span>
-                    <span className="truncate flex-1">{col.name}</span>
+                    <span className="truncate flex-1">{col.label ?? col.name}</span>
                     {count > 0 && (
                       <span className="text-xs text-gray-400 flex-shrink-0">
                         {count} chart{count !== 1 ? 's' : ''}

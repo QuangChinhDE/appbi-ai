@@ -73,14 +73,39 @@ export interface GenerateModelResponse {
   generated: boolean;
 }
 
+export interface DistinctFieldValuesResponse {
+  field: string;
+  values: string[];
+}
+
 // ===== Query Keys =====
 
 export const modelKeys = {
   all: ['dataset-model'] as const,
   detail: (datasetId: number) => [...modelKeys.all, datasetId] as const,
+  distinct: (datasetId: number, field: string) => [...modelKeys.detail(datasetId), 'distinct', field] as const,
 };
 
 // ===== Hooks =====
+
+export async function fetchDatasetModel(datasetId: number) {
+  const response = await api.get<DatasetModelResponse>(`/datasets/${datasetId}/model`);
+  return response.data;
+}
+
+export async function fetchDatasetModelDistinctValues(
+  datasetId: number,
+  field: string,
+  limit = 200,
+) {
+  const response = await api.get<DistinctFieldValuesResponse>(
+    `/datasets/${datasetId}/model/distinct-values`,
+    {
+      params: { field, limit },
+    },
+  );
+  return response.data;
+}
 
 /**
  * Get the semantic model for a dataset
@@ -88,12 +113,7 @@ export const modelKeys = {
 export function useDatasetModel(datasetId: number | null) {
   return useQuery({
     queryKey: modelKeys.detail(datasetId!),
-    queryFn: async () => {
-      const response = await api.get<DatasetModelResponse>(
-        `/datasets/${datasetId}/model`
-      );
-      return response.data;
-    },
+    queryFn: () => fetchDatasetModel(datasetId!),
     enabled: datasetId !== null && datasetId > 0,
   });
 }

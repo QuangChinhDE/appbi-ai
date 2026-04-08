@@ -84,7 +84,7 @@ export function PublicLinksManager({
       await Promise.all(
         charts.map(async (dc) => {
           try {
-            const resp = await chartApi.getData(dc.chart_id);
+            const resp = await chartApi.getData(dc.chart_id, undefined, 'dashboard');
             const rows = resp?.data ?? [];
             if (!rows.length) return;
 

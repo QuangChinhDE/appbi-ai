@@ -277,6 +277,7 @@ export default function ExploreDetailPage() {
   const [chartDescInput, setChartDescInput] = useState('');
   const [isEditingDesc, setIsEditingDesc] = useState(false);
   const [isChartLoaded, setIsChartLoaded] = useState(isNew); // skip load for new charts
+  const persistedBaseFiltersRef = useRef<Filter[]>([]);
 
   // isConfigOpen removed - chart config panel is always visible in right panel
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
@@ -330,6 +331,7 @@ export default function ExploreDetailPage() {
       setSelectedDatasetId(config.source.datasetId);
       setSelectedTableId(config.source.tableId);
     }
+    persistedBaseFiltersRef.current = Array.isArray(config?.baseFilters) ? config.baseFilters : [];
     setFilters(config?.filters ?? []);
     setChartType(config?.chartType ?? 'TABLE');
     setChartStyleConfig(normalizeChartStyleConfig(config?.styleConfig, config?.conditional_formatting));
@@ -730,6 +732,7 @@ export default function ExploreDetailPage() {
     const exploreConfig = {
       dataset_id: selectedDatasetId,
       filters,
+      ...(persistedBaseFiltersRef.current.length > 0 ? { baseFilters: persistedBaseFiltersRef.current } : {}),
       chartType,
       roleConfig: generatedRoleConfig,
       styleConfig: chartStyleConfig,

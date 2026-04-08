@@ -53,7 +53,10 @@ interface DashboardGridProps {
   removingChartId?: number;
   dashboardFilters?: DashboardFilter[];
   globalFilters?: BaseFilter[];
+  crossFilters?: BaseFilter[];
+  crossFilterSourceChartId?: number | null;
   onChartDataLoaded?: (chartId: number, data: any[], meta: { dimensionFields: string[] }) => void;
+  onSelectCrossFilter?: (chartId: number, filter: BaseFilter | null) => void;
 }
 
 export function DashboardGrid({
@@ -64,7 +67,10 @@ export function DashboardGrid({
   removingChartId,
   dashboardFilters = [],
   globalFilters = [],
+  crossFilters = [],
+  crossFilterSourceChartId = null,
   onChartDataLoaded,
+  onSelectCrossFilter,
 }: DashboardGridProps) {
   // Convert backend layout to react-grid-layout format
   const layouts = dashboardCharts.map((dc) => {
@@ -135,7 +141,10 @@ export function DashboardGrid({
                 isRemoving={removingChartId === dc.id}
                 dashboardFilters={dashboardFilters}
                 globalFilters={globalFilters}
+                crossFilters={crossFilterSourceChartId === dc.chart_id ? [] : crossFilters}
                 onDataLoaded={onChartDataLoaded}
+                onSelectCrossFilter={onSelectCrossFilter ? (filter) => onSelectCrossFilter(dc.chart_id, filter) : undefined}
+                isCrossFilterSource={crossFilterSourceChartId === dc.chart_id}
                 instanceParameters={dc.parameters ?? {}}
               />
             </LazyChartSlot>

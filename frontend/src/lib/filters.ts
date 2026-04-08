@@ -2,6 +2,8 @@
  * Shared filter types and utilities for both Explore and Dashboard
  */
 
+import type { ChartSemanticBinding } from '@/types/api';
+
 export type FilterOperator =
   | 'eq'
   | 'neq'
@@ -23,6 +25,9 @@ export type FilterType = 'text' | 'number' | 'date' | 'dropdown';
 export interface BaseFilter {
   id: string;                // unique per filter (e.g. uuid)
   field: string;             // primary column name
+  fieldKey?: string;         // stable key for semantic/qualified fields
+  semanticField?: string;    // qualified field name (e.g. orders.country)
+  datasetId?: number;        // semantic dataset scope when available
   linkedFields?: string[];   // additional column names this filter also applies to (cross-chart linking)
   type: FilterType;          // 'date' | 'dropdown' | 'text' | 'number'
   operator: FilterOperator;  // default depends on type
@@ -81,6 +86,118 @@ export function inferColumnTypeFromData(
 export interface ColumnInfo {
   name: string;
   type: FilterType;
+  key?: string;
+  label?: string;
+  datasetId?: number;
+  semanticField?: string;
+}
+
+export function getColumnKey(column: Pick<ColumnInfo, 'key' | 'semanticField' | 'name'>): string {
+  return column.key ?? column.semanticField ?? column.name;
+}
+
+export function getFilterKey(filter: Pick<BaseFilter, 'fieldKey' | 'semanticField' | 'field'>): string {
+  return filter.fieldKey ?? filter.semanticField ?? filter.field;
+}
+
+type ChartSemanticBindingLike = Pick<
+  ChartSemanticBinding,
+  'datasetId' | 'baseViewName' | 'fieldMap' | 'dimensionFields' | 'measureFields'
+>;
+
+function semanticCandidates(filter: Pick<BaseFilter, 'fieldKey' | 'semanticField' | 'field'>): string[] {
+  const candidates = [filter.semanticField, filter.fieldKey]
+    .filter((value): value is string => Boolean(value && value.includes('.')));
+  return Array.from(new Set(candidates));
+}
+
+export function resolveChartSemanticField(
+  binding: ChartSemanticBindingLike | null | undefined,
+  chartField: string,
+): string | null {
+  if (!binding) return null;
+
+  const mapped = binding.fieldMap?.[chartField];
+  if (mapped) return mapped;
+
+  if (!binding.baseViewName || !chartField) return null;
+
+  const semanticField = `${binding.baseViewName}.${chartField}`;
+  const availableSemanticFields = new Set([
+    ...(binding.dimensionFields ?? []),
+    ...(binding.measureFields ?? []),
+  ]);
+  return availableSemanticFields.has(semanticField) ? semanticField : null;
+}
+
+export function resolveChartFieldForFilter(
+  filter: Pick<BaseFilter, 'field' | 'fieldKey' | 'semanticField' | 'datasetId'>,
+  binding: ChartSemanticBindingLike | null | undefined,
+): string | null {
+  if (
+    filter.datasetId != null &&
+    binding?.datasetId != null &&
+    filter.datasetId !== binding.datasetId
+  ) {
+    return null;
+  }
+
+  if (!binding) {
+    return filter.field;
+  }
+
+  const availableSemanticFields = new Set([
+    ...(binding.dimensionFields ?? []),
+    ...(binding.measureFields ?? []),
+  ]);
+
+  for (const semanticField of semanticCandidates(filter)) {
+    const mappedField = Object.entries(binding.fieldMap ?? {}).find(
+      ([, value]) => value === semanticField,
+    )?.[0];
+    if (mappedField) return mappedField;
+
+    if (availableSemanticFields.has(semanticField) && binding.baseViewName) {
+      const prefix = `${binding.baseViewName}.`;
+      if (semanticField.startsWith(prefix)) {
+        return semanticField.slice(prefix.length);
+      }
+    }
+  }
+
+  if (binding.fieldMap && filter.field in binding.fieldMap) {
+    return filter.field;
+  }
+
+  return null;
+}
+
+export function resolveFilterForChartData(
+  filter: BaseFilter,
+  options: {
+    binding?: ChartSemanticBindingLike | null;
+    availableFields?: Iterable<string> | null;
+  } = {},
+): BaseFilter | null {
+  const { binding = null, availableFields = null } = options;
+  const availableFieldSet = availableFields ? new Set(availableFields) : null;
+  const resolvedField = resolveChartFieldForFilter(filter, binding);
+
+  if (resolvedField && (!availableFieldSet || availableFieldSet.has(resolvedField))) {
+    return resolvedField === filter.field ? filter : { ...filter, field: resolvedField };
+  }
+
+  if (semanticCandidates(filter).length > 0) {
+    return null;
+  }
+
+  const candidates = [filter.field, ...(filter.linkedFields ?? [])];
+  const fallback = availableFieldSet
+    ? candidates.find((candidate) => availableFieldSet.has(candidate))
+    : candidates[0];
+
+  if (!fallback) return null;
+  return fallback === filter.field ? filter : { ...filter, field: fallback };
 }
 
 /**

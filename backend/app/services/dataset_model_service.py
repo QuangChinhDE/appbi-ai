@@ -4,11 +4,13 @@ Auto-generates semantic layer (views, model, explores) from dataset tables.
 Each dataset = 1 Data Mart with its own semantic model.
 """
 import re
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 from sqlalchemy.orm import Session
 from app.models.semantic import SemanticView, SemanticModel, SemanticExplore
 from app.models.dataset import Dataset, DatasetTable
+from app.models.models import DataSource
 from app.core.logging import get_logger
+from app.services.runtime_modes import resolve_dataset_query_mode
 
 logger = get_logger(__name__)
 
@@ -160,6 +162,41 @@ def _normalize_join(join: dict, base_view_name: str, base_fields: set[str] | Non
     if to_column:
         normalized["to_column"] = to_column
     return normalized
+
+
+def _apply_duckdb_transformations(view_name: str, transformations) -> str:
+    server_transforms = [
+        step for step in (transformations or [])
+        if step.get("enabled", True) and step.get("type") not in ("js_formula",)
+    ]
+    if not server_transforms:
+        return view_name
+
+    from app.services.transformation_compiler import TransformationCompiler
+
+    compiled_sql, _ = TransformationCompiler.compile_transformations(
+        f"SELECT * FROM {view_name}",
+        server_transforms,
+        dialect="duckdb",
+    )
+    return f"({compiled_sql}) AS _t"
+
+
+def _coerce_distinct_values(rows: list[Any]) -> list[str]:
+    values: list[str] = []
+    for row in rows or []:
+        if isinstance(row, dict):
+            value = row.get("value")
+        elif isinstance(row, (list, tuple)):
+            value = row[0] if row else None
+        else:
+            value = row
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            values.append(text)
+    return values
 
 
 def _detect_joins(tables: List[DatasetTable]) -> list:
@@ -612,3 +649,89 @@ def remove_join(
         "base_view_name": explore.base_view_name,
         "joins": explore.joins,
     }
+
+
+def get_distinct_field_values(
+    db: Session,
+    dataset_id: int,
+    field: str,
+    limit: int = 200,
+) -> list[str]:
+    if "." not in field:
+        raise ValueError("Field must be qualified as view.field")
+
+    view_name, field_name = field.split(".", 1)
+    limit = max(1, min(int(limit), 500))
+
+    view = db.query(SemanticView).filter(SemanticView.name == view_name).first()
+    if not view or view.dataset_table_id is None:
+        raise ValueError(f"View '{view_name}' not found")
+
+    db_table = db.query(DatasetTable).filter(
+        DatasetTable.id == view.dataset_table_id,
+        DatasetTable.dataset_id == dataset_id,
+    ).first()
+    if not db_table:
+        raise ValueError(f"View '{view_name}' does not belong to dataset {dataset_id}")
+
+    datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+    if not datasource:
+        raise ValueError("Data source not found")
+
+    query_mode = resolve_dataset_query_mode(db_table)
+
+    def fetch_live_values() -> list[str]:
+        from app.services.datasource_service import DataSourceConnectionService
+        from app.services.live_query_service import (
+            _dialect_for_ds_type,
+            _quote_identifier,
+            build_live_base_query_plan,
+        )
+
+        ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+        dialect = _dialect_for_ds_type(ds_type)
+        quoted_field = _quote_identifier(field_name, dialect)
+        plan = build_live_base_query_plan(datasource, db_table, apply_type_overrides=True)
+        sql = (
+            f"SELECT DISTINCT {quoted_field} AS value "
+            f"FROM ({plan.sql}) AS _appbi_distinct "
+            f"WHERE {quoted_field} IS NOT NULL "
+            f"ORDER BY 1 "
+            f"LIMIT {limit}"
+        )
+        _, rows, _ = DataSourceConnectionService.execute_query(
+            ds_type,
+            datasource.config,
+            sql,
+            timeout_seconds=60 if ds_type == "bigquery" else 30,
+            skip_bigquery_cost_check=True,
+        )
+        return _coerce_distinct_values(rows)
+
+    if query_mode == "live":
+        return fetch_live_values()
+
+    from app.services.duckdb_engine import DuckDBEngine
+    from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
+
+    if db_table.source_kind == "sql_query":
+        rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query or "")
+        if not rewritten:
+            return fetch_live_values()
+        base_table = f"({rewritten}) AS _q"
+    elif db_table.source_kind == "physical_table":
+        synced_view = get_synced_view(datasource.id, db_table.source_table_name or "")
+        if not synced_view:
+            return fetch_live_values()
+        base_table = _apply_duckdb_transformations(synced_view, db_table.transformations)
+    else:
+        return fetch_live_values()
+
+    rows = DuckDBEngine.query(
+        f'SELECT DISTINCT "{field_name}" AS value '
+        f'FROM {base_table} '
+        f'WHERE "{field_name}" IS NOT NULL '
+        f'ORDER BY 1 '
+        f'LIMIT {limit}'
+    )
+    return _coerce_distinct_values(rows)

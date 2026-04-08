@@ -10,10 +10,14 @@ from app.schemas import ChartCreate, ChartUpdate
 from app.schemas import ChartMetadataUpsert, ChartParameterCreate, ChartParameterUpdate
 from app.core.logging import get_logger
 from app.services.chart_contracts import (
+    merge_chart_query_filters,
+    normalize_chart_filter_context,
     normalize_chart_role_config,
     normalize_filter_conditions,
     normalize_filter_operator,
+    resolve_chart_query_filters,
 )
+from app.services.chart_semantic_service import with_chart_semantic_binding
 from app.services.runtime_modes import resolve_dataset_query_mode
 
 logger = get_logger(__name__)
@@ -274,16 +278,35 @@ def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filter
 
 class ChartService:
     """Service for chart operations."""
+
+    @staticmethod
+    def hydrate_runtime_config(db: Session, chart: Chart | None) -> Chart | None:
+        """Attach derived semantic binding for response-time consumers."""
+        if not chart:
+            return chart
+        next_config = with_chart_semantic_binding(
+            db,
+            chart.dataset_table_id,
+            chart.config,
+            auto_generate=True,
+        )
+        if next_config != (chart.config or {}):
+            chart.config = next_config
+        return chart
     
     @staticmethod
     def get_all(db: Session, skip: int = 0, limit: int = 50) -> List[Chart]:
         """Get all charts with pagination."""
-        return db.query(Chart).offset(skip).limit(limit).all()
+        charts = db.query(Chart).offset(skip).limit(limit).all()
+        for chart in charts:
+            ChartService.hydrate_runtime_config(db, chart)
+        return charts
     
     @staticmethod
     def get_by_id(db: Session, chart_id: int) -> Optional[Chart]:
         """Get a chart by ID."""
-        return db.query(Chart).filter(Chart.id == chart_id).first()
+        chart = db.query(Chart).filter(Chart.id == chart_id).first()
+        return ChartService.hydrate_runtime_config(db, chart)
     
     @staticmethod
     def get_by_name(db: Session, name: str) -> Optional[Chart]:
@@ -306,7 +329,12 @@ class ChartService:
                 description=chart.description,
                 dataset_table_id=chart.dataset_table_id,
                 chart_type=ChartType(chart.chart_type.value),
-                config=chart.config,
+                config=with_chart_semantic_binding(
+                    db,
+                    chart.dataset_table_id,
+                    chart.config,
+                    auto_generate=True,
+                ),
                 owner_id=owner_id,
             )
             db.add(db_chart)
@@ -336,11 +364,19 @@ class ChartService:
                     setattr(db_chart, field, ChartType(value.value))
                 else:
                     setattr(db_chart, field, value)
+
+            if "config" in update_data or "dataset_table_id" in update_data:
+                db_chart.config = with_chart_semantic_binding(
+                    db,
+                    db_chart.dataset_table_id,
+                    db_chart.config,
+                    auto_generate=True,
+                )
             
             db.commit()
             db.refresh(db_chart)
             logger.info(f"Updated chart: {db_chart.name}")
-            return db_chart
+            return ChartService.hydrate_runtime_config(db, db_chart)
         except IntegrityError:
             db.rollback()
             raise ValueError(f"Chart with name '{chart_update.name}' already exists")
@@ -358,11 +394,17 @@ class ChartService:
         return True
     
     @staticmethod
-    def get_chart_data(db: Session, chart_id: int, extra_filters: list | None = None):
+    def get_chart_data(
+        db: Session,
+        chart_id: int,
+        extra_filters: list | None = None,
+        filter_context: str | None = None,
+    ):
         """Get chart configuration with data."""
         db_chart = ChartService.get_by_id(db, chart_id)
         if not db_chart:
             raise ValueError(f"Chart with ID {chart_id} not found")
+        filter_context = normalize_chart_filter_context(filter_context)
 
         # Prefer direct dataset_table_id FK over config-embedded source
         if db_chart.dataset_table_id is not None:
@@ -379,7 +421,7 @@ class ChartService:
                 raise ValueError("Data source not found")
 
             role_config = (db_chart.config or {}).get('roleConfig', {})
-            filters = (db_chart.config or {}).get('filters', [])
+            filters = resolve_chart_query_filters(db_chart.config or {}, filter_context)
 
             # ── LIVE mode: query source directly with aggregation ──
             query_mode = resolve_dataset_query_mode(db_table)
@@ -399,10 +441,11 @@ class ChartService:
             from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
             from app.services.duckdb_engine import DuckDBEngine
 
-            # Merge extra_filters from dashboard into stored filters
-            all_filters = list(filters or [])
-            if extra_filters:
-                all_filters.extend(extra_filters)
+            all_filters = merge_chart_query_filters(
+                db_chart.config or {},
+                extra_filters=extra_filters,
+                context=filter_context,
+            )
 
             if db_table.source_kind == "sql_query":
                 if not db_table.source_query:
@@ -462,7 +505,7 @@ class ChartService:
                 raise ValueError("Data source not found")
 
             role_config = (db_chart.config or {}).get('roleConfig', {})
-            filters = (db_chart.config or {}).get('filters', [])
+            filters = resolve_chart_query_filters(db_chart.config or {}, filter_context)
 
             # ── LIVE mode: query source directly with aggregation ──
             query_mode = resolve_dataset_query_mode(db_table)
@@ -482,9 +525,11 @@ class ChartService:
             from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
             from app.services.duckdb_engine import DuckDBEngine
 
-            all_filters = list(filters or [])
-            if extra_filters:
-                all_filters.extend(extra_filters)
+            all_filters = merge_chart_query_filters(
+                db_chart.config or {},
+                extra_filters=extra_filters,
+                context=filter_context,
+            )
 
             if db_table.source_kind == "sql_query":
                 if not db_table.source_query:
