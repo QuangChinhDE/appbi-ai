@@ -6,6 +6,8 @@ import { CHART_PALETTES, type ChartPaletteName } from '@/lib/chartColors';
 import type {
   ChartBenchmarkLineStyle,
   ConditionalFormatRule,
+  KpiGoalDirection,
+  KpiValueColorRule,
   TableHeatmapRule,
   TableSummaryCalculation,
   TableSummaryRowConfig,
@@ -62,6 +64,16 @@ export interface ChartStyleConfig {
   benchmarkLabel?: string;
   benchmarkColor?: string;
   benchmarkLineStyle?: ChartBenchmarkLineStyle;
+  // KPI card
+  kpiLabel?: string;
+  kpiContextTemplate?: string;
+  kpiBenchmarkValue?: number | '';
+  kpiBenchmarkLabel?: string;
+  kpiShowDelta?: boolean;
+  kpiGoalDirection?: KpiGoalDirection;
+  kpiAccentColor?: string;
+  kpiEnableColorRules?: boolean;
+  kpiColorRules?: KpiValueColorRule[];
   // Table
   tableEnableConditionalFormatting?: boolean;
   tableEnableHeatmap?: boolean;
@@ -95,6 +107,15 @@ export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
   benchmarkLabel: 'Benchmark',
   benchmarkColor: '#dc2626',
   benchmarkLineStyle: 'dashed',
+  kpiLabel: '',
+  kpiContextTemplate: '',
+  kpiBenchmarkValue: '',
+  kpiBenchmarkLabel: 'Target',
+  kpiShowDelta: true,
+  kpiGoalDirection: 'up',
+  kpiAccentColor: '#2563eb',
+  kpiEnableColorRules: false,
+  kpiColorRules: [],
   tableEnableConditionalFormatting: false,
   tableEnableHeatmap: false,
   tableShowSummaryRow: false,
@@ -153,6 +174,19 @@ export function normalizeChartStyleConfig(
 
   if (!Object.prototype.hasOwnProperty.call(rawStyleConfig, 'showBenchmarkLine')) {
     normalized.showBenchmarkLine = rawStyleConfig?.benchmarkValue !== undefined && rawStyleConfig?.benchmarkValue !== '';
+  }
+
+  if (normalized.kpiColorRules?.length) {
+    normalized.kpiColorRules = normalized.kpiColorRules.map((rule) => ({
+      operator: rule.operator ?? '>=',
+      value: Number.isFinite(Number(rule.value)) ? Number(rule.value) : 0,
+      color: normalizeColorInput(rule.color || '#16a34a', '#16a34a'),
+      label: rule.label?.trim() || undefined,
+    }));
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(rawStyleConfig, 'kpiEnableColorRules')) {
+    normalized.kpiEnableColorRules = Boolean(normalized.kpiColorRules?.length);
   }
 
   return normalized;
@@ -295,6 +329,11 @@ const COLOR_PRESET_SWATCHES = [
   '#fce7f3', '#ec4899', '#111827', '#475569', '#94a3b8', '#ffffff',
 ];
 
+const KPI_GOAL_DIRECTION_OPTIONS: Array<{ value: KpiGoalDirection; label: string }> = [
+  { value: 'up', label: 'Higher is better' },
+  { value: 'down', label: 'Lower is better' },
+];
+
 type TableBenchmarkMode = 'value' | 'field';
 
 function getTableBenchmarkMode(rule: ConditionalFormatRule): TableBenchmarkMode {
@@ -345,6 +384,20 @@ function createDefaultTableSummaryRow(
     label,
     calculation: 'sum',
     labelColumn: getDefaultSummaryLabelColumnName(displayedColumns, availableColumns),
+  };
+}
+
+function createDefaultKpiColorRule(index = 0): KpiValueColorRule {
+  const presets = [
+    { value: 0, color: '#16a34a', label: 'Positive' },
+    { value: 0, color: '#dc2626', label: 'Negative' },
+  ];
+  const preset = presets[index] ?? presets[0];
+  return {
+    operator: index === 1 ? '<' : '>=',
+    value: preset.value,
+    color: preset.color,
+    label: preset.label,
   };
 }
 
@@ -1352,6 +1405,203 @@ export function ExploreChartConfig({
         </Disclosure>
       )}
 
+      {chartType === 'KPI' && (
+        <Disclosure title="Card Options" hint="Make the KPI card smarter with labels, context, benchmark, and value rules.">
+          <div>
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">Card Label</label>
+            <input
+              type="text"
+              value={normalizedStyleConfig.kpiLabel || ''}
+              placeholder="Use metric label"
+              onChange={e => updStyle({ kpiLabel: e.target.value })}
+              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md"
+            />
+          </div>
+
+          <div>
+            <label className="flex items-center gap-1 text-xs font-semibold text-gray-600 mb-1">
+              Context Template
+              <HelpTooltip text="Use tokens like {value}, {rawValue}, {benchmark}, {benchmarkLabel}, {delta}, {deltaPercent}, {rows}, {label}." />
+            </label>
+            <textarea
+              value={normalizedStyleConfig.kpiContextTemplate || ''}
+              placeholder="Example: {value} achieved, higher than {benchmarkLabel} {benchmark}"
+              onChange={e => updStyle({ kpiContextTemplate: e.target.value })}
+              rows={3}
+              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md resize-none"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">Benchmark Value</label>
+              <input
+                type="number"
+                value={normalizedStyleConfig.kpiBenchmarkValue ?? ''}
+                placeholder="Optional"
+                onChange={e => updStyle({
+                  kpiBenchmarkValue: e.target.value === '' ? '' : Number(e.target.value),
+                })}
+                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">Benchmark Label</label>
+              <input
+                type="text"
+                value={normalizedStyleConfig.kpiBenchmarkLabel || ''}
+                placeholder="Target"
+                onChange={e => updStyle({ kpiBenchmarkLabel: e.target.value })}
+                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md"
+              />
+            </div>
+          </div>
+
+          <Toggle
+            label="Show delta vs benchmark"
+            checked={normalizedStyleConfig.kpiShowDelta ?? true}
+            onChange={v => updStyle({ kpiShowDelta: v })}
+          />
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">Goal Direction</label>
+              <select
+                value={normalizedStyleConfig.kpiGoalDirection || 'up'}
+                onChange={e => updStyle({ kpiGoalDirection: e.target.value as KpiGoalDirection })}
+                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white"
+              >
+                {KPI_GOAL_DIRECTION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <ColorField
+              label="Accent Color"
+              value={normalizedStyleConfig.kpiAccentColor || '#2563eb'}
+              onChange={value => updStyle({ kpiAccentColor: value })}
+            />
+          </div>
+
+          <Toggle
+            label="Value color rules"
+            checked={normalizedStyleConfig.kpiEnableColorRules ?? false}
+            onChange={(enabled) => updStyle({
+              kpiEnableColorRules: enabled,
+              kpiColorRules: enabled
+                ? (normalizedStyleConfig.kpiColorRules?.length
+                    ? normalizedStyleConfig.kpiColorRules
+                    : [createDefaultKpiColorRule()])
+                : (normalizedStyleConfig.kpiColorRules ?? []),
+            })}
+          />
+
+          {normalizedStyleConfig.kpiEnableColorRules && (
+            <div className="space-y-2">
+              {(normalizedStyleConfig.kpiColorRules ?? []).map((rule, index) => (
+                <div key={`kpi-rule-${index}`} className="rounded-lg border border-gray-200 bg-gray-50/80 p-2 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                      Rule {index + 1}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => updStyle({
+                        kpiColorRules: (normalizedStyleConfig.kpiColorRules ?? []).filter((_, ruleIndex) => ruleIndex !== index),
+                      })}
+                      className="rounded p-1 text-gray-400 hover:bg-white hover:text-red-500"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-[96px_1fr] gap-2">
+                    <div>
+                      <label className="text-[11px] font-semibold text-gray-500 mb-1 block">Operator</label>
+                      <select
+                        value={rule.operator}
+                        onChange={e => updStyle({
+                          kpiColorRules: (normalizedStyleConfig.kpiColorRules ?? []).map((currentRule, ruleIndex) => (
+                            ruleIndex === index
+                              ? { ...currentRule, operator: e.target.value as KpiValueColorRule['operator'] }
+                              : currentRule
+                          )),
+                        })}
+                        className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white"
+                      >
+                        {CONDITIONAL_OPERATOR_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-semibold text-gray-500 mb-1 block">Value</label>
+                      <input
+                        type="number"
+                        value={rule.value}
+                        onChange={e => updStyle({
+                          kpiColorRules: (normalizedStyleConfig.kpiColorRules ?? []).map((currentRule, ruleIndex) => (
+                            ruleIndex === index
+                              ? { ...currentRule, value: Number(e.target.value || 0) }
+                              : currentRule
+                          )),
+                        })}
+                        className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] font-semibold text-gray-500 mb-1 block">Status Label</label>
+                    <input
+                      type="text"
+                      value={rule.label || ''}
+                      placeholder="Optional badge text"
+                      onChange={e => updStyle({
+                        kpiColorRules: (normalizedStyleConfig.kpiColorRules ?? []).map((currentRule, ruleIndex) => (
+                          ruleIndex === index
+                            ? { ...currentRule, label: e.target.value }
+                            : currentRule
+                        )),
+                      })}
+                      className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white"
+                    />
+                  </div>
+
+                  <ColorField
+                    label="Value Color"
+                    value={rule.color}
+                    onChange={value => updStyle({
+                      kpiColorRules: (normalizedStyleConfig.kpiColorRules ?? []).map((currentRule, ruleIndex) => (
+                        ruleIndex === index
+                          ? { ...currentRule, color: value }
+                          : currentRule
+                      )),
+                    })}
+                  />
+                </div>
+              ))}
+
+              <button
+                type="button"
+                onClick={() => updStyle({
+                  kpiColorRules: [
+                    ...(normalizedStyleConfig.kpiColorRules ?? []),
+                    createDefaultKpiColorRule((normalizedStyleConfig.kpiColorRules ?? []).length),
+                  ],
+                })}
+                className="w-full rounded-md border border-dashed border-gray-300 px-3 py-2 text-xs font-medium text-gray-500 hover:border-gray-400 hover:text-gray-700"
+              >
+                + Add Color Rule
+              </button>
+            </div>
+          )}
+        </Disclosure>
+      )}
+
       {chartType !== 'TABLE' && (
         <Disclosure title="Field Mapping" defaultOpen>
 
@@ -1454,26 +1704,28 @@ export function ExploreChartConfig({
       {chartType !== 'TABLE' && (
         <Disclosure title="General" defaultOpen>
           {/* Color palette ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â compact horizontal row */}
-          <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1.5 block">Color Palette</label>
-            <div className="space-y-1">
-              {CHART_PALETTES.map(p => (
-                <button key={p.name} onClick={() => updStyle({ palette: p.name })}
-                  className={`w-full flex items-center gap-2 px-2 py-1 rounded-md border text-xs transition-colors ${
-                    (styleConfig.palette || 'default') === p.name
-                      ? 'border-blue-400 bg-blue-50'
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}>
-                  <div className="flex gap-0.5">
-                    {p.colors.slice(0, 6).map((c, i) => (
-                      <div key={i} className="w-3 h-3 rounded-sm" style={{ backgroundColor: c }} />
-                    ))}
-                  </div>
-                  <span className="text-gray-700">{p.label}</span>
-                </button>
-              ))}
+          {chartType !== 'KPI' && (
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1.5 block">Color Palette</label>
+              <div className="space-y-1">
+                {CHART_PALETTES.map(p => (
+                  <button key={p.name} onClick={() => updStyle({ palette: p.name })}
+                    className={`w-full flex items-center gap-2 px-2 py-1 rounded-md border text-xs transition-colors ${
+                      (styleConfig.palette || 'default') === p.name
+                        ? 'border-blue-400 bg-blue-50'
+                        : 'border-gray-200 hover:border-gray-300'
+                    }`}>
+                    <div className="flex gap-0.5">
+                      {p.colors.slice(0, 6).map((c, i) => (
+                        <div key={i} className="w-3 h-3 rounded-sm" style={{ backgroundColor: c }} />
+                      ))}
+                    </div>
+                    <span className="text-gray-700">{p.label}</span>
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Data labels */}
           {chartType !== 'KPI' && chartType !== 'SCATTER' && (
@@ -1482,20 +1734,18 @@ export function ExploreChartConfig({
           )}
 
           {/* Number format */}
-          {chartType !== 'KPI' && (
-            <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">Number Format</label>
-              <select value={styleConfig.numberFormat || 'compact'}
-                onChange={e => updStyle({ numberFormat: e.target.value as NumberFormat })}
-                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
-                <option value="auto">Auto (raw)</option>
-                <option value="compact">Compact (1.2K, 3.4M)</option>
-                <option value="number">Full Number (1,234)</option>
-                <option value="percent">Percent (%)</option>
-                <option value="currency">Currency ($)</option>
-              </select>
-            </div>
-          )}
+          <div>
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">Number Format</label>
+            <select value={styleConfig.numberFormat || 'compact'}
+              onChange={e => updStyle({ numberFormat: e.target.value as NumberFormat })}
+              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
+              <option value="auto">Auto (raw)</option>
+              <option value="compact">Compact (1.2K, 3.4M)</option>
+              <option value="number">Full Number (1,234)</option>
+              <option value="percent">Percent (%)</option>
+              <option value="currency">Currency ($)</option>
+            </select>
+          </div>
 
           {/* Legend position */}
           {chartType !== 'KPI' && (
@@ -1513,8 +1763,10 @@ export function ExploreChartConfig({
             </div>
           )}
 
-          <Toggle label="Grid Lines" checked={styleConfig.showGrid ?? true}
-            onChange={v => updStyle({ showGrid: v })} />
+          {chartType !== 'KPI' && (
+            <Toggle label="Grid Lines" checked={styleConfig.showGrid ?? true}
+              onChange={v => updStyle({ showGrid: v })} />
+          )}
         </Disclosure>
       )}
 
