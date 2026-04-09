@@ -4,21 +4,8 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Edit2, UserX, ChevronDown } from 'lucide-react';
 import { usersApi } from '@/lib/api-client';
+import { extractApiError, PASSWORD_REQUIREMENTS_TEXT, validatePasswordStrength } from '@/lib/api-errors';
 import { toast } from 'sonner';
-
-/** Extract a human-readable message from an Axios error (handles Pydantic 422 arrays). */
-function extractApiError(err: any, fallback = 'An error occurred.'): string {
-  const detail = err?.response?.data?.detail;
-  if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail)) {
-    const msgs = detail
-      .map((d: any) => (typeof d === 'string' ? d : d?.msg))
-      .filter(Boolean)
-      .map((m: string) => m.replace(/^Value error, /i, ''));
-    if (msgs.length) return msgs.join('; ');
-  }
-  return fallback;
-}
 
 type UserStatus = 'active' | 'deactivated';
 
@@ -172,6 +159,11 @@ function InviteModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    const passwordError = validatePasswordStrength(password);
+    if (passwordError) {
+      setError(passwordError);
+      return;
+    }
     setLoading(true);
     try {
       await usersApi.create({ email, full_name: fullName, password });
@@ -223,6 +215,7 @@ function InviteModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="Min 8 characters"
             />
+            <p className="mt-1 text-xs text-gray-500">{PASSWORD_REQUIREMENTS_TEXT}</p>
           </div>
           <div className="flex justify-end space-x-2 pt-2">
             <button

@@ -1,6 +1,7 @@
 """
 CRUD service for charts.
 """
+import re
 from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -28,6 +29,7 @@ from app.services.dataset_calendar_service import (
 )
 from app.services.dataset_table_sql_service import (
     DatasetTableSqlError,
+    build_live_proxy_table_for_dataset_table,
     build_dataset_table_duckdb_query,
     is_derived_table,
 )
@@ -148,6 +150,518 @@ def _apply_transformations(view_name: str, transformations) -> str:
     return f'({compiled_sql}) AS _t'
 
 
+_SIMPLE_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _quote_duckdb_identifier(value: str) -> str:
+    text = str(value)
+    return '"' + text.replace('"', '""') + '"'
+
+
+def _normalize_runtime_filters_for_chart(
+    chart_config: dict | None,
+    filters: list | None,
+    *,
+    include_joined_semantic: bool = False,
+) -> list[dict]:
+    normalized_filters = normalize_filter_conditions(filters)
+    if not normalized_filters:
+        return []
+
+    binding = (
+        chart_config.get("semanticBinding")
+        if isinstance(chart_config, dict) and isinstance(chart_config.get("semanticBinding"), dict)
+        else {}
+    )
+    dataset_id = binding.get("datasetId")
+    base_view_name = str(binding.get("baseViewName") or "").strip()
+
+    result: list[dict] = []
+    for filt in normalized_filters:
+        filter_dataset_id = filt.get("datasetId")
+        if dataset_id is not None and filter_dataset_id is not None and filter_dataset_id != dataset_id:
+            continue
+
+        semantic_field = str(
+            filt.get("semanticField")
+            or filt.get("fieldKey")
+            or ""
+        ).strip()
+        if not semantic_field or "." not in semantic_field:
+            result.append(filt)
+            continue
+
+        semantic_view, _semantic_name = semantic_field.split(".", 1)
+        if semantic_view == base_view_name:
+            result.append(filt)
+            continue
+
+        if include_joined_semantic:
+            result.append(filt)
+
+    return result
+
+
+def _render_duckdb_semantic_field_sql(
+    field_def: dict,
+    field_name: str,
+    table_alias: str,
+) -> str | None:
+    sql_template = str(field_def.get("sql") or field_name).strip()
+    if not sql_template or sql_template == "*":
+        return None
+    if "${TABLE}" in sql_template:
+        return sql_template.replace("${TABLE}", table_alias)
+    if _SIMPLE_SQL_IDENTIFIER_RE.fullmatch(sql_template):
+        return f"{table_alias}.{_quote_duckdb_identifier(sql_template)}"
+    return None
+
+
+def _semantic_view_has_field(semantic_view, field_name: str) -> bool:
+    target = str(field_name or "").strip()
+    if not target:
+        return False
+    return any(
+        str(item.get("name") or "").strip() == target
+        for item in [*(getattr(semantic_view, "dimensions", None) or []), *(getattr(semantic_view, "measures", None) or [])]
+    )
+
+
+def _build_duckdb_relation_for_semantic_view(
+    db: Session,
+    dataset_obj,
+    semantic_view,
+) -> str | None:
+    from app.models.dataset import DatasetTable
+    from app.models.models import DataSource
+    from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
+
+    dataset_table_id = getattr(semantic_view, "dataset_table_id", None)
+    if dataset_table_id:
+        joined_table = db.query(DatasetTable).filter(DatasetTable.id == dataset_table_id).first()
+        if not joined_table:
+            return None
+
+        if is_generated_calendar_table(joined_table):
+            return f"({build_calendar_duckdb_sql(get_calendar_settings(dataset_obj, enabled_default=False))}) AS _semantic_join"
+
+        if is_derived_table(joined_table):
+            try:
+                return f"({build_dataset_table_duckdb_query(db, dataset_obj, joined_table)}) AS _semantic_join"
+            except DatasetTableSqlError:
+                return None
+
+        datasource = db.query(DataSource).filter(DataSource.id == joined_table.datasource_id).first()
+        if not datasource:
+            return None
+
+        if joined_table.source_kind == "sql_query":
+            rewritten = rewrite_sql_for_duckdb(datasource.id, joined_table.source_query or "")
+            return f"({rewritten}) AS _semantic_join" if rewritten else None
+
+        if joined_table.source_kind == "physical_table":
+            view_name = get_synced_view(datasource.id, joined_table.source_table_name or "")
+            return view_name if view_name else None
+
+    sql_table_name = str(getattr(semantic_view, "sql_table_name", "") or "").strip()
+    if not sql_table_name:
+        return None
+    return f"({sql_table_name}) AS _semantic_join" if sql_table_name.startswith("(") else sql_table_name
+
+
+def _adapt_duckdb_base_table_for_semantic_filters(
+    db: Session,
+    dataset_obj,
+    chart_config: dict | None,
+    base_table: str,
+    filters: list | None,
+) -> tuple[str, list[dict]]:
+    normalized_filters = _normalize_runtime_filters_for_chart(
+        chart_config,
+        filters,
+        include_joined_semantic=True,
+    )
+    if not normalized_filters:
+        return base_table, []
+
+    binding = (
+        chart_config.get("semanticBinding")
+        if isinstance(chart_config, dict) and isinstance(chart_config.get("semanticBinding"), dict)
+        else {}
+    )
+    explore_id = binding.get("exploreId")
+    explore_name = str(binding.get("exploreName") or "").strip()
+    base_view_name = str(binding.get("baseViewName") or "").strip()
+    if not explore_id and not explore_name:
+        return base_table, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
+
+    from app.models.semantic import SemanticExplore, SemanticView
+
+    explore_query = db.query(SemanticExplore)
+    explore = (
+        explore_query.filter(SemanticExplore.id == explore_id).first()
+        if explore_id
+        else explore_query.filter(SemanticExplore.name == explore_name).first()
+    )
+    if not explore:
+        return base_table, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
+
+    join_alias_by_view: dict[str, str] = {}
+    join_specs: list[dict[str, Any]] = []
+    projected_fields: list[dict[str, str]] = []
+    effective_filters: list[dict] = []
+
+    join_index = 0
+    projection_index = 0
+
+    for filt in normalized_filters:
+        semantic_field = str(
+            filt.get("semanticField")
+            or filt.get("fieldKey")
+            or ""
+        ).strip()
+        if not semantic_field or "." not in semantic_field:
+            effective_filters.append(filt)
+            continue
+
+        semantic_view_name, semantic_name = semantic_field.split(".", 1)
+        if semantic_view_name == base_view_name:
+            effective_filters.append(filt)
+            continue
+
+        join_def = next(
+            (
+                join
+                for join in (explore.joins or [])
+                if str(join.get("view") or "").strip() == semantic_view_name
+                and str(join.get("from_view") or base_view_name).strip() == base_view_name
+                and join.get("from_column")
+                and join.get("to_column")
+            ),
+            None,
+        )
+        if not join_def:
+            continue
+
+        semantic_view = db.query(SemanticView).filter(SemanticView.name == semantic_view_name).first()
+        if not semantic_view:
+            continue
+
+        field_def = next(
+            (
+                item
+                for item in [*(semantic_view.dimensions or []), *(semantic_view.measures or [])]
+                if str(item.get("name") or "").strip() == semantic_name
+            ),
+            None,
+        )
+        if not field_def:
+            continue
+
+        join_alias = join_alias_by_view.get(semantic_view_name)
+        if join_alias is None:
+            join_relation = _build_duckdb_relation_for_semantic_view(db, dataset_obj, semantic_view)
+            if not join_relation:
+                continue
+            join_from_column = str(join_def.get("from_column"))
+            join_to_column = str(join_def.get("to_column"))
+            if (
+                join_to_column
+                and not _semantic_view_has_field(semantic_view, join_to_column)
+                and _semantic_view_has_field(semantic_view, join_from_column)
+            ):
+                join_to_column = join_from_column
+            join_alias = f"_appbi_sem_join_{join_index}"
+            join_index += 1
+            join_alias_by_view[semantic_view_name] = join_alias
+            join_specs.append(
+                {
+                    "view": semantic_view_name,
+                    "alias": join_alias,
+                    "relation": join_relation,
+                    "from_column": join_from_column,
+                    "to_column": join_to_column,
+                }
+            )
+
+        rendered_expr = _render_duckdb_semantic_field_sql(field_def, semantic_name, join_alias)
+        if not rendered_expr:
+            continue
+
+        projection_alias = f"__sem_filter_{projection_index}"
+        projection_index += 1
+        projected_fields.append(
+            {
+                "expr": rendered_expr,
+                "alias": projection_alias,
+            }
+        )
+        effective_filters.append(
+            {
+                **filt,
+                "field": projection_alias,
+            }
+        )
+
+    if not join_specs or not projected_fields:
+        return base_table, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
+
+    select_parts = ['_appbi_base.*']
+    select_parts.extend(
+        f'{field["expr"]} AS {_quote_duckdb_identifier(field["alias"])}'
+        for field in projected_fields
+    )
+    join_clauses = [
+        (
+            f'LEFT JOIN (SELECT * FROM {join_spec["relation"]}) AS {join_spec["alias"]} '
+            f'ON _appbi_base.{_quote_duckdb_identifier(join_spec["from_column"])} = '
+            f'{join_spec["alias"]}.{_quote_duckdb_identifier(join_spec["to_column"])}'
+        )
+        for join_spec in join_specs
+    ]
+    enriched_base_table = (
+        f'(SELECT {", ".join(select_parts)} '
+        f'FROM (SELECT * FROM {base_table}) AS _appbi_base '
+        f'{" ".join(join_clauses)}) AS _appbi_semantic'
+    )
+    return enriched_base_table, effective_filters
+
+
+def _render_live_semantic_field_sql(
+    field_def: dict,
+    field_name: str,
+    table_alias: str,
+) -> str | None:
+    sql_template = str(field_def.get("sql") or field_name).strip()
+    if not sql_template or sql_template == "*":
+        return None
+    if "${TABLE}" in sql_template:
+        return sql_template.replace("${TABLE}", table_alias)
+    if _SIMPLE_SQL_IDENTIFIER_RE.fullmatch(sql_template):
+        return f"{table_alias}.{sql_template}"
+    return None
+
+
+def _build_live_relation_for_semantic_view(
+    db: Session,
+    datasource,
+    semantic_view,
+) -> str | None:
+    from app.models.dataset import DatasetTable
+    from app.models.models import DataSource
+    from app.services.live_query_service import build_live_base_query_plan
+
+    dataset_table_id = getattr(semantic_view, "dataset_table_id", None)
+    if dataset_table_id:
+        joined_table = db.query(DatasetTable).filter(DatasetTable.id == dataset_table_id).first()
+        if joined_table and not is_derived_table(joined_table):
+            joined_datasource = db.query(DataSource).filter(DataSource.id == joined_table.datasource_id).first()
+            if joined_datasource and joined_datasource.id == datasource.id:
+                try:
+                    return build_live_base_query_plan(
+                        joined_datasource,
+                        joined_table,
+                        apply_type_overrides=True,
+                    ).sql
+                except Exception:
+                    logger.debug(
+                        "Falling back to semantic sql_table_name for live join view %s",
+                        getattr(semantic_view, "name", None),
+                        exc_info=True,
+                    )
+
+    sql_table_name = str(getattr(semantic_view, "sql_table_name", "") or "").strip()
+    return sql_table_name or None
+
+
+def _wrap_live_sql_relation(relation: str) -> str:
+    text = str(relation or "").strip().rstrip(";")
+    if not text:
+        return text
+    lowered = text.lower()
+    if text.startswith("("):
+        return text
+    if lowered.startswith("select ") or lowered.startswith("with "):
+        return f"({text})"
+    return text
+
+
+def _adapt_live_sql_for_semantic_filters(
+    db: Session,
+    datasource,
+    db_table,
+    chart_config: dict | None,
+    filters: list | None,
+) -> tuple[str | None, list[dict]]:
+    normalized_filters = _normalize_runtime_filters_for_chart(
+        chart_config,
+        filters,
+        include_joined_semantic=True,
+    )
+    if not normalized_filters:
+        return None, []
+
+    binding = (
+        chart_config.get("semanticBinding")
+        if isinstance(chart_config, dict) and isinstance(chart_config.get("semanticBinding"), dict)
+        else {}
+    )
+    explore_id = binding.get("exploreId")
+    explore_name = str(binding.get("exploreName") or "").strip()
+    base_view_name = str(binding.get("baseViewName") or "").strip()
+    if not explore_id and not explore_name:
+        return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
+
+    from app.models.semantic import SemanticExplore, SemanticView
+    from app.services.live_query_service import build_live_base_query_plan
+
+    explore_query = db.query(SemanticExplore)
+    explore = (
+        explore_query.filter(SemanticExplore.id == explore_id).first()
+        if explore_id
+        else explore_query.filter(SemanticExplore.name == explore_name).first()
+    )
+    if not explore:
+        return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
+
+    try:
+        base_sql = build_live_base_query_plan(
+            datasource,
+            db_table,
+            apply_type_overrides=True,
+        ).sql
+    except Exception:
+        logger.debug("Failed to build base live SQL for semantic runtime filters", exc_info=True)
+        return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
+
+    join_alias_by_view: dict[str, str] = {}
+    join_specs: list[dict[str, Any]] = []
+    projected_fields: list[dict[str, str]] = []
+    effective_filters: list[dict] = []
+
+    join_index = 0
+    projection_index = 0
+
+    for filt in normalized_filters:
+        semantic_field = str(
+            filt.get("semanticField")
+            or filt.get("fieldKey")
+            or ""
+        ).strip()
+        if not semantic_field or "." not in semantic_field:
+            effective_filters.append(filt)
+            continue
+
+        semantic_view_name, semantic_name = semantic_field.split(".", 1)
+        if semantic_view_name == base_view_name:
+            effective_filters.append(filt)
+            continue
+
+        join_def = next(
+            (
+                join
+                for join in (explore.joins or [])
+                if str(join.get("view") or "").strip() == semantic_view_name
+                and str(join.get("from_view") or base_view_name).strip() == base_view_name
+                and join.get("from_column")
+                and join.get("to_column")
+            ),
+            None,
+        )
+        if not join_def:
+            continue
+
+        semantic_view = db.query(SemanticView).filter(SemanticView.name == semantic_view_name).first()
+        if not semantic_view:
+            continue
+
+        field_def = next(
+            (
+                item
+                for item in [*(semantic_view.dimensions or []), *(semantic_view.measures or [])]
+                if str(item.get("name") or "").strip() == semantic_name
+            ),
+            None,
+        )
+        if not field_def:
+            continue
+
+        join_alias = join_alias_by_view.get(semantic_view_name)
+        if join_alias is None:
+            join_relation = _build_live_relation_for_semantic_view(db, datasource, semantic_view)
+            if not join_relation:
+                continue
+            join_from_column = str(join_def.get("from_column"))
+            join_to_column = str(join_def.get("to_column"))
+            if (
+                join_to_column
+                and not _semantic_view_has_field(semantic_view, join_to_column)
+                and _semantic_view_has_field(semantic_view, join_from_column)
+            ):
+                join_to_column = join_from_column
+            join_alias = f"_appbi_sem_join_{join_index}"
+            join_index += 1
+            join_alias_by_view[semantic_view_name] = join_alias
+            join_specs.append(
+                {
+                    "view": semantic_view_name,
+                    "alias": join_alias,
+                    "relation": join_relation,
+                    "from_column": join_from_column,
+                    "to_column": join_to_column,
+                }
+            )
+
+        rendered_expr = _render_live_semantic_field_sql(field_def, semantic_name, join_alias)
+        if not rendered_expr:
+            continue
+
+        projection_alias = f"__sem_filter_{projection_index}"
+        projection_index += 1
+        projected_fields.append(
+            {
+                "expr": rendered_expr,
+                "alias": projection_alias,
+            }
+        )
+        effective_filters.append(
+            {
+                **filt,
+                "field": projection_alias,
+            }
+        )
+
+    if not join_specs or not projected_fields:
+        return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
+
+    select_parts = ["_appbi_base.*"]
+    select_parts.extend(
+        f'{field["expr"]} AS {field["alias"]}'
+        for field in projected_fields
+    )
+    join_clauses = [
+        (
+            f'LEFT JOIN {_wrap_live_sql_relation(join_spec["relation"])} AS {join_spec["alias"]} '
+            f'ON _appbi_base.{join_spec["from_column"]} = {join_spec["alias"]}.{join_spec["to_column"]}'
+        )
+        for join_spec in join_specs
+    ]
+    enriched_sql = (
+        f'SELECT {", ".join(select_parts)} '
+        f'FROM ({base_sql}) AS _appbi_base '
+        f'{" ".join(join_clauses)}'
+    )
+    return enriched_sql, effective_filters
+
+
+def _wrap_base_table_with_row_order(base_table: str) -> str:
+    """Attach a stable row ordinal so grouped charts can preserve source order."""
+    return (
+        f'(SELECT *, ROW_NUMBER() OVER () AS "__appbi_row_order" '
+        f'FROM {base_table}) AS _appbi_ordered'
+    )
+
+
 def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filters: list):
     """
     Build a DuckDB GROUP BY query from chart roleConfig.
@@ -203,12 +717,18 @@ def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filter
             else:
                 metric_sql = f'SUM("{metric_field}") AS {metric_alias}'
 
+            ordered_base_table = _wrap_base_table_with_row_order(base_table)
+            inner_sql = (
+                f'SELECT "{table_row_dimension}", "{table_column_dimension}", {metric_sql}, '
+                f'MIN("__appbi_row_order") AS "__appbi_group_order" '
+                f'FROM {ordered_base_table}{where_sql} '
+                f'GROUP BY "{table_row_dimension}", "{table_column_dimension}"'
+            )
             sql = (
-                f'SELECT "{table_row_dimension}", "{table_column_dimension}", {metric_sql} '
-                f'FROM {base_table}{where_sql} '
-                f'GROUP BY "{table_row_dimension}", "{table_column_dimension}" '
-                f'ORDER BY "{table_row_dimension}" ASC, "{table_column_dimension}" ASC '
-                f'LIMIT 5000'
+                'SELECT * EXCLUDE ("__appbi_group_order") '
+                f'FROM ({inner_sql}) AS _appbi_pivot '
+                'ORDER BY "__appbi_group_order" ASC '
+                'LIMIT 5000'
             )
             return sql, True
 
@@ -268,36 +788,20 @@ def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filter
     if not select_parts:
         return f'SELECT * FROM {base_table}{where_sql} LIMIT 1000', False
 
-    sql = f"SELECT {', '.join(select_parts)} FROM {base_table}{where_sql}"
+    source_table = _wrap_base_table_with_row_order(base_table) if group_by_parts else base_table
+    sql = f"SELECT {', '.join(select_parts)}"
+    if group_by_parts:
+        sql += ', MIN("__appbi_row_order") AS "__appbi_group_order"'
+    sql += f" FROM {source_table}{where_sql}"
     if group_by_parts:
         sql += f" GROUP BY {', '.join(group_by_parts)}"
 
-    # BI best practice: ORDER BY the first metric DESC so the chart shows
-    # the most significant groups first, and cap at 10 000 groups to avoid
-    # sending millions of rows when a high-cardinality column is used as
-    # the dimension (e.g. customer_id with 10M unique values).
-    first_metric_alias = None
-    for m in metrics:
-        field = m.get('field', '')
-        agg = (m.get('agg') or 'sum').upper().replace(' ', '_')
-        if not field:
-            continue
-        if agg == 'COUNT_DISTINCT':
-            first_metric_alias = f'"count_distinct__{field}"'
-        elif agg == 'COUNT':
-            first_metric_alias = f'"count__{field}"'
-        elif agg == 'AVG':
-            first_metric_alias = f'"avg__{field}"'
-        elif agg == 'MIN':
-            first_metric_alias = f'"min__{field}"'
-        elif agg == 'MAX':
-            first_metric_alias = f'"max__{field}"'
-        else:
-            first_metric_alias = f'"sum__{field}"'
-        break
-
-    if first_metric_alias and group_by_parts:
-        sql += f" ORDER BY {first_metric_alias} DESC"
+    if group_by_parts:
+        sql = (
+            'SELECT * EXCLUDE ("__appbi_group_order") '
+            f'FROM ({sql}) AS _appbi_grouped '
+            'ORDER BY "__appbi_group_order" ASC'
+        )
     sql += " LIMIT 10000"
     return sql, True
 
@@ -321,12 +825,16 @@ def _execute_chart_runtime_for_table(
     role_config = get_chart_active_role_config(chart_config)
     filters = resolve_chart_query_filters(chart_config, filter_context)
     custom_sql = get_chart_custom_sql(chart_config)
+    raw_extra_filters = list(extra_filters or [])
+    normalized_extra_filters = _normalize_runtime_filters_for_chart(chart_config, extra_filters)
     dataset_obj = None
 
     if is_generated_calendar_table(db_table) or is_derived_table(db_table):
         dataset_obj = db.query(Dataset).filter(Dataset.id == db_table.dataset_id).first()
         if dataset_obj is None:
             raise ValueError("Dataset not found")
+    elif raw_extra_filters:
+        dataset_obj = db.query(Dataset).filter(Dataset.id == db_table.dataset_id).first()
 
     if is_generated_calendar_table(db_table):
         from app.services.duckdb_engine import DuckDBEngine
@@ -334,7 +842,7 @@ def _execute_chart_runtime_for_table(
         base_table = f"({build_calendar_duckdb_sql(get_calendar_settings(dataset_obj, enabled_default=False))}) AS _calendar"
         all_filters = merge_chart_query_filters(
             chart_config,
-            extra_filters=extra_filters,
+            extra_filters=normalized_extra_filters,
             context=filter_context,
         )
         agg_sql, pre_agg = _build_agg_query(base_table, chart_type, role_config, all_filters)
@@ -350,18 +858,34 @@ def _execute_chart_runtime_for_table(
             role_config,
             filters,
             custom_sql,
-            extra_filters=extra_filters,
+            extra_filters=normalized_extra_filters,
         )
 
     query_mode = resolve_dataset_query_mode(db_table)
     if query_mode == 'live':
+        live_sql, live_filters = _adapt_live_sql_for_semantic_filters(
+            db,
+            datasource,
+            db_table,
+            chart_config,
+            raw_extra_filters,
+        )
+        if live_sql:
+            return LiveQueryService.execute_chart_query_from_sql(
+                datasource,
+                chart_type,
+                role_config,
+                filters,
+                live_sql,
+                extra_filters=live_filters,
+            )
         return LiveQueryService.execute_chart_query(
             datasource,
             db_table,
             chart_type,
             role_config,
             filters,
-            extra_filters=extra_filters,
+            extra_filters=normalized_extra_filters,
         )
 
     from app.services.duckdb_engine import DuckDBEngine
@@ -369,17 +893,57 @@ def _execute_chart_runtime_for_table(
 
     all_filters = merge_chart_query_filters(
         chart_config,
-        extra_filters=extra_filters,
+        extra_filters=raw_extra_filters,
         context=filter_context,
     )
 
     if is_derived_table(db_table):
         try:
             base_table = f"({build_dataset_table_duckdb_query(db, dataset_obj, db_table)}) AS _q"
+            base_table, all_filters = _adapt_duckdb_base_table_for_semantic_filters(
+                db,
+                dataset_obj,
+                chart_config,
+                base_table,
+                all_filters,
+            )
             agg_sql, pre_agg = _build_agg_query(base_table, chart_type, role_config, all_filters)
             rows = DuckDBEngine.query(agg_sql)
             return {"data": rows, "pre_aggregated": pre_agg}
         except DatasetTableSqlError as exc:
+            if getattr(exc, "code", "") == "NOT_SYNCED":
+                try:
+                    live_datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
+                        db,
+                        dataset_obj,
+                        db_table,
+                    )
+                    live_sql, live_filters = _adapt_live_sql_for_semantic_filters(
+                        db,
+                        live_datasource,
+                        live_proxy_table,
+                        chart_config,
+                        raw_extra_filters,
+                    )
+                    if live_sql:
+                        return LiveQueryService.execute_chart_query_from_sql(
+                            live_datasource,
+                            chart_type,
+                            role_config,
+                            filters,
+                            live_sql,
+                            extra_filters=live_filters,
+                        )
+                    return LiveQueryService.execute_chart_query(
+                        live_datasource,
+                        live_proxy_table,
+                        chart_type,
+                        role_config,
+                        filters,
+                        extra_filters=normalized_extra_filters,
+                    )
+                except DatasetTableSqlError as live_exc:
+                    raise ValueError(str(live_exc)) from live_exc
             raise ValueError(str(exc)) from exc
 
     if db_table.source_kind == "sql_query":
@@ -389,18 +953,41 @@ def _execute_chart_runtime_for_table(
         if rewritten:
             try:
                 base_table = f"({rewritten}) AS _q"
+                base_table, all_filters = _adapt_duckdb_base_table_for_semantic_filters(
+                    db,
+                    dataset_obj,
+                    chart_config,
+                    base_table,
+                    all_filters,
+                )
                 agg_sql, pre_agg = _build_agg_query(base_table, chart_type, role_config, all_filters)
                 rows = DuckDBEngine.query(agg_sql)
                 return {"data": rows, "pre_aggregated": pre_agg}
             except Exception:
                 logger.debug("DuckDB agg query failed, falling back to live query", exc_info=True)
+        live_sql, live_filters = _adapt_live_sql_for_semantic_filters(
+            db,
+            datasource,
+            db_table,
+            chart_config,
+            raw_extra_filters,
+        )
+        if live_sql:
+            return LiveQueryService.execute_chart_query_from_sql(
+                datasource,
+                chart_type,
+                role_config,
+                filters,
+                live_sql,
+                extra_filters=live_filters,
+            )
         return LiveQueryService.execute_chart_query(
             datasource,
             db_table,
             chart_type,
             role_config,
             filters,
-            extra_filters=extra_filters,
+            extra_filters=normalized_extra_filters,
         )
 
     if db_table.source_kind == "physical_table":
@@ -409,16 +996,39 @@ def _execute_chart_runtime_for_table(
         view_name = get_synced_view(datasource.id, db_table.source_table_name)
         if view_name:
             base_table = _apply_transformations(view_name, db_table.transformations)
+            base_table, all_filters = _adapt_duckdb_base_table_for_semantic_filters(
+                db,
+                dataset_obj,
+                chart_config,
+                base_table,
+                all_filters,
+            )
             agg_sql, pre_agg = _build_agg_query(base_table, chart_type, role_config, all_filters)
             rows = DuckDBEngine.query(agg_sql)
             return {"data": rows, "pre_aggregated": pre_agg}
+        live_sql, live_filters = _adapt_live_sql_for_semantic_filters(
+            db,
+            datasource,
+            db_table,
+            chart_config,
+            raw_extra_filters,
+        )
+        if live_sql:
+            return LiveQueryService.execute_chart_query_from_sql(
+                datasource,
+                chart_type,
+                role_config,
+                filters,
+                live_sql,
+                extra_filters=live_filters,
+            )
         return LiveQueryService.execute_chart_query(
             datasource,
             db_table,
             chart_type,
             role_config,
             filters,
-            extra_filters=extra_filters,
+            extra_filters=normalized_extra_filters,
         )
 
     raise ValueError(f"Unsupported source_kind: {db_table.source_kind}")

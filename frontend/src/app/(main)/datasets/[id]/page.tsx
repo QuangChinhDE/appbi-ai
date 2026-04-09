@@ -194,40 +194,64 @@ function getTableSecondaryName(table: Partial<DatasetTable> | null | undefined):
 function getDeleteConstraintMeta(constraint: any): {
   badge: string;
   className: string;
+  title: string;
   description: string;
 } {
   if (constraint?.type === 'chart' || constraint?.type === 'chart_filter') {
     return {
       badge: 'Chart',
       className: 'text-red-500 bg-red-100',
-      description: constraint?.name || 'Chart dependency',
+      title: constraint?.object_label || (constraint?.name ? `Chart "${constraint.name}"` : 'Chart dependency'),
+      description: constraint?.detail || 'This chart still depends on the table you are trying to delete.',
     };
   }
   if (constraint?.type === 'dashboard_filter') {
     return {
       badge: 'Filter',
       className: 'text-blue-600 bg-blue-100',
-      description: `Dashboard ${constraint?.name || ''}${constraint?.field ? ` · ${constraint.field}` : ''}`.trim(),
+      title: constraint?.object_label || (constraint?.name ? `Dashboard "${constraint.name}"` : 'Dashboard filter'),
+      description: constraint?.detail || (
+        constraint?.field
+          ? `Filter "${constraint.field}" still references this table.`
+          : 'A dashboard filter still references this table.'
+      ),
     };
   }
   if (constraint?.type === 'public_link_filter') {
     return {
       badge: 'Public',
       className: 'text-indigo-600 bg-indigo-100',
-      description: `${constraint?.name || 'Public link'}${constraint?.field ? ` · ${constraint.field}` : ''}`.trim(),
+      title: constraint?.object_label || (constraint?.name ? `Public link "${constraint.name}"` : 'Public link'),
+      description: constraint?.detail || (
+        constraint?.field
+          ? `Filter "${constraint.field}" still references this table.`
+          : 'A public filter still references this table.'
+      ),
     };
   }
   if (constraint?.type === 'calculated_table') {
     return {
       badge: 'Calculated',
       className: 'text-violet-600 bg-violet-100',
-      description: constraint?.table_name || 'Calculated table dependency',
+      title: constraint?.object_label || (
+        constraint?.table_name ? `Calculated table "${constraint.table_name}"` : 'Calculated table dependency'
+      ),
+      description: constraint?.detail || 'Its SQL still depends on this table.',
     };
   }
   return {
     badge: 'Lookup',
     className: 'text-amber-600 bg-amber-100',
-    description: `Bảng ${constraint?.table_name ? `"${constraint.table_name}"` : ''}${constraint?.column ? `, cột "${constraint.column}"` : ''}`.trim(),
+    title: constraint?.object_label || (
+      constraint?.table_name
+        ? `Table "${constraint.table_name}"`
+        : 'Lookup dependency'
+    ),
+    description: constraint?.detail || (
+      constraint?.column
+        ? `Column "${constraint.column}" still references this table.`
+        : 'A lookup formula still references this table.'
+    ),
   };
 }
 
@@ -1378,11 +1402,14 @@ export default function DatasetDetailPage() {
                 </div>
                 <ul className="mb-6 space-y-2">
                   {deleteConstraints.map((c: any, i: number) => (
-                    <li key={i} className="flex items-center gap-2 text-sm bg-red-50 rounded-lg px-3 py-2">
-                      <span className={`text-xs font-semibold uppercase rounded px-1.5 py-0.5 ${getDeleteConstraintMeta(c).className}`}>
+                    <li key={i} className="flex items-start gap-3 rounded-lg bg-red-50 px-3 py-3 text-sm">
+                      <span className={`mt-0.5 text-xs font-semibold uppercase rounded px-1.5 py-0.5 ${getDeleteConstraintMeta(c).className}`}>
                         {getDeleteConstraintMeta(c).badge}
                       </span>
-                      <span className="text-gray-800">{getDeleteConstraintMeta(c).description}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium text-gray-900">{getDeleteConstraintMeta(c).title}</div>
+                        <div className="mt-0.5 text-gray-700">{getDeleteConstraintMeta(c).description}</div>
+                      </div>
                     </li>
                   ))}
                 </ul>

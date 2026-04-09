@@ -14,7 +14,6 @@ import type {
   ExecuteQueryRequest,
   ExecuteQueryResponse,
   FilterCondition as ExecuteFilterCondition,
-  OrderBySpec,
 } from '@/hooks/use-datasets';
 
 type QuerySource = 'generated' | 'custom';
@@ -41,6 +40,7 @@ interface CustomSqlRoleInference {
   generatedRoleConfig?: ChartRoleConfig;
 }
 
+const TRAILING_ROW_LIMIT_PATTERN = /(?:\blimit\s+\d+\s*(?:offset\s+\d+\s*)?|\boffset\s+\d+\s+limit\s+\d+\s*|\bfetch\s+first\s+\d+\s+rows?\s+only)\s*$/i;
 const AGGREGATED_CHART_TYPES = new Set<ExploreChartType>([
   'BAR',
   'HORIZONTAL_BAR',
@@ -53,8 +53,6 @@ const AGGREGATED_CHART_TYPES = new Set<ExploreChartType>([
   'PIE',
   'KPI',
 ]);
-
-const TRAILING_ROW_LIMIT_PATTERN = /(?:\blimit\s+\d+\s*(?:offset\s+\d+\s*)?|\boffset\s+\d+\s+limit\s+\d+\s*|\bfetch\s+first\s+\d+\s+rows?\s+only)\s*$/i;
 
 function datasetMetricAlias(metric: MetricConfig): string {
   return `${metric.field}_${metric.agg}`;
@@ -246,20 +244,6 @@ function normalizeFilterValue(filter: Filter): any {
     return [];
   }
   return filter.value ?? '';
-}
-
-function buildOrderBy(
-  chartType: ExploreChartType,
-  dimensionField: string | undefined,
-  metrics: MetricConfig[],
-): OrderBySpec[] {
-  if (chartType === 'TIME_SERIES' && dimensionField) {
-    return [{ field: dimensionField, direction: 'ASC' }];
-  }
-  if (AGGREGATED_CHART_TYPES.has(chartType) && metrics.length > 0) {
-    return [{ field: datasetMetricAlias(metrics[0]), direction: 'DESC' }];
-  }
-  return [];
 }
 
 function quoteSqlValue(value: any): string {
@@ -835,11 +819,6 @@ export function buildExploreExecuteRequest(args: {
       field: metric.field,
       function: metric.agg,
     }));
-  }
-
-  const orderBy = buildOrderBy(chartType, xField, queryMetrics);
-  if (orderBy.length > 0) {
-    request.order_by = orderBy;
   }
 
   return request;

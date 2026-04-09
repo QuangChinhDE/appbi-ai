@@ -598,12 +598,6 @@ class SemanticQueryEngineV2:
                 order_parts.append(f"{alias} {direction}")
             return "ORDER BY " + ", ".join(order_parts)
         
-        # Default: order by first measure DESC
-        if measures:
-            first_measure = measures[0]
-            alias = self._safe_alias(first_measure)
-            return f"ORDER BY {alias} DESC"
-        
         return ""
     
     def _parse_field_ref(self, field_ref: str) -> Tuple[str, str]:

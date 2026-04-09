@@ -50,10 +50,12 @@ from app.services.dataset_calendar_service import (
     is_generated_calendar_table,
 )
 from app.services.dataset_table_sql_service import (
+    build_live_proxy_table_for_dataset_table,
     DatasetTableSqlError,
     build_dataset_table_duckdb_query,
     build_dataset_table_sql_alias,
     collect_derived_dependency_table_ids,
+    get_dataset_table_reference_options,
     is_derived_table,
     preview_dataset_table_duckdb_query,
     validate_and_clean_derived_query,
@@ -190,6 +192,49 @@ def _filter_references_semantic_prefix(filter_obj: Any, dataset_id: int, prefixe
                 return True
 
     return False
+
+
+def _build_delete_constraint(
+    constraint_type: str,
+    *,
+    object_label: str,
+    detail: str,
+    **extra: Any,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "type": constraint_type,
+        "object_label": object_label,
+        "detail": detail,
+    }
+    for key, value in extra.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        payload[key] = value
+    return payload
+
+
+def _dedupe_delete_constraints(constraints: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen: set[tuple[Any, ...]] = set()
+    unique: List[Dict[str, Any]] = []
+    for constraint in constraints:
+        key = (
+            constraint.get("type"),
+            constraint.get("id"),
+            constraint.get("table_id"),
+            constraint.get("link_id"),
+            constraint.get("column"),
+            constraint.get("field"),
+            constraint.get("name"),
+            constraint.get("table_name"),
+            constraint.get("object_label"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(constraint)
+    return unique
 
 
 def _infer_column_type(col: str, col_index: int, rows: list) -> str:
@@ -363,13 +408,32 @@ def _infer_dataset_table_columns(
         ]
 
     if is_derived_table(db_table):
-        column_names, rows = preview_dataset_table_duckdb_query(
-            db,
-            dataset_obj,
-            db_table,
-            limit=200,
-            offset=0,
-        )
+        try:
+            column_names, rows = preview_dataset_table_duckdb_query(
+                db,
+                dataset_obj,
+                db_table,
+                limit=200,
+                offset=0,
+            )
+        except DatasetTableSqlError as exc:
+            if getattr(exc, "code", "") != "NOT_SYNCED":
+                raise
+            from app.services.live_query_service import LiveQueryService
+
+            datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
+                db,
+                dataset_obj,
+                db_table,
+            )
+            result = LiveQueryService.execute_preview_query(
+                datasource=datasource,
+                db_table=live_proxy_table,
+                limit=200,
+                offset=0,
+            )
+            column_names = list(result.get("columns") or [])
+            rows = list(result.get("rows") or [])
         return [
             DatasetColumnMetadata(
                 name=column_name,
@@ -651,11 +715,46 @@ def add_table_to_dataset(
                 ]
                 inferred_rows = preview_rows
             except DatasetTableSqlError as exc:
-                status_code = 422 if getattr(exc, "code", "") == "NOT_SYNCED" else 400
-                detail: Any = str(exc)
-                if getattr(exc, "code", "") == "NOT_SYNCED":
-                    detail = {"code": exc.code, "message": str(exc)}
-                raise HTTPException(status_code=status_code, detail=detail)
+                if getattr(exc, "code", "") != "NOT_SYNCED":
+                    status_code = 422 if getattr(exc, "code", "") == "NOT_SYNCED" else 400
+                    detail: Any = str(exc)
+                    if getattr(exc, "code", "") == "NOT_SYNCED":
+                        detail = {"code": exc.code, "message": str(exc)}
+                    raise HTTPException(status_code=status_code, detail=detail)
+
+                try:
+                    from app.services.live_query_service import LiveQueryService
+
+                    datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
+                        db,
+                        ds,
+                        derived_draft,
+                    )
+                    result = LiveQueryService.execute_preview_query(
+                        datasource=datasource,
+                        db_table=live_proxy_table,
+                        limit=200,
+                        offset=0,
+                    )
+                    preview_columns = list(result.get("columns") or [])
+                    preview_rows = list(result.get("rows") or [])
+                    inferred_metadata = [
+                        DatasetColumnMetadata(
+                            name=column_name,
+                            type=_infer_column_type(column_name, index, preview_rows),
+                            nullable=True,
+                        )
+                        for index, column_name in enumerate(preview_columns)
+                    ]
+                    inferred_rows = preview_rows
+                except DatasetTableSqlError as live_exc:
+                    status_code = 422 if getattr(live_exc, "code", "") == "NOT_SYNCED" else 400
+                    detail: Any = str(live_exc)
+                    if getattr(live_exc, "code", "") == "NOT_SYNCED":
+                        detail = {"code": live_exc.code, "message": str(live_exc)}
+                    raise HTTPException(status_code=status_code, detail=detail)
+                except ValueError as live_exc:
+                    raise HTTPException(status_code=400, detail=str(live_exc))
         else:
             # Validate datasource exists
             datasource = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
@@ -672,9 +771,12 @@ def add_table_to_dataset(
             except QueryValidationError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid SQL query: {str(e)}")
         
-        db_table = DatasetCRUDService.add_table_to_dataset(
-            db, dataset_id, table
-        )
+        try:
+            db_table = DatasetCRUDService.add_table_to_dataset(
+                db, dataset_id, table
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         
         if not db_table:
             raise HTTPException(status_code=404, detail="Dataset not found")
@@ -852,11 +954,45 @@ def update_dataset_table(
                     for index, column_name in enumerate(preview_columns)
                 ]
             except DatasetTableSqlError as exc:
-                status_code = 422 if getattr(exc, "code", "") == "NOT_SYNCED" else 400
-                detail: Any = str(exc)
-                if getattr(exc, "code", "") == "NOT_SYNCED":
-                    detail = {"code": exc.code, "message": str(exc)}
-                raise HTTPException(status_code=status_code, detail=detail)
+                if getattr(exc, "code", "") != "NOT_SYNCED":
+                    status_code = 422 if getattr(exc, "code", "") == "NOT_SYNCED" else 400
+                    detail: Any = str(exc)
+                    if getattr(exc, "code", "") == "NOT_SYNCED":
+                        detail = {"code": exc.code, "message": str(exc)}
+                    raise HTTPException(status_code=status_code, detail=detail)
+
+                try:
+                    from app.services.live_query_service import LiveQueryService
+
+                    datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
+                        db,
+                        ds,
+                        table_draft,
+                    )
+                    result = LiveQueryService.execute_preview_query(
+                        datasource=datasource,
+                        db_table=live_proxy_table,
+                        limit=200,
+                        offset=0,
+                    )
+                    preview_columns = list(result.get("columns") or [])
+                    preview_rows = list(result.get("rows") or [])
+                    preview_metadata = [
+                        DatasetColumnMetadata(
+                            name=column_name,
+                            type=_infer_column_type(column_name, index, preview_rows),
+                            nullable=True,
+                        )
+                        for index, column_name in enumerate(preview_columns)
+                    ]
+                except DatasetTableSqlError as live_exc:
+                    status_code = 422 if getattr(live_exc, "code", "") == "NOT_SYNCED" else 400
+                    detail: Any = str(live_exc)
+                    if getattr(live_exc, "code", "") == "NOT_SYNCED":
+                        detail = {"code": live_exc.code, "message": str(live_exc)}
+                    raise HTTPException(status_code=status_code, detail=detail)
+                except ValueError as live_exc:
+                    raise HTTPException(status_code=400, detail=str(live_exc))
         else:
             from app.services.query_validator import QueryValidator, QueryValidationError
             try:
@@ -913,9 +1049,12 @@ def update_dataset_table(
 
         table_update.type_overrides = normalized_overrides
 
-    updated_table = DatasetCRUDService.update_table(
-        db, table_id, table_update
-    )
+    try:
+        updated_table = DatasetCRUDService.update_table(
+            db, table_id, table_update
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if updated_table and db_table.datasource_id is not None:
         query_cache.invalidate_datasource(db_table.datasource_id)
 
@@ -1008,26 +1147,49 @@ def remove_table_from_dataset(
                     exclude_table_id=t.id,
                 )
             except DatasetTableSqlError:
-                depends_on_table = build_dataset_table_sql_alias(table_id).lower() in str(t.source_query).lower()
+                fallback_aliases = {
+                    build_dataset_table_sql_alias(table_id).lower(),
+                }
+                for option in get_dataset_table_reference_options(
+                    db,
+                    dataset_id,
+                    exclude_table_id=t.id,
+                    include_disabled=True,
+                ):
+                    if option.table_id == table_id:
+                        fallback_aliases.add(option.alias.lower())
+                        break
+                depends_on_table = any(alias in str(t.source_query).lower() for alias in fallback_aliases)
 
             if depends_on_table:
-                blocking_calculated_tables.append({
-                    "type": "calculated_table",
-                    "table_id": t.id,
-                    "table_name": t.display_name or t.source_table_name,
-                })
+                calculated_name = t.display_name or t.source_table_name or f"Table {t.id}"
+                blocking_calculated_tables.append(_build_delete_constraint(
+                    "calculated_table",
+                    table_id=t.id,
+                    table_name=calculated_name,
+                    object_label=f'Calculated table "{calculated_name}"',
+                    detail="Its SQL still depends on this source table.",
+                ))
 
         transforms = t.transformations or []
         for step in transforms:
             if step.get("type") == "js_formula" and step.get("enabled", True):
                 formula = step.get("params", {}).get("formula", "")
                 if _formula_references_dataset_table(formula, db_table):
-                    blocking_lookups.append({
-                        "type": "lookup",
-                        "table_id": t.id,
-                        "table_name": t.display_name or t.source_table_name,
-                        "column": step.get("params", {}).get("newField", ""),
-                    })
+                    lookup_table_name = t.display_name or t.source_table_name or f"Table {t.id}"
+                    lookup_column = step.get("params", {}).get("newField", "")
+                    blocking_lookups.append(_build_delete_constraint(
+                        "lookup",
+                        table_id=t.id,
+                        table_name=lookup_table_name,
+                        column=lookup_column,
+                        object_label=(
+                            f'Column "{lookup_column}" in table "{lookup_table_name}"'
+                            if lookup_column
+                            else f'Table "{lookup_table_name}"'
+                        ),
+                        detail="A LOOKUP or js_formula column here still references this table.",
+                    ))
                     break  # one entry per table is enough
 
     # ------------------------------------------------------------------
@@ -1053,21 +1215,33 @@ def remove_table_from_dataset(
                 continue
             chart_config = chart.config if isinstance(chart.config, dict) else {}
             if _config_references_semantic_prefix(chart_config, semantic_prefixes):
-                blocking_semantic_refs.append({
-                    "type": "chart_filter",
-                    "id": chart.id,
-                    "name": chart.name,
-                })
+                chart_name = chart.name or f"Chart {chart.id}"
+                blocking_semantic_refs.append(_build_delete_constraint(
+                    "chart_filter",
+                    id=chart.id,
+                    name=chart_name,
+                    object_label=f'Chart "{chart_name}"',
+                    detail="Its saved semantic configuration still references fields from this table.",
+                ))
 
+        dashboard_ids = [
+            int(row[0])
+            for row in (
+                db.query(Dashboard.id)
+                .join(Dashboard.dashboard_charts)
+                .join(DashboardChart.chart)
+                .filter(Chart.dataset_table_id.in_(dataset_table_ids))
+                .distinct()
+                .all()
+            )
+        ]
         dashboards = (
             db.query(Dashboard)
-            .join(Dashboard.dashboard_charts)
-            .join(DashboardChart.chart)
-            .filter(Chart.dataset_table_id.in_(dataset_table_ids))
-            .distinct()
+            .filter(Dashboard.id.in_(dashboard_ids))
             .all()
+            if dashboard_ids
+            else []
         )
-        dashboard_ids = [dashboard.id for dashboard in dashboards]
         public_links = (
             db.query(DashboardPublicLink)
             .filter(DashboardPublicLink.dashboard_id.in_(dashboard_ids))
@@ -1079,44 +1253,75 @@ def remove_table_from_dataset(
         for dashboard in dashboards:
             for filter_obj in dashboard.filters_config or []:
                 if _filter_references_semantic_prefix(filter_obj, dataset_id, semantic_prefixes):
-                    blocking_semantic_refs.append({
-                        "type": "dashboard_filter",
-                        "id": dashboard.id,
-                        "name": dashboard.name,
-                        "field": filter_obj.get("label") or filter_obj.get("semanticField") or filter_obj.get("field"),
-                    })
+                    field_name = filter_obj.get("label") or filter_obj.get("semanticField") or filter_obj.get("field")
+                    dashboard_name = dashboard.name or f"Dashboard {dashboard.id}"
+                    blocking_semantic_refs.append(_build_delete_constraint(
+                        "dashboard_filter",
+                        id=dashboard.id,
+                        name=dashboard_name,
+                        field=field_name,
+                        object_label=f'Dashboard "{dashboard_name}"',
+                        detail=(
+                            f'Filter "{field_name}" still references this table.'
+                            if field_name
+                            else "One of its filters still references this table."
+                        ),
+                    ))
                     break
             for filter_obj in dashboard.public_filters_config or []:
                 if _filter_references_semantic_prefix(filter_obj, dataset_id, semantic_prefixes):
-                    blocking_semantic_refs.append({
-                        "type": "public_link_filter",
-                        "id": dashboard.id,
-                        "name": dashboard.name,
-                        "field": filter_obj.get("label") or filter_obj.get("semanticField") or filter_obj.get("field"),
-                    })
+                    field_name = filter_obj.get("label") or filter_obj.get("semanticField") or filter_obj.get("field")
+                    dashboard_name = dashboard.name or f"Dashboard {dashboard.id}"
+                    blocking_semantic_refs.append(_build_delete_constraint(
+                        "public_link_filter",
+                        id=dashboard.id,
+                        name=dashboard_name,
+                        field=field_name,
+                        scope="dashboard_public_filters",
+                        object_label=f'Dashboard "{dashboard_name}" public filters',
+                        detail=(
+                            f'Public filter "{field_name}" still references this table.'
+                            if field_name
+                            else "A public dashboard filter still references this table."
+                        ),
+                    ))
                     break
 
         for link in public_links:
             for filter_obj in link.filters_config or []:
                 if _filter_references_semantic_prefix(filter_obj, dataset_id, semantic_prefixes):
-                    blocking_semantic_refs.append({
-                        "type": "public_link_filter",
-                        "id": link.dashboard_id,
-                        "name": link.name,
-                        "field": filter_obj.get("label") or filter_obj.get("semanticField") or filter_obj.get("field"),
-                    })
+                    field_name = filter_obj.get("label") or filter_obj.get("semanticField") or filter_obj.get("field")
+                    link_name = link.name or f"Public link {link.id}"
+                    blocking_semantic_refs.append(_build_delete_constraint(
+                        "public_link_filter",
+                        id=link.dashboard_id,
+                        link_id=link.id,
+                        name=link_name,
+                        field=field_name,
+                        scope="public_link",
+                        object_label=f'Public link "{link_name}"',
+                        detail=(
+                            f'Filter "{field_name}" still references this table.'
+                            if field_name
+                            else "One of its filters still references this table."
+                        ),
+                    ))
                     break
 
     constraints = []
     for ch in blocking_charts:
-        constraints.append({
-            "type": "chart",
-            "id": ch.id,
-            "name": ch.name,
-        })
+        chart_name = ch.name or f"Chart {ch.id}"
+        constraints.append(_build_delete_constraint(
+            "chart",
+            id=ch.id,
+            name=chart_name,
+            object_label=f'Chart "{chart_name}"',
+            detail="This chart is built directly from the table you are trying to delete.",
+        ))
     constraints.extend(blocking_calculated_tables)
     constraints.extend(blocking_lookups)
     constraints.extend(blocking_semantic_refs)
+    constraints = _dedupe_delete_constraints(constraints)
 
     if constraints:
         raise HTTPException(
@@ -1230,13 +1435,32 @@ def preview_dataset_table(
         try:
             limit = min(preview_request.limit or 100, 1000)
             offset = max(preview_request.offset or 0, 0)
-            columns, rows = preview_dataset_table_duckdb_query(
-                db,
-                dataset_obj,
-                db_table,
-                limit=limit,
-                offset=offset,
-            )
+            try:
+                columns, rows = preview_dataset_table_duckdb_query(
+                    db,
+                    dataset_obj,
+                    db_table,
+                    limit=limit,
+                    offset=offset,
+                )
+            except DatasetTableSqlError as exc:
+                if getattr(exc, "code", "") != "NOT_SYNCED":
+                    raise
+                from app.services.live_query_service import LiveQueryService
+
+                datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
+                    db,
+                    dataset_obj,
+                    db_table,
+                )
+                result = LiveQueryService.execute_preview_query(
+                    datasource=datasource,
+                    db_table=live_proxy_table,
+                    limit=limit,
+                    offset=offset,
+                )
+                columns = list(result.get("columns") or [])
+                rows = list(result.get("rows") or [])
             column_metadata = [
                 DatasetColumnMetadata(
                     name=column_name,
@@ -1517,15 +1741,19 @@ def execute_dataset_table_query(
             return "'" + str(v).replace("'", "''") + "'"
 
         select_parts = []
+        output_columns = []
         if execute_request.dimensions:
             for dim in execute_request.dimensions:
-                select_parts.append(_validate_calendar_column(dim, "dimension"))
+                quoted_dim = _validate_calendar_column(dim, "dimension")
+                select_parts.append(quoted_dim)
+                output_columns.append(quoted_dim)
 
         if execute_request.measures:
             for measure in execute_request.measures:
                 quoted_col = _validate_calendar_column(measure.field, "measure field")
                 agg_func = measure.function.upper()
                 alias = '"' + f"{measure.field}_{measure.function}".replace('"', '""') + '"'
+                output_columns.append(alias)
                 if agg_func == "COUNT_DISTINCT":
                     select_parts.append(f"COUNT(DISTINCT {quoted_col}) AS {alias}")
                 else:
@@ -1597,8 +1825,22 @@ def execute_dataset_table_query(
             if where_conditions:
                 query += " WHERE " + " AND ".join(where_conditions)
 
+        preserve_group_order = bool(
+            execute_request.dimensions and execute_request.measures and not execute_request.order_by
+        )
         if execute_request.dimensions and execute_request.measures:
             quoted_dims = [_validate_calendar_column(d, "dimension") for d in execute_request.dimensions]
+            if preserve_group_order:
+                ordered_base_table = (
+                    '(SELECT *, ROW_NUMBER() OVER () AS "__appbi_row_order" '
+                    f'FROM {base_table}) AS _appbi_ordered'
+                )
+                query = (
+                    f"SELECT {', '.join(select_parts)}, MIN(\"__appbi_row_order\") AS \"__appbi_group_order\" "
+                    f"FROM {ordered_base_table}"
+                )
+                if execute_request.filters and where_conditions:
+                    query += " WHERE " + " AND ".join(where_conditions)
             query += f" GROUP BY {', '.join(quoted_dims)}"
 
         measure_aliases = {
@@ -1615,6 +1857,12 @@ def execute_dataset_table_query(
                 direction = order_item.direction.upper() if order_item.direction.upper() in ("ASC", "DESC") else "DESC"
                 order_parts.append(f"{quoted_col} {direction}")
             query += " ORDER BY " + ", ".join(order_parts)
+        elif preserve_group_order:
+            query = (
+                f"SELECT {', '.join(output_columns)} "
+                f"FROM ({query}) AS _appbi_grouped "
+                'ORDER BY "__appbi_group_order" ASC'
+            )
 
         query += f" LIMIT {execute_request.limit}"
 
@@ -1710,7 +1958,64 @@ def execute_dataset_table_query(
             base_table = f"({build_dataset_table_duckdb_query(db, dataset_obj, db_table)}) AS base_table"
         except DatasetTableSqlError as exc:
             if getattr(exc, "code", "") == "NOT_SYNCED":
-                raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)})
+                try:
+                    from app.services.live_query_service import LiveQueryService
+
+                    datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
+                        db,
+                        dataset_obj,
+                        db_table,
+                    )
+                    measures = [
+                        {"field": m.field, "agg": m.function}
+                        for m in (execute_request.measures or [])
+                    ]
+                    filters = normalize_filter_conditions(
+                        [
+                            {
+                                "field": f.field,
+                                "operator": f.operator,
+                                "value": f.value,
+                            }
+                            for f in (execute_request.filters or [])
+                        ]
+                    )
+                    order_by = [
+                        {
+                            "field": ob.field,
+                            "direction": ob.direction,
+                        }
+                        for ob in (execute_request.order_by or [])
+                    ]
+
+                    rows = LiveQueryService.execute_dataset_query(
+                        datasource=datasource,
+                        db_table=live_proxy_table,
+                        dimensions=execute_request.dimensions or [],
+                        measures=measures,
+                        filters=filters,
+                        order_by=order_by,
+                        limit=execute_request.limit,
+                    )
+                    columns = list(rows[0].keys()) if rows else []
+                    column_metadata = [
+                        DatasetColumnMetadata(
+                            name=col,
+                            type=_infer_column_type(col, idx, rows),
+                            nullable=True,
+                        )
+                        for idx, col in enumerate(columns)
+                    ]
+                    return ExecuteQueryResponse(columns=column_metadata, rows=rows)
+                except DatasetTableSqlError as live_exc:
+                    raise HTTPException(
+                        status_code=422 if getattr(live_exc, "code", "") == "NOT_SYNCED" else 400,
+                        detail={"code": live_exc.code, "message": str(live_exc)}
+                        if getattr(live_exc, "code", "") == "NOT_SYNCED"
+                        else str(live_exc),
+                    )
+                except ValueError as live_exc:
+                    raise HTTPException(status_code=400, detail=str(live_exc))
             raise HTTPException(status_code=400, detail=str(exc))
     elif db_table.source_kind == "sql_query":
         if not db_table.source_query:
@@ -1769,6 +2074,15 @@ def execute_dataset_table_query(
                 select_parts.append(f"COUNT(DISTINCT {quoted_col}) AS {alias}")
             else:
                 select_parts.append(f"{agg_func}({quoted_col}) AS {alias}")
+
+    output_columns: list[str] = []
+    if execute_request.dimensions:
+        for dim in execute_request.dimensions:
+            output_columns.append(_validate_column(dim, "dimension"))
+
+    if execute_request.measures:
+        for m in execute_request.measures:
+            output_columns.append('"' + f"{m.field}_{m.function}".replace('"', '""') + '"')
 
     if not select_parts:
         select_parts.append("*")
@@ -1853,9 +2167,23 @@ def execute_dataset_table_query(
             query += " WHERE " + " AND ".join(where_conditions)
 
     # Add GROUP BY for dimensions
+    preserve_group_order = bool(
+        execute_request.dimensions and execute_request.measures and not execute_request.order_by
+    )
     if execute_request.dimensions and execute_request.measures:
         # dimensions are already validated + quoted above; rebuild the list
         quoted_dims = [_validate_column(d, "dimension") for d in execute_request.dimensions]
+        if preserve_group_order:
+            ordered_base_table = (
+                '(SELECT *, ROW_NUMBER() OVER () AS "__appbi_row_order" '
+                f'FROM {base_table}) AS _appbi_ordered'
+            )
+            query = (
+                f'SELECT {select_clause}, MIN("__appbi_row_order") AS "__appbi_group_order" '
+                f'FROM {ordered_base_table}'
+            )
+            if execute_request.filters and where_conditions:
+                query += " WHERE " + " AND ".join(where_conditions)
         query += f" GROUP BY {', '.join(quoted_dims)}"
 
     # Build set of valid measure aliases so ORDER BY can reference them
@@ -1876,6 +2204,12 @@ def execute_dataset_table_query(
             direction = ob.direction.upper() if ob.direction.upper() in ("ASC", "DESC") else "DESC"
             order_parts.append(f"{quoted_col} {direction}")
         query += " ORDER BY " + ", ".join(order_parts)
+    elif preserve_group_order:
+        query = (
+            f"SELECT {', '.join(output_columns)} "
+            f'FROM ({query}) AS _appbi_grouped '
+            'ORDER BY "__appbi_group_order" ASC'
+        )
 
     # Add LIMIT — integer, already constrained by Pydantic (ge=1, le=10000)
     query += f" LIMIT {execute_request.limit}"

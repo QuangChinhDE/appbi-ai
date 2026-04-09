@@ -1,4 +1,5 @@
 """CRUD service for Datasets (Table-based Datasets)"""
+import re
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_
@@ -15,6 +16,11 @@ from app.services.dataset_calendar_service import (
     get_calendar_settings,
     normalize_dataset_settings,
     remove_calendar_table,
+)
+from app.services.dataset_table_sql_service import (
+    build_dataset_table_reference_alias_map,
+    normalize_dataset_table_sql_alias,
+    rewrite_dataset_table_aliases_in_sql,
 )
 
 
@@ -84,6 +90,86 @@ def _migrate_lookup_formulas_for_table_rename(
 
         if changed:
             sibling.transformations = updated_transforms
+
+
+def _normalize_table_display_name(value: str | None) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def _validate_unique_table_display_name(
+    db: Session,
+    *,
+    dataset_id: int,
+    display_name: str,
+    exclude_table_id: int | None = None,
+) -> str:
+    normalized_name = _normalize_table_display_name(display_name)
+    if not normalized_name:
+        raise ValueError("Table name cannot be empty.")
+
+    candidate_alias = normalize_dataset_table_sql_alias(normalized_name, fallback="table")
+    sibling_tables = (
+        db.query(DatasetTable)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .all()
+    )
+
+    for sibling in sibling_tables:
+        if exclude_table_id is not None and int(sibling.id) == int(exclude_table_id):
+            continue
+
+        sibling_name = _normalize_table_display_name(
+            sibling.display_name or sibling.source_table_name or f"Table {sibling.id}"
+        )
+        if sibling_name.casefold() == normalized_name.casefold():
+            raise ValueError(f"Table name '{normalized_name}' already exists in this dataset.")
+
+        sibling_alias = normalize_dataset_table_sql_alias(
+            sibling_name,
+            fallback=f"table_{sibling.id}",
+        )
+        if sibling_alias == candidate_alias:
+            raise ValueError(
+                f"Table name '{normalized_name}' conflicts with existing table '{sibling_name}' after SQL normalization. "
+                "Please choose a different name."
+            )
+
+    return normalized_name
+
+
+def _migrate_derived_queries_for_alias_changes(
+    db: Session,
+    *,
+    dataset_id: int,
+    alias_changes: Dict[str, str],
+) -> None:
+    normalized_alias_changes = {
+        str(source or "").strip().lower(): str(target or "").strip()
+        for source, target in (alias_changes or {}).items()
+        if str(source or "").strip() and str(target or "").strip()
+    }
+    if not normalized_alias_changes:
+        return
+
+    derived_tables = (
+        db.query(DatasetTable)
+        .filter(
+            DatasetTable.dataset_id == dataset_id,
+            DatasetTable.source_kind == "derived_table",
+        )
+        .all()
+    )
+
+    for derived_table in derived_tables:
+        current_query = str(derived_table.source_query or "").strip()
+        if not current_query:
+            continue
+        try:
+            rewritten_query = rewrite_dataset_table_aliases_in_sql(current_query, normalized_alias_changes)
+        except Exception:
+            continue
+        if rewritten_query != current_query:
+            derived_table.source_query = rewritten_query
 
 
 class DatasetCRUDService:
@@ -268,7 +354,12 @@ class DatasetCRUDService:
                 display_name = table_name.replace('_', ' ').title()
             else:
                 display_name = "Untitled Table"
-        
+        display_name = _validate_unique_table_display_name(
+            db,
+            dataset_id=dataset_id,
+            display_name=display_name,
+        )
+
         db_table = DatasetTable(
             dataset_id=dataset_id,
             datasource_id=table.datasource_id,
@@ -302,9 +393,22 @@ class DatasetCRUDService:
         # Update only provided fields
         update_data = table_update.model_dump(exclude_unset=True)
         previous_lookup_name = db_table.display_name or db_table.source_table_name or ""
+        sibling_tables = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.dataset_id == db_table.dataset_id)
+            .all()
+        )
+        alias_map_before = build_dataset_table_reference_alias_map(sibling_tables)
+        if "display_name" in update_data:
+            update_data["display_name"] = _validate_unique_table_display_name(
+                db,
+                dataset_id=db_table.dataset_id,
+                display_name=update_data.get("display_name"),
+                exclude_table_id=table_id,
+            )
         display_name_changed = (
             "display_name" in update_data
-            and str(update_data.get("display_name") or "").strip() != str(db_table.display_name or "").strip()
+            and str(update_data.get("display_name") or "").strip() != _normalize_table_display_name(db_table.display_name)
         )
         source_query_changed = (
             "source_query" in update_data
@@ -318,6 +422,17 @@ class DatasetCRUDService:
                 db,
                 table=db_table,
                 previous_lookup_name=previous_lookup_name,
+            )
+            alias_map_after = build_dataset_table_reference_alias_map(sibling_tables)
+            alias_changes = {
+                previous_alias: alias_map_after.get(table_key, previous_alias)
+                for table_key, previous_alias in alias_map_before.items()
+                if alias_map_after.get(table_key) and alias_map_after.get(table_key) != previous_alias
+            }
+            _migrate_derived_queries_for_alias_changes(
+                db,
+                dataset_id=db_table.dataset_id,
+                alias_changes=alias_changes,
             )
 
         if source_query_changed:

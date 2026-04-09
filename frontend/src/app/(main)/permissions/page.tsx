@@ -2,8 +2,9 @@
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Shield, Plus, Edit2, UserX, ChevronDown } from 'lucide-react';
+import { Plus, Edit2, UserX, ChevronDown } from 'lucide-react';
 import { permissionsApi, usersApi } from '@/lib/api-client';
+import { extractApiError, PASSWORD_REQUIREMENTS_TEXT, validatePasswordStrength } from '@/lib/api-errors';
 import { toast } from 'sonner';
 
 /* ───────────── types ───────────── */
@@ -140,7 +141,7 @@ function MatrixTab() {
       qc.invalidateQueries({ queryKey: ['permissions'] });
       toast.success('Permissions saved');
     },
-    onError: (err: any) => toast.error(err?.response?.data?.detail || 'Save failed'),
+    onError: (err: any) => toast.error(extractApiError(err, 'Save failed')),
   });
 
   const presetMutation = useMutation({
@@ -151,7 +152,7 @@ function MatrixTab() {
       setPendingChanges((p) => { const n = { ...p }; delete n[vars.userId]; return n; });
       toast.success(`Applied "${vars.preset}" preset`);
     },
-    onError: (err: any) => toast.error(err?.response?.data?.detail || 'Preset failed'),
+    onError: (err: any) => toast.error(extractApiError(err, 'Preset failed')),
   });
 
   const setLevel = (userId: string, module: string, level: string) => {
@@ -341,7 +342,7 @@ function UsersTab() {
   const deactivateMutation = useMutation({
     mutationFn: (id: string) => usersApi.deactivate(id),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['users'] }); toast.success('User deactivated'); },
-    onError: (err: any) => toast.error(err?.response?.data?.detail || 'Failed'),
+    onError: (err: any) => toast.error(extractApiError(err, 'Failed')),
   });
 
   return (
@@ -462,13 +463,19 @@ function InviteModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(''); setLoading(true);
+    setError('');
+    const passwordError = validatePasswordStrength(password);
+    if (passwordError) {
+      setError(passwordError);
+      return;
+    }
+    setLoading(true);
     try {
       await usersApi.create({ email, full_name: fullName, password });
       toast.success(`User ${email} created`);
       onSuccess();
     } catch (err: any) {
-      setError(err?.response?.data?.detail || 'Failed to create user.');
+      setError(extractApiError(err, 'Failed to create user.'));
     } finally { setLoading(false); }
   };
 
@@ -492,6 +499,7 @@ function InviteModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
             <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
             <input type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Min 8 characters" />
+            <p className="mt-1 text-xs text-gray-500">{PASSWORD_REQUIREMENTS_TEXT}</p>
           </div>
           <div className="flex justify-end space-x-2 pt-2">
             <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded-lg border border-gray-200">Cancel</button>
@@ -517,7 +525,7 @@ function EditUserModal({ user, onClose, onSuccess }: { user: UserRecord; onClose
       await usersApi.update(user.id, { status: userStatus });
       toast.success('User updated');
       onSuccess();
-    } catch (err: any) { setError(err?.response?.data?.detail || 'Failed'); }
+    } catch (err: any) { setError(extractApiError(err, 'Failed')); }
     finally { setLoading(false); }
   };
 

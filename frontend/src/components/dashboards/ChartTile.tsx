@@ -159,8 +159,19 @@ export function ChartTile({
     filters.push(...parameterFilters);
     for (const gf of [...globalFilters, ...crossFilters]) {
       if (gf.value === undefined || gf.value === null || gf.value === '') continue;
-      const field = resolveChartFieldForFilter(gf, chartSemanticBinding);
-      if (!field) continue;
+      const resolvedField = resolveChartFieldForFilter(gf, chartSemanticBinding);
+      const semanticRef = gf.semanticField ?? gf.fieldKey;
+      const canDeferToSemanticJoin = Boolean(
+        semanticRef
+        && semanticRef.includes('.')
+        && (
+          gf.datasetId == null
+          || chartSemanticBinding?.datasetId == null
+          || gf.datasetId === chartSemanticBinding.datasetId
+        ),
+      );
+      if (!resolvedField && !canDeferToSemanticJoin) continue;
+      const field = resolvedField ?? gf.field;
       const calendarMapping = resolveCalendarFieldMapping(
         chartSemanticBinding,
         gf.semanticField ?? gf.fieldKey,
@@ -184,7 +195,19 @@ export function ChartTile({
     }
     for (const df of dashboardFilters) {
       if (df.value === undefined || df.value === null || df.value === '') continue;
-      const field = resolveChartFieldForFilter(df, chartSemanticBinding) ?? df.field;
+      const resolvedField = resolveChartFieldForFilter(df, chartSemanticBinding);
+      const semanticRef = df.semanticField ?? df.fieldKey;
+      const canDeferToSemanticJoin = Boolean(
+        semanticRef
+        && semanticRef.includes('.')
+        && (
+          df.datasetId == null
+          || chartSemanticBinding?.datasetId == null
+          || df.datasetId === chartSemanticBinding.datasetId
+        ),
+      );
+      if (!resolvedField && !canDeferToSemanticJoin) continue;
+      const field = resolvedField ?? df.field;
       const calendarMapping = resolveCalendarFieldMapping(
         chartSemanticBinding,
         df.semanticField ?? df.fieldKey,
@@ -640,7 +663,6 @@ export function ChartTile({
     </div>
   );
 }
-
 
 
 

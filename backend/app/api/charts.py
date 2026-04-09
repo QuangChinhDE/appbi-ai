@@ -41,6 +41,7 @@ from app.services.dataset_calendar_service import (
 )
 from app.services.dataset_table_sql_service import (
     DatasetTableSqlError,
+    build_live_proxy_table_for_dataset_table,
     build_dataset_table_duckdb_query,
     is_derived_table,
 )
@@ -211,6 +212,7 @@ def ai_chart_preview(
                 status_code=403,
                 detail="Requires 'edit' permission on module 'explore_charts'",
             )
+    config = payload.config or {}
 
     # Resolve DuckDB base table
     if is_generated_calendar_table(db_table):
@@ -220,7 +222,88 @@ def ai_chart_preview(
             base_table = f"({build_dataset_table_duckdb_query(db, dataset_obj, db_table)}) AS base_table"
         except DatasetTableSqlError as exc:
             if getattr(exc, "code", "") == "NOT_SYNCED":
-                raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)})
+                try:
+                    from app.services.live_query_service import build_live_dataset_query, _dialect_for_ds_type
+                    from app.services.datasource_service import DataSourceConnectionService
+
+                    datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
+                        db,
+                        dataset_obj,
+                        db_table,
+                    )
+                    ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+                    dialect = _dialect_for_ds_type(ds_type)
+
+                    dimensions = config.get("dimensions") or []
+                    metrics = config.get("metrics") or []
+                    limit = min(int(config.get("limit", 500)), 2000)
+                    measures = [
+                        {
+                            "field": item.get("column", ""),
+                            "agg": str(item.get("aggregation", "sum")).lower(),
+                        }
+                        for item in metrics
+                        if item.get("column")
+                    ]
+                    sql = build_live_dataset_query(
+                        base_table=f"({live_proxy_table.source_query}) AS base_table",
+                        dimensions=dimensions,
+                        measures=measures,
+                        filters=[],
+                        order_by=[],
+                        limit=limit,
+                        dialect=dialect,
+                    )
+                    _, data, _ = DataSourceConnectionService.execute_query(
+                        ds_type,
+                        datasource.config,
+                        sql,
+                        timeout_seconds=60 if ds_type == "bigquery" else 30,
+                        skip_bigquery_cost_check=True,
+                    )
+                    response: Dict[str, Any] = {
+                        "chart_type": payload.chart_type,
+                        "config": config,
+                        "data": data,
+                        "row_count": len(data),
+                        "saved": False,
+                        "chart_id": None,
+                    }
+
+                    if payload.save:
+                        from app.schemas import ChartCreate
+                        from app.schemas.schemas import ChartTypeSchema
+                        chart_type_val = payload.chart_type.upper()
+                        try:
+                            ct = ChartTypeSchema(chart_type_val)
+                        except ValueError:
+                            ct = ChartTypeSchema.BAR
+                        chart_create = ChartCreate(
+                            name=payload.name,
+                            description=payload.description,
+                            dataset_table_id=payload.dataset_table_id,
+                            chart_type=ct,
+                            config=config,
+                        )
+                        new_chart = ChartService.create(db, chart_create, owner_id=current_user.id)
+                        DescriptionPipelineService.enqueue_chart_pipeline(
+                            background_tasks,
+                            db,
+                            new_chart.id,
+                            trigger="chart_created",
+                        )
+                        response["saved"] = True
+                        response["chart_id"] = new_chart.id
+                        response["chart_name"] = new_chart.name
+
+                    return response
+                except DatasetTableSqlError as live_exc:
+                    raise HTTPException(
+                        status_code=422 if getattr(live_exc, "code", "") == "NOT_SYNCED" else 400,
+                        detail={"code": live_exc.code, "message": str(live_exc)}
+                        if getattr(live_exc, "code", "") == "NOT_SYNCED"
+                        else str(live_exc),
+                    )
             raise HTTPException(status_code=400, detail=str(exc))
     else:
         datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
@@ -239,7 +322,6 @@ def ai_chart_preview(
             base_table = view_name
 
     # Build and execute aggregation query
-    config = payload.config or {}
     dimensions = config.get("dimensions") or []
     metrics = config.get("metrics") or []
     limit = min(int(config.get("limit", 500)), 2000)

@@ -586,6 +586,10 @@ def build_live_agg_query(
     qi = _quote_identifier
     ctype = str(getattr(chart_type, "value", chart_type) or "").upper()
     role_config = normalize_chart_role_config(chart_type, role_config)
+    row_order_alias = "__appbi_row_order"
+    group_order_alias = "__appbi_group_order"
+    quoted_row_order_alias = qi(row_order_alias, dialect)
+    quoted_group_order_alias = qi(group_order_alias, dialect)
 
     where_clause = _build_where_clause(filters, dialect)
     where_sql = f" WHERE {where_clause}" if where_clause else ""
@@ -629,11 +633,20 @@ def build_live_agg_query(
                 metric_sql = f"SUM({quoted_metric_field}) AS {quoted_alias}"
 
             limit = limit_override or 5000
+            ordered_base_table = (
+                f"(SELECT *, ROW_NUMBER() OVER () AS {quoted_row_order_alias} "
+                f"FROM {base_table}) AS _appbi_ordered"
+            )
+            inner_sql = (
+                f"SELECT {qi(table_row_dimension, dialect)}, {qi(table_column_dimension, dialect)}, {metric_sql}, "
+                f"MIN({quoted_row_order_alias}) AS {quoted_group_order_alias} "
+                f"FROM {ordered_base_table}{where_sql} "
+                f"GROUP BY {qi(table_row_dimension, dialect)}, {qi(table_column_dimension, dialect)}"
+            )
             return (
-                f"SELECT {qi(table_row_dimension, dialect)}, {qi(table_column_dimension, dialect)}, {metric_sql} "
-                f"FROM {base_table}{where_sql} "
-                f"GROUP BY {qi(table_row_dimension, dialect)}, {qi(table_column_dimension, dialect)} "
-                f"ORDER BY {qi(table_row_dimension, dialect)} ASC, {qi(table_column_dimension, dialect)} ASC "
+                f"SELECT {qi(table_row_dimension, dialect)}, {qi(table_column_dimension, dialect)}, {quoted_alias} "
+                f"FROM ({inner_sql}) AS _appbi_pivot "
+                f"ORDER BY {quoted_group_order_alias} ASC "
                 f"LIMIT {int(limit)}",
                 True,
             )
@@ -669,13 +682,18 @@ def build_live_agg_query(
 
     select_parts = []
     group_by_parts = []
+    output_columns = []
 
     if group_field:
-        select_parts.append(qi(group_field, dialect))
-        group_by_parts.append(qi(group_field, dialect))
+        quoted_group_field = qi(group_field, dialect)
+        select_parts.append(quoted_group_field)
+        group_by_parts.append(quoted_group_field)
+        output_columns.append(quoted_group_field)
     if breakdown and ctype != "BAR_LINE":
-        select_parts.append(qi(breakdown, dialect))
-        group_by_parts.append(qi(breakdown, dialect))
+        quoted_breakdown = qi(breakdown, dialect)
+        select_parts.append(quoted_breakdown)
+        group_by_parts.append(quoted_breakdown)
+        output_columns.append(quoted_breakdown)
 
     seen_metric_aliases: set[str] = set()
     for m in metric_defs:
@@ -689,6 +707,7 @@ def build_live_agg_query(
             continue
         seen_metric_aliases.add(alias_name)
         alias = qi(alias_name, dialect)
+        output_columns.append(alias)
         if agg == "COUNT_DISTINCT":
             select_parts.append(f"COUNT(DISTINCT {qf}) AS {alias}")
         elif agg in ("COUNT", "AVG", "MIN", "MAX", "SUM"):
@@ -699,23 +718,23 @@ def build_live_agg_query(
     if not select_parts:
         raise ValueError("No valid metrics specified for aggregation.")
 
-    sql = f"SELECT {', '.join(select_parts)} FROM {base_table}{where_sql}"
+    source_table = (
+        f"(SELECT *, ROW_NUMBER() OVER () AS {quoted_row_order_alias} FROM {base_table}) AS _appbi_ordered"
+        if group_by_parts
+        else base_table
+    )
+    sql = f"SELECT {', '.join(select_parts)}"
+    if group_by_parts:
+        sql += f", MIN({quoted_row_order_alias}) AS {quoted_group_order_alias}"
+    sql += f" FROM {source_table}{where_sql}"
     if group_by_parts:
         sql += f" GROUP BY {', '.join(group_by_parts)}"
-
-    # ORDER BY first metric DESC
-    first_metric_alias = None
-    for m in metrics:
-        field = m.get("field", "")
-        agg = (m.get("agg") or "sum").upper().replace(" ", "_")
-        if not field:
-            continue
-        alias_name = f"{agg.lower()}__{field}"
-        first_metric_alias = qi(alias_name, dialect)
-        break
-
-    if first_metric_alias and group_by_parts:
-        sql += f" ORDER BY {first_metric_alias} DESC"
+    if group_by_parts:
+        sql = (
+            f"SELECT {', '.join(output_columns)} "
+            f"FROM ({sql}) AS _appbi_grouped "
+            f"ORDER BY {quoted_group_order_alias} ASC"
+        )
 
     # Stricter limit for live queries
     limit = limit_override or 1000
@@ -737,15 +756,21 @@ def build_live_dataset_query(
     dims = [d for d in (dimensions or []) if d]
     metrics = [m for m in (measures or []) if m.get("field")]
     orders = [o for o in (order_by or []) if o.get("field")]
+    row_order_alias = "__appbi_row_order"
+    group_order_alias = "__appbi_group_order"
+    quoted_row_order_alias = qi(row_order_alias, dialect)
+    quoted_group_order_alias = qi(group_order_alias, dialect)
 
     select_parts: list[str] = []
     group_by_parts: list[str] = []
     measure_aliases: dict[str, str] = {}
+    output_columns: list[str] = []
 
     for dim in dims:
         quoted_dim = qi(dim, dialect)
         select_parts.append(quoted_dim)
         group_by_parts.append(quoted_dim)
+        output_columns.append(quoted_dim)
 
     for metric in metrics:
         field = metric.get("field", "")
@@ -757,6 +782,7 @@ def build_live_dataset_query(
         alias_name = f"{field}_{agg.lower()}"
         alias = qi(alias_name, dialect)
         measure_aliases[alias_name] = alias
+        output_columns.append(alias)
 
         if agg == "COUNT_DISTINCT":
             select_parts.append(f"COUNT(DISTINCT {quoted_field}) AS {alias}")
@@ -771,7 +797,16 @@ def build_live_dataset_query(
     where_clause = _build_where_clause(filters, dialect)
     where_sql = f" WHERE {where_clause}" if where_clause else ""
 
-    sql = f"SELECT {', '.join(select_parts)} FROM {base_table}{where_sql}"
+    preserve_group_order = bool(dims and metrics and not orders)
+    source_table = (
+        f"(SELECT *, ROW_NUMBER() OVER () AS {quoted_row_order_alias} FROM {base_table}) AS _appbi_ordered"
+        if preserve_group_order
+        else base_table
+    )
+    sql = f"SELECT {', '.join(select_parts)}"
+    if preserve_group_order:
+        sql += f", MIN({quoted_row_order_alias}) AS {quoted_group_order_alias}"
+    sql += f" FROM {source_table}{where_sql}"
 
     if dims and metrics:
         sql += f" GROUP BY {', '.join(group_by_parts)}"
@@ -792,6 +827,12 @@ def build_live_dataset_query(
 
         if order_parts:
             sql += f" ORDER BY {', '.join(order_parts)}"
+    elif preserve_group_order:
+        sql = (
+            f"SELECT {', '.join(output_columns)} "
+            f"FROM ({sql}) AS _appbi_grouped "
+            f"ORDER BY {quoted_group_order_alias} ASC"
+        )
 
     sql += f" LIMIT {int(limit)}"
     return sql

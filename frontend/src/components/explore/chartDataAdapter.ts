@@ -76,29 +76,6 @@ function resolveMetricValueField(
   return candidates.find((candidate) => rows.some((row) => candidate in row)) ?? metric.field;
 }
 
-function sortPivotKeys(values: string[]): string[] {
-  return [...values].sort((left, right) => {
-    const leftNumber = Number(left);
-    const rightNumber = Number(right);
-    const leftIsNumber = left.trim() !== '' && Number.isFinite(leftNumber);
-    const rightIsNumber = right.trim() !== '' && Number.isFinite(rightNumber);
-
-    if (leftIsNumber && rightIsNumber) {
-      return leftNumber - rightNumber;
-    }
-
-    return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
-  });
-}
-
-function sortPivotEntries<T>(entries: Array<[string, T]>): Array<[string, T]> {
-  return [...entries].sort(([left], [right]) => left.localeCompare(
-    right,
-    undefined,
-    { numeric: true, sensitivity: 'base' },
-  ));
-}
-
 function aggregateMetricValue(
   rows: Record<string, any>[],
   metric: MetricConfig,
@@ -233,8 +210,8 @@ function buildPivotTableModel(args: {
     group.cells.get(columnValue)!.push(row);
   }
 
-  const dynamicColumns = sortPivotKeys(Array.from(pivotColumnValues)).slice(0, TABLE_PIVOT_COLUMN_LIMIT);
-  const rows = sortPivotEntries(Array.from(rowGroups.entries())).map(([, { rowValue, cells }]) => {
+  const dynamicColumns = Array.from(pivotColumnValues).slice(0, TABLE_PIVOT_COLUMN_LIMIT);
+  const rows = Array.from(rowGroups.entries()).map(([, { rowValue, cells }]) => {
     const result: Record<string, any> = { [rowField]: rowValue };
     dynamicColumns.forEach((columnValue) => {
       const cellRows = cells.get(columnValue) ?? [];

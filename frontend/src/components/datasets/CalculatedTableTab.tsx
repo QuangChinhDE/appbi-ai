@@ -4,6 +4,7 @@ import React, { useMemo, useRef, useState } from 'react';
 import { AlertCircle, Loader2, Sigma, TableProperties } from 'lucide-react';
 
 import type { AddTableInput, DatasetTable } from '@/hooks/use-datasets';
+import { buildDatasetTableAliasMap } from '@/lib/dataset-table-aliases';
 
 interface CalculatedTableTabProps {
   onAddTable?: (input: AddTableInput) => Promise<void>;
@@ -14,10 +15,6 @@ interface CalculatedTableTabProps {
   initialDisplayName?: string;
   initialQuery?: string;
   saveError?: string | null;
-}
-
-function buildDatasetTableAlias(tableId: number): string {
-  return `dataset_table_${tableId}`;
 }
 
 function getTableKindLabel(table: DatasetTable): string {
@@ -50,6 +47,8 @@ export function CalculatedTableTab({
   const [validationError, setValidationError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
+  const aliasByTableId = useMemo(() => buildDatasetTableAliasMap(availableTables), [availableTables]);
+
   const referenceTables = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
     return availableTables
@@ -59,10 +58,12 @@ export function CalculatedTableTab({
         return (
           table.display_name.toLowerCase().includes(normalizedSearch) ||
           (table.source_table_name ?? '').toLowerCase().includes(normalizedSearch) ||
-          buildDatasetTableAlias(table.id).includes(normalizedSearch)
+          (aliasByTableId[table.id] ?? '').includes(normalizedSearch)
         );
       });
-  }, [availableTables, excludeTableId, search]);
+  }, [aliasByTableId, availableTables, excludeTableId, search]);
+
+  const exampleAlias = referenceTables[0] ? aliasByTableId[referenceTables[0].id] : 'orders';
 
   const insertAlias = (alias: string) => {
     const textarea = textareaRef.current;
@@ -154,7 +155,7 @@ export function CalculatedTableTab({
               setQuery(event.target.value);
               setValidationError(null);
             }}
-            placeholder={`WITH orders AS (\n  SELECT * FROM dataset_table_12\n)\nSELECT * FROM orders`}
+            placeholder={`WITH agg AS (\n  SELECT * FROM ${exampleAlias}\n)\nSELECT * FROM agg`}
             className={`h-80 w-full resize-y rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 ${
               validationError ? 'border-red-300 focus:ring-red-500' : 'border-gray-300 focus:ring-blue-500'
             }`}
@@ -167,7 +168,9 @@ export function CalculatedTableTab({
             </div>
           )}
           <div className="mt-2 space-y-1 text-xs text-gray-500">
-            <p>Use the aliases from the right panel, for example `dataset_table_12`.</p>
+            <p>
+              Use the aliases from the right panel, for example <code>{exampleAlias}</code>.
+            </p>
             <p>Only SELECT/WITH queries are allowed in phase 1.</p>
           </div>
         </div>
@@ -215,7 +218,7 @@ export function CalculatedTableTab({
             </div>
           ) : (
             referenceTables.map((table) => {
-              const alias = buildDatasetTableAlias(table.id);
+              const alias = aliasByTableId[table.id] ?? `table_${table.id}`;
               return (
                 <button
                   key={table.id}
