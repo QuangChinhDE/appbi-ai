@@ -133,6 +133,10 @@ function parseSqlOn(sqlOn: string): { fromCol: string; toCol: string } | null {
   return { fromCol: clean(m[1]), toCol: clean(m[2]) };
 }
 
+function getViewLabel(view: Pick<DatasetModelView, 'name' | 'table_display_name'> | null | undefined): string {
+  return view?.table_display_name || view?.name || 'Unknown';
+}
+
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
 function DimIcon({ type }: { type: string }) {
@@ -173,14 +177,14 @@ function ViewCard({ view, onEdit, highlightedCols }: ViewCardProps) {
         <div className="flex items-center gap-2 min-w-0">
           <div className="w-2 h-2 rounded-full bg-blue-500 shrink-0" />
           <span className="font-semibold text-sm text-gray-800 truncate">
-            {view.table_display_name || view.name}
+            {getViewLabel(view)}
           </span>
         </div>
         {onEdit && (
           <button
             onClick={onEdit}
             className="p-1 rounded hover:bg-white/60 text-gray-400 hover:text-gray-600 transition-colors shrink-0"
-            title="Edit view"
+            title="Edit fields"
           >
             <Pencil className="w-3 h-3" />
           </button>
@@ -437,12 +441,20 @@ export function DataModelCanvas({
   const generateModel = useGenerateModel();
   const addJoin       = useAddJoin();
   const removeJoin    = useRemoveJoin();
+  const visibleViews = useMemo(
+    () => (model?.views ?? []).filter((view) => !view.hidden_in_canvas),
+    [model?.views],
+  );
+  const calendarPresentationViewName = useMemo(
+    () => (model?.views ?? []).find((view) => view.view_role === 'calendar_dimension')?.name ?? null,
+    [model?.views],
+  );
 
   // Fixed card positions — topology-aware, computed once per model
   const positions = useMemo<Record<number, { x: number; y: number }>>(() => {
-    if (!model?.views?.length) return {};
-    return computeLayout(model.views, model.explores ?? []);
-  }, [model?.model_id, model?.views, model?.explores]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!visibleViews.length) return {};
+    return computeLayout(visibleViews, model?.explores ?? []);
+  }, [model?.model_id, visibleViews, model?.explores]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Refs to card DOM elements
   const cardRefs = useRef<Record<number, HTMLDivElement | null>>({});
@@ -455,6 +467,11 @@ export function DataModelCanvas({
 
   const [selectedRelKey, setSelectedRelKey] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const allViewsByName = useMemo(() => {
+    const m: Record<string, DatasetModelView> = {};
+    (model?.views ?? []).forEach((v) => { m[v.name] = v; });
+    return m;
+  }, [model?.views]);
 
   // ── Relationships ─────────────────────────────────────────────────────────
 
@@ -466,32 +483,37 @@ export function DataModelCanvas({
           fromViewId:   ex.base_view_id,
           fromViewName: ex.base_view_name,
           toViewName:   j.view,
+          presentationViewName:
+            j.presentation_view
+            ?? (j.origin === 'auto_calendar' ? calendarPresentationViewName ?? j.view : j.view),
           joinType:     j.type ?? 'left',
           relationship: j.relationship,
           fromCol:      j.from_column ?? cols?.fromCol,
           toCol:        j.to_column   ?? cols?.toCol,
+          origin:       j.origin,
+          managed:      Boolean(j.managed),
           key: `${ex.base_view_id}->${j.view}->${j.from_column ?? cols?.fromCol ?? ''}->${j.to_column ?? cols?.toCol ?? ''}`,
         };
       })
     );
-  }, [model?.explores]);
+  }, [model?.explores, calendarPresentationViewName]);
 
   const viewByName = useMemo(() => {
     const m: Record<string, DatasetModelView> = {};
-    (model?.views ?? []).forEach((v) => { m[v.name] = v; });
+    visibleViews.forEach((v) => { m[v.name] = v; });
     return m;
-  }, [model?.views]);
+  }, [visibleViews]);
 
   // Columns that are part of at least one join (highlighted in cards)
   const viewHighlights = useMemo<Record<number, Set<string>>>(() => {
     const h: Record<number, Set<string>> = {};
     for (const rel of relationships) {
       if (rel.fromCol) (h[rel.fromViewId] ??= new Set()).add(rel.fromCol);
-      const tv = viewByName[rel.toViewName];
+      const tv = viewByName[rel.presentationViewName] ?? allViewsByName[rel.presentationViewName];
       if (tv && rel.toCol) (h[tv.id] ??= new Set()).add(rel.toCol);
     }
     return h;
-  }, [relationships, viewByName]);
+  }, [relationships, viewByName, allViewsByName]);
 
   // ── Column anchor measurement ─────────────────────────────────────────────
 
@@ -543,14 +565,14 @@ export function DataModelCanvas({
 
   const canvasSize = useMemo(() => {
     let w = 800, h = 500;
-    (model?.views ?? []).forEach((v) => {
+    visibleViews.forEach((v) => {
       const pos = positions[v.id];
       if (!pos) return;
       w = Math.max(w, pos.x + CARD_WIDTH + PAD);
       h = Math.max(h, pos.y + ROW_HEIGHT + PAD);
     });
     return { width: w, height: h };
-  }, [positions, model?.views]);
+  }, [positions, visibleViews]);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -558,6 +580,13 @@ export function DataModelCanvas({
     () => relationships.find((r) => r.key === selectedRelKey) ?? null,
     [relationships, selectedRelKey]
   );
+  const selectedFromView = selectedRelationship
+    ? allViewsByName[selectedRelationship.fromViewName]
+    : null;
+  const selectedToView = selectedRelationship
+    ? (viewByName[selectedRelationship.presentationViewName]
+        ?? allViewsByName[selectedRelationship.presentationViewName])
+    : null;
 
   const handleGenerate = async (force = false) => {
     try {
@@ -604,7 +633,7 @@ export function DataModelCanvas({
   const lineEndpoints = useMemo(() => {
     return relationships.flatMap((rel) => {
       const fromPos = positions[rel.fromViewId];
-      const toView  = viewByName[rel.toViewName];
+      const toView  = viewByName[rel.presentationViewName];
       if (!fromPos || !toView) return [];
       const toPos = positions[toView.id];
       if (!toPos) return [];
@@ -651,7 +680,7 @@ export function DataModelCanvas({
     );
   }
 
-  if (!model?.model_id || !model.views.length) {
+  if (!model?.model_id || !visibleViews.length) {
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-4">
         <div className="text-center">
@@ -689,28 +718,29 @@ export function DataModelCanvas({
         <div className="flex items-center gap-3 min-w-0">
           <h3 className="text-sm font-medium text-gray-900 shrink-0">Data Model</h3>
           <span className="text-xs text-gray-400 shrink-0">
-            {model.views.length} table{model.views.length !== 1 ? 's' : ''} |{' '}
+            {visibleViews.length} table{visibleViews.length !== 1 ? 's' : ''} |{' '}
             {totalRels} relationship{totalRels !== 1 ? 's' : ''}
           </span>
           {selectedRelationship && (
             <span className="text-xs text-indigo-600 truncate">
-              <span className="font-medium">{selectedRelationship.fromViewName}</span>
+              <span className="font-medium">{getViewLabel(selectedFromView)}</span>
               <span className="text-indigo-300">.</span>
               <span className="font-semibold">{selectedRelationship.fromCol ?? '?'}</span>
               {' → '}
-              <span className="font-medium">{selectedRelationship.toViewName}</span>
+              <span className="font-medium">{getViewLabel(selectedToView)}</span>
               <span className="text-indigo-300">.</span>
               <span className="font-semibold">{selectedRelationship.toCol ?? '?'}</span>
               {' · '}
               {selectedRelationship.relationship?.replace(/_/g, ':') ?? 'N:1'}
               {' · '}
               {selectedRelationship.joinType.toUpperCase()}
+              {selectedRelationship.managed ? ' | Auto-managed' : ''}
             </span>
           )}
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {selectedRelationship && canEdit && (
+          {selectedRelationship && canEdit && !selectedRelationship.managed && (
             <button
               onClick={handleDeleteRel}
               disabled={removeJoin.isPending}
@@ -794,7 +824,7 @@ export function DataModelCanvas({
           </svg>
 
           {/* Table cards — fixed positions, no drag */}
-          {model.views.map((view) => {
+          {visibleViews.map((view) => {
             const pos = positions[view.id];
             if (!pos) return null;
             return (
@@ -811,7 +841,11 @@ export function DataModelCanvas({
               >
                 <ViewCard
                   view={view}
-                  onEdit={canEdit && onEditView ? () => onEditView(view) : undefined}
+                  onEdit={
+                    canEdit && onEditView && !view.system_managed
+                      ? () => onEditView(view)
+                      : undefined
+                  }
                   highlightedCols={viewHighlights[view.id]}
                 />
               </div>
@@ -825,7 +859,7 @@ export function DataModelCanvas({
         isOpen={dialogOpen}
         onClose={() => setDialogOpen(false)}
         onSave={handleAddJoin}
-        views={model.views}
+        views={visibleViews}
         isSaving={addJoin.isPending}
       />
     </div>

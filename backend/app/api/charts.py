@@ -6,7 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, s
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core import get_db
 from app.core.dependencies import (
@@ -16,6 +16,7 @@ from app.core.dependencies import (
     require_edit_access,
     require_full_access,
     get_effective_permission,
+    batch_effective_permissions,
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models.models import Chart, DashboardChart, Dashboard
@@ -33,6 +34,16 @@ from app.schemas import (
     ChartParameterResponse,
 )
 from app.services import ChartService, EmbeddingService
+from app.services.dataset_calendar_service import (
+    build_calendar_duckdb_sql,
+    get_calendar_settings,
+    is_generated_calendar_table,
+)
+from app.services.dataset_table_sql_service import (
+    DatasetTableSqlError,
+    build_dataset_table_duckdb_query,
+    is_derived_table,
+)
 from app.services.description_pipeline_service import (
     DescriptionPipelineService,
     resolve_session_factory,
@@ -48,6 +59,25 @@ class AIChartPreviewRequest(BaseModel):
     name: str = "AI Chart"
     description: Optional[str] = None
     save: bool = False
+
+
+class ChartPreviewDataRequest(BaseModel):
+    """Request body for Explore chart preview."""
+    dataset_table_id: int
+    chart_type: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+    context: Optional[str] = None
+    include_source_sample: bool = False
+    source_sample_limit: int = Field(default=100, ge=1, le=1000)
+
+
+class ChartPreviewDataResponse(BaseModel):
+    """Shared preview response for Explore."""
+    data: List[Dict[str, Any]]
+    pre_aggregated: bool = False
+    execution_time_ms: Optional[float] = None
+    source_columns: List[str] = Field(default_factory=list)
+    source_rows: List[Dict[str, Any]] = Field(default_factory=list)
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/charts", tags=["charts"])
@@ -114,9 +144,14 @@ def list_charts(
         .limit(limit)
         .all()
     )
+    # Batch hydrate: use auto_generate=False to avoid heavy model generation
+    # on the list endpoint (semantic models are generated on save/preview instead).
     for item in items:
-        ChartService.hydrate_runtime_config(db, item)
-        item.user_permission = get_effective_permission(db, current_user, item, "explore_charts")
+        ChartService.hydrate_runtime_config(db, item, auto_generate=False)
+    # Batch permission check — single DB query instead of N queries
+    perm_map = batch_effective_permissions(db, current_user, items, "explore_charts")
+    for item in items:
+        item.user_permission = perm_map.get(item.id, "none")
     stamp_owner_emails(db, items)
     return items
 
@@ -177,21 +212,31 @@ def ai_chart_preview(
                 detail="Requires 'edit' permission on module 'explore_charts'",
             )
 
-    datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
-    if not datasource:
-        raise HTTPException(status_code=404, detail="Datasource not found")
-
     # Resolve DuckDB base table
-    if db_table.source_kind == "sql_query":
-        rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query or "")
-        if rewritten is None:
-            raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
-        base_table = f"({rewritten}) AS base_table"
+    if is_generated_calendar_table(db_table):
+        base_table = f"({build_calendar_duckdb_sql(get_calendar_settings(dataset_obj, enabled_default=False))}) AS base_table"
+    elif is_derived_table(db_table):
+        try:
+            base_table = f"({build_dataset_table_duckdb_query(db, dataset_obj, db_table)}) AS base_table"
+        except DatasetTableSqlError as exc:
+            if getattr(exc, "code", "") == "NOT_SYNCED":
+                raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)})
+            raise HTTPException(status_code=400, detail=str(exc))
     else:
-        view_name = get_synced_view(datasource.id, db_table.source_table_name or "")
-        if view_name is None:
-            raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
-        base_table = view_name
+        datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+        if not datasource:
+            raise HTTPException(status_code=404, detail="Datasource not found")
+
+        if db_table.source_kind == "sql_query":
+            rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query or "")
+            if rewritten is None:
+                raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
+            base_table = f"({rewritten}) AS base_table"
+        else:
+            view_name = get_synced_view(datasource.id, db_table.source_table_name or "")
+            if view_name is None:
+                raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
+            base_table = view_name
 
     # Build and execute aggregation query
     config = payload.config or {}
@@ -255,6 +300,37 @@ def ai_chart_preview(
         response["chart_name"] = new_chart.name
 
     return response
+
+
+@router.post("/preview-data", response_model=ChartPreviewDataResponse)
+def preview_chart_data(
+    payload: ChartPreviewDataRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Preview chart runtime for Explore using the saved-chart execution path."""
+    dataset_obj, _ = _get_dataset_for_chart_table(db, payload.dataset_table_id)
+    require_view_access(db, current_user, dataset_obj, "datasets")
+
+    try:
+        result = ChartService.preview_chart_data(
+            db,
+            payload.dataset_table_id,
+            payload.chart_type,
+            payload.config,
+            filter_context=payload.context,
+            include_source_sample=payload.include_source_sample,
+            source_sample_limit=payload.source_sample_limit,
+        )
+        return ChartPreviewDataResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to preview chart data: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to preview chart data.",
+        )
 
 
 @router.get("/{chart_id}", response_model=ChartResponse)

@@ -10,11 +10,26 @@ export interface Dataset {
   id: number;
   name: string;
   description?: string;
+  settings?: DatasetSettings;
   owner_id?: string;
   owner_email?: string;
   user_permission?: 'none' | 'view' | 'edit' | 'full';
   created_at: string;
   updated_at: string;
+}
+
+export interface CalendarDimensionSettings {
+  enabled: boolean;
+  start_date: string;
+  end_date: string;
+  timezone: string;
+  week_start_day: 'monday' | 'sunday';
+  fiscal_year_start_month: number;
+  auto_join_temporal_columns: boolean;
+}
+
+export interface DatasetSettings {
+  calendar_dimension: CalendarDimensionSettings;
 }
 
 export interface Transformation {
@@ -27,8 +42,8 @@ export interface Transformation {
 export interface DatasetTable {
   id: number;
   dataset_id: number;
-  datasource_id: number;
-  source_kind: "physical_table" | "sql_query";
+  datasource_id?: number | null;
+  source_kind: "physical_table" | "sql_query" | "derived_table" | "generated_calendar";
   source_table_name?: string;
   source_query?: string;
   display_name: string;
@@ -49,16 +64,18 @@ export interface DatasetWithTables extends Dataset {
 export interface CreateDatasetInput {
   name: string;
   description?: string;
+  settings?: DatasetSettings;
 }
 
 export interface UpdateDatasetInput {
   name?: string;
   description?: string;
+  settings?: DatasetSettings;
 }
 
 export interface AddTableInput {
-  datasource_id: number;
-  source_kind?: "physical_table" | "sql_query";
+  datasource_id?: number | null;
+  source_kind?: "physical_table" | "sql_query" | "derived_table";
   source_table_name?: string;
   source_query?: string;
   display_name: string;

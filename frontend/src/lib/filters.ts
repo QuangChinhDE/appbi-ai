@@ -102,7 +102,7 @@ export function getFilterKey(filter: Pick<BaseFilter, 'fieldKey' | 'semanticFiel
 
 type ChartSemanticBindingLike = Pick<
   ChartSemanticBinding,
-  'datasetId' | 'baseViewName' | 'fieldMap' | 'dimensionFields' | 'measureFields'
+  'datasetId' | 'baseViewName' | 'fieldMap' | 'dimensionFields' | 'measureFields' | 'calendarFieldMappings'
 >;
 
 function semanticCandidates(filter: Pick<BaseFilter, 'fieldKey' | 'semanticField' | 'field'>): string[] {
@@ -130,6 +130,16 @@ export function resolveChartSemanticField(
   return availableSemanticFields.has(semanticField) ? semanticField : null;
 }
 
+export function resolveCalendarFieldMapping(
+  binding: ChartSemanticBindingLike | null | undefined,
+  semanticField: string | null | undefined,
+) {
+  if (!binding || !semanticField) return null;
+  return (binding.calendarFieldMappings ?? []).find(
+    (mapping) => mapping.semanticField === semanticField,
+  ) ?? null;
+}
+
 export function resolveChartFieldForFilter(
   filter: Pick<BaseFilter, 'field' | 'fieldKey' | 'semanticField' | 'datasetId'>,
   binding: ChartSemanticBindingLike | null | undefined,
@@ -152,6 +162,11 @@ export function resolveChartFieldForFilter(
   ]);
 
   for (const semanticField of semanticCandidates(filter)) {
+    const calendarMapping = resolveCalendarFieldMapping(binding, semanticField);
+    if (calendarMapping?.sourceField) {
+      return calendarMapping.sourceField;
+    }
+
     const mappedField = Object.entries(binding.fieldMap ?? {}).find(
       ([, value]) => value === semanticField,
     )?.[0];
@@ -251,15 +266,18 @@ export function applyFiltersToRows(
       if (val === null || val === undefined) return false;
 
       // Handle multi-value operators first (type-agnostic)
+      // Normalize both sides to strings so numeric/string mismatches don't cause false negatives
       if (f.operator === 'in') {
-        const selected: string[] = Array.isArray(f.value) ? f.value : [];
+        const selected = Array.isArray(f.value) ? f.value : [];
         if (!selected.length) return true; // empty selection = no filter
-        return selected.includes(String(val));
+        const strVal = String(val);
+        return selected.some(s => String(s) === strVal);
       }
       if (f.operator === 'not_in') {
-        const excluded: string[] = Array.isArray(f.value) ? f.value : [];
+        const excluded = Array.isArray(f.value) ? f.value : [];
         if (!excluded.length) return true;
-        return !excluded.includes(String(val));
+        const strVal = String(val);
+        return !excluded.some(s => String(s) === strVal);
       }
 
       switch (f.type) {
@@ -285,9 +303,10 @@ export function applyFiltersToRows(
         }
         
         case 'dropdown': {
-          const selected: string[] = f.value ?? [];
+          const selected: unknown[] = f.value ?? [];
           if (!selected.length) return true;
-          return selected.includes(String(val));
+          const strVal = String(val);
+          return selected.some(s => String(s) === strVal);
         }
         
         case 'number': {

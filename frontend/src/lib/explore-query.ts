@@ -1,6 +1,7 @@
 import type { Filter } from '@/components/explore/FilterBuilder';
 import {
   metricKey,
+  normalizeMetricConfig,
   normalizeRoleConfig,
   TABLE_PIVOT_COLUMN_LIMIT,
   type ChartRoleConfig,
@@ -131,6 +132,91 @@ function dedupeMetrics(metrics: MetricConfig[]): MetricConfig[] {
   return deduped;
 }
 
+function parsedMetricToConfig(metric: ParsedSqlMetric): MetricConfig {
+  return {
+    field: metric.sourceField ?? metric.outputField,
+    agg: metric.agg,
+    outputField: metric.outputField,
+  };
+}
+
+function inferNumericOutputMetrics(columns: ColumnMetadata[]): MetricConfig[] {
+  return columns
+    .filter((column) => column.type === 'number')
+    .map((column) => ({
+      field: column.name,
+      agg: 'sum' as const,
+      outputField: column.name,
+    }));
+}
+
+function resolveCurrentSqlMetric(
+  columns: ColumnMetadata[],
+  parsedMetrics: ParsedSqlMetric[],
+  metric: MetricConfig | null | undefined,
+): MetricConfig | undefined {
+  const normalizedMetric = normalizeMetricConfig(metric);
+  if (!normalizedMetric) {
+    return undefined;
+  }
+
+  const outputColumns = columns.map((column) => column.name);
+  const resolvedMetric = resolveSqlMetricConfig(outputColumns, parsedMetrics, normalizedMetric);
+  if (resolvedMetric) {
+    return resolvedMetric;
+  }
+
+  const numericOutputNames = new Set(
+    columns
+      .filter((column) => column.type === 'number')
+      .map((column) => column.name),
+  );
+  const directOutputMatch = metricOutputKeys(normalizedMetric)
+    .find((key) => numericOutputNames.has(key));
+
+  if (!directOutputMatch) {
+    return undefined;
+  }
+
+  return {
+    ...normalizedMetric,
+    outputField: directOutputMatch,
+  };
+}
+
+function pickFirstUnusedMetric(
+  candidates: MetricConfig[],
+  usedMetricKeys: Set<string>,
+): MetricConfig | undefined {
+  const match = candidates.find((candidate) => !usedMetricKeys.has(metricKey(candidate)));
+  if (!match) {
+    return undefined;
+  }
+  usedMetricKeys.add(metricKey(match));
+  return match;
+}
+
+function buildChartQueryMetrics(
+  chartType: ExploreChartType,
+  roleConfig: ChartRoleConfig,
+): MetricConfig[] {
+  const normalized = normalizeRoleConfig(chartType, roleConfig);
+  if (chartType === 'KPI') {
+    const primaryMetric = normalized.metrics[0] ? [normalized.metrics[0]] : [];
+    return dedupeMetrics(
+      normalized.benchmarkMetric
+        ? [...primaryMetric, normalized.benchmarkMetric]
+        : primaryMetric,
+    );
+  }
+
+  return dedupeMetrics(
+    chartType === 'BAR_LINE' && normalized.lineMetric
+      ? [...normalized.metrics, normalized.lineMetric]
+      : [...normalized.metrics],
+  );
+}
+
 function isTablePivotConfig(roleConfig: ChartRoleConfig | null | undefined): boolean {
   return roleConfig?.tableMode === 'pivot'
     && Boolean(roleConfig.tableRowDimension)
@@ -203,9 +289,11 @@ function formatSqlFilter(filter: Filter): string | null {
       return `${field} <= ${quoteSqlValue(value)}`;
     case 'between': {
       const [start, end] = Array.isArray(value) ? value : ['', ''];
-      if (start && end) return `${field} BETWEEN ${quoteSqlValue(start)} AND ${quoteSqlValue(end)}`;
-      if (start) return `${field} >= ${quoteSqlValue(start)}`;
-      if (end) return `${field} <= ${quoteSqlValue(end)}`;
+      const hasStart = start !== null && start !== undefined && start !== '';
+      const hasEnd = end !== null && end !== undefined && end !== '';
+      if (hasStart && hasEnd) return `${field} BETWEEN ${quoteSqlValue(start)} AND ${quoteSqlValue(end)}`;
+      if (hasStart) return `${field} >= ${quoteSqlValue(start)}`;
+      if (hasEnd) return `${field} <= ${quoteSqlValue(end)}`;
       return null;
     }
     case 'in':
@@ -215,12 +303,18 @@ function formatSqlFilter(filter: Filter): string | null {
       const comparator = filter.operator === 'not_in' ? 'NOT IN' : 'IN';
       return `${field} ${comparator} (${values.map(quoteSqlValue).join(', ')})`;
     }
-    case 'contains':
-      return `${field} LIKE '%${String(value ?? '').replace(/'/g, "''")}%'`;
-    case 'not_contains':
-      return `${field} NOT LIKE '%${String(value ?? '').replace(/'/g, "''")}%'`;
-    case 'starts_with':
-      return `${field} LIKE '${String(value ?? '').replace(/'/g, "''")}%'`;
+    case 'contains': {
+      const esc = String(value ?? '').replace(/'/g, "''").replace(/%/g, '\\%').replace(/_/g, '\\_');
+      return `${field} LIKE '%${esc}%' ESCAPE '\\'`;
+    }
+    case 'not_contains': {
+      const esc = String(value ?? '').replace(/'/g, "''").replace(/%/g, '\\%').replace(/_/g, '\\_');
+      return `${field} NOT LIKE '%${esc}%' ESCAPE '\\'`;
+    }
+    case 'starts_with': {
+      const esc = String(value ?? '').replace(/'/g, "''").replace(/%/g, '\\%').replace(/_/g, '\\_');
+      return `${field} LIKE '${esc}%' ESCAPE '\\'`;
+    }
     case 'is_null':
       return `${field} IS NULL`;
     case 'is_not_null':
@@ -420,6 +514,7 @@ export function inferRoleConfigFromCustomSql(args: {
 }): CustomSqlRoleInference {
   const { sql, chartType, columns, currentRoleConfig } = args;
   const outputColumns = columns.map((column) => column.name);
+  const normalizedCurrent = normalizeRoleConfig(chartType, currentRoleConfig);
   const parsedItems = parseCustomSqlSelect(sql, outputColumns);
   if (parsedItems.length === 0) {
     return {};
@@ -433,7 +528,6 @@ export function inferRoleConfigFromCustomSql(args: {
     .filter((item): item is ParsedSqlDimension => Boolean(item));
 
   if (chartType === 'TABLE') {
-    const normalizedCurrent = normalizeRoleConfig(chartType, currentRoleConfig);
     if (isTablePivotConfig(normalizedCurrent)) {
       const pivotMetric = resolveSqlMetricConfig(
         outputColumns,
@@ -480,15 +574,133 @@ export function inferRoleConfigFromCustomSql(args: {
     return {};
   }
 
+  if (chartType === 'KPI') {
+    const resolvedCurrentMetric = resolveCurrentSqlMetric(
+      columns,
+      parsedMetrics,
+      normalizedCurrent.metrics[0],
+    );
+    const resolvedCurrentBenchmarkMetric = resolveCurrentSqlMetric(
+      columns,
+      parsedMetrics,
+      normalizedCurrent.benchmarkMetric,
+    );
+    const metricCandidates = dedupeMetrics([
+      ...parsedMetrics.map(parsedMetricToConfig),
+      ...inferNumericOutputMetrics(columns),
+    ]);
+    const usedMetricKeys = new Set<string>();
+    const primaryMetric = resolvedCurrentMetric ?? pickFirstUnusedMetric(metricCandidates, usedMetricKeys);
+
+    if (!primaryMetric) {
+      return {};
+    }
+
+    usedMetricKeys.add(metricKey(primaryMetric));
+    const benchmarkMetric = resolvedCurrentBenchmarkMetric
+      ?? pickFirstUnusedMetric(metricCandidates, usedMetricKeys);
+    const customRoleConfig: ChartRoleConfig = {
+      metrics: [primaryMetric],
+      ...(benchmarkMetric
+        ? { benchmarkMetric }
+        : {}),
+    };
+
+    const primaryParsedMetric = parsedMetrics.find((metric) => (
+      metric.agg === primaryMetric.agg
+        && (
+          metric.outputField === primaryMetric.outputField
+          || metric.outputField === primaryMetric.field
+          || metric.sourceField === primaryMetric.field
+        )
+    ));
+    const benchmarkParsedMetric = benchmarkMetric
+      ? parsedMetrics.find((metric) => (
+          metric.agg === benchmarkMetric.agg
+            && (
+              metric.outputField === benchmarkMetric.outputField
+              || metric.outputField === benchmarkMetric.field
+              || metric.sourceField === benchmarkMetric.field
+            )
+        ))
+      : undefined;
+
+    const canSyncGenerated = Boolean(primaryParsedMetric?.sourceField)
+      && (!benchmarkParsedMetric || Boolean(benchmarkParsedMetric.sourceField));
+
+    return {
+      customRoleConfig,
+      ...(canSyncGenerated
+        ? {
+            generatedRoleConfig: {
+              metrics: [{
+                field: primaryParsedMetric?.sourceField as string,
+                agg: primaryMetric.agg,
+              }],
+              ...(benchmarkParsedMetric
+                ? {
+                    benchmarkMetric: {
+                      field: benchmarkParsedMetric.sourceField as string,
+                      agg: benchmarkMetric?.agg ?? 'sum',
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
+    };
+  }
+
   const primaryDimension = parsedDimensions[0];
+  const resolvedCurrentDimension = resolveSqlDimensionOutputField(
+    outputColumns,
+    parsedDimensions,
+    normalizedCurrent.dimension,
+  );
+  const resolvedCurrentBreakdown = resolveSqlDimensionOutputField(
+    outputColumns,
+    parsedDimensions,
+    normalizedCurrent.breakdown,
+  );
+  const resolvedCurrentTimeField = resolveSqlDimensionOutputField(
+    outputColumns,
+    parsedDimensions,
+    normalizedCurrent.timeField,
+  );
+  const resolvedCurrentMetrics = dedupeMetrics(
+    normalizedCurrent.metrics
+      .map((metric) => resolveCurrentSqlMetric(columns, parsedMetrics, metric))
+      .filter((metric): metric is MetricConfig => Boolean(metric)),
+  );
+  const resolvedCurrentLineMetric = resolveCurrentSqlMetric(
+    columns,
+    parsedMetrics,
+    normalizedCurrent.lineMetric,
+  );
+  const resolvedCurrentBenchmarkMetric = resolveCurrentSqlMetric(
+    columns,
+    parsedMetrics,
+    normalizedCurrent.benchmarkMetric,
+  );
   const customRoleConfig: ChartRoleConfig = {
-    ...(primaryDimension ? { dimension: primaryDimension.outputField } : {}),
-    ...(chartType === 'TIME_SERIES' && primaryDimension ? { timeField: primaryDimension.outputField } : {}),
-    metrics: parsedMetrics.map((metric) => ({
-      field: metric.sourceField ?? metric.outputField,
-      agg: metric.agg,
-      outputField: metric.outputField,
-    })),
+    ...(resolvedCurrentDimension ?? primaryDimension?.outputField
+      ? { dimension: resolvedCurrentDimension ?? primaryDimension?.outputField }
+      : {}),
+    ...(resolvedCurrentBreakdown ? { breakdown: resolvedCurrentBreakdown } : {}),
+    ...(chartType === 'TIME_SERIES' && (resolvedCurrentTimeField ?? primaryDimension?.outputField)
+      ? { timeField: resolvedCurrentTimeField ?? primaryDimension?.outputField }
+      : {}),
+    ...(normalizedCurrent.scatterX && outputColumns.includes(normalizedCurrent.scatterX)
+      ? { scatterX: normalizedCurrent.scatterX }
+      : {}),
+    ...(normalizedCurrent.scatterY && outputColumns.includes(normalizedCurrent.scatterY)
+      ? { scatterY: normalizedCurrent.scatterY }
+      : {}),
+    ...(resolvedCurrentLineMetric ? { lineMetric: resolvedCurrentLineMetric } : {}),
+    ...(resolvedCurrentBenchmarkMetric ? { benchmarkMetric: resolvedCurrentBenchmarkMetric } : {}),
+    metrics: resolvedCurrentMetrics.length > 0
+      ? resolvedCurrentMetrics
+      : parsedMetrics.map(parsedMetricToConfig),
   };
 
   const canSyncGenerated = parsedMetrics.every((metric) => Boolean(metric.sourceField))
@@ -601,7 +813,7 @@ export function buildExploreExecuteRequest(args: {
   }
 
   if (chartType === 'KPI') {
-    request.measures = normalized.metrics.slice(0, 1).map((metric) => ({
+    request.measures = buildChartQueryMetrics(chartType, normalized).map((metric) => ({
       field: metric.field,
       function: metric.agg,
     }));
@@ -617,11 +829,7 @@ export function buildExploreExecuteRequest(args: {
     request.dimensions = uniqueDimensions;
   }
 
-  const queryMetrics = dedupeMetrics(
-    chartType === 'BAR_LINE' && normalized.lineMetric
-      ? [...normalized.metrics, normalized.lineMetric]
-      : [...normalized.metrics],
-  );
+  const queryMetrics = buildChartQueryMetrics(chartType, normalized);
   if (queryMetrics.length > 0) {
     request.measures = queryMetrics.map((metric) => ({
       field: metric.field,
@@ -651,7 +859,7 @@ export function buildExploreSqlPreview(args: {
 
   const request = buildExploreExecuteRequest({ chartType, roleConfig, filters, limit });
   const normalizedRoleConfig = normalizeRoleConfig(chartType, roleConfig);
-  const sourceSql = table.source_kind === 'sql_query' && table.source_query
+  const sourceSql = (table.source_kind === 'sql_query' || table.source_kind === 'derived_table') && table.source_query
     ? `(\n${table.source_query.trim()}\n) AS source_table`
     : (table.source_table_name || table.display_name || 'table');
 
@@ -771,11 +979,7 @@ export function buildExploreChartResult(args: {
     return { rows, columns, preAggregated: false };
   }
 
-  const metrics = dedupeMetrics(
-    chartType === 'BAR_LINE' && normalized.lineMetric
-      ? [...normalized.metrics, normalized.lineMetric]
-      : [...normalized.metrics],
-  );
+  const metrics = buildChartQueryMetrics(chartType, normalized);
   if (metrics.length === 0) {
     return { rows, columns, preAggregated: false };
   }
@@ -830,16 +1034,31 @@ export function buildQuerySignature(args: {
   tableId: number | null;
   limit: number;
   sqlMode: QuerySource;
+  chartType: ExploreChartType;
+  roleConfig: ChartRoleConfig;
+  filters: Filter[];
   request: ExecuteQueryRequest;
   customSql: string;
 }): string {
-  const { datasetId, tableId, limit, sqlMode, request, customSql } = args;
+  const { datasetId, tableId, limit, sqlMode, chartType, roleConfig, filters, request, customSql } = args;
+  const normalizedRoleConfig = normalizeRoleConfig(chartType, roleConfig);
+  const normalizedFilters = filters
+    .filter((filter) => filter.field?.trim())
+    .map((filter) => ({
+      field: filter.field?.trim() ?? '',
+      operator: filter.operator,
+      value: normalizeFilterValue(filter),
+    }));
+
   return JSON.stringify({
     datasetId,
     tableId,
-    limit,
     sqlMode,
+    chartType,
+    limit: sqlMode === 'generated' ? limit : null,
     request: sqlMode === 'generated' ? request : null,
+    roleConfig: sqlMode === 'custom' ? normalizedRoleConfig : null,
+    filters: sqlMode === 'custom' ? normalizedFilters : null,
     customSql: sqlMode === 'custom' ? customSql.trim() : '',
   });
 }

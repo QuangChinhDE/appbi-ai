@@ -1,5 +1,5 @@
 """Schemas for Datasets (Table-based Datasets)"""
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel, Field, model_validator
 from uuid import UUID
@@ -7,10 +7,25 @@ from uuid import UUID
 
 # ===== Dataset Schemas =====
 
+
+class CalendarDimensionSettings(BaseModel):
+    enabled: bool = True
+    start_date: date = Field(default=date(2000, 1, 1))
+    end_date: date = Field(default=date(2100, 12, 31))
+    timezone: str = "UTC"
+    week_start_day: str = Field(default="monday", pattern="^(monday|sunday)$")
+    fiscal_year_start_month: int = Field(default=1, ge=1, le=12)
+    auto_join_temporal_columns: bool = True
+
+
+class DatasetSettings(BaseModel):
+    calendar_dimension: CalendarDimensionSettings = Field(default_factory=CalendarDimensionSettings)
+
 class DatasetBase(BaseModel):
     """Base dataset schema"""
     name: str = Field(..., min_length=1, max_length=200)
     description: Optional[str] = None
+    settings: Optional[DatasetSettings] = None
 
 
 class DatasetCreate(DatasetBase):
@@ -22,6 +37,7 @@ class DatasetUpdate(BaseModel):
     """Schema for updating a dataset"""
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     description: Optional[str] = None
+    settings: Optional[DatasetSettings] = None
 
 
 class DatasetResponse(DatasetBase):
@@ -48,22 +64,33 @@ class DatasetTableBase(BaseModel):
 
 class TableCreate(DatasetTableBase):
     """Schema for adding a table to dataset"""
-    datasource_id: int
-    source_kind: str = Field(default="physical_table", description="'physical_table' or 'sql_query'")
+    datasource_id: Optional[int] = None
+    source_kind: str = Field(default="physical_table", description="'physical_table', 'sql_query', or 'derived_table'")
     source_table_name: Optional[str] = Field(None, description="Full table name for physical_table")
-    source_query: Optional[str] = Field(None, description="SQL query for sql_query")
+    source_query: Optional[str] = Field(None, description="SQL query for sql_query or derived_table")
     
     @model_validator(mode='after')
     def validate_source(self):
         """Validate that source fields match source_kind"""
         if self.source_kind == "physical_table":
+            if self.datasource_id is None:
+                raise ValueError("datasource_id is required when source_kind is 'physical_table'")
             if not self.source_table_name:
                 raise ValueError("source_table_name is required when source_kind is 'physical_table'")
         elif self.source_kind == "sql_query":
+            if self.datasource_id is None:
+                raise ValueError("datasource_id is required when source_kind is 'sql_query'")
             if not self.source_query:
                 raise ValueError("source_query is required when source_kind is 'sql_query'")
+        elif self.source_kind == "derived_table":
+            if self.datasource_id is not None:
+                raise ValueError("datasource_id must be omitted when source_kind is 'derived_table'")
+            if not self.source_query:
+                raise ValueError("source_query is required when source_kind is 'derived_table'")
         else:
-            raise ValueError(f"Invalid source_kind: {self.source_kind}. Must be 'physical_table' or 'sql_query'")
+            raise ValueError(
+                f"Invalid source_kind: {self.source_kind}. Must be 'physical_table', 'sql_query', or 'derived_table'"
+            )
         return self
 
 
@@ -81,10 +108,13 @@ class TableResponse(DatasetTableBase):
     """Schema for table response"""
     id: int
     dataset_id: int
-    datasource_id: int
+    datasource_id: Optional[int] = None
     source_kind: str
     source_table_name: Optional[str] = None
     source_query: Optional[str] = None
+    query_mode: str = "synced"
+    estimated_row_count: Optional[int] = None
+    estimated_size_bytes: Optional[int] = None
     transformations: Optional[List[Dict[str, Any]]] = None
     columns_cache: Optional[Union[List[Any], Dict[str, Any]]] = None
     sample_cache: Optional[List[Dict[str, Any]]] = None

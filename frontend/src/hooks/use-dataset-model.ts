@@ -33,6 +33,10 @@ export interface JoinDefinition {
   from_view?: string;
   from_column?: string;
   to_column?: string;
+  origin?: 'auto_fk' | 'auto_calendar' | 'manual';
+  managed?: boolean;
+  presentation_view?: string;
+  calendar_source_field?: string;
 }
 
 export interface DatasetModelView {
@@ -41,6 +45,9 @@ export interface DatasetModelView {
   dataset_table_id?: number;
   table_display_name?: string;
   sql_table_name?: string;
+  view_role?: 'table' | 'calendar_dimension' | 'calendar_role';
+  system_managed?: boolean;
+  hidden_in_canvas?: boolean;
   dimensions: DimensionDefinition[];
   measures: MeasureDefinition[];
   description?: string;
@@ -138,7 +145,7 @@ export function useGenerateModel() {
 }
 
 /**
- * Update a semantic view (dimensions/measures)
+ * Update a model table's fields
  */
 export function useUpdateModelView() {
   const queryClient = useQueryClient();
@@ -151,7 +158,7 @@ export function useUpdateModelView() {
     }: {
       datasetId: number;
       viewId: number;
-      data: Partial<Pick<DatasetModelView, 'dimensions' | 'measures' | 'description' | 'name'>>;
+      data: Partial<Pick<DatasetModelView, 'dimensions' | 'measures' | 'description'>>;
     }) => {
       const response = await api.put(
         `/datasets/${datasetId}/model/views/${viewId}`,
@@ -166,7 +173,7 @@ export function useUpdateModelView() {
 }
 
 /**
- * Update a semantic explore (joins)
+ * Update model relationships
  */
 export function useUpdateModelExplore() {
   const queryClient = useQueryClient();
@@ -179,7 +186,7 @@ export function useUpdateModelExplore() {
     }: {
       datasetId: number;
       exploreId: number;
-      data: Partial<Pick<DatasetModelExplore, 'joins' | 'description' | 'name'>>;
+      data: Partial<Pick<DatasetModelExplore, 'joins' | 'description'>>;
     }) => {
       const response = await api.put(
         `/datasets/${datasetId}/model/explores/${exploreId}`,

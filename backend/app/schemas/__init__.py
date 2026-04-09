@@ -45,8 +45,10 @@ from app.schemas.schemas import (
 
 from app.schemas.dataset import (
     # Dataset (Table-based)
+    CalendarDimensionSettings,
     DatasetBase,
     DatasetCreate,
+    DatasetSettings,
     DatasetUpdate,
     DatasetResponse,
     DatasetWithTables,
@@ -116,8 +118,10 @@ __all__ = [
     "ErrorResponse",
     
     # Dataset (Table-based)
+    "CalendarDimensionSettings",
     "DatasetBase",
     "DatasetCreate",
+    "DatasetSettings",
     "DatasetUpdate",
     "DatasetResponse",
     "DatasetWithTables",

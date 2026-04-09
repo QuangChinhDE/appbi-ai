@@ -99,10 +99,15 @@ export function TableDescriptionPanel({ datasetId, tableId, canEdit }: Props) {
 
   useEffect(() => {
     if (!isProcessing) return;
-    const timer = setInterval(() => {
+    let delay = 2000;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = () => {
       queryClient.invalidateQueries({ queryKey: ['table-description', datasetId, tableId] });
-    }, 2000);
-    return () => clearInterval(timer);
+      delay = Math.min(delay * 1.5, 10000);
+      timer = setTimeout(poll, delay);
+    };
+    timer = setTimeout(poll, delay);
+    return () => clearTimeout(timer);
   }, [isProcessing, queryClient, tableId, datasetId]);
 
   useEffect(() => {

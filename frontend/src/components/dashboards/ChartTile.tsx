@@ -1,12 +1,11 @@
 'use client';
 
-import React, { useMemo, useState, useRef, useEffect } from 'react';
+import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { X, Loader2, Pencil, Check, SlidersHorizontal } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { applyFilters } from '@/lib/explore-utils';
-import type { ChartRoleConfig } from '@/components/explore/ExploreChartConfig';
 import {
   getRoleConfigDimensionFields,
   metricKey,
@@ -14,10 +13,12 @@ import {
   normalizeChartStyleConfig,
   normalizeRoleConfig,
 } from '@/components/explore/ExploreChartConfig';
+import { getActiveChartRoleConfig } from '@/lib/chart-config';
 import {
   DashboardFilter,
   applyFiltersToRows,
   inferColumnTypeFromData,
+  resolveCalendarFieldMapping,
   resolveChartFieldForFilter,
   resolveChartSemanticField,
   resolveFilterForChartData,
@@ -41,6 +42,16 @@ interface ChartTileProps {
   onSelectCrossFilter?: (filter: BaseFilter | null) => void;
   isCrossFilterSource?: boolean;
   instanceParameters?: Record<string, any>;
+}
+
+/** Debounce a value — avoids cascading API calls on rapid filter changes. */
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
 }
 
 const NUMERIC_MAPPING_TYPES = new Set(['number', 'integer', 'float', 'double', 'decimal', 'numeric', 'bigint', 'int']);
@@ -150,12 +161,20 @@ export function ChartTile({
       if (gf.value === undefined || gf.value === null || gf.value === '') continue;
       const field = resolveChartFieldForFilter(gf, chartSemanticBinding);
       if (!field) continue;
+      const calendarMapping = resolveCalendarFieldMapping(
+        chartSemanticBinding,
+        gf.semanticField ?? gf.fieldKey,
+      );
       filters.push({
         field,
         operator: gf.operator,
         value: gf.value,
         semanticField: gf.semanticField,
         datasetId: gf.datasetId,
+        ...(calendarMapping ? {
+          calendarField: calendarMapping.calendarField,
+          calendarSourceField: calendarMapping.sourceField,
+        } : {}),
       });
       if (!chartSemanticBinding && !gf.semanticField && gf.linkedFields) {
         for (const lf of gf.linkedFields) {
@@ -165,12 +184,38 @@ export function ChartTile({
     }
     for (const df of dashboardFilters) {
       if (df.value === undefined || df.value === null || df.value === '') continue;
-      filters.push({ field: df.field, operator: df.operator, value: df.value });
+      const field = resolveChartFieldForFilter(df, chartSemanticBinding) ?? df.field;
+      const calendarMapping = resolveCalendarFieldMapping(
+        chartSemanticBinding,
+        df.semanticField ?? df.fieldKey,
+      );
+      filters.push({
+        field,
+        operator: df.operator,
+        value: df.value,
+        semanticField: df.semanticField,
+        datasetId: df.datasetId,
+        ...(calendarMapping ? {
+          calendarField: calendarMapping.calendarField,
+          calendarSourceField: calendarMapping.sourceField,
+        } : {}),
+      });
     }
     return filters.length > 0 ? filters : undefined;
   }, [globalFilters, crossFilters, dashboardFilters, parameterFilters, chartSemanticBinding]);
 
-  const { data: chartData, isLoading: isLoadingData } = useChartData(chartId, serverFilters, 'dashboard');
+  // Debounce server filters to avoid cascading API calls on rapid cross-filter / dashboard filter changes
+  const serverFilterKey = useMemo(
+    () => (serverFilters ? JSON.stringify(serverFilters) : null),
+    [serverFilters],
+  );
+  const debouncedFilterKey = useDebouncedValue(serverFilterKey, 300);
+  const debouncedFilters = useMemo(
+    () => (debouncedFilterKey ? JSON.parse(debouncedFilterKey) as Record<string, unknown>[] : undefined),
+    [debouncedFilterKey],
+  );
+
+  const { data: chartData, isLoading: isLoadingData } = useChartData(chartId, debouncedFilters, 'dashboard');
 
   // Title editing state
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -178,12 +223,29 @@ export function ChartTile({
   const [isSavingTitle, setIsSavingTitle] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
 
-  // Per-tile HAVING filter state (post-aggregation)
-  const [havingFilters, setHavingFilters] = useState<BaseFilter[]>([]);
+  // Per-tile HAVING filter state (post-aggregation) — persisted in dashboard layout
+  const [havingFilters, setHavingFilters] = useState<BaseFilter[]>(
+    () => (Array.isArray(currentLayout?.havingFilters) ? currentLayout.havingFilters : []),
+  );
   const [isHavingOpen, setIsHavingOpen] = useState(false);
   const [draftHavingField, setDraftHavingField] = useState('');
   const [draftHavingOp, setDraftHavingOp] = useState<FilterOperator>('gt');
   const [draftHavingValue, setDraftHavingValue] = useState('');
+
+  // Persist HAVING filters into dashboard layout so they survive navigation
+  const havingFiltersKey = useMemo(() => JSON.stringify(havingFilters), [havingFilters]);
+  const initialHavingRef = useRef(havingFiltersKey);
+  useEffect(() => {
+    // Skip the initial mount — only persist when user actually changes filters
+    if (havingFiltersKey === initialHavingRef.current) return;
+    initialHavingRef.current = havingFiltersKey;
+    dashboardApi.updateLayout(dashboardId, [{
+      id: dashboardChartId,
+      layout: { ...currentLayout, havingFilters },
+    }]).then(() => {
+      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+    }).catch(() => { /* layout save is best-effort */ });
+  }, [havingFiltersKey, dashboardId, dashboardChartId, currentLayout, havingFilters, queryClient]);
 
   const customTitle: string | undefined = currentLayout?.custom_title;
   const displayTitle = customTitle ?? chart?.name ?? '';
@@ -226,16 +288,17 @@ export function ChartTile({
     if (e.key === 'Escape') setIsEditingTitle(false);
   };
 
-  // Detect whether this is an Explore-format chart (has roleConfig)
+  // Detect whether this is an Explore-format chart using the active mode config.
   const exploreConfig = useMemo(() => {
     const config = chart?.config as any;
-    if (!config?.roleConfig) return null;
+    const activeRoleConfig = getActiveChartRoleConfig(config);
+    if (!activeRoleConfig) return null;
     const chartType = (config.chartType as string) || String(chart?.chart_type ?? '');
-    const rc = normalizeRoleConfig(chartType, config.roleConfig as ChartRoleConfig);
+    const rc = normalizeRoleConfig(chartType, activeRoleConfig);
     return {
       chartType,
       roleConfig: rc,
-      filters: config.baseFilters ?? [],
+      filters: config.baseFilters ?? config.filters ?? [],
       styleConfig: normalizeChartStyleConfig(config.styleConfig, config.conditional_formatting),
     };
   }, [chart?.config, chart?.chart_type]);

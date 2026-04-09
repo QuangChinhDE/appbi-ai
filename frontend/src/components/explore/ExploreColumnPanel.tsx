@@ -58,7 +58,9 @@ export function ExploreColumnPanel({
   // Auto-expand the selected table's view
   const views = useMemo(() => {
     if (!model?.views) return [];
-    return model.views.filter((v) => !v.dimensions.every((d) => d.hidden) || !v.measures.every((m) => m.hidden));
+    return model.views.filter(
+      (v) => !v.hidden_in_canvas && (!v.dimensions.every((d) => d.hidden) || !v.measures.every((m) => m.hidden)),
+    );
   }, [model?.views]);
 
   // Filter by search
@@ -80,13 +82,13 @@ export function ExploreColumnPanel({
 
   // Default expand: the view matching selectedTableId
   React.useEffect(() => {
-    if (selectedTableId && model?.views) {
-      const match = model.views.find((v) => v.dataset_table_id === selectedTableId);
+    if (selectedTableId) {
+      const match = views.find((v) => v.dataset_table_id === selectedTableId);
       if (match) {
         setExpandedViews((prev) => ({ ...prev, [match.id]: true }));
       }
     }
-  }, [selectedTableId, model?.views]);
+  }, [selectedTableId, views]);
 
   const toggleView = (id: number) => {
     setExpandedViews((prev) => ({ ...prev, [id]: !prev[id] }));

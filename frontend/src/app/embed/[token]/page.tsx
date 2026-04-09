@@ -34,6 +34,7 @@ import {
 import type { Dashboard, DashboardChart, ChartDataResponse } from '@/types/api';
 import type { BaseFilter } from '@/lib/filters';
 import { applyFiltersToRows, resolveFilterForChartData } from '@/lib/filters';
+import { getActiveChartRoleConfig } from '@/lib/chart-config';
 
 const ResponsiveGridLayout = WidthProvider(Responsive);
 
@@ -324,7 +325,7 @@ export default function EmbedDashboardPage() {
                 );
               }
               const title = dc.layout.custom_title ?? chart?.name ?? '';
-              const roleConfig = (chart?.config as any)?.roleConfig;
+              const roleConfig = getActiveChartRoleConfig((chart?.config as Record<string, any> | undefined) ?? null);
               const filteredRows = Array.isArray(cd?.data)
                 ? applyFiltersToRows(
                     cd.data,

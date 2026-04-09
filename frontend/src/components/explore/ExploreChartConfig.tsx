@@ -69,6 +69,7 @@ export interface ChartStyleConfig {
   kpiContextTemplate?: string;
   kpiBenchmarkValue?: number | '';
   kpiBenchmarkLabel?: string;
+  kpiShowBenchmarkValue?: boolean;
   kpiShowDelta?: boolean;
   kpiGoalDirection?: KpiGoalDirection;
   kpiAccentColor?: string;
@@ -111,6 +112,7 @@ export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
   kpiContextTemplate: '',
   kpiBenchmarkValue: '',
   kpiBenchmarkLabel: 'Target',
+  kpiShowBenchmarkValue: true,
   kpiShowDelta: true,
   kpiGoalDirection: 'up',
   kpiAccentColor: '#2563eb',
@@ -199,6 +201,8 @@ export interface ChartRoleConfig {
   breakdown?: string;
   /** Additive BAR_LINE contract: one aggregated metric rendered as a line. */
   lineMetric?: MetricConfig;
+  /** Optional KPI benchmark metric used for dynamic context/delta calculations. */
+  benchmarkMetric?: MetricConfig;
   timeField?: string;
   scatterX?: string;
   scatterY?: string;
@@ -252,6 +256,7 @@ export function normalizeRoleConfig(chartType: string, roleConfig: ChartRoleConf
   if (!lineMetric && chartType === 'BAR_LINE' && roleConfig?.breakdown) {
     lineMetric = { field: roleConfig.breakdown, agg: 'sum' };
   }
+  const benchmarkMetric = normalizeMetricConfig(roleConfig?.benchmarkMetric);
   const tablePivotMetric = normalizeMetricConfig(roleConfig?.tablePivotMetric);
   const tableMode: TableLayoutMode = chartType === 'TABLE' && roleConfig?.tableMode === 'pivot'
     ? 'pivot'
@@ -261,6 +266,7 @@ export function normalizeRoleConfig(chartType: string, roleConfig: ChartRoleConf
     ...(roleConfig ?? EMPTY_ROLE_CONFIG),
     metrics: normalizedMetrics,
     tableMode,
+    ...(benchmarkMetric ? { benchmarkMetric } : {}),
     ...(tablePivotMetric ? { tablePivotMetric } : {}),
     ...(lineMetric ? { lineMetric } : {}),
   };
@@ -302,6 +308,17 @@ const AGG_OPTIONS: { value: AggFn; label: string }[] = [
   { value: 'max',            label: 'MAX' },
   { value: 'count_distinct', label: 'COUNT DISTINCT' },
 ];
+
+const KPI_TEMPLATE_TOKENS = [
+  '{value}',
+  '{benchmark}',
+  '{delta}',
+  '{deltaPercent}',
+  '{benchmarkLabel}',
+  '{label}',
+  '{rows}',
+  '{rawValue}',
+] as const;
 
 const TABLE_SUMMARY_CALCULATION_OPTIONS: { value: TableSummaryCalculation; label: string }[] = [
   { value: 'sum', label: 'SUM' },
@@ -712,13 +729,22 @@ interface ExploreChartConfigProps {
   styleConfig: ChartStyleConfig;
   availableColumns: Col[];
   tableDisplayColumns?: Col[];
+  queryMode?: 'generated' | 'custom';
   onChartTypeChange: (t: ExploreChartType) => void;
   onRoleConfigChange: (c: ChartRoleConfig) => void;
   onStyleConfigChange: (c: ChartStyleConfig) => void;
 }
 
 export function ExploreChartConfig({
-  chartType, roleConfig, styleConfig, availableColumns, tableDisplayColumns = [], onChartTypeChange, onRoleConfigChange, onStyleConfigChange,
+  chartType,
+  roleConfig,
+  styleConfig,
+  availableColumns,
+  tableDisplayColumns = [],
+  queryMode = 'generated',
+  onChartTypeChange,
+  onRoleConfigChange,
+  onStyleConfigChange,
 }: ExploreChartConfigProps) {
   const upd = useCallback(
     (patch: Partial<ChartRoleConfig>) => onRoleConfigChange({ ...roleConfig, ...patch }),
@@ -746,6 +772,7 @@ export function ExploreChartConfig({
   const sx  = normalizedRoleConfig.scatterX  || '';
   const sy  = normalizedRoleConfig.scatterY  || '';
   const lineMetric = normalizedRoleConfig.lineMetric ? [normalizedRoleConfig.lineMetric] : [];
+  const benchmarkMetric = normalizedRoleConfig.benchmarkMetric ? [normalizedRoleConfig.benchmarkMetric] : [];
   const tableMode = normalizedRoleConfig.tableMode ?? 'standard';
   const tableRowDimension = normalizedRoleConfig.tableRowDimension || '';
   const tableColumnDimension = normalizedRoleConfig.tableColumnDimension || '';
@@ -783,6 +810,13 @@ export function ExploreChartConfig({
   const isLineType = ['LINE', 'TIME_SERIES', 'AREA', 'BAR_LINE'].includes(chartType);
   const hasAxis = !['PIE', 'KPI', 'TABLE'].includes(chartType);
   const supportsBenchmarkLine = ['BAR', 'HORIZONTAL_BAR', 'GROUPED_BAR', 'STACKED_BAR', 'LINE', 'AREA', 'TIME_SERIES', 'BAR_LINE'].includes(chartType);
+  const roleSectionTitle = queryMode === 'custom' ? 'SQL Output Columns' : 'Field Mapping';
+  const tableRoleSectionHint = queryMode === 'custom'
+    ? 'Choose directly from the columns returned by your SQL. Nothing is inferred back into Config Builder fields.'
+    : 'Standard table stays as-is. Enable pivot only when you want dynamic cross-tab headers driven by distinct column values.';
+  const chartRoleSectionHint = queryMode === 'custom'
+    ? 'Choose which SQL output columns drive this chart. These selections work directly on your SQL output.'
+    : undefined;
 
   const setTableConditionalFormatting = (rules: ConditionalFormatRule[]) => {
     updStyle({ tableConditionalFormatting: rules.length > 0 ? rules : undefined });
@@ -953,8 +987,8 @@ export function ExploreChartConfig({
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ TABLE: column picker ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {chartType === 'TABLE' && availableColumns.length > 0 && (
         <Disclosure
-          title="Field Mapping"
-          hint="Standard table stays as-is. Enable pivot only when you want dynamic cross-tab headers driven by distinct column values."
+          title={roleSectionTitle}
+          hint={tableRoleSectionHint}
           defaultOpen
         >
           <Toggle
@@ -1421,20 +1455,34 @@ export function ExploreChartConfig({
           <div>
             <label className="flex items-center gap-1 text-xs font-semibold text-gray-600 mb-1">
               Context Template
-              <HelpTooltip text="Use tokens like {value}, {rawValue}, {benchmark}, {benchmarkLabel}, {delta}, {deltaPercent}, {rows}, {label}." />
+              <HelpTooltip text="Use tokens like {value}, {benchmark}, {delta}, {deltaPercent}, {benchmarkLabel}, {label}, {rows}, {rawValue}. If Benchmark Metric is set, the card uses that dynamic value before the manual benchmark value." />
             </label>
             <textarea
               value={normalizedStyleConfig.kpiContextTemplate || ''}
-              placeholder="Example: {value} achieved, higher than {benchmarkLabel} {benchmark}"
+              placeholder="Example: {delta} above {benchmarkLabel} {benchmark}"
               onChange={e => updStyle({ kpiContextTemplate: e.target.value })}
               rows={3}
               className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md resize-none"
             />
+            <div className="mt-2 flex flex-wrap gap-1">
+              {KPI_TEMPLATE_TOKENS.map((token) => (
+                <button
+                  key={token}
+                  type="button"
+                  onClick={() => updStyle({
+                    kpiContextTemplate: `${normalizedStyleConfig.kpiContextTemplate || ''}${token}`,
+                  })}
+                  className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700 hover:bg-blue-100"
+                >
+                  {token}
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">Benchmark Value</label>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">Manual Benchmark</label>
               <input
                 type="number"
                 value={normalizedStyleConfig.kpiBenchmarkValue ?? ''}
@@ -1457,6 +1505,19 @@ export function ExploreChartConfig({
               />
             </div>
           </div>
+
+          {normalizedRoleConfig.benchmarkMetric && (
+            <p className="text-[11px] text-gray-500">
+              Dynamic benchmark is currently driven by {metricLabel(normalizedRoleConfig.benchmarkMetric)}.
+              Manual Benchmark is only used when no Benchmark Metric is set, and you can keep the benchmark hidden while still using it in the template or delta.
+            </p>
+          )}
+
+          <Toggle
+            label="Show benchmark value block"
+            checked={normalizedStyleConfig.kpiShowBenchmarkValue ?? true}
+            onChange={v => updStyle({ kpiShowBenchmarkValue: v })}
+          />
 
           <Toggle
             label="Show delta vs benchmark"
@@ -1603,7 +1664,7 @@ export function ExploreChartConfig({
       )}
 
       {chartType !== 'TABLE' && (
-        <Disclosure title="Field Mapping" defaultOpen>
+        <Disclosure title={roleSectionTitle} hint={chartRoleSectionHint} defaultOpen>
 
           {(chartType === 'BAR' || chartType === 'HORIZONTAL_BAR') && <>
             <SelectSlot label={chartType === 'HORIZONTAL_BAR' ? 'Y Axis' : 'X Axis'} hint="group by" required value={dim} options={dimOrAll}
@@ -1695,6 +1756,11 @@ export function ExploreChartConfig({
           {chartType === 'KPI' && <>
             <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll}
               onChange={v => upd({ metrics: v })} />
+            <MetricSlot label="Benchmark Metric" hint="optional dynamic comparison" single value={benchmarkMetric} options={numOrAll}
+              onChange={v => upd({ benchmarkMetric: v[0] || undefined })} />
+            <p className="text-[11px] text-gray-500">
+              In Custom SQL mode, choose a second numeric SQL output column for Benchmark Metric, then use {`{benchmark}`}, {`{delta}`}, or {`{deltaPercent}`} in the Context Template.
+            </p>
           </>}
 
         </Disclosure>

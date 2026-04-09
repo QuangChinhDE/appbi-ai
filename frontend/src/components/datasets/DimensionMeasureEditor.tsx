@@ -1,5 +1,5 @@
 /**
- * DimensionMeasureEditor — Side panel for editing a semantic view's dimensions/measures.
+ * DimensionMeasureEditor — Side panel for editing a model table's fields.
  * Allows toggling visibility, changing types, editing labels and SQL.
  */
 'use client';
@@ -261,10 +261,10 @@ export function DimensionMeasureEditor({ datasetId, view, onClose }: DimensionMe
         viewId: view.id,
         data: { dimensions, measures, description },
       });
-      toast.success('View updated');
+      toast.success('Table fields updated');
       onClose();
     } catch (err: any) {
-      toast.error(err?.response?.data?.detail || 'Failed to update view');
+      toast.error(err?.response?.data?.detail || 'Failed to update table fields');
     }
   };
 
@@ -281,7 +281,7 @@ export function DimensionMeasureEditor({ datasetId, view, onClose }: DimensionMe
           <h3 className="text-sm font-semibold text-gray-900">
             {view.table_display_name || view.name}
           </h3>
-          <p className="text-xs text-gray-500">Edit dimensions & measures</p>
+          <p className="text-xs text-gray-500">Edit fields and measures</p>
         </div>
         <button onClick={onClose} className="p-1 hover:bg-gray-100 rounded">
           <X className="w-4 h-4" />
@@ -295,7 +295,7 @@ export function DimensionMeasureEditor({ datasetId, view, onClose }: DimensionMe
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           className="w-full text-xs px-2 py-1.5 border rounded"
-          placeholder="View description"
+          placeholder="Table description"
         />
       </div>
 

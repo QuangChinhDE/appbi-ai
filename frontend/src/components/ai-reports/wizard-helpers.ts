@@ -6,6 +6,7 @@ import {
   AgentSectionPlan,
   ThesisArtifact,
 } from '@/types/agent';
+import { getActiveChartRoleConfig } from '@/lib/chart-config';
 import { EditableAgentChartPlan, EditableAgentPlan } from './wizard-types';
 
 function ensureArray<T>(value: T[] | null | undefined): T[] {
@@ -199,7 +200,7 @@ export function toBuildPlan(plan: EditableAgentPlan): AgentPlanResponse {
 }
 
 export function describeChartConfig(chart: AgentChartPlan): string[] {
-  const roleConfig = (chart.config?.roleConfig ?? {}) as Record<string, any>;
+  const roleConfig = (getActiveChartRoleConfig(chart.config as Record<string, any> | null | undefined) ?? {}) as Record<string, any>;
   const notes: string[] = [];
 
   const metrics = Array.isArray(roleConfig.metrics) ? roleConfig.metrics : [];

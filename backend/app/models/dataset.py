@@ -19,6 +19,7 @@ class Dataset(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
+    settings = Column(JSONB, nullable=True, default=None)
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
@@ -36,10 +37,10 @@ class DatasetTable(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
-    datasource_id = Column(Integer, ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True)
+    datasource_id = Column(Integer, ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=True, index=True)
     
     # Source specification
-    source_kind = Column(String(50), default="physical_table", nullable=False)  # "physical_table" or "sql_query"
+    source_kind = Column(String(50), default="physical_table", nullable=False)  # "physical_table" | "sql_query" | "derived_table" | "generated_calendar"
     source_table_name = Column(String(500), nullable=True)  # For physical_table: e.g., "public.orders"
     source_query = Column(Text, nullable=True)  # For sql_query: SELECT statement
     display_name = Column(String(255), nullable=False)  # User-friendly name

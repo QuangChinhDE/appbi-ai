@@ -32,6 +32,8 @@ export interface ExploreChartModel {
   pieData: Array<{ name: string; value: number }>;
   kpiValue?: number;
   kpiMetric?: MetricConfig;
+  kpiBenchmarkValue?: number;
+  kpiBenchmarkMetric?: MetricConfig;
   scatterPoints: Array<{ x: number; y: number; label?: any }>;
 }
 
@@ -327,13 +329,23 @@ export function buildExploreChartModel(args: {
 
   if (type === 'KPI') {
     const metric = metrics[0];
+    const benchmarkMetric = normalizedRoleConfig.benchmarkMetric;
+    const benchmarkValueField = benchmarkMetric
+      ? resolveMetricValueField(data, benchmarkMetric, preAggregated)
+      : undefined;
     return {
       ...emptyModel,
       kpiMetric: metric,
+      kpiBenchmarkMetric: benchmarkMetric,
       kpiValue: metric
         ? (preAggregated
             ? Number(data[0]?.[metricKey(metric)]) || 0
             : aggregateMetricValue(data, metric))
+        : undefined,
+      kpiBenchmarkValue: benchmarkMetric
+        ? (preAggregated
+            ? Number(data[0]?.[metricKey(benchmarkMetric)]) || 0
+            : aggregateMetricValue(data, benchmarkMetric, benchmarkValueField))
         : undefined,
     };
   }

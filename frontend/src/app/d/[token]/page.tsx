@@ -21,6 +21,7 @@ import type { Dashboard, DashboardChart, ChartDataResponse } from '@/types/api';
 import type { BaseFilter, ColumnInfo } from '@/lib/filters';
 import { applyFiltersToRows, inferColumnTypeFromData, resolveFilterForChartData } from '@/lib/filters';
 import { getRoleConfigDimensionFields } from '@/components/explore/ExploreChartConfig';
+import { getActiveChartRoleConfig } from '@/lib/chart-config';
 
 const ResponsiveGridLayout = WidthProvider(Responsive);
 
@@ -277,7 +278,7 @@ export default function PublicDashboardPage() {
       const chartId = Number(chartIdRaw);
       const rows = Array.isArray(payload?.data) ? payload.data : [];
       if (!rows.length) return;
-      const roleConfig = (payload.chart?.config as any)?.roleConfig ?? {};
+      const roleConfig = getActiveChartRoleConfig((payload.chart?.config as Record<string, any> | undefined) ?? null) ?? { metrics: [] };
       const dimensionFields = getRoleConfigDimensionFields(payload.chart?.chart_type ?? payload.chart?.config?.chartType ?? '', roleConfig)
         .filter((field): field is string => Boolean(field) && field in rows[0]);
       const fields = dimensionFields.length > 0 ? dimensionFields : Object.keys(rows[0]);
@@ -294,7 +295,7 @@ export default function PublicDashboardPage() {
     Object.values(chartData).forEach((payload) => {
       const rows = Array.isArray(payload?.data) ? payload.data : [];
       if (!rows.length) return;
-      const roleConfig = (payload.chart?.config as any)?.roleConfig ?? {};
+      const roleConfig = getActiveChartRoleConfig((payload.chart?.config as Record<string, any> | undefined) ?? null) ?? { metrics: [] };
       const dimensionFields = getRoleConfigDimensionFields(payload.chart?.chart_type ?? payload.chart?.config?.chartType ?? '', roleConfig)
         .filter((field): field is string => Boolean(field) && field in rows[0]);
       const fields = dimensionFields.length > 0 ? dimensionFields : Object.keys(rows[0]);
@@ -433,7 +434,7 @@ export default function PublicDashboardPage() {
               }
               const customTitle = dc.layout.custom_title;
               const title = customTitle ?? chart?.name ?? '';
-              const roleConfig = (chart?.config as any)?.roleConfig;
+              const roleConfig = getActiveChartRoleConfig((chart?.config as Record<string, any> | undefined) ?? null);
               const filteredRows = Array.isArray(cd?.data)
                 ? applyFiltersToRows(
                     cd.data,

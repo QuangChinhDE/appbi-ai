@@ -13,7 +13,14 @@ import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { buildExploreChartModel } from '@/components/explore/chartDataAdapter';
 import { FilterBuilder, type Filter } from '@/components/explore/FilterBuilder';
-import { useChart, useCreateChart, useUpdateChart, useUpsertChartMetadata, useReplaceChartParameters } from '@/hooks/use-charts';
+import {
+  useChart,
+  useCreateChart,
+  usePreviewChartData,
+  useReplaceChartParameters,
+  useUpdateChart,
+  useUpsertChartMetadata,
+} from '@/hooks/use-charts';
 import {
   ExploreChartConfig,
   type ExploreChartType,
@@ -28,16 +35,13 @@ import { toast } from 'sonner';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ChartDescriptionPanel } from '@/components/explore/ChartDescriptionPanel';
 import { AppModalShell } from '@/components/common/AppModalShell';
-import { useExecuteQuery } from '@/hooks/use-datasources';
 import {
   buildExploreChartResult,
   buildExploreExecuteRequest,
   buildExploreSqlPreview,
   buildQuerySignature,
-  inferRoleConfigFromCustomSql,
   inferQueryColumns,
   normalizeExecuteResponseColumns,
-  sqlHasExplicitRowLimit,
   stripTrailingSqlLimit,
 } from '@/lib/explore-query';
 import type { ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
@@ -65,20 +69,10 @@ interface ExploreQueryState {
   executionTimeMs?: number;
 }
 
-function hasRoleConfigSelection(roleConfig: ChartRoleConfig | null | undefined): boolean {
-  return Boolean(
-    roleConfig?.dimension ||
-    roleConfig?.breakdown ||
-    roleConfig?.timeField ||
-    roleConfig?.scatterX ||
-    roleConfig?.scatterY ||
-    roleConfig?.lineMetric ||
-    roleConfig?.tableRowDimension ||
-    roleConfig?.tableColumnDimension ||
-    roleConfig?.tablePivotMetric ||
-    roleConfig?.metrics?.length ||
-    roleConfig?.selectedColumns?.length,
-  );
+function normalizeSavedQueryMode(config: Record<string, any> | null | undefined): QueryMode {
+  const mode = config?.queryMode === 'custom' ? 'custom' : 'generated';
+  const customSql = typeof config?.customSql === 'string' ? config.customSql.trim() : '';
+  return mode === 'custom' && customSql ? 'custom' : 'generated';
 }
 
 function metricMatchesColumns(metric: MetricConfig | null | undefined, columnNames: Set<string>): boolean {
@@ -187,6 +181,10 @@ function syncRoleConfigWithColumns(
       normalized.lineMetric && metricMatchesColumns(normalized.lineMetric, columnNames)
         ? normalized.lineMetric
         : undefined,
+    benchmarkMetric:
+      normalized.benchmarkMetric && metricMatchesColumns(normalized.benchmarkMetric, columnNames)
+        ? normalized.benchmarkMetric
+        : undefined,
     metrics: normalized.metrics.filter((metric) => metricMatchesColumns(metric, columnNames)),
     tableRowDimension: normalized.tableRowDimension && columnNames.has(normalized.tableRowDimension)
       ? normalized.tableRowDimension
@@ -258,6 +256,56 @@ function syncRoleConfigWithColumns(
   return next;
 }
 
+function pruneRoleConfigToColumns(
+  chartType: ChartType,
+  roleConfig: ChartRoleConfig,
+  columns: ColumnMetadata[],
+): ChartRoleConfig {
+  const normalized = normalizeRoleConfig(chartType, roleConfig);
+  if (!columns.length) return normalized;
+
+  const columnNames = new Set(columns.map((column) => column.name));
+
+  const next: ChartRoleConfig = {
+    ...normalized,
+    dimension: normalized.dimension && columnNames.has(normalized.dimension) ? normalized.dimension : undefined,
+    breakdown: normalized.breakdown && columnNames.has(normalized.breakdown) ? normalized.breakdown : undefined,
+    timeField: normalized.timeField && columnNames.has(normalized.timeField) ? normalized.timeField : undefined,
+    scatterX: normalized.scatterX && columnNames.has(normalized.scatterX) ? normalized.scatterX : undefined,
+    scatterY: normalized.scatterY && columnNames.has(normalized.scatterY) ? normalized.scatterY : undefined,
+    lineMetric:
+      normalized.lineMetric && metricMatchesColumns(normalized.lineMetric, columnNames)
+        ? normalized.lineMetric
+        : undefined,
+    benchmarkMetric:
+      normalized.benchmarkMetric && metricMatchesColumns(normalized.benchmarkMetric, columnNames)
+        ? normalized.benchmarkMetric
+        : undefined,
+    metrics: normalized.metrics.filter((metric) => metricMatchesColumns(metric, columnNames)),
+    tableRowDimension: normalized.tableRowDimension && columnNames.has(normalized.tableRowDimension)
+      ? normalized.tableRowDimension
+      : undefined,
+    tableColumnDimension: normalized.tableColumnDimension && columnNames.has(normalized.tableColumnDimension)
+      ? normalized.tableColumnDimension
+      : undefined,
+    tablePivotMetric:
+      normalized.tablePivotMetric && metricMatchesColumns(normalized.tablePivotMetric, columnNames)
+        ? normalized.tablePivotMetric
+        : undefined,
+    selectedColumns: normalized.selectedColumns?.filter((column) => columnNames.has(column)),
+  };
+
+  if (next.selectedColumns && next.selectedColumns.length === 0) {
+    next.selectedColumns = undefined;
+  }
+
+  return next;
+}
+
+function customChartNeedsValueColumn(chartType: ChartType): boolean {
+  return chartType !== 'TABLE' && chartType !== 'SCATTER';
+}
+
 export default function ExploreDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -277,10 +325,9 @@ export default function ExploreDetailPage() {
   const [chartDescInput, setChartDescInput] = useState('');
   const [isEditingDesc, setIsEditingDesc] = useState(false);
   const [isChartLoaded, setIsChartLoaded] = useState(isNew); // skip load for new charts
-  const persistedBaseFiltersRef = useRef<Filter[]>([]);
 
   // isConfigOpen removed - chart config panel is always visible in right panel
-  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
+  const [isFiltersOpen, setIsFiltersOpen] = useState(true);
   // resultTab removed - new layout shows chart + table simultaneously, SQL via sqlMode toggle
   const [queryLimit, setQueryLimit] = useState(100);
   const [sqlMode, setSqlMode] = useState<QueryMode>('generated');
@@ -312,11 +359,12 @@ export default function ExploreDetailPage() {
   const upsertMetadata = useUpsertChartMetadata();
   const replaceParams = useReplaceChartParameters();
   const executeDatasetQuery = useExecuteDatasetTableQueryMutation();
-  const executeCustomSql = useExecuteQuery();
+  const previewChartData = usePreviewChartData();
 
   const { data: chart, isLoading: isChartLoading } = useChart(chartId ?? 0);
   const { data: dataset } = useDataset(selectedDatasetId);
   const resPerms = getResourcePermissions(isNew ? 'full' : chart?.user_permission);
+  const skipNextSourceResetRef = useRef(false);
 
   // Load existing chart config into editor state on first data arrival
   useEffect(() => {
@@ -324,25 +372,36 @@ export default function ExploreDetailPage() {
     if (!chart) return;
 
     const config = chart.config as any;
+    const savedQueryMode = normalizeSavedQueryMode(config);
+    const savedChartType = config?.chartType ?? chart.chart_type;
     if (chart.dataset_table_id) {
+      skipNextSourceResetRef.current = true;
       setSelectedTableId(chart.dataset_table_id);
       if (config?.dataset_id) setSelectedDatasetId(config.dataset_id);
     } else if (config?.source?.kind === 'dataset_table') {
+      skipNextSourceResetRef.current = true;
       setSelectedDatasetId(config.source.datasetId);
       setSelectedTableId(config.source.tableId);
     }
-    persistedBaseFiltersRef.current = Array.isArray(config?.baseFilters) ? config.baseFilters : [];
-    setFilters(config?.filters ?? []);
-    setChartType(config?.chartType ?? 'TABLE');
+    const persistedFilters = Array.isArray(config?.baseFilters) && config.baseFilters.length > 0
+      ? config.baseFilters
+      : (config?.filters ?? []);
+    setFilters(persistedFilters);
+    setChartType(savedChartType);
     setChartStyleConfig(normalizeChartStyleConfig(config?.styleConfig, config?.conditional_formatting));
-    if (config?.roleConfig) {
-      const initialRoleConfig = normalizeRoleConfig(
-        config?.chartType ?? chart.chart_type,
-        config.roleConfig as ChartRoleConfig,
-      );
-      setGeneratedRoleConfig(initialRoleConfig);
-      setCustomRoleConfig(initialRoleConfig);
-    }
+    const initialGeneratedRoleConfig = normalizeRoleConfig(
+      savedChartType,
+      (config?.generatedRoleConfig ?? (savedQueryMode === 'generated' ? config?.roleConfig : null)) as ChartRoleConfig,
+    );
+    const initialCustomRoleConfig = normalizeRoleConfig(
+      savedChartType,
+      (config?.customRoleConfig
+        ?? (savedQueryMode === 'custom' ? config?.roleConfig : null)) as ChartRoleConfig,
+    );
+    setGeneratedRoleConfig(initialGeneratedRoleConfig);
+    setCustomRoleConfig(initialCustomRoleConfig);
+    setSqlMode(savedQueryMode);
+    setCustomSqlDraft(typeof config?.customSql === 'string' ? config.customSql.trim() : '');
     setChartNameInput(chart.name);
     setChartDescInput(chart.description ?? '');
     // Load metadata
@@ -419,40 +478,44 @@ export default function ExploreDetailPage() {
       tableId: selectedTableId,
       limit: queryLimit,
       sqlMode,
+      chartType,
+      roleConfig: normalizedRoleConfig,
+      filters,
       request: executeRequest,
       customSql: customSqlDraft,
     }),
-    [selectedDatasetId, selectedTableId, queryLimit, sqlMode, executeRequest, customSqlDraft],
+    [
+      selectedDatasetId,
+      selectedTableId,
+      queryLimit,
+      sqlMode,
+      chartType,
+      normalizedRoleConfig,
+      filters,
+      executeRequest,
+      customSqlDraft,
+    ],
   );
   const activeQueryState = sqlMode === 'custom' ? customQueryState : generatedQueryState;
   const activeLastRunSignature = sqlMode === 'custom'
     ? customLastRunSignature
     : generatedLastRunSignature;
   const isQueryDirty = activeQueryState !== null && currentQuerySignature !== activeLastRunSignature;
-  const isRunningQuery = executeDatasetQuery.isPending || executeCustomSql.isPending;
+  const isRunningQuery = executeDatasetQuery.isPending || previewChartData.isPending;
   const customConfigColumns = customQueryState?.columns ?? null;
-  const configColumns = sqlMode === 'custom' && customConfigColumns?.length
-    ? customConfigColumns
+  const configColumns = sqlMode === 'custom'
+    ? (customConfigColumns ?? [])
     : previewColumns;
-  const displayedQueryState = useMemo(() => {
-    if (!activeQueryState) return null;
-    if (sqlMode !== 'custom') return activeQueryState;
-
-    const chartResult = buildExploreChartResult({
-      rows: activeQueryState.rows,
-      columns: activeQueryState.columns,
-      chartType,
-      roleConfig: normalizedCustomRoleConfig,
-      source: 'custom',
-    });
-
-    return {
-      ...activeQueryState,
-      chartRows: chartResult.rows,
-      chartColumns: chartResult.columns,
-      chartPreAggregated: chartResult.preAggregated,
-    };
-  }, [activeQueryState, chartType, normalizedCustomRoleConfig, sqlMode]);
+  const filterColumns = sqlMode === 'custom'
+    ? (customConfigColumns ?? [])
+    : previewColumns;
+  const filterRows = sqlMode === 'custom'
+    ? (customQueryState?.rows ?? [])
+    : previewRows;
+  const parameterColumns = sqlMode === 'custom'
+    ? (customConfigColumns ?? [])
+    : previewColumns;
+  const displayedQueryState = activeQueryState;
 
   const tableDisplayColumns = useMemo(() => {
     if (chartType !== 'TABLE') {
@@ -534,10 +597,14 @@ export default function ExploreDetailPage() {
 
   useEffect(() => {
     if (!customConfigColumns?.length) return;
-    setCustomRoleConfig((prev) => syncRoleConfigWithColumns(chartType, prev, customConfigColumns));
+    setCustomRoleConfig((prev) => pruneRoleConfigToColumns(chartType, prev, customConfigColumns));
   }, [chartType, customConfigColumns]);
 
   useEffect(() => {
+    if (skipNextSourceResetRef.current) {
+      skipNextSourceResetRef.current = false;
+      return;
+    }
     setGeneratedQueryState(null);
     setCustomQueryState(null);
     setQueryError(null);
@@ -552,14 +619,10 @@ export default function ExploreDetailPage() {
     setSqlMode('custom');
     setIsSqlEditorOpen(true);
     setCustomSqlDraft((current) => (current.trim() ? current : stripTrailingSqlLimit(generatedSql)));
-    setCustomRoleConfig((current) => (hasRoleConfigSelection(current) ? current : generatedRoleConfig));
   };
 
   const handleCloseSqlEditor = () => {
     setIsSqlEditorOpen(false);
-    if (!customQueryState) {
-      setSqlMode('generated');
-    }
   };
 
   const handleUseGeneratedQuery = () => {
@@ -588,96 +651,85 @@ export default function ExploreDetailPage() {
           toast.error('Custom SQL cannot be empty');
           return;
         }
-        const hasExplicitLimit = sqlHasExplicitRowLimit(sql);
-
-        const response = await executeCustomSql.mutateAsync({
-          data_source_id: selectedTable.datasource_id,
-          sql_query: sql,
-          limit: hasExplicitLimit ? undefined : queryLimit,
-        });
-        const columns = inferQueryColumns(response.columns, response.data);
-        const inferredRoleConfig = inferRoleConfigFromCustomSql({
-          sql,
+        const buildCustomPreviewConfig = (roleConfig: ChartRoleConfig) => ({
           chartType,
-          columns,
-          currentRoleConfig: normalizedCustomRoleConfig,
+          queryMode: 'custom' as const,
+          customSql: sql,
+          roleConfig,
+          customRoleConfig: roleConfig,
+          filters,
+          baseFilters: filters,
         });
-        const resolvedCustomRoleConfig = inferredRoleConfig.customRoleConfig
-          ? normalizeRoleConfig(chartType, inferredRoleConfig.customRoleConfig)
+
+        const sourceSampleResponse = await previewChartData.mutateAsync({
+          dataset_table_id: selectedTableId,
+          chart_type: chartType,
+          config: buildCustomPreviewConfig({ metrics: [] }),
+          include_source_sample: true,
+          source_sample_limit: queryLimit,
+        });
+
+        const sourceRows = sourceSampleResponse.source_rows ?? [];
+        const sourceColumnNames = sourceSampleResponse.source_columns?.length
+          ? sourceSampleResponse.source_columns
+          : Object.keys(sourceRows[0] ?? {});
+        const sourceColumns = inferQueryColumns(sourceColumnNames, sourceRows);
+        const nextCustomRoleConfig = sourceColumns.length > 0
+          ? pruneRoleConfigToColumns(chartType, normalizedCustomRoleConfig, sourceColumns)
           : normalizedCustomRoleConfig;
-        const chartResult = buildExploreChartResult({
-          rows: response.data,
-          columns,
+        const nextCustomSignature = buildQuerySignature({
+          datasetId: selectedDatasetId,
+          tableId: selectedTableId,
+          limit: queryLimit,
+          sqlMode: 'custom',
           chartType,
-          roleConfig: resolvedCustomRoleConfig,
-          source: 'custom',
+          roleConfig: nextCustomRoleConfig,
+          filters,
+          request: executeRequest,
+          customSql: sql,
+        });
+        const roleConfigChanged = JSON.stringify(nextCustomRoleConfig) !== JSON.stringify(normalizedCustomRoleConfig);
+
+        if (roleConfigChanged) {
+          setCustomRoleConfig(nextCustomRoleConfig);
+        }
+
+        if (customChartNeedsValueColumn(chartType) && nextCustomRoleConfig.metrics.length === 0) {
+          setCustomQueryState({
+            source: 'custom',
+            sql,
+            columns: sourceColumns,
+            rows: sourceRows,
+            chartRows: [],
+            chartColumns: [],
+            chartPreAggregated: false,
+            executionTimeMs: sourceSampleResponse.execution_time_ms,
+          });
+          setCustomLastRunSignature('');
+          toast.info('SQL ran successfully. Choose a value column from the SQL output to preview the chart.');
+          return;
+        }
+
+        const previewResponse = await previewChartData.mutateAsync({
+          dataset_table_id: selectedTableId,
+          chart_type: chartType,
+          config: buildCustomPreviewConfig(nextCustomRoleConfig),
+          include_source_sample: false,
         });
 
-        if (inferredRoleConfig.customRoleConfig) {
-          setCustomRoleConfig(resolvedCustomRoleConfig);
-        }
-
-        if (inferredRoleConfig.generatedRoleConfig) {
-          const resolvedGeneratedRoleConfig = normalizeRoleConfig(
-            chartType,
-            inferredRoleConfig.generatedRoleConfig,
-          );
-          const nextGeneratedRequest = buildExploreExecuteRequest({
-            chartType,
-            roleConfig: resolvedGeneratedRoleConfig,
-            filters,
-            limit: queryLimit,
-          });
-          const nextGeneratedSql = buildExploreSqlPreview({
-            table: selectedTable,
-            chartType,
-            roleConfig: resolvedGeneratedRoleConfig,
-            filters,
-            limit: queryLimit,
-          });
-          const generatedChartResult = buildExploreChartResult({
-            rows: response.data,
-            columns,
-            chartType,
-            roleConfig: resolvedGeneratedRoleConfig,
-            source: 'generated',
-          });
-
-          setGeneratedRoleConfig(resolvedGeneratedRoleConfig);
-          setGeneratedQueryState({
-            source: 'generated',
-            sql: nextGeneratedSql,
-            columns,
-            rows: response.data,
-            chartRows: generatedChartResult.rows,
-            chartColumns: generatedChartResult.columns,
-            chartPreAggregated: generatedChartResult.preAggregated,
-            executionTimeMs: response.execution_time_ms,
-          });
-          setGeneratedLastRunSignature(buildQuerySignature({
-            datasetId: selectedDatasetId,
-            tableId: selectedTableId,
-            limit: queryLimit,
-            sqlMode: 'generated',
-            request: nextGeneratedRequest,
-            customSql: '',
-          }));
-        } else {
-          setGeneratedQueryState(null);
-          setGeneratedLastRunSignature('');
-        }
-
+        const chartRows = previewResponse.data ?? [];
+        const chartColumns = inferQueryColumns(Object.keys(chartRows[0] ?? {}), chartRows);
         setCustomQueryState({
           source: 'custom',
           sql,
-          columns,
-          rows: response.data,
-          chartRows: chartResult.rows,
-          chartColumns: chartResult.columns,
-          chartPreAggregated: chartResult.preAggregated,
-          executionTimeMs: response.execution_time_ms,
+          columns: sourceColumns,
+          rows: sourceRows,
+          chartRows,
+          chartColumns,
+          chartPreAggregated: Boolean(previewResponse.pre_aggregated),
+          executionTimeMs: previewResponse.execution_time_ms,
         });
-        setCustomLastRunSignature(currentQuerySignature);
+        setCustomLastRunSignature(nextCustomSignature);
       } else {
         const response = await executeDatasetQuery.mutateAsync({
           datasetId: selectedDatasetId,
@@ -728,13 +780,30 @@ export default function ExploreDetailPage() {
       toast.error('Please select a dataset table first');
       return;
     }
+    const trimmedCustomSql = customSqlDraft.trim();
+    if (sqlMode === 'custom') {
+      if (!trimmedCustomSql) {
+        toast.error('Custom SQL cannot be empty');
+        return;
+      }
+      if (!customQueryState || currentQuerySignature !== customLastRunSignature) {
+        toast.error('Run the custom SQL before saving so the chart uses the latest output columns');
+        return;
+      }
+    }
+
+    const activeSavedRoleConfig = sqlMode === 'custom' ? customRoleConfig : generatedRoleConfig;
     const tableConditionalFormatting = chartStyleConfig.tableConditionalFormatting;
     const exploreConfig = {
       dataset_id: selectedDatasetId,
       filters,
-      ...(persistedBaseFiltersRef.current.length > 0 ? { baseFilters: persistedBaseFiltersRef.current } : {}),
+      baseFilters: filters,
       chartType,
-      roleConfig: generatedRoleConfig,
+      queryMode: sqlMode,
+      roleConfig: activeSavedRoleConfig,
+      generatedRoleConfig,
+      customRoleConfig,
+      ...(trimmedCustomSql ? { customSql: trimmedCustomSql } : {}),
       styleConfig: chartStyleConfig,
       ...(chartType === 'TABLE' && tableConditionalFormatting?.length
         ? { conditional_formatting: tableConditionalFormatting }
@@ -817,11 +886,11 @@ export default function ExploreDetailPage() {
   const removeParamRow = (key: string) => setParamRows((p) => p.filter((r) => r._key !== key));
 
   useEffect(() => {
-    if (!previewColumns.length) return;
+    if (!parameterColumns.length) return;
     setParamRows((rows) => rows.map((row) => {
       const column = row.column_mapping?.column;
       if (!column) return row;
-      const columnMeta = previewColumns.find((item) => item.name === column);
+      const columnMeta = parameterColumns.find((item) => item.name === column);
       if (!columnMeta) return row;
       if (row.column_mapping?.type === columnMeta.type) return row;
       return {
@@ -829,7 +898,7 @@ export default function ExploreDetailPage() {
         column_mapping: { column, type: columnMeta.type },
       };
     }));
-  }, [previewColumns]);
+  }, [parameterColumns]);
 
   // Show loading skeleton while fetching existing chart
   if (!isNew && isChartLoading) {
@@ -1017,71 +1086,64 @@ export default function ExploreDetailPage() {
             </div>
           )}
 
-          {/* Filters - pinned to bottom of left panel */}
-          {selectedTableId && (
-            <div className="border-t shrink-0">
-              <button
-                onClick={() => setIsFiltersOpen((o) => !o)}
-                className="w-full flex items-center justify-between px-3 py-2 hover:bg-gray-50 transition-colors"
-              >
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs font-semibold text-gray-700">Filters</span>
-                  {filters.length > 0 && (
-                    <span className="px-1.5 py-0.5 text-[10px] bg-orange-100 text-orange-700 rounded-full font-medium">
-                      {filters.length}
-                    </span>
-                  )}
-                </div>
-                {isFiltersOpen
-                  ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
-                  : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}
-              </button>
-              {isFiltersOpen && (
-                <div className="px-3 pb-3 max-h-56 overflow-y-auto">
-                  <p className="text-[10px] text-gray-400 mb-2">Applied every time chart renders</p>
-                  <FilterBuilder
-                    filters={filters}
-                    onChange={setFilters}
-                    columns={previewColumns}
-                    dataRows={previewRows}
-                  />
-                </div>
-              )}
-            </div>
-          )}
         </div>
 
         {/* CENTER: Visualization + Results */}
         <div className="flex-1 flex flex-col overflow-hidden bg-[#f4f5f7]">
           {/* Center toolbar */}
           {selectedTableId && !centerContent && (
-            <div className="bg-white border-b border-gray-200 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0">
-              <div className="flex items-center gap-2">
-                {/* SQL mode toggle */}
-                {!isSqlEditorOpen ? (
-                  <button
-                    onClick={handleEditSql}
-                    className="px-2 py-1 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-50 flex items-center gap-1"
-                  >
-                    <Code2 className="w-3 h-3" />
-                    Edit SQL
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleCloseSqlEditor}
-                    className="px-2 py-1 text-xs font-medium text-indigo-600 border border-indigo-300 bg-indigo-50 rounded hover:bg-indigo-100 flex items-center gap-1"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    Back to Chart
-                  </button>
-                )}
+            <div className="bg-white border-b border-gray-200 px-3 py-2 flex items-center justify-between gap-3 shrink-0 flex-wrap">
+              <div className="flex items-center gap-3 min-w-0 flex-wrap">
+                <div className="shrink-0">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-gray-400">Query Mode</p>
+                  <div className="mt-1 inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1">
+                    <button
+                      onClick={handleUseGeneratedQuery}
+                      className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                        sqlMode === 'generated'
+                          ? 'bg-white text-blue-700 shadow-sm'
+                          : 'text-gray-600 hover:bg-white/70'
+                      }`}
+                    >
+                      <Database className="w-3 h-3" />
+                      Config Builder
+                    </button>
+                    <button
+                      onClick={handleEditSql}
+                      className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                        sqlMode === 'custom'
+                          ? 'bg-white text-amber-700 shadow-sm'
+                          : 'text-gray-600 hover:bg-white/70'
+                      }`}
+                    >
+                      <Code2 className="w-3 h-3" />
+                      Custom SQL
+                    </button>
+                  </div>
+                </div>
+
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-gray-700">
+                    {sqlMode === 'custom' ? 'Custom SQL drives the dataset' : 'Config Builder generates the dataset'}
+                  </p>
+                  <p className="text-[11px] text-gray-500 truncate">
+                    {sqlMode === 'custom'
+                      ? 'Write SQL for the source rows, then keep using field mapping, filters, and chart options on the SQL output columns.'
+                      : 'Choose fields in the UI and let the app build SQL for you. Switch to Custom SQL when you need formulas or pre-shaped result sets.'}
+                  </p>
+                </div>
+
                 {sqlMode === 'custom' && (
                   <button
-                    onClick={handleUseGeneratedQuery}
-                    className="px-2 py-1 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-50 flex items-center gap-1"
+                    onClick={isSqlEditorOpen ? handleCloseSqlEditor : handleEditSql}
+                    className={`px-2 py-1 text-xs font-medium border rounded flex items-center gap-1 shrink-0 ${
+                      isSqlEditorOpen
+                        ? 'text-indigo-600 border-indigo-300 bg-indigo-50 hover:bg-indigo-100'
+                        : 'text-gray-600 border-gray-300 hover:bg-gray-50'
+                    }`}
                   >
-                    <Database className="w-3 h-3" />
-                    Use Generated
+                    {isSqlEditorOpen ? <RotateCcw className="w-3 h-3" /> : <Code2 className="w-3 h-3" />}
+                    {isSqlEditorOpen ? 'Preview Chart' : 'Edit SQL'}
                   </button>
                 )}
                 {isQueryDirty && (
@@ -1141,7 +1203,7 @@ export default function ExploreDetailPage() {
                       <div>
                         <p className="text-xs font-medium text-gray-700">Custom SQL</p>
                         <p className="text-xs text-gray-400">
-                          Change aliases freely, then click Run to refresh the field mapping. Back to Chart keeps the custom result active until you switch back to generated.
+                          Change aliases freely, then click Run to refresh chart options from the SQL output columns. Preview Chart keeps the custom result active until you switch back to Config Builder.
                         </p>
                       </div>
                       <button onClick={handleResetCustomSqlDraft}
@@ -1163,10 +1225,14 @@ export default function ExploreDetailPage() {
                   /* Run prompt */
                   <div className="flex-1 flex items-center justify-center">
                     <div className="text-center max-w-xs px-6">
-                      <Database className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+                      {sqlMode === 'custom'
+                        ? <Code2 className="w-10 h-10 text-amber-300 mx-auto mb-3" />
+                        : <Database className="w-10 h-10 text-gray-300 mx-auto mb-3" />}
                       <p className="text-sm font-medium text-gray-700 mb-1">Run the query to see results</p>
                       <p className="text-xs text-gray-400 mb-4">
-                        Configure chart fields on the right, then run.
+                        {sqlMode === 'custom'
+                          ? 'Write or review the SQL, then run. Field mapping on the right will use the SQL output columns.'
+                          : 'Configure chart fields on the right, then run.'}
                       </p>
                       <button
                         onClick={() => void handleRunQuery()}
@@ -1222,9 +1288,16 @@ export default function ExploreDetailPage() {
                   <>
                     <div className="px-3 py-1.5 border-b bg-gray-50 shrink-0 flex items-center gap-2">
                       <span className="text-xs font-medium text-gray-500">
-                        Results - {displayedQueryState.rows.length} row{displayedQueryState.rows.length === 1 ? '' : 's'}
+                        {sqlMode === 'custom' ? 'SQL Output Sample' : 'Results'}
+                        {' - '}
+                        {displayedQueryState.rows.length} row{displayedQueryState.rows.length === 1 ? '' : 's'}
                       </span>
                     </div>
+                    {sqlMode === 'custom' && (
+                      <div className="border-b bg-amber-50 px-3 py-1 text-[10px] text-amber-700">
+                        The table below shows sample rows returned by your SQL. The chart preview above uses that SQL output plus the chart mapping and filters you selected.
+                      </div>
+                    )}
                     <div className="flex-1 overflow-hidden">
                       <DatasetTableGrid columns={displayedQueryState.columns} rows={displayedQueryState.rows} />
                     </div>
@@ -1242,6 +1315,42 @@ export default function ExploreDetailPage() {
         {/* RIGHT PANEL: Chart Config + Metadata + Parameters */}
         {selectedTableId && (
           <div className="w-72 shrink-0 flex flex-col border-l border-gray-200 bg-white overflow-y-auto">
+            <div className={`px-4 py-2 border-b border-gray-200 ${
+              sqlMode === 'custom' ? 'bg-amber-50/70' : 'bg-slate-50'
+            }`}>
+              <p className={`text-[11px] font-medium ${
+                sqlMode === 'custom' ? 'text-amber-800' : 'text-slate-700'
+              }`}>
+                {sqlMode === 'custom' ? 'Using Custom SQL' : 'Using Config Builder'}
+              </p>
+              <p className={`mt-0.5 text-[11px] ${
+                sqlMode === 'custom' ? 'text-amber-700' : 'text-slate-500'
+              }`}>
+                {sqlMode === 'custom'
+                  ? 'Column selection and chart filters below now work directly on the columns returned by your SQL.'
+                  : 'Field Mapping and Chart Filters below work on the selected table columns, and SQL is generated for you.'}
+              </p>
+              {sqlMode === 'custom' && !isSqlEditorOpen && (
+                <button
+                  type="button"
+                  onClick={handleEditSql}
+                  className="mt-2 inline-flex items-center gap-1 rounded-md border border-amber-300 bg-white px-2 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-50"
+                >
+                  <Code2 className="w-3 h-3" />
+                  Reopen SQL editor
+                </button>
+              )}
+              {sqlMode === 'custom' && isSqlEditorOpen && (
+                <p className="mt-2 text-[10px] text-amber-700">
+                  Save will use the last SQL you ran together with the chart options below.
+                </p>
+              )}
+              {sqlMode === 'generated' && (
+                <p className="mt-2 text-[10px] text-slate-500">
+                  Switch to Custom SQL when you need calculated fields, CTEs, or a pre-shaped table before visualization.
+                </p>
+              )}
+            </div>
 
             {/* Chart type + field mapping + styling */}
             <ExploreChartConfig
@@ -1250,10 +1359,55 @@ export default function ExploreDetailPage() {
               styleConfig={chartStyleConfig}
               availableColumns={configColumns}
               tableDisplayColumns={tableDisplayColumns}
+              queryMode={sqlMode}
               onChartTypeChange={handleChartTypeChange}
               onRoleConfigChange={sqlMode === 'custom' ? setCustomRoleConfig : setGeneratedRoleConfig}
               onStyleConfigChange={setChartStyleConfig}
             />
+
+            <div className="border-t">
+              <button
+                onClick={() => setIsFiltersOpen((open) => !open)}
+                className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <Settings2 className="w-3.5 h-3.5 text-gray-400" />
+                  <span className="text-xs font-semibold text-gray-700">Chart Filters</span>
+                  {filters.length > 0 && (
+                    <span className="px-1.5 py-0.5 text-[10px] bg-orange-100 text-orange-700 rounded-full font-medium">
+                      {filters.length}
+                    </span>
+                  )}
+                </div>
+                {isFiltersOpen
+                  ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
+                  : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}
+              </button>
+              {isFiltersOpen && (
+                <div className="px-4 pb-4">
+                  <p className="mb-2 text-[11px] text-gray-500">
+                    Saved with this chart and still applied after you add the chart to a dashboard.
+                  </p>
+                  <p className="mb-3 text-[10px] text-gray-400">
+                    {sqlMode === 'custom'
+                      ? 'These filters run against the columns returned by the custom SQL output.'
+                      : 'These filters run before dashboard-level filters.'}
+                  </p>
+                  {sqlMode === 'custom' && filterColumns.length === 0 ? (
+                    <p className="text-xs text-gray-400">
+                      Run the custom SQL once to load output columns for chart filters.
+                    </p>
+                  ) : (
+                    <FilterBuilder
+                      filters={filters}
+                      onChange={setFilters}
+                      columns={filterColumns}
+                      dataRows={filterRows}
+                    />
+                  )}
+                </div>
+              )}
+            </div>
 
             {/* Metadata */}
             <div className="border-t">
@@ -1418,7 +1572,11 @@ export default function ExploreDetailPage() {
               </button>
               {isParamsOpen && (
                 <div className="px-4 pb-4 space-y-2">
-                  <p className="text-[10px] text-gray-400">Filters this chart accepts from a dashboard.</p>
+                  <p className="text-[10px] text-gray-400">
+                    {sqlMode === 'custom'
+                      ? 'Filters this chart accepts from a dashboard, based on the SQL output columns.'
+                      : 'Filters this chart accepts from a dashboard.'}
+                  </p>
                   {paramRows.map((row) => (
                     <div key={row._key} className="bg-gray-50 rounded border border-gray-200 p-2 space-y-1.5">
                       <div className="flex items-center gap-1">
@@ -1446,14 +1604,14 @@ export default function ExploreDetailPage() {
                         value={row.column_mapping?.column ?? ''}
                         onChange={(e) => {
                           const column = e.target.value;
-                          const columnMeta = previewColumns.find((c) => c.name === column);
+                          const columnMeta = parameterColumns.find((c) => c.name === column);
                           updateParamRow(row._key, 'column_mapping',
                             column ? { column, type: columnMeta?.type ?? 'string' } : null);
                         }}
                         className="w-full px-2 py-1 border border-gray-200 rounded text-xs bg-white"
                       >
                         <option value="">Column mapping (optional)</option>
-                        {previewColumns.map((col) => (
+                        {parameterColumns.map((col) => (
                           <option key={col.name} value={col.name}>{col.name} ({col.type})</option>
                         ))}
                       </select>

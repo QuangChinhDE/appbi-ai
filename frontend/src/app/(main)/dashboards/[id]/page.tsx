@@ -393,13 +393,14 @@ export default function DashboardDetailPage() {
         const view = viewsByName.get(viewName);
         const dimension = view?.dimensions.find((item) => item.name === fieldName);
         if (!dimension) continue;
+        const viewLabel = view?.table_display_name || viewName;
 
         const key = semanticField;
         if (!columns.has(key)) {
           columns.set(key, {
             key,
             name: fieldName,
-            label: `${viewName}.${dimension.label ?? fieldName}`,
+            label: `${viewLabel}.${dimension.label ?? fieldName}`,
             type: semanticDimensionToFilterType(dimension.type),
             datasetId: binding.datasetId,
             semanticField,

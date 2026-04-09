@@ -9,6 +9,7 @@ Includes dry-run cost guard for BigQuery.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from datetime import date as dt_date, datetime
@@ -23,6 +24,7 @@ from app.services.chart_contracts import (
     normalize_filter_operator,
 )
 from app.services import query_cache
+from app.services.dataset_calendar_service import build_calendar_filter_expression
 from app.services.transformation_compiler import TransformationCompiler
 from app.services.sql_validator import validate_select_only
 from app.services.type_override_service import (
@@ -323,6 +325,36 @@ def _source_signature(db_table) -> Dict[str, Any]:
     }
 
 
+def build_dataset_table_cache_identifier(db_table) -> str:
+    table_id = getattr(db_table, "id", None)
+    source_kind = str(getattr(db_table, "source_kind", "") or "unknown").strip().lower()
+    source_table_name = str(getattr(db_table, "source_table_name", "") or "").strip()
+    source_query = str(getattr(db_table, "source_query", "") or "").strip()
+    display_name = str(getattr(db_table, "display_name", "") or "").strip()
+
+    if source_kind == "physical_table" and source_table_name:
+        source_ref = f"physical:{source_table_name.lower()}"
+    elif source_kind == "sql_query" and source_query:
+        source_hash = hashlib.sha1(source_query.encode("utf-8")).hexdigest()[:16]
+        source_ref = f"sql:{source_hash}"
+    elif source_kind == "derived_table" and source_query:
+        source_hash = hashlib.sha1(source_query.encode("utf-8")).hexdigest()[:16]
+        source_ref = f"derived:{source_hash}"
+    elif source_table_name:
+        source_ref = f"table:{source_table_name.lower()}"
+    elif source_query:
+        source_hash = hashlib.sha1(source_query.encode("utf-8")).hexdigest()[:16]
+        source_ref = f"sql:{source_hash}"
+    elif display_name:
+        source_ref = f"display:{display_name.lower()}"
+    else:
+        source_ref = "anonymous"
+
+    if table_id is not None:
+        return f"dataset_table:{table_id}:{source_ref}"
+    return f"dataset_table:{source_ref}"
+
+
 def _extract_cached_output_columns(db_table) -> list[str]:
     raw_cols = getattr(db_table, "columns_cache", None)
     if isinstance(raw_cols, dict) and "columns" in raw_cols:
@@ -467,7 +499,17 @@ def _build_where_clause(filters: list, dialect: str) -> str:
         value = f.get("value")
         if not field:
             continue
-        qf = qi(field, dialect)
+        calendar_field = str(f.get("calendarField") or f.get("calendar_field") or "").strip()
+        calendar_source_field = str(
+            f.get("calendarSourceField")
+            or f.get("calendar_source_field")
+            or field
+        ).strip()
+        qf = (
+            build_calendar_filter_expression(calendar_field, calendar_source_field, dialect)
+            if calendar_field
+            else None
+        ) or qi(field, dialect)
         if op == "eq":
             parts.append(f"{qf} = {_sql_literal(value)}")
         elif op == "neq":
@@ -507,8 +549,8 @@ def _build_where_clause(filters: list, dialect: str) -> str:
             if vals:
                 parts.append(f"{qf} NOT IN ({vals})")
         elif op == "like" and value is not None:
-            esc = str(value).replace("'", "''")
-            parts.append(f"{qf} LIKE '%{esc}%'")
+            esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
+            parts.append(f"{qf} LIKE '%{esc}%' ESCAPE '\\'")
         elif op == "contains" and value is not None:
             esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
             parts.append(f"{qf} LIKE '%{esc}%' ESCAPE '\\'")
@@ -557,6 +599,7 @@ def build_live_agg_query(
     metrics = role_config.get("metrics") or []
     breakdown = role_config.get("breakdown")
     line_metric = role_config.get("lineMetric")
+    benchmark_metric = role_config.get("benchmarkMetric")
     table_mode = role_config.get("tableMode")
     table_row_dimension = role_config.get("tableRowDimension")
     table_column_dimension = role_config.get("tableColumnDimension")
@@ -621,6 +664,8 @@ def build_live_agg_query(
     metric_defs = list(metrics)
     if ctype == "BAR_LINE" and line_metric:
         metric_defs.append(line_metric)
+    if ctype == "KPI" and benchmark_metric:
+        metric_defs.append(benchmark_metric)
 
     select_parts = []
     group_by_parts = []
@@ -810,7 +855,7 @@ class LiveQueryService:
 
         from app.core.crypto import decrypt_config
         config = decrypt_config(datasource.config)
-        table_identifier = db_table.source_table_name or db_table.display_name
+        table_identifier = build_dataset_table_cache_identifier(db_table)
         limit = min(max(int(limit or 100), 1), 1000)
         offset = max(int(offset or 0), 0)
 
@@ -1010,7 +1055,7 @@ class LiveQueryService:
         all_filters = normalize_filter_conditions(all_filters)
         normalized_role_config = normalize_chart_role_config(chart_type, role_config)
 
-        table_identifier = db_table.source_table_name or db_table.display_name
+        table_identifier = build_dataset_table_cache_identifier(db_table)
         plan = build_live_base_query_plan(datasource, db_table, apply_type_overrides=True)
         base_table = f"({plan.sql}) AS _appbi_live"
         cache_role_config = {
@@ -1093,6 +1138,125 @@ class LiveQueryService:
         return result
 
     @staticmethod
+    def execute_chart_query_from_sql(
+        datasource,
+        chart_type: str,
+        role_config: dict,
+        filters: list,
+        sql_query: str,
+        extra_filters: list | None = None,
+        limit_override: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Execute a chart query where the chart source is a custom SQL statement.
+
+        The chart role config still applies on top of the SQL output columns.
+        """
+        ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+        dialect = _dialect_for_ds_type(ds_type)
+
+        from app.core.crypto import decrypt_config
+        from app.services.datasource_service import DataSourceConnectionService
+
+        config = decrypt_config(datasource.config)
+        validate_select_only(sql_query)
+        normalized_sql_query = sql_query.strip().rstrip(";").rstrip()
+
+        all_filters = list(filters or [])
+        if extra_filters:
+            all_filters.extend(extra_filters)
+        all_filters = normalize_filter_conditions(all_filters)
+        normalized_role_config = normalize_chart_role_config(chart_type, role_config)
+        normalized_chart_type = str(getattr(chart_type, "value", chart_type) or "").upper()
+
+        if normalized_chart_type not in {"TABLE", "SCATTER"} and not (normalized_role_config.get("metrics") or []):
+            raise ValueError(
+                "Choose at least one value column from your SQL output before previewing this chart."
+            )
+
+        source_hash = hashlib.sha1(normalized_sql_query.encode("utf-8")).hexdigest()[:16]
+        table_identifier = f"custom_sql::{source_hash}"
+        cache_role_config = {
+            **normalized_role_config,
+            "_source_sql": normalized_sql_query,
+        }
+
+        cached = query_cache.get_cached(
+            datasource.id,
+            table_identifier,
+            chart_type,
+            cache_role_config,
+            all_filters,
+        )
+        if cached is not None:
+            return cached
+
+        base_table = f"({normalized_sql_query}) AS _appbi_live"
+        sql, pre_aggregated = build_live_agg_query(
+            base_table,
+            chart_type,
+            normalized_role_config,
+            all_filters,
+            dialect,
+            limit_override=limit_override,
+        )
+
+        if ds_type == "bigquery":
+            estimated_bytes = _estimate_bigquery_bytes(config, sql)
+            max_bytes = settings.BQ_MAX_BYTES_SCANNED
+            if estimated_bytes > max_bytes:
+                gb_est = estimated_bytes / (1024**3)
+                gb_max = max_bytes / (1024**3)
+                raise ValueError(
+                    f"Query would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
+                    "Add filters or narrow the custom SQL."
+                )
+            if estimated_bytes > 0:
+                logger.info(
+                    "BigQuery dry-run for custom chart SQL: %.2f GB for ds=%d",
+                    estimated_bytes / (1024**3),
+                    datasource.id,
+                )
+
+        start_time = time.time()
+        timeout = 60 if ds_type == "bigquery" else 30
+
+        _, rows, execution_time_ms = DataSourceConnectionService.execute_query(
+            ds_type,
+            datasource.config,
+            sql,
+            timeout_seconds=timeout,
+            skip_bigquery_cost_check=True,
+        )
+
+        execution_time_ms = (time.time() - start_time) * 1000
+
+        result = {
+            "data": rows,
+            "pre_aggregated": pre_aggregated,
+            "execution_time_ms": round(execution_time_ms, 1),
+        }
+
+        query_cache.set_cached(
+            datasource.id,
+            table_identifier,
+            chart_type,
+            cache_role_config,
+            all_filters,
+            result,
+        )
+
+        logger.info(
+            "Live custom chart query executed: ds=%d, chart_type=%s, rows=%d, time=%.0fms",
+            datasource.id,
+            chart_type,
+            len(rows),
+            execution_time_ms,
+        )
+
+        return result
+
+    @staticmethod
     def execute_dataset_query(
         datasource,
         db_table,
@@ -1109,7 +1273,7 @@ class LiveQueryService:
         from app.core.crypto import decrypt_config
         config = decrypt_config(datasource.config)
 
-        table_identifier = db_table.source_table_name or db_table.display_name
+        table_identifier = build_dataset_table_cache_identifier(db_table)
         plan = build_live_base_query_plan(datasource, db_table, apply_type_overrides=True)
         base_table = f"({plan.sql}) AS _appbi_live"
         normalized_filters = normalize_filter_conditions(list(filters or []))

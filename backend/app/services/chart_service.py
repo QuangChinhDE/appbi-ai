@@ -1,7 +1,7 @@
 """
 CRUD service for charts.
 """
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
@@ -10,6 +10,8 @@ from app.schemas import ChartCreate, ChartUpdate
 from app.schemas import ChartMetadataUpsert, ChartParameterCreate, ChartParameterUpdate
 from app.core.logging import get_logger
 from app.services.chart_contracts import (
+    get_chart_active_role_config,
+    get_chart_custom_sql,
     merge_chart_query_filters,
     normalize_chart_filter_context,
     normalize_chart_role_config,
@@ -18,6 +20,17 @@ from app.services.chart_contracts import (
     resolve_chart_query_filters,
 )
 from app.services.chart_semantic_service import with_chart_semantic_binding
+from app.services.dataset_calendar_service import (
+    build_calendar_duckdb_sql,
+    build_calendar_filter_expression,
+    get_calendar_settings,
+    is_generated_calendar_table,
+)
+from app.services.dataset_table_sql_service import (
+    DatasetTableSqlError,
+    build_dataset_table_duckdb_query,
+    is_derived_table,
+)
 from app.services.runtime_modes import resolve_dataset_query_mode
 
 logger = get_logger(__name__)
@@ -47,7 +60,17 @@ def _build_where_clause(filters) -> str:
         value = f.get('value')
         if not field:
             continue
-        qf = f'"{field}"'
+        calendar_field = str(f.get("calendarField") or f.get("calendar_field") or "").strip()
+        calendar_source_field = str(
+            f.get("calendarSourceField")
+            or f.get("calendar_source_field")
+            or field
+        ).strip()
+        qf = (
+            build_calendar_filter_expression(calendar_field, calendar_source_field, "duckdb")
+            if calendar_field
+            else None
+        ) or f'"{field}"'
         if op == 'eq':
             parts.append(f'{qf} = {_sql_literal(value)}')
         elif op == 'neq':
@@ -143,6 +166,7 @@ def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filter
     metrics = role_config.get('metrics') or []
     breakdown = role_config.get('breakdown')
     line_metric = role_config.get('lineMetric')
+    benchmark_metric = role_config.get('benchmarkMetric')
     table_mode = role_config.get('tableMode')
     table_row_dimension = role_config.get('tableRowDimension')
     table_column_dimension = role_config.get('tableColumnDimension')
@@ -205,6 +229,8 @@ def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filter
     metric_defs = list(metrics)
     if ctype == 'BAR_LINE' and line_metric:
         metric_defs.append(line_metric)
+    if ctype == 'KPI' and benchmark_metric:
+        metric_defs.append(benchmark_metric)
 
     select_parts = []
     group_by_parts = []
@@ -276,11 +302,137 @@ def _build_agg_query(base_table: str, chart_type: str, role_config: dict, filter
     return sql, True
 
 
+def _execute_chart_runtime_for_table(
+    db: Session,
+    datasource,
+    db_table,
+    chart_type,
+    chart_config: dict | None = None,
+    *,
+    extra_filters: list | None = None,
+    filter_context: str | None = None,
+) -> Dict[str, Any]:
+    """Execute chart runtime against a dataset table using the shared chart contract."""
+    from app.services.live_query_service import LiveQueryService
+    from app.models.dataset import Dataset
+
+    filter_context = normalize_chart_filter_context(filter_context)
+    chart_config = chart_config or {}
+    role_config = get_chart_active_role_config(chart_config)
+    filters = resolve_chart_query_filters(chart_config, filter_context)
+    custom_sql = get_chart_custom_sql(chart_config)
+    dataset_obj = None
+
+    if is_generated_calendar_table(db_table) or is_derived_table(db_table):
+        dataset_obj = db.query(Dataset).filter(Dataset.id == db_table.dataset_id).first()
+        if dataset_obj is None:
+            raise ValueError("Dataset not found")
+
+    if is_generated_calendar_table(db_table):
+        from app.services.duckdb_engine import DuckDBEngine
+
+        base_table = f"({build_calendar_duckdb_sql(get_calendar_settings(dataset_obj, enabled_default=False))}) AS _calendar"
+        all_filters = merge_chart_query_filters(
+            chart_config,
+            extra_filters=extra_filters,
+            context=filter_context,
+        )
+        agg_sql, pre_agg = _build_agg_query(base_table, chart_type, role_config, all_filters)
+        rows = DuckDBEngine.query(agg_sql)
+        return {"data": rows, "pre_aggregated": pre_agg}
+
+    if custom_sql:
+        if datasource is None:
+            raise ValueError("Custom SQL charts require a datasource-backed table")
+        return LiveQueryService.execute_chart_query_from_sql(
+            datasource,
+            chart_type,
+            role_config,
+            filters,
+            custom_sql,
+            extra_filters=extra_filters,
+        )
+
+    query_mode = resolve_dataset_query_mode(db_table)
+    if query_mode == 'live':
+        return LiveQueryService.execute_chart_query(
+            datasource,
+            db_table,
+            chart_type,
+            role_config,
+            filters,
+            extra_filters=extra_filters,
+        )
+
+    from app.services.duckdb_engine import DuckDBEngine
+    from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
+
+    all_filters = merge_chart_query_filters(
+        chart_config,
+        extra_filters=extra_filters,
+        context=filter_context,
+    )
+
+    if is_derived_table(db_table):
+        try:
+            base_table = f"({build_dataset_table_duckdb_query(db, dataset_obj, db_table)}) AS _q"
+            agg_sql, pre_agg = _build_agg_query(base_table, chart_type, role_config, all_filters)
+            rows = DuckDBEngine.query(agg_sql)
+            return {"data": rows, "pre_aggregated": pre_agg}
+        except DatasetTableSqlError as exc:
+            raise ValueError(str(exc)) from exc
+
+    if db_table.source_kind == "sql_query":
+        if not db_table.source_query:
+            raise ValueError("Table has no SQL query")
+        rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
+        if rewritten:
+            try:
+                base_table = f"({rewritten}) AS _q"
+                agg_sql, pre_agg = _build_agg_query(base_table, chart_type, role_config, all_filters)
+                rows = DuckDBEngine.query(agg_sql)
+                return {"data": rows, "pre_aggregated": pre_agg}
+            except Exception:
+                logger.debug("DuckDB agg query failed, falling back to live query", exc_info=True)
+        return LiveQueryService.execute_chart_query(
+            datasource,
+            db_table,
+            chart_type,
+            role_config,
+            filters,
+            extra_filters=extra_filters,
+        )
+
+    if db_table.source_kind == "physical_table":
+        if not db_table.source_table_name:
+            raise ValueError("Table has no physical table name")
+        view_name = get_synced_view(datasource.id, db_table.source_table_name)
+        if view_name:
+            base_table = _apply_transformations(view_name, db_table.transformations)
+            agg_sql, pre_agg = _build_agg_query(base_table, chart_type, role_config, all_filters)
+            rows = DuckDBEngine.query(agg_sql)
+            return {"data": rows, "pre_aggregated": pre_agg}
+        return LiveQueryService.execute_chart_query(
+            datasource,
+            db_table,
+            chart_type,
+            role_config,
+            filters,
+            extra_filters=extra_filters,
+        )
+
+    raise ValueError(f"Unsupported source_kind: {db_table.source_kind}")
+
+
 class ChartService:
     """Service for chart operations."""
 
     @staticmethod
-    def hydrate_runtime_config(db: Session, chart: Chart | None) -> Chart | None:
+    def hydrate_runtime_config(
+        db: Session,
+        chart: Chart | None,
+        auto_generate: bool = True,
+    ) -> Chart | None:
         """Attach derived semantic binding for response-time consumers."""
         if not chart:
             return chart
@@ -288,7 +440,7 @@ class ChartService:
             db,
             chart.dataset_table_id,
             chart.config,
-            auto_generate=True,
+            auto_generate=auto_generate,
         )
         if next_config != (chart.config or {}):
             chart.config = next_config
@@ -404,90 +556,42 @@ class ChartService:
         db_chart = ChartService.get_by_id(db, chart_id)
         if not db_chart:
             raise ValueError(f"Chart with ID {chart_id} not found")
-        filter_context = normalize_chart_filter_context(filter_context)
 
         # Prefer direct dataset_table_id FK over config-embedded source
         if db_chart.dataset_table_id is not None:
             from app.services.dataset_crud import DatasetCRUDService
-            from app.services.live_query_service import LiveQueryService
             from app.models.models import DataSource
 
             db_table = DatasetCRUDService.get_table_by_id(db, db_chart.dataset_table_id)
             if not db_table:
                 raise ValueError("Dataset table not found")
 
-            datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
-            if not datasource:
-                raise ValueError("Data source not found")
+            datasource = None
+            if not is_generated_calendar_table(db_table) and not is_derived_table(db_table):
+                datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+                if not datasource:
+                    raise ValueError("Data source not found")
 
-            role_config = (db_chart.config or {}).get('roleConfig', {})
-            filters = resolve_chart_query_filters(db_chart.config or {}, filter_context)
-
-            # ── LIVE mode: query source directly with aggregation ──
-            query_mode = resolve_dataset_query_mode(db_table)
-            if query_mode == 'live':
-                from app.services.live_query_service import LiveQueryService
-                result = LiveQueryService.execute_chart_query(
-                    datasource, db_table, db_chart.chart_type,
-                    role_config, filters, extra_filters=extra_filters,
-                )
-                return {
-                    "chart": db_chart,
-                    "data": result["data"],
-                    "pre_aggregated": result["pre_aggregated"],
-                }
-
-            # ── SYNCED mode: use DuckDB local cache ──
-            from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
-            from app.services.duckdb_engine import DuckDBEngine
-
-            all_filters = merge_chart_query_filters(
+            result = _execute_chart_runtime_for_table(
+                db,
+                datasource,
+                db_table,
+                db_chart.chart_type,
                 db_chart.config or {},
                 extra_filters=extra_filters,
-                context=filter_context,
+                filter_context=filter_context,
             )
 
-            if db_table.source_kind == "sql_query":
-                if not db_table.source_query:
-                    raise ValueError("Table has no SQL query")
-                # Try DuckDB synced cache first
-                rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
-                if rewritten:
-                    try:
-                        base_table = f"({rewritten}) AS _q"
-                        agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, all_filters)
-                        rows = DuckDBEngine.query(agg_sql)
-                        return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
-                    except Exception:
-                        pass  # fall through to live query
-                result = LiveQueryService.execute_chart_query(
-                    datasource, db_table, db_chart.chart_type,
-                    role_config, filters, extra_filters=extra_filters,
-                )
-                return {"chart": db_chart, "data": result["data"], "pre_aggregated": result["pre_aggregated"]}
-            elif db_table.source_kind == "physical_table":
-                if not db_table.source_table_name:
-                    raise ValueError("Table has no physical table name")
-                # Use DuckDB synced cache if available — avoids live source round-trip
-                view_name = get_synced_view(datasource.id, db_table.source_table_name)
-                if view_name:
-                    base_table = _apply_transformations(view_name, db_table.transformations)
-                    agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, all_filters)
-                    rows = DuckDBEngine.query(agg_sql)
-                    return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
-                result = LiveQueryService.execute_chart_query(
-                    datasource, db_table, db_chart.chart_type,
-                    role_config, filters, extra_filters=extra_filters,
-                )
-                return {"chart": db_chart, "data": result["data"], "pre_aggregated": result["pre_aggregated"]}
-            else:
-                raise ValueError(f"Unsupported source_kind: {db_table.source_kind}")
+            return {
+                "chart": db_chart,
+                "data": result["data"],
+                "pre_aggregated": result["pre_aggregated"],
+            }
 
         # Fallback: check config for legacy dataset_table source
         config = db_chart.config or {}
         if isinstance(config, dict) and config.get('source', {}).get('kind') == 'dataset_table':
             from app.services.dataset_crud import DatasetCRUDService
-            from app.services.live_query_service import LiveQueryService
             from app.models.models import DataSource
 
             dataset_id = config['source'].get('datasetId')
@@ -500,74 +604,107 @@ class ChartService:
             if not db_table or db_table.dataset_id != dataset_id:
                 raise ValueError("Table not found in dataset")
 
+            datasource = None
+            if not is_generated_calendar_table(db_table) and not is_derived_table(db_table):
+                datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+                if not datasource:
+                    raise ValueError("Data source not found")
+
+            result = _execute_chart_runtime_for_table(
+                db,
+                datasource,
+                db_table,
+                db_chart.chart_type,
+                db_chart.config or {},
+                extra_filters=extra_filters,
+                filter_context=filter_context,
+            )
+
+            return {
+                "chart": db_chart,
+                "data": result["data"],
+                "pre_aggregated": result["pre_aggregated"],
+            }
+
+        raise ValueError("Chart has no data source configured")
+
+    @staticmethod
+    def preview_chart_data(
+        db: Session,
+        dataset_table_id: int,
+        chart_type,
+        chart_config: dict | None = None,
+        *,
+        extra_filters: list | None = None,
+        filter_context: str | None = None,
+        include_source_sample: bool = False,
+        source_sample_limit: int = 100,
+    ) -> Dict[str, Any]:
+        """Preview chart runtime for Explore using the same execution path as saved charts."""
+        from app.models.models import DataSource
+        from app.services.dataset_crud import DatasetCRUDService
+
+        db_table = DatasetCRUDService.get_table_by_id(db, dataset_table_id)
+        if not db_table:
+            raise ValueError(f"Dataset table with ID {dataset_table_id} not found")
+
+        datasource = None
+        if not is_generated_calendar_table(db_table) and not is_derived_table(db_table):
             datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
             if not datasource:
                 raise ValueError("Data source not found")
 
-            role_config = (db_chart.config or {}).get('roleConfig', {})
-            filters = resolve_chart_query_filters(db_chart.config or {}, filter_context)
+        config = chart_config or {}
+        custom_sql = get_chart_custom_sql(config)
+        normalized_role_config = normalize_chart_role_config(
+            chart_type,
+            get_chart_active_role_config(config),
+        )
+        normalized_chart_type = str(getattr(chart_type, "value", chart_type) or "").upper()
+        preview: Dict[str, Any] = {
+            "data": [],
+            "pre_aggregated": False,
+        }
 
-            # ── LIVE mode: query source directly with aggregation ──
-            query_mode = resolve_dataset_query_mode(db_table)
-            if query_mode == 'live':
-                from app.services.live_query_service import LiveQueryService
-                result = LiveQueryService.execute_chart_query(
-                    datasource, db_table, db_chart.chart_type,
-                    role_config, filters, extra_filters=extra_filters,
-                )
-                return {
-                    "chart": db_chart,
-                    "data": result["data"],
-                    "pre_aggregated": result["pre_aggregated"],
-                }
+        if include_source_sample and custom_sql:
+            from app.services.datasource_service import DataSourceConnectionService
 
-            # ── SYNCED mode: use DuckDB local cache ──
-            from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
-            from app.services.duckdb_engine import DuckDBEngine
-
-            all_filters = merge_chart_query_filters(
-                db_chart.config or {},
-                extra_filters=extra_filters,
-                context=filter_context,
+            ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+            timeout = 60 if ds_type == "bigquery" else 30
+            source_columns, source_rows, source_execution_time_ms = DataSourceConnectionService.execute_query(
+                ds_type,
+                datasource.config,
+                custom_sql,
+                limit=source_sample_limit,
+                timeout_seconds=timeout,
+                skip_bigquery_cost_check=True,
             )
+            preview["source_columns"] = source_columns
+            preview["source_rows"] = source_rows
+            if source_execution_time_ms is not None:
+                preview["execution_time_ms"] = source_execution_time_ms
 
-            if db_table.source_kind == "sql_query":
-                if not db_table.source_query:
-                    raise ValueError("Table has no SQL query")
-                # Try DuckDB synced cache first
-                rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
-                if rewritten:
-                    try:
-                        base_table = f"({rewritten}) AS _q"
-                        agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, all_filters)
-                        rows = DuckDBEngine.query(agg_sql)
-                        return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
-                    except Exception:
-                        pass  # fall through to live query
-                result = LiveQueryService.execute_chart_query(
-                    datasource, db_table, db_chart.chart_type,
-                    role_config, filters, extra_filters=extra_filters,
-                )
-                return {"chart": db_chart, "data": result["data"], "pre_aggregated": result["pre_aggregated"]}
-            elif db_table.source_kind == "physical_table":
-                if not db_table.source_table_name:
-                    raise ValueError("Table has no physical table")
-                # Use DuckDB synced cache if available — avoids live source round-trip
-                view_name = get_synced_view(datasource.id, db_table.source_table_name)
-                if view_name:
-                    base_table = _apply_transformations(view_name, db_table.transformations)
-                    agg_sql, pre_agg = _build_agg_query(base_table, db_chart.chart_type, role_config, all_filters)
-                    rows = DuckDBEngine.query(agg_sql)
-                    return {"chart": db_chart, "data": rows, "pre_aggregated": pre_agg}
-                result = LiveQueryService.execute_chart_query(
-                    datasource, db_table, db_chart.chart_type,
-                    role_config, filters, extra_filters=extra_filters,
-                )
-                return {"chart": db_chart, "data": result["data"], "pre_aggregated": result["pre_aggregated"]}
-            else:
-                raise ValueError(f"Unsupported source_kind: {db_table.source_kind}")
+            # In Custom SQL mode, the first Run should always be able to return
+            # the SQL output sample even before the user picks a chart value column.
+            if normalized_chart_type not in {"TABLE", "SCATTER"} and not (normalized_role_config.get("metrics") or []):
+                return preview
 
-        raise ValueError("Chart has no data source configured")
+        result = _execute_chart_runtime_for_table(
+            db,
+            datasource,
+            db_table,
+            chart_type,
+            config,
+            extra_filters=extra_filters,
+            filter_context=filter_context,
+        )
+
+        preview["data"] = result["data"]
+        preview["pre_aggregated"] = result["pre_aggregated"]
+        if result.get("execution_time_ms") is not None:
+            preview["execution_time_ms"] = result["execution_time_ms"]
+
+        return preview
 
     # -----------------------------------------------------------------------
     # Metadata CRUD

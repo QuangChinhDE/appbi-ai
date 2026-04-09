@@ -1,16 +1,12 @@
-/**
- * AddTableModal v2.0 - Add or edit tables (physical or query-based)
- *
- * Add mode:  two tabs (From Table / From Query), full interactive form
- * Edit mode: single tab (matching source_kind, same visual style), pre-filled fields
- */
 'use client';
 
-import React, { useState } from 'react';
-import { X, Database, Code, Loader2, AlertCircle } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { AlertCircle, Code, Database, Loader2, Sigma, X } from 'lucide-react';
+
 import { useDataSources } from '@/hooks/use-datasources';
 import { useAddTableToDataset, useUpdateTable } from '@/hooks/use-datasets';
 import type { AddTableInput, DatasetTable } from '@/hooks/use-datasets';
+import { CalculatedTableTab } from './CalculatedTableTab';
 import { PhysicalTableTab } from './PhysicalTableTab';
 import { QueryTableTab } from './QueryTableTab';
 
@@ -20,11 +16,11 @@ interface AddTableModalProps {
   onClose: () => void;
   onSuccess?: (created?: DatasetTable) => void;
   existingTable?: DatasetTable | null;
+  createMode?: 'source' | 'calculated';
+  availableTables?: DatasetTable[];
 }
 
-type TabType = 'physical' | 'query';
-
-// ─── Inline edit forms ─────────────────────────────────────────────────────────
+type SourceTab = 'physical' | 'query';
 
 function EditPhysicalForm({
   existingTable,
@@ -41,90 +37,126 @@ function EditPhysicalForm({
 }) {
   const [displayName, setDisplayName] = useState(existingTable.display_name || '');
 
+  useEffect(() => {
+    setDisplayName(existingTable.display_name || '');
+  }, [existingTable.display_name]);
+
   return (
-    <div className="p-6 space-y-6">
-      {/* Datasource — read-only display, same label as PhysicalTableTab */}
+    <div className="space-y-6 p-6">
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">Select Datasource *</label>
+        <label className="mb-2 block text-sm font-medium text-gray-700">Datasource</label>
         <input
           type="text"
           value={datasourceName}
           readOnly
-          className="w-full px-3 py-2 border border-gray-200 rounded-md bg-gray-50 text-gray-500 cursor-not-allowed"
+          className="w-full cursor-not-allowed rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500"
         />
       </div>
 
-      {/* Selected table — same area as the table list, read-only */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">Select Table *</label>
-        <div className="border border-gray-200 rounded-md bg-gray-50 px-4 py-3 flex items-center gap-2">
-          <Database className="w-4 h-4 text-blue-500 flex-shrink-0" />
+        <label className="mb-2 block text-sm font-medium text-gray-700">Selected table</label>
+        <div className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-4 py-3">
+          <Database className="h-4 w-4 flex-shrink-0 text-blue-500" />
           <span className="font-medium text-gray-700">{existingTable.source_table_name}</span>
         </div>
       </div>
 
-      {/* Display name */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">Display Name *</label>
+        <label className="mb-2 block text-sm font-medium text-gray-700">Display name *</label>
         <input
           type="text"
           value={displayName}
-          onChange={e => setDisplayName(e.target.value)}
-          placeholder="e.g., Orders"
-          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+          onChange={(event) => setDisplayName(event.target.value)}
+          placeholder="e.g. Orders"
+          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           disabled={isLoading}
           autoFocus
         />
-        <p className="text-xs text-gray-500 mt-1">This name will be shown in the dataset</p>
+        <p className="mt-1 text-xs text-gray-500">This is the name shown inside the dataset.</p>
       </div>
 
       {saveError && (
-        <div className="flex items-start gap-2 text-red-600 text-sm">
-          <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+        <div className="flex items-start gap-2 text-sm text-red-600">
+          <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
           <span>{saveError}</span>
         </div>
       )}
 
-      <div className="flex justify-end pt-4 border-t">
+      <div className="flex justify-end border-t pt-4">
         <button
+          type="button"
           onClick={() => onSave(displayName)}
           disabled={isLoading || !displayName.trim()}
-          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-          Lưu thay đổi
+          {isLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+          Save changes
         </button>
       </div>
     </div>
   );
 }
 
-// ─── Main modal ───────────────────────────────────────────────────────────────
+function getEditHeader(table: DatasetTable | null | undefined): { icon: React.ReactNode; label: string } {
+  if (table?.source_kind === 'sql_query') {
+    return { icon: <Code className="h-4 w-4" />, label: 'SQL Query' };
+  }
+  if (table?.source_kind === 'derived_table') {
+    return { icon: <Sigma className="h-4 w-4" />, label: 'Calculated Table' };
+  }
+  return { icon: <Database className="h-4 w-4" />, label: 'Source Table' };
+}
 
-export function AddTableModal({ datasetId, isOpen, onClose, onSuccess, existingTable }: AddTableModalProps) {
-  const [activeTab, setActiveTab] = useState<TabType>('physical');
+export function AddTableModal({
+  datasetId,
+  isOpen,
+  onClose,
+  onSuccess,
+  existingTable = null,
+  createMode = 'source',
+  availableTables = [],
+}: AddTableModalProps) {
+  const [activeSourceTab, setActiveSourceTab] = useState<SourceTab>('physical');
   const [saveError, setSaveError] = useState<string | null>(null);
+
   const addTableMutation = useAddTableToDataset();
   const updateTableMutation = useUpdateTable();
-  const isEditMode = !!existingTable;
+  const isEditMode = Boolean(existingTable);
   const isPending = addTableMutation.isPending || updateTableMutation.isPending;
 
   const { data: datasources } = useDataSources();
   const datasourceName = existingTable
-    ? datasources?.find(d => d.id === existingTable.datasource_id)?.name ?? `Datasource #${existingTable.datasource_id}`
+    ? (
+        existingTable.datasource_id != null
+          ? datasources?.find((datasource) => datasource.id === existingTable.datasource_id)?.name
+            ?? `Datasource #${existingTable.datasource_id}`
+          : 'Dataset internal table'
+      )
     : '';
 
-  React.useEffect(() => {
+  const effectiveCreateMode = useMemo<'source' | 'calculated'>(() => {
+    if (!isEditMode) return createMode;
+    if (existingTable?.source_kind === 'derived_table') return 'calculated';
+    return 'source';
+  }, [createMode, existingTable?.source_kind, isEditMode]);
+
+  useEffect(() => {
     if (!isOpen) {
-      setActiveTab('physical');
+      setActiveSourceTab('physical');
       setSaveError(null);
     }
   }, [isOpen]);
 
   const handleAddTable = async (input: AddTableInput) => {
-    const created = await addTableMutation.mutateAsync({ datasetId, input });
-    onSuccess?.(created);
-    onClose();
+    setSaveError(null);
+    try {
+      const created = await addTableMutation.mutateAsync({ datasetId, input });
+      onSuccess?.(created);
+      onClose();
+    } catch (error: any) {
+      const message = error?.response?.data?.detail ?? error?.message ?? 'Could not create table.';
+      setSaveError(typeof message === 'string' ? message : JSON.stringify(message));
+    }
   };
 
   const handleEditSave = async (displayName: string, sourceQuery?: string) => {
@@ -136,94 +168,109 @@ export function AddTableModal({ datasetId, isOpen, onClose, onSuccess, existingT
         tableId: existingTable.id,
         input: {
           display_name: displayName,
-          ...(sourceQuery !== undefined && { source_query: sourceQuery }),
+          ...(sourceQuery !== undefined ? { source_query: sourceQuery } : {}),
         },
       });
       onSuccess?.();
       onClose();
-    } catch (err: any) {
-      const msg = err?.response?.data?.detail ?? err?.message ?? 'Lưu thất bại, thử lại.';
-      setSaveError(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    } catch (error: any) {
+      const message = error?.response?.data?.detail ?? error?.message ?? 'Could not save changes.';
+      setSaveError(typeof message === 'string' ? message : JSON.stringify(message));
     }
   };
 
   if (!isOpen) return null;
 
-  const editTabIcon = existingTable?.source_kind === 'sql_query'
-    ? <Code className="w-4 h-4" />
-    : <Database className="w-4 h-4" />;
-  const editTabLabel = existingTable?.source_kind === 'sql_query' ? 'From Query' : 'From Table';
+  const editHeader = getEditHeader(existingTable);
+  const modalTitle = isEditMode
+    ? 'Edit table'
+    : (effectiveCreateMode === 'calculated' ? 'Add calculated table' : 'Add table');
+  const modalDescription = isEditMode
+    ? `Editing: ${existingTable?.display_name || existingTable?.source_table_name || 'Table'}`
+    : effectiveCreateMode === 'calculated'
+      ? 'Create a calculated table from SQL that references other tables in this dataset.'
+      : 'Add a source table from a datasource table or a datasource SQL query.';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col">
-
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b px-6 py-4">
           <div>
-            <h2 className="text-xl font-semibold text-gray-900">
-              {isEditMode ? 'Chỉnh sửa bảng' : 'Add Table'}
-            </h2>
-            <p className="text-sm text-gray-500 mt-1">
-              {isEditMode
-                ? `Đang chỉnh sửa: ${existingTable?.display_name || existingTable?.source_table_name}`
-                : 'Add a table from a physical datasource table or custom SQL query'}
-            </p>
+            <h2 className="text-xl font-semibold text-gray-900">{modalTitle}</h2>
+            <p className="mt-1 text-sm text-gray-500">{modalDescription}</p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors" disabled={isPending}>
-            <X className="w-5 h-5" />
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+            disabled={isPending}
+          >
+            <X className="h-5 w-5" />
           </button>
         </div>
 
-        {/* Tabs row */}
         <div className="flex border-b px-6">
           {isEditMode ? (
-            /* Edit: single locked tab matching source_kind */
-            <div className="flex items-center gap-2 px-4 py-3 border-b-2 border-blue-500 text-blue-600">
-              {editTabIcon}
-              <span className="font-medium">{editTabLabel}</span>
+            <div className="flex items-center gap-2 border-b-2 border-blue-500 px-4 py-3 text-blue-600">
+              {editHeader.icon}
+              <span className="font-medium">{editHeader.label}</span>
             </div>
-          ) : (
-            /* Add: two switchable tabs */
+          ) : effectiveCreateMode === 'source' ? (
             <>
               <button
-                onClick={() => setActiveTab('physical')}
-                className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${
-                  activeTab === 'physical'
+                type="button"
+                onClick={() => setActiveSourceTab('physical')}
+                className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
+                  activeSourceTab === 'physical'
                     ? 'border-blue-500 text-blue-600'
                     : 'border-transparent text-gray-500 hover:text-gray-700'
                 }`}
                 disabled={isPending}
               >
-                <Database className="w-4 h-4" />
-                <span className="font-medium">From Table</span>
+                <Database className="h-4 w-4" />
+                From Table
               </button>
               <button
-                onClick={() => setActiveTab('query')}
-                className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${
-                  activeTab === 'query'
+                type="button"
+                onClick={() => setActiveSourceTab('query')}
+                className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
+                  activeSourceTab === 'query'
                     ? 'border-blue-500 text-blue-600'
                     : 'border-transparent text-gray-500 hover:text-gray-700'
                 }`}
                 disabled={isPending}
               >
-                <Code className="w-4 h-4" />
-                <span className="font-medium">From Query</span>
+                <Code className="h-4 w-4" />
+                From SQL Query
               </button>
             </>
+          ) : (
+            <div className="flex items-center gap-2 border-b-2 border-blue-500 px-4 py-3 text-blue-600">
+              <Sigma className="h-4 w-4" />
+              <span className="font-medium">Calculated Table</span>
+            </div>
           )}
         </div>
 
-        {/* Content */}
         <div className="flex-1 overflow-y-auto">
           {isEditMode && existingTable ? (
             existingTable.source_kind === 'sql_query' ? (
               <QueryTableTab
-                onSave={(name, q) => handleEditSave(name, q)}
+                onSave={(displayName, sqlQuery) => handleEditSave(displayName, sqlQuery)}
                 isLoading={isPending}
                 lockDatasource={true}
                 lockedDatasourceName={datasourceName}
-                initialDatasourceId={existingTable.datasource_id}
+                initialDatasourceId={existingTable.datasource_id ?? undefined}
+                initialDisplayName={existingTable.display_name || ''}
+                initialQuery={existingTable.source_query || ''}
+                saveError={saveError}
+              />
+            ) : existingTable.source_kind === 'derived_table' ? (
+              <CalculatedTableTab
+                onSave={(displayName, sqlQuery) => handleEditSave(displayName, sqlQuery)}
+                isLoading={isPending}
+                availableTables={availableTables}
+                excludeTableId={existingTable.id}
                 initialDisplayName={existingTable.display_name || ''}
                 initialQuery={existingTable.source_query || ''}
                 saveError={saveError}
@@ -234,13 +281,20 @@ export function AddTableModal({ datasetId, isOpen, onClose, onSuccess, existingT
                 datasourceName={datasourceName}
                 isLoading={isPending}
                 saveError={saveError}
-                onSave={(name) => handleEditSave(name)}
+                onSave={(displayName) => handleEditSave(displayName)}
               />
             )
-          ) : activeTab === 'physical' ? (
+          ) : effectiveCreateMode === 'calculated' ? (
+            <CalculatedTableTab
+              onAddTable={handleAddTable}
+              isLoading={isPending}
+              availableTables={availableTables}
+              saveError={saveError}
+            />
+          ) : activeSourceTab === 'physical' ? (
             <PhysicalTableTab onAddTable={handleAddTable} isLoading={isPending} />
           ) : (
-            <QueryTableTab onAddTable={handleAddTable} isLoading={isPending} />
+            <QueryTableTab onAddTable={handleAddTable} isLoading={isPending} saveError={saveError} />
           )}
         </div>
       </div>

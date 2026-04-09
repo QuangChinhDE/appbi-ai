@@ -16,6 +16,7 @@ import { toast } from 'sonner';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import type { Chart } from '@/types/api';
+import { getActiveChartRoleConfig } from '@/lib/chart-config';
 
 const CHART_TYPE_LABELS: Record<string, string> = {
   BAR: 'Bar', LINE: 'Line', PIE: 'Pie', TIME_SERIES: 'Time Series',
@@ -144,6 +145,7 @@ export default function ExplorePage() {
             <div className="flex flex-col divide-y divide-gray-100 border border-gray-200 rounded-lg bg-white overflow-hidden">
               {filtered.map(chart => {
                 const config = chart.config as any;
+                const activeRoleConfig = getActiveChartRoleConfig(config);
                 const typeLabel = CHART_TYPE_LABELS[chart.chart_type] ?? chart.chart_type;
                 const createdAt = new Date(chart.created_at).toLocaleDateString(locale, {
                   day: '2-digit', month: '2-digit', year: 'numeric',
@@ -164,10 +166,10 @@ export default function ExplorePage() {
                       </div>
                       {chart.description ? (
                         <p className="text-xs text-gray-500 truncate">{chart.description}</p>
-                      ) : config?.roleConfig?.dimension ? (
+                      ) : activeRoleConfig?.dimension ? (
                         <p className="text-xs text-gray-500 truncate flex items-center gap-1">
                           <Layers className="w-3 h-3 flex-shrink-0" />
-                          {config.roleConfig.dimension}
+                          {activeRoleConfig.dimension}
                         </p>
                       ) : null}
                     </div>
@@ -198,6 +200,7 @@ export default function ExplorePage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {filtered.map(chart => {
               const config = chart.config as any;
+              const activeRoleConfig = getActiveChartRoleConfig(config);
               const typeLabel = CHART_TYPE_LABELS[chart.chart_type] ?? chart.chart_type;
               const createdAt = new Date(chart.created_at).toLocaleDateString(locale, {
                 day: '2-digit', month: '2-digit', year: 'numeric',
@@ -227,10 +230,10 @@ export default function ExplorePage() {
                     <OwnerBadge email={chart.owner_email} />
                     {chart.description ? (
                       <p className="text-xs text-gray-500 mt-0.5 truncate">{chart.description}</p>
-                    ) : config?.roleConfig?.dimension && (
+                    ) : activeRoleConfig?.dimension && (
                       <p className="text-xs text-gray-500 mt-0.5 truncate flex items-center gap-1">
                         <Layers className="w-3 h-3 flex-shrink-0" />
-                        {config.roleConfig.dimension}
+                        {activeRoleConfig.dimension}
                       </p>
                     )}
                   </div>

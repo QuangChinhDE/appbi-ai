@@ -10,6 +10,80 @@ from app.schemas.dataset import (
     TableCreate,
     TableUpdate,
 )
+from app.services.dataset_calendar_service import (
+    ensure_calendar_table,
+    get_calendar_settings,
+    normalize_dataset_settings,
+    remove_calendar_table,
+)
+
+
+LOOKUP_TABLE_IDENTIFIER_PREFIX = "dataset-table://"
+
+
+def build_lookup_table_identifier(table_id: int) -> str:
+    return f"{LOOKUP_TABLE_IDENTIFIER_PREFIX}{table_id}"
+
+
+def _rewrite_lookup_formula_identifier(
+    formula: str,
+    *,
+    legacy_names: List[str],
+    replacement_identifier: str,
+) -> str:
+    updated = str(formula or "")
+    replacement = f'"{replacement_identifier}"'
+    for legacy_name in legacy_names:
+        alias = str(legacy_name or "").strip()
+        if not alias:
+            continue
+        updated = updated.replace(f'"{alias}"', replacement)
+    return updated
+
+
+def _migrate_lookup_formulas_for_table_rename(
+    db: Session,
+    *,
+    table: DatasetTable,
+    previous_lookup_name: str,
+) -> None:
+    legacy_name = str(previous_lookup_name or "").strip()
+    if not legacy_name:
+        return
+
+    replacement_identifier = build_lookup_table_identifier(table.id)
+    sibling_tables = (
+        db.query(DatasetTable)
+        .filter(
+            DatasetTable.dataset_id == table.dataset_id,
+            DatasetTable.id != table.id,
+        )
+        .all()
+    )
+
+    for sibling in sibling_tables:
+        transforms = sibling.transformations or []
+        changed = False
+        updated_transforms: List[Dict[str, Any]] = []
+
+        for step in transforms:
+            step_copy = dict(step or {})
+            params = dict(step_copy.get("params") or {})
+            formula = params.get("formula")
+            if step_copy.get("type") == "js_formula" and isinstance(formula, str):
+                rewritten = _rewrite_lookup_formula_identifier(
+                    formula,
+                    legacy_names=[legacy_name],
+                    replacement_identifier=replacement_identifier,
+                )
+                if rewritten != formula:
+                    params["formula"] = rewritten
+                    step_copy["params"] = params
+                    changed = True
+            updated_transforms.append(step_copy)
+
+        if changed:
+            sibling.transformations = updated_transforms
 
 
 class DatasetCRUDService:
@@ -51,12 +125,22 @@ class DatasetCRUDService:
         owner_id=None,
     ) -> Dataset:
         """Create a new dataset"""
+        settings = normalize_dataset_settings(
+            dataset_in.settings.model_dump() if getattr(dataset_in, "settings", None) else None,
+            enabled_default=False,
+        )
         db_dataset = Dataset(
             name=dataset_in.name,
             description=dataset_in.description,
+            settings=settings,
             owner_id=owner_id,
         )
         db.add(db_dataset)
+        db.flush()
+
+        if get_calendar_settings(db_dataset, enabled_default=False).get("enabled"):
+            ensure_calendar_table(db, db_dataset)
+
         db.commit()
         db.refresh(db_dataset)
         return db_dataset
@@ -77,8 +161,30 @@ class DatasetCRUDService:
         
         # Update only provided fields
         update_data = dataset_in.model_dump(exclude_unset=True)
+        incoming_settings = update_data.pop("settings", None)
         for key, value in update_data.items():
             setattr(db_dataset, key, value)
+
+        if incoming_settings is not None:
+            current_settings = normalize_dataset_settings(
+                getattr(db_dataset, "settings", None),
+                enabled_default=False,
+            )
+            merged_calendar_settings = {
+                **(current_settings.get("calendar_dimension") or {}),
+                **((incoming_settings or {}).get("calendar_dimension") or {}),
+            }
+            db_dataset.settings = normalize_dataset_settings(
+                {"calendar_dimension": merged_calendar_settings},
+                enabled_default=bool(
+                    (current_settings.get("calendar_dimension") or {}).get("enabled", False)
+                ),
+            )
+
+        if get_calendar_settings(db_dataset, enabled_default=False).get("enabled"):
+            ensure_calendar_table(db, db_dataset)
+        else:
+            remove_calendar_table(db, dataset_id)
         
         db.commit()
         db.refresh(db_dataset)
@@ -145,7 +251,8 @@ class DatasetCRUDService:
                     and_(
                         DatasetTable.dataset_id == dataset_id,
                         DatasetTable.datasource_id == table.datasource_id,
-                        DatasetTable.source_table_name == table.source_table_name
+                        DatasetTable.source_table_name == table.source_table_name,
+                        DatasetTable.source_kind == table.source_kind,
                     )
                 )\
                 .first()
@@ -194,8 +301,32 @@ class DatasetCRUDService:
         
         # Update only provided fields
         update_data = table_update.model_dump(exclude_unset=True)
+        previous_lookup_name = db_table.display_name or db_table.source_table_name or ""
+        display_name_changed = (
+            "display_name" in update_data
+            and str(update_data.get("display_name") or "").strip() != str(db_table.display_name or "").strip()
+        )
+        source_query_changed = (
+            "source_query" in update_data
+            and update_data.get("source_query") != db_table.source_query
+        )
         for key, value in update_data.items():
             setattr(db_table, key, value)
+
+        if display_name_changed:
+            _migrate_lookup_formulas_for_table_rename(
+                db,
+                table=db_table,
+                previous_lookup_name=previous_lookup_name,
+            )
+
+        if source_query_changed:
+            # Source-derived metadata must be rebuilt from the new query.
+            db_table.columns_cache = None
+            db_table.sample_cache = None
+            db_table.column_stats = None
+            db_table.schema_hash = None
+            db_table.stats_updated_at = None
         
         db.commit()
         db.refresh(db_table)

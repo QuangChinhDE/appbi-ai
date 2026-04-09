@@ -4,12 +4,29 @@ Auto-generates semantic layer (views, model, explores) from dataset tables.
 Each dataset = 1 Data Mart with its own semantic model.
 """
 import re
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from sqlalchemy.orm import Session
 from app.models.semantic import SemanticView, SemanticModel, SemanticExplore
 from app.models.dataset import Dataset, DatasetTable
 from app.models.models import DataSource
 from app.core.logging import get_logger
+from app.services.dataset_calendar_service import (
+    CALENDAR_DIMENSIONS,
+    CALENDAR_MEASURES,
+    build_calendar_duckdb_sql,
+    build_calendar_join_sql,
+    build_calendar_role_display_name,
+    build_calendar_role_view_name,
+    get_calendar_role_view_display,
+    get_calendar_settings,
+    is_generated_calendar_table,
+    iter_temporal_columns,
+)
+from app.services.dataset_table_sql_service import (
+    DatasetTableSqlError,
+    build_dataset_table_duckdb_query,
+    is_derived_table,
+)
 from app.services.runtime_modes import resolve_dataset_query_mode
 
 logger = get_logger(__name__)
@@ -199,6 +216,267 @@ def _coerce_distinct_values(rows: list[Any]) -> list[str]:
     return values
 
 
+def _view_name_for_table(table: DatasetTable) -> str:
+    return table.display_name or table.source_table_name or f"table_{table.id}"
+
+
+def _stable_semantic_view_name(table_id: int) -> str:
+    return f"dataset_table_{table_id}"
+
+
+def _sql_table_for_table(dataset_obj: Dataset, table: DatasetTable) -> str:
+    if is_generated_calendar_table(table):
+        settings = get_calendar_settings(dataset_obj, enabled_default=False)
+        return f"({build_calendar_duckdb_sql(settings)})"
+    if is_derived_table(table) and table.source_query:
+        return f"({table.source_query})"
+    if table.source_kind == "physical_table" and table.source_table_name:
+        return table.source_table_name
+    if table.source_kind == "sql_query" and table.source_query:
+        return f"({table.source_query})"
+    return _view_name_for_table(table)
+
+
+def _semantic_fields_for_table(dataset_obj: Dataset, table: DatasetTable) -> tuple[list[dict], list[dict]]:
+    if is_generated_calendar_table(table):
+        return [dict(item) for item in CALENDAR_DIMENSIONS], [dict(item) for item in CALENDAR_MEASURES]
+    return _classify_columns(table.columns_cache or [])
+
+
+def _upsert_semantic_view(
+    db: Session,
+    *,
+    name: str,
+    sql_table_name: str,
+    dataset_table_id: int | None,
+    dimensions: list[dict],
+    measures: list[dict],
+    description: str | None,
+    existing_by_dataset_table: Dict[int, SemanticView],
+    existing_by_name: Dict[str, SemanticView],
+) -> tuple[SemanticView, bool, bool]:
+    view: SemanticView | None = None
+    if dataset_table_id is not None:
+        view = existing_by_dataset_table.get(dataset_table_id)
+    if view is None:
+        view = existing_by_name.get(name)
+
+    created = False
+    updated = False
+    if view is None:
+        view = SemanticView(
+            name=name,
+            sql_table_name=sql_table_name,
+            dataset_table_id=dataset_table_id,
+            dimensions=dimensions,
+            measures=measures,
+            description=description,
+        )
+        db.add(view)
+        db.flush()
+        created = True
+    else:
+        changed = (
+            view.name != name
+            or view.sql_table_name != sql_table_name
+            or view.dataset_table_id != dataset_table_id
+            or (view.dimensions or []) != dimensions
+            or (view.measures or []) != measures
+            or view.description != description
+        )
+        view.name = name
+        view.sql_table_name = sql_table_name
+        view.dataset_table_id = dataset_table_id
+        view.dimensions = dimensions
+        view.measures = measures
+        view.description = description
+        updated = changed
+
+    existing_by_name[view.name] = view
+    if dataset_table_id is not None:
+        existing_by_dataset_table[dataset_table_id] = view
+    return view, created, updated
+
+
+def _detect_fk_joins(
+    tables: List[DatasetTable],
+    table_views: Dict[int, SemanticView],
+) -> Dict[str, List[dict]]:
+    joins_by_source: Dict[str, List[dict]] = {}
+    table_names: Dict[str, DatasetTable] = {}
+
+    for table in tables:
+        if is_generated_calendar_table(table):
+            continue
+        display = _view_name_for_table(table)
+        table_names[display.lower()] = table
+        table_names[_singularize(display).lower()] = table
+
+    for table in tables:
+        if is_generated_calendar_table(table) or not table.columns_cache:
+            continue
+        current_view = table_views.get(table.id)
+        if current_view is None:
+            continue
+
+        cc = table.columns_cache
+        if isinstance(cc, dict):
+            columns = cc.get("columns", [])
+        elif isinstance(cc, list):
+            columns = cc
+        else:
+            continue
+
+        for col in columns:
+            raw_col_name = str(col.get("name") or "").strip()
+            col_name = raw_col_name.lower()
+            if not raw_col_name or not any(col_name.endswith(suffix) for suffix in _FK_SUFFIXES):
+                continue
+
+            ref_name = col_name
+            for suffix in _FK_SUFFIXES:
+                if ref_name.endswith(suffix):
+                    ref_name = ref_name[: -len(suffix)]
+                    break
+
+            ref_table = table_names.get(ref_name)
+            ref_view = table_views.get(ref_table.id) if ref_table else None
+            if ref_table is None or ref_view is None or ref_table.id == table.id:
+                continue
+
+            joins_by_source.setdefault(current_view.name, [])
+            existing = any(
+                join.get("view") == ref_view.name
+                and join.get("from_column") == raw_col_name
+                and join.get("to_column") == "id"
+                for join in joins_by_source[current_view.name]
+            )
+            if existing:
+                continue
+
+            joins_by_source[current_view.name].append({
+                "name": ref_view.name,
+                "view": ref_view.name,
+                "type": "left",
+                "sql_on": f"${{TABLE}}.{raw_col_name} = ${{{ref_view.name}}}.id",
+                "relationship": "many_to_one",
+                "from_view": current_view.name,
+                "from_column": raw_col_name,
+                "to_column": "id",
+                "origin": "auto_fk",
+                "managed": True,
+            })
+
+    return joins_by_source
+
+
+def _build_calendar_role_views(
+    db: Session,
+    *,
+    dataset_obj: Dataset,
+    tables: List[DatasetTable],
+    table_views: Dict[int, SemanticView],
+    existing_by_name: Dict[str, SemanticView],
+    existing_by_dataset_table: Dict[int, SemanticView],
+) -> tuple[Dict[str, List[dict]], Dict[str, SemanticView], int, int, Set[str]]:
+    joins_by_source: Dict[str, List[dict]] = {}
+    role_views: Dict[str, SemanticView] = {}
+    created = 0
+    updated = 0
+    role_view_names: Set[str] = set()
+
+    calendar_settings = get_calendar_settings(dataset_obj, enabled_default=False)
+    if not calendar_settings.get("enabled") or not calendar_settings.get("auto_join_temporal_columns"):
+        return joins_by_source, role_views, created, updated, role_view_names
+
+    calendar_table = next((table for table in tables if is_generated_calendar_table(table)), None)
+    calendar_view = table_views.get(calendar_table.id) if calendar_table else None
+    if calendar_table is None or calendar_view is None:
+        return joins_by_source, role_views, created, updated, role_view_names
+
+    role_dimensions = [dict(item) for item in CALENDAR_DIMENSIONS]
+    role_measures = [dict(item) for item in CALENDAR_MEASURES]
+
+    for table in tables:
+        if is_generated_calendar_table(table):
+            continue
+        source_view = table_views.get(table.id)
+        if source_view is None:
+            continue
+        source_label = table.display_name or table.source_table_name or source_view.name
+
+        for temporal_column in iter_temporal_columns(table):
+            column_name = temporal_column["name"]
+            column_type = temporal_column["type"]
+            role_view_name = build_calendar_role_view_name(source_view.name, column_name)
+            role_view_names.add(role_view_name)
+
+            role_view, was_created, was_updated = _upsert_semantic_view(
+                db,
+                name=role_view_name,
+                sql_table_name=calendar_view.sql_table_name,
+                dataset_table_id=None,
+                dimensions=role_dimensions,
+                measures=role_measures,
+                description=build_calendar_role_display_name(source_label, column_name),
+                existing_by_dataset_table=existing_by_dataset_table,
+                existing_by_name=existing_by_name,
+            )
+            if was_created:
+                created += 1
+            elif was_updated:
+                updated += 1
+            role_views[role_view.name] = role_view
+
+            joins_by_source.setdefault(source_view.name, []).append({
+                "name": role_view.name,
+                "view": role_view.name,
+                "type": "left",
+                "sql_on": build_calendar_join_sql(column_name, column_type, role_view.name),
+                "relationship": "many_to_one",
+                "from_view": source_view.name,
+                "from_column": column_name,
+                "to_column": "date",
+                "origin": "auto_calendar",
+                "managed": True,
+                "calendar_role": role_view.name,
+                "calendar_source_field": column_name,
+                "presentation_view": calendar_view.name,
+            })
+
+    return joins_by_source, role_views, created, updated, role_view_names
+
+
+def _merge_join_definitions(
+    manual_joins: List[dict],
+    auto_joins: List[dict],
+) -> List[dict]:
+    merged: List[dict] = []
+    seen: Set[tuple[str, str | None, str | None]] = set()
+
+    for join in [*manual_joins, *auto_joins]:
+        parsed_from, parsed_to = _parse_join_columns(join.get("sql_on"))
+        join_from = _clean_join_identifier(join.get("from_column")) or parsed_from
+        join_to = _clean_join_identifier(join.get("to_column")) or parsed_to
+        key = (str(join.get("view") or ""), join_from, join_to)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(join)
+
+    return merged
+
+
+def _view_role_for_response(view: SemanticView, table: DatasetTable | None) -> tuple[str, bool, bool]:
+    if table is not None:
+        if is_generated_calendar_table(table):
+            return "calendar_dimension", True, False
+        return "table", False, False
+    if str(view.name or "").endswith("__date_dim"):
+        return "calendar_role", True, True
+    return "table", False, False
+
+
 def _detect_joins(tables: List[DatasetTable]) -> list:
     """
     Detect potential joins between tables using FK naming conventions.
@@ -269,25 +547,8 @@ def generate_dataset_model(
     dataset_id: int,
     force: bool = False,
 ) -> dict:
-    """
-    Auto-generate a semantic model for a dataset.
-
-    For each table in the dataset:
-    - Create/update a SemanticView with auto-classified dimensions/measures
-    - Create/update a SemanticModel for the dataset
-    - Create SemanticExplores with auto-detected joins
-
-    Args:
-        db: Database session
-        dataset_id: Dataset ID
-        force: If True, overwrite existing views/model
-
-    Returns:
-        Dict with model_id, views created/updated count, explores count
-    """
-    dataset_obj = db.query(Dataset).filter(
-        Dataset.id == dataset_id
-    ).first()
+    """Auto-sync the semantic model for a dataset while preserving manual joins."""
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise ValueError(f"Dataset {dataset_id} not found")
 
@@ -297,120 +558,143 @@ def generate_dataset_model(
         .filter(DatasetTable.enabled == True)
         .all()
     )
-
     if not tables:
         raise ValueError("Dataset has no enabled tables")
 
-    # 1. Get or create SemanticModel for this dataset
-    model = db.query(SemanticModel).filter(
-        SemanticModel.dataset_id == dataset_id
-    ).first()
-
-    if model and not force:
-        # Model exists, just update views for new tables
-        pass
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    if not model:
+        model = SemanticModel(
+            name=f"model_{dataset_obj.name}",
+            dataset_id=dataset_id,
+            description=f"Auto-generated model for dataset: {dataset_obj.name}",
+        )
+        db.add(model)
+        db.flush()
     else:
-        if not model:
-            model = SemanticModel(
-                name=f"model_{dataset_obj.name}",
-                dataset_id=dataset_id,
-                description=f"Auto-generated model for dataset: {dataset_obj.name}",
-            )
-            db.add(model)
-            db.flush()  # Get model.id
-        else:
-            model.name = f"model_{dataset_obj.name}"
-            model.description = f"Auto-generated model for dataset: {dataset_obj.name}"
+        model.name = f"model_{dataset_obj.name}"
+        model.description = f"Auto-generated model for dataset: {dataset_obj.name}"
 
-    # 2. Create/update SemanticView for each table
+    existing_views = db.query(SemanticView).all()
+    existing_by_dataset_table = {
+        view.dataset_table_id: view
+        for view in existing_views
+        if view.dataset_table_id is not None
+    }
+    existing_by_name = {view.name: view for view in existing_views}
+
     views_created = 0
     views_updated = 0
-    created_views = []
+    table_views: Dict[int, SemanticView] = {}
+    desired_dataset_view_names: Set[str] = set()
+    desired_table_ids = {table.id for table in tables}
+
+    # All table IDs for this dataset (enabled + disabled) — used to scope
+    # deletions so we never touch SemanticViews belonging to other datasets.
+    all_dataset_table_ids = {
+        t_id
+        for (t_id,) in db.query(DatasetTable.id).filter(
+            DatasetTable.dataset_id == dataset_id
+        ).all()
+    }
+
+    for stale_view in existing_views:
+        if (
+            stale_view.dataset_table_id is not None
+            and stale_view.dataset_table_id in all_dataset_table_ids
+            and stale_view.dataset_table_id not in desired_table_ids
+        ):
+            db.delete(stale_view)
 
     for table in tables:
-        existing_view = db.query(SemanticView).filter(
-            SemanticView.dataset_table_id == table.id
-        ).first()
-
-        dimensions, measures = _classify_columns(table.columns_cache or [])
-        display_name = table.display_name or table.source_table_name or f"table_{table.id}"
-
-        # Determine the actual SQL table reference for this dataset table
-        if table.source_kind == "physical_table" and table.source_table_name:
-            sql_table = table.source_table_name
-        elif table.source_kind == "sql_query" and table.source_query:
-            sql_table = f"({table.source_query})"
-        else:
-            sql_table = display_name
-
-        if existing_view:
-            if force:
-                existing_view.name = display_name
-                existing_view.sql_table_name = sql_table
-                existing_view.dimensions = dimensions
-                existing_view.measures = measures
-                existing_view.description = table.auto_description or f"View for table: {display_name}"
-                views_updated += 1
-            created_views.append(existing_view)
-        else:
-            view = SemanticView(
-                name=display_name,
-                sql_table_name=sql_table,
-                dataset_table_id=table.id,
-                dimensions=dimensions,
-                measures=measures,
-                description=table.auto_description or f"View for table: {display_name}",
-            )
-            db.add(view)
-            db.flush()
-            created_views.append(view)
+        existing_view = existing_by_dataset_table.get(table.id)
+        view_name = existing_view.name if existing_view else _stable_semantic_view_name(table.id)
+        desired_dataset_view_names.add(view_name)
+        dimensions, measures = _semantic_fields_for_table(dataset_obj, table)
+        display_label = table.display_name or table.source_table_name or view_name
+        description = table.auto_description or f"View for table: {display_label}"
+        view, was_created, was_updated = _upsert_semantic_view(
+            db,
+            name=view_name,
+            sql_table_name=_sql_table_for_table(dataset_obj, table),
+            dataset_table_id=table.id,
+            dimensions=dimensions,
+            measures=measures,
+            description=description,
+            existing_by_dataset_table=existing_by_dataset_table,
+            existing_by_name=existing_by_name,
+        )
+        table_views[table.id] = view
+        if was_created:
             views_created += 1
+        elif was_updated or force:
+            views_updated += 1
 
-    # 3. Create explores with auto-detected joins
-    # Delete old explores for this model when force=True
-    if force:
-        db.query(SemanticExplore).filter(
-            SemanticExplore.model_id == model.id
-        ).delete()
-        db.flush()
+    auto_fk_joins = _detect_fk_joins(tables, table_views)
+    auto_calendar_joins, role_views, role_views_created, role_views_updated, role_view_names = _build_calendar_role_views(
+        db,
+        dataset_obj=dataset_obj,
+        tables=tables,
+        table_views=table_views,
+        existing_by_name=existing_by_name,
+        existing_by_dataset_table=existing_by_dataset_table,
+    )
+    views_created += role_views_created
+    views_updated += role_views_updated
 
-    # Check if explores already exist
-    existing_explores = db.query(SemanticExplore).filter(
-        SemanticExplore.model_id == model.id
-    ).count()
+    # Clean up stale calendar role views — only those belonging to THIS dataset.
+    # Role views are named "{dataset_table_{id}}__{column}__date_dim".
+    dataset_view_prefixes = {f"dataset_table_{tid}__" for tid in all_dataset_table_ids}
+    for view in db.query(SemanticView).filter(SemanticView.dataset_table_id.is_(None)).all():
+        if view.name in role_view_names:
+            continue
+        if view.name.endswith("__date_dim") and any(
+            view.name.startswith(pfx) for pfx in dataset_view_prefixes
+        ):
+            db.delete(view)
+
+    existing_explores = {
+        explore.base_view_id: explore
+        for explore in db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all()
+    }
+    desired_base_view_ids = {view.id for view in table_views.values()}
+    for base_view_id, explore in list(existing_explores.items()):
+        if base_view_id not in desired_base_view_ids:
+            db.delete(explore)
+            existing_explores.pop(base_view_id, None)
 
     explores_created = 0
-    if existing_explores == 0 or force:
-        detected_joins = _detect_joins(tables)
+    for table in tables:
+        base_view = table_views.get(table.id)
+        if base_view is None:
+            continue
 
-        for view in created_views:
-            # Find joins where this view is the source
-            view_joins = [
-                {
-                    "name": j["name"],
-                    "view": j["view"],
-                    "type": j["type"],
-                    "sql_on": j["sql_on"],
-                    "relationship": j["relationship"],
-                    "from_view": view.name,
-                    "from_column": j.get("from_column"),
-                    "to_column": j.get("to_column"),
-                }
-                for j in detected_joins
-                if j.get("_source_table") == view.name and j.get("view") != view.name
-            ]
-
-            # Only create explore if model exists
+        explore = existing_explores.get(base_view.id)
+        if explore is None:
             explore = SemanticExplore(
-                name=view.name,
+                name=base_view.name,
                 model_id=model.id,
-                base_view_id=view.id,
-                base_view_name=view.name,
-                joins=view_joins if view_joins else [],
-                description=f"Explore for {view.name}",
+                base_view_id=base_view.id,
+                base_view_name=base_view.name,
+                joins=[],
+                description=f"Explore for {table.display_name or table.source_table_name or base_view.name}",
             )
             db.add(explore)
+            db.flush()
             explores_created += 1
+
+        manual_joins = [
+            join for join in (explore.joins or [])
+            if join.get("origin") not in {"auto_fk", "auto_calendar"}
+        ]
+        auto_joins = [
+            *auto_fk_joins.get(base_view.name, []),
+            *auto_calendar_joins.get(base_view.name, []),
+        ]
+        explore.name = base_view.name
+        explore.base_view_name = base_view.name
+        explore.base_view_id = base_view.id
+        explore.description = f"Explore for {table.display_name or table.source_table_name or base_view.name}"
+        explore.joins = _merge_join_definitions(manual_joins, auto_joins)
 
     db.commit()
 
@@ -442,7 +726,6 @@ def get_dataset_model(db: Session, dataset_id: int) -> Optional[dict]:
     if not model:
         return None
 
-    # Get all views linked to tables in this dataset
     tables = (
         db.query(DatasetTable)
         .filter(DatasetTable.dataset_id == dataset_id)
@@ -451,22 +734,40 @@ def get_dataset_model(db: Session, dataset_id: int) -> Optional[dict]:
     table_ids = [t.id for t in tables]
     table_map = {t.id: t for t in tables}
 
-    views = (
-        db.query(SemanticView)
-        .filter(SemanticView.dataset_table_id.in_(table_ids))
-        .all()
-    ) if table_ids else []
-
     explores = (
         db.query(SemanticExplore)
         .filter(SemanticExplore.model_id == model.id)
         .all()
     )
 
+    referenced_view_names: Set[str] = set()
+    for explore in explores:
+        referenced_view_names.add(explore.base_view_name)
+        for join in explore.joins or []:
+            if join.get("view"):
+                referenced_view_names.add(str(join.get("view")))
+
+    views: List[SemanticView] = []
+    if table_ids:
+        views.extend(
+            db.query(SemanticView)
+            .filter(SemanticView.dataset_table_id.in_(table_ids))
+            .all()
+        )
+    if referenced_view_names:
+        extra_views = (
+            db.query(SemanticView)
+            .filter(SemanticView.name.in_(list(referenced_view_names)))
+            .all()
+        )
+        existing_ids = {view.id for view in views}
+        views.extend(view for view in extra_views if view.id not in existing_ids)
+
     views_data = []
     view_field_map: dict[str, set[str]] = {}
     for v in views:
         table = table_map.get(v.dataset_table_id) if v.dataset_table_id else None
+        view_role, system_managed, hidden_in_canvas = _view_role_for_response(v, table)
         dimension_names = {
             item.get("name")
             for item in (v.dimensions or [])
@@ -482,12 +783,27 @@ def get_dataset_model(db: Session, dataset_id: int) -> Optional[dict]:
             "id": v.id,
             "name": v.name,
             "dataset_table_id": v.dataset_table_id,
-            "table_display_name": table.display_name if table else None,
+            "table_display_name": (
+                (table.display_name or table.source_table_name or v.name) if table
+                else v.description or get_calendar_role_view_display(v.name)
+            ),
             "sql_table_name": v.sql_table_name,
+            "view_role": view_role,
+            "system_managed": system_managed,
+            "hidden_in_canvas": hidden_in_canvas,
             "dimensions": v.dimensions or [],
             "measures": v.measures or [],
             "description": v.description,
         })
+
+    calendar_presentation_view_name = next(
+        (
+            item["name"]
+            for item in views_data
+            if item.get("view_role") == "calendar_dimension"
+        ),
+        None,
+    )
 
     explores_data = []
     for e in explores:
@@ -496,6 +812,11 @@ def get_dataset_model(db: Session, dataset_id: int) -> Optional[dict]:
         for join in e.joins or []:
             normalized_join = _normalize_join(join, e.base_view_name, base_fields)
             if normalized_join:
+                if normalized_join.get("origin") == "auto_calendar":
+                    if not normalized_join.get("presentation_view") and calendar_presentation_view_name:
+                        normalized_join["presentation_view"] = calendar_presentation_view_name
+                    if not normalized_join.get("calendar_source_field") and normalized_join.get("from_column"):
+                        normalized_join["calendar_source_field"] = normalized_join.get("from_column")
                 normalized_joins.append(normalized_join)
         explores_data.append({
             "id": e.id,
@@ -538,21 +859,33 @@ def add_join(
     if from_view_id == to_view_id:
         raise ValueError("Cannot join a view to itself")
 
-    # Validate both views' tables belong to this dataset
+    # Validate both views belong to this dataset/model scope.
     from_table = db.query(DatasetTable).filter(
         DatasetTable.id == from_view.dataset_table_id,
         DatasetTable.dataset_id == dataset_id,
     ).first()
-    to_table = db.query(DatasetTable).filter(
-        DatasetTable.id == to_view.dataset_table_id,
-        DatasetTable.dataset_id == dataset_id,
-    ).first()
-    if not from_table or not to_table:
+    if not from_table:
         raise ValueError("Views do not belong to this dataset")
 
     model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
     if not model:
         raise ValueError("No semantic model found - generate the model first")
+
+    if to_view.dataset_table_id is not None:
+        to_table = db.query(DatasetTable).filter(
+            DatasetTable.id == to_view.dataset_table_id,
+            DatasetTable.dataset_id == dataset_id,
+        ).first()
+        if not to_table:
+            raise ValueError("Views do not belong to this dataset")
+    else:
+        visible_view_names = {explore.base_view_name for explore in model.explores}
+        for explore in model.explores:
+            for join in explore.joins or []:
+                if join.get("view"):
+                    visible_view_names.add(str(join.get("view")))
+        if to_view.name not in visible_view_names:
+            raise ValueError("Views do not belong to this dataset")
 
     explore = db.query(SemanticExplore).filter(
         SemanticExplore.model_id == model.id,
@@ -642,6 +975,10 @@ def remove_join(
         join_to = _clean_join_identifier(join.get("to_column")) or parsed_to
         return join_from == normalized_from and join_to == normalized_to
 
+    matching_joins = [join for join in (explore.joins or []) if should_remove(join)]
+    if any(join.get("managed") or join.get("origin") in {"auto_fk", "auto_calendar"} for join in matching_joins):
+        raise ValueError("System-managed relationships cannot be removed manually")
+
     explore.joins = [j for j in (explore.joins or []) if not should_remove(j)]
     db.commit()
     return {
@@ -664,8 +1001,24 @@ def get_distinct_field_values(
     limit = max(1, min(int(limit), 500))
 
     view = db.query(SemanticView).filter(SemanticView.name == view_name).first()
-    if not view or view.dataset_table_id is None:
+    if not view:
         raise ValueError(f"View '{view_name}' not found")
+
+    if view.dataset_table_id is None:
+        from app.services.duckdb_engine import DuckDBEngine
+
+        sql_source = str(view.sql_table_name or "").strip()
+        if not sql_source:
+            raise ValueError(f"View '{view_name}' not found")
+        base_table = f"{sql_source} AS _q" if sql_source.startswith("(") else sql_source
+        rows = DuckDBEngine.query(
+            f'SELECT DISTINCT "{field_name}" AS value '
+            f'FROM {base_table} '
+            f'WHERE "{field_name}" IS NOT NULL '
+            f'ORDER BY 1 '
+            f'LIMIT {limit}'
+        )
+        return _coerce_distinct_values(rows)
 
     db_table = db.query(DatasetTable).filter(
         DatasetTable.id == view.dataset_table_id,
@@ -673,12 +1026,25 @@ def get_distinct_field_values(
     ).first()
     if not db_table:
         raise ValueError(f"View '{view_name}' does not belong to dataset {dataset_id}")
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if dataset_obj is None:
+        raise ValueError(f"Dataset {dataset_id} not found")
 
-    datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
-    if not datasource:
-        raise ValueError("Data source not found")
+    if is_generated_calendar_table(db_table):
+        from app.services.duckdb_engine import DuckDBEngine
 
-    query_mode = resolve_dataset_query_mode(db_table)
+        settings = get_calendar_settings(dataset_obj, enabled_default=False)
+        rows = DuckDBEngine.query(
+            f'SELECT DISTINCT "{field_name}" AS value '
+            f'FROM ({build_calendar_duckdb_sql(settings)}) AS _q '
+            f'WHERE "{field_name}" IS NOT NULL '
+            f'ORDER BY 1 '
+            f'LIMIT {limit}'
+        )
+        return _coerce_distinct_values(rows)
+
+    datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first() if db_table.datasource_id is not None else None
+    query_mode = resolve_dataset_query_mode(db_table) if datasource is not None else "synced"
 
     def fetch_live_values() -> list[str]:
         from app.services.datasource_service import DataSourceConnectionService
@@ -709,17 +1075,28 @@ def get_distinct_field_values(
         return _coerce_distinct_values(rows)
 
     if query_mode == "live":
+        if datasource is None:
+            raise ValueError("Data source not found")
         return fetch_live_values()
 
     from app.services.duckdb_engine import DuckDBEngine
     from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
 
-    if db_table.source_kind == "sql_query":
+    if is_derived_table(db_table):
+        try:
+            base_table = f"({build_dataset_table_duckdb_query(db, dataset_obj, db_table)}) AS _q"
+        except DatasetTableSqlError as exc:
+            raise ValueError(str(exc)) from exc
+    elif db_table.source_kind == "sql_query":
+        if datasource is None:
+            raise ValueError("Data source not found")
         rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query or "")
         if not rewritten:
             return fetch_live_values()
         base_table = f"({rewritten}) AS _q"
     elif db_table.source_kind == "physical_table":
+        if datasource is None:
+            raise ValueError("Data source not found")
         synced_view = get_synced_view(datasource.id, db_table.source_table_name or "")
         if not synced_view:
             return fetch_live_values()

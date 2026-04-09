@@ -203,6 +203,70 @@ def get_effective_permission(db: Session, user: User, resource, module: str) -> 
     return "none"
 
 
+def batch_effective_permissions(
+    db: Session,
+    user: User,
+    resources: list,
+    module: str,
+) -> dict[int, str]:
+    """
+    Batch version of get_effective_permission for list endpoints.
+    Returns {resource.id: permission_level} using a single DB query for shares.
+    """
+    perms = _normalize_permissions(user)
+    module_level = perms.get(module, "none")
+
+    result: dict[int, str] = {}
+
+    if module_level == "none":
+        for r in resources:
+            result[r.id] = "none"
+        return result
+    if module_level == "full":
+        for r in resources:
+            result[r.id] = "full"
+        return result
+
+    # Pre-fetch all shares for these resources in one query
+    if not resources:
+        return result
+
+    class_name = type(resources[0]).__name__
+    rt = _MODEL_TO_RESOURCE_TYPE.get(class_name)
+    share_lookup: dict[str, str] = {}
+
+    if rt:
+        resource_ids = [str(r.id) for r in resources]
+        shares = (
+            db.query(ResourceShare.resource_id, ResourceShare.permission)
+            .filter(
+                ResourceShare.resource_type == rt,
+                ResourceShare.resource_id.in_(resource_ids),
+                ResourceShare.user_id == user.id,
+            )
+            .all()
+        )
+        share_lookup = {s.resource_id: s.permission.value for s in shares}
+
+    for r in resources:
+        owner_id = getattr(r, "owner_id", None)
+        if owner_id is not None and str(owner_id) == str(user.id):
+            result[r.id] = "full"
+            continue
+
+        share_level = share_lookup.get(str(r.id))
+        if share_level:
+            if LEVEL_ORDER.get(share_level, 0) <= LEVEL_ORDER.get(module_level, 0):
+                result[r.id] = share_level
+            else:
+                result[r.id] = module_level
+            continue
+
+        result[r.id] = "none"
+
+    return result
+
+
 def require_view_access(db: Session, user: User, resource, module: str) -> str:
     """Raise 403 if user cannot view the resource (effective == none)."""
     eff = get_effective_permission(db, user, resource, module)

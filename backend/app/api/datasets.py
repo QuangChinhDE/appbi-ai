@@ -17,7 +17,8 @@ from app.core.dependencies import (
     get_effective_permission,
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
-from app.models import DataSource, Chart, Dataset, DatasetTable
+from app.models import DataSource, Chart, Dashboard, DashboardChart, Dataset, DatasetTable
+from app.models.models import DashboardPublicLink
 from app.models.resource_share import ResourceType
 from app.models.user import User
 from app.schemas import (
@@ -40,14 +41,35 @@ from app.services import (
     DataSourceConnectionService,
     EmbeddingService,
 )
+from app.services import query_cache
 from app.services.chart_contracts import normalize_filter_conditions
+from app.services.dataset_calendar_service import (
+    build_calendar_columns_cache,
+    build_calendar_duckdb_sql,
+    get_calendar_settings,
+    is_generated_calendar_table,
+)
+from app.services.dataset_table_sql_service import (
+    DatasetTableSqlError,
+    build_dataset_table_duckdb_query,
+    build_dataset_table_sql_alias,
+    collect_derived_dependency_table_ids,
+    is_derived_table,
+    preview_dataset_table_duckdb_query,
+    validate_and_clean_derived_query,
+)
+from app.services.dataset_model_service import generate_dataset_model
 from app.services.description_pipeline_service import (
     DescriptionPipelineService,
     resolve_session_factory,
 )
 from app.core.logging import get_logger
 from app.services.runtime_modes import datasource_sync_enabled, resolve_dataset_query_mode
-from app.services.live_query_service import build_live_base_query_plan
+from app.services.schema_inference import infer_schema_from_sql
+from app.services.live_query_service import (
+    build_dataset_table_cache_identifier,
+    build_live_base_query_plan,
+)
 from app.services.type_override_service import (
     audit_type_overrides,
     normalize_type_overrides,
@@ -57,12 +79,117 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+LOOKUP_TABLE_IDENTIFIER_PREFIX = "dataset-table://"
+
+
 
 # ISO date/datetime patterns for string-based detection
 _ISO_DATETIME_RE = re.compile(
     r'^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?'
 )
 _ISO_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+
+def _build_lookup_table_identifier(table_id: int) -> str:
+    return f"{LOOKUP_TABLE_IDENTIFIER_PREFIX}{table_id}"
+
+
+def _dataset_table_lookup_tokens(table: DatasetTable) -> List[str]:
+    tokens: List[str] = []
+    for candidate in (
+        _build_lookup_table_identifier(table.id),
+        table.display_name,
+        table.source_table_name,
+    ):
+        text = str(candidate or "").strip()
+        if text and text not in tokens:
+            tokens.append(text)
+    return tokens
+
+
+def _formula_references_dataset_table(formula: Any, table: DatasetTable) -> bool:
+    text = str(formula or "")
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(f'"{token}"'.lower() in lowered for token in _dataset_table_lookup_tokens(table))
+
+
+def _semantic_prefixes_for_table(
+    db: Session,
+    *,
+    dataset_id: int,
+    table: DatasetTable,
+) -> set[str]:
+    from app.models.semantic import SemanticExplore, SemanticModel, SemanticView
+
+    prefixes: set[str] = set()
+    base_view = db.query(SemanticView).filter(SemanticView.dataset_table_id == table.id).first()
+    if base_view is not None:
+        prefixes.add(f"{base_view.name}.")
+
+    if not is_generated_calendar_table(table):
+        return prefixes
+
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    if model is None:
+        return prefixes
+
+    explores = db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all()
+    for explore in explores:
+        for join in explore.joins or []:
+            if join.get("origin") != "auto_calendar":
+                continue
+            for key in ("view", "calendar_role", "presentation_view"):
+                name = str(join.get(key) or "").strip()
+                if name:
+                    prefixes.add(f"{name}.")
+    return prefixes
+
+
+def _config_references_semantic_prefix(value: Any, prefixes: set[str]) -> bool:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key == "semanticBinding":
+                continue
+            if _config_references_semantic_prefix(nested, prefixes):
+                return True
+        return False
+
+    if isinstance(value, list):
+        return any(_config_references_semantic_prefix(item, prefixes) for item in value)
+
+    if isinstance(value, str):
+        stripped = value.strip()
+        return any(stripped.startswith(prefix) for prefix in prefixes)
+
+    return False
+
+
+def _filter_references_semantic_prefix(filter_obj: Any, dataset_id: int, prefixes: set[str]) -> bool:
+    if not isinstance(filter_obj, dict):
+        return False
+
+    filter_dataset_id = filter_obj.get("datasetId")
+    if filter_dataset_id is not None:
+        try:
+            if int(filter_dataset_id) != dataset_id:
+                return False
+        except (TypeError, ValueError):
+            pass
+
+    for key in ("semanticField", "fieldKey", "field"):
+        value = filter_obj.get(key)
+        if isinstance(value, str) and any(value.strip().startswith(prefix) for prefix in prefixes):
+            return True
+
+    linked_fields = filter_obj.get("linkedFields")
+    if isinstance(linked_fields, list):
+        for value in linked_fields:
+            if isinstance(value, str) and any(value.strip().startswith(prefix) for prefix in prefixes):
+                return True
+
+    return False
 
 
 def _infer_column_type(col: str, col_index: int, rows: list) -> str:
@@ -149,6 +276,22 @@ def _build_columns_cache_payload(
     return payload
 
 
+def _serialize_cached_rows(rows: list[dict[str, Any]] | None, *, limit: int = 500) -> list[dict[str, Any]]:
+    def _serialize_value(value: Any) -> Any:
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        if isinstance(value, Decimal):
+            return float(value)
+        return value
+
+    serialized: list[dict[str, Any]] = []
+    for row in list(rows or [])[: max(1, int(limit))]:
+        if not isinstance(row, dict):
+            continue
+        serialized.append({key: _serialize_value(value) for key, value in row.items()})
+    return serialized
+
+
 def _format_type_audit_error(audits: List[Dict[str, Any]]) -> str:
     parts: List[str] = []
     for audit in audits:
@@ -193,6 +336,82 @@ def _serialize_table_description(table) -> dict:
         "generation_finished_at": table.generation_finished_at.isoformat() if getattr(table, "generation_finished_at", None) else None,
         "stale_reason": getattr(table, "stale_reason", None),
     }
+
+
+def _sync_dataset_model_safely(db: Session, dataset_id: int) -> None:
+    try:
+        generate_dataset_model(db, dataset_id, force=False)
+    except Exception as exc:
+        logger.warning("Dataset model sync skipped for dataset %s: %s", dataset_id, exc)
+
+
+def _infer_dataset_table_columns(
+    db: Session,
+    dataset_obj: Dataset,
+    datasource: Optional[DataSource],
+    db_table: DatasetTable | Any,
+) -> List[DatasetColumnMetadata]:
+    if is_generated_calendar_table(db_table):
+        return [
+            DatasetColumnMetadata(
+                name=str(column.get("name") or ""),
+                type=str(column.get("type") or "string"),
+                nullable=bool(column.get("nullable", False)),
+            )
+            for column in build_calendar_columns_cache()["columns"]
+            if str(column.get("name") or "").strip()
+        ]
+
+    if is_derived_table(db_table):
+        column_names, rows = preview_dataset_table_duckdb_query(
+            db,
+            dataset_obj,
+            db_table,
+            limit=200,
+            offset=0,
+        )
+        return [
+            DatasetColumnMetadata(
+                name=column_name,
+                type=_infer_column_type(column_name, index, rows),
+                nullable=True,
+            )
+            for index, column_name in enumerate(column_names)
+        ]
+
+    if datasource is None:
+        raise DatasetTableSqlError("Datasource not found", code="DATASOURCE_NOT_FOUND")
+
+    ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+    inferred_columns: List[Dict[str, Any]] = []
+    if db_table.source_kind == "physical_table" and db_table.source_table_name:
+        inferred_columns = DataSourceConnectionService.list_columns(
+            ds_id=datasource.id,
+            ds_type=ds_type,
+            config=datasource.config,
+            table_name=db_table.source_table_name,
+        )
+    elif db_table.source_kind == "sql_query" and db_table.source_query:
+        inferred_columns = infer_schema_from_sql(
+            db=db,
+            datasource=datasource,
+            sql_query=db_table.source_query,
+        )
+
+    normalized: List[DatasetColumnMetadata] = []
+    for column in inferred_columns or []:
+        name = str(column.get("name") or "").strip()
+        if not name:
+            continue
+        col_type = str(column.get("type") or "string").strip().lower()
+        normalized.append(
+            DatasetColumnMetadata(
+                name=name,
+                type=col_type or "string",
+                nullable=True,
+            )
+        )
+    return normalized
 
 
 # ===== Table Vector Search (must be before /{dataset_id} routes) =====
@@ -277,6 +496,8 @@ def create_dataset(
 ):
     """Create a new dataset"""
     db_dataset = DatasetCRUDService.create_dataset(db, dataset_in, owner_id=current_user.id)
+    _sync_dataset_model_safely(db, db_dataset.id)
+    db.refresh(db_dataset)
     return db_dataset
 
 
@@ -313,6 +534,9 @@ def update_dataset(
     db_dataset = DatasetCRUDService.update_dataset(
         db, dataset_id, dataset_in
     )
+    if db_dataset:
+        _sync_dataset_model_safely(db, dataset_id)
+        db.refresh(db_dataset)
     return db_dataset
 
 
@@ -386,13 +610,60 @@ def add_table_to_dataset(
             raise HTTPException(status_code=404, detail="Dataset not found")
         require_edit_access(db, current_user, ds, "datasets")
 
-        # Validate datasource exists
-        datasource = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
-        if not datasource:
-            raise HTTPException(status_code=404, detail="Datasource not found")
-        require_view_access(db, current_user, datasource, "data_sources")
+        datasource: Optional[DataSource] = None
+        inferred_metadata: List[DatasetColumnMetadata] = []
+        inferred_rows: List[Dict[str, Any]] = []
 
-        # Validate SQL query if source_kind is 'sql_query'
+        if table.source_kind == "derived_table":
+            try:
+                table.source_query = validate_and_clean_derived_query(table.source_query or "")
+                draft_display_name = str(
+                    table.display_name
+                    or "Calculated Table"
+                ).strip()
+                derived_draft = SimpleNamespace(
+                    id=None,
+                    dataset_id=dataset_id,
+                    datasource_id=None,
+                    source_kind="derived_table",
+                    source_table_name=None,
+                    source_query=table.source_query,
+                    display_name=draft_display_name,
+                    enabled=table.enabled,
+                    transformations=table.transformations or [],
+                    type_overrides=None,
+                    columns_cache=None,
+                )
+                preview_columns, preview_rows = preview_dataset_table_duckdb_query(
+                    db,
+                    ds,
+                    derived_draft,
+                    limit=200,
+                    offset=0,
+                )
+                inferred_metadata = [
+                    DatasetColumnMetadata(
+                        name=column_name,
+                        type=_infer_column_type(column_name, index, preview_rows),
+                        nullable=True,
+                    )
+                    for index, column_name in enumerate(preview_columns)
+                ]
+                inferred_rows = preview_rows
+            except DatasetTableSqlError as exc:
+                status_code = 422 if getattr(exc, "code", "") == "NOT_SYNCED" else 400
+                detail: Any = str(exc)
+                if getattr(exc, "code", "") == "NOT_SYNCED":
+                    detail = {"code": exc.code, "message": str(exc)}
+                raise HTTPException(status_code=status_code, detail=detail)
+        else:
+            # Validate datasource exists
+            datasource = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
+            if not datasource:
+                raise HTTPException(status_code=404, detail="Datasource not found")
+            require_view_access(db, current_user, datasource, "data_sources")
+
+        # Validate SQL query if source_kind is datasource-backed 'sql_query'
         if table.source_kind == "sql_query":
             from app.services.query_validator import QueryValidator, QueryValidationError
             try:
@@ -408,13 +679,13 @@ def add_table_to_dataset(
         if not db_table:
             raise HTTPException(status_code=404, detail="Dataset not found")
 
-        if not datasource_sync_enabled():
+        if not datasource_sync_enabled() and db_table.datasource_id is not None:
             db_table.query_mode = "live"
             db.commit()
             db.refresh(db_table)
 
         # ── Auto-detect table size and set query_mode ──
-        if datasource_sync_enabled() and db_table.source_kind == "physical_table" and db_table.source_table_name:
+        if datasource_sync_enabled() and datasource is not None and db_table.source_kind == "physical_table" and db_table.source_table_name:
             try:
                 from app.services.live_query_service import LiveQueryService
                 ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
@@ -448,7 +719,7 @@ def add_table_to_dataset(
                     db.refresh(db_table)
             except Exception as e:
                 logger.warning("Size detection failed for table %s: %s", db_table.source_table_name, e)
-        elif db_table.source_kind == "physical_table" and db_table.source_table_name:
+        elif datasource is not None and db_table.source_kind == "physical_table" and db_table.source_table_name:
             try:
                 from app.services.live_query_service import LiveQueryService
                 ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
@@ -470,6 +741,23 @@ def add_table_to_dataset(
             except Exception as e:
                 logger.warning("Size detection failed for live-only table %s: %s", db_table.source_table_name, e)
 
+        try:
+            if not inferred_metadata:
+                inferred_metadata = _infer_dataset_table_columns(db, ds, datasource, db_table)
+            if inferred_metadata:
+                db_table = DatasetCRUDService.update_table_cache(
+                    db,
+                    db_table.id,
+                    columns_cache=_build_columns_cache_payload(
+                        db_table,
+                        inferred_metadata,
+                        source_columns=[column.name for column in inferred_metadata],
+                    ),
+                    sample_cache=_serialize_cached_rows(inferred_rows) or None,
+                ) or db_table
+        except Exception as e:
+            logger.warning("Column inference failed for dataset table %s: %s", db_table.id, e)
+
         # Queue a single AI-description pipeline to avoid duplicate generate/embed work.
         DescriptionPipelineService.enqueue_table_pipeline(
             background_tasks,
@@ -477,6 +765,9 @@ def add_table_to_dataset(
             db_table.id,
             trigger="table_created",
         )
+
+        _sync_dataset_model_safely(db, dataset_id)
+        db.refresh(db_table)
 
         # Return plain dict instead of model to avoid serialization issues
         return {
@@ -491,6 +782,8 @@ def add_table_to_dataset(
             "transformations": db_table.transformations,
             "columns_cache": db_table.columns_cache,
             "sample_cache": db_table.sample_cache,
+            "type_overrides": db_table.type_overrides,
+            "column_formats": db_table.column_formats,
             "query_mode": getattr(db_table, 'query_mode', 'synced') or 'synced',
             "estimated_row_count": getattr(db_table, 'estimated_row_count', None),
             "estimated_size_bytes": getattr(db_table, 'estimated_size_bytes', None),
@@ -522,14 +815,54 @@ def update_dataset_table(
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
         raise HTTPException(status_code=404, detail="Table not found in this dataset")
+    if is_generated_calendar_table(db_table):
+        raise HTTPException(
+            status_code=400,
+            detail="Standard Date table is managed by dataset calendar settings and cannot be edited here.",
+        )
+
+    # Reject source_query updates on unsupported table kinds
+    if table_update.source_query is not None and db_table.source_kind not in {"sql_query", "derived_table"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot set source_query on a '{db_table.source_kind}' table.",
+        )
+    preview_metadata: List[DatasetColumnMetadata] = []
+    preview_rows: List[Dict[str, Any]] = []
 
     # Validate SQL query if source_query is being updated
     if table_update.source_query is not None:
-        from app.services.query_validator import QueryValidator, QueryValidationError
-        try:
-            table_update.source_query = QueryValidator.validate_and_clean(table_update.source_query)
-        except QueryValidationError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid SQL query: {str(e)}")
+        if db_table.source_kind == "derived_table":
+            try:
+                table_update.source_query = validate_and_clean_derived_query(table_update.source_query)
+                table_draft = _build_table_draft(db_table, table_update)
+                preview_columns, preview_rows = preview_dataset_table_duckdb_query(
+                    db,
+                    ds,
+                    table_draft,
+                    limit=200,
+                    offset=0,
+                )
+                preview_metadata = [
+                    DatasetColumnMetadata(
+                        name=column_name,
+                        type=_infer_column_type(column_name, index, preview_rows),
+                        nullable=True,
+                    )
+                    for index, column_name in enumerate(preview_columns)
+                ]
+            except DatasetTableSqlError as exc:
+                status_code = 422 if getattr(exc, "code", "") == "NOT_SYNCED" else 400
+                detail: Any = str(exc)
+                if getattr(exc, "code", "") == "NOT_SYNCED":
+                    detail = {"code": exc.code, "message": str(exc)}
+                raise HTTPException(status_code=status_code, detail=detail)
+        else:
+            from app.services.query_validator import QueryValidator, QueryValidationError
+            try:
+                table_update.source_query = QueryValidator.validate_and_clean(table_update.source_query)
+            except QueryValidationError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid SQL query: {str(e)}")
 
     if table_update.type_overrides is not None:
         normalized_overrides = normalize_type_overrides(table_update.type_overrides)
@@ -541,47 +874,68 @@ def update_dataset_table(
         }
 
         if changed_overrides:
-            datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
-            if not datasource:
-                raise HTTPException(status_code=404, detail="Datasource not found")
-            table_draft = _build_table_draft(db_table, table_update)
+            if db_table.datasource_id is not None:
+                datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+                if not datasource:
+                    raise HTTPException(status_code=404, detail="Datasource not found")
+                table_draft = _build_table_draft(db_table, table_update)
 
-            try:
-                plan = build_live_base_query_plan(
-                    datasource,
-                    table_draft,
-                    apply_type_overrides=False,
-                )
-                audits = audit_type_overrides(
-                    datasource=datasource,
-                    table_identifier=table_draft.source_table_name or table_draft.display_name,
-                    base_query=plan.sql,
-                    candidate_overrides=changed_overrides,
-                    available_columns=plan.output_columns,
-                    dialect=(
-                        datasource.type.value
-                        if hasattr(datasource.type, "value")
-                        else str(datasource.type)
-                    ),
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
+                try:
+                    plan = build_live_base_query_plan(
+                        datasource,
+                        table_draft,
+                        apply_type_overrides=False,
+                    )
+                    audits = audit_type_overrides(
+                        datasource=datasource,
+                        table_identifier=build_dataset_table_cache_identifier(table_draft),
+                        base_query=plan.sql,
+                        candidate_overrides=changed_overrides,
+                        available_columns=plan.output_columns,
+                        dialect=(
+                            datasource.type.value
+                            if hasattr(datasource.type, "value")
+                            else str(datasource.type)
+                        ),
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc))
 
-            invalid_audits = [audit.to_dict() for audit in audits if audit.invalid_count > 0]
-            if invalid_audits:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "message": _format_type_audit_error(invalid_audits),
-                        "type_audit": invalid_audits,
-                    },
-                )
+                invalid_audits = [audit.to_dict() for audit in audits if audit.invalid_count > 0]
+                if invalid_audits:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "message": _format_type_audit_error(invalid_audits),
+                            "type_audit": invalid_audits,
+                        },
+                    )
 
         table_update.type_overrides = normalized_overrides
 
     updated_table = DatasetCRUDService.update_table(
         db, table_id, table_update
     )
+    if updated_table and db_table.datasource_id is not None:
+        query_cache.invalidate_datasource(db_table.datasource_id)
+
+    if updated_table and table_update.source_query is not None:
+        datasource = db.query(DataSource).filter(DataSource.id == updated_table.datasource_id).first() if updated_table.datasource_id is not None else None
+        try:
+            inferred_metadata = preview_metadata or _infer_dataset_table_columns(db, ds, datasource, updated_table)
+            if inferred_metadata:
+                updated_table = DatasetCRUDService.update_table_cache(
+                    db,
+                    updated_table.id,
+                    columns_cache=_build_columns_cache_payload(
+                        updated_table,
+                        inferred_metadata,
+                        source_columns=[column.name for column in inferred_metadata],
+                    ),
+                    sample_cache=_serialize_cached_rows(preview_rows) or None,
+                ) or updated_table
+        except Exception as exc:
+            logger.warning("Column inference failed after updating table %s: %s", updated_table.id, exc)
 
     DescriptionPipelineService.enqueue_table_pipeline(
         background_tasks,
@@ -589,6 +943,10 @@ def update_dataset_table(
         table_id,
         trigger="table_updated",
     )
+
+    _sync_dataset_model_safely(db, dataset_id)
+    if updated_table:
+        db.refresh(updated_table)
 
     return updated_table
 
@@ -609,6 +967,11 @@ def remove_table_from_dataset(
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
         raise HTTPException(status_code=404, detail="Table not found in this dataset")
+
+    dataset_table_ids = [
+        int(row[0])
+        for row in db.query(DatasetTable.id).filter(DatasetTable.dataset_id == dataset_id).all()
+    ]
 
     # ------------------------------------------------------------------
     # Check 1: charts that directly reference this table
@@ -633,12 +996,32 @@ def remove_table_from_dataset(
         .all()
     )
     blocking_lookups = []
+    blocking_calculated_tables = []
     for t in other_tables:
+        if is_derived_table(t) and t.source_query:
+            depends_on_table = False
+            try:
+                depends_on_table = table_id in collect_derived_dependency_table_ids(
+                    db,
+                    dataset_id,
+                    t.source_query,
+                    exclude_table_id=t.id,
+                )
+            except DatasetTableSqlError:
+                depends_on_table = build_dataset_table_sql_alias(table_id).lower() in str(t.source_query).lower()
+
+            if depends_on_table:
+                blocking_calculated_tables.append({
+                    "type": "calculated_table",
+                    "table_id": t.id,
+                    "table_name": t.display_name or t.source_table_name,
+                })
+
         transforms = t.transformations or []
         for step in transforms:
             if step.get("type") == "js_formula" and step.get("enabled", True):
                 formula = step.get("params", {}).get("formula", "")
-                if table_label and f'"{table_label}"' in formula:
+                if _formula_references_dataset_table(formula, db_table):
                     blocking_lookups.append({
                         "type": "lookup",
                         "table_id": t.id,
@@ -647,6 +1030,83 @@ def remove_table_from_dataset(
                     })
                     break  # one entry per table is enough
 
+    # ------------------------------------------------------------------
+    # Check 3: semantic filters / saved config that explicitly reference
+    # this table's semantic fields (dashboard filters, public links, or
+    # chart configs that store qualified fields).
+    # ------------------------------------------------------------------
+    semantic_prefixes = _semantic_prefixes_for_table(
+        db,
+        dataset_id=dataset_id,
+        table=db_table,
+    )
+    blocking_semantic_refs = []
+    if semantic_prefixes and dataset_table_ids:
+        direct_chart_ids = {chart.id for chart in blocking_charts}
+        dataset_charts = (
+            db.query(Chart)
+            .filter(Chart.dataset_table_id.in_(dataset_table_ids))
+            .all()
+        )
+        for chart in dataset_charts:
+            if chart.id in direct_chart_ids:
+                continue
+            chart_config = chart.config if isinstance(chart.config, dict) else {}
+            if _config_references_semantic_prefix(chart_config, semantic_prefixes):
+                blocking_semantic_refs.append({
+                    "type": "chart_filter",
+                    "id": chart.id,
+                    "name": chart.name,
+                })
+
+        dashboards = (
+            db.query(Dashboard)
+            .join(Dashboard.dashboard_charts)
+            .join(DashboardChart.chart)
+            .filter(Chart.dataset_table_id.in_(dataset_table_ids))
+            .distinct()
+            .all()
+        )
+        dashboard_ids = [dashboard.id for dashboard in dashboards]
+        public_links = (
+            db.query(DashboardPublicLink)
+            .filter(DashboardPublicLink.dashboard_id.in_(dashboard_ids))
+            .all()
+            if dashboard_ids
+            else []
+        )
+
+        for dashboard in dashboards:
+            for filter_obj in dashboard.filters_config or []:
+                if _filter_references_semantic_prefix(filter_obj, dataset_id, semantic_prefixes):
+                    blocking_semantic_refs.append({
+                        "type": "dashboard_filter",
+                        "id": dashboard.id,
+                        "name": dashboard.name,
+                        "field": filter_obj.get("label") or filter_obj.get("semanticField") or filter_obj.get("field"),
+                    })
+                    break
+            for filter_obj in dashboard.public_filters_config or []:
+                if _filter_references_semantic_prefix(filter_obj, dataset_id, semantic_prefixes):
+                    blocking_semantic_refs.append({
+                        "type": "public_link_filter",
+                        "id": dashboard.id,
+                        "name": dashboard.name,
+                        "field": filter_obj.get("label") or filter_obj.get("semanticField") or filter_obj.get("field"),
+                    })
+                    break
+
+        for link in public_links:
+            for filter_obj in link.filters_config or []:
+                if _filter_references_semantic_prefix(filter_obj, dataset_id, semantic_prefixes):
+                    blocking_semantic_refs.append({
+                        "type": "public_link_filter",
+                        "id": link.dashboard_id,
+                        "name": link.name,
+                        "field": filter_obj.get("label") or filter_obj.get("semanticField") or filter_obj.get("field"),
+                    })
+                    break
+
     constraints = []
     for ch in blocking_charts:
         constraints.append({
@@ -654,7 +1114,9 @@ def remove_table_from_dataset(
             "id": ch.id,
             "name": ch.name,
         })
+    constraints.extend(blocking_calculated_tables)
     constraints.extend(blocking_lookups)
+    constraints.extend(blocking_semantic_refs)
 
     if constraints:
         raise HTTPException(
@@ -666,7 +1128,28 @@ def remove_table_from_dataset(
         )
 
     EmbeddingService.delete_embedding(db, "dataset_table", table_id)
-    success = DatasetCRUDService.delete_table(db, table_id)
+
+    if is_generated_calendar_table(db_table):
+        current_settings = get_calendar_settings(ds, enabled_default=False)
+        DatasetCRUDService.update_dataset(
+            db,
+            dataset_id,
+            DatasetUpdate.model_validate({
+                "settings": {
+                    "calendar_dimension": {
+                        **current_settings,
+                        "enabled": False,
+                    }
+                }
+            }),
+        )
+        success = True
+    else:
+        datasource_id = db_table.datasource_id
+        success = DatasetCRUDService.delete_table(db, table_id)
+        if datasource_id is not None:
+            query_cache.invalidate_datasource(datasource_id)
+    _sync_dataset_model_safely(db, dataset_id)
 
     if not success:
         raise HTTPException(status_code=404, detail="Table not found")
@@ -694,6 +1177,101 @@ def preview_dataset_table(
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
         raise HTTPException(status_code=404, detail="Table not found in this dataset")
+
+    if is_generated_calendar_table(db_table):
+        from app.services.duckdb_engine import DuckDBEngine
+
+        settings = get_calendar_settings(dataset_obj, enabled_default=False)
+        base_query = build_calendar_duckdb_sql(settings)
+        limit = min(preview_request.limit or 100, 1000)
+        offset = max(preview_request.offset or 0, 0)
+        query = f"SELECT * FROM ({base_query}) AS generated_calendar LIMIT {limit}"
+        if offset:
+            query += f" OFFSET {offset}"
+
+        rows = DuckDBEngine.query(query)
+        cached_columns = build_calendar_columns_cache()["columns"]
+        column_metadata = [
+            DatasetColumnMetadata(
+                name=str(column.get("name")),
+                type=str(column.get("type")),
+                nullable=bool(column.get("nullable", False)),
+            )
+            for column in cached_columns
+        ]
+
+        def serialize_value(val):
+            if isinstance(val, (datetime, date)):
+                return val.isoformat()
+            if isinstance(val, Decimal):
+                return float(val)
+            return val
+
+        serializable_rows = [{k: serialize_value(v) for k, v in row.items()} for row in rows[:500]]
+        DatasetCRUDService.update_table_cache(
+            db,
+            table_id,
+            columns_cache=build_calendar_columns_cache(),
+            sample_cache=serializable_rows,
+        )
+        _sync_dataset_model_safely(db, dataset_id)
+
+        total = (
+            date.fromisoformat(settings["end_date"]) - date.fromisoformat(settings["start_date"])
+        ).days + 1
+        return TablePreviewResponse(
+            columns=column_metadata,
+            rows=rows,
+            total=total,
+            has_more=(offset + len(rows)) < total,
+        )
+
+    if is_derived_table(db_table):
+        try:
+            limit = min(preview_request.limit or 100, 1000)
+            offset = max(preview_request.offset or 0, 0)
+            columns, rows = preview_dataset_table_duckdb_query(
+                db,
+                dataset_obj,
+                db_table,
+                limit=limit,
+                offset=offset,
+            )
+            column_metadata = [
+                DatasetColumnMetadata(
+                    name=column_name,
+                    type=_infer_column_type(column_name, index, rows),
+                    nullable=True,
+                )
+                for index, column_name in enumerate(columns)
+            ]
+            DatasetCRUDService.update_table_cache(
+                db,
+                table_id,
+                columns_cache=_build_columns_cache_payload(
+                    db_table,
+                    column_metadata,
+                    source_columns=columns,
+                ),
+                sample_cache=_serialize_cached_rows(rows),
+            )
+            _sync_dataset_model_safely(db, dataset_id)
+
+            return TablePreviewResponse(
+                columns=column_metadata,
+                rows=rows,
+                total=len(rows),
+                has_more=len(rows) >= limit,
+            )
+        except DatasetTableSqlError as exc:
+            if getattr(exc, "code", "") == "NOT_SYNCED":
+                raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)})
+            raise HTTPException(status_code=400, detail=str(exc))
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error("Failed to preview calculated table %s: %s", table_id, exc)
+            raise HTTPException(status_code=500, detail="Failed to preview calculated table.")
     
     # Get datasource
     datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
@@ -750,6 +1328,7 @@ def preview_dataset_table(
                 ),
                 sample_cache=serializable_rows,
             )
+            _sync_dataset_model_safely(db, dataset_id)
 
             return TablePreviewResponse(
                 columns=column_metadata,
@@ -859,6 +1438,7 @@ def preview_dataset_table(
             columns_cache={"columns": [col.model_dump() for col in column_metadata]},
             sample_cache=serializable_rows
         )
+        _sync_dataset_model_safely(db, dataset_id)
         
         return TablePreviewResponse(
             columns=column_metadata,
@@ -912,13 +1492,159 @@ def execute_dataset_table_query(
     if not db_table or db_table.dataset_id != dataset_id:
         raise HTTPException(status_code=404, detail="Table not found in this dataset")
 
-    # Get datasource
-    datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
-    if not datasource:
-        raise HTTPException(status_code=404, detail="Datasource not found")
+    if is_generated_calendar_table(db_table):
+        from app.services.duckdb_engine import DuckDBEngine
+
+        settings = get_calendar_settings(dataset_obj, enabled_default=False)
+        base_table = f"({build_calendar_duckdb_sql(settings)}) AS base_table"
+        allowed_columns = {column["name"] for column in build_calendar_columns_cache()["columns"]}
+
+        def _validate_calendar_column(col_name: str, context: str) -> str:
+            if col_name not in allowed_columns:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid {context}: '{col_name}' is not a column of this table",
+                )
+            return '"' + col_name.replace('"', '""') + '"'
+
+        def _sql_literal(v: Any) -> str:
+            if v is None:
+                return "NULL"
+            if isinstance(v, bool):
+                return "TRUE" if v else "FALSE"
+            if isinstance(v, (int, float, Decimal)) and not isinstance(v, bool):
+                return str(v)
+            return "'" + str(v).replace("'", "''") + "'"
+
+        select_parts = []
+        if execute_request.dimensions:
+            for dim in execute_request.dimensions:
+                select_parts.append(_validate_calendar_column(dim, "dimension"))
+
+        if execute_request.measures:
+            for measure in execute_request.measures:
+                quoted_col = _validate_calendar_column(measure.field, "measure field")
+                agg_func = measure.function.upper()
+                alias = '"' + f"{measure.field}_{measure.function}".replace('"', '""') + '"'
+                if agg_func == "COUNT_DISTINCT":
+                    select_parts.append(f"COUNT(DISTINCT {quoted_col}) AS {alias}")
+                else:
+                    select_parts.append(f"{agg_func}({quoted_col}) AS {alias}")
+
+        if not select_parts:
+            select_parts.append("*")
+
+        query = f"SELECT {', '.join(select_parts)} FROM {base_table}"
+
+        if execute_request.filters:
+            normalized_filters = normalize_filter_conditions(
+                [
+                    {
+                        "field": item.field,
+                        "operator": item.operator,
+                        "value": item.value,
+                    }
+                    for item in execute_request.filters
+                ]
+            )
+            where_conditions = []
+            for filter_cond in normalized_filters:
+                quoted_field = _validate_calendar_column(filter_cond["field"], "filter field")
+                op = str(filter_cond.get("operator") or "").lower()
+                value = filter_cond.get("value")
+                if op == "eq":
+                    where_conditions.append(f"{quoted_field} = {_sql_literal(value)}")
+                elif op == "neq":
+                    where_conditions.append(f"{quoted_field} != {_sql_literal(value)}")
+                elif op == "gt":
+                    where_conditions.append(f"{quoted_field} > {_sql_literal(value)}")
+                elif op == "gte":
+                    where_conditions.append(f"{quoted_field} >= {_sql_literal(value)}")
+                elif op == "lt":
+                    where_conditions.append(f"{quoted_field} < {_sql_literal(value)}")
+                elif op == "lte":
+                    where_conditions.append(f"{quoted_field} <= {_sql_literal(value)}")
+                elif op == "between" and isinstance(value, list) and len(value) >= 2:
+                    lo, hi = value[0], value[1]
+                    if lo not in ("", None) and hi not in ("", None):
+                        where_conditions.append(f"{quoted_field} BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}")
+                    elif lo not in ("", None):
+                        where_conditions.append(f"{quoted_field} >= {_sql_literal(lo)}")
+                    elif hi not in ("", None):
+                        where_conditions.append(f"{quoted_field} <= {_sql_literal(hi)}")
+                elif op in {"in", "not_in"}:
+                    values = value if isinstance(value, list) else []
+                    if isinstance(value, str):
+                        values = [v.strip() for v in value.split(",") if v.strip()]
+                    if not values:
+                        continue
+                    quoted_values = ", ".join(_sql_literal(v) for v in values)
+                    comparator = "NOT IN" if op == "not_in" else "IN"
+                    where_conditions.append(f"{quoted_field} {comparator} ({quoted_values})")
+                elif op in {"like", "contains", "not_contains", "starts_with"} and value is not None:
+                    escaped = str(value).replace("'", "''")
+                    if op == "starts_with":
+                        where_conditions.append(f"{quoted_field} LIKE '{escaped}%'")
+                    elif op == "not_contains":
+                        where_conditions.append(f"{quoted_field} NOT LIKE '%{escaped}%'")
+                    else:
+                        where_conditions.append(f"{quoted_field} LIKE '%{escaped}%'")
+                elif op == "is_null":
+                    where_conditions.append(f"{quoted_field} IS NULL")
+                elif op == "is_not_null":
+                    where_conditions.append(f"{quoted_field} IS NOT NULL")
+
+            if where_conditions:
+                query += " WHERE " + " AND ".join(where_conditions)
+
+        if execute_request.dimensions and execute_request.measures:
+            quoted_dims = [_validate_calendar_column(d, "dimension") for d in execute_request.dimensions]
+            query += f" GROUP BY {', '.join(quoted_dims)}"
+
+        measure_aliases = {
+            f"{metric.field}_{metric.function}"
+            for metric in (execute_request.measures or [])
+        }
+        if execute_request.order_by:
+            order_parts = []
+            for order_item in execute_request.order_by:
+                if order_item.field in measure_aliases:
+                    quoted_col = '"' + order_item.field.replace('"', '""') + '"'
+                else:
+                    quoted_col = _validate_calendar_column(order_item.field, "order_by field")
+                direction = order_item.direction.upper() if order_item.direction.upper() in ("ASC", "DESC") else "DESC"
+                order_parts.append(f"{quoted_col} {direction}")
+            query += " ORDER BY " + ", ".join(order_parts)
+
+        query += f" LIMIT {execute_request.limit}"
+
+        try:
+            rows = DuckDBEngine.query(query)
+            columns = list(rows[0].keys()) if rows else []
+            column_metadata = [
+                DatasetColumnMetadata(
+                    name=column,
+                    type=_infer_column_type(column, idx, rows),
+                    nullable=True,
+                )
+                for idx, column in enumerate(columns)
+            ]
+            return ExecuteQueryResponse(columns=column_metadata, rows=rows)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error("Failed to execute generated calendar query: %s", exc)
+            raise HTTPException(status_code=500, detail="Failed to execute query.")
+
+    datasource: Optional[DataSource] = None
+    query_mode = "synced"
+    if not is_derived_table(db_table):
+        datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+        if not datasource:
+            raise HTTPException(status_code=404, detail="Datasource not found")
+        query_mode = resolve_dataset_query_mode(db_table)
 
     # ── LIVE mode: execute aggregation directly against source ──
-    query_mode = resolve_dataset_query_mode(db_table)
     if query_mode == 'live':
         try:
             from app.services.live_query_service import LiveQueryService
@@ -979,7 +1705,14 @@ def execute_dataset_table_query(
     from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
     from app.services.duckdb_engine import DuckDBEngine
 
-    if db_table.source_kind == "sql_query":
+    if is_derived_table(db_table):
+        try:
+            base_table = f"({build_dataset_table_duckdb_query(db, dataset_obj, db_table)}) AS base_table"
+        except DatasetTableSqlError as exc:
+            if getattr(exc, "code", "") == "NOT_SYNCED":
+                raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)})
+            raise HTTPException(status_code=400, detail=str(exc))
+    elif db_table.source_kind == "sql_query":
         if not db_table.source_query:
             raise HTTPException(status_code=400, detail="Table has source_kind='sql_query' but source_query is NULL")
         rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
@@ -1522,8 +2255,10 @@ def update_dataset_view(
     ).first()
     if not table and view.dataset_table_id is not None:
         raise HTTPException(status_code=403, detail="View does not belong to this dataset")
+    if view.dataset_table_id is None or (table and is_generated_calendar_table(table)):
+        raise HTTPException(status_code=400, detail="System-managed model tables cannot be edited here.")
 
-    allowed_fields = {"dimensions", "measures", "description", "name"}
+    allowed_fields = {"dimensions", "measures", "description"}
     for key, value in update_data.items():
         if key in allowed_fields:
             setattr(view, key, value)
@@ -1578,10 +2313,22 @@ def update_dataset_explore(
     if not model:
         raise HTTPException(status_code=403, detail="Explore does not belong to this dataset")
 
-    allowed_fields = {"joins", "description", "name"}
+    allowed_fields = {"joins", "description"}
     for key, value in update_data.items():
-        if key in allowed_fields:
-            setattr(explore, key, value)
+        if key not in allowed_fields:
+            continue
+        if key == "joins" and isinstance(value, list):
+            managed_joins = [
+                join for join in (explore.joins or [])
+                if join.get("managed") or join.get("origin") in {"auto_fk", "auto_calendar"}
+            ]
+            manual_joins = [
+                join for join in value
+                if not join.get("managed") and join.get("origin") not in {"auto_fk", "auto_calendar"}
+            ]
+            setattr(explore, key, [*managed_joins, *manual_joins])
+            continue
+        setattr(explore, key, value)
 
     db.commit()
     db.refresh(explore)

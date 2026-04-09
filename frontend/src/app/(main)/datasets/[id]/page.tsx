@@ -8,9 +8,11 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import {
   Plus,
   Search,
+  Calendar,
   Database,
   RefreshCw,
   ChevronLeft,
+  ChevronDown,
   Loader2,
   Columns,
   Trash2,
@@ -22,11 +24,19 @@ import {
   Bot,
   Sigma,
 } from 'lucide-react';
-import { useDataset, useTablePreview, useUpdateTable, useRemoveTable } from '@/hooks/use-datasets';
+import {
+  useDataset,
+  useTablePreview,
+  useUpdateDataset,
+  useUpdateTable,
+  useRemoveTable,
+  type CalendarDimensionSettings,
+  type DatasetTable,
+} from '@/hooks/use-datasets';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
 import { AddTableModal } from '@/components/datasets/AddTableModalV2';
 import { ManageColumnsDrawer } from '@/components/datasets/ManageColumnsDrawer';
-import { AddColumnModal, buildFNS } from '@/components/datasets/AddColumnModal';
+import { AddColumnModal, buildFNS, type LookupTableOption } from '@/components/datasets/AddColumnModal';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { TableDescriptionPanel } from '@/components/datasets/TableDescriptionPanel';
 import { AppModalShell } from '@/components/common/AppModalShell';
@@ -92,6 +102,283 @@ function extractDatasetErrorMessage(error: any, fallback: string): string {
   return error?.message || fallback;
 }
 
+const DEFAULT_CALENDAR_SETTINGS: CalendarDimensionSettings = {
+  enabled: false,
+  start_date: '2000-01-01',
+  end_date: '2100-12-31',
+  timezone: 'UTC',
+  week_start_day: 'monday',
+  fiscal_year_start_month: 1,
+  auto_join_temporal_columns: true,
+};
+
+const LOOKUP_TABLE_IDENTIFIER_PREFIX = 'dataset-table://';
+
+function buildLookupTableIdentifier(tableId: number): string {
+  return `${LOOKUP_TABLE_IDENTIFIER_PREFIX}${tableId}`;
+}
+
+function getDatasetCalendarSettings(dataset: {
+  settings?: { calendar_dimension?: Partial<CalendarDimensionSettings> };
+} | null | undefined): CalendarDimensionSettings {
+  return {
+    ...DEFAULT_CALENDAR_SETTINGS,
+    ...(dataset?.settings?.calendar_dimension ?? {}),
+  };
+}
+
+function isGeneratedCalendarTable(table: Pick<DatasetTable, 'source_kind'> | null | undefined): boolean {
+  return table?.source_kind === 'generated_calendar';
+}
+
+function isCalculatedTable(table: Pick<DatasetTable, 'source_kind'> | null | undefined): boolean {
+  return table?.source_kind === 'derived_table';
+}
+
+type TableGroupKey = 'calendar' | 'source' | 'calculated';
+
+function getTableGroupKey(table: Pick<DatasetTable, 'source_kind'> | null | undefined): TableGroupKey {
+  if (isGeneratedCalendarTable(table)) return 'calendar';
+  if (isCalculatedTable(table)) return 'calculated';
+  return 'source';
+}
+
+function getTableGroupLabel(group: TableGroupKey): string {
+  if (group === 'calendar') return 'Calendar';
+  if (group === 'calculated') return 'Calculated';
+  return 'Source';
+}
+
+function getTableGroupEmptyMessage(group: TableGroupKey): string {
+  if (group === 'calendar') return 'No calendar table yet';
+  if (group === 'calculated') return 'No calculated tables yet';
+  return 'No source tables yet';
+}
+
+function getTableBadgeLabel(table: Pick<DatasetTable, 'source_kind'> | null | undefined): string {
+  const group = getTableGroupKey(table);
+  if (group === 'calendar') return 'Date';
+  if (group === 'calculated') return 'Calculated';
+  return 'Source';
+}
+
+function getTableIcon(table: Pick<DatasetTable, 'source_kind'> | null | undefined): React.ReactNode {
+  if (isGeneratedCalendarTable(table)) {
+    return <Calendar className="h-4 w-4 flex-shrink-0 text-blue-500" />;
+  }
+  if (isCalculatedTable(table)) {
+    return <Sigma className="h-4 w-4 flex-shrink-0 text-violet-500" />;
+  }
+  return <Database className="h-4 w-4 flex-shrink-0 text-gray-400" />;
+}
+
+function getTableGroupIcon(group: TableGroupKey): React.ReactNode {
+  if (group === 'calendar') return <Calendar className="h-4 w-4 text-blue-500" />;
+  if (group === 'calculated') return <Sigma className="h-4 w-4 text-violet-500" />;
+  return <Database className="h-4 w-4 text-gray-500" />;
+}
+
+function getTablePrimaryName(table: Partial<DatasetTable> | null | undefined): string {
+  return table?.display_name || table?.source_table_name || 'Untitled table';
+}
+
+function getTableSecondaryName(table: Partial<DatasetTable> | null | undefined): string | null {
+  if (!table) return null;
+  if (isGeneratedCalendarTable(table as DatasetTable)) return 'Standard Date table';
+  if (isCalculatedTable(table as DatasetTable)) return 'Calculated table';
+  if (table.source_kind === 'sql_query') return 'Datasource SQL query';
+  if (table.display_name && table.source_table_name) return table.source_table_name;
+  return null;
+}
+
+function getDeleteConstraintMeta(constraint: any): {
+  badge: string;
+  className: string;
+  description: string;
+} {
+  if (constraint?.type === 'chart' || constraint?.type === 'chart_filter') {
+    return {
+      badge: 'Chart',
+      className: 'text-red-500 bg-red-100',
+      description: constraint?.name || 'Chart dependency',
+    };
+  }
+  if (constraint?.type === 'dashboard_filter') {
+    return {
+      badge: 'Filter',
+      className: 'text-blue-600 bg-blue-100',
+      description: `Dashboard ${constraint?.name || ''}${constraint?.field ? ` · ${constraint.field}` : ''}`.trim(),
+    };
+  }
+  if (constraint?.type === 'public_link_filter') {
+    return {
+      badge: 'Public',
+      className: 'text-indigo-600 bg-indigo-100',
+      description: `${constraint?.name || 'Public link'}${constraint?.field ? ` · ${constraint.field}` : ''}`.trim(),
+    };
+  }
+  if (constraint?.type === 'calculated_table') {
+    return {
+      badge: 'Calculated',
+      className: 'text-violet-600 bg-violet-100',
+      description: constraint?.table_name || 'Calculated table dependency',
+    };
+  }
+  return {
+    badge: 'Lookup',
+    className: 'text-amber-600 bg-amber-100',
+    description: `Bảng ${constraint?.table_name ? `"${constraint.table_name}"` : ''}${constraint?.column ? `, cột "${constraint.column}"` : ''}`.trim(),
+  };
+}
+
+interface CalendarDimensionModalProps {
+  isOpen: boolean;
+  isSaving: boolean;
+  isExisting: boolean;
+  draft: CalendarDimensionSettings;
+  canEdit: boolean;
+  onDraftChange: (updater: (current: CalendarDimensionSettings) => CalendarDimensionSettings) => void;
+  onClose: () => void;
+  onSave: () => void;
+  onRemove: () => void;
+}
+
+function CalendarDimensionModal({
+  isOpen,
+  isSaving,
+  isExisting,
+  draft,
+  canEdit,
+  onDraftChange,
+  onClose,
+  onSave,
+  onRemove,
+}: CalendarDimensionModalProps) {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
+      <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl">
+        <div className="border-b px-6 py-4">
+          <h2 className="text-xl font-semibold text-gray-900">
+            {isExisting ? 'Calendar Dimension' : 'Add Calendar Dimension'}
+          </h2>
+          <p className="mt-1 text-sm text-gray-500">
+            {isExisting
+              ? 'Update the standard Date table for this dataset.'
+              : 'Create a standard Date table and auto-connect temporal columns when needed.'}
+          </p>
+        </div>
+
+        <div className="space-y-4 px-6 py-5">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="mb-2 block text-sm font-medium text-gray-700">Start date</label>
+              <input
+                type="date"
+                value={draft.start_date}
+                onChange={(e) => onDraftChange((current) => ({
+                  ...current,
+                  enabled: true,
+                  start_date: e.target.value,
+                }))}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                disabled={!canEdit || isSaving}
+              />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm font-medium text-gray-700">End date</label>
+              <input
+                type="date"
+                value={draft.end_date}
+                onChange={(e) => onDraftChange((current) => ({
+                  ...current,
+                  enabled: true,
+                  end_date: e.target.value,
+                }))}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                disabled={!canEdit || isSaving}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-gray-700">Week starts on</label>
+            <select
+              value={draft.week_start_day}
+              onChange={(e) => onDraftChange((current) => ({
+                ...current,
+                enabled: true,
+                week_start_day: e.target.value as CalendarDimensionSettings['week_start_day'],
+              }))}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              disabled={!canEdit || isSaving}
+            >
+              <option value="monday">Monday</option>
+              <option value="sunday">Sunday</option>
+            </select>
+          </div>
+
+          <label className="flex items-start gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+            <input
+              type="checkbox"
+              checked={draft.auto_join_temporal_columns}
+              onChange={(e) => onDraftChange((current) => ({
+                ...current,
+                enabled: true,
+                auto_join_temporal_columns: e.target.checked,
+              }))}
+              className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              disabled={!canEdit || isSaving}
+            />
+            <div>
+              <div className="text-sm font-medium text-gray-900">Auto-connect time columns</div>
+              <p className="mt-1 text-xs text-gray-500">
+                Automatically link date, datetime, and timestamp columns to this Date table.
+              </p>
+            </div>
+          </label>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 border-t bg-gray-50 px-6 py-4">
+          <div>
+            {isExisting && canEdit && (
+              <button
+                type="button"
+                onClick={onRemove}
+                disabled={isSaving}
+                className="rounded-md px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Remove calendar
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              disabled={isSaving}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={onSave}
+              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!canEdit || isSaving}
+            >
+              {isSaving
+                ? (isExisting ? 'Saving...' : 'Creating...')
+                : (isExisting ? 'Save changes' : 'Create calendar')}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function DatasetDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -102,17 +389,25 @@ export default function DatasetDetailPage() {
   const [previewLimit, setPreviewLimit] = useState(100);
   const [page, setPage] = useState(1);
   const [editingTable, setEditingTable] = useState<any | null>(null);
+  const [tableModalMode, setTableModalMode] = useState<'source' | 'calculated'>('source');
   const [isAddTableModalOpen, setIsAddTableModalOpen] = useState(false);
   const [isManageColumnsOpen, setIsManageColumnsOpen] = useState(false);
   const [isAddColumnModalOpen, setIsAddColumnModalOpen] = useState(false);
   const [editingColumnStep, setEditingColumnStep] = useState<Transformation | null>(null);
   const [tableSearchQuery, setTableSearchQuery] = useState('');
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<TableGroupKey, boolean>>({
+    calendar: false,
+    source: false,
+    calculated: false,
+  });
   const [tableToDelete, setTableToDelete] = useState<{ id: number; name: string } | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingTable, setIsDeletingTable] = useState(false);
   const [isDescModalOpen, setIsDescModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'tables' | 'model'>('tables');
   const [editingView, setEditingView] = useState<DatasetModelView | null>(null);
+  const [calendarDraft, setCalendarDraft] = useState<CalendarDimensionSettings>(DEFAULT_CALENDAR_SETTINGS);
+  const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
 
   // Fetch dataset with tables
   const { 
@@ -138,6 +433,20 @@ export default function DatasetDetailPage() {
     { enabled: activeTab === 'tables' }
   );
 
+  const updateDatasetMutation = useUpdateDataset();
+  const datasetCalendarSettings = useMemo(
+    () => getDatasetCalendarSettings(dataset),
+    [dataset],
+  );
+
+  React.useEffect(() => {
+    // Only sync draft from server when the modal is closed to avoid
+    // overwriting user edits during background refetches.
+    if (!isCalendarModalOpen) {
+      setCalendarDraft(datasetCalendarSettings);
+    }
+  }, [datasetCalendarSettings, isCalendarModalOpen]);
+
   // Filter tables by search
   const filteredTables = useMemo(() => {
     if (!dataset?.tables) return [];
@@ -146,9 +455,34 @@ export default function DatasetDetailPage() {
     const query = tableSearchQuery.toLowerCase();
     return dataset.tables.filter((table: any) => 
       table.display_name?.toLowerCase().includes(query) ||
-      table.source_table_name.toLowerCase().includes(query)
+      table.source_kind?.toLowerCase().includes(query) ||
+      (table.source_table_name ?? '').toLowerCase().includes(query)
     );
   }, [dataset?.tables, tableSearchQuery]);
+
+  const groupedTables = useMemo<Record<TableGroupKey, DatasetTable[]>>(() => {
+    const groups: Record<TableGroupKey, DatasetTable[]> = {
+      calendar: [],
+      source: [],
+      calculated: [],
+    };
+    for (const table of filteredTables as DatasetTable[]) {
+      groups[getTableGroupKey(table)].push(table);
+    }
+    return groups;
+  }, [filteredTables]);
+
+  const groupCounts = useMemo<Record<TableGroupKey, number>>(() => {
+    const counts: Record<TableGroupKey, number> = {
+      calendar: 0,
+      source: 0,
+      calculated: 0,
+    };
+    for (const table of dataset?.tables ?? []) {
+      counts[getTableGroupKey(table)] += 1;
+    }
+    return counts;
+  }, [dataset?.tables]);
 
   // Auto-select table: prefer ?table= URL param, then first table
   React.useEffect(() => {
@@ -174,6 +508,38 @@ export default function DatasetDetailPage() {
     const nextUrl = new URL(window.location.href);
     nextUrl.searchParams.set('table', String(tableId));
     window.history.replaceState(window.history.state, '', nextUrl.toString());
+  }, []);
+
+  const clearTableInUrl = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.delete('table');
+    window.history.replaceState(window.history.state, '', nextUrl.toString());
+  }, []);
+
+  const toggleGroup = useCallback((group: TableGroupKey) => {
+    setCollapsedGroups((current) => ({
+      ...current,
+      [group]: !current[group],
+    }));
+  }, []);
+
+  const openSourceTableModal = useCallback(() => {
+    setEditingTable(null);
+    setTableModalMode('source');
+    setIsAddTableModalOpen(true);
+  }, []);
+
+  const openCalculatedTableModal = useCallback(() => {
+    setEditingTable(null);
+    setTableModalMode('calculated');
+    setIsAddTableModalOpen(true);
+  }, []);
+
+  const openEditTableModal = useCallback((table: DatasetTable) => {
+    setEditingTable(table);
+    setTableModalMode(isCalculatedTable(table) ? 'calculated' : 'source');
+    setIsAddTableModalOpen(true);
   }, []);
 
   // Handle table addition success — select and surface the new table in the URL
@@ -209,10 +575,15 @@ export default function DatasetDetailPage() {
         datasetId,
         tableId: tableToDelete.id,
       });
-      // Select another table if the deleted one was selected
+
+      const refreshResult = await refetchDataset();
+      const remainingTables = refreshResult.data?.tables ?? [];
+
       if (selectedTableId === tableToDelete.id) {
-        const remaining = (dataset?.tables ?? []).filter((t: any) => t.id !== tableToDelete.id);
-        setSelectedTableId(remaining.length > 0 ? remaining[0].id : null);
+        const fallbackTable = remainingTables[0] ?? null;
+        startTransition(() => setSelectedTableId(fallbackTable?.id ?? null));
+        if (fallbackTable?.id) replaceTableInUrl(fallbackTable.id);
+        else clearTableInUrl();
       }
       setTableToDelete(null);
       setDeleteConstraints(null);
@@ -305,6 +676,81 @@ export default function DatasetDetailPage() {
   };
 
   const selectedTable = dataset?.tables?.find((t: any) => t.id === selectedTableId);
+  const calendarTable = dataset?.tables?.find((table: any) => isGeneratedCalendarTable(table)) as DatasetTable | undefined;
+  const calendarEnabled = Boolean(datasetCalendarSettings.enabled && calendarTable);
+  const selectedTableIsGenerated = isGeneratedCalendarTable(selectedTable as DatasetTable | undefined);
+  const selectedTableTitle = getTablePrimaryName(selectedTable);
+  const selectedTableSubtitle = getTableSecondaryName(selectedTable);
+
+  const openCalendarModal = () => {
+    setCalendarDraft({
+      ...datasetCalendarSettings,
+      enabled: true,
+    });
+    setIsCalendarModalOpen(true);
+  };
+
+  const handleSaveCalendarSettings = async () => {
+    if (!datasetId) return;
+    if (calendarDraft.start_date && calendarDraft.end_date && calendarDraft.start_date > calendarDraft.end_date) {
+      toast.error('Start date must be before end date.');
+      return;
+    }
+    try {
+      await updateDatasetMutation.mutateAsync({
+        id: datasetId,
+        input: {
+          settings: {
+            calendar_dimension: {
+              ...calendarDraft,
+              enabled: true,
+            },
+          },
+        },
+      });
+      const refreshResult = await refetchDataset();
+      const nextCalendarTable = refreshResult.data?.tables?.find((table: any) =>
+        isGeneratedCalendarTable(table),
+      ) as DatasetTable | undefined;
+      if (nextCalendarTable?.id) {
+        startTransition(() => setSelectedTableId(nextCalendarTable.id));
+        replaceTableInUrl(nextCalendarTable.id);
+      }
+      setIsCalendarModalOpen(false);
+      toast.success(calendarEnabled ? 'Calendar dimension updated' : 'Calendar dimension created');
+    } catch (error: any) {
+      toast.error(extractDatasetErrorMessage(error, 'Khong the cap nhat calendar settings'));
+    }
+  };
+
+  const handleRemoveCalendarDimension = async () => {
+    if (!datasetId) return;
+    try {
+      await updateDatasetMutation.mutateAsync({
+        id: datasetId,
+        input: {
+          settings: {
+            calendar_dimension: {
+              ...datasetCalendarSettings,
+              enabled: false,
+            },
+          },
+        },
+      });
+      const refreshResult = await refetchDataset();
+      const remainingTables = refreshResult.data?.tables ?? [];
+      if (selectedTableIsGenerated) {
+        const fallbackTable = remainingTables.find((table: any) => !isGeneratedCalendarTable(table));
+        startTransition(() => setSelectedTableId(fallbackTable?.id ?? null));
+        if (fallbackTable?.id) replaceTableInUrl(fallbackTable.id);
+        else clearTableInUrl();
+      }
+      setIsCalendarModalOpen(false);
+      toast.success('Calendar dimension removed');
+    } catch (error: any) {
+      toast.error(extractDatasetErrorMessage(error, 'Khong the xoa calendar dimension'));
+    }
+  };
 
   // Names of columns produced by js_formula OR add_column transformations (deletable in drawer)
   const computedColumnNames = useMemo(() => {
@@ -327,16 +773,39 @@ export default function DatasetDetailPage() {
 
   /**
    * Lookup data for cross-table LOOKUP() use in formulas.
-   * Keyed by each other table's display label; value = their sample_cache rows.
-   * sample_cache holds the first 10 rows cached on last preview.
+   * We keep backward-compatible aliases (display/source name) while also
+   * exposing a stable identifier so renames do not break new formulas.
    */
+  const lookupTables = useMemo<LookupTableOption[]>(() => {
+    const result: LookupTableOption[] = [];
+    for (const t of dataset?.tables ?? []) {
+      if (t.id === selectedTableId) continue; // skip current table
+      const rows: Record<string, any>[] = (t as any).sample_cache ?? [];
+      if (rows.length === 0) continue;
+      result.push({
+        identifier: buildLookupTableIdentifier(t.id),
+        label: getTablePrimaryName(t),
+        rowCount: rows.length,
+      });
+    }
+    return result;
+  }, [dataset?.tables, selectedTableId]);
+
   const datasetLookupData = useMemo(() => {
     const result: Record<string, Record<string, any>[]> = {};
     for (const t of dataset?.tables ?? []) {
       if (t.id === selectedTableId) continue; // skip current table
-      const label = (t as any).display_name || (t as any).source_table_name || String(t.id);
       const rows: Record<string, any>[] = (t as any).sample_cache ?? [];
-      if (rows.length > 0) result[label] = rows;
+      if (rows.length === 0) continue;
+
+      const aliases = new Set<string>([
+        buildLookupTableIdentifier(t.id),
+        String((t as any).display_name || '').trim(),
+        String((t as any).source_table_name || '').trim(),
+      ]);
+      aliases.forEach((alias) => {
+        if (alias) result[alias] = rows;
+      });
     }
     return result;
   }, [dataset?.tables, selectedTableId]);
@@ -486,93 +955,153 @@ export default function DatasetDetailPage() {
         </div>
 
         {/* Tables List */}
-        <div className="flex-1 overflow-y-auto">
-          {filteredTables.length === 0 ? (
-            <div className="p-4 text-center text-gray-500 text-sm">
-              {tableSearchQuery ? 'No tables match your search' : 'No tables yet'}
+        <div className="flex-1 overflow-y-auto p-2">
+          {tableSearchQuery && filteredTables.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-gray-200 px-4 py-6 text-center text-sm text-gray-500">
+              No tables match your search
             </div>
           ) : (
-            <div className="p-2">
-              {filteredTables.map((table: any) => (
-                <div
-                  key={table.id}
-                  className={`group relative w-full flex items-center gap-3 px-3 py-2 rounded-md text-left transition-colors cursor-pointer ${
-                    selectedTableId === table.id
-                      ? 'bg-blue-50 text-blue-900'
-                      : 'hover:bg-gray-100 text-gray-900'
-                  }`}
-                  onClick={() => {
-                    startTransition(() => setSelectedTableId(table.id));
-                    replaceTableInUrl(table.id);
-                  }}
-                >
-                  <Database className="w-4 h-4 flex-shrink-0 text-gray-400" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium truncate">
-                      {table.display_name || table.source_table_name}
+            <div className="space-y-3">
+              {(['calendar', 'source', 'calculated'] as TableGroupKey[]).map((group) => {
+                const tablesInGroup = groupedTables[group];
+                const totalCount = groupCounts[group];
+                const isCollapsed = collapsedGroups[group];
+                const shouldRenderGroup = tableSearchQuery ? tablesInGroup.length > 0 : true;
+
+                if (!shouldRenderGroup) return null;
+
+                return (
+                  <div key={group} className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+                    <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-3 py-3">
+                      <button
+                        type="button"
+                        onClick={() => toggleGroup(group)}
+                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                      >
+                        <span className="text-gray-400">
+                          {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                        </span>
+                        {getTableGroupIcon(group)}
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold text-gray-900">{getTableGroupLabel(group)}</div>
+                          <div className="text-xs text-gray-500">
+                            {tableSearchQuery ? `${tablesInGroup.length} matching` : `${totalCount} table${totalCount === 1 ? '' : 's'}`}
+                          </div>
+                        </div>
+                      </button>
+
+                      {resPerms.canEdit && (
+                        group === 'calendar' ? (
+                          <button
+                            type="button"
+                            onClick={openCalendarModal}
+                            className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            {calendarEnabled ? 'Edit' : 'Add'}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={group === 'source' ? openSourceTableModal : openCalculatedTableModal}
+                            className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            Add
+                          </button>
+                        )
+                      )}
                     </div>
-                    {table.display_name && (
-                      <div className="text-xs text-gray-500 truncate">
-                        {table.source_table_name}
+
+                    {!isCollapsed && (
+                      <div className="p-2">
+                        {tablesInGroup.length === 0 ? (
+                          <div className="rounded-lg border border-dashed border-gray-200 px-3 py-5 text-center text-xs text-gray-500">
+                            {getTableGroupEmptyMessage(group)}
+                          </div>
+                        ) : (
+                          <div className="space-y-1">
+                            {tablesInGroup.map((table: DatasetTable) => (
+                              <div
+                                key={table.id}
+                                className={`group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors cursor-pointer ${
+                                  selectedTableId === table.id
+                                    ? 'bg-blue-50 text-blue-900'
+                                    : 'text-gray-900 hover:bg-gray-50'
+                                }`}
+                                onClick={() => {
+                                  startTransition(() => setSelectedTableId(table.id));
+                                  replaceTableInUrl(table.id);
+                                }}
+                              >
+                                {getTableIcon(table)}
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2">
+                                    <div className="truncate text-sm font-medium">
+                                      {getTablePrimaryName(table)}
+                                    </div>
+                                    <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-600">
+                                      {getTableBadgeLabel(table)}
+                                    </span>
+                                  </div>
+                                  {getTableSecondaryName(table) && (
+                                    <div className="truncate text-xs text-gray-500">
+                                      {getTableSecondaryName(table)}
+                                    </div>
+                                  )}
+                                </div>
+                                {resPerms.canEdit && !isGeneratedCalendarTable(table) && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openEditTableModal(table);
+                                    }}
+                                    className="rounded p-1 text-gray-400 hover:bg-blue-100 hover:text-blue-600"
+                                    title="Chỉnh sửa bảng"
+                                  >
+                                    <Pencil className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
+                                {resPerms.canDelete && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDeleteConstraints(null);
+                                      setTableToDelete({
+                                        id: table.id,
+                                        name: table.display_name || table.source_table_name || `Table ${table.id}`,
+                                      });
+                                    }}
+                                    className="rounded p-1 text-gray-400 hover:bg-red-100 hover:text-red-600"
+                                    title="Xóa bảng"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
+                                {!isGeneratedCalendarTable(table) && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      startTransition(() => setSelectedTableId(table.id));
+                                      replaceTableInUrl(table.id);
+                                      setIsDescModalOpen(true);
+                                    }}
+                                    className="rounded p-1 text-gray-400 hover:bg-blue-100 hover:text-blue-600"
+                                    title="AI Description"
+                                  >
+                                    <Bot className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
-                  {resPerms.canEdit && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setEditingTable(table);
-                      setIsAddTableModalOpen(true);
-                    }}
-                    className="p-1 hover:bg-blue-100 rounded text-gray-400 hover:text-blue-600"
-                    title="Chỉnh sửa bảng"
-                  >
-                    <Pencil className="w-3.5 h-3.5" />
-                  </button>
-                  )}
-                  {resPerms.canDelete && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setDeleteConstraints(null);
-                      setTableToDelete({
-                        id: table.id,
-                        name: table.display_name || table.source_table_name,
-                      });
-                    }}
-                    className="p-1 hover:bg-red-100 rounded text-gray-400 hover:text-red-600"
-                    title="Xóa bảng"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                  )}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setSelectedTableId(table.id);
-                      setIsDescModalOpen(true);
-                    }}
-                    className="p-1 hover:bg-blue-100 rounded text-gray-400 hover:text-blue-600"
-                    title="AI Description"
-                  >
-                    <Bot className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
-          )}
-        </div>
-
-        {/* Add Table Button */}
-        <div className="p-4 border-t">
-          {resPerms.canEdit && (
-          <button
-            onClick={() => setIsAddTableModalOpen(true)}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            Add Table
-          </button>
           )}
         </div>
       </div>
@@ -629,16 +1158,12 @@ export default function DatasetDetailPage() {
                 No tables yet
               </h2>
               <p className="text-gray-600 mb-6">
-                Add a table from your datasources to get started with this dataset
+                Use the add actions in the left sidebar to create a source table, a calculated table, or a Date table.
               </p>
-              {resPerms.canEdit && (
-              <button
-                onClick={() => setIsAddTableModalOpen(true)}
-                className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-              >
-                <Plus className="w-5 h-5" />
-                Add Table
-              </button>
+              {!resPerms.canEdit && (
+                <p className="text-sm text-gray-500">
+                  Ask an editor on this dataset to add tables for you.
+                </p>
               )}
             </div>
           </div>
@@ -649,15 +1174,22 @@ export default function DatasetDetailPage() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <h2 className="text-lg font-semibold text-gray-900">
-                    {selectedTable.display_name || selectedTable.source_table_name}
+                    {selectedTableTitle}
                   </h2>
-                  <span className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded">
-                    {selectedTable.source_table_name}
-                  </span>
+                  {selectedTableSubtitle && (
+                    <span className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded">
+                      {selectedTableSubtitle}
+                    </span>
+                  )}
+                  {selectedTableIsGenerated && (
+                    <span className="px-2 py-1 text-xs font-medium text-blue-700 bg-blue-50 rounded">
+                      System-managed
+                    </span>
+                  )}
                 </div>
                 
                 <div className="flex items-center gap-3">
-                  {resPerms.canEdit && (
+                  {resPerms.canEdit && !selectedTableIsGenerated && (
                   <button
                     onClick={() => setIsManageColumnsOpen(true)}
                     className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded transition-colors"
@@ -667,7 +1199,7 @@ export default function DatasetDetailPage() {
                   </button>
                   )}
                   
-                  {resPerms.canEdit && (
+                  {resPerms.canEdit && !selectedTableIsGenerated && (
                   <button
                     onClick={() => setIsAddColumnModalOpen(true)}
                     className="flex items-center gap-2 px-3 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors"
@@ -727,15 +1259,15 @@ export default function DatasetDetailPage() {
                   </div>
                 </div>
               ) : (
-                <DatasetTableGrid
+                  <DatasetTableGrid
                   columns={computedPreviewData?.columns || []}
                   rows={computedPreviewData?.rows || []}
                   isLoading={loadingPreview}
                   error={previewError instanceof Error ? previewError.message : null}
                   onRetry={() => refetchPreview()}
-                  onAddColumn={resPerms.canEdit ? () => setIsAddColumnModalOpen(true) : undefined}
-                  onDeleteColumn={resPerms.canEdit ? handleDeleteColumn : undefined}
-                  onEditColumn={resPerms.canEdit ? handleEditColumn : undefined}
+                  onAddColumn={resPerms.canEdit && !selectedTableIsGenerated ? () => setIsAddColumnModalOpen(true) : undefined}
+                  onDeleteColumn={resPerms.canEdit && !selectedTableIsGenerated ? handleDeleteColumn : undefined}
+                  onEditColumn={resPerms.canEdit && !selectedTableIsGenerated ? handleEditColumn : undefined}
                   computedColumns={computedColumnNames}
                   typeOverrides={(selectedTable as any)?.type_overrides}
                   columnFormatsDb={(selectedTable as any)?.column_formats}
@@ -777,6 +1309,18 @@ export default function DatasetDetailPage() {
         ) : null}
       </div>
 
+      <CalendarDimensionModal
+        isOpen={isCalendarModalOpen}
+        isSaving={updateDatasetMutation.isPending}
+        isExisting={calendarEnabled}
+        draft={calendarDraft}
+        canEdit={resPerms.canEdit}
+        onDraftChange={(updater) => setCalendarDraft((current) => updater(current))}
+        onClose={() => setIsCalendarModalOpen(false)}
+        onSave={handleSaveCalendarSettings}
+        onRemove={handleRemoveCalendarDimension}
+      />
+
       {/* Add Table Modal */}
       <AddTableModal
         datasetId={datasetId!}
@@ -784,10 +1328,12 @@ export default function DatasetDetailPage() {
         onClose={() => { setIsAddTableModalOpen(false); setEditingTable(null); }}
         onSuccess={handleTableAddSuccess}
         existingTable={editingTable}
+        createMode={tableModalMode}
+        availableTables={dataset?.tables ?? []}
       />
 
       {/* Manage Columns Drawer */}
-      {selectedTable && (
+      {selectedTable && !selectedTableIsGenerated && (
         <ManageColumnsDrawer
           table={selectedTable}
           allColumns={(computedPreviewData?.columns || []).map((c) => c.name)}
@@ -799,13 +1345,14 @@ export default function DatasetDetailPage() {
       )}
 
       {/* Add Column Modal */}
-      {selectedTable && (
+      {selectedTable && !selectedTableIsGenerated && (
         <AddColumnModal
           table={selectedTable}
           allColumns={(computedPreviewData?.columns || []).map((c) => c.name)}
           columnGroups={modalColumnGroups}
           previewRows={computedPreviewData?.rows || []}
           lookupData={datasetLookupData}
+          lookupTables={lookupTables}
           isOpen={isAddColumnModalOpen}
           onClose={() => { setIsAddColumnModalOpen(false); setEditingColumnStep(null); }}
           onSave={handleSaveTransformations}
@@ -832,17 +1379,10 @@ export default function DatasetDetailPage() {
                 <ul className="mb-6 space-y-2">
                   {deleteConstraints.map((c: any, i: number) => (
                     <li key={i} className="flex items-center gap-2 text-sm bg-red-50 rounded-lg px-3 py-2">
-                      {c.type === 'chart' ? (
-                        <>
-                          <span className="text-xs font-semibold uppercase text-red-500 bg-red-100 rounded px-1.5 py-0.5">Chart</span>
-                          <span className="text-gray-800">{c.name}</span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="text-xs font-semibold uppercase text-amber-600 bg-amber-100 rounded px-1.5 py-0.5">LOOKUP</span>
-                          <span className="text-gray-800">Bảng <strong>{c.table_name}</strong>, cột <strong>{c.column}</strong></span>
-                        </>
-                      )}
+                      <span className={`text-xs font-semibold uppercase rounded px-1.5 py-0.5 ${getDeleteConstraintMeta(c).className}`}>
+                        {getDeleteConstraintMeta(c).badge}
+                      </span>
+                      <span className="text-gray-800">{getDeleteConstraintMeta(c).description}</span>
                     </li>
                   ))}
                 </ul>
@@ -894,7 +1434,7 @@ export default function DatasetDetailPage() {
       )}
 
       {/* AI Description Modal */}
-      {isDescModalOpen && selectedTableId && datasetId && (
+      {isDescModalOpen && selectedTableId && datasetId && !selectedTableIsGenerated && (
         <AppModalShell
           onClose={() => setIsDescModalOpen(false)}
           title="AI Description"

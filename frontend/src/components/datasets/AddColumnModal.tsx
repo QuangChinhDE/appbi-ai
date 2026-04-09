@@ -230,6 +230,12 @@ export interface ColumnGroup {
   columns: string[];
 }
 
+export interface LookupTableOption {
+  identifier: string;
+  label: string;
+  rowCount: number;
+}
+
 interface AddColumnModalProps {
   table: DatasetTable;
   /**
@@ -244,11 +250,13 @@ interface AddColumnModalProps {
   columnGroups?: ColumnGroup[];
   previewRows: Record<string, any>[];
   /**
-   * Lookup data keyed by table label (= sourceLabel in columnGroups).
+   * Lookup data keyed by supported table aliases.
    * Each entry is the rows from that table's sample cache.
    * Used by LOOKUP / VLOOKUP functions in formulas.
    */
   lookupData?: Record<string, Record<string, any>[]>;
+  /** Optional display list for lookup-capable tables. */
+  lookupTables?: LookupTableOption[];
   isOpen: boolean;
   onClose: () => void;
   onSave: (transformations: Transformation[]) => Promise<void>;
@@ -262,6 +270,7 @@ export function AddColumnModal({
   columnGroups,
   previewRows,
   lookupData,
+  lookupTables,
   isOpen,
   onClose,
   onSave,
@@ -527,17 +536,32 @@ export function AddColumnModal({
                 <div className="px-3 py-2 border-b bg-amber-50">
                   <p className="text-[10px] font-semibold text-amber-700 mb-1.5">Bảng lookup khả dụng:</p>
                   <div className="space-y-1">
-                    {Object.entries(lookupData).map(([tableKey, rows]) => (
-                      <button
-                        key={tableKey}
-                        type="button"
-                        onClick={() => insertFnExample(`LOOKUP([khóa],"${tableKey}","cột_khóa","cột_cần_lấy")`)}
-                        className="w-full text-left px-2 py-1 bg-amber-100 hover:bg-amber-200 rounded border border-amber-200 transition-colors"
-                      >
-                        <span className="text-[10px] font-mono font-semibold text-amber-800 block">"{tableKey}"</span>
-                        <span className="text-[9px] text-amber-600">{rows.length} rows cache · click chèn mẫu</span>
-                      </button>
-                    ))}
+                    {lookupTables && lookupTables.length > 0 ? (
+                      lookupTables.map((lookupTable) => (
+                        <button
+                          key={lookupTable.identifier}
+                          type="button"
+                          onClick={() => insertFnExample(`LOOKUP([khóa],"${lookupTable.identifier}","cột_khóa","cột_cần_lấy")`)}
+                          className="w-full text-left px-2 py-1 bg-amber-100 hover:bg-amber-200 rounded border border-amber-200 transition-colors"
+                        >
+                          <span className="text-[10px] font-semibold text-amber-800 block">{lookupTable.label}</span>
+                          <span className="text-[9px] font-mono text-amber-700 block">"{lookupTable.identifier}"</span>
+                          <span className="text-[9px] text-amber-600">{lookupTable.rowCount} rows cache · click chèn mẫu</span>
+                        </button>
+                      ))
+                    ) : (
+                      Object.entries(lookupData).map(([tableKey, rows]) => (
+                        <button
+                          key={tableKey}
+                          type="button"
+                          onClick={() => insertFnExample(`LOOKUP([khóa],"${tableKey}","cột_khóa","cột_cần_lấy")`)}
+                          className="w-full text-left px-2 py-1 bg-amber-100 hover:bg-amber-200 rounded border border-amber-200 transition-colors"
+                        >
+                          <span className="text-[10px] font-mono font-semibold text-amber-800 block">"{tableKey}"</span>
+                          <span className="text-[9px] text-amber-600">{rows.length} rows cache · click chèn mẫu</span>
+                        </button>
+                      ))
+                    )}
                   </div>
                 </div>
               )}

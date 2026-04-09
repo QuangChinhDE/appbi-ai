@@ -25,7 +25,7 @@ interface QueryTableTabProps {
   // Edit / locked-datasource mode
   lockDatasource?: boolean;
   lockedDatasourceName?: string;
-  initialDatasourceId?: number;
+  initialDatasourceId?: number | null;
   initialDisplayName?: string;
   initialQuery?: string;
   onSave?: (displayName: string, query: string) => void;

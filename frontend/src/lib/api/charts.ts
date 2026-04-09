@@ -8,6 +8,8 @@ import {
   ChartUpdate,
   ChartDataContext,
   ChartDataResponse,
+  ChartPreviewDataRequest,
+  ChartPreviewDataResponse,
   ChartMetadata,
   ChartMetadataUpsert,
   ChartParameter,
@@ -52,6 +54,11 @@ export const chartApi = {
       params.context = context;
     }
     const response = await apiClient.get(`/charts/${id}/data`, { params });
+    return response.data;
+  },
+
+  previewData: async (payload: ChartPreviewDataRequest): Promise<ChartPreviewDataResponse> => {
+    const response = await apiClient.post('/charts/preview-data', payload);
     return response.data;
   },
 

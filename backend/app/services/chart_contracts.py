@@ -12,6 +12,12 @@ from typing import Any
 
 
 _VALID_AGGS = {"sum", "avg", "count", "min", "max", "count_distinct"}
+CHART_QUERY_MODE_GENERATED = "generated"
+CHART_QUERY_MODE_CUSTOM = "custom"
+_VALID_CHART_QUERY_MODES = {
+    CHART_QUERY_MODE_GENERATED,
+    CHART_QUERY_MODE_CUSTOM,
+}
 _OPERATOR_MAP = {
     "=": "eq",
     "==": "eq",
@@ -43,6 +49,43 @@ _VALID_CHART_FILTER_CONTEXTS = {
     CHART_FILTER_CONTEXT_DEFAULT,
     CHART_FILTER_CONTEXT_DASHBOARD,
 }
+
+
+def normalize_chart_query_mode(mode: Any) -> str:
+    raw = str(mode or CHART_QUERY_MODE_GENERATED).strip().lower()
+    return raw if raw in _VALID_CHART_QUERY_MODES else CHART_QUERY_MODE_GENERATED
+
+
+def get_chart_query_mode(config: dict[str, Any] | None) -> str:
+    if not isinstance(config, dict):
+        return CHART_QUERY_MODE_GENERATED
+
+    mode = normalize_chart_query_mode(config.get("queryMode"))
+    custom_sql = str(config.get("customSql") or "").strip()
+    if mode == CHART_QUERY_MODE_CUSTOM and custom_sql:
+        return CHART_QUERY_MODE_CUSTOM
+    return CHART_QUERY_MODE_GENERATED
+
+
+def get_chart_custom_sql(config: dict[str, Any] | None) -> str | None:
+    if get_chart_query_mode(config) != CHART_QUERY_MODE_CUSTOM:
+        return None
+    custom_sql = str((config or {}).get("customSql") or "").strip()
+    return custom_sql or None
+
+
+def get_chart_active_role_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        return {}
+
+    mode = get_chart_query_mode(config)
+    if mode == CHART_QUERY_MODE_CUSTOM and isinstance(config.get("customRoleConfig"), dict):
+        return config.get("customRoleConfig") or {}
+    if mode == CHART_QUERY_MODE_GENERATED and isinstance(config.get("generatedRoleConfig"), dict):
+        return config.get("generatedRoleConfig") or {}
+    if isinstance(config.get("roleConfig"), dict):
+        return config.get("roleConfig") or {}
+    return {}
 
 
 def normalize_filter_operator(operator: str | None) -> str:
@@ -118,12 +161,9 @@ def resolve_chart_query_filters(
     config: dict[str, Any] | None,
     context: str | None = None,
 ) -> list[dict]:
-    normalized_context = normalize_chart_filter_context(context)
     base_filters = get_chart_base_filters(config)
     if base_filters:
         return base_filters
-    if normalized_context == CHART_FILTER_CONTEXT_DASHBOARD:
-        return []
     return get_chart_editor_filters(config)
 
 
@@ -132,8 +172,16 @@ def merge_chart_query_filters(
     extra_filters: list[dict] | None = None,
     context: str | None = None,
 ) -> list[dict]:
-    merged = list(resolve_chart_query_filters(config, context=context))
-    merged.extend(normalize_filter_conditions(extra_filters))
+    base = list(resolve_chart_query_filters(config, context=context))
+    extra = normalize_filter_conditions(extra_filters)
+    if not extra:
+        return base
+
+    # Deduplicate: when extra_filters (runtime/dashboard) target the same field+operator
+    # as a base filter, the runtime value takes precedence.
+    extra_keys = {(f["field"], f["operator"]) for f in extra}
+    merged = [f for f in base if (f["field"], f["operator"]) not in extra_keys]
+    merged.extend(extra)
     return merged
 
 
@@ -175,6 +223,7 @@ def normalize_chart_role_config(chart_type: str, role_config: dict | None) -> di
 
     ctype = str(getattr(chart_type, "value", chart_type) or "").upper()
     line_metric = normalize_metric_config(normalized.get("lineMetric"))
+    benchmark_metric = normalize_metric_config(normalized.get("benchmarkMetric"))
     table_pivot_metric = normalize_metric_config(normalized.get("tablePivotMetric"))
 
     normalized["tableMode"] = "pivot" if str(normalized.get("tableMode") or "").lower() == "pivot" else "standard"
@@ -196,6 +245,10 @@ def normalize_chart_role_config(chart_type: str, role_config: dict | None) -> di
 
     if line_metric:
         normalized["lineMetric"] = line_metric
+    if benchmark_metric:
+        normalized["benchmarkMetric"] = benchmark_metric
+    else:
+        normalized.pop("benchmarkMetric", None)
     if table_pivot_metric:
         normalized["tablePivotMetric"] = table_pivot_metric
     else:

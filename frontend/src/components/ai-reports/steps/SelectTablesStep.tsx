@@ -198,7 +198,13 @@ export function SelectTablesStep(props: any) {
                           <div className="flex items-baseline gap-2">
                             <p className="text-sm font-medium text-gray-900">{table.display_name}</p>
                             <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-gray-500">
-                              {table.source_kind === 'sql_query' ? 'SQL' : 'table'}
+                              {table.source_kind === 'generated_calendar'
+                                ? 'Date'
+                                : table.source_kind === 'derived_table'
+                                  ? 'Calculated'
+                                  : table.source_kind === 'sql_query'
+                                    ? 'SQL'
+                                    : 'Source'}
                             </span>
                           </div>
                           {table.auto_description && (

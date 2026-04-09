@@ -5,7 +5,14 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { chartApi } from '@/lib/api/charts';
-import { ChartCreate, ChartDataContext, ChartUpdate, ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
+import {
+  ChartCreate,
+  ChartDataContext,
+  ChartMetadataUpsert,
+  ChartParameterCreate,
+  ChartPreviewDataRequest,
+  ChartUpdate,
+} from '@/types/api';
 
 export const useCharts = () => {
   return useQuery({
@@ -27,10 +34,22 @@ export const useChartData = (
   filters?: Record<string, unknown>[],
   context: ChartDataContext = 'default',
 ) => {
+  // Serialize filters to a stable string so identical filter payloads share
+  // the same cache entry regardless of object-reference identity.
+  const filterKey = filters && filters.length > 0 ? JSON.stringify(filters) : null;
+
   return useQuery({
-    queryKey: ['charts', id, 'data', context, filters ?? []],
+    queryKey: ['charts', id, 'data', context, filterKey],
     queryFn: () => chartApi.getData(id, filters, context),
     enabled: !!id,
+    staleTime: 5 * 60 * 1000,   // 5 min — avoid refetching unchanged chart data
+    gcTime: 30 * 60 * 1000,     // 30 min — keep inactive entries longer
+  });
+};
+
+export const usePreviewChartData = () => {
+  return useMutation({
+    mutationFn: (payload: ChartPreviewDataRequest) => chartApi.previewData(payload),
   });
 };
 

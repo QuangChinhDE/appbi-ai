@@ -15,6 +15,7 @@ type KpiCardProps = {
   contextTemplate?: string;
   benchmarkValue?: number | string | null;
   benchmarkLabel?: string;
+  showBenchmarkValue?: boolean;
   showDelta?: boolean;
   goalDirection?: KpiGoalDirection;
   accentColor?: string;
@@ -175,6 +176,7 @@ export function KpiCard({
   contextTemplate,
   benchmarkValue,
   benchmarkLabel = 'Benchmark',
+  showBenchmarkValue = true,
   showDelta = true,
   goalDirection = 'up',
   accentColor = DEFAULT_ACCENT_COLOR,
@@ -195,6 +197,7 @@ export function KpiCard({
     ? delta / Math.abs(numericBenchmark)
     : null;
   const hasBenchmark = numericBenchmark !== null;
+  const showBenchmarkPanel = Boolean(showBenchmarkValue && hasBenchmark);
   const hasDelta = Boolean(showDelta && delta !== null);
   const statusLabel = matchedRule?.label?.trim();
   const template = contextTemplate?.trim();
@@ -254,9 +257,9 @@ export function KpiCard({
           )}
         </div>
 
-        {(hasBenchmark || hasDelta || legacyComparison !== null) && (
+        {(showBenchmarkPanel || hasDelta || legacyComparison !== null) && (
           <div className="mt-5 grid gap-3 border-t border-slate-100 pt-4 sm:grid-cols-2">
-            {hasBenchmark && (
+            {showBenchmarkPanel && (
               <div className="rounded-xl bg-slate-50 px-4 py-3">
                 <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                   <Target className="h-3.5 w-3.5" />

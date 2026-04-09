@@ -345,6 +345,11 @@ export interface ChartSemanticBinding {
   fieldMap?: Record<string, string>;
   dimensionFields?: string[];
   measureFields?: string[];
+  calendarFieldMappings?: Array<{
+    semanticField: string;
+    sourceField: string;
+    calendarField: string;
+  }>;
 }
 
 export interface Chart {
@@ -499,4 +504,21 @@ export interface ChartDataResponse {
     row_count?: number;
     execution_time_ms?: number;
   };
+}
+
+export interface ChartPreviewDataRequest {
+  dataset_table_id: number;
+  chart_type: string;
+  config: Record<string, any>;
+  context?: ChartDataContext;
+  include_source_sample?: boolean;
+  source_sample_limit?: number;
+}
+
+export interface ChartPreviewDataResponse {
+  data: Record<string, any>[];
+  pre_aggregated?: boolean;
+  execution_time_ms?: number;
+  source_columns?: string[];
+  source_rows?: Record<string, any>[];
 }

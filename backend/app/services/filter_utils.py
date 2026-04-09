@@ -6,7 +6,11 @@ from typing import Dict, List, Any, Optional
 from sqlalchemy.orm import Session
 from app.models.semantic import SemanticView, SemanticExplore
 from app.models import Chart
+from app.services.chart_contracts import get_chart_active_role_config
 from app.services.chart_semantic_service import with_chart_semantic_binding
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class FilterUtils:
@@ -78,10 +82,11 @@ class FilterUtils:
                                 return True
             
             return False
-        
+
         except Exception:
+            logger.warning("field_exists_in_explore failed for explore=%s field=%s", explore_name, field, exc_info=True)
             return False
-    
+
     @staticmethod
     def field_exists_in_view(
         db: Session,
@@ -118,10 +123,11 @@ class FilterUtils:
                     return True
             
             return False
-        
+
         except Exception:
+            logger.warning("field_exists_in_view failed for view=%s field=%s", view_name, field, exc_info=True)
             return False
-    
+
     @staticmethod
     def merge_filters(
         persistent_filters: List[Dict[str, Any]],
@@ -193,16 +199,25 @@ class FilterUtils:
                 return False
 
             if "." not in filter_field:
-                role_config = config.get("roleConfig") if isinstance(config.get("roleConfig"), dict) else {}
+                role_config = get_chart_active_role_config(config)
                 chart_fields = {
                     value
                     for key, value in role_config.items()
                     if isinstance(value, str) and key not in {"chartType"}
                 }
+                for metric_key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
+                    metric = role_config.get(metric_key)
+                    if isinstance(metric, dict) and metric.get("field"):
+                        chart_fields.add(metric.get("field"))
                 chart_fields.update(
                     metric.get("field")
                     for metric in (role_config.get("metrics") or [])
                     if isinstance(metric, dict) and metric.get("field")
+                )
+                chart_fields.update(
+                    column_name
+                    for column_name in (role_config.get("selectedColumns") or [])
+                    if isinstance(column_name, str) and column_name
                 )
                 return filter_field in chart_fields
 
@@ -218,10 +233,11 @@ class FilterUtils:
                 return FilterUtils.field_exists_in_explore(db, explore_name, filter_field)
 
             return False
-        
+
         except Exception:
+            logger.warning("is_filter_compatible_with_chart failed for chart=%s filter_field=%s", chart_id, filter_field, exc_info=True)
             return False
-    
+
     @staticmethod
     def convert_dashboard_filter_to_semantic(
         dashboard_filter: Dict[str, Any]
