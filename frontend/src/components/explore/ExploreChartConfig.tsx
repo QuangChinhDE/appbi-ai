@@ -462,11 +462,11 @@ function Disclosure({ title, hint, defaultOpen = false, children }: {
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="border-t border-gray-100 pt-2">
+    <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2">
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center justify-between py-1 group"
+        className="group flex w-full items-center justify-between py-1"
       >
         <span className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">
           <span>{title}</span>
@@ -474,7 +474,7 @@ function Disclosure({ title, hint, defaultOpen = false, children }: {
         </span>
         <ChevronDown className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
       </button>
-      {open && <div className="mt-2 space-y-3">{children}</div>}
+      {open && <div className="mt-3 space-y-3 border-t border-slate-200 pt-3">{children}</div>}
     </div>
   );
 }
@@ -511,6 +511,31 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
         </span>
       </button>
     </div>
+  );
+}
+
+function SectionPanel({
+  step,
+  title,
+  description,
+  children,
+}: {
+  step: string;
+  title: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-100 px-4 py-3">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">{step}</p>
+        <h3 className="mt-1 text-sm font-semibold text-slate-800">{title}</h3>
+        <p className="mt-1 text-xs text-slate-500">{description}</p>
+      </div>
+      <div className="space-y-3 px-4 py-4">
+        {children}
+      </div>
+    </section>
   );
 }
 
@@ -810,13 +835,16 @@ export function ExploreChartConfig({
   const isLineType = ['LINE', 'TIME_SERIES', 'AREA', 'BAR_LINE'].includes(chartType);
   const hasAxis = !['PIE', 'KPI', 'TABLE'].includes(chartType);
   const supportsBenchmarkLine = ['BAR', 'HORIZONTAL_BAR', 'GROUPED_BAR', 'STACKED_BAR', 'LINE', 'AREA', 'TIME_SERIES', 'BAR_LINE'].includes(chartType);
-  const roleSectionTitle = queryMode === 'custom' ? 'SQL Output Columns' : 'Field Mapping';
+  const chartBindingTitle = queryMode === 'custom' ? 'SQL Column Roles' : 'Field Roles';
+  const tableBindingTitle = isPivotEnabled ? 'Pivot Layout' : 'Visible Columns';
   const tableRoleSectionHint = queryMode === 'custom'
     ? 'Choose directly from the columns returned by your SQL. Nothing is inferred back into Config Builder fields.'
     : 'Standard table stays as-is. Enable pivot only when you want dynamic cross-tab headers driven by distinct column values.';
   const chartRoleSectionHint = queryMode === 'custom'
     ? 'Choose which SQL output columns drive this chart. These selections work directly on your SQL output.'
     : undefined;
+  const showQuickView = !['TABLE', 'KPI'].includes(chartType);
+  const hasAdvancedControls = showQuickView && (hasAxis || supportsBenchmarkLine || isBarType || isLineType);
 
   const setTableConditionalFormatting = (rules: ConditionalFormatRule[]) => {
     updStyle({ tableConditionalFormatting: rules.length > 0 ? rules : undefined });
@@ -962,10 +990,14 @@ export function ExploreChartConfig({
   };
 
   return (
-    <div className="p-4 space-y-3">
+    <div className="space-y-4 p-4">
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Chart Type ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ visual grid ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
-      <div>
+      <SectionPanel
+        step="Step 1"
+        title="Chart Type"
+        description="Start with the visual form. The required field roles below will adapt to the chart you choose."
+      >
         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Chart Type</p>
         <div className="grid grid-cols-4 gap-1">
           {CHART_TYPE_GRID.map(({ value, label, icon }) => (
@@ -982,12 +1014,19 @@ export function ExploreChartConfig({
             </button>
           ))}
         </div>
-      </div>
+      </SectionPanel>
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ TABLE: column picker ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
-      {chartType === 'TABLE' && availableColumns.length > 0 && (
+      {chartType === 'TABLE' && (
+        <SectionPanel
+          step="Step 2"
+          title="Table Structure"
+          description="Choose the visible columns first, then enable only the table behaviors you actually need."
+        >
+      {availableColumns.length > 0 && (
+        <>
         <Disclosure
-          title={roleSectionTitle}
+          title={tableBindingTitle}
           hint={tableRoleSectionHint}
           defaultOpen
         >
@@ -1064,9 +1103,10 @@ export function ExploreChartConfig({
             </>
           )}
         </Disclosure>
-      )}
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Field Mapping ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
+        </>
+      )}
       {chartType === 'TABLE' && (
         <Disclosure
           title="Optional Enhancements"
@@ -1439,8 +1479,34 @@ export function ExploreChartConfig({
         </Disclosure>
       )}
 
+        </SectionPanel>
+      )}
+
       {chartType === 'KPI' && (
-        <Disclosure title="Card Options" hint="Make the KPI card smarter with labels, context, benchmark, and value rules.">
+        <SectionPanel
+          step="Step 2"
+          title="Data Binding"
+          description="Pick the KPI value first, then add an optional benchmark metric if the card should compare against live data."
+        >
+          <Disclosure title={chartBindingTitle} hint={chartRoleSectionHint} defaultOpen>
+            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll}
+              onChange={v => upd({ metrics: v })} />
+            <MetricSlot label="Benchmark Metric" hint="optional dynamic comparison" single value={benchmarkMetric} options={numOrAll}
+              onChange={v => upd({ benchmarkMetric: v[0] || undefined })} />
+            <p className="text-[11px] text-gray-500">
+              In Custom SQL mode, choose a second numeric SQL output column for Benchmark Metric, then use {`{benchmark}`}, {`{delta}`}, or {`{deltaPercent}`} in the Context Template.
+            </p>
+          </Disclosure>
+        </SectionPanel>
+      )}
+
+      {chartType === 'KPI' && (
+        <SectionPanel
+          step="Step 3"
+          title="Card Setup"
+          description="Shape the KPI card after choosing its value and optional benchmark metric."
+        >
+        <Disclosure title="Card Details" hint="Make the KPI card smarter with labels, context, benchmark, and value rules." defaultOpen>
           <div>
             <label className="text-xs font-semibold text-gray-600 mb-1 block">Card Label</label>
             <input
@@ -1661,10 +1727,16 @@ export function ExploreChartConfig({
             </div>
           )}
         </Disclosure>
+        </SectionPanel>
       )}
 
-      {chartType !== 'TABLE' && (
-        <Disclosure title={roleSectionTitle} hint={chartRoleSectionHint} defaultOpen>
+      {chartType !== 'TABLE' && chartType !== 'KPI' && (
+        <SectionPanel
+          step="Step 2"
+          title="Data Binding"
+          description="Map the minimum fields first so the chart becomes valid, then add optional roles like breakdown."
+        >
+        <Disclosure title={chartBindingTitle} hint={chartRoleSectionHint} defaultOpen>
 
           {(chartType === 'BAR' || chartType === 'HORIZONTAL_BAR') && <>
             <SelectSlot label={chartType === 'HORIZONTAL_BAR' ? 'Y Axis' : 'X Axis'} hint="group by" required value={dim} options={dimOrAll}
@@ -1753,22 +1825,18 @@ export function ExploreChartConfig({
               onChange={v => upd({ dimension: v || undefined })} />
           </>}
 
-          {chartType === 'KPI' && <>
-            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll}
-              onChange={v => upd({ metrics: v })} />
-            <MetricSlot label="Benchmark Metric" hint="optional dynamic comparison" single value={benchmarkMetric} options={numOrAll}
-              onChange={v => upd({ benchmarkMetric: v[0] || undefined })} />
-            <p className="text-[11px] text-gray-500">
-              In Custom SQL mode, choose a second numeric SQL output column for Benchmark Metric, then use {`{benchmark}`}, {`{delta}`}, or {`{deltaPercent}`} in the Context Template.
-            </p>
-          </>}
-
         </Disclosure>
+        </SectionPanel>
       )}
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Appearance: General ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
-      {chartType !== 'TABLE' && (
-        <Disclosure title="General" defaultOpen>
+      {showQuickView && (
+        <SectionPanel
+          step="Step 3"
+          title="Quick View"
+          description="Keep the most-used presentation controls together, then open Advanced only if the preview still needs extra tuning."
+        >
+        <Disclosure title="Most-used Settings" defaultOpen>
           {/* Color palette ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â compact horizontal row */}
           {chartType !== 'KPI' && (
             <div>
@@ -1829,16 +1897,21 @@ export function ExploreChartConfig({
             </div>
           )}
 
-          {chartType !== 'KPI' && (
-            <Toggle label="Grid Lines" checked={styleConfig.showGrid ?? true}
-              onChange={v => updStyle({ showGrid: v })} />
-          )}
         </Disclosure>
-      )}
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Appearance: Axis ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
-      {hasAxis && (
-        <Disclosure title="Axis">
+        </SectionPanel>
+      )}
+      {hasAdvancedControls && (
+        <SectionPanel
+          step="Step 4"
+          title="Advanced"
+          description="Open these only when you need extra control over scale, reference lines, or chart-specific shape details."
+        >
+        {hasAxis && (
+        <Disclosure title="Axes & Scale">
+          <Toggle label="Grid Lines" checked={styleConfig.showGrid ?? true}
+            onChange={v => updStyle({ showGrid: v })} />
           <div>
             <label className="text-xs font-semibold text-gray-600 mb-1 block">X Axis Label</label>
             <input type="text" value={styleConfig.xAxisLabel || ''} placeholder="auto"
@@ -1876,7 +1949,7 @@ export function ExploreChartConfig({
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Appearance: Bar options ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {supportsBenchmarkLine && (
-        <Disclosure title="Benchmark" hint="Optional reference line for the numeric axis.">
+        <Disclosure title="Benchmark Line" hint="Optional reference line for the numeric axis.">
           <Toggle
             label="Benchmark line"
             checked={normalizedStyleConfig.showBenchmarkLine ?? false}
@@ -1940,7 +2013,7 @@ export function ExploreChartConfig({
       )}
 
       {isBarType && (
-        <Disclosure title="Bar Options">
+        <Disclosure title="Bar Shape">
           <div>
             <label className="text-xs font-semibold text-gray-600 mb-1 block">Bar Radius: {styleConfig.barRadius ?? 4}px</label>
             <input type="range" min={0} max={12} step={1} value={styleConfig.barRadius ?? 4}
@@ -1952,7 +2025,7 @@ export function ExploreChartConfig({
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Appearance: Line options ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {isLineType && (
-        <Disclosure title="Line Options">
+        <Disclosure title="Line Style">
           <Toggle label="Show Dots" checked={styleConfig.showDots ?? true}
             onChange={v => updStyle({ showDots: v })} />
           <div>
@@ -1965,6 +2038,8 @@ export function ExploreChartConfig({
             </select>
           </div>
         </Disclosure>
+      )}
+        </SectionPanel>
       )}
     </div>
   );
