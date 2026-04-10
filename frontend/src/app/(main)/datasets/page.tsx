@@ -5,8 +5,9 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Database, Loader2, Calendar, ChevronRight, Trash2, Search } from 'lucide-react';
+import { Plus, Database, Loader2, Calendar, ChevronRight, Trash2, Search, Share2 } from 'lucide-react';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
+import { ShareDialog } from '@/components/common/ShareDialog';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
@@ -39,6 +40,7 @@ export default function DatasetsPage() {
   const [datasetToDelete, setDatasetToDelete] = useState<{ id: number; name: string } | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingDataset, setIsDeletingDataset] = useState(false);
+  const [shareDataset, setShareDataset] = useState<{ id: number; name: string } | null>(null);
 
   const handleCreateDataset = async (input: CreateDatasetInput) => {
     try {
@@ -136,7 +138,7 @@ export default function DatasetsPage() {
         isLoading={isLoading}
         loadingText={t('common.loading')}
         searchPlaceholder={t('common.search')}
-        defaultView="grid"
+        defaultView="list"
       >
         {({ viewMode, filterText }) => {
           const filtered = (datasets ?? []).filter((w: any) =>
@@ -151,6 +153,7 @@ export default function DatasetsPage() {
                 <p className="text-gray-600 mb-6">
                   Create your first dataset dataset to start exploring tables from your datasources
                 </p>
+                {canEdit && (
                 <button
                   onClick={() => setIsCreateModalOpen(true)}
                   className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
@@ -158,6 +161,7 @@ export default function DatasetsPage() {
                   <Plus className="w-5 h-5" />
                   Create Dataset
                 </button>
+                )}
               </div>
             );
           }
@@ -206,6 +210,15 @@ export default function DatasetsPage() {
                       </div>
                     </button>
                     <div className="px-6 py-3 border-t bg-gray-50 flex items-center justify-end gap-2">
+                      {getResourcePermissions(dataset.user_permission).canShare && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setShareDataset({ id: dataset.id, name: dataset.name }); }}
+                        className="p-2 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded transition-colors"
+                        title="Share dataset"
+                      >
+                        <Share2 className="w-4 h-4" />
+                      </button>
+                      )}
                       {getResourcePermissions(dataset.user_permission).canDelete && (
                       <button
                         onClick={(e) => { e.stopPropagation(); handleDeleteDataset(dataset.id, dataset.name); }}
@@ -249,6 +262,15 @@ export default function DatasetsPage() {
                     <Calendar className="w-3 h-3" />
                     {new Date(dataset.updated_at).toLocaleDateString()}
                   </span>
+                  {getResourcePermissions(dataset.user_permission).canShare && (
+                  <button
+                    onClick={() => setShareDataset({ id: dataset.id, name: dataset.name })}
+                    className="opacity-0 group-hover:opacity-100 p-1.5 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded transition-all"
+                    title="Share dataset"
+                  >
+                    <Share2 className="w-4 h-4" />
+                  </button>
+                  )}
                   {getResourcePermissions(dataset.user_permission).canDelete && (
                   <button
                     onClick={() => handleDeleteDataset(dataset.id, dataset.name)}
@@ -282,6 +304,15 @@ export default function DatasetsPage() {
           isDeleting={isDeletingDataset}
           onConfirm={confirmDeleteDataset}
           onClose={() => { setDatasetToDelete(null); setDeleteConstraints(null); }}
+        />
+      )}
+
+      {shareDataset && (
+        <ShareDialog
+          resourceType="dataset"
+          resourceId={shareDataset.id}
+          resourceName={shareDataset.name}
+          onClose={() => setShareDataset(null)}
         />
       )}
     </>

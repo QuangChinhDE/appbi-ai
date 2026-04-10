@@ -12,6 +12,7 @@ interface ExploreSourceSelectorProps {
   selectedTableId: number | null;
   onDatasetChange: (datasetId: number | null) => void;
   onTableChange: (tableId: number | null) => void;
+  disabled?: boolean;
 }
 
 export function ExploreSourceSelector({
@@ -19,6 +20,7 @@ export function ExploreSourceSelector({
   selectedTableId,
   onDatasetChange,
   onTableChange,
+  disabled,
 }: ExploreSourceSelectorProps) {
   const { data: datasets = [], isLoading: loadingDatasets } = useDatasets();
   const { data: dataset } = useDataset(selectedDatasetId);
@@ -46,8 +48,8 @@ export function ExploreSourceSelector({
           <select
             value={selectedDatasetId || ''}
             onChange={(e) => handleDatasetChange(e.target.value)}
-            disabled={loadingDatasets}
-            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white appearance-none pr-10"
+            disabled={disabled || loadingDatasets}
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white appearance-none pr-10 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <option value="">Select dataset...</option>
             {datasets.map((ws: any) => (
@@ -71,8 +73,8 @@ export function ExploreSourceSelector({
             <select
               value={selectedTableId || ''}
               onChange={(e) => handleTableChange(e.target.value)}
-              disabled={!dataset?.tables?.length}
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white appearance-none pr-10"
+              disabled={disabled || !dataset?.tables?.length}
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white appearance-none pr-10 disabled:opacity-60 disabled:cursor-not-allowed"
             >
               <option value="">Select table...</option>
               {dataset?.tables?.map((table: any) => (

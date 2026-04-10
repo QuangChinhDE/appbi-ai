@@ -5,9 +5,10 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Trash2, BarChart3, Clock, Layers, Search } from 'lucide-react';
+import { Plus, Trash2, BarChart3, Clock, Layers, Search, Share2 } from 'lucide-react';
 import { useCharts, useDeleteChart } from '@/hooks/use-charts';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
+import { ShareDialog } from '@/components/common/ShareDialog';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
@@ -40,6 +41,7 @@ export default function ExplorePage() {
   const [chartToDelete, setChartToDelete] = useState<Chart | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingChart, setIsDeletingChart] = useState(false);
+  const [shareChart, setShareChart] = useState<Chart | null>(null);
 
   const handleDeleteChart = (chart: Chart) => {
     setChartToDelete(chart);
@@ -107,6 +109,7 @@ export default function ExplorePage() {
       ) : undefined}
       isLoading={isLoading}
       loadingText={t('common.loading')}
+      defaultView="list"
     >
       {({ viewMode, filterText }) => {
         const filtered = (charts ?? []).filter(c =>
@@ -120,6 +123,7 @@ export default function ExplorePage() {
               <BarChart3 className="w-14 h-14 text-gray-300 mb-4" />
               <h3 className="text-lg font-medium text-gray-700 mb-1">No saved charts yet</h3>
               <p className="text-sm text-gray-500 mb-4">Create your first chart from a dataset table</p>
+              {canEdit && (
               <button
                 onClick={() => router.push('/explore/new')}
                 className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
@@ -127,6 +131,7 @@ export default function ExplorePage() {
                 <Plus className="w-4 h-4" />
                 New Chart
               </button>
+              )}
             </div>
           );
         }
@@ -150,6 +155,7 @@ export default function ExplorePage() {
                 const createdAt = new Date(chart.created_at).toLocaleDateString(locale, {
                   day: '2-digit', month: '2-digit', year: 'numeric',
                 });
+                const itemPerms = getResourcePermissions(chart.user_permission);
                 return (
                   <div
                     key={chart.id}
@@ -180,14 +186,26 @@ export default function ExplorePage() {
                       <Clock className="w-3 h-3" />
                       {createdAt}
                     </span>
-                    {getResourcePermissions(chart.user_permission).canDelete && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDeleteChart(chart); }}
-                      className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 transition-all p-1 rounded flex-shrink-0"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                    )}
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0">
+                      {itemPerms.canShare && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setShareChart(chart); }}
+                          className="text-gray-400 hover:text-purple-600 hover:bg-purple-50 p-1 rounded transition-colors"
+                          title="Share"
+                        >
+                          <Share2 className="w-4 h-4" />
+                        </button>
+                      )}
+                      {itemPerms.canDelete && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeleteChart(chart); }}
+                          className="text-gray-400 hover:text-red-600 hover:bg-red-50 p-1 rounded transition-colors"
+                          title="Delete"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -205,6 +223,7 @@ export default function ExplorePage() {
               const createdAt = new Date(chart.created_at).toLocaleDateString(locale, {
                 day: '2-digit', month: '2-digit', year: 'numeric',
               });
+              const itemPerms = getResourcePermissions(chart.user_permission);
               return (
                 <div
                   key={chart.id}
@@ -215,14 +234,26 @@ export default function ExplorePage() {
                     <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
                       <BarChart3 className="w-5 h-5 text-blue-600" />
                     </div>
-                    {getResourcePermissions(chart.user_permission).canDelete && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDeleteChart(chart); }}
-                      className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 transition-all p-1 rounded"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                    )}
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                      {itemPerms.canShare && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setShareChart(chart); }}
+                          className="text-gray-400 hover:text-purple-600 hover:bg-purple-50 p-1 rounded transition-colors"
+                          title="Share"
+                        >
+                          <Share2 className="w-4 h-4" />
+                        </button>
+                      )}
+                      {itemPerms.canDelete && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeleteChart(chart); }}
+                          className="text-gray-400 hover:text-red-600 hover:bg-red-50 p-1 rounded transition-colors"
+                          title="Delete"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <div className="flex-1 min-w-0">
@@ -262,6 +293,14 @@ export default function ExplorePage() {
         isDeleting={isDeletingChart}
         onConfirm={confirmDeleteChart}
         onClose={() => { setChartToDelete(null); setDeleteConstraints(null); }}
+      />
+    )}
+    {shareChart && (
+      <ShareDialog
+        resourceType="chart"
+        resourceId={shareChart.id}
+        resourceName={shareChart.name}
+        onClose={() => setShareChart(null)}
       />
     )}
     </>

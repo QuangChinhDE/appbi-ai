@@ -3,8 +3,9 @@
 import React, { useState, useEffect } from 'react';
 import { X, Search, Share2, Users, Trash2, ChevronDown } from 'lucide-react';
 import { usersApi, sharesApi } from '@/lib/api-client';
+import { extractApiError } from '@/lib/api-errors';
 
-type Permission = 'viewer' | 'editor';
+type Permission = 'view' | 'edit';
 
 interface ShareUser {
   id: string;
@@ -37,7 +38,7 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
   const [users, setUsers] = useState<UserOption[]>([]);
   const [search, setSearch] = useState('');
   const [selectedUser, setSelectedUser] = useState<UserOption | null>(null);
-  const [permission, setPermission] = useState<Permission>('viewer');
+  const [permission, setPermission] = useState<Permission>('view');
   const [loading, setLoading] = useState(false);
   const [loadingShares, setLoadingShares] = useState(true);
   const [error, setError] = useState('');
@@ -83,8 +84,8 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
       setShares(newShares);
       setSelectedUser(null);
       setSearch('');
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || 'Failed to share.');
+    } catch (err: unknown) {
+      setError(extractApiError(err, 'Failed to share.'));
     } finally {
       setLoading(false);
     }
@@ -117,8 +118,8 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
       await sharesApi.shareAllTeam(resourceType, resourceId, { permission });
       const newShares = await sharesApi.getShares(resourceType, resourceId);
       setShares(newShares);
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || 'Failed to share with team.');
+    } catch (err: unknown) {
+      setError(extractApiError(err, 'Failed to share with team.'));
     } finally {
       setAllTeamLoading(false);
     }
@@ -187,8 +188,8 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
                   onChange={(e) => setPermission(e.target.value as Permission)}
                   className="appearance-none pl-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                 >
-                  <option value="viewer">Viewer</option>
-                  <option value="editor">Editor</option>
+                  <option value="view">Viewer</option>
+                  <option value="edit">Editor</option>
                 </select>
                 <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
               </div>
@@ -246,8 +247,8 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
                         onChange={(e) => handleUpdatePermission(s.user_id, e.target.value as Permission)}
                         className="text-xs border border-gray-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
                       >
-                        <option value="viewer">Viewer</option>
-                        <option value="editor">Editor</option>
+                        <option value="view">Viewer</option>
+                        <option value="edit">Editor</option>
                       </select>
                       <button
                         onClick={() => handleRevoke(s.user_id)}

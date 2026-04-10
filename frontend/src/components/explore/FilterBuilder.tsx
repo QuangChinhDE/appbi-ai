@@ -98,11 +98,13 @@ interface FilterBuilderProps {
   dataRows?: Record<string, any>[];
   // ── Legacy prop (backward compat) ──────────────────────────────────────────
   availableFields?: string[];
+  /** When true, all controls are disabled (view-only mode). */
+  readOnly?: boolean;
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function FilterBuilder({
-  filters, onChange, columns, dataRows = [], availableFields,
+  filters, onChange, columns, dataRows = [], availableFields, readOnly,
 }: FilterBuilderProps) {
   // Build column list — prefer columns with type info, fall back to string[]
   const cols: ColInfo[] = useMemo(() => {
@@ -145,7 +147,7 @@ export function FilterBuilder({
     onChange(filters.map((f, i) => i === idx ? { ...f, value } : f));
 
   return (
-    <div className="space-y-2">
+    <div className={`space-y-2${readOnly ? ' pointer-events-none opacity-60' : ''}`}>
       {filters.map((filter, idx) => {
         const col = cols.find(c => c.name === filter.field);
         const colType: FilterType = col ? resolveType(col, dataRows) : 'text';
@@ -173,13 +175,15 @@ export function FilterBuilder({
         <p className="text-xs text-gray-400 italic py-0.5">No filters — chart shows all data.</p>
       )}
 
-      <button
-        onClick={addFilter}
-        disabled={!cols.length}
-        className="flex items-center gap-1 text-xs text-orange-600 hover:text-orange-700 font-medium disabled:opacity-40"
-      >
-        <Plus className="w-3 h-3" /> Add Filter
-      </button>
+      {!readOnly && (
+        <button
+          onClick={addFilter}
+          disabled={!cols.length}
+          className="flex items-center gap-1 text-xs text-orange-600 hover:text-orange-700 font-medium disabled:opacity-40"
+        >
+          <Plus className="w-3 h-3" /> Add Filter
+        </button>
+      )}
     </div>
   );
 }

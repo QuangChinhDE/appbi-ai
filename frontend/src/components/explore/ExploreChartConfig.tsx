@@ -5,15 +5,19 @@ import { Check, Info, X, ChevronDown } from 'lucide-react';
 import { CHART_PALETTES, type ChartPaletteName } from '@/lib/chartColors';
 import type {
   ChartBenchmarkLineStyle,
+  ChartSortRule,
   ConditionalFormatRule,
   KpiGoalDirection,
   KpiValueColorRule,
   TableHeatmapRule,
   TableSummaryCalculation,
   TableSummaryRowConfig,
+  TimeGranularity,
 } from '@/types/api';
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Types ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+export type { ChartSortRule, TimeGranularity } from '@/types/api';
+
 export type ExploreChartType =
   | 'TABLE' | 'BAR' | 'HORIZONTAL_BAR' | 'GROUPED_BAR' | 'STACKED_BAR'
   | 'LINE' | 'AREA' | 'TIME_SERIES' | 'BAR_LINE'
@@ -84,6 +88,30 @@ export interface ChartStyleConfig {
   tableSummaryLabel?: string;
   tableSummaryLabelColumn?: string;
   tableSummaryRows?: TableSummaryRowConfig[];
+  // Chart title (shown above the chart)
+  chartTitle?: string;
+  // PIE: donut inner radius (0 = full pie, >0 = donut, percentage of outer radius 0-80)
+  pieInnerRadius?: number;
+  // STACKED_BAR: 100% stacked mode
+  stackMode?: 'normal' | 'percent';
+  // TIME_SERIES: time bucketing granularity
+  timeGranularity?: TimeGranularity;
+  // Data: multi-column sort rules applied client-side before rendering
+  chartSortRules?: ChartSortRule[];
+  // Data: limit displayed rows (top N or bottom N)
+  dataLimit?: number | '';
+  dataLimitDirection?: 'top' | 'bottom';
+  // BAR_LINE: show a second Y axis on the right for the line metric
+  dualYAxis?: boolean;
+  yAxisRightLabel?: string;
+  // AREA: fill opacity (0–1)
+  areaOpacity?: number;
+  // LINE/AREA/TIME_SERIES: stroke width in px
+  lineWidth?: number;
+  // BAR types: fixed bar width in px (undefined = auto)
+  barSize?: number | '';
+  // SCATTER: dimension field used as point labels
+  scatterLabelField?: string;
 }
 
 export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
@@ -122,6 +150,20 @@ export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
   tableEnableHeatmap: false,
   tableShowSummaryRow: false,
   tableSummaryLabel: 'Total',
+  // New features
+  chartTitle: '',
+  pieInnerRadius: 0,
+  stackMode: 'normal',
+  timeGranularity: 'raw',
+  chartSortRules: [],
+  dataLimit: '',
+  dataLimitDirection: 'top',
+  dualYAxis: false,
+  yAxisRightLabel: '',
+  areaOpacity: 0.6,
+  lineWidth: 2,
+  barSize: '',
+  scatterLabelField: '',
 };
 
 export function normalizeChartStyleConfig(
@@ -755,6 +797,7 @@ interface ExploreChartConfigProps {
   availableColumns: Col[];
   tableDisplayColumns?: Col[];
   queryMode?: 'generated' | 'custom';
+  readOnly?: boolean;
   onChartTypeChange: (t: ExploreChartType) => void;
   onRoleConfigChange: (c: ChartRoleConfig) => void;
   onStyleConfigChange: (c: ChartStyleConfig) => void;
@@ -767,6 +810,7 @@ export function ExploreChartConfig({
   availableColumns,
   tableDisplayColumns = [],
   queryMode = 'generated',
+  readOnly,
   onChartTypeChange,
   onRoleConfigChange,
   onStyleConfigChange,
@@ -835,6 +879,7 @@ export function ExploreChartConfig({
   const isLineType = ['LINE', 'TIME_SERIES', 'AREA', 'BAR_LINE'].includes(chartType);
   const hasAxis = !['PIE', 'KPI', 'TABLE'].includes(chartType);
   const supportsBenchmarkLine = ['BAR', 'HORIZONTAL_BAR', 'GROUPED_BAR', 'STACKED_BAR', 'LINE', 'AREA', 'TIME_SERIES', 'BAR_LINE'].includes(chartType);
+  const supportsDataSection = !['TABLE', 'KPI'].includes(chartType);
   const chartBindingTitle = queryMode === 'custom' ? 'SQL Column Roles' : 'Field Roles';
   const tableBindingTitle = isPivotEnabled ? 'Pivot Layout' : 'Visible Columns';
   const tableRoleSectionHint = queryMode === 'custom'
@@ -844,7 +889,8 @@ export function ExploreChartConfig({
     ? 'Choose which SQL output columns drive this chart. These selections work directly on your SQL output.'
     : undefined;
   const showQuickView = !['TABLE', 'KPI'].includes(chartType);
-  const hasAdvancedControls = showQuickView && (hasAxis || supportsBenchmarkLine || isBarType || isLineType);
+  const hasAdvancedControls = showQuickView && (hasAxis || supportsBenchmarkLine || isBarType || isLineType || chartType === 'PIE' || chartType === 'SCATTER' || chartType === 'TIME_SERIES' || supportsDataSection);
+  const chartSortRules = normalizedStyleConfig.chartSortRules ?? [];
 
   const setTableConditionalFormatting = (rules: ConditionalFormatRule[]) => {
     updStyle({ tableConditionalFormatting: rules.length > 0 ? rules : undefined });
@@ -990,7 +1036,7 @@ export function ExploreChartConfig({
   };
 
   return (
-    <div className="space-y-4 p-4">
+    <div className={`space-y-4 p-4${readOnly ? ' pointer-events-none opacity-60' : ''}`}>
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Chart Type ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ visual grid ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       <SectionPanel
@@ -1838,6 +1884,40 @@ export function ExploreChartConfig({
         >
         <Disclosure title="Most-used Settings" defaultOpen>
           {/* Color palette ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â compact horizontal row */}
+          {/* Chart Title */}
+          <div>
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">Chart Title</label>
+            <input type="text" value={styleConfig.chartTitle || ''} placeholder="Optional title"
+              onChange={e => updStyle({ chartTitle: e.target.value })}
+              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+          </div>
+
+          {/* PIE: donut hole slider */}
+          {chartType === 'PIE' && (
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">
+                Donut Hole: {styleConfig.pieInnerRadius ?? 0}%
+                <span className="ml-1 font-normal text-gray-400">({(styleConfig.pieInnerRadius ?? 0) === 0 ? 'Pie' : 'Donut'})</span>
+              </label>
+              <input type="range" min={0} max={80} step={5} value={styleConfig.pieInnerRadius ?? 0}
+                onChange={e => updStyle({ pieInnerRadius: Number(e.target.value) })}
+                className="w-full h-1.5 bg-gray-200 rounded-lg accent-blue-500 cursor-pointer" />
+            </div>
+          )}
+
+          {/* STACKED_BAR: 100% stack mode */}
+          {chartType === 'STACKED_BAR' && (
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">Stack Mode</label>
+              <select value={styleConfig.stackMode || 'normal'}
+                onChange={e => updStyle({ stackMode: e.target.value as 'normal' | 'percent' })}
+                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
+                <option value="normal">Normal (absolute values)</option>
+                <option value="percent">100% Stacked (percentage)</option>
+              </select>
+            </div>
+          )}
+
           {chartType !== 'KPI' && (
             <div>
               <label className="text-xs font-semibold text-gray-600 mb-1.5 block">Color Palette</label>
@@ -2020,6 +2100,12 @@ export function ExploreChartConfig({
               onChange={e => updStyle({ barRadius: Number(e.target.value) })}
               className="w-full h-1.5 bg-gray-200 rounded-lg accent-blue-500 cursor-pointer" />
           </div>
+          <div>
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">Bar Width (px)</label>
+            <input type="number" min={4} max={200} value={styleConfig.barSize ?? ''} placeholder="auto"
+              onChange={e => updStyle({ barSize: e.target.value === '' ? '' : Number(e.target.value) })}
+              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+          </div>
         </Disclosure>
       )}
 
@@ -2036,6 +2122,128 @@ export function ExploreChartConfig({
               <option value="solid">Solid</option>
               <option value="dashed">Dashed</option>
             </select>
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">Line Width: {styleConfig.lineWidth ?? 2}px</label>
+            <input type="range" min={1} max={6} step={1} value={styleConfig.lineWidth ?? 2}
+              onChange={e => updStyle({ lineWidth: Number(e.target.value) })}
+              className="w-full h-1.5 bg-gray-200 rounded-lg accent-blue-500 cursor-pointer" />
+          </div>
+          {(chartType === 'AREA') && (
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">Fill Opacity: {Math.round((styleConfig.areaOpacity ?? 0.6) * 100)}%</label>
+              <input type="range" min={0} max={100} step={5} value={Math.round((styleConfig.areaOpacity ?? 0.6) * 100)}
+                onChange={e => updStyle({ areaOpacity: Number(e.target.value) / 100 })}
+                className="w-full h-1.5 bg-gray-200 rounded-lg accent-blue-500 cursor-pointer" />
+            </div>
+          )}
+        </Disclosure>
+      )}
+
+      {/* BAR_LINE: dual Y-axis */}
+      {chartType === 'BAR_LINE' && (
+        <Disclosure title="Dual Y-Axis" hint="Show a second Y axis on the right side for the line metric — useful when bar and line values have very different scales.">
+          <Toggle label="Enable right Y axis" checked={styleConfig.dualYAxis ?? false}
+            onChange={v => updStyle({ dualYAxis: v })} />
+          {styleConfig.dualYAxis && (
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">Right Axis Label</label>
+              <input type="text" value={styleConfig.yAxisRightLabel || ''} placeholder="auto"
+                onChange={e => updStyle({ yAxisRightLabel: e.target.value })}
+                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+            </div>
+          )}
+        </Disclosure>
+      )}
+
+      {/* TIME_SERIES: time granularity */}
+      {chartType === 'TIME_SERIES' && (
+        <Disclosure title="Time Granularity" hint="Bucket timestamps into time periods before aggregating. Useful for compressing high-frequency data.">
+          <div>
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">Group by</label>
+            <select value={styleConfig.timeGranularity || 'raw'}
+              onChange={e => updStyle({ timeGranularity: e.target.value as TimeGranularity })}
+              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
+              <option value="raw">Raw (no bucketing)</option>
+              <option value="day">Day</option>
+              <option value="week">Week</option>
+              <option value="month">Month</option>
+              <option value="quarter">Quarter</option>
+              <option value="year">Year</option>
+            </select>
+          </div>
+        </Disclosure>
+      )}
+
+      {/* SCATTER: point labels */}
+      {chartType === 'SCATTER' && (
+        <Disclosure title="Point Labels" hint="Show a label on each scatter point from a dimension column.">
+          <div>
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">Label Field</label>
+            <select value={styleConfig.scatterLabelField || ''}
+              onChange={e => updStyle({ scatterLabelField: e.target.value })}
+              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
+              <option value="">None</option>
+              {allCols.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+            </select>
+          </div>
+        </Disclosure>
+      )}
+
+      {/* Data: Sort & Limit */}
+      {supportsDataSection && (
+        <Disclosure title="Data: Sort & Limit" hint="Sort by one or multiple columns before rendering, then optionally cap the number of displayed rows.">
+          {/* Sort rules */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-gray-600">Sort Rules</span>
+              <button type="button"
+                onClick={() => updStyle({ chartSortRules: [...chartSortRules, { field: allCols[0]?.name ?? '', direction: 'asc' }] })}
+                className="text-xs text-blue-600 hover:text-blue-800">+ Add rule</button>
+            </div>
+            {chartSortRules.length === 0 && (
+              <p className="text-[11px] text-gray-400">No sort applied — data shown in query order.</p>
+            )}
+            {chartSortRules.map((rule, i) => (
+              <div key={i} className="flex items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 p-2">
+                <span className="text-[11px] text-gray-400 w-4 text-center">{i + 1}</span>
+                <select value={rule.field}
+                  onChange={e => updStyle({ chartSortRules: chartSortRules.map((r, ri) => ri === i ? { ...r, field: e.target.value } : r) })}
+                  className="flex-1 px-1.5 py-1 text-xs border border-gray-300 rounded-md bg-white min-w-0">
+                  {allCols.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                </select>
+                <select value={rule.direction}
+                  onChange={e => updStyle({ chartSortRules: chartSortRules.map((r, ri) => ri === i ? { ...r, direction: e.target.value as 'asc' | 'desc' } : r) })}
+                  className="w-20 px-1.5 py-1 text-xs border border-gray-300 rounded-md bg-white">
+                  <option value="asc">ASC</option>
+                  <option value="desc">DESC</option>
+                </select>
+                <button type="button"
+                  onClick={() => updStyle({ chartSortRules: chartSortRules.filter((_, ri) => ri !== i) })}
+                  className="p-0.5 text-gray-400 hover:text-red-500 flex-shrink-0">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {/* Top N limit */}
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">Show</label>
+              <select value={styleConfig.dataLimitDirection || 'top'}
+                onChange={e => updStyle({ dataLimitDirection: e.target.value as 'top' | 'bottom' })}
+                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
+                <option value="top">Top N</option>
+                <option value="bottom">Bottom N</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">Limit (rows)</label>
+              <input type="number" min={1} value={styleConfig.dataLimit ?? ''} placeholder="all"
+                onChange={e => updStyle({ dataLimit: e.target.value === '' ? '' : Number(e.target.value) })}
+                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+            </div>
           </div>
         </Disclosure>
       )}

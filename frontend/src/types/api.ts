@@ -60,6 +60,15 @@ export interface TableSummaryRowConfig {
 export type ChartBenchmarkLineStyle = 'solid' | 'dashed';
 export type KpiGoalDirection = 'up' | 'down';
 
+// Chart-level sort rule (applied client-side before rendering)
+export interface ChartSortRule {
+  field: string;
+  direction: 'asc' | 'desc';
+}
+
+// Time granularity for TIME_SERIES charts
+export type TimeGranularity = 'raw' | 'day' | 'week' | 'month' | 'quarter' | 'year';
+
 export interface KpiValueColorRule {
   operator: '>' | '<' | '=' | '>=' | '<=' | '!=';
   value: number;

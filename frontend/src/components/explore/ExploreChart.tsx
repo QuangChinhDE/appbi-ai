@@ -13,6 +13,7 @@ import {
 } from 'recharts';
 import type { ChartRoleConfig, MetricConfig, ChartStyleConfig } from './ExploreChartConfig';
 import { metricKey, metricLabel, normalizeChartStyleConfig } from './ExploreChartConfig';
+import type { ChartSortRule, TimeGranularity } from '@/types/api';
 import { KpiCard } from '@/components/visualizations/KpiCard';
 import { TableVisualization } from '@/components/visualizations/TableVisualization';
 import { applyFiltersToRows } from '@/lib/filters';
@@ -201,6 +202,89 @@ function pivotByBreakdown(
   return { pivoted: filtered, seriesKeys };
 }
 
+// ── Client-side sort helper ───────────────────────────────────────────────────
+function applySortRules(data: Record<string, any>[], rules: ChartSortRule[]): Record<string, any>[] {
+  if (!rules || rules.length === 0) return data;
+  return [...data].sort((a, b) => {
+    for (const rule of rules) {
+      const av = a[rule.field];
+      const bv = b[rule.field];
+      const aNum = Number(av);
+      const bNum = Number(bv);
+      const numeric = !isNaN(aNum) && !isNaN(bNum);
+      let cmp = 0;
+      if (numeric) {
+        cmp = aNum - bNum;
+      } else {
+        cmp = String(av ?? '').localeCompare(String(bv ?? ''));
+      }
+      if (cmp !== 0) return rule.direction === 'desc' ? -cmp : cmp;
+    }
+    return 0;
+  });
+}
+
+// ── Client-side top/bottom N limit ───────────────────────────────────────────
+function applyDataLimit(data: Record<string, any>[], limit: number | '' | undefined, direction: 'top' | 'bottom' | undefined): Record<string, any>[] {
+  if (!limit || typeof limit !== 'number' || limit <= 0) return data;
+  if (direction === 'bottom') return data.slice(-limit);
+  return data.slice(0, limit);
+}
+
+// ── Time granularity bucketing ────────────────────────────────────────────────
+function bucketTimestamp(ts: any, granularity: TimeGranularity): string {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return String(ts);
+  switch (granularity) {
+    case 'day':   return d.toISOString().slice(0, 10); // YYYY-MM-DD
+    case 'week': {
+      // Monday of the week
+      const day = d.getDay();
+      const diff = (day === 0 ? -6 : 1 - day);
+      const mon = new Date(d.getFullYear(), d.getMonth(), d.getDate() + diff);
+      return `W${mon.toISOString().slice(0, 10)}`;
+    }
+    case 'month':   return d.toISOString().slice(0, 7); // YYYY-MM
+    case 'quarter': return `${d.getFullYear()}-Q${Math.ceil((d.getMonth() + 1) / 3)}`;
+    case 'year':    return String(d.getFullYear());
+    default:        return String(ts);
+  }
+}
+
+function applyTimeGranularity(
+  data: Record<string, any>[],
+  timeField: string,
+  metrics: MetricConfig[],
+  granularity: TimeGranularity,
+): Record<string, any>[] {
+  if (!granularity || granularity === 'raw' || !timeField || metrics.length === 0) return data;
+  const buckets = new Map<string, Record<string, any>[]>();
+  for (const row of data) {
+    const key = bucketTimestamp(row[timeField], granularity);
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key)!.push(row);
+  }
+  return Array.from(buckets.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([bucket, rows]) => {
+      const out: Record<string, any> = { [timeField]: bucket };
+      for (const m of metrics) {
+        const key = metricKey(m);
+        const vals = rows.map(r => Number(r[key] ?? r[m.field]) || 0);
+        switch (m.agg) {
+          case 'sum':            out[key] = vals.reduce((a, b) => a + b, 0); break;
+          case 'avg':            out[key] = vals.reduce((a, b) => a + b, 0) / Math.max(vals.length, 1); break;
+          case 'count':          out[key] = rows.length; break;
+          case 'min':            out[key] = Math.min(...vals); break;
+          case 'max':            out[key] = Math.max(...vals); break;
+          case 'count_distinct': out[key] = new Set(rows.map(r => r[m.field])).size; break;
+          default:               out[key] = vals.reduce((a, b) => a + b, 0);
+        }
+      }
+      return out;
+    });
+}
+
 function EmptyState({ message }: { message: string }) {
   return (
     <div className="h-full flex items-center justify-center text-gray-400">
@@ -260,6 +344,38 @@ function ExploreChartInner({
   } = model;
   const { dimension, metrics, scatterX, scatterY } = normalizedRoleConfig;
 
+  // Apply sort + limit to categorical/combo/scatter data
+  const sortRules = style.chartSortRules ?? [];
+  const dataLimit = style.dataLimit;
+  const dataLimitDir = style.dataLimitDirection ?? 'top';
+
+  const sortedCategoricalData = useMemo(() => {
+    let d = applySortRules(categoricalData, sortRules);
+    d = applyDataLimit(d, dataLimit, dataLimitDir);
+    return d;
+  }, [categoricalData, sortRules, dataLimit, dataLimitDir]);
+
+  const sortedComboData = useMemo(() => {
+    let d = applySortRules(comboData, sortRules);
+    d = applyDataLimit(d, dataLimit, dataLimitDir);
+    return d;
+  }, [comboData, sortRules, dataLimit, dataLimitDir]);
+
+  const sortedScatterPoints = useMemo(() => {
+    let d = applySortRules(scatterPoints, sortRules);
+    d = applyDataLimit(d, dataLimit, dataLimitDir);
+    return d;
+  }, [scatterPoints, sortRules, dataLimit, dataLimitDir]);
+
+  // Apply time granularity bucketing for TIME_SERIES
+  const timeSeriesData = useMemo(() => {
+    if (type !== 'LINE' && type !== 'TIME_SERIES') return sortedCategoricalData;
+    const gran = style.timeGranularity ?? 'raw';
+    const tf = normalizedRoleConfig.timeField || xField;
+    if (!tf || gran === 'raw') return sortedCategoricalData;
+    return applyTimeGranularity(sortedCategoricalData, tf, metrics, gran);
+  }, [type, sortedCategoricalData, style.timeGranularity, normalizedRoleConfig.timeField, xField, metrics]);
+
   if (!data || data.length === 0) {
     return <EmptyState message="No data. Run the query first." />;
   }
@@ -276,9 +392,18 @@ function ExploreChartInner({
   const legendPos = style.legendPosition || 'bottom';
   const showLegend = legendPos !== 'none';
   const barRadius = style.barRadius ?? 4;
+  const barSize = typeof style.barSize === 'number' && style.barSize > 0 ? style.barSize : undefined;
   const showDataLabels = style.showDataLabels ?? false;
   const showDots = style.showDots ?? true;
+  const lineWidth = style.lineWidth ?? 2;
+  const areaOpacity = style.areaOpacity ?? 0.6;
   const lineDash = style.lineStyle === 'dashed' ? '8 4' : undefined;
+  const chartTitle = style.chartTitle?.trim() || undefined;
+  const pieInnerRadius = style.pieInnerRadius ?? 0;
+  const stackMode = style.stackMode ?? 'normal';
+  const dualYAxis = style.dualYAxis ?? false;
+  const yAxisRightLabel = style.yAxisRightLabel?.trim() || undefined;
+  const scatterLabelField = style.scatterLabelField?.trim() || undefined;
   const benchmarkValue = getBenchmarkValue(style);
   const showBenchmarkLine = Boolean(style.showBenchmarkLine && benchmarkValue !== null);
   const benchmarkColor = style.benchmarkColor || '#dc2626';
@@ -292,6 +417,10 @@ function ExploreChartInner({
 
   const xAxisLabel = style.xAxisLabel || undefined;
   const yAxisLabel = style.yAxisLabel || undefined;
+
+  const ChartTitleEl = chartTitle ? (
+    <div className="text-center text-sm font-semibold text-gray-700 mb-1">{chartTitle}</div>
+  ) : null;
 
   const renderXAxis = (dataKey: string, count: number = categoricalData.length) => {
     const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(count, fontSize, xAxisLabel);
@@ -364,25 +493,28 @@ function ExploreChartInner({
         : Number(style.kpiBenchmarkValue)
     );
     return (
-      <div className="flex h-full items-center justify-center">
-        <div className="w-full max-w-xl">
-          <KpiCard
-            value={kpiValue}
-            label={cardLabel}
-            format={style.numberFormat ?? 'compact'}
-            decimalPlaces={style.decimalPlaces}
-            currencySymbol={style.currencySymbol}
-            contextTemplate={style.kpiContextTemplate}
-            benchmarkValue={benchmarkValue}
-            benchmarkLabel={style.kpiBenchmarkLabel}
-            showBenchmarkValue={style.kpiShowBenchmarkValue}
-            showDelta={style.kpiShowDelta}
-            goalDirection={style.kpiGoalDirection}
-            accentColor={style.kpiAccentColor}
-            enableColorRules={style.kpiEnableColorRules}
-            colorRules={style.kpiColorRules}
-            rowCount={data.length}
-          />
+      <div className="h-full flex flex-col">
+        {ChartTitleEl}
+        <div className="flex-1 flex items-center justify-center">
+          <div className="w-full max-w-xl">
+            <KpiCard
+              value={kpiValue}
+              label={cardLabel}
+              format={style.numberFormat ?? 'compact'}
+              decimalPlaces={style.decimalPlaces}
+              currencySymbol={style.currencySymbol}
+              contextTemplate={style.kpiContextTemplate}
+              benchmarkValue={benchmarkValue}
+              benchmarkLabel={style.kpiBenchmarkLabel}
+              showBenchmarkValue={style.kpiShowBenchmarkValue}
+              showDelta={style.kpiShowDelta}
+              goalDirection={style.kpiGoalDirection}
+              accentColor={style.kpiAccentColor}
+              enableColorRules={style.kpiEnableColorRules}
+              colorRules={style.kpiColorRules}
+              rowCount={data.length}
+            />
+          </div>
         </div>
       </div>
     );
@@ -392,24 +524,31 @@ function ExploreChartInner({
   if (type === 'PIE') {
     const m = metrics[0];
     if (!dimension || !m) return <EmptyState message="Select legend and value columns to render this chart." />;
+    const sortedPieData = applyDataLimit(applySortRules(pieData, sortRules), dataLimit, dataLimitDir);
     return (
-      <ResponsiveContainer width="100%" height="100%">
-        <PieChart>
-          <Pie data={pieData} dataKey="value" nameKey="name"
-            cx="50%" cy="45%" outerRadius="60%"
-            onClick={handlePieClick}
-            label={showDataLabels
-              ? ({ name, value, percent }) => percent > 0.03
-                ? `${name}: ${formatNumber(value, style)} (${(percent * 100).toFixed(0)}%)`
-                : ''
-              : ({ name, percent }) => percent > 0.03 ? `${name} (${(percent * 100).toFixed(0)}%)` : ''}
-          >
-            {pieData.map((_, i) => <Cell key={i} fill={PALETTE[i % PALETTE.length]} />)}
-          </Pie>
-          <Tooltip formatter={(v: any) => [formatNumber(v, style), metricLabel(m)]} />
-          {renderLegend()}
-        </PieChart>
-      </ResponsiveContainer>
+      <div className="h-full flex flex-col">
+        {ChartTitleEl}
+        <div className="flex-1 min-h-0">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie data={sortedPieData} dataKey="value" nameKey="name"
+                cx="50%" cy="45%" outerRadius="60%"
+                innerRadius={pieInnerRadius > 0 ? `${pieInnerRadius}%` : undefined}
+                onClick={handlePieClick}
+                label={showDataLabels
+                  ? ({ name, value, percent }) => percent > 0.03
+                    ? `${name}: ${formatNumber(value, style)} (${(percent * 100).toFixed(0)}%)`
+                    : ''
+                  : ({ name, percent }) => percent > 0.03 ? `${name} (${(percent * 100).toFixed(0)}%)` : ''}
+              >
+                {sortedPieData.map((_, i) => <Cell key={i} fill={PALETTE[i % PALETTE.length]} />)}
+              </Pie>
+              <Tooltip formatter={(v: any) => [formatNumber(v, style), metricLabel(m)]} />
+              {renderLegend()}
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
     );
   }
 
@@ -430,36 +569,50 @@ function ExploreChartInner({
       );
     };
     return (
-      <ResponsiveContainer width="100%" height="100%">
-        <ScatterChart onClick={handleScatterClick}>
-          {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-          <XAxis dataKey="x" name={scatterX} type="number" tick={{ fontSize }}
-            label={{ value: style.xAxisLabel || scatterX, position: 'insideBottom', offset: -5, fontSize }} />
-          <YAxis dataKey="y" name={scatterY} type="number" tick={{ fontSize }}
-            tickFormatter={yAxisTickFormatter(style)}
-            label={{ value: style.yAxisLabel || scatterY, angle: -90, position: 'insideLeft', fontSize }} />
-          <ZAxis range={[40, 40]} />
-          <Tooltip content={<ScatterTooltip />} cursor={{ strokeDasharray: '3 3' }} />
-          {renderLegend()}
-          <Scatter name={`${scatterX} vs ${scatterY}`} data={scatterPoints} fill={PALETTE[0]} />
-        </ScatterChart>
-      </ResponsiveContainer>
+      <div className="h-full flex flex-col">
+        {ChartTitleEl}
+        <div className="flex-1 min-h-0">
+          <ResponsiveContainer width="100%" height="100%">
+            <ScatterChart onClick={handleScatterClick}>
+              {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+              <XAxis dataKey="x" name={scatterX} type="number" tick={{ fontSize }}
+                label={{ value: style.xAxisLabel || scatterX, position: 'insideBottom', offset: -5, fontSize }} />
+              <YAxis dataKey="y" name={scatterY} type="number" tick={{ fontSize }}
+                tickFormatter={yAxisTickFormatter(style)}
+                label={{ value: style.yAxisLabel || scatterY, angle: -90, position: 'insideLeft', fontSize }} />
+              <ZAxis range={[40, 40]} />
+              <Tooltip content={<ScatterTooltip />} cursor={{ strokeDasharray: '3 3' }} />
+              {renderLegend()}
+              <Scatter name={`${scatterX} vs ${scatterY}`} data={sortedScatterPoints} fill={PALETTE[0]}>
+                {scatterLabelField && (
+                  <LabelList dataKey={scatterLabelField} position="top" fontSize={fontSize - 1} />
+                )}
+              </Scatter>
+            </ScatterChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
     );
   }
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ TABLE ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'TABLE') {
     return (
-      <TableVisualization
-        data={tableData}
-        columns={tableColumns}
-        conditionalFormatting={style.tableEnableConditionalFormatting ? style.tableConditionalFormatting : undefined}
-        heatmapRules={style.tableEnableHeatmap ? style.tableHeatmapRules : undefined}
-        summaryRows={style.tableSummaryRows}
-        showSummaryRow={style.tableShowSummaryRow}
-        summaryLabel={style.tableSummaryLabel}
-        summaryLabelColumn={style.tableSummaryLabelColumn}
-      />
+      <div className="h-full flex flex-col">
+        {ChartTitleEl}
+        <div className="flex-1 min-h-0">
+          <TableVisualization
+            data={tableData}
+            columns={tableColumns}
+            conditionalFormatting={style.tableEnableConditionalFormatting ? style.tableConditionalFormatting : undefined}
+            heatmapRules={style.tableEnableHeatmap ? style.tableHeatmapRules : undefined}
+            summaryRows={style.tableSummaryRows}
+            showSummaryRow={style.tableShowSummaryRow}
+            summaryLabel={style.tableSummaryLabel}
+            summaryLabelColumn={style.tableSummaryLabelColumn}
+          />
+        </div>
+      </div>
     );
   }
 
@@ -470,107 +623,125 @@ function ExploreChartInner({
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ STACKED BAR ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'STACKED_BAR') {
-    const displayData = categoricalData;
+    const displayData = sortedCategoricalData;
     const displaySeries = categoricalSeries;
+    const isPercent = stackMode === 'percent';
+    const percentYAxis = isPercent ? (
+      <YAxis tick={{ fontSize }} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} domain={[0, 1]}
+        label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
+    ) : renderYAxis();
     return (
-      <>
-        {TruncationBanner}
-        {wrapScrollable(
-          <BarChart data={displayData} onClick={handleCategoricalChartClick}>
-            {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            {renderXAxis(xField, displayData.length)}
-            {renderYAxis()}
-            <Tooltip formatter={tooltipFormatter(displaySeries, style)} />
-            {renderLegend()}
-            {displaySeries.map((series, i) => (
-              <Bar key={series.key} dataKey={series.key} stackId="s" fill={PALETTE[i % PALETTE.length]}
-                name={series.label}
-                radius={i === displaySeries.length - 1 ? [barRadius, barRadius, 0, 0] : undefined}>
-                {showDataLabels && i === displaySeries.length - 1 && (
-                  <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
-                )}
-              </Bar>
-            ))}
-            {renderBenchmarkLine('y')}
-          </BarChart>,
-          displayData.length,
-        )}
-      </>
+      <div className="h-full flex flex-col">
+        {ChartTitleEl}
+        <div className="flex-1 min-h-0">
+          {TruncationBanner}
+          {wrapScrollable(
+            <BarChart data={displayData} onClick={handleCategoricalChartClick}
+              stackOffset={isPercent ? 'expand' : undefined}>
+              {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+              {renderXAxis(xField, displayData.length)}
+              {percentYAxis}
+              <Tooltip formatter={isPercent
+                ? (v: any, name: string) => [`${(Number(v) * 100).toFixed(1)}%`, name]
+                : tooltipFormatter(displaySeries, style)} />
+              {renderLegend()}
+              {displaySeries.map((series, i) => (
+                <Bar key={series.key} dataKey={series.key} stackId="s" fill={PALETTE[i % PALETTE.length]}
+                  name={series.label}
+                  barSize={barSize}
+                  radius={i === displaySeries.length - 1 ? [barRadius, barRadius, 0, 0] : undefined}>
+                  {showDataLabels && i === displaySeries.length - 1 && (
+                    <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
+                  )}
+                </Bar>
+              ))}
+              {renderBenchmarkLine('y')}
+            </BarChart>,
+            displayData.length,
+          )}
+        </div>
+      </div>
     );
   }
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ AREA ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'AREA') {
-    const displayData = categoricalData;
+    const displayData = sortedCategoricalData;
     const displaySeries = categoricalSeries;
     return (
-      <>
-        {TruncationBanner}
-        {wrapScrollable(
-          <AreaChart data={displayData} onClick={handleCategoricalChartClick}>
-            {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            {renderXAxis(xField, displayData.length)}
-            {renderYAxis()}
-            <Tooltip formatter={tooltipFormatter(displaySeries, style)} />
-            {renderLegend()}
-            {displaySeries.map((series, i) => {
-              return (
-                <Area key={series.key} type="monotone" dataKey={series.key}
-                  name={series.label}
-                  stroke={PALETTE[i % PALETTE.length]}
-                  fill={PALETTE[i % PALETTE.length]}
-                  fillOpacity={0.2} strokeWidth={2}
-                  dot={showDots && displayData.length <= 60}
-                  strokeDasharray={lineDash} />
-              );
-            })}
-            {renderBenchmarkLine('y')}
-          </AreaChart>,
-          displayData.length,
-        )}
-      </>
+      <div className="h-full flex flex-col">
+        {ChartTitleEl}
+        <div className="flex-1 min-h-0">
+          {TruncationBanner}
+          {wrapScrollable(
+            <AreaChart data={displayData} onClick={handleCategoricalChartClick}>
+              {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+              {renderXAxis(xField, displayData.length)}
+              {renderYAxis()}
+              <Tooltip formatter={tooltipFormatter(displaySeries, style)} />
+              {renderLegend()}
+              {displaySeries.map((series, i) => {
+                return (
+                  <Area key={series.key} type="monotone" dataKey={series.key}
+                    name={series.label}
+                    stroke={PALETTE[i % PALETTE.length]}
+                    fill={PALETTE[i % PALETTE.length]}
+                    fillOpacity={areaOpacity} strokeWidth={lineWidth}
+                    dot={showDots && displayData.length <= 60}
+                    strokeDasharray={lineDash} />
+                );
+              })}
+              {renderBenchmarkLine('y')}
+            </AreaChart>,
+            displayData.length,
+          )}
+        </div>
+      </div>
     );
   }
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ LINE / TIME_SERIES ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'LINE' || type === 'TIME_SERIES') {
-    const displayData = categoricalData;
+    const displayData = timeSeriesData;
     const displaySeries = categoricalSeries;
     return (
-      <>
-        {TruncationBanner}
-        {wrapScrollable(
-          <LineChart data={displayData} onClick={handleCategoricalChartClick}>
-            {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            {renderXAxis(xField, displayData.length)}
-            {renderYAxis()}
-            <Tooltip formatter={tooltipFormatter(displaySeries, style)} />
-            {renderLegend()}
-            {displaySeries.map((series, i) => {
-              return (
-                <Line key={series.key} type="monotone" dataKey={series.key}
-                  name={series.label}
-                  stroke={PALETTE[i % PALETTE.length]}
-                  strokeWidth={2}
-                  dot={showDots && displayData.length <= 60}
-                  strokeDasharray={lineDash}>
-                  {showDataLabels && (
-                    <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
-                  )}
-                </Line>
-              );
-            })}
-            {renderBenchmarkLine('y')}
-          </LineChart>,
-          displayData.length,
-        )}
-      </>
+      <div className="h-full flex flex-col">
+        {ChartTitleEl}
+        <div className="flex-1 min-h-0">
+          {TruncationBanner}
+          {wrapScrollable(
+            <LineChart data={displayData} onClick={handleCategoricalChartClick}>
+              {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+              {renderXAxis(xField, displayData.length)}
+              {renderYAxis()}
+              <Tooltip formatter={tooltipFormatter(displaySeries, style)} />
+              {renderLegend()}
+              {displaySeries.map((series, i) => {
+                return (
+                  <Line key={series.key} type="monotone" dataKey={series.key}
+                    name={series.label}
+                    stroke={PALETTE[i % PALETTE.length]}
+                    strokeWidth={lineWidth}
+                    dot={showDots && displayData.length <= 60}
+                    strokeDasharray={lineDash}>
+                    {showDataLabels && (
+                      <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
+                    )}
+                  </Line>
+                );
+              })}
+              {renderBenchmarkLine('y')}
+            </LineChart>,
+            displayData.length,
+          )}
+        </div>
+      </div>
     );
   }
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ HORIZONTAL BAR ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   if (type === 'HORIZONTAL_BAR') {
-    const displayData = categoricalData;
+    const displayData = sortedCategoricalData;
     const displaySeries = categoricalSeries;
     const MIN_ROW_HEIGHT = 32; // px per row for horizontal bars
     const chartHeight = displayData.length > SCROLL_THRESHOLD
@@ -590,6 +761,7 @@ function ExploreChartInner({
             <Bar key={series.key} dataKey={series.key}
               name={series.label}
               fill={PALETTE[i % PALETTE.length]}
+              barSize={barSize}
               radius={[0, barRadius, barRadius, 0]}>
               {showDataLabels && (
                 <LabelList dataKey={series.key} position="right" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
@@ -601,22 +773,25 @@ function ExploreChartInner({
       </BarChart>
     );
     return (
-      <>
-        {TruncationBanner}
-        {displayData.length > SCROLL_THRESHOLD ? (
-          <div style={{ width: '100%', height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
-            <div style={{ width: '100%', height: chartHeight }}>
-              <ResponsiveContainer width="100%" height="100%">
-                {innerChart}
-              </ResponsiveContainer>
+      <div className="h-full flex flex-col">
+        {ChartTitleEl}
+        <div className="flex-1 min-h-0">
+          {TruncationBanner}
+          {displayData.length > SCROLL_THRESHOLD ? (
+            <div style={{ width: '100%', height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
+              <div style={{ width: '100%', height: chartHeight }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  {innerChart}
+                </ResponsiveContainer>
+              </div>
             </div>
-          </div>
-        ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            {innerChart}
-          </ResponsiveContainer>
-        )}
-      </>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              {innerChart}
+            </ResponsiveContainer>
+          )}
+        </div>
+      </div>
     );
   }
 
@@ -626,68 +801,81 @@ function ExploreChartInner({
       return <EmptyState message="Select bar value columns and a line value column to render this chart." />;
     }
     const lineSeries = comboLineSeries[0];
-    const displayData = comboData;
+    const displayData = sortedComboData;
     return (
-      <>
-        {TruncationBanner}
-        {wrapScrollable(
-          <ComposedChart data={displayData} onClick={handleCategoricalChartClick}>
-            {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-            {renderXAxis(xField!, displayData.length)}
-            {renderYAxis()}
-            <Tooltip formatter={tooltipFormatter([...comboBarSeries, ...comboLineSeries], style)} />
-            {renderLegend()}
-            {comboBarSeries.map((series, index) => (
-              <Bar key={series.key} dataKey={series.key} name={series.label}
-                fill={PALETTE[index % PALETTE.length]} radius={[barRadius, barRadius, 0, 0]}>
-                {showDataLabels && (
-                  <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
-                )}
-              </Bar>
-            ))}
-            <Line dataKey={lineSeries.key} name={lineSeries.label}
-              type="monotone" stroke={PALETTE[comboBarSeries.length % PALETTE.length]} strokeWidth={2}
-              dot={showDots && displayData.length <= 60}
-              strokeDasharray={lineDash}
-              yAxisId={0} />
-            {renderBenchmarkLine('y')}
-          </ComposedChart>,
-          displayData.length,
-        )}
-      </>
+      <div className="h-full flex flex-col">
+        {ChartTitleEl}
+        <div className="flex-1 min-h-0">
+          {TruncationBanner}
+          {wrapScrollable(
+            <ComposedChart data={displayData} onClick={handleCategoricalChartClick}>
+              {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+              {renderXAxis(xField!, displayData.length)}
+              {renderYAxis()}
+              {dualYAxis && (
+                <YAxis yAxisId="right" orientation="right" tick={{ fontSize }}
+                  tickFormatter={yAxisTickFormatter(style)}
+                  label={yAxisRightLabel ? { value: yAxisRightLabel, angle: 90, position: 'insideRight', fontSize, dx: 15 } : undefined} />
+              )}
+              <Tooltip formatter={tooltipFormatter([...comboBarSeries, ...comboLineSeries], style)} />
+              {renderLegend()}
+              {comboBarSeries.map((series, index) => (
+                <Bar key={series.key} dataKey={series.key} name={series.label}
+                  fill={PALETTE[index % PALETTE.length]} radius={[barRadius, barRadius, 0, 0]}
+                  barSize={barSize}>
+                  {showDataLabels && (
+                    <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
+                  )}
+                </Bar>
+              ))}
+              <Line dataKey={lineSeries.key} name={lineSeries.label}
+                type="monotone" stroke={PALETTE[comboBarSeries.length % PALETTE.length]} strokeWidth={lineWidth}
+                dot={showDots && displayData.length <= 60}
+                strokeDasharray={lineDash}
+                yAxisId={dualYAxis ? 'right' : 0} />
+              {renderBenchmarkLine('y')}
+            </ComposedChart>,
+            displayData.length,
+          )}
+        </div>
+      </div>
     );
   }
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ BAR / GROUPED_BAR (default) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-  const displayBarData = categoricalData;
+  const displayBarData = sortedCategoricalData;
   const displayBarSeries = categoricalSeries;
   return (
-    <>
-      {TruncationBanner}
-      {wrapScrollable(
-        <BarChart data={displayBarData} onClick={handleCategoricalChartClick}>
-          {showGrid && <CartesianGrid strokeDasharray="3 3" />}
-          {renderXAxis(xField, displayBarData.length)}
-          {renderYAxis()}
-          <Tooltip formatter={tooltipFormatter(displayBarSeries, style)} />
-          {renderLegend()}
-          {displayBarSeries.map((series, i) => {
-            return (
-              <Bar key={series.key} dataKey={series.key}
-                name={series.label}
-                fill={PALETTE[i % PALETTE.length]}
-                radius={[barRadius, barRadius, 0, 0]}>
-                {showDataLabels && (
-                  <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
-                )}
-              </Bar>
-            );
-          })}
-          {renderBenchmarkLine('y')}
-        </BarChart>,
-        displayBarData.length,
-      )}
-    </>
+    <div className="h-full flex flex-col">
+      {ChartTitleEl}
+      <div className="flex-1 min-h-0">
+        {TruncationBanner}
+        {wrapScrollable(
+          <BarChart data={displayBarData} onClick={handleCategoricalChartClick}>
+            {showGrid && <CartesianGrid strokeDasharray="3 3" />}
+            {renderXAxis(xField, displayBarData.length)}
+            {renderYAxis()}
+            <Tooltip formatter={tooltipFormatter(displayBarSeries, style)} />
+            {renderLegend()}
+            {displayBarSeries.map((series, i) => {
+              return (
+                <Bar key={series.key} dataKey={series.key}
+                  name={series.label}
+                  fill={PALETTE[i % PALETTE.length]}
+                  barSize={barSize}
+                  radius={[barRadius, barRadius, 0, 0]}>
+                  {showDataLabels && (
+                    <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
+                  )}
+                </Bar>
+              );
+            })}
+            {renderBenchmarkLine('y')}
+          </BarChart>,
+          displayBarData.length,
+        )}
+      </div>
+    </div>
   );
 }
 

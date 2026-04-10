@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { Save, ArrowLeft, ChevronDown, ChevronRight, Pencil, Check, Search, Plus, Trash2, Tag, Settings2, Bot, Play, RotateCcw, Database, Code2 } from 'lucide-react';
+import { Save, ArrowLeft, ChevronDown, ChevronRight, Pencil, Check, Search, Plus, Trash2, Tag, Settings2, Bot, Play, RotateCcw, Database, Code2, Eye } from 'lucide-react';
 import { useDataset, useTablePreview, useExecuteDatasetTableQueryMutation, type ColumnMetadata } from '@/hooks/use-datasets';
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
@@ -977,6 +977,15 @@ export default function ExploreDetailPage() {
 
   return (
     <div className="flex h-screen flex-col bg-slate-100">
+      {!isNew && !resPerms.canEdit && resPerms.canView && (
+        <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-2">
+          <div className="flex items-center gap-2 text-xs text-amber-700">
+            <Eye className="h-3.5 w-3.5 shrink-0" />
+            <span className="font-medium">View only</span>
+            <span className="text-amber-600">— You can preview this chart but cannot modify its configuration.</span>
+          </div>
+        </div>
+      )}
       <div className="shrink-0 border-b border-slate-200 bg-white px-4 py-3">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-2 min-w-0">
@@ -1093,7 +1102,8 @@ export default function ExploreDetailPage() {
               <div className="mt-1 inline-flex rounded-2xl border border-slate-200 bg-slate-100 p-1">
                 <button
                   onClick={handleUseGeneratedQuery}
-                  className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors ${
+                  disabled={!resPerms.canEdit}
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                     isConfigBuilderMode
                       ? 'bg-white text-blue-700 shadow-sm'
                       : 'text-slate-600 hover:bg-white/70'
@@ -1104,7 +1114,8 @@ export default function ExploreDetailPage() {
                 </button>
                 <button
                   onClick={handleEditSql}
-                  className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors ${
+                  disabled={!resPerms.canEdit}
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                     !isConfigBuilderMode
                       ? 'bg-white text-amber-700 shadow-sm'
                       : 'text-slate-600 hover:bg-white/70'
@@ -1141,7 +1152,8 @@ export default function ExploreDetailPage() {
               <select
                 value={queryLimit}
                 onChange={(e) => setQueryLimit(Number(e.target.value))}
-                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs"
+                disabled={!resPerms.canEdit}
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {[50, 100, 250, 500, 1000].map((value) => <option key={value} value={value}>{value}</option>)}
               </select>
@@ -1180,6 +1192,7 @@ export default function ExploreDetailPage() {
                   selectedTableId={selectedTableId}
                   onDatasetChange={setSelectedDatasetId}
                   onTableChange={setSelectedTableId}
+                  disabled={!resPerms.canEdit}
                 />
               </div>
 
@@ -1314,21 +1327,24 @@ export default function ExploreDetailPage() {
                     <p className="text-sm font-medium text-slate-700">Custom SQL</p>
                     <p className="text-xs text-slate-400">Run SQL to refresh the output columns used by Chart Setup.</p>
                   </div>
-                  <button
-                    onClick={handleResetCustomSqlDraft}
-                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
-                  >
-                    <RotateCcw className="h-3 w-3" />
-                    Reset
-                  </button>
+                  {resPerms.canEdit && (
+                    <button
+                      onClick={handleResetCustomSqlDraft}
+                      className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                    >
+                      <RotateCcw className="h-3 w-3" />
+                      Reset
+                    </button>
+                  )}
                 </div>
 
                 <div className="border-b border-slate-200 p-4">
                   <textarea
                     value={customSqlDraft}
                     onChange={(e) => setCustomSqlDraft(e.target.value)}
+                    readOnly={!resPerms.canEdit}
                     spellCheck={false}
-                    className="h-64 w-full resize-none rounded-2xl border border-slate-200 bg-slate-950 px-3 py-3 font-mono text-xs text-slate-100 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-100"
+                    className={`h-64 w-full resize-none rounded-2xl border border-slate-200 bg-slate-950 px-3 py-3 font-mono text-xs text-slate-100 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-100${!resPerms.canEdit ? ' opacity-60 cursor-not-allowed' : ''}`}
                   />
                 </div>
 
@@ -1559,6 +1575,7 @@ export default function ExploreDetailPage() {
               availableColumns={configColumns}
               tableDisplayColumns={tableDisplayColumns}
               queryMode={sqlMode}
+              readOnly={!resPerms.canEdit}
               onChartTypeChange={handleChartTypeChange}
               onRoleConfigChange={sqlMode === 'custom' ? setCustomRoleConfig : setGeneratedRoleConfig}
               onStyleConfigChange={setChartStyleConfig}
@@ -1602,6 +1619,7 @@ export default function ExploreDetailPage() {
                       onChange={setFilters}
                       columns={filterColumns}
                       dataRows={filterRows}
+                      readOnly={!resPerms.canEdit}
                     />
                   )}
                 </div>
@@ -1626,7 +1644,7 @@ export default function ExploreDetailPage() {
                   : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}
               </button>
               {isMetaOpen && (
-                <div className="px-4 pb-4 space-y-3">
+                <div className={`px-4 pb-4 space-y-3${!resPerms.canEdit ? ' pointer-events-none opacity-60' : ''}`}>
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="block text-xs font-medium text-gray-600 mb-1">Domain</label>
@@ -1770,7 +1788,7 @@ export default function ExploreDetailPage() {
                   : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}
               </button>
               {isParamsOpen && (
-                <div className="px-4 pb-4 space-y-2">
+                <div className={`px-4 pb-4 space-y-2${!resPerms.canEdit ? ' pointer-events-none opacity-60' : ''}`}>
                   <p className="text-[10px] text-gray-400">
                     {sqlMode === 'custom'
                       ? 'Filters this chart accepts from a dashboard, based on the SQL output columns.'

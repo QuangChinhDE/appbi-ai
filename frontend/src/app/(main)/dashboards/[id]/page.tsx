@@ -994,6 +994,7 @@ export default function DashboardDetailPage() {
         <DashboardGrid
           dashboardId={dashboardId}
           dashboardCharts={visibleDashboardCharts}
+          canEdit={canEditResource}
           onLayoutChange={canEditResource ? handleLayoutChange : undefined}
           onRemoveChart={canEditResource ? handleRemoveChart : undefined}
           removingChartId={removingChartId}

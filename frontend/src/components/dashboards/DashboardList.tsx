@@ -2,17 +2,19 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
-import { Eye, Trash2, LayoutDashboard, Loader2 } from 'lucide-react';
+import { Eye, Trash2, Share2, LayoutDashboard, Loader2 } from 'lucide-react';
 import { Dashboard } from '@/types/api';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import { OwnerBadge } from '@/components/common/OwnerBadge';
 
 interface DashboardListProps {
   dashboards: Dashboard[];
   onDelete?: (id: number) => void;
+  onShare?: (dashboard: Dashboard) => void;
   deletingId?: number;
 }
 
-export function DashboardList({ dashboards, onDelete, deletingId }: DashboardListProps) {
+export function DashboardList({ dashboards, onDelete, onShare, deletingId }: DashboardListProps) {
   const router = useRouter();
 
   if (dashboards.length === 0) {
@@ -36,6 +38,9 @@ export function DashboardList({ dashboards, onDelete, deletingId }: DashboardLis
               Name
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Owner
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
               Charts
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -47,7 +52,9 @@ export function DashboardList({ dashboards, onDelete, deletingId }: DashboardLis
           </tr>
         </thead>
         <tbody className="bg-white divide-y divide-gray-200">
-          {dashboards.map((dashboard) => (
+          {dashboards.map((dashboard) => {
+            const perms = getResourcePermissions(dashboard.user_permission);
+            return (
             <tr key={dashboard.id} className="hover:bg-gray-50">
               <td className="px-6 py-4">
                 <div className="text-sm font-medium text-gray-900">
@@ -57,6 +64,9 @@ export function DashboardList({ dashboards, onDelete, deletingId }: DashboardLis
                   <div className="text-sm text-gray-500">{dashboard.description}</div>
                 )}
               </td>
+              <td className="px-6 py-4 whitespace-nowrap">
+                <OwnerBadge email={dashboard.owner_email} />
+              </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                 {dashboard.dashboard_charts?.length || 0} charts
               </td>
@@ -64,32 +74,42 @@ export function DashboardList({ dashboards, onDelete, deletingId }: DashboardLis
                 {new Date(dashboard.created_at).toLocaleDateString()}
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                <div className="flex justify-end space-x-2">
+                <div className="flex justify-end items-center gap-2">
                   <button
                     onClick={() => router.push(`/dashboards/${dashboard.id}`)}
-                    className="text-blue-600 hover:text-blue-900"
+                    className="text-blue-600 hover:text-blue-900 p-1 rounded hover:bg-blue-50"
                     title="Open dashboard"
                   >
-                    <Eye className="h-5 w-5" />
+                    <Eye className="h-4 w-4" />
                   </button>
-                  {onDelete && getResourcePermissions(dashboard.user_permission).canDelete && (
+                  {onShare && perms.canShare && (
+                  <button
+                    onClick={() => onShare(dashboard)}
+                    className="text-purple-600 hover:text-purple-900 p-1 rounded hover:bg-purple-50"
+                    title="Share"
+                  >
+                    <Share2 className="h-4 w-4" />
+                  </button>
+                  )}
+                  {onDelete && perms.canDelete && (
                   <button
                     onClick={() => onDelete(dashboard.id)}
                     disabled={deletingId === dashboard.id}
-                    className="text-red-600 hover:text-red-900 disabled:opacity-50"
+                    className="text-red-600 hover:text-red-900 p-1 rounded hover:bg-red-50 disabled:opacity-50"
                     title="Delete dashboard"
                   >
                     {deletingId === dashboard.id ? (
-                      <Loader2 className="h-5 w-5 animate-spin" />
+                      <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
-                      <Trash2 className="h-5 w-5" />
+                      <Trash2 className="h-4 w-4" />
                     )}
                   </button>
                   )}
                 </div>
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

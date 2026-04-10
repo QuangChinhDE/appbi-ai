@@ -24,6 +24,8 @@ interface DataSourceFormProps {
   onSubmit: (data: DataSourceCreate, meta: { configModified: boolean }) => void;
   onCancel: () => void;
   isLoading?: boolean;
+  /** When true, all inputs are disabled and the submit button is hidden. */
+  readOnly?: boolean;
 }
 
 const SENSITIVE_FIELDS = ['password', 'credentials_json', 'api_key', 'token', 'access_token', 'secret_key', 'private_key', 'client_secret', 'service_account_json'];
@@ -42,6 +44,7 @@ export default function DataSourceForm({
   onSubmit,
   onCancel,
   isLoading = false,
+  readOnly = false,
 }: DataSourceFormProps) {
   const [name, setName] = useState(initialData?.name || '');
   const [type, setType] = useState<DataSourceType>(
@@ -183,6 +186,7 @@ export default function DataSourceForm({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (readOnly) return;
     // For non-manual types, require a successful test before saving
     if (type !== DataSourceType.MANUAL && testState !== 'ok') return;
     onSubmit(
@@ -593,6 +597,13 @@ export default function DataSourceForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      {readOnly && (
+        <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-amber-700 text-sm">
+          <span>You have view-only access to this data source.</span>
+        </div>
+      )}
+      {/* fieldset[disabled] cascades to all form controls inside — no need to touch each input */}
+      <fieldset disabled={readOnly} className="space-y-4 border-0 p-0 m-0 disabled:opacity-60">
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">
           Name <span className="text-red-500">*</span>
@@ -676,6 +687,8 @@ export default function DataSourceForm({
         </div>
       )}
 
+      </fieldset>
+
       <div className="flex gap-3 pt-4 border-t">
         <button
           type="button"
@@ -683,8 +696,9 @@ export default function DataSourceForm({
           className="flex-1 px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-colors"
           disabled={isLoading}
         >
-          Cancel
+          {readOnly ? 'Back' : 'Cancel'}
         </button>
+        {!readOnly && (
         <button
           type="submit"
           className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
@@ -694,6 +708,7 @@ export default function DataSourceForm({
           {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
           {initialData ? 'Update' : 'Create'}
         </button>
+        )}
       </div>
     </form>
   );

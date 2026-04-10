@@ -176,6 +176,7 @@ export default function DataSourceDetailPage() {
                 onSubmit={handleUpdate}
                 onCancel={() => router.push('/datasources')}
                 isLoading={updateMutation.isPending}
+                readOnly={!resPerms.canEdit}
               />
             </div>
           )}

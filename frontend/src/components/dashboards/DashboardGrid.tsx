@@ -60,6 +60,7 @@ interface DashboardGridProps {
   availablePages?: DashboardPageConfig[];
   onMoveChartToPage?: (dashboardChartId: number, pageId: string) => void;
   emptyMessage?: string;
+  canEdit?: boolean;
 }
 
 export function DashboardGrid({
@@ -77,6 +78,7 @@ export function DashboardGrid({
   availablePages = [],
   onMoveChartToPage,
   emptyMessage,
+  canEdit = false,
 }: DashboardGridProps) {
   // Convert backend layout to react-grid-layout format
   const layouts = dashboardCharts.map((dc) => {
@@ -143,6 +145,7 @@ export function DashboardGrid({
                 dashboardChartId={dc.id}
                 dashboardId={dashboardId}
                 currentLayout={dc.layout as Record<string, any>}
+                canEdit={canEdit}
                 onRemove={onRemoveChart}
                 isRemoving={removingChartId === dc.id}
                 dashboardFilters={dashboardFilters}

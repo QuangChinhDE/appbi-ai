@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Loader2, LayoutDashboard, Clock, Eye, Trash2, Search, Globe } from 'lucide-react';
+import { Plus, Loader2, LayoutDashboard, Clock, Eye, Trash2, Search, Globe, Share2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { useDashboards, useCreateDashboard, useDeleteDashboard } from '@/hooks/use-dashboards';
@@ -10,6 +10,7 @@ import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { DashboardList } from '@/components/dashboards/DashboardList';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
+import { ShareDialog } from '@/components/common/ShareDialog';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { GettingStartedGuide } from '@/components/common/GettingStartedGuide';
@@ -28,6 +29,7 @@ export default function DashboardsPage() {
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingDashboard, setIsDeletingDashboard] = useState(false);
   const [publicShareDash, setPublicShareDash] = useState<Dashboard | null>(null);
+  const [shareDash, setShareDash] = useState<Dashboard | null>(null);
 
   const { data: dashboards, isLoading } = useDashboards();
   const { data: permData } = usePermissions();
@@ -130,7 +132,7 @@ export default function DashboardsPage() {
         isLoading={isLoading}
         loadingText={t('common.loading')}
         searchPlaceholder={t('common.search')}
-        defaultView="grid"
+        defaultView="list"
       >
         {({ viewMode, filterText }) => {
           const filtered = (dashboards ?? []).filter((dashboard) =>
@@ -192,16 +194,28 @@ export default function DashboardsPage() {
                           </div>
                         </div>
                         <div className="flex items-center justify-between rounded-b-lg border-t bg-gray-50 px-5 py-3">
-                          {getResourcePermissions(dashboard.user_permission).canEdit && (
-                            <button
-                              onClick={() => setPublicShareDash(dashboard)}
-                              className="flex items-center gap-1 text-xs text-gray-400 transition-colors hover:text-purple-600"
-                              title="Public links"
-                            >
-                              <Globe className="h-3.5 w-3.5" />
-                              Public links
-                            </button>
-                          )}
+                          <div className="flex items-center gap-3">
+                            {getResourcePermissions(dashboard.user_permission).canShare && (
+                              <button
+                                onClick={() => setShareDash(dashboard)}
+                                className="flex items-center gap-1 text-xs text-gray-400 transition-colors hover:text-blue-600"
+                                title="Share"
+                              >
+                                <Share2 className="h-3.5 w-3.5" />
+                                Share
+                              </button>
+                            )}
+                            {getResourcePermissions(dashboard.user_permission).canEdit && (
+                              <button
+                                onClick={() => setPublicShareDash(dashboard)}
+                                className="flex items-center gap-1 text-xs text-gray-400 transition-colors hover:text-purple-600"
+                                title="Public links"
+                              >
+                                <Globe className="h-3.5 w-3.5" />
+                                Public links
+                              </button>
+                            )}
+                          </div>
                           <button
                             onClick={() => router.push(`/dashboards/${dashboard.id}`)}
                             className="ml-auto flex items-center gap-1.5 text-xs font-medium text-blue-600 transition-colors hover:text-blue-800"
@@ -218,6 +232,7 @@ export default function DashboardsPage() {
                 <DashboardList
                   dashboards={filtered}
                   onDelete={canEdit ? handleDelete : undefined}
+                  onShare={(dashboard) => setShareDash(dashboard)}
                   deletingId={isDeletingDashboard ? dashboardToDelete?.id : undefined}
                 />
               )}
@@ -301,6 +316,15 @@ export default function DashboardsPage() {
           dashboardId={publicShareDash.id}
           dashboardName={publicShareDash.name}
           onClose={() => setPublicShareDash(null)}
+        />
+      )}
+
+      {shareDash && (
+        <ShareDialog
+          resourceType="dashboard"
+          resourceId={shareDash.id}
+          resourceName={shareDash.name}
+          onClose={() => setShareDash(null)}
         />
       )}
     </>

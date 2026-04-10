@@ -33,6 +33,7 @@ interface ChartTileProps {
   dashboardChartId: number;
   dashboardId: number;
   currentLayout: Record<string, any>;
+  canEdit?: boolean;
   onRemove?: (dashboardChartId: number) => void;
   isRemoving?: boolean;
   dashboardFilters?: DashboardFilter[];
@@ -82,12 +83,13 @@ function coerceParameterAtom(rawValue: unknown, mappingType: string) {
   return typeof rawValue === 'string' ? rawValue.trim() : rawValue;
 }
 
-export function ChartTile({ 
-  chartId, 
+export function ChartTile({
+  chartId,
   dashboardChartId,
   dashboardId,
   currentLayout,
-  onRemove, 
+  canEdit = false,
+  onRemove,
   isRemoving,
   dashboardFilters = [],
   globalFilters = [],
@@ -266,7 +268,7 @@ export function ChartTile({
   const initialHavingRef = useRef(havingFiltersKey);
   useEffect(() => {
     // Skip the initial mount — only persist when user actually changes filters
-    if (havingFiltersKey === initialHavingRef.current) return;
+    if (!canEdit || havingFiltersKey === initialHavingRef.current) return;
     initialHavingRef.current = havingFiltersKey;
     dashboardApi.updateLayout(dashboardId, [{
       id: dashboardChartId,
@@ -295,7 +297,7 @@ export function ChartTile({
 
   const saveTitle = async () => {
     const newTitle = titleInput.trim();
-    if (!newTitle || newTitle === displayTitle) {
+    if (!canEdit || !newTitle || newTitle === displayTitle) {
       setIsEditingTitle(false);
       return;
     }
@@ -520,7 +522,7 @@ export function ChartTile({
         ) : (
           <>
             <h3 className="text-sm font-semibold truncate flex-1">{displayTitle}</h3>
-            {availablePages.length > 1 && onMoveToPage && (
+            {canEdit && availablePages.length > 1 && onMoveToPage && (
               <select
                 value={currentPageId ?? ''}
                 onMouseDown={e => e.stopPropagation()}
@@ -535,7 +537,7 @@ export function ChartTile({
                 ))}
               </select>
             )}
-            {exploreConfig && havingOptions.length > 0 && (
+            {canEdit && exploreConfig && havingOptions.length > 0 && (
               <button
                 onMouseDown={e => e.stopPropagation()}
                 onClick={() => setIsHavingOpen(v => !v)}
@@ -552,6 +554,7 @@ export function ChartTile({
                 )}
               </button>
             )}
+            {canEdit && (
             <button
               onMouseDown={e => e.stopPropagation()}
               onClick={startEditingTitle}
@@ -560,6 +563,7 @@ export function ChartTile({
             >
               <Pencil className="h-3.5 w-3.5" />
             </button>
+            )}
           </>
         )}
         </div>
@@ -585,6 +589,7 @@ export function ChartTile({
                 <span className="font-mono opacity-60 text-[0.6rem] uppercase">having</span>
                 {havingOptions.find(o => o.key === f.field)?.label ?? f.field}
                 {` ${f.operator} ${f.value}`}
+                {canEdit && (
                 <button
                   onMouseDown={e => e.stopPropagation()}
                   onClick={() => setHavingFilters(prev => prev.filter(x => x.id !== f.id))}
@@ -592,6 +597,7 @@ export function ChartTile({
                 >
                   <X className="w-2.5 h-2.5" />
                 </button>
+                )}
               </span>
             ))}
           </div>
