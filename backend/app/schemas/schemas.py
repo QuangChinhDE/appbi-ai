@@ -219,6 +219,7 @@ class DashboardBase(BaseModel):
     description: Optional[str] = None
     filters_config: Optional[List[Dict[str, Any]]] = None  # Dashboard-level filters (hybrid v1)
     public_filters_config: Optional[List[Dict[str, Any]]] = None
+    pages_config: Optional[List[Dict[str, Any]]] = None
 
 
 class DashboardCreate(DashboardBase):
@@ -232,6 +233,7 @@ class DashboardUpdate(BaseModel):
     description: Optional[str] = None
     filters_config: Optional[List[Dict[str, Any]]] = None
     public_filters_config: Optional[List[Dict[str, Any]]] = None
+    pages_config: Optional[List[Dict[str, Any]]] = None
 
 
 class DashboardShareRequest(BaseModel):

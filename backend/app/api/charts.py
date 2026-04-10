@@ -35,14 +35,13 @@ from app.schemas import (
 )
 from app.services import ChartService, EmbeddingService
 from app.services.dataset_calendar_service import (
-    build_calendar_duckdb_sql,
+    build_calendar_live_sql,
     get_calendar_settings,
     is_generated_calendar_table,
 )
 from app.services.dataset_table_sql_service import (
     DatasetTableSqlError,
     build_live_proxy_table_for_dataset_table,
-    build_dataset_table_duckdb_query,
     is_derived_table,
 )
 from app.services.description_pipeline_service import (
@@ -200,8 +199,8 @@ def ai_chart_preview(
     Requires ai_chat >= view permission.
     """
     from app.models.models import DataSource
-    from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
-    from app.services.duckdb_engine import DuckDBEngine
+    from app.services.live_query_service import build_live_dataset_query, _dialect_for_ds_type
+    from app.services.datasource_service import DataSourceConnectionService
 
     dataset_obj, db_table = _get_dataset_for_chart_table(db, payload.dataset_table_id)
     require_view_access(db, current_user, dataset_obj, "datasets")
@@ -214,135 +213,91 @@ def ai_chart_preview(
             )
     config = payload.config or {}
 
-    # Resolve DuckDB base table
-    if is_generated_calendar_table(db_table):
-        base_table = f"({build_calendar_duckdb_sql(get_calendar_settings(dataset_obj, enabled_default=False))}) AS base_table"
-    elif is_derived_table(db_table):
-        try:
-            base_table = f"({build_dataset_table_duckdb_query(db, dataset_obj, db_table)}) AS base_table"
-        except DatasetTableSqlError as exc:
-            if getattr(exc, "code", "") == "NOT_SYNCED":
-                try:
-                    from app.services.live_query_service import build_live_dataset_query, _dialect_for_ds_type
-                    from app.services.datasource_service import DataSourceConnectionService
-
-                    datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
-                        db,
-                        dataset_obj,
-                        db_table,
-                    )
-                    ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
-                    dialect = _dialect_for_ds_type(ds_type)
-
-                    dimensions = config.get("dimensions") or []
-                    metrics = config.get("metrics") or []
-                    limit = min(int(config.get("limit", 500)), 2000)
-                    measures = [
-                        {
-                            "field": item.get("column", ""),
-                            "agg": str(item.get("aggregation", "sum")).lower(),
-                        }
-                        for item in metrics
-                        if item.get("column")
-                    ]
-                    sql = build_live_dataset_query(
-                        base_table=f"({live_proxy_table.source_query}) AS base_table",
-                        dimensions=dimensions,
-                        measures=measures,
-                        filters=[],
-                        order_by=[],
-                        limit=limit,
-                        dialect=dialect,
-                    )
-                    _, data, _ = DataSourceConnectionService.execute_query(
-                        ds_type,
-                        datasource.config,
-                        sql,
-                        timeout_seconds=60 if ds_type == "bigquery" else 30,
-                        skip_bigquery_cost_check=True,
-                    )
-                    response: Dict[str, Any] = {
-                        "chart_type": payload.chart_type,
-                        "config": config,
-                        "data": data,
-                        "row_count": len(data),
-                        "saved": False,
-                        "chart_id": None,
-                    }
-
-                    if payload.save:
-                        from app.schemas import ChartCreate
-                        from app.schemas.schemas import ChartTypeSchema
-                        chart_type_val = payload.chart_type.upper()
-                        try:
-                            ct = ChartTypeSchema(chart_type_val)
-                        except ValueError:
-                            ct = ChartTypeSchema.BAR
-                        chart_create = ChartCreate(
-                            name=payload.name,
-                            description=payload.description,
-                            dataset_table_id=payload.dataset_table_id,
-                            chart_type=ct,
-                            config=config,
-                        )
-                        new_chart = ChartService.create(db, chart_create, owner_id=current_user.id)
-                        DescriptionPipelineService.enqueue_chart_pipeline(
-                            background_tasks,
-                            db,
-                            new_chart.id,
-                            trigger="chart_created",
-                        )
-                        response["saved"] = True
-                        response["chart_id"] = new_chart.id
-                        response["chart_name"] = new_chart.name
-
-                    return response
-                except DatasetTableSqlError as live_exc:
-                    raise HTTPException(
-                        status_code=422 if getattr(live_exc, "code", "") == "NOT_SYNCED" else 400,
-                        detail={"code": live_exc.code, "message": str(live_exc)}
-                        if getattr(live_exc, "code", "") == "NOT_SYNCED"
-                        else str(live_exc),
-                    )
-            raise HTTPException(status_code=400, detail=str(exc))
-    else:
-        datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
-        if not datasource:
-            raise HTTPException(status_code=404, detail="Datasource not found")
-
-        if db_table.source_kind == "sql_query":
-            rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query or "")
-            if rewritten is None:
-                raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
-            base_table = f"({rewritten}) AS base_table"
+    # Resolve live datasource and base SQL for every table type
+    try:
+        if is_generated_calendar_table(db_table):
+            # Calendar tables need an explicit datasource to determine dialect.
+            # Pick the first physical datasource referenced by the dataset.
+            from app.models.dataset import DatasetTable
+            sibling_table = (
+                db.query(DatasetTable)
+                .filter(
+                    DatasetTable.dataset_id == dataset_obj.id,
+                    DatasetTable.datasource_id.isnot(None),
+                )
+                .first()
+            )
+            if sibling_table is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="No datasource available for calendar table",
+                )
+            datasource = db.query(DataSource).filter(DataSource.id == sibling_table.datasource_id).first()
+            if datasource is None:
+                raise HTTPException(status_code=404, detail="Datasource not found")
+            ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+            dialect = _dialect_for_ds_type(ds_type)
+            base_sql = build_calendar_live_sql(
+                get_calendar_settings(dataset_obj, enabled_default=False),
+                dialect,
+            )
+        elif is_derived_table(db_table):
+            datasource, proxy_table = build_live_proxy_table_for_dataset_table(
+                db, dataset_obj, db_table,
+            )
+            ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+            dialect = _dialect_for_ds_type(ds_type)
+            base_sql = proxy_table.source_query
         else:
-            view_name = get_synced_view(datasource.id, db_table.source_table_name or "")
-            if view_name is None:
-                raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
-            base_table = view_name
+            # Physical or sql_query table — build live SQL via query plan
+            from app.services.live_query_service import build_live_base_query_plan
+            datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+            if not datasource:
+                raise HTTPException(status_code=404, detail="Datasource not found")
+            ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+            dialect = _dialect_for_ds_type(ds_type)
+            plan = build_live_base_query_plan(datasource, db_table)
+            base_sql = plan.sql
+    except DatasetTableSqlError as exc:
+        code = getattr(exc, "code", "")
+        if code == "NOT_SYNCED":
+            raise HTTPException(
+                status_code=422,
+                detail={"code": exc.code, "message": str(exc)},
+            )
+        raise HTTPException(status_code=400, detail=str(exc))
 
-    # Build and execute aggregation query
+    # Build and execute aggregation query via live datasource
     dimensions = config.get("dimensions") or []
     metrics = config.get("metrics") or []
     limit = min(int(config.get("limit", 500)), 2000)
+    measures = [
+        {
+            "field": item.get("column", ""),
+            "agg": str(item.get("aggregation", "sum")).lower(),
+        }
+        for item in metrics
+        if item.get("column")
+    ]
 
-    select_parts = [f'"{d}"' for d in dimensions]
-    for m in metrics:
-        col = m.get("column", "")
-        agg = m.get("aggregation", "sum").upper()
-        alias = f"{col}_{agg.lower()}"
-        select_parts.append(f'{agg}("{col}") AS "{alias}"')
-
-    if not select_parts:
-        sql = f"SELECT * FROM {base_table} LIMIT {limit}"
-    elif dimensions:
-        group_by = ", ".join(f'"{d}"' for d in dimensions)
-        sql = f"SELECT {', '.join(select_parts)} FROM {base_table} GROUP BY {group_by} LIMIT {limit}"
-    else:
-        sql = f"SELECT {', '.join(select_parts)} FROM {base_table} LIMIT {limit}"
+    sql = build_live_dataset_query(
+        base_table=f"({base_sql}) AS base_table",
+        dimensions=dimensions,
+        measures=measures,
+        filters=[],
+        order_by=[],
+        limit=limit,
+        dialect=dialect,
+    )
 
     try:
-        data = DuckDBEngine.query(sql)
+        _, data, _ = DataSourceConnectionService.execute_query(
+            ds_type,
+            datasource.config,
+            sql,
+            timeout_seconds=60 if ds_type == "bigquery" else 30,
+            skip_bigquery_cost_check=True,
+        )
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Query failed: {str(exc)}")
 

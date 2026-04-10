@@ -3,18 +3,21 @@ Dataset Model Service
 Auto-generates semantic layer (views, model, explores) from dataset tables.
 Each dataset = 1 Data Mart with its own semantic model.
 """
+import hashlib
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 from sqlalchemy.orm import Session
 from app.models.semantic import SemanticView, SemanticModel, SemanticExplore
 from app.models.dataset import Dataset, DatasetTable
 from app.models.models import DataSource
+from app.core.config import settings
 from app.core.logging import get_logger
+from app.services import query_cache
 from app.services.dataset_calendar_service import (
     CALENDAR_DIMENSIONS,
     CALENDAR_MEASURES,
-    build_calendar_duckdb_sql,
     build_calendar_join_sql,
+    build_calendar_live_sql,
     build_calendar_role_display_name,
     build_calendar_role_view_name,
     get_calendar_role_view_display,
@@ -23,11 +26,8 @@ from app.services.dataset_calendar_service import (
     iter_temporal_columns,
 )
 from app.services.dataset_table_sql_service import (
-    DatasetTableSqlError,
-    build_dataset_table_duckdb_query,
     is_derived_table,
 )
-from app.services.runtime_modes import resolve_dataset_query_mode
 
 logger = get_logger(__name__)
 
@@ -224,10 +224,21 @@ def _stable_semantic_view_name(table_id: int) -> str:
     return f"dataset_table_{table_id}"
 
 
-def _sql_table_for_table(dataset_obj: Dataset, table: DatasetTable) -> str:
+def _resolve_dataset_dialect(datasources: List[DataSource]) -> str:
+    from app.services.live_query_service import _dialect_for_ds_type
+
+    for datasource in datasources:
+        if datasource is None:
+            continue
+        ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+        return _dialect_for_ds_type(ds_type)
+    return "postgresql"
+
+
+def _sql_table_for_table(dataset_obj: Dataset, table: DatasetTable, *, calendar_dialect: str) -> str:
     if is_generated_calendar_table(table):
         settings = get_calendar_settings(dataset_obj, enabled_default=False)
-        return f"({build_calendar_duckdb_sql(settings)})"
+        return f"({build_calendar_live_sql(settings, calendar_dialect)})"
     if is_derived_table(table) and table.source_query:
         return f"({table.source_query})"
     if table.source_kind == "physical_table" and table.source_table_name:
@@ -561,6 +572,21 @@ def generate_dataset_model(
     if not tables:
         raise ValueError("Dataset has no enabled tables")
 
+    datasource_ids = {
+        int(table.datasource_id)
+        for table in tables
+        if getattr(table, "datasource_id", None) is not None
+    }
+    datasources = (
+        db.query(DataSource)
+        .filter(DataSource.id.in_(datasource_ids))
+        .order_by(DataSource.id)
+        .all()
+        if datasource_ids
+        else []
+    )
+    calendar_dialect = _resolve_dataset_dialect(datasources)
+
     model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
     if not model:
         model = SemanticModel(
@@ -615,7 +641,11 @@ def generate_dataset_model(
         view, was_created, was_updated = _upsert_semantic_view(
             db,
             name=view_name,
-            sql_table_name=_sql_table_for_table(dataset_obj, table),
+            sql_table_name=_sql_table_for_table(
+                dataset_obj,
+                table,
+                calendar_dialect=calendar_dialect,
+            ),
             dataset_table_id=table.id,
             dimensions=dimensions,
             measures=measures,
@@ -1004,21 +1034,93 @@ def get_distinct_field_values(
     if not view:
         raise ValueError(f"View '{view_name}' not found")
 
-    if view.dataset_table_id is None:
-        from app.services.duckdb_engine import DuckDBEngine
+    from app.core.crypto import decrypt_config
+    from app.services.datasource_service import DataSourceConnectionService
+    from app.services.live_query_service import (
+        _dialect_for_ds_type,
+        _estimate_bigquery_bytes,
+        _quote_identifier,
+        build_dataset_table_cache_identifier,
+        build_live_base_query_plan,
+    )
 
+    cache_payload = {
+        "field": field_name,
+        "limit": limit,
+    }
+
+    def execute_distinct_sql(datasource_obj, table_identifier: str, sql: str) -> list[str]:
+        ds_type = datasource_obj.type if isinstance(datasource_obj.type, str) else datasource_obj.type.value
+        cached = query_cache.get_cached(
+            datasource_obj.id,
+            table_identifier,
+            "model_distinct_values",
+            cache_payload,
+            [],
+        )
+        if cached is not None:
+            return list(cached.get("values") or [])
+
+        if ds_type == "bigquery":
+            estimated_bytes = _estimate_bigquery_bytes(decrypt_config(datasource_obj.config), sql)
+            max_bytes = settings.BQ_MAX_BYTES_SCANNED
+            if estimated_bytes > max_bytes:
+                gb_est = estimated_bytes / (1024**3)
+                gb_max = max_bytes / (1024**3)
+                raise ValueError(
+                    f"Distinct values query would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
+                    "Add a narrower filter or avoid loading high-cardinality suggestions."
+                )
+
+        _, rows, _ = DataSourceConnectionService.execute_query(
+            ds_type,
+            datasource_obj.config,
+            sql,
+            timeout_seconds=60 if ds_type == "bigquery" else 30,
+            skip_bigquery_cost_check=True,
+        )
+        values = _coerce_distinct_values(rows)
+        query_cache.set_cached(
+            datasource_obj.id,
+            table_identifier,
+            "model_distinct_values",
+            cache_payload,
+            [],
+            {"values": values},
+        )
+        return values
+
+    if view.dataset_table_id is None:
         sql_source = str(view.sql_table_name or "").strip()
         if not sql_source:
             raise ValueError(f"View '{view_name}' not found")
-        base_table = f"{sql_source} AS _q" if sql_source.startswith("(") else sql_source
-        rows = DuckDBEngine.query(
-            f'SELECT DISTINCT "{field_name}" AS value '
-            f'FROM {base_table} '
-            f'WHERE "{field_name}" IS NOT NULL '
-            f'ORDER BY 1 '
-            f'LIMIT {limit}'
+
+        # Find a datasource from the dataset to execute the query against
+        ds_table = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.dataset_id == dataset_id, DatasetTable.datasource_id.isnot(None))
+            .first()
         )
-        return _coerce_distinct_values(rows)
+        if ds_table is None:
+            raise ValueError(f"No datasource available for view '{view_name}'")
+        datasource_for_view = db.query(DataSource).filter(DataSource.id == ds_table.datasource_id).first()
+        if datasource_for_view is None:
+            raise ValueError(f"No datasource available for view '{view_name}'")
+
+        ds_type = datasource_for_view.type if isinstance(datasource_for_view.type, str) else datasource_for_view.type.value
+        dialect = _dialect_for_ds_type(ds_type)
+        quoted_field = _quote_identifier(field_name, dialect)
+        base_table = f"{sql_source} AS _q" if sql_source.startswith("(") else sql_source
+        sql = (
+            f"SELECT DISTINCT {quoted_field} AS value "
+            f"FROM {base_table} "
+            f"WHERE {quoted_field} IS NOT NULL "
+            f"ORDER BY 1 "
+            f"LIMIT {limit}"
+        )
+        source_hash = hashlib.sha1(sql_source.encode("utf-8")).hexdigest()[:16]
+        table_identifier = f"semantic_view:{view_name}:{source_hash}"
+        return execute_distinct_sql(datasource_for_view, table_identifier, sql)
 
     db_table = db.query(DatasetTable).filter(
         DatasetTable.id == view.dataset_table_id,
@@ -1031,33 +1133,55 @@ def get_distinct_field_values(
         raise ValueError(f"Dataset {dataset_id} not found")
 
     if is_generated_calendar_table(db_table):
-        from app.services.duckdb_engine import DuckDBEngine
-
-        settings = get_calendar_settings(dataset_obj, enabled_default=False)
-        rows = DuckDBEngine.query(
-            f'SELECT DISTINCT "{field_name}" AS value '
-            f'FROM ({build_calendar_duckdb_sql(settings)}) AS _q '
-            f'WHERE "{field_name}" IS NOT NULL '
-            f'ORDER BY 1 '
-            f'LIMIT {limit}'
+        # Find a datasource from the dataset to execute the calendar query against
+        cal_ds_table = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.dataset_id == dataset_id, DatasetTable.datasource_id.isnot(None))
+            .first()
         )
-        return _coerce_distinct_values(rows)
+        if cal_ds_table is None:
+            raise ValueError("No datasource available for calendar table execution")
+        cal_datasource = db.query(DataSource).filter(DataSource.id == cal_ds_table.datasource_id).first()
+        if cal_datasource is None:
+            raise ValueError("No datasource available for calendar table execution")
 
-    datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first() if db_table.datasource_id is not None else None
-    query_mode = resolve_dataset_query_mode(db_table) if datasource is not None else "synced"
+        ds_type = cal_datasource.type if isinstance(cal_datasource.type, str) else cal_datasource.type.value
+        dialect = _dialect_for_ds_type(ds_type)
+        quoted_field = _quote_identifier(field_name, dialect)
+        calendar_settings = get_calendar_settings(dataset_obj, enabled_default=False)
+        cal_sql = build_calendar_live_sql(calendar_settings, dialect)
+        sql = (
+            f"SELECT DISTINCT {quoted_field} AS value "
+            f"FROM ({cal_sql}) AS _q "
+            f"WHERE {quoted_field} IS NOT NULL "
+            f"ORDER BY 1 "
+            f"LIMIT {limit}"
+        )
+        table_identifier = f"calendar_view:{dataset_id}:{view_name}"
+        return execute_distinct_sql(cal_datasource, table_identifier, sql)
+
+    live_table = db_table
+    datasource = (
+        db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+        if db_table.datasource_id is not None
+        else None
+    )
+    if datasource is None and is_derived_table(db_table):
+        from app.services.dataset_table_sql_service import (
+            DatasetTableSqlError,
+            build_live_proxy_table_for_dataset_table,
+        )
+
+        try:
+            datasource, live_table = build_live_proxy_table_for_dataset_table(db, dataset_obj, db_table)
+        except DatasetTableSqlError as exc:
+            raise ValueError(str(exc)) from exc
 
     def fetch_live_values() -> list[str]:
-        from app.services.datasource_service import DataSourceConnectionService
-        from app.services.live_query_service import (
-            _dialect_for_ds_type,
-            _quote_identifier,
-            build_live_base_query_plan,
-        )
-
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
         quoted_field = _quote_identifier(field_name, dialect)
-        plan = build_live_base_query_plan(datasource, db_table, apply_type_overrides=True)
+        plan = build_live_base_query_plan(datasource, live_table, apply_type_overrides=True)
         sql = (
             f"SELECT DISTINCT {quoted_field} AS value "
             f"FROM ({plan.sql}) AS _appbi_distinct "
@@ -1065,50 +1189,9 @@ def get_distinct_field_values(
             f"ORDER BY 1 "
             f"LIMIT {limit}"
         )
-        _, rows, _ = DataSourceConnectionService.execute_query(
-            ds_type,
-            datasource.config,
-            sql,
-            timeout_seconds=60 if ds_type == "bigquery" else 30,
-            skip_bigquery_cost_check=True,
-        )
-        return _coerce_distinct_values(rows)
+        table_identifier = build_dataset_table_cache_identifier(live_table)
+        return execute_distinct_sql(datasource, table_identifier, sql)
 
-    if query_mode == "live":
-        if datasource is None:
-            raise ValueError("Data source not found")
-        return fetch_live_values()
-
-    from app.services.duckdb_engine import DuckDBEngine
-    from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
-
-    if is_derived_table(db_table):
-        try:
-            base_table = f"({build_dataset_table_duckdb_query(db, dataset_obj, db_table)}) AS _q"
-        except DatasetTableSqlError as exc:
-            raise ValueError(str(exc)) from exc
-    elif db_table.source_kind == "sql_query":
-        if datasource is None:
-            raise ValueError("Data source not found")
-        rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query or "")
-        if not rewritten:
-            return fetch_live_values()
-        base_table = f"({rewritten}) AS _q"
-    elif db_table.source_kind == "physical_table":
-        if datasource is None:
-            raise ValueError("Data source not found")
-        synced_view = get_synced_view(datasource.id, db_table.source_table_name or "")
-        if not synced_view:
-            return fetch_live_values()
-        base_table = _apply_duckdb_transformations(synced_view, db_table.transformations)
-    else:
-        return fetch_live_values()
-
-    rows = DuckDBEngine.query(
-        f'SELECT DISTINCT "{field_name}" AS value '
-        f'FROM {base_table} '
-        f'WHERE "{field_name}" IS NOT NULL '
-        f'ORDER BY 1 '
-        f'LIMIT {limit}'
-    )
-    return _coerce_distinct_values(rows)
+    if datasource is None:
+        raise ValueError("Data source not found")
+    return fetch_live_values()

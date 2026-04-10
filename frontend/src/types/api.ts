@@ -164,64 +164,6 @@ export interface WatermarkColumn {
   type: string;
 }
 
-// ── Sync Config ────────────────────────────────────────────────────────────
-
-export type SyncStrategyType = 'full_refresh' | 'incremental' | 'append_only' | 'manual';
-export type ScheduleType = 'interval' | 'daily' | 'custom_cron';
-
-export interface SyncScheduleConfig {
-  enabled: boolean;
-  type: ScheduleType;
-  interval_hours?: number;
-  interval_seconds?: number;
-  time?: string;       // "HH:MM" for daily
-  timezone?: string;
-  cron?: string;
-  cron_expression?: string;
-}
-
-export interface SyncTableConfig {
-  enabled: boolean;
-  strategy: SyncStrategyType;
-  watermark_column?: string;
-  rows_cached?: number;
-}
-
-export interface SyncRetryConfig {
-  max_attempts: number;
-  backoff_interval: string; // "5m" | "15m" | "30m" | "1h"
-}
-
-export interface SyncNotificationConfig {
-  email_on_failure: boolean;
-  webhook_url?: string;
-}
-
-export interface SyncConfig {
-  mode?: 'full_refresh' | 'incremental' | 'append_only' | 'manual';
-  schedule?: SyncScheduleConfig;
-  tables?: Record<string, SyncTableConfig>;   // key = "schema.table"
-  retry?: SyncRetryConfig;
-  notification?: SyncNotificationConfig;
-  watermark_column?: string;
-  incremental?: Record<string, any>;
-}
-
-// ── Sync Jobs ──────────────────────────────────────────────────────────────
-
-export interface SyncJob {
-  id: number;
-  status: 'running' | 'success' | 'failed' | 'timeout' | 'cancelled';
-  mode: string;
-  started_at: string;
-  finished_at: string | null;
-  duration_seconds: number | null;
-  rows_synced: number | null;
-  rows_failed: number | null;
-  error_message: string | null;
-  triggered_by: string | null;
-}
-
 export interface ColumnMetadata {
   name: string;
   type: string;
@@ -284,17 +226,6 @@ export interface MaterializationConfig {
   last_refreshed_at?: string;
   status?: 'idle' | 'running' | 'failed';
   error?: string;
-}
-
-export interface SyncJobRun {
-  id: number;
-  mode: string;
-  status: 'running' | 'success' | 'failed';
-  rows_pulled?: number;
-  duration_seconds?: number;
-  error?: string;
-  started_at?: string;
-  finished_at?: string;
 }
 
 export interface ChartConfig {
@@ -390,6 +321,12 @@ export interface DashboardChartLayout {
   w: number;
   h: number;
   custom_title?: string;
+  pageId?: string | null;
+}
+
+export interface DashboardPageConfig {
+  id: string;
+  name: string;
 }
 
 export interface DashboardChart {
@@ -461,11 +398,13 @@ export interface Dashboard {
   dashboard_charts: DashboardChart[];
   filters_config?: any[]; // Dashboard-level filters (hybrid v1)
   public_filters_config?: any[];
+  pages_config?: DashboardPageConfig[];
 }
 
 export interface DashboardCreate {
   name: string;
   description?: string;
+  pages_config?: DashboardPageConfig[];
   charts?: Array<{
     chart_id: number;
     layout: DashboardChartLayout;
@@ -478,6 +417,7 @@ export interface DashboardUpdate {
   description?: string;
   filters_config?: any[];
   public_filters_config?: any[];
+  pages_config?: DashboardPageConfig[];
 }
 
 export interface QueryExecuteRequest {

@@ -13,6 +13,12 @@ from app.models.semantic import SemanticExplore, SemanticModel, SemanticView
 from app.services.chart_contracts import get_chart_active_role_config
 from app.services.dataset_calendar_service import iter_calendar_binding_fields
 from app.services.dataset_model_service import generate_dataset_model
+from app.services.dataset_table_sql_service import (
+    DatasetTableSqlError,
+    collect_derived_dependency_table_ids,
+    is_derived_table,
+    validate_and_clean_derived_query,
+)
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -75,14 +81,73 @@ def _collect_chart_field_names(config: dict[str, Any] | None) -> list[str]:
     return sorted(fields)
 
 
+def _collect_dependency_binding_scope(
+    db: Session,
+    db_table: DatasetTable,
+    *,
+    auto_generate: bool,
+    visited_table_ids: set[int],
+) -> tuple[list[str], list[str], list[dict[str, Any]]]:
+    table_id = getattr(db_table, "id", None)
+    if (
+        table_id is None
+        or int(table_id) in visited_table_ids
+        or not is_derived_table(db_table)
+        or not str(getattr(db_table, "source_query", "") or "").strip()
+    ):
+        return [], [], []
+
+    try:
+        cleaned_query = validate_and_clean_derived_query(str(db_table.source_query or ""))
+        dependency_ids = collect_derived_dependency_table_ids(
+            db,
+            db_table.dataset_id,
+            cleaned_query,
+            exclude_table_id=int(table_id),
+        )
+    except DatasetTableSqlError:
+        logger.debug(
+            "Skipping dependency semantic scope for dataset_table %s due to invalid derived SQL",
+            table_id,
+            exc_info=True,
+        )
+        return [], [], []
+
+    next_visited = set(visited_table_ids)
+    next_visited.add(int(table_id))
+
+    dimension_fields: list[str] = []
+    measure_fields: list[str] = []
+    calendar_field_mappings: list[dict[str, Any]] = []
+
+    for dependency_id in dependency_ids:
+        dependency_binding = resolve_chart_semantic_binding(
+            db,
+            int(dependency_id),
+            {},
+            auto_generate=auto_generate,
+            _visited_table_ids=next_visited,
+        )
+        if not dependency_binding:
+            continue
+        dimension_fields.extend(dependency_binding.get("dimensionFields") or [])
+        measure_fields.extend(dependency_binding.get("measureFields") or [])
+        calendar_field_mappings.extend(dependency_binding.get("calendarFieldMappings") or [])
+
+    return dimension_fields, measure_fields, calendar_field_mappings
+
+
 def resolve_chart_semantic_binding(
     db: Session,
     dataset_table_id: int | None,
     config: dict[str, Any] | None = None,
     *,
     auto_generate: bool = False,
+    _visited_table_ids: set[int] | None = None,
 ) -> dict[str, Any] | None:
     if dataset_table_id is None:
+        return None
+    if _visited_table_ids and int(dataset_table_id) in _visited_table_ids:
         return None
 
     db_table = db.query(DatasetTable).filter(DatasetTable.id == dataset_table_id).first()
@@ -152,6 +217,18 @@ def resolve_chart_semantic_binding(
         if explore is not None:
             calendar_field_mappings = iter_calendar_binding_fields(explore.joins or [])
 
+        dependency_dimension_fields, dependency_measure_fields, dependency_calendar_mappings = (
+            _collect_dependency_binding_scope(
+                db,
+                db_table,
+                auto_generate=auto_generate,
+                visited_table_ids=set(_visited_table_ids or set()),
+            )
+        )
+        dimension_fields.extend(dependency_dimension_fields)
+        measure_fields.extend(dependency_measure_fields)
+        calendar_field_mappings.extend(dependency_calendar_mappings)
+
         available_fields = set(base_dimension_names) | set(base_measure_names)
         calendar_date_by_source = {
             mapping.get("sourceField"): mapping.get("semanticField")
@@ -170,7 +247,7 @@ def resolve_chart_semantic_binding(
         "datasetTableId": dataset_table_id,
         "modelId": model.id if model is not None else None,
         "exploreId": explore.id if explore is not None else None,
-        "exploreName": explore.name if explore is not None else view_name,
+        "exploreName": getattr(explore, "name", None) if explore is not None and getattr(explore, "name", None) else view_name,
         "baseViewId": view.id if view is not None else None,
         "baseViewName": view_name,
         "fieldMap": field_map,
@@ -198,3 +275,4 @@ def with_chart_semantic_binding(
     if binding:
         next_config["semanticBinding"] = binding
     return next_config
+

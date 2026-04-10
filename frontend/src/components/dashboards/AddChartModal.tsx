@@ -11,6 +11,7 @@ interface AddChartModalProps {
   onAdd: (chartId: number, layout: DashboardChartLayout, parameters?: Record<string, any>) => void;
   existingChartIds: number[];
   isAdding: boolean;
+  currentPageName?: string;
 }
 
 const NUMERIC_COLUMN_TYPES = new Set(['number', 'integer', 'float', 'double', 'decimal', 'numeric', 'bigint', 'int']);
@@ -42,6 +43,7 @@ export function AddChartModal({
   onAdd,
   existingChartIds,
   isAdding,
+  currentPageName,
 }: AddChartModalProps) {
   const [selectedChartId, setSelectedChartId] = useState<number | ''>('');
   const [width, setWidth] = useState(4);
@@ -215,7 +217,7 @@ export function AddChartModal({
 
           <div className="bg-blue-50 border border-blue-200 rounded-md p-3">
             <p className="text-sm text-blue-800">
-              The chart will be placed at the top. You can drag and resize it after adding.
+              The chart will be placed at the top{currentPageName ? ` of ${currentPageName}` : ''}. You can drag and resize it after adding.
             </p>
           </div>
         </div>

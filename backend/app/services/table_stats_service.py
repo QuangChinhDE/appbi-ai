@@ -1,10 +1,11 @@
 """
 TableStatsService - compute column-level statistics for dataset tables.
 
-Approach: fetch a sample of rows via the synced DuckDB view, compute stats
-in-memory, and persist the latest schema snapshot. This service only updates
-table stats + schema hash; callers decide whether the AI description should be
-regenerated or marked stale.
+Approach: use the cached sample rows when available, otherwise fetch a sample
+via a live query against the source database. Stats are computed in-memory and
+the latest schema snapshot is persisted. This service only updates table stats +
+schema hash; callers decide whether the AI description should be regenerated or
+marked stale.
 """
 import logging
 import statistics
@@ -13,8 +14,15 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
+from app.services.dataset_calendar_service import (
+    is_generated_calendar_table,
+)
+from app.services.dataset_table_sql_service import (
+    DatasetTableSqlError,
+    build_live_proxy_table_for_dataset_table,
+    is_derived_table,
+)
 from app.services.schema_change_service import SchemaChangeService
-from app.services.runtime_modes import datasource_sync_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +136,7 @@ class TableStatsService:
 
         Safe to call in a background task - all errors are caught.
         """
-        from app.models.dataset import DatasetTable
+        from app.models.dataset import Dataset, DatasetTable
         from app.models.models import DataSource
 
         try:
@@ -143,13 +151,6 @@ class TableStatsService:
                 logger.info("TableStats: table %s has no columns_cache yet, skipping", table_id)
                 return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "missing_columns_cache"}
 
-            datasource = db.query(DataSource).filter(
-                DataSource.id == table.datasource_id
-            ).first()
-            if not datasource:
-                logger.warning("TableStats: datasource not found for table %s", table_id)
-                return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "datasource_not_found"}
-
             rows = None
             normalized_columns = _normalize_columns_cache(table.columns_cache)
             cols = [
@@ -159,42 +160,66 @@ class TableStatsService:
                 for column in normalized_columns
             ]
 
-            if not datasource_sync_enabled():
-                cached_rows = table.sample_cache if isinstance(table.sample_cache, list) else []
-                rows = [
-                    row for row in cached_rows[:TableStatsService.SAMPLE_LIMIT]
-                    if isinstance(row, dict)
-                ]
-                if not rows:
-                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "missing_sample_cache"}
-            else:
-                from app.services.duckdb_engine import DuckDBEngine
-                from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
+            # Try sample_cache first (fast, no network)
+            cached_rows = table.sample_cache if isinstance(table.sample_cache, list) else []
+            rows = [
+                row for row in cached_rows[:TableStatsService.SAMPLE_LIMIT]
+                if isinstance(row, dict)
+            ]
 
-                if table.source_kind == "sql_query":
-                    if not table.source_query:
-                        return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "missing_source_query"}
-                    rewritten = rewrite_sql_for_duckdb(datasource.id, table.source_query)
-                    if not rewritten:
-                        return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "not_synced"}
+            # Fall back to live query if no cached sample available
+            if not rows:
+                from app.services.datasource_service import DataSourceConnectionService
+                from app.services.live_query_service import build_live_base_query_plan
+
+                datasource = None
+                target_table = table
+
+                if is_generated_calendar_table(table) or is_derived_table(table):
+                    dataset_obj = db.query(Dataset).filter(Dataset.id == table.dataset_id).first()
+                    if dataset_obj is None:
+                        return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "dataset_not_found"}
                     try:
-                        rows = DuckDBEngine.query(
-                            f"SELECT * FROM ({rewritten}) AS _q LIMIT {TableStatsService.SAMPLE_LIMIT}"
+                        datasource, target_table = build_live_proxy_table_for_dataset_table(
+                            db,
+                            dataset_obj,
+                            table,
                         )
-                    except Exception:
-                        return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "duckdb_query_failed"}
+                    except DatasetTableSqlError as exc:
+                        logger.warning("TableStats: failed to build live proxy for table %s - %s", table_id, exc)
+                        return {
+                            "stats": None,
+                            "changed": False,
+                            "added": [],
+                            "removed": [],
+                            "new_hash": table.schema_hash,
+                            "reason": str(getattr(exc, "code", "live_proxy_failed")).lower(),
+                        }
                 else:
-                    if not table.source_table_name:
-                        return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "missing_source_table_name"}
-                    view_name = get_synced_view(datasource.id, table.source_table_name)
-                    if not view_name:
-                        return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "not_synced"}
-                    try:
-                        rows = DuckDBEngine.query(
-                            f"SELECT * FROM {view_name} LIMIT {TableStatsService.SAMPLE_LIMIT}"
-                        )
-                    except Exception:
-                        return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "duckdb_query_failed"}
+                    datasource = db.query(DataSource).filter(
+                        DataSource.id == table.datasource_id
+                    ).first()
+
+                if not datasource:
+                    logger.warning("TableStats: datasource not found for table %s", table_id)
+                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "datasource_not_found"}
+
+                try:
+                    plan = build_live_base_query_plan(
+                        datasource,
+                        target_table,
+                        apply_type_overrides=True,
+                    )
+                    sql = f"SELECT * FROM ({plan.sql}) AS _appbi_stats LIMIT {TableStatsService.SAMPLE_LIMIT}"
+                    ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+                    _, rows, _ = DataSourceConnectionService.execute_query(
+                        ds_type,
+                        datasource.config,
+                        sql,
+                        timeout_seconds=60,
+                    )
+                except Exception:
+                    return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "live_query_failed"}
 
             if not rows:
                 return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "no_rows"}

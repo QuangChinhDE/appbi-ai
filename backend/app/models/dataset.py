@@ -84,3 +84,4 @@ class DatasetTable(Base):
 
     # Relationships
     dataset = relationship("Dataset", back_populates="tables")
+

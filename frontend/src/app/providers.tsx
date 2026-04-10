@@ -29,3 +29,4 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
     </QueryClientProvider>
   );
 }
+

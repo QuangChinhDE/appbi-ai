@@ -205,30 +205,89 @@ def build_calendar_sample_rows(settings: Dict[str, Any], limit: int = 64) -> Lis
     return rows
 
 
-def build_calendar_duckdb_sql(settings: Dict[str, Any]) -> str:
+def build_calendar_live_sql(settings: Dict[str, Any], dialect: str) -> str:
+    """Generate calendar SQL for live query execution against a real database.
+
+    Supports bigquery, postgresql, and mysql dialects.
+    """
     start_date = settings["start_date"]
     end_date = settings["end_date"]
+
+    if dialect == "bigquery":
+        return f"""
+SELECT
+  d AS date,
+  CAST(FORMAT_DATE('%Y%m%d', d) AS INT64) AS date_key,
+  EXTRACT(YEAR FROM d) AS year,
+  EXTRACT(QUARTER FROM d) AS quarter,
+  CONCAT(CAST(EXTRACT(YEAR FROM d) AS STRING), '-Q', CAST(EXTRACT(QUARTER FROM d) AS STRING)) AS year_quarter,
+  EXTRACT(MONTH FROM d) AS month,
+  FORMAT_DATE('%B', d) AS month_name,
+  FORMAT_DATE('%b', d) AS month_short,
+  FORMAT_DATE('%Y-%m', d) AS year_month,
+  EXTRACT(ISOWEEK FROM d) AS week_of_year_iso,
+  DATE_TRUNC(d, ISOWEEK) AS week_start_date,
+  DATE_ADD(DATE_TRUNC(d, ISOWEEK), INTERVAL 6 DAY) AS week_end_date,
+  EXTRACT(DAY FROM d) AS day_of_month,
+  MOD(EXTRACT(DAYOFWEEK FROM d) + 5, 7) + 1 AS day_of_week_iso,
+  FORMAT_DATE('%A', d) AS day_name,
+  CASE WHEN MOD(EXTRACT(DAYOFWEEK FROM d) + 5, 7) + 1 IN (6, 7) THEN TRUE ELSE FALSE END AS is_weekend,
+  DATE_TRUNC(d, MONTH) AS month_start_date,
+  DATE_SUB(DATE_ADD(DATE_TRUNC(d, MONTH), INTERVAL 1 MONTH), INTERVAL 1 DAY) AS month_end_date
+FROM UNNEST(GENERATE_DATE_ARRAY(DATE '{start_date}', DATE '{end_date}')) AS d
+""".strip()
+
+    if dialect == "mysql":
+        return f"""
+WITH RECURSIVE calendar_series AS (
+  SELECT CAST('{start_date}' AS DATE) AS d
+  UNION ALL
+  SELECT DATE_ADD(d, INTERVAL 1 DAY) FROM calendar_series WHERE d < '{end_date}'
+)
+SELECT
+  d AS date,
+  CAST(DATE_FORMAT(d, '%Y%m%d') AS UNSIGNED) AS date_key,
+  YEAR(d) AS year,
+  QUARTER(d) AS quarter,
+  CONCAT(CAST(YEAR(d) AS CHAR), '-Q', CAST(QUARTER(d) AS CHAR)) AS year_quarter,
+  MONTH(d) AS month,
+  MONTHNAME(d) AS month_name,
+  DATE_FORMAT(d, '%b') AS month_short,
+  DATE_FORMAT(d, '%Y-%m') AS year_month,
+  WEEK(d, 3) AS week_of_year_iso,
+  DATE_SUB(d, INTERVAL (WEEKDAY(d)) DAY) AS week_start_date,
+  DATE_ADD(DATE_SUB(d, INTERVAL (WEEKDAY(d)) DAY), INTERVAL 6 DAY) AS week_end_date,
+  DAY(d) AS day_of_month,
+  WEEKDAY(d) + 1 AS day_of_week_iso,
+  DAYNAME(d) AS day_name,
+  CASE WHEN WEEKDAY(d) + 1 IN (6, 7) THEN TRUE ELSE FALSE END AS is_weekend,
+  DATE_SUB(d, INTERVAL (DAY(d) - 1) DAY) AS month_start_date,
+  LAST_DAY(d) AS month_end_date
+FROM calendar_series
+""".strip()
+
+    # Default: PostgreSQL
     return f"""
 SELECT
-  CAST(d AS DATE) AS date,
-  CAST(strftime(CAST(d AS DATE), '%Y%m%d') AS BIGINT) AS date_key,
-  CAST(EXTRACT(YEAR FROM CAST(d AS DATE)) AS INTEGER) AS year,
-  CAST(EXTRACT(QUARTER FROM CAST(d AS DATE)) AS INTEGER) AS quarter,
-  CAST(EXTRACT(YEAR FROM CAST(d AS DATE)) AS VARCHAR) || '-Q' || CAST(EXTRACT(QUARTER FROM CAST(d AS DATE)) AS VARCHAR) AS year_quarter,
-  CAST(EXTRACT(MONTH FROM CAST(d AS DATE)) AS INTEGER) AS month,
-  monthname(CAST(d AS DATE)) AS month_name,
-  substr(monthname(CAST(d AS DATE)), 1, 3) AS month_short,
-  strftime(CAST(d AS DATE), '%Y-%m') AS year_month,
-  CAST(strftime(CAST(d AS DATE), '%V') AS INTEGER) AS week_of_year_iso,
-  CAST(date_trunc('week', CAST(d AS DATE)) AS DATE) AS week_start_date,
-  CAST(date_trunc('week', CAST(d AS DATE)) + INTERVAL 6 DAY AS DATE) AS week_end_date,
-  CAST(EXTRACT(DAY FROM CAST(d AS DATE)) AS INTEGER) AS day_of_month,
-  CAST(strftime(CAST(d AS DATE), '%u') AS INTEGER) AS day_of_week_iso,
-  dayname(CAST(d AS DATE)) AS day_name,
-  CASE WHEN CAST(strftime(CAST(d AS DATE), '%u') AS INTEGER) IN (6, 7) THEN TRUE ELSE FALSE END AS is_weekend,
-  CAST(date_trunc('month', CAST(d AS DATE)) AS DATE) AS month_start_date,
-  CAST(date_trunc('month', CAST(d AS DATE)) + INTERVAL 1 MONTH - INTERVAL 1 DAY AS DATE) AS month_end_date
-FROM generate_series(DATE '{start_date}', DATE '{end_date}', INTERVAL 1 DAY) AS calendar_series(d)
+  d::date AS date,
+  CAST(TO_CHAR(d::date, 'YYYYMMDD') AS BIGINT) AS date_key,
+  EXTRACT(YEAR FROM d::date)::INTEGER AS year,
+  EXTRACT(QUARTER FROM d::date)::INTEGER AS quarter,
+  EXTRACT(YEAR FROM d::date)::VARCHAR || '-Q' || EXTRACT(QUARTER FROM d::date)::VARCHAR AS year_quarter,
+  EXTRACT(MONTH FROM d::date)::INTEGER AS month,
+  TO_CHAR(d::date, 'FMMonth') AS month_name,
+  TO_CHAR(d::date, 'Mon') AS month_short,
+  TO_CHAR(d::date, 'YYYY-MM') AS year_month,
+  EXTRACT(WEEK FROM d::date)::INTEGER AS week_of_year_iso,
+  DATE_TRUNC('week', d::date)::DATE AS week_start_date,
+  (DATE_TRUNC('week', d::date) + INTERVAL '6 days')::DATE AS week_end_date,
+  EXTRACT(DAY FROM d::date)::INTEGER AS day_of_month,
+  EXTRACT(ISODOW FROM d::date)::INTEGER AS day_of_week_iso,
+  TO_CHAR(d::date, 'FMDay') AS day_name,
+  CASE WHEN EXTRACT(ISODOW FROM d::date) IN (6, 7) THEN TRUE ELSE FALSE END AS is_weekend,
+  DATE_TRUNC('month', d::date)::DATE AS month_start_date,
+  (DATE_TRUNC('month', d::date) + INTERVAL '1 month' - INTERVAL '1 day')::DATE AS month_end_date
+FROM generate_series(DATE '{start_date}', DATE '{end_date}', INTERVAL '1 day') AS calendar_series(d)
 """.strip()
 
 

@@ -6,7 +6,7 @@ import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { ChartTile } from './ChartTile';
 import { ChartErrorBoundary } from './ChartErrorBoundary';
-import { DashboardChart } from '@/types/api';
+import { DashboardChart, DashboardPageConfig } from '@/types/api';
 import { DashboardFilter } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { Loader2 } from 'lucide-react';
@@ -57,6 +57,9 @@ interface DashboardGridProps {
   crossFilterSourceChartId?: number | null;
   onChartDataLoaded?: (chartId: number, data: any[], meta: { dimensionFields: string[] }) => void;
   onSelectCrossFilter?: (chartId: number, filter: BaseFilter | null) => void;
+  availablePages?: DashboardPageConfig[];
+  onMoveChartToPage?: (dashboardChartId: number, pageId: string) => void;
+  emptyMessage?: string;
 }
 
 export function DashboardGrid({
@@ -71,6 +74,9 @@ export function DashboardGrid({
   crossFilterSourceChartId = null,
   onChartDataLoaded,
   onSelectCrossFilter,
+  availablePages = [],
+  onMoveChartToPage,
+  emptyMessage,
 }: DashboardGridProps) {
   // Convert backend layout to react-grid-layout format
   const layouts = dashboardCharts.map((dc) => {
@@ -108,7 +114,7 @@ export function DashboardGrid({
     return (
       <div className="flex items-center justify-center h-64 bg-gray-50 border-2 border-dashed border-gray-300 rounded-lg">
         <p className="text-gray-500">
-          No charts in this dashboard. Click "Add Chart" to get started.
+          {emptyMessage ?? 'No charts in this dashboard. Click "Add Chart" to get started.'}
         </p>
       </div>
     );
@@ -146,6 +152,9 @@ export function DashboardGrid({
                 onSelectCrossFilter={onSelectCrossFilter ? (filter) => onSelectCrossFilter(dc.chart_id, filter) : undefined}
                 isCrossFilterSource={crossFilterSourceChartId === dc.chart_id}
                 instanceParameters={dc.parameters ?? {}}
+                availablePages={availablePages}
+                currentPageId={typeof dc.layout?.pageId === 'string' ? dc.layout.pageId : (availablePages[0]?.id ?? null)}
+                onMoveToPage={onMoveChartToPage ? (pageId) => onMoveChartToPage(dc.id, pageId) : undefined}
               />
             </LazyChartSlot>
           </ChartErrorBoundary>

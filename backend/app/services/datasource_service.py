@@ -1754,25 +1754,11 @@ class DataSourceConnectionService:
         table_name: str,
     ) -> List[Dict[str, str]]:
         """
-        Return columns for a specific table.
-        Tries DuckDB synced view first (no live call), falls back to live source.
+        Return columns for a specific table via live source query.
         Each item: {"name": str, "type": str}
         """
         from app.core.crypto import decrypt_config
-        from app.services.sync_engine import get_synced_view
-        from app.services.duckdb_engine import DuckDBEngine
 
-        # --- Try DuckDB synced view first ---
-        try:
-            view_name = get_synced_view(ds_id, table_name)
-            if view_name:
-                with DuckDBEngine.read_conn() as conn:
-                    rows = conn.execute(f"DESCRIBE {view_name}").fetchall()
-                return [{"name": r[0], "type": r[1]} for r in rows]
-        except Exception:
-            pass
-
-        # --- Fallback: live source (schema/metadata only, no data) ---
         config = decrypt_config(config)
 
         # Parse schema.table

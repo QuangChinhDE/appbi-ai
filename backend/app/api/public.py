@@ -9,10 +9,10 @@ Password-protected links require a session token obtained from /auth.
 Session tokens are JWTs signed with the app SECRET_KEY, valid for 2 hours.
 Send them via the X-Public-Session request header.
 """
+import json
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
@@ -60,114 +60,12 @@ def _verify_public_session(session_token: str, link_token: str) -> bool:
         return False
 
 
-def _apply_filters_to_rows(rows: list[dict[str, Any]], filters: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if not rows or not filters:
-        return rows
-
-    def _resolve_field(row: dict[str, Any], f: dict[str, Any]) -> str | None:
-        """Find the first matching field name for this filter in the row (primary or linkedFields)."""
-        field = f.get("field")
-        if field and field in row:
-            return field
-        for lf in (f.get("linkedFields") or []):
-            if lf in row:
-                return lf
-        return None
-
-    def matches(row: dict[str, Any], f: dict[str, Any]) -> bool:
-        field = _resolve_field(row, f)
-        if not field:
-            return True  # filter doesn't apply to this row's columns
-        operator = f.get("operator")
-        filter_type = f.get("type")
-        value = f.get("value")
-        cell = row.get(field)
-        if cell is None:
-            return False
-
-        # Handle multi-value operators first (type-agnostic)
-        if operator == "in":
-            selected = [str(item) for item in (value if isinstance(value, list) else []) if item is not None]
-            if not selected:
-                return True
-            return str(cell) in selected
-        if operator == "not_in":
-            excluded = [str(item) for item in (value if isinstance(value, list) else []) if item is not None]
-            if not excluded:
-                return True
-            return str(cell) not in excluded
-
-        if filter_type == "date":
-            str_val = str(cell)[:10]
-            if operator == "between" and isinstance(value, list):
-                start = str(value[0])[:10] if len(value) > 0 and value[0] is not None else None
-                end = str(value[1])[:10] if len(value) > 1 and value[1] is not None else None
-                if start and str_val < start:
-                    return False
-                if end and str_val > end:
-                    return False
-                return True
-            filter_val = str(value or "")[:10]
-            return {
-                "eq": str_val == filter_val,
-                "neq": str_val != filter_val,
-                "gt": str_val > filter_val,
-                "gte": str_val >= filter_val,
-                "lt": str_val < filter_val,
-                "lte": str_val <= filter_val,
-            }.get(operator, True)
-
-        if filter_type == "dropdown":
-            selected = value if isinstance(value, list) else [value]
-            selected = [str(item) for item in selected if item is not None]
-            if not selected:
-                return True
-            if operator == "not_in":
-                return str(cell) not in selected
-            return str(cell) in selected
-
-        if filter_type == "number":
-            try:
-                num_val = float(cell)
-            except (TypeError, ValueError):
-                return False
-            if operator == "between" and isinstance(value, list):
-                lower = value[0] if len(value) > 0 else None
-                upper = value[1] if len(value) > 1 else None
-                if lower is not None and num_val < float(lower):
-                    return False
-                if upper is not None and num_val > float(upper):
-                    return False
-                return True
-            try:
-                filter_val = float(value)
-            except (TypeError, ValueError):
-                return True
-            return {
-                "eq": num_val == filter_val,
-                "neq": num_val != filter_val,
-                "gt": num_val > filter_val,
-                "gte": num_val >= filter_val,
-                "lt": num_val < filter_val,
-                "lte": num_val <= filter_val,
-            }.get(operator, True)
-
-        str_val = str(cell)
-        filter_val = str(value or "")
-        return {
-            "eq": str_val == filter_val,
-            "neq": str_val != filter_val,
-            "contains": filter_val.lower() in str_val.lower(),
-            "starts_with": str_val.lower().startswith(filter_val.lower()),
-        }.get(operator, True)
-
-    return [row for row in rows if all(matches(row, f) for f in filters)]
-
-
 def _get_dashboard_by_token(
     token: str,
     db: Session,
     session_token: str | None = None,
+    *,
+    track_access: bool = True,
 ) -> tuple[Dashboard, list[dict]]:
     """Look up dashboard by token. Checks new multi-link table first, falls back to legacy share_token.
     Returns (dashboard, filters_config_for_this_link)."""
@@ -197,10 +95,10 @@ def _get_dashboard_by_token(
         dash = db.query(Dashboard).filter(Dashboard.id == link.dashboard_id).first()
         if not dash:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found.")
-        # Track access
-        link.access_count = (link.access_count or 0) + 1
-        link.last_accessed_at = datetime.now(timezone.utc)
-        db.commit()
+        if track_access:
+            link.access_count = (link.access_count or 0) + 1
+            link.last_accessed_at = datetime.now(timezone.utc)
+            db.commit()
         return dash, link.filters_config or []
 
     # Fallback to legacy share_token on Dashboard model
@@ -267,6 +165,10 @@ def get_public_chart_data(
     token: str,
     chart_id: int,
     request: Request,
+    filters: str | None = Query(
+        default=None,
+        description="JSON-encoded list of additional viewer filter objects.",
+    ),
     db: Session = Depends(get_db),
     x_public_session: str | None = Header(default=None),
 ):
@@ -276,7 +178,12 @@ def get_public_chart_data(
     cannot be used to access arbitrary charts.
     Password-protected links require X-Public-Session header from /auth.
     """
-    dash, public_filters = _get_dashboard_by_token(token, db, session_token=x_public_session)
+    dash, public_filters = _get_dashboard_by_token(
+        token,
+        db,
+        session_token=x_public_session,
+        track_access=False,
+    )
 
     # Confirm the chart belongs to this dashboard
     link = (
@@ -293,15 +200,31 @@ def get_public_chart_data(
             detail="Chart not found in this shared dashboard.",
         )
 
+    viewer_filters: list[dict] = []
+    if filters:
+        try:
+            parsed_filters = json.loads(filters)
+            if not isinstance(parsed_filters, list):
+                raise ValueError("filters must be a JSON array")
+            viewer_filters = [item for item in parsed_filters if isinstance(item, dict)]
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid filters parameter: {exc}",
+            ) from exc
+
+    combined_filters = [
+        *[item for item in (public_filters or []) if isinstance(item, dict)],
+        *viewer_filters,
+    ]
+
     try:
-        result = ChartService.get_chart_data(db, chart_id, filter_context="dashboard")
-        rows = result.get("data")
-        if isinstance(rows, list) and public_filters:
-            result = {
-                **result,
-                "data": _apply_filters_to_rows(rows, [f for f in public_filters if isinstance(f, dict)]),
-            }
-        return result
+        return ChartService.get_chart_data(
+            db,
+            chart_id,
+            extra_filters=combined_filters or None,
+            filter_context="dashboard",
+        )
     except ValueError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chart data not found.")
     except Exception as exc:

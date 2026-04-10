@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
-import { Plus, X, Filter, ChevronDown, ChevronRight, Search, Link2 } from 'lucide-react';
+import { Plus, X, Filter, ChevronDown, ChevronRight, Search, Link2, Check, RotateCcw } from 'lucide-react';
 import { BaseFilter, FilterOperator, FilterType, ColumnInfo, getColumnKey, getFilterKey } from '@/lib/filters';
 import { DateInput } from '@/components/ui/DateInput';
 
@@ -21,6 +21,10 @@ interface DashboardFilterBarProps {
   distinctValues: Record<string, string[]>;
   filters: BaseFilter[];
   onFiltersChange: (filters: BaseFilter[]) => void;
+  hasPendingChanges?: boolean;
+  onApply?: () => void;
+  onReset?: () => void;
+  isApplying?: boolean;
 }
 
 export function DashboardFilterBar({
@@ -29,9 +33,15 @@ export function DashboardFilterBar({
   distinctValues,
   filters,
   onFiltersChange,
+  hasPendingChanges = false,
+  onApply,
+  onReset,
+  isApplying = false,
 }: DashboardFilterBarProps) {
   const [isExpanded, setIsExpanded] = useState(true);
   const [addingField, setAddingField] = useState(false);
+  const [showPartialFields, setShowPartialFields] = useState(false);
+  const [addFilterSearch, setAddFilterSearch] = useState('');
   const [searchTerms, setSearchTerms] = useState<Record<string, string>>({});
 
   // How many filters have a non-empty value?
@@ -50,6 +60,34 @@ export function DashboardFilterBar({
   const availableColumns = useMemo(
     () => columns.filter(c => !usedFields.has(getColumnKey(c))),
     [columns, usedFields],
+  );
+
+  const normalizedAddFilterSearch = addFilterSearch.trim().toLowerCase();
+
+  const matchingAvailableColumns = useMemo(
+    () => availableColumns.filter((column) => {
+      if (!normalizedAddFilterSearch) return true;
+      const haystack = [
+        column.label,
+        column.name,
+        column.semanticField,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(normalizedAddFilterSearch);
+    }),
+    [availableColumns, normalizedAddFilterSearch],
+  );
+
+  const sharedAvailableColumns = useMemo(
+    () => matchingAvailableColumns.filter((column) => column.sharedAcrossDataset !== false),
+    [matchingAvailableColumns],
+  );
+
+  const partialAvailableColumns = useMemo(
+    () => matchingAvailableColumns.filter((column) => column.sharedAcrossDataset === false),
+    [matchingAvailableColumns],
   );
 
   // ── Mutators ───────────────────────────────────────────────────
@@ -83,6 +121,8 @@ export function DashboardFilterBar({
     };
     onFiltersChange([...filters, newFilter]);
     setAddingField(false);
+    setAddFilterSearch('');
+    setShowPartialFields(false);
     setIsExpanded(true);
   };
 
@@ -139,12 +179,54 @@ export function DashboardFilterBar({
   // Compute total chart coverage per filter (primary + linked fields)
   const getFilterChartCount = (f: BaseFilter): number => {
     const fields = [getFilterKey(f), ...(f.linkedFields ?? [])];
+    const primaryColumn = columns.find((column) => getColumnKey(column) === getFilterKey(f));
     let total = 0;
     for (const field of fields) {
       total += columnChartCount.get(field) ?? 0;
     }
-    const maxPossible = Math.max(...Array.from(columnChartCount.values()), 0);
+    const maxPossible = primaryColumn?.datasetChartCount ?? Math.max(...Array.from(columnChartCount.values()), 0);
     return Math.min(total, maxPossible || total);
+  };
+
+  const getCoverageLabel = (column: ColumnInfo) => {
+    const covered = column.chartCoverage ?? columnChartCount.get(getColumnKey(column)) ?? 0;
+    if (column.datasetChartCount && column.datasetChartCount > 0) {
+      return `${covered}/${column.datasetChartCount} charts`;
+    }
+    return `${covered} chart${covered !== 1 ? 's' : ''}`;
+  };
+
+  const renderColumnOption = (column: ColumnInfo) => {
+    const columnKey = getColumnKey(column);
+    const sameTypeCount = column.type === 'date' && !column.semanticField
+      ? columns.filter(c => c.type === 'date' && getColumnKey(c) !== columnKey && !usedFields.has(getColumnKey(c))).length
+      : 0;
+
+    return (
+      <button
+        key={columnKey}
+        onClick={() => addFilter(columnKey)}
+        className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 flex items-center justify-between group"
+      >
+        <span className="flex items-center gap-2 min-w-0">
+          <span className={`text-xs font-mono w-4 text-center ${TYPE_CLR[column.type]}`}>
+            {TYPE_BADGE[column.type]}
+          </span>
+          <span className="text-gray-700 group-hover:text-blue-700 truncate">{column.label ?? column.name}</span>
+        </span>
+        <span className="flex items-center gap-2 pl-2">
+          {sameTypeCount > 0 && (
+            <span className="flex items-center gap-0.5 text-xs text-teal-500" title={`Will auto-link ${sameTypeCount} other date column(s)`}>
+              <Link2 className="w-3 h-3" />
+              +{sameTypeCount}
+            </span>
+          )}
+          <span className={`text-xs ${column.sharedAcrossDataset === false ? 'text-amber-500' : 'text-gray-400'}`}>
+            {getCoverageLabel(column)}
+          </span>
+        </span>
+      </button>
+    );
   };
 
   // ── Render ─────────────────────────────────────────────────────
@@ -167,6 +249,12 @@ export function DashboardFilterBar({
             ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
             : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}
         </button>
+
+        {hasPendingChanges && (
+          <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+            Draft changes
+          </span>
+        )}
 
         {/* Collapsed summary chips */}
         {!isExpanded && activeCount > 0 && (
@@ -191,6 +279,27 @@ export function DashboardFilterBar({
         )}
 
         <div className="ml-auto flex items-center gap-2">
+          {hasPendingChanges && onReset && (
+            <button
+              onClick={onReset}
+              className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
+            >
+              <RotateCcw className="h-3 w-3" />
+              Reset
+            </button>
+          )}
+
+          {onApply && (
+            <button
+              onClick={onApply}
+              disabled={!hasPendingChanges || isApplying}
+              className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+            >
+              <Check className="h-3 w-3" />
+              {isApplying ? 'Applying...' : 'Apply'}
+            </button>
+          )}
+
           {filters.length > 0 && (
             <button
               onClick={() => onFiltersChange([])}
@@ -203,7 +312,14 @@ export function DashboardFilterBar({
           {/* Add filter dropdown */}
           <div className="relative">
             <button
-              onClick={() => setAddingField(!addingField)}
+              onClick={() => {
+                const next = !addingField;
+                setAddingField(next);
+                if (!next) {
+                  setAddFilterSearch('');
+                  setShowPartialFields(false);
+                }
+              }}
               disabled={availableColumns.length === 0}
               className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-600 border border-blue-300 rounded-md hover:bg-blue-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
@@ -213,46 +329,66 @@ export function DashboardFilterBar({
 
             {addingField && availableColumns.length > 0 && (
               <>
-                <div className="fixed inset-0 z-10" onClick={() => setAddingField(false)} />
+                <div className="fixed inset-0 z-10" onClick={() => {
+                  setAddingField(false);
+                  setAddFilterSearch('');
+                  setShowPartialFields(false);
+                }} />
                 <div className="absolute right-0 top-full mt-1 z-20 bg-white border border-gray-200 rounded-lg shadow-lg w-72 max-h-80 overflow-y-auto">
                   <div className="p-2 border-b border-gray-100">
                     <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Select a field</p>
-                    <p className="text-xs text-gray-400 mt-0.5">Date fields auto-link across all charts</p>
+                    <p className="text-xs text-gray-400 mt-0.5">Shared fields affect every compatible chart in the dataset.</p>
                   </div>
-                  {availableColumns.map(col => {
-                    const columnKey = getColumnKey(col);
-                    const count = columnChartCount.get(columnKey) ?? 0;
-                    const sameTypeCount = col.type === 'date' && !col.semanticField
-                      ? columns.filter(c => c.type === 'date' && getColumnKey(c) !== columnKey && !usedFields.has(getColumnKey(c))).length
-                      : 0;
-                    return (
+                  {availableColumns.length > 8 && (
+                    <div className="p-2 border-b border-gray-100">
+                      <div className="relative">
+                        <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                        <input
+                          type="text"
+                          value={addFilterSearch}
+                          onChange={(e) => setAddFilterSearch(e.target.value)}
+                          placeholder="Search fields..."
+                          className="w-full pl-7 pr-2 py-1.5 text-xs border border-gray-200 rounded focus:ring-1 focus:ring-blue-400 focus:border-blue-400 outline-none bg-white"
+                        />
+                      </div>
+                    </div>
+                  )}
+                  {sharedAvailableColumns.length > 0 && (
+                    <div className="py-1">
+                      <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                        Shared fields
+                      </div>
+                      {sharedAvailableColumns.map(renderColumnOption)}
+                    </div>
+                  )}
+                  {partialAvailableColumns.length > 0 && (
+                    <div className="border-t border-gray-100 py-1">
                       <button
-                        key={columnKey}
-                        onClick={() => addFilter(columnKey)}
-                        className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 flex items-center justify-between group"
+                        type="button"
+                        onClick={() => setShowPartialFields((current) => !current)}
+                        className="w-full px-3 py-1.5 flex items-center gap-2 text-xs text-amber-700 hover:bg-amber-50"
                       >
-                        <span className="flex items-center gap-2">
-                          <span className={`text-xs font-mono w-4 text-center ${TYPE_CLR[col.type]}`}>
-                            {TYPE_BADGE[col.type]}
-                          </span>
-                          <span className="text-gray-700 group-hover:text-blue-700">{col.label ?? col.name}</span>
-                        </span>
-                        <span className="flex items-center gap-2">
-                          {sameTypeCount > 0 && (
-                            <span className="flex items-center gap-0.5 text-xs text-teal-500" title={`Will auto-link ${sameTypeCount} other date column(s)`}>
-                              <Link2 className="w-3 h-3" />
-                              +{sameTypeCount}
-                            </span>
-                          )}
-                          {count > 0 && (
-                            <span className="text-xs text-gray-400">
-                              {count} chart{count !== 1 ? 's' : ''}
-                            </span>
-                          )}
-                        </span>
+                        {showPartialFields
+                          ? <ChevronDown className="w-3.5 h-3.5" />
+                          : <ChevronRight className="w-3.5 h-3.5" />}
+                        <span>Chart-specific fields</span>
+                        <span className="ml-auto text-[11px] text-amber-500">{partialAvailableColumns.length}</span>
                       </button>
-                    );
-                  })}
+                      {showPartialFields && (
+                        <div>
+                          <p className="px-3 pb-1 text-[11px] text-amber-500">
+                            These fields only affect a subset of charts.
+                          </p>
+                          {partialAvailableColumns.map(renderColumnOption)}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {matchingAvailableColumns.length === 0 && (
+                    <p className="px-3 py-3 text-xs text-gray-400 italic">
+                      No matching fields
+                    </p>
+                  )}
                 </div>
               </>
             )}
@@ -388,6 +524,13 @@ function FilterCard({
 
   const linkedCount = f.linkedFields?.length ?? 0;
   const hasLinkableColumns = linkableColumns.length > 0;
+  const primaryColumn = useMemo(
+    () => allColumns.find((column) => getColumnKey(column) === getFilterKey(f)),
+    [allColumns, f],
+  );
+  const filterCoverageLabel = primaryColumn?.datasetChartCount
+    ? `${filterChartCount}/${primaryColumn.datasetChartCount} charts`
+    : `${filterChartCount} chart${filterChartCount !== 1 ? 's' : ''}`;
 
   return (
     <div className="border border-gray-200 rounded-lg bg-gray-50/70 overflow-hidden flex flex-col">
@@ -412,12 +555,12 @@ function FilterCard({
                   : 'bg-gray-100 text-gray-500'
               }`}
               title={linkedCount > 0
-                ? `Linked to ${linkedCount} other column(s) — applies to more charts`
-                : `Applies to ${filterChartCount} chart(s)`
+                ? `Linked to ${linkedCount} other column(s) - applies to more charts`
+                : `Applies to ${filterCoverageLabel}`
               }
             >
               {linkedCount > 0 && <Link2 className="w-3 h-3 inline mr-0.5" />}
-              {filterChartCount} chart{filterChartCount !== 1 ? 's' : ''}
+              {filterCoverageLabel}
             </span>
           )}
         </div>

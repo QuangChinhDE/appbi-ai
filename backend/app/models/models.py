@@ -122,6 +122,7 @@ class Dashboard(Base):
     # Store dashboard-level filters as JSON (hybrid approach v1)
     # Structure: [{"id": "uuid", "datasetId": 1, "field": "country", "type": "dropdown", "operator": "in", "value": ["US"]}]
     filters_config = Column(JSON, nullable=True, default=list)
+    pages_config = Column(JSON, nullable=True, default=list)
     
     # Ownership
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

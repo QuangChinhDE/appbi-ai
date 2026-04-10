@@ -71,6 +71,7 @@ class DashboardChartLayout(BaseModel):
     minH: Optional[int] = Field(None, ge=1, description="Minimum height")
     maxH: Optional[int] = Field(None, ge=1, description="Maximum height")
     static: Optional[bool] = Field(False, description="Whether item is static (non-draggable)")
+    pageId: Optional[str] = Field(None, description="Dashboard page identifier")
     
     class Config:
         extra = "allow"  # Allow react-grid-layout to add more fields

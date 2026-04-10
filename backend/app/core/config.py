@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     # Database (Metadata Store)
     DATABASE_URL: str
     
-    # Storage (Parquet + DuckDB)
+    # Local application storage
     DATA_DIR: str = ".data"
 
     @property
@@ -165,3 +165,4 @@ def validate_security_settings() -> None:
     if errors:
         msg = "FATAL — Insecure configuration detected:\n" + "\n".join(f"  • {e}" for e in errors)
         raise RuntimeError(msg)
+

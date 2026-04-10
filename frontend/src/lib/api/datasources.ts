@@ -11,8 +11,6 @@ import {
   SchemaResponse,
   TableDetail,
   WatermarkColumn,
-  SyncConfig,
-  SyncJob,
 } from '@/types/api';
 
 export const dataSourceApi = {
@@ -81,44 +79,4 @@ export const dataSourceApi = {
     return response.data;
   },
 
-  // ── Sync Config ─────────────────────────────────────────────────────────
-
-  getSyncConfig: async (id: number): Promise<{ sync_config: SyncConfig }> => {
-    const response = await apiClient.get(`/datasources/${id}/sync-config`);
-    return response.data;
-  },
-
-  saveSyncConfig: async (id: number, config: SyncConfig): Promise<{ sync_config: SyncConfig }> => {
-    const response = await apiClient.put(`/datasources/${id}/sync-config`, {
-      sync_config: config,
-    });
-    return response.data;
-  },
-
-  // ── Sync Jobs ────────────────────────────────────────────────────────────
-
-  getSyncJobs: async (id: number, limit = 10): Promise<{ jobs: SyncJob[] }> => {
-    const response = await apiClient.get(`/datasources/${id}/sync-jobs`, {
-      params: { limit },
-    });
-    return response.data;
-  },
-
-  triggerSync: async (id: number): Promise<{ job_id: number; status: string; message: string }> => {
-    const response = await apiClient.post(`/datasources/${id}/sync`);
-    return response.data;
-  },
-
-  cancelSync: async (dsId: number, jobId: number): Promise<{ message: string; job_id: number }> => {
-    const response = await apiClient.post(`/datasources/${dsId}/sync-jobs/${jobId}/cancel`);
-    return response.data;
-  },
-
-  /**
-   * Returns the SSE URL for streaming live sync logs.
-   * Must be used with EventSource (not axios).
-   */
-  syncLogsUrl: (dsId: number, jobId: number): string => {
-    return `/api/datasources/${dsId}/sync-jobs/${jobId}/logs`;
-  },
 };

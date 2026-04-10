@@ -8,6 +8,7 @@ import {
 import { dashboardApi, PublicLink } from '@/lib/api/dashboards';
 import { chartApi } from '@/lib/api/charts';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
+import { useFilterDistinctValues } from '@/hooks/use-filter-distinct-values';
 import { toast } from 'sonner';
 import type { BaseFilter, ColumnInfo } from '@/lib/filters';
 import { inferColumnTypeFromData } from '@/lib/filters';
@@ -139,7 +140,8 @@ export function PublicLinksManager({
   // ── Use props when available, else use self-fetched ──
   const activeColumns = (propColumns?.length ?? 0) > 0 ? propColumns! : columns;
   const activeChartCount = (propChartCount?.size ?? 0) > 0 ? propChartCount! : chartCount;
-  const activeDistinctValues = Object.keys(propDistinctValues ?? {}).length > 0 ? propDistinctValues! : dv;
+  const baseDistinctValues = Object.keys(propDistinctValues ?? {}).length > 0 ? propDistinctValues! : dv;
+  const activeDistinctValues = useFilterDistinctValues(activeColumns, formFilters, baseDistinctValues);
 
   // ── Handlers ──
   const handleCreate = async () => {

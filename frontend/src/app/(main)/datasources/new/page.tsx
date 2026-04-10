@@ -3,13 +3,12 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Settings, RefreshCw, Lock, Zap } from 'lucide-react';
+import { ArrowLeft, Settings } from 'lucide-react';
 import DataSourceForm from '@/components/datasources/DataSourceForm';
 import { useCreateDataSource } from '@/hooks/use-datasources';
 import type { DataSourceCreate } from '@/types/api';
-import { DATASOURCE_SYNC_ENABLED, LIVE_QUERY_ONLY_MODE } from '@/lib/feature-flags';
 
-type Tab = 'connection' | 'sync';
+type Tab = 'connection';
 
 export default function NewDataSourcePage() {
   const router = useRouter();
@@ -25,21 +24,12 @@ export default function NewDataSourcePage() {
     }
   };
 
-  const tabs: { id: Tab; label: string; icon: React.ReactNode; locked: boolean }[] = [
+  const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     {
       id: 'connection',
       label: 'Connection',
       icon: <Settings className="w-3.5 h-3.5" />,
-      locked: false,
     },
-    ...(DATASOURCE_SYNC_ENABLED
-      ? [{
-          id: 'sync' as Tab,
-          label: 'Sync settings',
-          icon: <RefreshCw className="w-3.5 h-3.5" />,
-          locked: true,
-        }]
-      : []),
   ];
 
   return (
@@ -61,17 +51,6 @@ export default function NewDataSourcePage() {
             Configure the connection and query source data live.
           </p>
         </div>
-        {LIVE_QUERY_ONLY_MODE && (
-          <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            <Zap className="mt-0.5 h-4 w-4 shrink-0" />
-            <div>
-              <p className="font-medium">Live query mode</p>
-              <p className="mt-1 text-amber-800">
-                New sources use direct querying only. Sync setup is hidden for now.
-              </p>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Tabs card — stretches to fill remaining viewport height */}
@@ -81,19 +60,15 @@ export default function NewDataSourcePage() {
             {tabs.map((tab) => (
               <button
                 key={tab.id}
-                onClick={() => !tab.locked && setActiveTab(tab.id)}
-                disabled={tab.locked}
+                onClick={() => setActiveTab(tab.id)}
                 className={`flex items-center gap-2 px-5 py-3 text-sm font-medium border-b-2 transition-colors ${
-                  tab.locked
-                    ? 'border-transparent text-gray-300 cursor-not-allowed'
-                    : activeTab === tab.id
+                  activeTab === tab.id
                     ? 'border-blue-600 text-blue-700 bg-blue-50/40'
                     : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
                 }`}
               >
                 {tab.icon}
                 {tab.label}
-                {tab.locked && <Lock className="w-3 h-3 ml-0.5 opacity-50" />}
               </button>
             ))}
           </div>
@@ -110,22 +85,6 @@ export default function NewDataSourcePage() {
               </div>
             )}
 
-            {/* Locked sync tab */}
-            {activeTab === 'sync' && (
-              <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-3">
-                <Lock className="w-8 h-8 text-gray-200" />
-                <p className="text-sm font-medium">Save connection settings first</p>
-                <p className="text-xs text-gray-400 max-w-xs text-center">
-                  Complete and save the Connection tab to unlock Sync settings.
-                </p>
-                <button
-                  onClick={() => setActiveTab('connection')}
-                  className="mt-2 text-sm text-blue-600 hover:underline"
-                >
-                  Go to Connection
-                </button>
-              </div>
-            )}
           </div>
         </div>
       </div>

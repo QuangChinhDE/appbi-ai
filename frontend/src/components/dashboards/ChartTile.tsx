@@ -26,7 +26,7 @@ import {
 import type { BaseFilter, FilterOperator } from '@/lib/filters';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { useQueryClient } from '@tanstack/react-query';
-import type { ChartSemanticBinding } from '@/types/api';
+import type { ChartSemanticBinding, DashboardPageConfig } from '@/types/api';
 
 interface ChartTileProps {
   chartId: number;
@@ -42,6 +42,9 @@ interface ChartTileProps {
   onSelectCrossFilter?: (filter: BaseFilter | null) => void;
   isCrossFilterSource?: boolean;
   instanceParameters?: Record<string, any>;
+  availablePages?: DashboardPageConfig[];
+  currentPageId?: string | null;
+  onMoveToPage?: (pageId: string) => void;
 }
 
 /** Debounce a value — avoids cascading API calls on rapid filter changes. */
@@ -93,6 +96,9 @@ export function ChartTile({
   onSelectCrossFilter,
   isCrossFilterSource = false,
   instanceParameters,
+  availablePages = [],
+  currentPageId = null,
+  onMoveToPage,
 }: ChartTileProps) {
   const queryClient = useQueryClient();
   const { data: chart, isLoading: isLoadingChart } = useChart(chartId);
@@ -514,6 +520,21 @@ export function ChartTile({
         ) : (
           <>
             <h3 className="text-sm font-semibold truncate flex-1">{displayTitle}</h3>
+            {availablePages.length > 1 && onMoveToPage && (
+              <select
+                value={currentPageId ?? ''}
+                onMouseDown={e => e.stopPropagation()}
+                onChange={e => onMoveToPage(e.target.value)}
+                className="max-w-28 rounded border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] text-gray-500 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+                title="Move chart to page"
+              >
+                {availablePages.map((page) => (
+                  <option key={page.id} value={page.id}>
+                    {page.name}
+                  </option>
+                ))}
+              </select>
+            )}
             {exploreConfig && havingOptions.length > 0 && (
               <button
                 onMouseDown={e => e.stopPropagation()}
@@ -663,7 +684,6 @@ export function ChartTile({
     </div>
   );
 }
-
 
 
 

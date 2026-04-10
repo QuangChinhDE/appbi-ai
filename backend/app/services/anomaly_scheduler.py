@@ -2,7 +2,7 @@
 Anomaly Detection Scheduler — Phase 4 Proactive Intelligence.
 
 Runs AnomalyDetectionService.run_all_checks() daily at 2 AM.
-Uses APScheduler (same as sync_scheduler).
+Uses APScheduler for background scheduling.
 """
 import logging
 

@@ -12,6 +12,7 @@ from app.services.chart_service import ChartService
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+DEFAULT_DASHBOARD_PAGE = {"id": "page-1", "name": "Page 1"}
 
 
 class DashboardService:
@@ -46,6 +47,9 @@ class DashboardService:
                 name=dashboard.name,
                 description=dashboard.description,
                 owner_id=owner_id,
+                filters_config=dashboard.filters_config or [],
+                public_filters_config=dashboard.public_filters_config or [],
+                pages_config=dashboard.pages_config or [DEFAULT_DASHBOARD_PAGE],
             )
             db.add(db_dashboard)
             db.flush()  # Get the ID without committing

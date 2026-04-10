@@ -45,19 +45,16 @@ from app.services import query_cache
 from app.services.chart_contracts import normalize_filter_conditions
 from app.services.dataset_calendar_service import (
     build_calendar_columns_cache,
-    build_calendar_duckdb_sql,
     get_calendar_settings,
     is_generated_calendar_table,
 )
 from app.services.dataset_table_sql_service import (
     build_live_proxy_table_for_dataset_table,
     DatasetTableSqlError,
-    build_dataset_table_duckdb_query,
     build_dataset_table_sql_alias,
     collect_derived_dependency_table_ids,
     get_dataset_table_reference_options,
     is_derived_table,
-    preview_dataset_table_duckdb_query,
     validate_and_clean_derived_query,
 )
 from app.services.dataset_model_service import generate_dataset_model
@@ -66,9 +63,10 @@ from app.services.description_pipeline_service import (
     resolve_session_factory,
 )
 from app.core.logging import get_logger
-from app.services.runtime_modes import datasource_sync_enabled, resolve_dataset_query_mode
+from app.services.runtime_modes import datasource_sync_enabled
 from app.services.schema_inference import infer_schema_from_sql
 from app.services.live_query_service import (
+    LiveQueryService,
     build_dataset_table_cache_identifier,
     build_live_base_query_plan,
 )
@@ -408,32 +406,19 @@ def _infer_dataset_table_columns(
         ]
 
     if is_derived_table(db_table):
-        try:
-            column_names, rows = preview_dataset_table_duckdb_query(
-                db,
-                dataset_obj,
-                db_table,
-                limit=200,
-                offset=0,
-            )
-        except DatasetTableSqlError as exc:
-            if getattr(exc, "code", "") != "NOT_SYNCED":
-                raise
-            from app.services.live_query_service import LiveQueryService
-
-            datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
-                db,
-                dataset_obj,
-                db_table,
-            )
-            result = LiveQueryService.execute_preview_query(
-                datasource=datasource,
-                db_table=live_proxy_table,
-                limit=200,
-                offset=0,
-            )
-            column_names = list(result.get("columns") or [])
-            rows = list(result.get("rows") or [])
+        datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
+            db,
+            dataset_obj,
+            db_table,
+        )
+        result = LiveQueryService.execute_preview_query(
+            datasource=datasource,
+            db_table=live_proxy_table,
+            limit=200,
+            offset=0,
+        )
+        column_names = list(result.get("columns") or [])
+        rows = list(result.get("rows") or [])
         return [
             DatasetColumnMetadata(
                 name=column_name,
@@ -698,13 +683,19 @@ def add_table_to_dataset(
                     type_overrides=None,
                     columns_cache=None,
                 )
-                preview_columns, preview_rows = preview_dataset_table_duckdb_query(
+                datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
                     db,
                     ds,
                     derived_draft,
+                )
+                result = LiveQueryService.execute_preview_query(
+                    datasource=datasource,
+                    db_table=live_proxy_table,
                     limit=200,
                     offset=0,
                 )
+                preview_columns = list(result.get("columns") or [])
+                preview_rows = list(result.get("rows") or [])
                 inferred_metadata = [
                     DatasetColumnMetadata(
                         name=column_name,
@@ -715,46 +706,13 @@ def add_table_to_dataset(
                 ]
                 inferred_rows = preview_rows
             except DatasetTableSqlError as exc:
-                if getattr(exc, "code", "") != "NOT_SYNCED":
-                    status_code = 422 if getattr(exc, "code", "") == "NOT_SYNCED" else 400
-                    detail: Any = str(exc)
-                    if getattr(exc, "code", "") == "NOT_SYNCED":
-                        detail = {"code": exc.code, "message": str(exc)}
-                    raise HTTPException(status_code=status_code, detail=detail)
-
-                try:
-                    from app.services.live_query_service import LiveQueryService
-
-                    datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
-                        db,
-                        ds,
-                        derived_draft,
-                    )
-                    result = LiveQueryService.execute_preview_query(
-                        datasource=datasource,
-                        db_table=live_proxy_table,
-                        limit=200,
-                        offset=0,
-                    )
-                    preview_columns = list(result.get("columns") or [])
-                    preview_rows = list(result.get("rows") or [])
-                    inferred_metadata = [
-                        DatasetColumnMetadata(
-                            name=column_name,
-                            type=_infer_column_type(column_name, index, preview_rows),
-                            nullable=True,
-                        )
-                        for index, column_name in enumerate(preview_columns)
-                    ]
-                    inferred_rows = preview_rows
-                except DatasetTableSqlError as live_exc:
-                    status_code = 422 if getattr(live_exc, "code", "") == "NOT_SYNCED" else 400
-                    detail: Any = str(live_exc)
-                    if getattr(live_exc, "code", "") == "NOT_SYNCED":
-                        detail = {"code": live_exc.code, "message": str(live_exc)}
-                    raise HTTPException(status_code=status_code, detail=detail)
-                except ValueError as live_exc:
-                    raise HTTPException(status_code=400, detail=str(live_exc))
+                status_code = 422 if getattr(exc, "code", "") == "NOT_SYNCED" else 400
+                detail: Any = str(exc)
+                if getattr(exc, "code", "") == "NOT_SYNCED":
+                    detail = {"code": exc.code, "message": str(exc)}
+                raise HTTPException(status_code=status_code, detail=detail)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
         else:
             # Validate datasource exists
             datasource = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
@@ -789,7 +747,6 @@ def add_table_to_dataset(
         # ── Auto-detect table size and set query_mode ──
         if datasource_sync_enabled() and datasource is not None and db_table.source_kind == "physical_table" and db_table.source_table_name:
             try:
-                from app.services.live_query_service import LiveQueryService
                 ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
                 stn = db_table.source_table_name.strip().strip('"').strip("'")
                 if "." in stn:
@@ -823,7 +780,6 @@ def add_table_to_dataset(
                 logger.warning("Size detection failed for table %s: %s", db_table.source_table_name, e)
         elif datasource is not None and db_table.source_kind == "physical_table" and db_table.source_table_name:
             try:
-                from app.services.live_query_service import LiveQueryService
                 ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
                 stn = db_table.source_table_name.strip().strip('"').strip("'")
                 if "." in stn:
@@ -938,13 +894,19 @@ def update_dataset_table(
             try:
                 table_update.source_query = validate_and_clean_derived_query(table_update.source_query)
                 table_draft = _build_table_draft(db_table, table_update)
-                preview_columns, preview_rows = preview_dataset_table_duckdb_query(
+                datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
                     db,
                     ds,
                     table_draft,
+                )
+                result = LiveQueryService.execute_preview_query(
+                    datasource=datasource,
+                    db_table=live_proxy_table,
                     limit=200,
                     offset=0,
                 )
+                preview_columns = list(result.get("columns") or [])
+                preview_rows = list(result.get("rows") or [])
                 preview_metadata = [
                     DatasetColumnMetadata(
                         name=column_name,
@@ -954,45 +916,13 @@ def update_dataset_table(
                     for index, column_name in enumerate(preview_columns)
                 ]
             except DatasetTableSqlError as exc:
-                if getattr(exc, "code", "") != "NOT_SYNCED":
-                    status_code = 422 if getattr(exc, "code", "") == "NOT_SYNCED" else 400
-                    detail: Any = str(exc)
-                    if getattr(exc, "code", "") == "NOT_SYNCED":
-                        detail = {"code": exc.code, "message": str(exc)}
-                    raise HTTPException(status_code=status_code, detail=detail)
-
-                try:
-                    from app.services.live_query_service import LiveQueryService
-
-                    datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
-                        db,
-                        ds,
-                        table_draft,
-                    )
-                    result = LiveQueryService.execute_preview_query(
-                        datasource=datasource,
-                        db_table=live_proxy_table,
-                        limit=200,
-                        offset=0,
-                    )
-                    preview_columns = list(result.get("columns") or [])
-                    preview_rows = list(result.get("rows") or [])
-                    preview_metadata = [
-                        DatasetColumnMetadata(
-                            name=column_name,
-                            type=_infer_column_type(column_name, index, preview_rows),
-                            nullable=True,
-                        )
-                        for index, column_name in enumerate(preview_columns)
-                    ]
-                except DatasetTableSqlError as live_exc:
-                    status_code = 422 if getattr(live_exc, "code", "") == "NOT_SYNCED" else 400
-                    detail: Any = str(live_exc)
-                    if getattr(live_exc, "code", "") == "NOT_SYNCED":
-                        detail = {"code": live_exc.code, "message": str(live_exc)}
-                    raise HTTPException(status_code=status_code, detail=detail)
-                except ValueError as live_exc:
-                    raise HTTPException(status_code=400, detail=str(live_exc))
+                status_code = 422 if getattr(exc, "code", "") == "NOT_SYNCED" else 400
+                detail: Any = str(exc)
+                if getattr(exc, "code", "") == "NOT_SYNCED":
+                    detail = {"code": exc.code, "message": str(exc)}
+                raise HTTPException(status_code=status_code, detail=detail)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
         else:
             from app.services.query_validator import QueryValidator, QueryValidationError
             try:
@@ -1383,314 +1313,99 @@ def preview_dataset_table(
     if not db_table or db_table.dataset_id != dataset_id:
         raise HTTPException(status_code=404, detail="Table not found in this dataset")
 
-    if is_generated_calendar_table(db_table):
-        from app.services.duckdb_engine import DuckDBEngine
+    limit = min(preview_request.limit or 1000, 1000)
+    offset = max(preview_request.offset or 0, 0)
+    datasource: Optional[DataSource] = None
+    target_table = db_table
 
-        settings = get_calendar_settings(dataset_obj, enabled_default=False)
-        base_query = build_calendar_duckdb_sql(settings)
-        limit = min(preview_request.limit or 100, 1000)
-        offset = max(preview_request.offset or 0, 0)
-        query = f"SELECT * FROM ({base_query}) AS generated_calendar LIMIT {limit}"
-        if offset:
-            query += f" OFFSET {offset}"
-
-        rows = DuckDBEngine.query(query)
-        cached_columns = build_calendar_columns_cache()["columns"]
-        column_metadata = [
-            DatasetColumnMetadata(
-                name=str(column.get("name")),
-                type=str(column.get("type")),
-                nullable=bool(column.get("nullable", False)),
-            )
-            for column in cached_columns
-        ]
-
-        def serialize_value(val):
-            if isinstance(val, (datetime, date)):
-                return val.isoformat()
-            if isinstance(val, Decimal):
-                return float(val)
-            return val
-
-        serializable_rows = [{k: serialize_value(v) for k, v in row.items()} for row in rows[:500]]
-        DatasetCRUDService.update_table_cache(
-            db,
-            table_id,
-            columns_cache=build_calendar_columns_cache(),
-            sample_cache=serializable_rows,
-        )
-        _sync_dataset_model_safely(db, dataset_id)
-
-        total = (
-            date.fromisoformat(settings["end_date"]) - date.fromisoformat(settings["start_date"])
-        ).days + 1
-        return TablePreviewResponse(
-            columns=column_metadata,
-            rows=rows,
-            total=total,
-            has_more=(offset + len(rows)) < total,
-        )
-
-    if is_derived_table(db_table):
+    if is_generated_calendar_table(db_table) or is_derived_table(db_table):
         try:
-            limit = min(preview_request.limit or 100, 1000)
-            offset = max(preview_request.offset or 0, 0)
-            try:
-                columns, rows = preview_dataset_table_duckdb_query(
-                    db,
-                    dataset_obj,
-                    db_table,
-                    limit=limit,
-                    offset=offset,
-                )
-            except DatasetTableSqlError as exc:
-                if getattr(exc, "code", "") != "NOT_SYNCED":
-                    raise
-                from app.services.live_query_service import LiveQueryService
-
-                datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
-                    db,
-                    dataset_obj,
-                    db_table,
-                )
-                result = LiveQueryService.execute_preview_query(
-                    datasource=datasource,
-                    db_table=live_proxy_table,
-                    limit=limit,
-                    offset=offset,
-                )
-                columns = list(result.get("columns") or [])
-                rows = list(result.get("rows") or [])
-            column_metadata = [
-                DatasetColumnMetadata(
-                    name=column_name,
-                    type=_infer_column_type(column_name, index, rows),
-                    nullable=True,
-                )
-                for index, column_name in enumerate(columns)
-            ]
-            DatasetCRUDService.update_table_cache(
+            datasource, target_table = build_live_proxy_table_for_dataset_table(
                 db,
-                table_id,
-                columns_cache=_build_columns_cache_payload(
-                    db_table,
-                    column_metadata,
-                    source_columns=columns,
-                ),
-                sample_cache=_serialize_cached_rows(rows),
-            )
-            _sync_dataset_model_safely(db, dataset_id)
-
-            return TablePreviewResponse(
-                columns=column_metadata,
-                rows=rows,
-                total=len(rows),
-                has_more=len(rows) >= limit,
+                dataset_obj,
+                db_table,
             )
         except DatasetTableSqlError as exc:
             if getattr(exc, "code", "") == "NOT_SYNCED":
                 raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)})
             raise HTTPException(status_code=400, detail=str(exc))
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.error("Failed to preview calculated table %s: %s", table_id, exc)
-            raise HTTPException(status_code=500, detail="Failed to preview calculated table.")
-    
-    # Get datasource
-    datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
-    if not datasource:
-        raise HTTPException(status_code=404, detail="Datasource not found")
+    else:
+        datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+        if not datasource:
+            raise HTTPException(status_code=404, detail="Datasource not found")
 
-    # ── LIVE mode: preview directly from source ──
-    query_mode = resolve_dataset_query_mode(db_table)
-    if query_mode == 'live':
-        try:
-            from app.services.live_query_service import LiveQueryService
-            limit = preview_request.limit or 1000
-            limit = min(limit, 1000)
-            result = LiveQueryService.execute_preview_query(
-                datasource=datasource,
-                db_table=db_table,
-                limit=limit,
-                offset=preview_request.offset or 0,
-            )
-            rows = result["rows"]
-            columns = result["columns"]
-            column_metadata = []
-            for i, col in enumerate(columns):
-                col_type = _infer_column_type(col, i, rows)
-                column_metadata.append(DatasetColumnMetadata(name=col, type=col_type, nullable=True))
-
-            type_overrides = db_table.type_overrides or {}
-            for col_meta in column_metadata:
-                if col_meta.name in type_overrides:
-                    col_meta.type = type_overrides[col_meta.name]
-
-            def serialize_value(val):
-                from datetime import datetime, date
-                from decimal import Decimal
-                if isinstance(val, (datetime, date)):
-                    return val.isoformat()
-                if isinstance(val, Decimal):
-                    return float(val)
-                return val
-
-            serializable_rows = []
-            for row in rows[:500]:
-                if isinstance(row, dict):
-                    serializable_rows.append({k: serialize_value(v) for k, v in row.items()})
-                else:
-                    serializable_rows.append([serialize_value(v) for v in row])
-
-            DatasetCRUDService.update_table_cache(
-                db, table_id,
-                columns_cache=_build_columns_cache_payload(
-                    db_table,
-                    column_metadata,
-                    source_columns=result.get("source_columns") or [],
-                ),
-                sample_cache=serializable_rows,
-            )
-            _sync_dataset_model_safely(db, dataset_id)
-
-            return TablePreviewResponse(
-                columns=column_metadata,
-                rows=rows,
-                total=len(rows),
-                has_more=len(rows) >= limit,
-            )
-        except HTTPException:
-            raise
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            logger.error("Failed to live-preview table: %s", e)
-            raise HTTPException(status_code=500, detail="Failed to preview table from live source.")
-    
-    # ── SYNCED mode: use DuckDB ──
-    # Build base query — requires DuckDB synced view (raises 422 NOT_SYNCED if not synced)
-    from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
-    from app.services.duckdb_engine import DuckDBEngine
-    from app.services.transformation_compiler import TransformationCompiler
-
+    # ── Preview directly from live source ──
     try:
-        if db_table.source_kind == "sql_query":
-            if not db_table.source_query:
-                raise HTTPException(status_code=400, detail="Table has source_kind='sql_query' but source_query is NULL")
-            rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
-            if rewritten is None:
-                raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
-            base_query = f"SELECT * FROM ({rewritten}) AS _base"
-        else:
-            if not db_table.source_table_name:
-                raise HTTPException(status_code=400, detail="Table has source_kind='physical_table' but source_table_name is NULL")
-            view_name = get_synced_view(datasource.id, db_table.source_table_name)
-            if view_name is None:
-                raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
-            base_query = f"SELECT * FROM {view_name}"
-
-        # Apply transformations (TransformationCompiler generates DuckDB-compatible SQL)
-        if db_table.transformations:
-            transformations = db_table.transformations if isinstance(db_table.transformations, list) else []
-            query, _ = TransformationCompiler.compile_transformations(
-                base_query, transformations, dialect="duckdb"
-            )
-        else:
-            query = base_query
-
-        if preview_request.limit:
-            query += f" LIMIT {preview_request.limit}"
-        else:
-            query += " LIMIT 1000"
-        if preview_request.offset:
-            query += f" OFFSET {preview_request.offset}"
-
-        with DuckDBEngine.read_conn() as _conn:
-            _result = _conn.execute(query)
-        col_names = [d[0] for d in _result.description] if _result.description else []
-        raw_rows = _result.fetchall()
-        rows = [dict(zip(col_names, r)) for r in raw_rows]
-        columns = col_names
-        
-        # Infer column types
+        result = LiveQueryService.execute_preview_query(
+            datasource=datasource,
+            db_table=target_table,
+            limit=limit,
+            offset=offset,
+        )
+        rows = result["rows"]
+        columns = result["columns"]
         column_metadata = []
         for i, col in enumerate(columns):
             col_type = _infer_column_type(col, i, rows)
-            column_metadata.append(
-                DatasetColumnMetadata(
-                    name=col,
-                    type=col_type,
-                    nullable=True
-                )
-            )
-        
-        # Apply user-defined type overrides
+            column_metadata.append(DatasetColumnMetadata(name=col, type=col_type, nullable=True))
+
         type_overrides = db_table.type_overrides or {}
         for col_meta in column_metadata:
             if col_meta.name in type_overrides:
                 col_meta.type = type_overrides[col_meta.name]
-        
-        # Get total count (approximate for now)
-        # In production, run a COUNT query
-        total = len(rows)
-        has_more = len(rows) >= preview_request.limit
-        
-        # Serialize rows for JSON storage (convert datetime, date, etc.)
+
         def serialize_value(val):
-            """Convert non-JSON-serializable values to strings"""
-            from datetime import datetime, date
-            from decimal import Decimal
             if isinstance(val, (datetime, date)):
                 return val.isoformat()
             if isinstance(val, Decimal):
                 return float(val)
             return val
-        
-        # Convert rows to serializable format
+
         serializable_rows = []
-        for row in rows[:500]:  # Keep up to 500 rows for LOOKUP support
+        for row in rows[:500]:
             if isinstance(row, dict):
                 serializable_rows.append({k: serialize_value(v) for k, v in row.items()})
             else:
                 serializable_rows.append([serialize_value(v) for v in row])
-        
-        # Cache results
+
+        columns_cache_payload = (
+            build_calendar_columns_cache()
+            if is_generated_calendar_table(db_table)
+            else _build_columns_cache_payload(
+                db_table,
+                column_metadata,
+                source_columns=result.get("source_columns") or [],
+            )
+        )
         DatasetCRUDService.update_table_cache(
-            db,
-            table_id,
-            columns_cache={"columns": [col.model_dump() for col in column_metadata]},
-            sample_cache=serializable_rows
+            db, table_id,
+            columns_cache=columns_cache_payload,
+            sample_cache=serializable_rows,
         )
         _sync_dataset_model_safely(db, dataset_id)
-        
+
+        total = len(rows)
+        has_more = len(rows) >= limit
+        if is_generated_calendar_table(db_table):
+            settings = get_calendar_settings(dataset_obj, enabled_default=False)
+            total = (
+                date.fromisoformat(settings["end_date"]) - date.fromisoformat(settings["start_date"])
+            ).days + 1
+            has_more = (offset + len(rows)) < total
+
         return TablePreviewResponse(
             columns=column_metadata,
             rows=rows,
             total=total,
-            has_more=has_more
+            has_more=has_more,
         )
-
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        import re as _re
-        err = str(e)
-        _binder = _re.search(r'Referenced table "([^"]+)" not found', err)
-        if _binder:
-            tname = _binder.group(1)
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "NOT_SYNCED",
-                    "message": f"Table '{tname}' has not been synced from the datasource yet. Please sync the datasource first.",
-                }
-            )
-        logger.error(f"Failed to preview table: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to preview table."
-        )
+        logger.error("Failed to preview table: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to preview table.")
 
 
 @router.post(
@@ -1716,544 +1431,87 @@ def execute_dataset_table_query(
     if not db_table or db_table.dataset_id != dataset_id:
         raise HTTPException(status_code=404, detail="Table not found in this dataset")
 
-    if is_generated_calendar_table(db_table):
-        from app.services.duckdb_engine import DuckDBEngine
-
-        settings = get_calendar_settings(dataset_obj, enabled_default=False)
-        base_table = f"({build_calendar_duckdb_sql(settings)}) AS base_table"
-        allowed_columns = {column["name"] for column in build_calendar_columns_cache()["columns"]}
-
-        def _validate_calendar_column(col_name: str, context: str) -> str:
-            if col_name not in allowed_columns:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid {context}: '{col_name}' is not a column of this table",
-                )
-            return '"' + col_name.replace('"', '""') + '"'
-
-        def _sql_literal(v: Any) -> str:
-            if v is None:
-                return "NULL"
-            if isinstance(v, bool):
-                return "TRUE" if v else "FALSE"
-            if isinstance(v, (int, float, Decimal)) and not isinstance(v, bool):
-                return str(v)
-            return "'" + str(v).replace("'", "''") + "'"
-
-        select_parts = []
-        output_columns = []
-        if execute_request.dimensions:
-            for dim in execute_request.dimensions:
-                quoted_dim = _validate_calendar_column(dim, "dimension")
-                select_parts.append(quoted_dim)
-                output_columns.append(quoted_dim)
-
-        if execute_request.measures:
-            for measure in execute_request.measures:
-                quoted_col = _validate_calendar_column(measure.field, "measure field")
-                agg_func = measure.function.upper()
-                alias = '"' + f"{measure.field}_{measure.function}".replace('"', '""') + '"'
-                output_columns.append(alias)
-                if agg_func == "COUNT_DISTINCT":
-                    select_parts.append(f"COUNT(DISTINCT {quoted_col}) AS {alias}")
-                else:
-                    select_parts.append(f"{agg_func}({quoted_col}) AS {alias}")
-
-        if not select_parts:
-            select_parts.append("*")
-
-        query = f"SELECT {', '.join(select_parts)} FROM {base_table}"
-
-        if execute_request.filters:
-            normalized_filters = normalize_filter_conditions(
-                [
-                    {
-                        "field": item.field,
-                        "operator": item.operator,
-                        "value": item.value,
-                    }
-                    for item in execute_request.filters
-                ]
-            )
-            where_conditions = []
-            for filter_cond in normalized_filters:
-                quoted_field = _validate_calendar_column(filter_cond["field"], "filter field")
-                op = str(filter_cond.get("operator") or "").lower()
-                value = filter_cond.get("value")
-                if op == "eq":
-                    where_conditions.append(f"{quoted_field} = {_sql_literal(value)}")
-                elif op == "neq":
-                    where_conditions.append(f"{quoted_field} != {_sql_literal(value)}")
-                elif op == "gt":
-                    where_conditions.append(f"{quoted_field} > {_sql_literal(value)}")
-                elif op == "gte":
-                    where_conditions.append(f"{quoted_field} >= {_sql_literal(value)}")
-                elif op == "lt":
-                    where_conditions.append(f"{quoted_field} < {_sql_literal(value)}")
-                elif op == "lte":
-                    where_conditions.append(f"{quoted_field} <= {_sql_literal(value)}")
-                elif op == "between" and isinstance(value, list) and len(value) >= 2:
-                    lo, hi = value[0], value[1]
-                    if lo not in ("", None) and hi not in ("", None):
-                        where_conditions.append(f"{quoted_field} BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}")
-                    elif lo not in ("", None):
-                        where_conditions.append(f"{quoted_field} >= {_sql_literal(lo)}")
-                    elif hi not in ("", None):
-                        where_conditions.append(f"{quoted_field} <= {_sql_literal(hi)}")
-                elif op in {"in", "not_in"}:
-                    values = value if isinstance(value, list) else []
-                    if isinstance(value, str):
-                        values = [v.strip() for v in value.split(",") if v.strip()]
-                    if not values:
-                        continue
-                    quoted_values = ", ".join(_sql_literal(v) for v in values)
-                    comparator = "NOT IN" if op == "not_in" else "IN"
-                    where_conditions.append(f"{quoted_field} {comparator} ({quoted_values})")
-                elif op in {"like", "contains", "not_contains", "starts_with"} and value is not None:
-                    escaped = str(value).replace("'", "''")
-                    if op == "starts_with":
-                        where_conditions.append(f"{quoted_field} LIKE '{escaped}%'")
-                    elif op == "not_contains":
-                        where_conditions.append(f"{quoted_field} NOT LIKE '%{escaped}%'")
-                    else:
-                        where_conditions.append(f"{quoted_field} LIKE '%{escaped}%'")
-                elif op == "is_null":
-                    where_conditions.append(f"{quoted_field} IS NULL")
-                elif op == "is_not_null":
-                    where_conditions.append(f"{quoted_field} IS NOT NULL")
-
-            if where_conditions:
-                query += " WHERE " + " AND ".join(where_conditions)
-
-        preserve_group_order = bool(
-            execute_request.dimensions and execute_request.measures and not execute_request.order_by
-        )
-        if execute_request.dimensions and execute_request.measures:
-            quoted_dims = [_validate_calendar_column(d, "dimension") for d in execute_request.dimensions]
-            if preserve_group_order:
-                ordered_base_table = (
-                    '(SELECT *, ROW_NUMBER() OVER () AS "__appbi_row_order" '
-                    f'FROM {base_table}) AS _appbi_ordered'
-                )
-                query = (
-                    f"SELECT {', '.join(select_parts)}, MIN(\"__appbi_row_order\") AS \"__appbi_group_order\" "
-                    f"FROM {ordered_base_table}"
-                )
-                if execute_request.filters and where_conditions:
-                    query += " WHERE " + " AND ".join(where_conditions)
-            query += f" GROUP BY {', '.join(quoted_dims)}"
-
-        measure_aliases = {
-            f"{metric.field}_{metric.function}"
-            for metric in (execute_request.measures or [])
-        }
-        if execute_request.order_by:
-            order_parts = []
-            for order_item in execute_request.order_by:
-                if order_item.field in measure_aliases:
-                    quoted_col = '"' + order_item.field.replace('"', '""') + '"'
-                else:
-                    quoted_col = _validate_calendar_column(order_item.field, "order_by field")
-                direction = order_item.direction.upper() if order_item.direction.upper() in ("ASC", "DESC") else "DESC"
-                order_parts.append(f"{quoted_col} {direction}")
-            query += " ORDER BY " + ", ".join(order_parts)
-        elif preserve_group_order:
-            query = (
-                f"SELECT {', '.join(output_columns)} "
-                f"FROM ({query}) AS _appbi_grouped "
-                'ORDER BY "__appbi_group_order" ASC'
-            )
-
-        query += f" LIMIT {execute_request.limit}"
-
-        try:
-            rows = DuckDBEngine.query(query)
-            columns = list(rows[0].keys()) if rows else []
-            column_metadata = [
-                DatasetColumnMetadata(
-                    name=column,
-                    type=_infer_column_type(column, idx, rows),
-                    nullable=True,
-                )
-                for idx, column in enumerate(columns)
-            ]
-            return ExecuteQueryResponse(columns=column_metadata, rows=rows)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.error("Failed to execute generated calendar query: %s", exc)
-            raise HTTPException(status_code=500, detail="Failed to execute query.")
-
+    # ── Resolve datasource and build live query target ──
     datasource: Optional[DataSource] = None
-    query_mode = "synced"
-    if not is_derived_table(db_table):
+    target_table = db_table
+
+    if is_generated_calendar_table(db_table) or is_derived_table(db_table):
+        try:
+            datasource, target_table = build_live_proxy_table_for_dataset_table(
+                db,
+                dataset_obj,
+                db_table,
+            )
+        except DatasetTableSqlError as exc:
+            if getattr(exc, "code", "") == "NOT_SYNCED":
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": exc.code, "message": str(exc)},
+                )
+            raise HTTPException(status_code=400, detail=str(exc))
+    else:
         datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
         if not datasource:
             raise HTTPException(status_code=404, detail="Datasource not found")
-        query_mode = resolve_dataset_query_mode(db_table)
 
-    # ── LIVE mode: execute aggregation directly against source ──
-    if query_mode == 'live':
-        try:
-            from app.services.live_query_service import LiveQueryService
-
-            measures = [
-                {"field": m.field, "agg": m.function}
-                for m in (execute_request.measures or [])
-            ]
-            filters = normalize_filter_conditions(
-                [
-                    {
-                        "field": f.field,
-                        "operator": f.operator,
-                        "value": f.value,
-                    }
-                    for f in (execute_request.filters or [])
-                ]
-            )
-            order_by = [
-                {
-                    "field": ob.field,
-                    "direction": ob.direction,
-                }
-                for ob in (execute_request.order_by or [])
-            ]
-
-            rows = LiveQueryService.execute_dataset_query(
-                datasource=datasource,
-                db_table=db_table,
-                dimensions=execute_request.dimensions or [],
-                measures=measures,
-                filters=filters,
-                order_by=order_by,
-                limit=execute_request.limit,
-            )
-
-            columns = list(rows[0].keys()) if rows else []
-            column_metadata = [
-                DatasetColumnMetadata(
-                    name=col,
-                    type=_infer_column_type(col, idx, rows),
-                    nullable=True,
-                )
-                for idx, col in enumerate(columns)
-            ]
-
-            return ExecuteQueryResponse(columns=column_metadata, rows=rows)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error("Failed to execute live query: %s", e)
-            raise HTTPException(status_code=500, detail="Failed to execute query on live source.")
-    
-    # ── SYNCED mode: use DuckDB ──
-    # Build base_table — requires synced DuckDB view
-    from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
-    from app.services.duckdb_engine import DuckDBEngine
-
-    if is_derived_table(db_table):
-        try:
-            base_table = f"({build_dataset_table_duckdb_query(db, dataset_obj, db_table)}) AS base_table"
-        except DatasetTableSqlError as exc:
-            if getattr(exc, "code", "") == "NOT_SYNCED":
-                try:
-                    from app.services.live_query_service import LiveQueryService
-
-                    datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
-                        db,
-                        dataset_obj,
-                        db_table,
-                    )
-                    measures = [
-                        {"field": m.field, "agg": m.function}
-                        for m in (execute_request.measures or [])
-                    ]
-                    filters = normalize_filter_conditions(
-                        [
-                            {
-                                "field": f.field,
-                                "operator": f.operator,
-                                "value": f.value,
-                            }
-                            for f in (execute_request.filters or [])
-                        ]
-                    )
-                    order_by = [
-                        {
-                            "field": ob.field,
-                            "direction": ob.direction,
-                        }
-                        for ob in (execute_request.order_by or [])
-                    ]
-
-                    rows = LiveQueryService.execute_dataset_query(
-                        datasource=datasource,
-                        db_table=live_proxy_table,
-                        dimensions=execute_request.dimensions or [],
-                        measures=measures,
-                        filters=filters,
-                        order_by=order_by,
-                        limit=execute_request.limit,
-                    )
-                    columns = list(rows[0].keys()) if rows else []
-                    column_metadata = [
-                        DatasetColumnMetadata(
-                            name=col,
-                            type=_infer_column_type(col, idx, rows),
-                            nullable=True,
-                        )
-                        for idx, col in enumerate(columns)
-                    ]
-                    return ExecuteQueryResponse(columns=column_metadata, rows=rows)
-                except DatasetTableSqlError as live_exc:
-                    raise HTTPException(
-                        status_code=422 if getattr(live_exc, "code", "") == "NOT_SYNCED" else 400,
-                        detail={"code": live_exc.code, "message": str(live_exc)}
-                        if getattr(live_exc, "code", "") == "NOT_SYNCED"
-                        else str(live_exc),
-                    )
-                except ValueError as live_exc:
-                    raise HTTPException(status_code=400, detail=str(live_exc))
-            raise HTTPException(status_code=400, detail=str(exc))
-    elif db_table.source_kind == "sql_query":
-        if not db_table.source_query:
-            raise HTTPException(status_code=400, detail="Table has source_kind='sql_query' but source_query is NULL")
-        rewritten = rewrite_sql_for_duckdb(datasource.id, db_table.source_query)
-        if rewritten is None:
-            raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
-        base_table = f"({rewritten}) AS base_table"
-    else:
-        if not db_table.source_table_name:
-            raise HTTPException(status_code=400, detail="Table has source_kind='physical_table' but source_table_name is NULL")
-        view_name = get_synced_view(datasource.id, db_table.source_table_name)
-        if view_name is None:
-            raise HTTPException(status_code=422, detail={"code": "NOT_SYNCED", "message": "Table not synced to DuckDB"})
-        base_table = view_name
-
-    # --- Security: build column whitelist from columns_cache ---
-    # columns_cache is populated by the preview endpoint; if missing we skip whitelist validation
-    # (SELECT * path below still avoids injection since we only quote identifiers).
-    allowed_columns: set | None = None
-    if db_table.columns_cache:
-        raw_cols = db_table.columns_cache
-        if isinstance(raw_cols, dict) and "columns" in raw_cols:
-            raw_cols = raw_cols["columns"]
-        allowed_columns = {
-            c["name"] if isinstance(c, dict) else str(c)
-            for c in raw_cols
-        }
-
-    def _validate_column(col_name: str, context: str) -> str:
-        """Raise 400 if col_name is not in whitelist, return double-quoted identifier."""
-        if allowed_columns is not None and col_name not in allowed_columns:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid {context}: '{col_name}' is not a column of this table"
-            )
-        # Quote identifier to prevent injection even when whitelist is unavailable
-        return '"' + col_name.replace('"', '""') + '"'
-
-    # Build SELECT clause with dimensions and measures
-    select_parts = []
-
-    # Add dimensions
-    if execute_request.dimensions:
-        for dim in execute_request.dimensions:
-            select_parts.append(_validate_column(dim, "dimension"))
-
-    # Add measures (aggregations)
-    if execute_request.measures:
-        for measure in execute_request.measures:
-            quoted_col = _validate_column(measure.field, "measure field")
-            # measure.function is already validated by Pydantic pattern constraint
-            agg_func = measure.function.upper()
-            alias = '"' + f"{measure.field}_{measure.function}".replace('"', '""') + '"'
-            if agg_func == 'COUNT_DISTINCT':
-                select_parts.append(f"COUNT(DISTINCT {quoted_col}) AS {alias}")
-            else:
-                select_parts.append(f"{agg_func}({quoted_col}) AS {alias}")
-
-    output_columns: list[str] = []
-    if execute_request.dimensions:
-        for dim in execute_request.dimensions:
-            output_columns.append(_validate_column(dim, "dimension"))
-
-    if execute_request.measures:
-        for m in execute_request.measures:
-            output_columns.append('"' + f"{m.field}_{m.function}".replace('"', '""') + '"')
-
-    if not select_parts:
-        select_parts.append("*")
-
-    select_clause = ", ".join(select_parts)
-
-    # Build query — inline values with SQL-safe escaping (single-quote doubling).
-    # DuckDB does not support psycopg2-style %s placeholders; column names are
-    # already injection-safe (validated whitelist + double-quoted identifiers).
-    def _sql_literal(v: Any) -> str:
-        """Render a SQL literal for the synced DuckDB path."""
-        if v is None:
-            return "NULL"
-        if isinstance(v, bool):
-            return "TRUE" if v else "FALSE"
-        if isinstance(v, (int, float, Decimal)) and not isinstance(v, bool):
-            return str(v)
-        return "'" + str(v).replace("'", "''") + "'"
-
-    query = f"SELECT {select_clause} FROM {base_table}"
-
-    # Add WHERE clause
-    if execute_request.filters:
-        normalized_filters = normalize_filter_conditions(
+    # ── Execute aggregation directly against the live source ──
+    try:
+        measures = [
+            {"field": m.field, "agg": m.function}
+            for m in (execute_request.measures or [])
+        ]
+        filters = normalize_filter_conditions(
             [
                 {
-                    "field": item.field,
-                    "operator": item.operator,
-                    "value": item.value,
+                    "field": f.field,
+                    "operator": f.operator,
+                    "value": f.value,
                 }
-                for item in execute_request.filters
+                for f in (execute_request.filters or [])
             ]
         )
-        where_conditions = []
-        for filter_cond in normalized_filters:
-            quoted_field = _validate_column(filter_cond["field"], "filter field")
-            op = str(filter_cond.get("operator") or "").lower()
-            value = filter_cond.get("value")
-            if op == "eq":
-                where_conditions.append(f"{quoted_field} = {_sql_literal(value)}")
-            elif op == "neq":
-                where_conditions.append(f"{quoted_field} != {_sql_literal(value)}")
-            elif op == "gt":
-                where_conditions.append(f"{quoted_field} > {_sql_literal(value)}")
-            elif op == "gte":
-                where_conditions.append(f"{quoted_field} >= {_sql_literal(value)}")
-            elif op == "lt":
-                where_conditions.append(f"{quoted_field} < {_sql_literal(value)}")
-            elif op == "lte":
-                where_conditions.append(f"{quoted_field} <= {_sql_literal(value)}")
-            elif op == "between" and isinstance(value, list) and len(value) >= 2:
-                lo, hi = value[0], value[1]
-                if lo not in ("", None) and hi not in ("", None):
-                    where_conditions.append(f"{quoted_field} BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}")
-                elif lo not in ("", None):
-                    where_conditions.append(f"{quoted_field} >= {_sql_literal(lo)}")
-                elif hi not in ("", None):
-                    where_conditions.append(f"{quoted_field} <= {_sql_literal(hi)}")
-            elif op in {"in", "not_in"}:
-                values = value if isinstance(value, list) else []
-                if isinstance(value, str):
-                    values = [v.strip() for v in value.split(",") if v.strip()]
-                if not values:
-                    continue
-                quoted_values = ", ".join(_sql_literal(v) for v in values)
-                comparator = "NOT IN" if op == "not_in" else "IN"
-                where_conditions.append(f"{quoted_field} {comparator} ({quoted_values})")
-            elif op in {"like", "contains", "not_contains", "starts_with"} and value is not None:
-                escaped = str(value).replace("'", "''")
-                if op == "starts_with":
-                    where_conditions.append(f"{quoted_field} LIKE '{escaped}%'")
-                elif op == "not_contains":
-                    where_conditions.append(f"{quoted_field} NOT LIKE '%{escaped}%'")
-                else:
-                    where_conditions.append(f"{quoted_field} LIKE '%{escaped}%'")
-            elif op == "is_null":
-                where_conditions.append(f"{quoted_field} IS NULL")
-            elif op == "is_not_null":
-                where_conditions.append(f"{quoted_field} IS NOT NULL")
+        order_by = [
+            {
+                "field": ob.field,
+                "direction": ob.direction,
+            }
+            for ob in (execute_request.order_by or [])
+        ]
 
-        if where_conditions:
-            query += " WHERE " + " AND ".join(where_conditions)
-
-    # Add GROUP BY for dimensions
-    preserve_group_order = bool(
-        execute_request.dimensions and execute_request.measures and not execute_request.order_by
-    )
-    if execute_request.dimensions and execute_request.measures:
-        # dimensions are already validated + quoted above; rebuild the list
-        quoted_dims = [_validate_column(d, "dimension") for d in execute_request.dimensions]
-        if preserve_group_order:
-            ordered_base_table = (
-                '(SELECT *, ROW_NUMBER() OVER () AS "__appbi_row_order" '
-                f'FROM {base_table}) AS _appbi_ordered'
-            )
-            query = (
-                f'SELECT {select_clause}, MIN("__appbi_row_order") AS "__appbi_group_order" '
-                f'FROM {ordered_base_table}'
-            )
-            if execute_request.filters and where_conditions:
-                query += " WHERE " + " AND ".join(where_conditions)
-        query += f" GROUP BY {', '.join(quoted_dims)}"
-
-    # Build set of valid measure aliases so ORDER BY can reference them
-    measure_aliases: set = set()
-    if execute_request.measures:
-        for m in execute_request.measures:
-            measure_aliases.add(f"{m.field}_{m.function}")
-
-    # Add ORDER BY — field validated + quoted, direction constrained by Pydantic
-    if execute_request.order_by:
-        order_parts = []
-        for ob in execute_request.order_by:
-            if ob.field in measure_aliases:
-                # Measure alias — already safe (constructed from validated field + function)
-                quoted_col = '"' + ob.field.replace('"', '""') + '"'
-            else:
-                quoted_col = _validate_column(ob.field, "order_by field")
-            direction = ob.direction.upper() if ob.direction.upper() in ("ASC", "DESC") else "DESC"
-            order_parts.append(f"{quoted_col} {direction}")
-        query += " ORDER BY " + ", ".join(order_parts)
-    elif preserve_group_order:
-        query = (
-            f"SELECT {', '.join(output_columns)} "
-            f'FROM ({query}) AS _appbi_grouped '
-            'ORDER BY "__appbi_group_order" ASC'
+        rows = LiveQueryService.execute_dataset_query(
+            datasource=datasource,
+            db_table=target_table,
+            dimensions=execute_request.dimensions or [],
+            measures=measures,
+            filters=filters,
+            order_by=order_by,
+            limit=execute_request.limit,
         )
 
-    # Add LIMIT — integer, already constrained by Pydantic (ge=1, le=10000)
-    query += f" LIMIT {execute_request.limit}"
-
-    try:
-        with DuckDBEngine.read_conn() as _conn:
-            _result = _conn.execute(query)
-        col_names = [d[0] for d in _result.description] if _result.description else []
-        raw_rows = _result.fetchall()
-        rows = [dict(zip(col_names, r)) for r in raw_rows]
-        columns = col_names
-
-        # Infer column types
-        column_metadata = []
-        for i, col in enumerate(columns):
-            col_type = "string"
-            if rows and len(rows) > 0:
-                if isinstance(rows[0], dict):
-                    val = rows[0].get(col)
-                else:
-                    val = rows[0][i] if i < len(rows[0]) else None
-
-                if isinstance(val, bool):
-                    col_type = "boolean"
-                elif isinstance(val, (int, float, Decimal)):
-                    col_type = "number"
-
-            column_metadata.append(
-                DatasetColumnMetadata(
-                    name=col,
-                    type=col_type,
-                    nullable=True
-                )
+        columns = list(rows[0].keys()) if rows else []
+        column_metadata = [
+            DatasetColumnMetadata(
+                name=col,
+                type=_infer_column_type(col, idx, rows),
+                nullable=True,
             )
+            for idx, col in enumerate(columns)
+        ]
 
-        return ExecuteQueryResponse(
-            columns=column_metadata,
-            rows=rows
-        )
-
+        return ExecuteQueryResponse(columns=column_metadata, rows=rows)
+    except DatasetTableSqlError as exc:
+        if getattr(exc, "code", "") == "NOT_SYNCED":
+            raise HTTPException(
+                status_code=422,
+                detail={"code": exc.code, "message": str(exc)},
+            )
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to execute query: {e}")
+        logger.error("Failed to execute query: %s", e)
         raise HTTPException(
             status_code=500,
             detail="Failed to execute query."
@@ -2427,7 +1685,7 @@ def list_datasource_table_columns(
 ):
     """
     Return columns for a specific table.
-    Tries DuckDB synced view first; falls back to live source schema query.
+    Return columns for a table by querying the live source schema.
     """
     datasource = db.query(DataSource).filter(DataSource.id == datasource_id).first()
     if not datasource:

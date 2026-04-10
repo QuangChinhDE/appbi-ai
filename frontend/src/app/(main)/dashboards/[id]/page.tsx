@@ -3,7 +3,7 @@
 import React, { useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Bot, Sparkles } from 'lucide-react';
+import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Bot, Sparkles, Trash2 } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import { useQueries } from '@tanstack/react-query';
 import {
@@ -20,13 +20,26 @@ import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
-import { DashboardChartLayout } from '@/types/api';
+import { DashboardChartLayout, DashboardPageConfig } from '@/types/api';
 import type { BaseFilter, ColumnInfo, FilterType } from '@/lib/filters';
-import { getColumnKey, getFilterKey, inferColumnTypeFromData } from '@/lib/filters';
+import {
+  collectJoinKeySemanticFields,
+  getColumnKey,
+  getFilterKey,
+  inferColumnTypeFromData,
+  isSemanticDimensionFilterableForDashboard,
+} from '@/lib/filters';
 import { fetchDatasetModel, fetchDatasetModelDistinctValues, modelKeys, type DatasetModelResponse } from '@/hooks/use-dataset-model';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { useAgentReportSpecs } from '@/hooks/use-agent-report-specs';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import {
+  createDashboardPageId,
+  ensureDashboardPageId,
+  getDashboardChartPageId,
+  getDashboardChartsForPage,
+  normalizeDashboardPages,
+} from '@/lib/dashboard-pages';
 import { toast } from 'sonner';
 
 // Debounce utility
@@ -94,7 +107,9 @@ export default function DashboardDetailPage() {
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState('');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-  const [globalFilters, setGlobalFilters] = useState<BaseFilter[]>([]);
+  const [draftGlobalFilters, setDraftGlobalFilters] = useState<BaseFilter[]>([]);
+  const [appliedGlobalFilters, setAppliedGlobalFilters] = useState<BaseFilter[]>([]);
+  const [isApplyingFilters, setIsApplyingFilters] = useState(false);
   const [crossFilterState, setCrossFilterState] = useState<{
     sourceChartId: number;
     filter: BaseFilter;
@@ -102,12 +117,16 @@ export default function DashboardDetailPage() {
   const [availableColumns, setAvailableColumns] = useState<ColumnInfo[]>([]);
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   const [isPublicShareOpen, setIsPublicShareOpen] = useState(false);
+  const [currentPageId, setCurrentPageId] = useState<string | null>(null);
+  const [localPagesConfig, setLocalPagesConfig] = useState<DashboardPageConfig[] | null>(null);
+  const [editingPageId, setEditingPageId] = useState<string | null>(null);
+  const [editedPageName, setEditedPageName] = useState('');
+  const [pendingDeletePageId, setPendingDeletePageId] = useState<string | null>(null);
   // columnChartCount: how many distinct chartIds have each column
   const columnChartCountRef = React.useRef<Map<string, Set<number>>>(new Map());
   const [columnChartCount, setColumnChartCount] = useState<Map<string, number>>(new Map());
-  // Refs for filter seeding and auto-save
+  // Refs for filter seeding
   const filtersSeededRef = React.useRef(false);
-  const filtersSaveTimerRef = React.useRef<NodeJS.Timeout | null>(null);
   const filtersSnapshotRef = React.useRef<string>('[]');
   const distinctValuesRef = React.useRef<Map<string, Set<string>>>(new Map());
   const [distinctValues, setDistinctValues] = useState<Record<string, string[]>>({});
@@ -148,6 +167,36 @@ export default function DashboardDetailPage() {
   const addChartMutation = useAddChartToDashboard();
   const removeChartMutation = useRemoveChartFromDashboard();
   const updateLayoutMutation = useUpdateDashboardLayout();
+  const dashboardPages = React.useMemo(
+    () => normalizeDashboardPages(localPagesConfig ?? dashboard?.pages_config),
+    [dashboard?.pages_config, localPagesConfig],
+  );
+  const activePageId = React.useMemo(
+    () => ensureDashboardPageId(dashboardPages, currentPageId),
+    [dashboardPages, currentPageId],
+  );
+  const currentPage = React.useMemo(
+    () => dashboardPages.find((page) => page.id === activePageId) ?? dashboardPages[0],
+    [activePageId, dashboardPages],
+  );
+  const visibleDashboardCharts = React.useMemo(
+    () => getDashboardChartsForPage(dashboard?.dashboard_charts, activePageId),
+    [dashboard?.dashboard_charts, activePageId],
+  );
+  const hasPendingFilterChanges = React.useMemo(
+    () => JSON.stringify(draftGlobalFilters) !== JSON.stringify(appliedGlobalFilters),
+    [draftGlobalFilters, appliedGlobalFilters],
+  );
+
+  React.useEffect(() => {
+    if (currentPageId !== activePageId) {
+      setCurrentPageId(activePageId);
+    }
+  }, [currentPageId, activePageId]);
+
+  React.useEffect(() => {
+    setLocalPagesConfig(null);
+  }, [dashboard?.pages_config]);
 
   // Seed globalFilters from dashboard.filters_config once when dashboard first loads
   React.useEffect(() => {
@@ -155,38 +204,39 @@ export default function DashboardDetailPage() {
     filtersSeededRef.current = true;
     const initial: BaseFilter[] = Array.isArray(dashboard.filters_config) ? dashboard.filters_config as BaseFilter[] : [];
     filtersSnapshotRef.current = JSON.stringify(initial);
-    setGlobalFilters(initial);
+    setDraftGlobalFilters(initial);
+    setAppliedGlobalFilters(initial);
   }, [dashboard]);
 
   React.useEffect(() => {
     if (!crossFilterState) return;
-    const sourceExists = (dashboard?.dashboard_charts ?? []).some(
+    const sourceExists = visibleDashboardCharts.some(
       (dashboardChart) => dashboardChart.chart_id === crossFilterState.sourceChartId,
     );
     if (!sourceExists) {
       setCrossFilterState(null);
     }
-  }, [dashboard?.dashboard_charts, crossFilterState]);
+  }, [visibleDashboardCharts, crossFilterState]);
 
-  // Auto-save globalFilters to backend for editors (1.5s debounce, skips the initial seed)
+  // Track the last applied filter snapshot.
   React.useEffect(() => {
     if (!filtersSeededRef.current) return;
-    const current = JSON.stringify(globalFilters);
-    if (current === filtersSnapshotRef.current) return; // no change from saved value
-    if (!canEditResource) return;
-    if (filtersSaveTimerRef.current) clearTimeout(filtersSaveTimerRef.current);
-    filtersSaveTimerRef.current = setTimeout(async () => {
-      try {
-        await dashboardApi.update(dashboardId, { filters_config: globalFilters });
-        filtersSnapshotRef.current = JSON.stringify(globalFilters);
-      } catch {
+    const current = JSON.stringify(appliedGlobalFilters);
+    filtersSnapshotRef.current = current;
+  }, [appliedGlobalFilters]);
+  // Filter changes are applied explicitly via the Apply action.
+  //
+  //
+  //
+  //
+  //
         // silent — filters remain active in session even if save fails
-      }
-    }, 1500);
-    return () => {
-      if (filtersSaveTimerRef.current) clearTimeout(filtersSaveTimerRef.current);
-    };
-  }, [globalFilters, canEditResource, dashboardId]);
+  //
+  //
+  //
+  //
+  //
+  //
 
   // Auto-save layout with debounce
   const debouncedSaveLayout = useDebounce(
@@ -196,6 +246,7 @@ export default function DashboardDetailPage() {
       const chartLayouts = layouts.map((item) => ({
         id: Number(item.i), // dashboard_chart_id
         layout: {
+          ...(dashboard.dashboard_charts?.find((dashboardChart) => dashboardChart.id === Number(item.i))?.layout ?? {}),
           x: item.x,
           y: item.y,
           w: item.w,
@@ -246,7 +297,10 @@ export default function DashboardDetailPage() {
       await addChartMutation.mutateAsync({
         dashboardId,
         chartId,
-        layout,
+        layout: {
+          ...layout,
+          pageId: activePageId,
+        },
         parameters,
       });
       setIsAddChartModalOpen(false);
@@ -311,6 +365,155 @@ export default function DashboardDetailPage() {
     setEditedName('');
   };
 
+  const handleApplyFilters = async () => {
+    setAppliedGlobalFilters(draftGlobalFilters);
+    if (!canEditResource) return;
+
+    setIsApplyingFilters(true);
+    try {
+      await dashboardApi.update(dashboardId, { filters_config: draftGlobalFilters });
+      filtersSnapshotRef.current = JSON.stringify(draftGlobalFilters);
+    } catch (error) {
+      console.error('Failed to save dashboard filters:', error);
+      toast.error('Applied in this session, but failed to save dashboard filters.');
+    } finally {
+      setIsApplyingFilters(false);
+    }
+  };
+
+  const handleResetFilters = () => {
+    setDraftGlobalFilters(appliedGlobalFilters);
+  };
+
+  const persistPagesConfig = useCallback(async (pages: DashboardPageConfig[]) => {
+    setLocalPagesConfig(pages);
+    try {
+      await updateDashboardMutation.mutateAsync({
+        id: dashboardId,
+        data: { pages_config: pages },
+      });
+    } catch (error) {
+      setLocalPagesConfig(null);
+      throw error;
+    }
+  }, [dashboardId, updateDashboardMutation]);
+
+  const handleAddPage = async () => {
+    const nextPage: DashboardPageConfig = {
+      id: createDashboardPageId(),
+      name: `Page ${dashboardPages.length + 1}`,
+    };
+
+    try {
+      await persistPagesConfig([...dashboardPages, nextPage]);
+      setCurrentPageId(nextPage.id);
+      setEditingPageId(nextPage.id);
+      setEditedPageName(nextPage.name);
+      toast.success('Dashboard page added');
+    } catch (error) {
+      console.error('Failed to add dashboard page:', error);
+      toast.error('Failed to add page. Please try again.');
+    }
+  };
+
+  const handleStartRenamePage = () => {
+    if (!currentPage) return;
+    setEditingPageId(currentPage.id);
+    setEditedPageName(currentPage.name);
+  };
+
+  const handleCancelRenamePage = () => {
+    setEditingPageId(null);
+    setEditedPageName('');
+  };
+
+  const handleSavePageName = async () => {
+    if (!editingPageId) return;
+    const trimmedName = editedPageName.trim();
+    if (!trimmedName) return;
+
+    const nextPages = dashboardPages.map((page) => (
+      page.id === editingPageId ? { ...page, name: trimmedName } : page
+    ));
+
+    try {
+      await persistPagesConfig(nextPages);
+      setEditingPageId(null);
+      setEditedPageName('');
+      toast.success('Page renamed');
+    } catch (error) {
+      console.error('Failed to rename page:', error);
+      toast.error('Failed to rename page. Please try again.');
+    }
+  };
+
+  const confirmDeletePage = async () => {
+    if (!pendingDeletePageId || dashboardPages.length <= 1 || !dashboard) {
+      setPendingDeletePageId(null);
+      return;
+    }
+
+    const fallbackPage = dashboardPages.find((page) => page.id !== pendingDeletePageId);
+    if (!fallbackPage) {
+      setPendingDeletePageId(null);
+      return;
+    }
+
+    const chartsToMove = (dashboard.dashboard_charts ?? [])
+      .filter((dashboardChart) => getDashboardChartPageId(dashboardChart.layout) === pendingDeletePageId)
+      .map((dashboardChart) => ({
+        id: dashboardChart.id,
+        layout: {
+          ...dashboardChart.layout,
+          pageId: fallbackPage.id,
+        },
+      }));
+
+    try {
+      if (chartsToMove.length > 0) {
+        await updateLayoutMutation.mutateAsync({
+          dashboardId,
+          chartLayouts: chartsToMove,
+        });
+      }
+      await persistPagesConfig(dashboardPages.filter((page) => page.id !== pendingDeletePageId));
+      if (activePageId === pendingDeletePageId) {
+        setCurrentPageId(fallbackPage.id);
+      }
+      setEditingPageId((current) => current === pendingDeletePageId ? null : current);
+      toast.success('Page deleted');
+    } catch (error) {
+      console.error('Failed to delete page:', error);
+      toast.error('Failed to delete page. Please try again.');
+    } finally {
+      setPendingDeletePageId(null);
+    }
+  };
+
+  const handleMoveChartToPage = async (dashboardChartId: number, pageId: string) => {
+    if (!dashboard) return;
+    const dashboardChart = dashboard.dashboard_charts?.find((item) => item.id === dashboardChartId);
+    if (!dashboardChart) return;
+    if (getDashboardChartPageId(dashboardChart.layout) === pageId) return;
+
+    try {
+      await updateLayoutMutation.mutateAsync({
+        dashboardId,
+        chartLayouts: [{
+          id: dashboardChartId,
+          layout: {
+            ...dashboardChart.layout,
+            pageId,
+          },
+        }],
+      });
+      toast.success('Chart moved to another page');
+    } catch (error) {
+      console.error('Failed to move chart to page:', error);
+      toast.error('Failed to move chart. Please try again.');
+    }
+  };
+
   // Collect typed column info from chart data as charts load
   // Only dimension/breakdown fields are eligible for the global filter bar
   const handleChartDataLoaded = useCallback((
@@ -367,6 +570,12 @@ export default function DashboardDetailPage() {
   const semanticColumnsResult = React.useMemo(() => {
     const columns = new Map<string, ColumnInfo>();
     const counts = new Map<string, Set<number>>();
+    const datasetChartIds = new Map<number, Set<number>>();
+    const datasetJoinKeyFields = new Map<number, Set<string>>();
+
+    for (const [datasetId, model] of datasetModelsById.entries()) {
+      datasetJoinKeyFields.set(datasetId, collectJoinKeySemanticFields(model));
+    }
 
     for (const dashboardChart of dashboard?.dashboard_charts ?? []) {
       const binding = (dashboardChart.chart?.config as any)?.semanticBinding as
@@ -378,10 +587,14 @@ export default function DashboardDetailPage() {
         | undefined;
 
       if (!binding?.datasetId) continue;
+      if (!datasetChartIds.has(binding.datasetId)) datasetChartIds.set(binding.datasetId, new Set());
+      datasetChartIds.get(binding.datasetId)!.add(dashboardChart.chart_id);
+
       const model = datasetModelsById.get(binding.datasetId);
       if (!model) continue;
 
       const viewsByName = new Map(model.views.map((view) => [view.name, view]));
+      const joinKeyFields = datasetJoinKeyFields.get(binding.datasetId) ?? new Set<string>();
       const candidateFields = binding.dimensionFields?.length
         ? binding.dimensionFields
         : Object.values(binding.fieldMap ?? {});
@@ -392,6 +605,12 @@ export default function DashboardDetailPage() {
         const [viewName, fieldName] = parts;
         const view = viewsByName.get(viewName);
         const dimension = view?.dimensions.find((item) => item.name === fieldName);
+        if (!isSemanticDimensionFilterableForDashboard({
+          semanticField,
+          view,
+          dimension,
+          joinKeyFields,
+        })) continue;
         if (!dimension) continue;
         const viewLabel = view?.table_display_name || viewName;
 
@@ -411,24 +630,62 @@ export default function DashboardDetailPage() {
       }
     }
 
+    const sortedColumns = Array.from(columns.values())
+      .map((column) => {
+        const key = getColumnKey(column);
+        const chartCoverage = counts.get(key)?.size ?? 0;
+        const datasetChartCount = column.datasetId
+          ? (datasetChartIds.get(column.datasetId)?.size ?? chartCoverage)
+          : chartCoverage;
+        return {
+          ...column,
+          chartCoverage,
+          datasetChartCount,
+          sharedAcrossDataset: datasetChartCount > 0 && chartCoverage === datasetChartCount,
+        };
+      })
+      .sort((left, right) => {
+        const leftShared = left.sharedAcrossDataset ? 1 : 0;
+        const rightShared = right.sharedAcrossDataset ? 1 : 0;
+        if (leftShared !== rightShared) return rightShared - leftShared;
+        if ((left.chartCoverage ?? 0) !== (right.chartCoverage ?? 0)) {
+          return (right.chartCoverage ?? 0) - (left.chartCoverage ?? 0);
+        }
+        if ((left.datasetChartCount ?? 0) !== (right.datasetChartCount ?? 0)) {
+          return (right.datasetChartCount ?? 0) - (left.datasetChartCount ?? 0);
+        }
+        return (left.label ?? left.name).localeCompare(right.label ?? right.name);
+      });
+
     return {
-      columns: Array.from(columns.values()).sort((a, b) =>
-        (a.label ?? a.name).localeCompare(b.label ?? b.name),
-      ),
+      columns: sortedColumns,
       chartCount: new Map(Array.from(counts.entries()).map(([key, ids]) => [key, ids.size])),
     };
   }, [dashboard?.dashboard_charts, datasetModelsById]);
 
-  const semanticDistinctColumns = React.useMemo(
-    () => semanticColumnsResult.columns.filter(
-      (column) => Boolean(column.datasetId && column.semanticField)
-        && (column.type === 'dropdown' || column.type === 'text'),
-    ),
-    [semanticColumnsResult.columns],
-  );
+  const activeSemanticDistinctColumns = React.useMemo(() => {
+    if (semanticColumnsResult.columns.length === 0 || draftGlobalFilters.length === 0) {
+      return [];
+    }
+
+    const columnsByKey = new Map(
+      semanticColumnsResult.columns.map((column) => [getColumnKey(column), column]),
+    );
+    const activeColumns = new Map<string, ColumnInfo>();
+
+    for (const filter of draftGlobalFilters) {
+      const key = getFilterKey(filter);
+      const column = columnsByKey.get(key);
+      if (!column?.datasetId || !column.semanticField) continue;
+      if (column.type !== 'dropdown' && column.type !== 'text') continue;
+      activeColumns.set(key, column);
+    }
+
+    return Array.from(activeColumns.values());
+  }, [draftGlobalFilters, semanticColumnsResult.columns]);
 
   const semanticDistinctQueries = useQueries({
-    queries: semanticDistinctColumns.map((column) => ({
+    queries: activeSemanticDistinctColumns.map((column) => ({
       queryKey: modelKeys.distinct(column.datasetId!, column.semanticField!),
       queryFn: () => fetchDatasetModelDistinctValues(column.datasetId!, column.semanticField!),
       enabled: Boolean(column.datasetId && column.semanticField),
@@ -438,11 +695,11 @@ export default function DashboardDetailPage() {
 
   const semanticDistinctValues = React.useMemo(() => {
     const values: Record<string, string[]> = {};
-    semanticDistinctColumns.forEach((column, index) => {
+    activeSemanticDistinctColumns.forEach((column, index) => {
       values[getColumnKey(column)] = semanticDistinctQueries[index]?.data?.values ?? [];
     });
     return values;
-  }, [semanticDistinctColumns, semanticDistinctQueries]);
+  }, [activeSemanticDistinctColumns, semanticDistinctQueries]);
 
   const resolvedAvailableColumns = semanticColumnsResult.columns.length > 0
     ? semanticColumnsResult.columns
@@ -489,132 +746,221 @@ export default function DashboardDetailPage() {
   const existingChartIds = dashboard.dashboard_charts?.map((dc) => dc.chart_id) || [];
   const linkedAgentReport = agentReportSpecs.find((spec) => spec.latest_dashboard_id === dashboardId);
   const activeCrossFilter = crossFilterState?.filter ?? null;
+  const isRenamingCurrentPage = editingPageId === currentPage?.id;
+  const emptyPageMessage = currentPage
+    ? `No charts on ${currentPage.name} yet. Add a chart to start this page.`
+    : 'No charts in this dashboard yet.';
+  const fallbackDeletePage = pendingDeletePageId
+    ? dashboardPages.find((page) => page.id !== pendingDeletePageId) ?? null
+    : null;
   const activeCrossFilterSourceTitle = crossFilterState
-    ? (dashboard.dashboard_charts?.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.layout?.custom_title
-      ?? dashboard.dashboard_charts?.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.chart?.name
+    ? (visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.layout?.custom_title
+      ?? visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.chart?.name
       ?? `Chart ${crossFilterState.sourceChartId}`)
     : null;
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="w-full px-8 py-6">
-        {/* Navigation */}
-        <div className="mb-6">
-          <Link href="/dashboards" className="inline-flex items-center text-blue-600 hover:text-blue-700">
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back to Dashboards
-          </Link>
-        </div>
+      <div className="w-full px-4 py-4 sm:px-6 lg:px-8">
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-sm">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-3 text-sm">
+                <Link href="/dashboards" className="inline-flex items-center text-blue-600 hover:text-blue-700">
+                  <ArrowLeft className="mr-2 h-4 w-4" />
+                  Back to Dashboards
+                </Link>
+                {hasUnsavedChanges && (
+                  <span className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-xs text-gray-500">
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    Saving layout
+                  </span>
+                )}
+              </div>
 
-        {/* Header */}
-        <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
-          {linkedAgentReport && (
-            <div className="mb-5 rounded-xl border border-blue-200 bg-blue-50 p-4">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div className="flex items-start gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white text-blue-600">
-                    <Bot className="h-5 w-5" />
+              <div className="mt-3 min-w-0">
+                {isEditingName ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="text"
+                      value={editedName}
+                      onChange={(e) => setEditedName(e.target.value)}
+                      className="min-w-[260px] flex-1 rounded-lg border border-gray-300 px-3 py-2 text-xl font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      autoFocus
+                    />
+                    <button
+                      onClick={handleSaveName}
+                      disabled={updateDashboardMutation.isPending}
+                      className="rounded-md p-2 text-green-600 hover:bg-green-50"
+                      title="Save"
+                    >
+                      <Check className="h-5 w-5" />
+                    </button>
+                    <button
+                      onClick={handleCancelEditName}
+                      className="rounded-md p-2 text-gray-600 hover:bg-gray-50"
+                      title="Cancel"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
                   </div>
-                  <div>
-                    <p className="text-sm font-semibold text-blue-900">Generated from AI Report</p>
-                    <p className="mt-1 text-sm text-blue-800">
-                      This dashboard is the editable output of <span className="font-medium">{linkedAgentReport.name}</span>.
-                      Keep refining layout and charts here, then return to AI Reports when you want to review the narrative or rerun the brief.
-                    </p>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-3">
+                    <h1 className="truncate text-2xl font-bold text-gray-900">{dashboard.name}</h1>
+                    {canEditResource && (
+                      <button
+                        onClick={handleStartEditName}
+                        className="rounded-md p-1 text-gray-400 hover:text-gray-600"
+                        title="Edit name"
+                      >
+                        <Edit2 className="h-4 w-4" />
+                      </button>
+                    )}
                   </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => router.push(`/ai-reports/${linkedAgentReport.id}`)}
-                  className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-white px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100/40"
-                >
-                  <Sparkles className="h-4 w-4" />
-                  Open AI report
-                </button>
+                )}
+
+                {dashboard.description && (
+                  <p className="mt-1 text-sm text-gray-500">{dashboard.description}</p>
+                )}
+
+                {linkedAgentReport && (
+                  <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                    <div className="flex items-center gap-2">
+                      <Bot className="h-4 w-4" />
+                      <span>
+                        Generated from <span className="font-semibold">{linkedAgentReport.name}</span>
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => router.push(`/ai-reports/${linkedAgentReport.id}`)}
+                      className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100/40"
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      Open AI report
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
-          )}
-          <div className="flex items-center justify-between">
-            <div className="flex-1">
-              {isEditingName ? (
-                <div className="flex items-center space-x-2">
-                  <input
-                    type="text"
-                    value={editedName}
-                    onChange={(e) => setEditedName(e.target.value)}
-                    className="text-2xl font-bold border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    autoFocus
-                  />
-                  <button
-                    onClick={handleSaveName}
-                    disabled={updateDashboardMutation.isPending}
-                    className="p-2 text-green-600 hover:bg-green-50 rounded"
-                    title="Save"
-                  >
-                    <Check className="h-5 w-5" />
-                  </button>
-                  <button
-                    onClick={handleCancelEditName}
-                    className="p-2 text-gray-600 hover:bg-gray-50 rounded"
-                    title="Cancel"
-                  >
-                    <X className="h-5 w-5" />
-                  </button>
-                </div>
-              ) : (
-                <div className="flex items-center space-x-3">
-                  <h1 className="text-2xl font-bold">{dashboard.name}</h1>
-                  {canEditResource && (
-                  <button
-                    onClick={handleStartEditName}
-                    className="p-1 text-gray-400 hover:text-gray-600"
-                    title="Edit name"
-                  >
-                    <Edit2 className="h-4 w-4" />
-                  </button>
-                  )}
-                </div>
-              )}
-              {dashboard.description && (
-                <p className="text-gray-600 mt-1">{dashboard.description}</p>
-              )}
-            </div>
 
-            <div className="flex items-center space-x-3">
-              {hasUnsavedChanges && (
-                <span className="text-sm text-gray-500 flex items-center">
-                  <Loader2 className="h-4 w-4 animate-spin mr-1" />
-                  Saving...
-                </span>
-              )}
+            <div className="flex flex-wrap items-center gap-2 xl:justify-end">
               {canEditResource && (
                 <button
                   onClick={() => setIsPublicShareOpen(true)}
-                  className="flex items-center px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
+                  className="inline-flex items-center rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
                 >
-                  <Globe className="h-4 w-4 mr-2" />
+                  <Globe className="mr-2 h-4 w-4" />
                   Public links
                 </button>
               )}
               {canShare && (
                 <button
                   onClick={() => setIsShareDialogOpen(true)}
-                  className="flex items-center px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
+                  className="inline-flex items-center rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
                 >
-                  <Share2 className="h-4 w-4 mr-2" />
+                  <Share2 className="mr-2 h-4 w-4" />
                   Share
                 </button>
               )}
               {canEditResource && (
-              <button
-                onClick={() => setIsAddChartModalOpen(true)}
-                className="flex items-center px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600"
-              >
-                <Plus className="h-5 w-5 mr-2" />
-                Add Chart
-              </button>
+                <button
+                  onClick={() => setIsAddChartModalOpen(true)}
+                  className="inline-flex items-center rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add Chart
+                </button>
               )}
             </div>
+          </div>
+        </div>
+
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {dashboardPages.map((page) => {
+                const isActive = page.id === activePageId;
+                return (
+                  <button
+                    key={page.id}
+                    type="button"
+                    onClick={() => setCurrentPageId(page.id)}
+                    className={`rounded-full px-3 py-1.5 text-sm font-medium transition-colors ${
+                      isActive
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    }`}
+                  >
+                    {page.name}
+                  </button>
+                );
+              })}
+            </div>
+
+            {canEditResource && (
+              <div className="flex flex-wrap items-center gap-2">
+                {isRenamingCurrentPage ? (
+                  <>
+                    <input
+                      type="text"
+                      value={editedPageName}
+                      onChange={(e) => setEditedPageName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleSavePageName();
+                        if (e.key === 'Escape') handleCancelRenamePage();
+                      }}
+                      className="min-w-[180px] rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSavePageName}
+                      className="rounded-md p-2 text-green-600 hover:bg-green-50"
+                      title="Save page name"
+                    >
+                      <Check className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCancelRenamePage}
+                      className="rounded-md p-2 text-gray-500 hover:bg-gray-100"
+                      title="Cancel"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleStartRenamePage}
+                    className="inline-flex items-center rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    <Edit2 className="mr-2 h-4 w-4" />
+                    Rename page
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setPendingDeletePageId(activePageId)}
+                  disabled={dashboardPages.length <= 1}
+                  className="inline-flex items-center rounded-md border border-red-200 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete page
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleAddPage}
+                  className="inline-flex items-center rounded-md border border-blue-200 px-3 py-1.5 text-sm text-blue-700 hover:bg-blue-50"
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add page
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -623,8 +969,12 @@ export default function DashboardDetailPage() {
           columns={resolvedAvailableColumns}
           columnChartCount={resolvedColumnChartCount}
           distinctValues={resolvedDistinctValues}
-          filters={globalFilters}
-          onFiltersChange={setGlobalFilters}
+          filters={draftGlobalFilters}
+          onFiltersChange={setDraftGlobalFilters}
+          hasPendingChanges={hasPendingFilterChanges}
+          onApply={handleApplyFilters}
+          onReset={handleResetFilters}
+          isApplying={isApplyingFilters}
         />
 
         {activeCrossFilter && (
@@ -648,15 +998,18 @@ export default function DashboardDetailPage() {
         {/* Dashboard Grid */}
         <DashboardGrid
           dashboardId={dashboardId}
-          dashboardCharts={dashboard.dashboard_charts || []}
+          dashboardCharts={visibleDashboardCharts}
           onLayoutChange={canEditResource ? handleLayoutChange : undefined}
           onRemoveChart={canEditResource ? handleRemoveChart : undefined}
           removingChartId={removingChartId}
-          globalFilters={globalFilters}
+          globalFilters={appliedGlobalFilters}
           crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
           crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}
           onChartDataLoaded={semanticColumnsResult.columns.length > 0 ? undefined : handleChartDataLoaded}
           onSelectCrossFilter={handleCrossFilterChange}
+          availablePages={dashboardPages}
+          onMoveChartToPage={canEditResource ? handleMoveChartToPage : undefined}
+          emptyMessage={emptyPageMessage}
         />
 
         {/* Add Chart Modal */}
@@ -666,6 +1019,19 @@ export default function DashboardDetailPage() {
           onAdd={handleAddChart}
           existingChartIds={existingChartIds}
           isAdding={addChartMutation.isPending}
+          currentPageName={currentPage?.name}
+        />
+
+        <ConfirmDialog
+          isOpen={pendingDeletePageId !== null}
+          onClose={() => setPendingDeletePageId(null)}
+          onConfirm={confirmDeletePage}
+          title="Delete page?"
+          description={fallbackDeletePage
+            ? `Charts on this page will be moved to ${fallbackDeletePage.name}.`
+            : 'This page will be deleted.'}
+          confirmLabel="Delete page"
+          variant="danger"
         />
 
         {/* Confirm Remove Chart Dialog */}

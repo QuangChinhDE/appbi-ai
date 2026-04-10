@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { X, Link2, Copy, Check, Trash2, Globe, Filter, ChevronDown, ChevronUp } from 'lucide-react';
 import { useShareDashboard, useUnshareDashboard } from '@/hooks/use-dashboards';
+import { useFilterDistinctValues } from '@/hooks/use-filter-distinct-values';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { toast } from 'sonner';
 import type { BaseFilter, ColumnInfo } from '@/lib/filters';
@@ -15,6 +16,7 @@ interface PublicShareDialogProps {
   currentPublicFilters?: BaseFilter[];
   availableColumns?: ColumnInfo[];
   columnChartCount?: Map<string, number>;
+  distinctValues?: Record<string, string[]>;
   onClose: () => void;
 }
 
@@ -26,6 +28,7 @@ export function PublicShareDialog({
   currentPublicFilters = [],
   availableColumns = [],
   columnChartCount = new Map<string, number>(),
+  distinctValues = {},
   onClose,
 }: PublicShareDialogProps) {
   const [token, setToken] = useState<string | null | undefined>(currentToken);
@@ -42,6 +45,11 @@ export function PublicShareDialog({
   const filtersDirty = useMemo(
     () => JSON.stringify(publicFilters) !== JSON.stringify(savedPublicFilters),
     [publicFilters, savedPublicFilters],
+  );
+  const resolvedDistinctValues = useFilterDistinctValues(
+    availableColumns,
+    publicFilters,
+    distinctValues,
   );
 
   useEffect(() => {
@@ -145,7 +153,7 @@ export function PublicShareDialog({
                   <DashboardFilterBar
                     columns={availableColumns}
                     columnChartCount={columnChartCount}
-                    distinctValues={{}}
+                    distinctValues={resolvedDistinctValues}
                     filters={publicFilters}
                     onFiltersChange={setPublicFilters}
                   />

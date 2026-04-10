@@ -2,13 +2,13 @@
 AnomalyDetectionService — Phase 4 Proactive Intelligence.
 
 Runs on a scheduler (daily by default). For each active MonitoredMetric:
-  1. Pulls historical daily values from DuckDB / Parquet
+  1. Pulls historical daily values via live query against the source database
   2. Computes 7-day rolling mean + std
   3. Flags anomalies where |z-score| >= threshold
   4. Saves AnomalyAlert records with LLM-generated explanation
 
 Design decisions:
-  - Uses DuckDB directly (synced Parquet) — fast, no live-source round-trip
+  - Queries the source database directly (BigQuery / PostgreSQL / MySQL)
   - numpy is optional; falls back to stdlib statistics
   - LLM explanation is optional; stored in alert.explanation
 """
@@ -33,13 +33,53 @@ class AnomalyDetectionService:
     # ── Core detection ──────────────────────────────────────────────────────
 
     @staticmethod
+    def _date_bucket_day(column_name: str, dialect: str) -> str:
+        """Return a dialect-aware day bucket expression for the given column."""
+        from app.services.live_query_service import _quote_identifier
+
+        quoted = _quote_identifier(column_name, dialect)
+        if dialect == "bigquery":
+            return f"DATE({quoted})"
+        if dialect == "mysql":
+            return f"DATE({quoted})"
+        # postgresql (default)
+        return f"CAST({quoted} AS DATE)"
+
+    @staticmethod
+    def _render_aggregate(metric_column: str, aggregation: str, dialect: str) -> str:
+        """Render a safe aggregate expression for the metric column."""
+        from app.services.live_query_service import _quote_identifier
+
+        quoted_metric = _quote_identifier(metric_column, dialect)
+        normalized = str(aggregation or "sum").upper().replace(" ", "_")
+        if normalized == "COUNT_DISTINCT":
+            return f"COUNT(DISTINCT {quoted_metric})"
+        if normalized == "COUNT":
+            return f"COUNT({quoted_metric})"
+        return f"{normalized}({quoted_metric})"
+
+    @staticmethod
+    def _date_interval_ago(days: int, dialect: str) -> str:
+        """Return dialect-aware 'current_date minus N days' expression."""
+        if dialect == "bigquery":
+            return f"DATE_SUB(CURRENT_DATE(), INTERVAL {days} DAY)"
+        if dialect == "mysql":
+            return f"DATE_SUB(CURDATE(), INTERVAL {days} DAY)"
+        # postgresql (default)
+        return f"CURRENT_DATE - INTERVAL '{days} days'"
+
+    @staticmethod
     def check_metric(metric: MonitoredMetric, db: Session) -> List[Dict[str, Any]]:
         """
         Check one metric for anomalies.
         Returns list of anomaly dicts (empty = no anomaly detected).
         """
-        from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
-        from app.services.duckdb_engine import DuckDBEngine
+        from app.services.live_query_service import (
+            _dialect_for_ds_type,
+            _quote_identifier,
+            build_live_base_query_plan,
+        )
+        from app.services.datasource_service import DataSourceConnectionService
 
         table: DatasetTable = metric.dataset_table
         if not table:
@@ -50,39 +90,44 @@ class AnomalyDetectionService:
         if not datasource:
             return []
 
-        # Resolve DuckDB base table
-        if table.source_kind == "sql_query" and table.source_query:
-            rewritten = rewrite_sql_for_duckdb(datasource.id, table.source_query)
-            if not rewritten:
-                return []
-            base = f"({rewritten}) AS base_table"
-        elif table.source_kind == "physical_table" and table.source_table_name:
-            view_name = get_synced_view(datasource.id, table.source_table_name)
-            if not view_name:
-                return []
-            base = view_name
-        else:
+        ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+        dialect = _dialect_for_ds_type(ds_type)
+
+        # Build live base query (handles physical tables, sql_query, transforms, type overrides)
+        try:
+            plan = build_live_base_query_plan(datasource, table, apply_type_overrides=True)
+        except Exception as exc:
+            logger.warning("AnomalyDetection: failed to build query plan for metric %s — %s", metric.id, exc)
             return []
+
+        base = f"({plan.sql}) AS base_table"
 
         time_col = metric.time_column
         metric_col = metric.metric_column
-        agg = (metric.aggregation or "sum").upper()
 
-        if not time_col:
+        if not time_col or not metric_col:
             # Without time column we can't do period comparison — skip
             return []
 
+        dt_expr = AnomalyDetectionService._date_bucket_day(time_col, dialect)
+        time_expr = AnomalyDetectionService._date_bucket_day(time_col, dialect)
+        metric_expr = AnomalyDetectionService._render_aggregate(metric_col, metric.aggregation, dialect)
+        since_30d = AnomalyDetectionService._date_interval_ago(30, dialect)
+
         # Fetch last 30 days daily values
+        history_sql = f"""
+            SELECT
+                {dt_expr} AS dt,
+                {metric_expr} AS val
+            FROM {base}
+            WHERE {time_expr} >= {since_30d}
+            GROUP BY 1
+            ORDER BY 1
+        """
         try:
-            history = DuckDBEngine.query(f"""
-                SELECT
-                    date_trunc('day', CAST("{time_col}" AS TIMESTAMP)) AS dt,
-                    {agg}("{metric_col}") AS val
-                FROM {base}
-                WHERE CAST("{time_col}" AS TIMESTAMP) >= CURRENT_DATE - INTERVAL '30 days'
-                GROUP BY 1
-                ORDER BY 1
-            """)
+            _, history, _ = DataSourceConnectionService.execute_query(
+                ds_type, datasource.config, history_sql, timeout_seconds=60,
+            )
         except Exception as exc:
             logger.warning("AnomalyDetection: history query failed for metric %s — %s", metric.id, exc)
             return []
@@ -128,18 +173,23 @@ class AnomalyDetectionService:
         # Optional: drill down by dimension columns
         dim_cols: List[str] = metric.dimension_columns or []
         breakdowns = {}
+        since_7d = AnomalyDetectionService._date_interval_ago(7, dialect)
         for dim in dim_cols[:3]:
             try:
-                dim_rows = DuckDBEngine.query(f"""
+                quoted_dim = _quote_identifier(dim, dialect)
+                dim_sql = f"""
                     SELECT
-                        "{dim}",
-                        {agg}("{metric_col}") AS val
+                        {quoted_dim},
+                        {metric_expr} AS val
                     FROM {base}
-                    WHERE CAST("{time_col}" AS TIMESTAMP) >= CURRENT_DATE - INTERVAL '7 days'
-                    GROUP BY "{dim}"
+                    WHERE {time_expr} >= {since_7d}
+                    GROUP BY {quoted_dim}
                     ORDER BY val DESC
                     LIMIT 10
-                """)
+                """
+                _, dim_rows, _ = DataSourceConnectionService.execute_query(
+                    ds_type, datasource.config, dim_sql, timeout_seconds=60,
+                )
                 breakdowns[dim] = [{k: v for k, v in r.items()} for r in dim_rows[:5]]
             except Exception:
                 pass

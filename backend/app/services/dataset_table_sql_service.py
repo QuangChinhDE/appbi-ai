@@ -1,4 +1,4 @@
-"""Helpers for dataset-backed DuckDB SQL tables."""
+"""Helpers for dataset-backed SQL tables."""
 from __future__ import annotations
 
 import re
@@ -16,14 +16,11 @@ from app.core.logging import get_logger
 from app.models import DataSource
 from app.models.dataset import Dataset, DatasetTable
 from app.services.dataset_calendar_service import (
-    build_calendar_duckdb_sql,
+    build_calendar_live_sql,
     get_calendar_settings,
     is_generated_calendar_table,
 )
-from app.services.duckdb_query_validator import validate_duckdb_query
 from app.services.query_validator import QueryValidationError, QueryValidator
-from app.services.runtime_modes import resolve_dataset_query_mode
-from app.services.sync_engine import get_synced_view, rewrite_sql_for_duckdb
 from app.services.transformation_compiler import TransformationCompiler
 
 logger = get_logger(__name__)
@@ -31,24 +28,6 @@ logger = get_logger(__name__)
 
 DERIVED_TABLE_SOURCE_KIND = "derived_table"
 DATASET_TABLE_ALIAS_PREFIX = "dataset_table_"
-_DUCKDB_EXTERNAL_TABLE_FUNCTIONS = {
-    "csv_scan",
-    "delta_scan",
-    "glob",
-    "iceberg_scan",
-    "mysql_scan",
-    "parquet_scan",
-    "postgres_scan",
-    "read_blob",
-    "read_csv",
-    "read_csv_auto",
-    "read_json",
-    "read_json_auto",
-    "read_ndjson",
-    "read_ndjson_auto",
-    "read_parquet",
-    "sqlite_scan",
-}
 _SQL_ALIAS_RESERVED_WORDS = {
     "as",
     "by",
@@ -186,11 +165,6 @@ def validate_and_clean_derived_query(query: str) -> str:
     except QueryValidationError as exc:
         raise DatasetTableSqlError(str(exc), code="INVALID_DATASET_SQL") from exc
 
-    try:
-        validate_duckdb_query(cleaned)
-    except ValueError as exc:
-        raise DatasetTableSqlError(str(exc), code="INVALID_DATASET_SQL") from exc
-
     return cleaned
 
 
@@ -223,13 +197,6 @@ def extract_dataset_table_aliases_from_sql(sql: str) -> List[str]:
                 "External table functions are not allowed in calculated tables.",
                 code="INVALID_DATASET_SQL",
             )
-        if isinstance(node, exp.Anonymous):
-            fn_name = str(node.name or "").strip().lower()
-            if fn_name in _DUCKDB_EXTERNAL_TABLE_FUNCTIONS:
-                raise DatasetTableSqlError(
-                    f"Function '{fn_name}' is not allowed in calculated tables.",
-                    code="INVALID_DATASET_SQL",
-                )
 
     aliases: List[str] = []
     seen: set[str] = set()
@@ -382,139 +349,38 @@ def _apply_table_transformations(
     return compiled_sql
 
 
-def _build_source_backed_duckdb_query(
+def _find_live_datasource_for_dataset(
     db: Session,
     dataset_obj: Dataset,
-    table: DatasetTable | Any,
-) -> str:
-    if is_generated_calendar_table(table):
-        settings = get_calendar_settings(dataset_obj, enabled_default=False)
-        return build_calendar_duckdb_sql(settings)
-
-    datasource_id = getattr(table, "datasource_id", None)
-    datasource = db.query(DataSource).filter(DataSource.id == datasource_id).first() if datasource_id else None
-    if datasource is None:
-        raise DatasetTableSqlError(
-            f'Table "{getattr(table, "display_name", getattr(table, "source_table_name", "Unknown"))}" has no datasource.',
-            code="DATASOURCE_NOT_FOUND",
-        )
-
-    source_kind = str(getattr(table, "source_kind", "") or "").strip().lower()
-    display_name = str(getattr(table, "display_name", "") or getattr(table, "source_table_name", "") or "Table")
-
-    if source_kind == "physical_table":
-        source_table_name = str(getattr(table, "source_table_name", "") or "").strip()
-        if not source_table_name:
-            raise DatasetTableSqlError(
-                f'Table "{display_name}" is missing its source table name.',
-                code="INVALID_DATASET_SQL",
-            )
-        view_name = get_synced_view(datasource.id, source_table_name)
-        if view_name is None:
-            query_mode = resolve_dataset_query_mode(table)
-            if query_mode == "live":
-                raise DatasetTableSqlError(
-                    f'Table "{display_name}" is in live mode and cannot be used in a calculated table until it is synced.',
-                    code="NOT_SYNCED",
-                )
-            raise DatasetTableSqlError(
-                f'Table "{display_name}" has not been synced yet.',
-                code="NOT_SYNCED",
-            )
-        return _apply_table_transformations(f"SELECT * FROM {view_name}", table, dialect="duckdb")
-
-    if source_kind == "sql_query":
-        source_query = str(getattr(table, "source_query", "") or "").strip()
-        if not source_query:
-            raise DatasetTableSqlError(
-                f'Table "{display_name}" is missing its SQL query.',
-                code="INVALID_DATASET_SQL",
-            )
-        rewritten = rewrite_sql_for_duckdb(datasource.id, source_query)
-        if rewritten is None:
-            raise DatasetTableSqlError(
-                f'Table "{display_name}" cannot be compiled to DuckDB yet. Please sync its source tables first.',
-                code="NOT_SYNCED",
-            )
-        return _apply_table_transformations(
-            f"SELECT * FROM ({rewritten}) AS _dataset_source",
-            table,
-            dialect="duckdb",
-        )
-
-    raise DatasetTableSqlError(
-        f"Unsupported source_kind for DuckDB compilation: {source_kind or 'unknown'}",
-        code="INVALID_DATASET_SQL",
-    )
-
-
-def build_dataset_table_duckdb_query(
-    db: Session,
-    dataset_obj: Dataset,
-    table: DatasetTable | Any,
     *,
-    visited_table_ids: Sequence[int] | None = None,
-) -> str:
-    if not is_derived_table(table):
-        return _build_source_backed_duckdb_query(db, dataset_obj, table)
+    required_datasource_id: int | None = None,
+) -> DataSource | None:
+    if required_datasource_id is not None:
+        return db.query(DataSource).filter(DataSource.id == int(required_datasource_id)).first()
 
-    current_table_id = getattr(table, "id", None)
-    display_name = str(getattr(table, "display_name", "") or f"Table {current_table_id or ''}").strip()
-    if current_table_id is not None and current_table_id in set(visited_table_ids or []):
-        cycle_chain = " -> ".join(str(item) for item in [*(visited_table_ids or []), current_table_id])
-        raise DatasetTableSqlError(
-            f"Calculated table dependency cycle detected: {cycle_chain}",
-            code="CIRCULAR_DEPENDENCY",
+    candidate_tables = (
+        db.query(DatasetTable)
+        .filter(
+            DatasetTable.dataset_id == dataset_obj.id,
+            DatasetTable.datasource_id.isnot(None),
         )
-
-    source_query = str(getattr(table, "source_query", "") or "").strip()
-    cleaned_query = validate_and_clean_derived_query(source_query)
-    dependency_ids = collect_derived_dependency_table_ids(
-        db,
-        dataset_obj.id,
-        cleaned_query,
-        exclude_table_id=current_table_id,
+        .order_by(DatasetTable.id)
+        .all()
     )
 
-    dependency_tables = {
-        int(dep.id): dep
-        for dep in (
-            db.query(DatasetTable)
-            .filter(DatasetTable.dataset_id == dataset_obj.id)
-            .filter(DatasetTable.id.in_(dependency_ids))
-            .all()
-        )
-    }
-    dataset_alias_map = build_dataset_table_reference_alias_map(
-        db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_obj.id).all()
-    )
+    for candidate in candidate_tables:
+        if is_generated_calendar_table(candidate):
+            continue
+        datasource = db.query(DataSource).filter(DataSource.id == candidate.datasource_id).first()
+        if datasource is not None:
+            return datasource
 
-    ctes: List[str] = []
-    next_visited = [*(visited_table_ids or [])]
-    if current_table_id is not None:
-        next_visited.append(int(current_table_id))
+    for candidate in candidate_tables:
+        datasource = db.query(DataSource).filter(DataSource.id == candidate.datasource_id).first()
+        if datasource is not None:
+            return datasource
 
-    for dependency_id in dependency_ids:
-        dependency_table = dependency_tables.get(int(dependency_id))
-        if dependency_table is None:
-            raise DatasetTableSqlError(
-                f'Calculated table "{display_name}" references a missing table alias: {dataset_alias_map.get(int(dependency_id), build_dataset_table_sql_alias(int(dependency_id)))}',
-                code="INVALID_DATASET_SQL",
-            )
-        dependency_sql = build_dataset_table_duckdb_query(
-            db,
-            dataset_obj,
-            dependency_table,
-            visited_table_ids=next_visited,
-        )
-        alias = dataset_alias_map.get(int(dependency_id), build_dataset_table_sql_alias(int(dependency_id))).replace('"', "")
-        ctes.append(f'"{alias}" AS (\n{_indent_sql(dependency_sql)}\n)')
-
-    base_query = f"SELECT * FROM (\n{_indent_sql(cleaned_query)}\n) AS _derived_table"
-    if ctes:
-        base_query = "WITH " + ",\n".join(ctes) + "\n" + base_query
-
-    return _apply_table_transformations(base_query, table, dialect="duckdb")
+    return None
 
 
 def build_dataset_table_live_query(
@@ -532,9 +398,21 @@ def build_dataset_table_live_query(
     )
 
     if is_generated_calendar_table(table):
-        raise DatasetTableSqlError(
-            'Standard Date table cannot be used in a live calculated table. Sync the dataset tables first.',
-            code="NOT_SYNCED",
+        datasource = _find_live_datasource_for_dataset(
+            db,
+            dataset_obj,
+            required_datasource_id=required_datasource_id,
+        )
+        if datasource is None:
+            raise DatasetTableSqlError(
+                'Standard Date table requires a datasource-backed table in the same dataset.',
+                code="DATASOURCE_NOT_FOUND",
+            )
+        ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+        dialect = _dialect_for_ds_type(ds_type)
+        return datasource, build_calendar_live_sql(
+            get_calendar_settings(dataset_obj, enabled_default=False),
+            dialect,
         )
 
     if not is_derived_table(table):
@@ -590,7 +468,20 @@ def build_dataset_table_live_query(
     if current_table_id is not None:
         next_visited.append(int(current_table_id))
 
-    for dependency_id in dependency_ids:
+    ordered_dependency_ids = [
+        *[
+            dependency_id
+            for dependency_id in dependency_ids
+            if not is_generated_calendar_table(dependency_tables.get(int(dependency_id)))
+        ],
+        *[
+            dependency_id
+            for dependency_id in dependency_ids
+            if is_generated_calendar_table(dependency_tables.get(int(dependency_id)))
+        ],
+    ]
+
+    for dependency_id in ordered_dependency_ids:
         dependency_table = dependency_tables.get(int(dependency_id))
         if dependency_table is None:
             raise DatasetTableSqlError(
@@ -660,26 +551,3 @@ def build_live_proxy_table_for_dataset_table(
         sample_cache=getattr(table, "sample_cache", None),
     )
     return datasource, proxy_table
-
-
-def preview_dataset_table_duckdb_query(
-    db: Session,
-    dataset_obj: Dataset,
-    table: DatasetTable | Any,
-    *,
-    limit: int = 100,
-    offset: int = 0,
-) -> tuple[list[str], list[dict[str, Any]]]:
-    from app.services.duckdb_engine import DuckDBEngine
-
-    compiled_query = build_dataset_table_duckdb_query(db, dataset_obj, table)
-    sql = f"SELECT * FROM ({compiled_query}) AS _dataset_preview LIMIT {max(1, int(limit))}"
-    if offset:
-        sql += f" OFFSET {max(0, int(offset))}"
-
-    with DuckDBEngine.read_conn() as conn:
-        result = conn.execute(sql)
-        columns = [item[0] for item in (result.description or [])]
-        raw_rows = result.fetchall()
-    rows = [dict(zip(columns, row)) for row in raw_rows]
-    return columns, rows

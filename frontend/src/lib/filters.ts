@@ -90,6 +90,77 @@ export interface ColumnInfo {
   label?: string;
   datasetId?: number;
   semanticField?: string;
+  chartCoverage?: number;
+  datasetChartCount?: number;
+  sharedAcrossDataset?: boolean;
+}
+
+export interface DashboardFilterableDimensionLike {
+  name?: string;
+  hidden?: boolean;
+}
+
+export interface DashboardFilterableViewLike {
+  hidden_in_canvas?: boolean;
+}
+
+export interface DashboardFilterableJoinLike {
+  origin?: string;
+  from_view?: string;
+  from_column?: string;
+  view?: string;
+  to_column?: string;
+}
+
+export interface DashboardFilterableExploreLike {
+  base_view_name?: string;
+  joins?: DashboardFilterableJoinLike[];
+}
+
+export interface DashboardFilterableModelLike {
+  explores?: DashboardFilterableExploreLike[];
+}
+
+export function collectJoinKeySemanticFields(model: DashboardFilterableModelLike | null | undefined): Set<string> {
+  const fields = new Set<string>();
+
+  for (const explore of model?.explores ?? []) {
+    for (const join of explore.joins ?? []) {
+      if (join?.origin === 'auto_calendar') continue;
+
+      const fromView = String(join?.from_view || explore?.base_view_name || '').trim();
+      const fromColumn = String(join?.from_column || '').trim();
+      const toView = String(join?.view || '').trim();
+      const toColumn = String(join?.to_column || '').trim();
+
+      if (fromView && fromColumn) {
+        fields.add(`${fromView}.${fromColumn}`);
+      }
+      if (toView && toColumn) {
+        fields.add(`${toView}.${toColumn}`);
+      }
+    }
+  }
+
+  return fields;
+}
+
+export function isSemanticDimensionFilterableForDashboard(options: {
+  semanticField: string;
+  view?: DashboardFilterableViewLike | null;
+  dimension?: DashboardFilterableDimensionLike | null;
+  joinKeyFields?: Set<string> | null;
+}): boolean {
+  const { semanticField, view, dimension, joinKeyFields } = options;
+  if (!semanticField || !dimension || view?.hidden_in_canvas) {
+    return false;
+  }
+
+  if (!dimension.hidden) {
+    return true;
+  }
+
+  return Boolean(joinKeyFields?.has(semanticField));
 }
 
 export function getColumnKey(column: Pick<ColumnInfo, 'key' | 'semanticField' | 'name'>): string {

@@ -9,7 +9,6 @@ import {
   DataSourceCreate,
   DataSourceUpdate,
   QueryExecuteRequest,
-  SyncConfig,
 } from '@/types/api';
 
 export const useDataSources = () => {
@@ -111,63 +110,3 @@ export const useWatermarkCandidates = (
   });
 };
 
-// ── Sync Config hooks ─────────────────────────────────────────────────────────
-
-export const useSyncConfig = (id: number) => {
-  return useQuery({
-    queryKey: ['datasources', id, 'sync-config'],
-    queryFn: () => dataSourceApi.getSyncConfig(id),
-    enabled: !!id,
-  });
-};
-
-export const useSaveSyncConfig = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, config }: { id: number; config: SyncConfig }) =>
-      dataSourceApi.saveSyncConfig(id, config),
-    onSuccess: (_data: unknown, variables: { id: number; config: SyncConfig }) => {
-      queryClient.invalidateQueries({ queryKey: ['datasources', variables.id, 'sync-config'] });
-    },
-  });
-};
-
-// ── Sync Jobs hooks ───────────────────────────────────────────────────────────
-
-export const useSyncJobs = (id: number, limit = 10, enabled = true) => {
-  return useQuery({
-    queryKey: ['datasources', id, 'sync-jobs', limit],
-    queryFn: () => dataSourceApi.getSyncJobs(id, limit),
-    enabled: !!id && enabled,
-    refetchInterval: (query) => {
-      const data = query.state.data as { jobs?: Array<{ status?: string }> } | undefined;
-      const hasRunningJob = (data?.jobs ?? []).some((job) => job.status === 'running');
-      return hasRunningJob ? 10_000 : false;
-    },
-  });
-};
-
-export const useTriggerSync = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (id: number) => dataSourceApi.triggerSync(id),
-    onSuccess: (_data: unknown, id: number) => {
-      queryClient.invalidateQueries({ queryKey: ['datasources', id, 'sync-jobs'] });
-      // Clear cached preview errors so the dataset page retries automatically
-      // once the background sync thread finishes writing the DuckDB views.
-      queryClient.invalidateQueries({ queryKey: ['datasets'] });
-      queryClient.invalidateQueries({ queryKey: ['table-preview'] });
-    },
-  });
-};
-
-export const useCancelSync = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ dsId, jobId }: { dsId: number; jobId: number }) =>
-      dataSourceApi.cancelSync(dsId, jobId),
-    onSuccess: (_data: unknown, { dsId }: { dsId: number; jobId: number }) => {
-      queryClient.invalidateQueries({ queryKey: ['datasources', dsId, 'sync-jobs'] });
-    },
-  });
-};
