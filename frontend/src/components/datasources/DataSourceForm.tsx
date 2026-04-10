@@ -20,6 +20,16 @@ type GoogleDataAccessStatus = {
   redirect_uri?: string | null;
 };
 
+function extractErrorMessage(payload: unknown, fallback: string): string {
+  if (typeof payload === 'string' && payload.trim()) return payload;
+  if (!payload || typeof payload !== 'object') return fallback;
+
+  const candidate = payload as { message?: unknown; detail?: unknown };
+  if (typeof candidate.message === 'string' && candidate.message.trim()) return candidate.message;
+  if (typeof candidate.detail === 'string' && candidate.detail.trim()) return candidate.detail;
+  return fallback;
+}
+
 interface DataSourceFormProps {
   initialData?: {
     id?: number;
@@ -148,6 +158,10 @@ export default function DataSourceForm({
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
       if (event.data?.type !== 'google-data-access') return;
+      if (event.data?.status === 'error') {
+        setTestState('fail');
+        setTestMessage(extractErrorMessage(event.data?.message, 'Google access connection failed.'));
+      }
       void loadGoogleDataAccessStatus();
     };
     window.addEventListener('message', onMessage);
@@ -181,12 +195,17 @@ export default function DataSourceForm({
         body: JSON.stringify({ type, config, data_source_id: initialData?.id ?? null }),
       });
       const data = await res.json();
+      if (!res.ok) {
+        setTestState('fail');
+        setTestMessage(extractErrorMessage(data, 'Connection failed'));
+        return;
+      }
       if (data.success) {
         setTestState('ok');
         setTestMessage(data.message ?? 'Connection successful');
       } else {
         setTestState('fail');
-        setTestMessage(data.message ?? 'Connection failed');
+        setTestMessage(extractErrorMessage(data, 'Connection failed'));
       }
     } catch (e: any) {
       setTestState('fail');

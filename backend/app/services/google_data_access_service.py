@@ -4,6 +4,7 @@ Helpers for Google OAuth data-access grants used by BigQuery and Google Sheets.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -22,10 +23,12 @@ from app.core.database import SessionLocal
 from app.core.dependencies import ALGORITHM
 from app.models.user import User
 
+logger = logging.getLogger(__name__)
+
 GOOGLE_DATA_ACCESS_SCOPES = [
     "openid",
-    "email",
-    "profile",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/bigquery",
     "https://www.googleapis.com/auth/spreadsheets.readonly",
 ]
@@ -85,7 +88,6 @@ def build_google_data_access_authorization_url(state: str) -> str:
     flow = _build_flow(state=state)
     authorization_url, _ = flow.authorization_url(
         access_type="offline",
-        include_granted_scopes="true",
         prompt="consent",
     )
     return authorization_url
@@ -171,11 +173,12 @@ def exchange_google_data_access_code(code: str) -> tuple[google_user_credentials
     flow = _build_flow()
     try:
         flow.fetch_token(code=code)
-    except Exception:
+    except Exception as exc:
+        logger.exception("Google OAuth token exchange failed")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Failed to exchange Google OAuth authorization code.",
-        )
+        ) from exc
 
     credentials = flow.credentials
     claims = _verify_google_oauth_id_token(getattr(credentials, "id_token", None))

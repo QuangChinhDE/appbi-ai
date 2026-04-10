@@ -5,6 +5,7 @@ Rate limiting: /auth/login and /auth/google are limited to 5 requests/minute
 per IP via slowapi.
 """
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -48,6 +49,7 @@ from app.services.google_data_access_service import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
 _limiter = Limiter(key_func=get_remote_address)
@@ -599,6 +601,7 @@ def google_data_access_callback(
         )
     except HTTPException as exc:
         message = str(exc.detail)
+        logger.warning("Google data access callback failed: %s", message)
         if popup:
             return _popup_close_response("error", message)
         return RedirectResponse(

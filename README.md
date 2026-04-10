@@ -46,7 +46,11 @@ Chart live queries keep their existing aggregation semantics. Only the BigQuery 
 ```bash
 git clone https://github.com/QuangChinhDE/appbi-ai.git
 cd appbi-ai
+# basic/password login preset
 cp .env.example .env
+
+# or Google login preset
+# cp .env.google.example .env
 ```
 
 Then update `.env`.
@@ -66,10 +70,45 @@ Optional but important depending on your setup:
 
 - `GCP_SERVICE_ACCOUNT_JSON`
 - `GCP_SERVICE_ACCOUNT_EMAIL`
+- `AUTH_GOOGLE_ENABLED`
+- `AUTH_GOOGLE_CLIENT_ID`
+- `AUTH_GOOGLE_CLIENT_SECRET`
+- `AUTH_GOOGLE_DATA_REDIRECT_URI`
+- `NEXT_PUBLIC_AUTH_GOOGLE_ENABLED`
+- `NEXT_PUBLIC_GOOGLE_CLIENT_ID`
 - `OPENROUTER_API_KEY` or `OPENROUTER_API_KEY_1..5`
 - `ENABLE_DATASOURCE_SYNC`
 - `NEXT_PUBLIC_ENABLE_DATASOURCE_SYNC`
 - `BQ_MAX_BYTES_SCANNED`
+
+### Google sign-in setup
+
+If you want users to log in with Google instead of email/password:
+
+- Create a Google Identity Services Web OAuth client in Google Cloud Console.
+- Add your frontend origin (for example `http://localhost:3000`) to the authorized JavaScript origins.
+- Set `AUTH_GOOGLE_ENABLED=true`
+- Set `AUTH_GOOGLE_CLIENT_ID=<your Google Web client ID>`
+- Set `NEXT_PUBLIC_AUTH_GOOGLE_ENABLED=true`
+- Set `NEXT_PUBLIC_GOOGLE_CLIENT_ID=<the same Google Web client ID>`
+- Set `AUTH_PASSWORD_LOGIN_ENABLED=false` and `NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED=false` if you want Google-only login.
+- Leave `AUTH_GOOGLE_AUTO_CREATE_USERS=false` if admins should pre-create users first, or set it to `true` if first Google sign-in should auto-create a user.
+
+### Google data access for BigQuery / Sheets
+
+If you want BigQuery and Google Sheets datasources to use each signed-in user's
+Google account instead of a service account:
+
+- Reuse the same Google Web OAuth client, or create another Web client for AppBI.
+- Set `AUTH_GOOGLE_CLIENT_SECRET=<your Google Web client secret>`.
+- Set `AUTH_GOOGLE_DATA_REDIRECT_URI=<your exact callback URI>`.
+- Add that exact callback URI in Google Cloud Console, for example:
+  - `http://localhost:3000/api/v1/auth/google/data-access/callback`
+  - `https://bi.your-domain.com/api/v1/auth/google/data-access/callback`
+- In the datasource form, choose `Use my Google account`, then click `Connect Google access`.
+
+The original service-account flow still works, so you can mix both modes in the
+same deployment.
 
 ### 2. Start the core production-style stack
 
