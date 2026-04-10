@@ -1,7 +1,4 @@
-"""Google Sheets Data Source Connector
-
-Connects to Google Sheets using service account credentials.
-"""
+"""Google Sheets data source connector."""
 from typing import List, Dict, Any, Optional
 import json
 from google.oauth2 import service_account
@@ -12,34 +9,38 @@ from googleapiclient.errors import HttpError
 class GoogleSheetsConnector:
     """Connector for Google Sheets data source"""
     
-    def __init__(self, credentials_json: str):
+    def __init__(self, credentials_source: Any):
         """
         Initialize Google Sheets connector.
         
         Args:
-            credentials_json: JSON string of service account credentials
+            credentials_source: service-account JSON or user OAuth credentials
         """
         try:
-            # Private keys in PEM format contain real newlines.  When the
-            # credentials_json string is stored inside a JSON field and later
-            # retrieved, those \n escape sequences are decoded to actual
-            # newline characters (chr 10), which are invalid inside a JSON
-            # string value.  Re-escape them before parsing.
-            if isinstance(credentials_json, dict):
-                credentials_dict = credentials_json
+            if isinstance(credentials_source, str) or isinstance(credentials_source, dict):
+                # Private keys in PEM format contain real newlines. When the
+                # credentials JSON string is stored inside another JSON field
+                # and later retrieved, those newline characters can break the
+                # parser. Re-escape them before parsing.
+                if isinstance(credentials_source, dict):
+                    credentials_dict = credentials_source
+                else:
+                    try:
+                        credentials_dict = json.loads(credentials_source)
+                    except json.JSONDecodeError:
+                        fixed = (
+                            credentials_source
+                            .replace("\r\n", "\\n")
+                            .replace("\r", "\\n")
+                            .replace("\n", "\\n")
+                        )
+                        credentials_dict = json.loads(fixed)
+                self.credentials = service_account.Credentials.from_service_account_info(
+                    credentials_dict,
+                    scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+                )
             else:
-                try:
-                    credentials_dict = json.loads(credentials_json)
-                except json.JSONDecodeError:
-                    fixed = (credentials_json
-                             .replace('\r\n', '\\n')
-                             .replace('\r', '\\n')
-                             .replace('\n', '\\n'))
-                    credentials_dict = json.loads(fixed)
-            self.credentials = service_account.Credentials.from_service_account_info(
-                credentials_dict,
-                scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
-            )
+                self.credentials = credentials_source
             self.service = build('sheets', 'v4', credentials=self.credentials)
         except Exception as e:
             raise ValueError(f"Failed to initialize Google Sheets connector: {str(e)}")
@@ -150,11 +151,8 @@ class GoogleSheetsConnector:
 def create_google_sheets_connector(config: Dict[str, Any]) -> GoogleSheetsConnector:
     """
     Create a Google Sheets connector from config.
-
-    credentials_json is resolved in priority order:
-      1. Value in config (user-provided key)
-      2. GCP_SERVICE_ACCOUNT_JSON from platform settings (.env)
     """
-    from app.services.datasource_service import _resolve_gcp_credentials_json
-    credentials_json = _resolve_gcp_credentials_json(config)
-    return GoogleSheetsConnector(credentials_json)
+    from app.services.datasource_service import _build_gcp_credentials
+
+    credentials = _build_gcp_credentials(config)
+    return GoogleSheetsConnector(credentials)

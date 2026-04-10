@@ -12,6 +12,13 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 
 // Type shared with backend response
 type SheetData = { columns: { name: string; type: string }[]; rows: Record<string, any>[] };
+type GoogleDataAccessStatus = {
+  configured: boolean;
+  connected: boolean;
+  email: string | null;
+  scopes: string[];
+  redirect_uri?: string | null;
+};
 
 interface DataSourceFormProps {
   initialData?: {
@@ -28,7 +35,26 @@ interface DataSourceFormProps {
   readOnly?: boolean;
 }
 
-const SENSITIVE_FIELDS = ['password', 'credentials_json', 'api_key', 'token', 'access_token', 'secret_key', 'private_key', 'client_secret', 'service_account_json'];
+const SENSITIVE_FIELDS = ['password', 'credentials_json', 'api_key', 'token', 'access_token', 'google_oauth_user_id', 'secret_key', 'private_key', 'client_secret', 'service_account_json'];
+
+function getDefaultConfigForType(type: DataSourceType): Record<string, any> {
+  if (type === DataSourceType.POSTGRESQL) {
+    return { host: 'localhost', port: 5432, database: '', username: '', password: '', schema_name: '' };
+  }
+  if (type === DataSourceType.MYSQL) {
+    return { host: 'localhost', port: 3306, database: '', username: '', password: '' };
+  }
+  if (type === DataSourceType.BIGQUERY) {
+    return { project_id: '', auth_mode: 'service_account', credentials_json: '', default_dataset: '' };
+  }
+  if (type === DataSourceType.GOOGLE_SHEETS) {
+    return { auth_mode: 'service_account', credentials_json: '', spreadsheet_id: '', sheet_name: '' };
+  }
+  if (type === DataSourceType.MANUAL) {
+    return { sheets: {} };
+  }
+  return {};
+}
 
 /** Strip the server's "__stored__" sentinel so form fields appear empty (not leaking masked values). */
 function sanitizeConfigForForm(cfg: Record<string, any>): Record<string, any> {
@@ -93,15 +119,54 @@ export default function DataSourceForm({
 
   // Platform-level GCP service account info
   const [platformGcp, setPlatformGcp] = useState<{ available: boolean; email: string | null } | null>(null);
+  const [googleDataAccess, setGoogleDataAccess] = useState<GoogleDataAccessStatus | null>(null);
+  const googleAuthMode = config.auth_mode === 'google_oauth' ? 'google_oauth' : 'service_account';
+  const isGoogleCloudType = type === DataSourceType.BIGQUERY || type === DataSourceType.GOOGLE_SHEETS;
+  const currentGoogleDatasourceEmail = typeof config.google_oauth_email === 'string' ? config.google_oauth_email : '';
+
+  const loadGoogleDataAccessStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/auth/google/data-access/status`, { credentials: 'include' });
+      if (!response.ok) return;
+      const data: GoogleDataAccessStatus = await response.json();
+      setGoogleDataAccess(data);
+    } catch {
+      // Ignore transient fetch failures in the form.
+    }
+  }, []);
+
   useEffect(() => {
     fetch(`${API_BASE}/datasources/platform-gcp-info`, { credentials: 'include' })
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setPlatformGcp({ available: d.platform_credential_available, email: d.service_account_email }))
       .catch(() => {});
   }, []);
+  useEffect(() => { void loadGoogleDataAccessStatus(); }, [loadGoogleDataAccessStatus]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type !== 'google-data-access') return;
+      void loadGoogleDataAccessStatus();
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [loadGoogleDataAccessStatus]);
 
   // Reset test state whenever config fields change
   useEffect(() => { setTestState('idle'); setTestMessage(''); }, [config]);
+
+  useEffect(() => {
+    if (!isGoogleCloudType || googleAuthMode !== 'google_oauth') return;
+    if (!googleDataAccess?.email) return;
+    if (currentGoogleDatasourceEmail) return;
+    setConfig(prev => (
+      prev.auth_mode === 'google_oauth' && !prev.google_oauth_email
+        ? { ...prev, google_oauth_email: googleDataAccess.email }
+        : prev
+    ));
+  }, [currentGoogleDatasourceEmail, googleAuthMode, googleDataAccess?.email, isGoogleCloudType]);
 
   const isDbType = type === DataSourceType.POSTGRESQL || type === DataSourceType.MYSQL;
 
@@ -165,17 +230,7 @@ export default function DataSourceForm({
     // Reset config when type changes (only for new datasource creation)
     if (!initialData) {
       setImportPreview(null);
-      if (type === DataSourceType.POSTGRESQL) {
-        setConfig({ host: 'localhost', port: 5432, database: '', username: '', password: '', schema_name: '' });
-      } else if (type === DataSourceType.MYSQL) {
-        setConfig({ host: 'localhost', port: 3306, database: '', username: '', password: '' });
-      } else if (type === DataSourceType.BIGQUERY) {
-        setConfig({ project_id: '', credentials_json: '', default_dataset: '' });
-      } else if (type === DataSourceType.GOOGLE_SHEETS) {
-        setConfig({ credentials_json: '', spreadsheet_id: '', sheet_name: '' });
-      } else if (type === DataSourceType.MANUAL) {
-        setConfig({ sheets: {} });
-      }
+      setConfig(getDefaultConfigForType(type));
     }
   }, [type, initialData]);
 
@@ -183,6 +238,27 @@ export default function DataSourceForm({
     setConfig((prev) => ({ ...prev, [key]: value }));
     setConfigModified(true);
   };
+
+  const handleGoogleAuthModeChange = useCallback((nextMode: 'service_account' | 'google_oauth') => {
+    setConfig((prev) => ({
+      ...prev,
+      auth_mode: nextMode,
+      ...(nextMode === 'google_oauth' && googleDataAccess?.email
+        ? { google_oauth_email: googleDataAccess.email }
+        : {}),
+    }));
+    setConfigModified(true);
+  }, [googleDataAccess?.email]);
+
+  const handleConnectGoogleDataAccess = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const returnTo = `${window.location.pathname}${window.location.search}`;
+    const url = `${API_BASE}/auth/google/data-access/start?popup=1&return_to=${encodeURIComponent(returnTo)}`;
+    const popup = window.open(url, 'google-data-access', 'popup=yes,width=560,height=720');
+    if (!popup) {
+      window.location.assign(url.replace('popup=1', 'popup=0'));
+    }
+  }, []);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -299,8 +375,137 @@ export default function DataSourceForm({
         </>
       );
     } else if (type === DataSourceType.BIGQUERY) {
+      if (googleAuthMode === 'google_oauth') {
+        return (
+          <>
+            <div className="space-y-3">
+              <label className="block text-sm font-medium text-gray-700">
+                Authentication
+              </label>
+              <div className="grid gap-3 md:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => handleGoogleAuthModeChange('google_oauth')}
+                  className="rounded-lg border border-blue-500 bg-blue-50 px-4 py-3 text-left text-blue-900 transition-colors"
+                >
+                  <div className="flex items-center gap-2 font-medium">
+                    <Radio className="w-4 h-4" />
+                    Use my Google account
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Query BigQuery with the Google account already connected in AppBI.
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleGoogleAuthModeChange('service_account')}
+                  className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-left text-gray-700 transition-colors hover:border-gray-300"
+                >
+                  <div className="flex items-center gap-2 font-medium">
+                    <Radio className="w-4 h-4" />
+                    Use service account
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Switch back to the existing service-account flow.
+                  </p>
+                </button>
+              </div>
+            </div>
+
+            <div className={`rounded-lg border px-4 py-3 text-sm ${googleDataAccess?.connected ? 'border-green-200 bg-green-50 text-green-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+              <div className="font-medium">
+                {googleDataAccess?.connected ? 'Google data access connected.' : 'Google data access not connected yet.'}
+              </div>
+              <p className="mt-1">
+                {googleDataAccess?.connected
+                  ? <>Your AppBI account is connected to <span className="font-mono">{googleDataAccess.email}</span>.</>
+                  : googleDataAccess?.configured
+                    ? 'Connect your Google account once, then this datasource can use BigQuery directly without a service-account JSON key.'
+                    : 'Admin still needs to set AUTH_GOOGLE_CLIENT_SECRET and AUTH_GOOGLE_DATA_REDIRECT_URI on the server.'}
+              </p>
+              {!readOnly && googleDataAccess?.configured && (
+                <button
+                  type="button"
+                  onClick={handleConnectGoogleDataAccess}
+                  className="mt-3 inline-flex items-center rounded-md border border-blue-200 bg-white px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50"
+                >
+                  {googleDataAccess?.connected ? 'Reconnect Google access' : 'Connect Google access'}
+                </button>
+              )}
+            </div>
+
+            {currentGoogleDatasourceEmail && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                This datasource will use Google account <span className="font-mono">{currentGoogleDatasourceEmail}</span>.
+              </div>
+            )}
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Project ID
+              </label>
+              <input
+                type="text"
+                value={config.project_id || ''}
+                onChange={(e) => handleConfigChange('project_id', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="my-gcp-project"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Default Dataset (Optional)
+              </label>
+              <input
+                type="text"
+                value={config.default_dataset || ''}
+                onChange={(e) => handleConfigChange('default_dataset', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="my_dataset"
+              />
+            </div>
+          </>
+        );
+      }
+
       return (
         <>
+          <div className="space-y-3">
+            <label className="block text-sm font-medium text-gray-700">
+              Authentication
+            </label>
+            <div className="grid gap-3 md:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => handleGoogleAuthModeChange('google_oauth')}
+                className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-left text-gray-700 transition-colors hover:border-gray-300"
+              >
+                <div className="flex items-center gap-2 font-medium">
+                  <Radio className="w-4 h-4" />
+                  Use my Google account
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  Query BigQuery with the Google account already connected in AppBI.
+                </p>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleGoogleAuthModeChange('service_account')}
+                className="rounded-lg border border-blue-500 bg-blue-50 px-4 py-3 text-left text-blue-900 transition-colors"
+              >
+                <div className="flex items-center gap-2 font-medium">
+                  <Radio className="w-4 h-4" />
+                  Use service account
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  Keep the existing service-account flow.
+                </p>
+              </button>
+            </div>
+          </div>
+
           {platformGcp?.available && (
             <div className="flex items-start gap-2 px-3 py-2.5 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800">
               <CheckCircle className="w-4 h-4 mt-0.5 shrink-0 text-green-600" />
@@ -370,8 +575,147 @@ export default function DataSourceForm({
         </>
       );
     } else if (type === DataSourceType.GOOGLE_SHEETS) {
+      if (googleAuthMode === 'google_oauth') {
+        return (
+          <>
+            <div className="space-y-3">
+              <label className="block text-sm font-medium text-gray-700">
+                Authentication
+              </label>
+              <div className="grid gap-3 md:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => handleGoogleAuthModeChange('google_oauth')}
+                  className="rounded-lg border border-blue-500 bg-blue-50 px-4 py-3 text-left text-blue-900 transition-colors"
+                >
+                  <div className="flex items-center gap-2 font-medium">
+                    <Radio className="w-4 h-4" />
+                    Use my Google account
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Read the sheet using the Google account already connected in AppBI.
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleGoogleAuthModeChange('service_account')}
+                  className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-left text-gray-700 transition-colors hover:border-gray-300"
+                >
+                  <div className="flex items-center gap-2 font-medium">
+                    <Radio className="w-4 h-4" />
+                    Use service account
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Switch back to the existing service-account flow.
+                  </p>
+                </button>
+              </div>
+            </div>
+
+            <div className={`rounded-lg border px-4 py-3 text-sm ${googleDataAccess?.connected ? 'border-green-200 bg-green-50 text-green-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+              <div className="font-medium">
+                {googleDataAccess?.connected ? 'Google data access connected.' : 'Google data access not connected yet.'}
+              </div>
+              <p className="mt-1">
+                {googleDataAccess?.connected
+                  ? <>Your AppBI account is connected to <span className="font-mono">{googleDataAccess.email}</span>.</>
+                  : googleDataAccess?.configured
+                    ? 'Connect your Google account once, then this datasource can read Google Sheets directly without a service-account JSON key.'
+                    : 'Admin still needs to set AUTH_GOOGLE_CLIENT_SECRET and AUTH_GOOGLE_DATA_REDIRECT_URI on the server.'}
+              </p>
+              {!readOnly && googleDataAccess?.configured && (
+                <button
+                  type="button"
+                  onClick={handleConnectGoogleDataAccess}
+                  className="mt-3 inline-flex items-center rounded-md border border-blue-200 bg-white px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50"
+                >
+                  {googleDataAccess?.connected ? 'Reconnect Google access' : 'Connect Google access'}
+                </button>
+              )}
+            </div>
+
+            {currentGoogleDatasourceEmail && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                This datasource will use Google account <span className="font-mono">{currentGoogleDatasourceEmail}</span>.
+              </div>
+            )}
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Spreadsheet URL or ID
+              </label>
+              <input
+                type="text"
+                value={config.spreadsheet_id || ''}
+                onChange={(e) => {
+                  const val = e.target.value.trim();
+                  const match = val.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+                  handleConfigChange('spreadsheet_id', match ? match[1] : val);
+                }}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Paste a Google Sheets URL or Spreadsheet ID"
+                required
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Paste the full Google Sheets link and AppBI will extract the spreadsheet ID automatically.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Sheet Name (Optional)
+              </label>
+              <input
+                type="text"
+                value={config.sheet_name || ''}
+                onChange={(e) => handleConfigChange('sheet_name', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Sheet1"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Leave empty to use the first sheet
+              </p>
+            </div>
+          </>
+        );
+      }
+
       return (
         <>
+          <div className="space-y-3">
+            <label className="block text-sm font-medium text-gray-700">
+              Authentication
+            </label>
+            <div className="grid gap-3 md:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => handleGoogleAuthModeChange('google_oauth')}
+                className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-left text-gray-700 transition-colors hover:border-gray-300"
+              >
+                <div className="flex items-center gap-2 font-medium">
+                  <Radio className="w-4 h-4" />
+                  Use my Google account
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  Read the sheet with the Google account already connected in AppBI.
+                </p>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleGoogleAuthModeChange('service_account')}
+                className="rounded-lg border border-blue-500 bg-blue-50 px-4 py-3 text-left text-blue-900 transition-colors"
+              >
+                <div className="flex items-center gap-2 font-medium">
+                  <Radio className="w-4 h-4" />
+                  Use service account
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  Keep the existing service-account flow.
+                </p>
+              </button>
+            </div>
+          </div>
+
           {platformGcp?.available && (
             <div className="flex items-start gap-2 px-3 py-2.5 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800">
               <CheckCircle className="w-4 h-4 mt-0.5 shrink-0 text-green-600" />

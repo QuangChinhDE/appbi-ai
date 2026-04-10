@@ -75,6 +75,14 @@ class Settings(BaseSettings):
     DATASOURCE_ENCRYPTION_KEY: str = ""
     COOKIE_SECURE: bool = True
     ENVIRONMENT: str = "production"
+    AUTH_PASSWORD_LOGIN_ENABLED: bool = True
+    AUTH_GOOGLE_ENABLED: bool = False
+    AUTH_GOOGLE_CLIENT_ID: str = ""
+    AUTH_GOOGLE_CLIENT_SECRET: str = ""
+    AUTH_GOOGLE_DATA_REDIRECT_URI: str = ""
+    AUTH_GOOGLE_ALLOWED_DOMAINS: str = ""
+    AUTH_GOOGLE_AUTO_CREATE_USERS: bool = False
+    AUTH_GOOGLE_BOOTSTRAP_ADMIN_EMAIL: str = ""
 
     # Platform-level Google / GCP service account
     # When set, users do NOT need to paste a credentials JSON when connecting
@@ -136,6 +144,15 @@ class Settings(BaseSettings):
         """Parse CORS origins from comma-separated string."""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
 
+    @property
+    def auth_google_allowed_domains_list(self) -> List[str]:
+        """Parse allowed Google email domains from comma-separated string."""
+        return [
+            domain.strip().lower()
+            for domain in self.AUTH_GOOGLE_ALLOWED_DOMAINS.split(",")
+            if domain.strip()
+        ]
+
 
 # Global settings instance
 settings = Settings()
@@ -152,6 +169,11 @@ def validate_security_settings() -> None:
         return  # skip validation in dev/test
 
     errors: list[str] = []
+    if settings.AUTH_GOOGLE_ENABLED and not settings.AUTH_GOOGLE_CLIENT_ID.strip():
+        errors.append(
+            "AUTH_GOOGLE_ENABLED is true but AUTH_GOOGLE_CLIENT_ID is empty. "
+            "Create a Google OAuth Web client and set its client ID."
+        )
     if settings.SECRET_KEY in _INSECURE_DEFAULTS:
         errors.append(
             "SECRET_KEY is still set to a development default. "

@@ -30,6 +30,7 @@ _SENSITIVE_FIELDS = frozenset({
     "api_key",
     "token",
     "access_token",
+    "google_oauth_user_id",
     "secret_key",
     "private_key",
     "client_secret",

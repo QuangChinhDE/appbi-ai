@@ -208,16 +208,22 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
                   <HelpCircle className="h-4 w-4 text-gray-400" />
                   <span>{language === 'vi' ? 'Hướng dẫn sử dụng' : 'Getting started guide'}</span>
                 </button>
-                <button
-                  onClick={() => {
-                    setShowChangePassword(true);
-                    setShowUserMenu(false);
-                  }}
-                  className="flex w-full items-center space-x-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
-                >
-                  <KeyRound className="h-4 w-4 text-gray-400" />
-                  <span>{t('sidebar.user.changePassword')}</span>
-                </button>
+                {user.has_password && user.auth_provider === 'password' ? (
+                  <button
+                    onClick={() => {
+                      setShowChangePassword(true);
+                      setShowUserMenu(false);
+                    }}
+                    className="flex w-full items-center space-x-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    <KeyRound className="h-4 w-4 text-gray-400" />
+                    <span>{t('sidebar.user.changePassword')}</span>
+                  </button>
+                ) : (
+                  <div className="px-4 py-2.5 text-sm text-gray-500">
+                    {language === 'vi' ? 'Tài khoản này dùng đăng nhập Google.' : 'This account signs in with Google.'}
+                  </div>
+                )}
                 <button
                   onClick={handleLogout}
                   className="flex w-full items-center space-x-2 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50"
@@ -248,7 +254,9 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
         </div>
       </div>
 
-      {showChangePassword && <ChangePasswordModal onClose={() => setShowChangePassword(false)} />}
+      {showChangePassword && user?.has_password && user.auth_provider === 'password' && (
+        <ChangePasswordModal onClose={() => setShowChangePassword(false)} />
+      )}
       <GettingStartedModal open={showGuide} onClose={() => setShowGuide(false)} locale={language} />
     </div>
   );

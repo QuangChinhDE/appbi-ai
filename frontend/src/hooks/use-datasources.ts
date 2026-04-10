@@ -60,8 +60,15 @@ export const useDeleteDataSource = () => {
 
 export const useTestDataSource = () => {
   return useMutation({
-    mutationFn: ({ type, config }: { type: string; config: Record<string, any> }) =>
-      dataSourceApi.test(type, config),
+    mutationFn: ({
+      type,
+      config,
+      data_source_id,
+    }: {
+      type: string;
+      config: Record<string, any>;
+      data_source_id?: number;
+    }) => dataSourceApi.test(type, config, data_source_id),
   });
 };
 

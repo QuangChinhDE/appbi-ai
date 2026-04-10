@@ -10,7 +10,6 @@ Includes dry-run cost guard for BigQuery.
 from __future__ import annotations
 
 import hashlib
-import json
 import time
 from datetime import date as dt_date, datetime
 from dataclasses import dataclass
@@ -205,8 +204,7 @@ def _get_bigquery_partition_metadata(
     }
     try:
         from google.cloud import bigquery
-        from google.oauth2 import service_account
-        from app.services.datasource_service import _resolve_gcp_credentials_json
+        from app.services.datasource_service import _build_bigquery_client
 
         dataset_name, table_name = _parse_bigquery_dataset_and_table(config, source_table_name)
         project_id = str(config.get("project_id") or "").strip()
@@ -218,12 +216,7 @@ def _get_bigquery_partition_metadata(
         if not project_id or not dataset_name or not table_name:
             return metadata
 
-        credentials_info = json.loads(_resolve_gcp_credentials_json(config))
-        credentials = service_account.Credentials.from_service_account_info(credentials_info)
-        client = bigquery.Client(
-            credentials=credentials,
-            project=project_id,
-        )
+        client = _build_bigquery_client(config)
         try:
             table_ref = f"{project_id}.{dataset_name}.{table_name}"
             table = client.get_table(table_ref)
@@ -844,15 +837,9 @@ def _estimate_bigquery_bytes(config: dict, sql: str) -> int:
     """Dry-run a BigQuery query to get estimated bytes processed. Returns 0 on error."""
     try:
         from google.cloud import bigquery
-        from google.oauth2 import service_account
-        from app.services.datasource_service import _resolve_gcp_credentials_json
+        from app.services.datasource_service import _build_bigquery_client
 
-        credentials_info = json.loads(_resolve_gcp_credentials_json(config))
-        credentials = service_account.Credentials.from_service_account_info(credentials_info)
-        client = bigquery.Client(
-            credentials=credentials,
-            project=config.get("project_id"),
-        )
+        client = _build_bigquery_client(config)
         try:
             job_config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
             query_job = client.query(sql, job_config=job_config)
@@ -1428,16 +1415,11 @@ class LiveQueryService:
 
 def _get_bigquery_table_size(config: dict, schema_name: str, table_name: str) -> Dict[str, Any]:
     """Use BigQuery client API (get_table) for safe metadata lookup — no SQL injection risk."""
-    from google.cloud import bigquery
-    from google.oauth2 import service_account
+    from app.services.datasource_service import _build_bigquery_client
 
-    credentials_info = json.loads(config.get("credentials_json", "{}"))
-    if not credentials_info and settings.GCP_SERVICE_ACCOUNT_JSON:
-        credentials_info = json.loads(settings.GCP_SERVICE_ACCOUNT_JSON)
-    credentials = service_account.Credentials.from_service_account_info(credentials_info)
     project_id = config.get("project_id", "")
 
-    client = bigquery.Client(credentials=credentials, project=project_id)
+    client = _build_bigquery_client(config)
     try:
         # Use the safe client API instead of SQL string interpolation
         table_ref = f"{project_id}.{schema_name}.{table_name}"

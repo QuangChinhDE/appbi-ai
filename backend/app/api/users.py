@@ -10,11 +10,15 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import require_permission, get_current_user
-from app.models.user import User, UserStatus
+from app.core.dependencies import require_permission
+from app.models.user import AuthProvider, User, UserStatus
 from app.schemas.auth import UserCreate, UserResponse, UserUpdate
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
 
 
 class ShareableUser(BaseModel):
@@ -70,16 +74,18 @@ def create_user(
 ):
     """Create a new user (admin only). Sets status=active immediately."""
     from app.api.auth import hash_password
+    normalized_email = _normalize_email(body.email)
 
-    if db.query(User).filter(User.email == body.email).first():
+    if db.query(User).filter(User.email.ilike(normalized_email)).first():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Email '{body.email}' is already registered",
+            detail=f"Email '{normalized_email}' is already registered",
         )
 
     user = User(
-        email=body.email,
-        password_hash=hash_password(body.password),
+        email=normalized_email,
+        password_hash=hash_password(body.password) if body.password else None,
+        auth_provider=body.auth_provider or AuthProvider.GOOGLE.value,
         full_name=body.full_name,
         invited_by=admin.id,
     )

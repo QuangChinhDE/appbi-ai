@@ -91,6 +91,11 @@ export const authApi = {
     return response.data;
   },
 
+  loginWithGoogle: async (credential: string) => {
+    const response = await apiClient.post('/auth/google', { credential });
+    return response.data;
+  },
+
   me: async () => {
     const response = await apiClient.get('/auth/me');
     return response.data;
@@ -156,7 +161,12 @@ export const usersApi = {
     return response.data;
   },
 
-  create: async (payload: { email: string; full_name: string; password: string }) => {
+  create: async (payload: {
+    email: string;
+    full_name: string;
+    auth_provider: 'password' | 'google';
+    password?: string;
+  }) => {
     const response = await apiClient.post('/users/', payload);
     return response.data;
   },

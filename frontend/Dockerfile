@@ -16,10 +16,16 @@ RUN npm install
 FROM node:18-alpine AS builder
 WORKDIR /app
 
-# Accept only the public API base as a build-time argument.
-# It must stay relative so the same image works for localhost and custom domains.
+# Public frontend settings must be available at build time so Next.js can
+# inline them into the browser bundle.
 ARG NEXT_PUBLIC_API_URL=/api/v1
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED=true
+ENV NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED=$NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED
+ARG NEXT_PUBLIC_AUTH_GOOGLE_ENABLED=false
+ENV NEXT_PUBLIC_AUTH_GOOGLE_ENABLED=$NEXT_PUBLIC_AUTH_GOOGLE_ENABLED
+ARG NEXT_PUBLIC_GOOGLE_CLIENT_ID=
+ENV NEXT_PUBLIC_GOOGLE_CLIENT_ID=$NEXT_PUBLIC_GOOGLE_CLIENT_ID
 ARG NEXT_PUBLIC_APP_URL=http://localhost:3000
 ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
 

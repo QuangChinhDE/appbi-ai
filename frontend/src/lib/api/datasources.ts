@@ -38,8 +38,12 @@ export const dataSourceApi = {
     await apiClient.delete(`/datasources/${id}`);
   },
 
-  test: async (type: string, config: Record<string, any>): Promise<{ success: boolean; message: string }> => {
-    const response = await apiClient.post('/datasources/test', { type, config });
+  test: async (
+    type: string,
+    config: Record<string, any>,
+    data_source_id?: number,
+  ): Promise<{ success: boolean; message: string }> => {
+    const response = await apiClient.post('/datasources/test', { type, config, data_source_id });
     return response.data;
   },
 

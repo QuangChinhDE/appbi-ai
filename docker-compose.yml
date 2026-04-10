@@ -47,6 +47,14 @@ services:
       SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       ENVIRONMENT: ${ENVIRONMENT:-production}
+      AUTH_PASSWORD_LOGIN_ENABLED: ${AUTH_PASSWORD_LOGIN_ENABLED:-true}
+      AUTH_GOOGLE_ENABLED: ${AUTH_GOOGLE_ENABLED:-false}
+      AUTH_GOOGLE_CLIENT_ID: ${AUTH_GOOGLE_CLIENT_ID:-}
+      AUTH_GOOGLE_CLIENT_SECRET: ${AUTH_GOOGLE_CLIENT_SECRET:-}
+      AUTH_GOOGLE_DATA_REDIRECT_URI: ${AUTH_GOOGLE_DATA_REDIRECT_URI:-}
+      AUTH_GOOGLE_ALLOWED_DOMAINS: ${AUTH_GOOGLE_ALLOWED_DOMAINS:-}
+      AUTH_GOOGLE_AUTO_CREATE_USERS: ${AUTH_GOOGLE_AUTO_CREATE_USERS:-false}
+      AUTH_GOOGLE_BOOTSTRAP_ADMIN_EMAIL: ${AUTH_GOOGLE_BOOTSTRAP_ADMIN_EMAIL:-}
       API_RELOAD: "false"
       SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@appbi.io}
@@ -93,6 +101,9 @@ services:
         # NEXT_PUBLIC_API_URL is baked as a relative path so it works on any domain.
         # AI service URLs are NOT baked — derived at runtime from window.location automatically.
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api/v1}
+        NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED: ${NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED:-true}
+        NEXT_PUBLIC_AUTH_GOOGLE_ENABLED: ${NEXT_PUBLIC_AUTH_GOOGLE_ENABLED:-false}
+        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000/api/v1
@@ -100,6 +111,9 @@ services:
       AI_AGENT_INTERNAL_URL: http://ai-agent-service:8001
       SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED: ${NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED:-true}
+      NEXT_PUBLIC_AUTH_GOOGLE_ENABLED: ${NEXT_PUBLIC_AUTH_GOOGLE_ENABLED:-false}
+      NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
     ports:
       # Bind to 127.0.0.1 so the frontend is reachable only via nginx,
       # not directly from the public internet.

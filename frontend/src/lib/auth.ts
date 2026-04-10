@@ -14,6 +14,10 @@ export interface CurrentUser {
   id: string;
   email: string;
   full_name: string;
+  auth_provider: 'password' | 'google';
+  has_password: boolean;
+  google_connected: boolean;
+  avatar_url: string | null;
   preferred_language: 'en' | 'vi';
   status: string;
   last_login_at: string | null;

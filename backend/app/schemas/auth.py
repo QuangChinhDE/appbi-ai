@@ -6,9 +6,9 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from typing import Optional, Dict, Literal
-from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator, ConfigDict
 
-from app.models.user import UserStatus
+from app.models.user import AuthProvider, UserStatus
 from app.models.resource_share import ResourceType, SharePermission
 
 import re
@@ -50,6 +50,10 @@ class LoginRequest(BaseModel):
     password: str = Field(..., min_length=1)
 
 
+class GoogleLoginRequest(BaseModel):
+    credential: str = Field(..., min_length=1)
+
+
 # ── Users ─────────────────────────────────────────────────────────────────────
 # Defined before TokenResponse so Pydantic v2 can resolve the annotation
 # immediately at class-definition time (no forward-ref needed).
@@ -57,12 +61,25 @@ class LoginRequest(BaseModel):
 class UserCreate(BaseModel):
     email: EmailStr
     full_name: str = Field(..., min_length=1, max_length=255)
-    password: str = Field(..., min_length=8)
+    auth_provider: Literal["password", "google"] | None = None
+    password: Optional[str] = Field(None, min_length=8)
 
-    @field_validator("password")
-    @classmethod
-    def password_strength(cls, v: str) -> str:
-        return _validate_password_strength(v)
+    @model_validator(mode="after")
+    def validate_auth_provider(self) -> "UserCreate":
+        provider = self.auth_provider or (
+            AuthProvider.PASSWORD.value if self.password else AuthProvider.GOOGLE.value
+        )
+
+        if provider == AuthProvider.PASSWORD.value:
+            if not self.password:
+                raise ValueError("Password is required for password-based accounts")
+            self.password = _validate_password_strength(self.password)
+        else:
+            if self.password:
+                raise ValueError("Do not set a password for Google-based accounts")
+
+        self.auth_provider = provider
+        return self
 
 
 class UserUpdate(BaseModel):
@@ -77,6 +94,10 @@ class UserResponse(BaseModel):
     id: uuid.UUID
     email: str
     full_name: str
+    auth_provider: Literal["password", "google"] = "password"
+    has_password: bool = False
+    google_connected: bool = False
+    avatar_url: Optional[str] = None
     preferred_language: Literal["en", "vi"] = "en"
     status: UserStatus
     permissions: Dict[str, str] = {}

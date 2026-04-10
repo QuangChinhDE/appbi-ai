@@ -35,6 +35,7 @@ from app.schemas import (
 from app.services import DataSourceCRUDService, DataSourceConnectionService
 from app.core.logging import get_logger
 from app.core.config import settings
+from app.services.google_data_access_service import get_google_data_access_status
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/datasources", tags=["datasources"])
@@ -47,6 +48,53 @@ def _build_query_error_detail(exc: Exception) -> dict:
     return {
         "message": message or "Query execution failed. Please check your SQL and try again.",
     }
+
+
+def _normalize_google_oauth_config(
+    config: dict[str, Any],
+    *,
+    current_user: User,
+    existing_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized = dict(config or {})
+    if normalized.get("auth_mode") != "google_oauth":
+        normalized.pop("google_oauth_user_id", None)
+        normalized.pop("google_oauth_email", None)
+        return normalized
+
+    from app.core.crypto import decrypt_config
+
+    existing = decrypt_config(existing_config or {})
+    existing_user_id = str(existing.get("google_oauth_user_id") or "").strip()
+    existing_email = str(existing.get("google_oauth_email") or "").strip().lower()
+    desired_email = str(normalized.get("google_oauth_email") or "").strip().lower()
+
+    if existing_user_id and existing_email and (not desired_email or desired_email == existing_email):
+        normalized["google_oauth_user_id"] = existing_user_id
+        normalized["google_oauth_email"] = existing_email
+        return normalized
+
+    status_payload = get_google_data_access_status(current_user)
+    if not status_payload["configured"]:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Google data access is not configured yet. Ask an admin to set "
+                "AUTH_GOOGLE_CLIENT_SECRET and AUTH_GOOGLE_DATA_REDIRECT_URI."
+            ),
+        )
+    if not status_payload["connected"] or not status_payload["email"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Connect your Google account inside AppBI before using Google OAuth "
+                "for BigQuery or Google Sheets."
+            ),
+        )
+
+    normalized["google_oauth_user_id"] = str(current_user.id)
+    normalized["google_oauth_email"] = str(status_payload["email"]).strip().lower()
+    return normalized
 
 
 # ── Platform GCP credential info ──────────────────────────────────────────────
@@ -228,6 +276,10 @@ def create_data_source(
 ):
     """Create a new data source."""
     try:
+        data_source.config = _normalize_google_oauth_config(
+            data_source.config,
+            current_user=current_user,
+        )
         return DataSourceCRUDService.create(db, data_source, owner_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -246,6 +298,12 @@ def update_data_source(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Data source with ID {data_source_id} not found")
     require_edit_access(db, current_user, ds, "data_sources")
     try:
+        if data_source_update.config is not None:
+            data_source_update.config = _normalize_google_oauth_config(
+                data_source_update.config,
+                current_user=current_user,
+                existing_config=ds.config,
+            )
         data_source = DataSourceCRUDService.update(db, data_source_id, data_source_update)
         return data_source
     except ValueError as e:
@@ -319,6 +377,12 @@ def test_data_source_connection(
                 if config.get(field, None) in ('', None, MASKED_PLACEHOLDER):
                     if stored.get(field):
                         config[field] = stored[field]  # keep encrypted value from DB
+
+    config = _normalize_google_oauth_config(
+        config,
+        current_user=current_user,
+        existing_config=db_ds.config if request.data_source_id is not None and db_ds else None,
+    )
 
     success, message = DataSourceConnectionService.test_connection(
         request.type.value,

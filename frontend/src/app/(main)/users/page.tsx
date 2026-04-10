@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Edit2, UserX, ChevronDown } from 'lucide-react';
 import { usersApi } from '@/lib/api-client';
 import { extractApiError, PASSWORD_REQUIREMENTS_TEXT, validatePasswordStrength } from '@/lib/api-errors';
+import { authConfig, getAuthMethodLabel, type AuthProvider } from '@/lib/auth-config';
 import { toast } from 'sonner';
 
 type UserStatus = 'active' | 'deactivated';
@@ -13,6 +14,9 @@ interface User {
   id: string;
   email: string;
   full_name: string;
+  auth_provider: AuthProvider;
+  google_connected: boolean;
+  has_password: boolean;
   status: UserStatus;
   last_login_at: string | null;
   created_at: string;
@@ -73,6 +77,7 @@ export default function UsersPage() {
               <tr className="border-b border-gray-200 bg-gray-50">
                 <th className="text-left px-6 py-3 font-medium text-gray-600">Name</th>
                 <th className="text-left px-6 py-3 font-medium text-gray-600">Email</th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600">Login method</th>
                 <th className="text-left px-6 py-3 font-medium text-gray-600">Status</th>
                 <th className="text-left px-6 py-3 font-medium text-gray-600">Last login</th>
                 <th className="px-6 py-3" />
@@ -83,6 +88,11 @@ export default function UsersPage() {
                 <tr key={user.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-3 font-medium text-gray-900">{user.full_name}</td>
                   <td className="px-6 py-3 text-gray-600">{user.email}</td>
+                  <td className="px-6 py-3 text-gray-600">
+                    <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-700">
+                      {getAuthMethodLabel(user.auth_provider, user.google_connected)}
+                    </span>
+                  </td>
                   <td className="px-6 py-3">
                     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[user.status]}`}>
                       {user.status}
@@ -152,6 +162,9 @@ export default function UsersPage() {
 function InviteModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
+  const [authProvider, setAuthProvider] = useState<AuthProvider>(
+    authConfig.googleEnabled ? 'google' : 'password',
+  );
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -159,14 +172,21 @@ function InviteModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    const passwordError = validatePasswordStrength(password);
-    if (passwordError) {
-      setError(passwordError);
-      return;
+    if (authProvider === 'password') {
+      const passwordError = validatePasswordStrength(password);
+      if (passwordError) {
+        setError(passwordError);
+        return;
+      }
     }
     setLoading(true);
     try {
-      await usersApi.create({ email, full_name: fullName, password });
+      await usersApi.create({
+        email,
+        full_name: fullName,
+        auth_provider: authProvider,
+        ...(authProvider === 'password' ? { password } : {}),
+      });
       toast.success(`User ${email} created successfully`);
       onSuccess();
     } catch (err: any) {
@@ -204,19 +224,41 @@ function InviteModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-            <input
-              type="password"
-              required
-              minLength={8}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Min 8 characters"
-            />
-            <p className="mt-1 text-xs text-gray-500">{PASSWORD_REQUIREMENTS_TEXT}</p>
-          </div>
+          {(authConfig.googleEnabled || authConfig.passwordEnabled) && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Login method</label>
+              <div className="relative">
+                <select
+                  value={authProvider}
+                  onChange={(e) => setAuthProvider(e.target.value as AuthProvider)}
+                  className="w-full appearance-none px-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                >
+                  {authConfig.googleEnabled && <option value="google">Google</option>}
+                  {authConfig.passwordEnabled && <option value="password">Password</option>}
+                </select>
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+              </div>
+            </div>
+          )}
+          {authProvider === 'password' ? (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+              <input
+                type="password"
+                required
+                minLength={8}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Min 8 characters"
+              />
+              <p className="mt-1 text-xs text-gray-500">{PASSWORD_REQUIREMENTS_TEXT}</p>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+              The user will sign in with Google using this email. No password is required.
+            </div>
+          )}
           <div className="flex justify-end space-x-2 pt-2">
             <button
               type="button"

@@ -19,6 +19,7 @@ from app.models import DataSourceType
 from app.services.sql_validator import validate_select_only
 from app.services.google_sheets_connector import create_google_sheets_connector
 from app.services.manual_table_connector import create_manual_table_connector
+from app.services.google_data_access_service import get_google_credentials_for_user_id
 
 logger = get_logger(__name__)
 
@@ -42,6 +43,28 @@ def _resolve_gcp_credentials_json(config: Dict[str, Any]) -> str:
     raise ValueError(
         "No GCP credentials found. Either provide credentials_json in the "
         "datasource config or set GCP_SERVICE_ACCOUNT_JSON in the platform .env."
+    )
+
+
+def _build_gcp_credentials(config: Dict[str, Any]):
+    auth_mode = str(config.get("auth_mode") or "service_account").strip().lower()
+    if auth_mode == "google_oauth":
+        google_oauth_user_id = str(config.get("google_oauth_user_id") or "").strip()
+        if not google_oauth_user_id:
+            raise ValueError(
+                "Google OAuth datasource is missing its connected AppBI user. Reconnect Google access and save again."
+            )
+        return get_google_credentials_for_user_id(google_oauth_user_id)
+
+    credentials_info = json.loads(_resolve_gcp_credentials_json(config))
+    return service_account.Credentials.from_service_account_info(credentials_info)
+
+
+def _build_bigquery_client(config: Dict[str, Any]) -> bigquery.Client:
+    project_id = str(config.get("project_id") or "").strip() or None
+    return bigquery.Client(
+        credentials=_build_gcp_credentials(config),
+        project=project_id,
     )
 
 
@@ -156,12 +179,7 @@ class DataSourceConnectionService:
         """Test BigQuery connection."""
         client = None
         try:
-            credentials_info = json.loads(_resolve_gcp_credentials_json(config))
-            credentials = service_account.Credentials.from_service_account_info(credentials_info)
-            client = bigquery.Client(
-                credentials=credentials,
-                project=config.get("project_id")
-            )
+            client = _build_bigquery_client(config)
             # Test basic API access
             query = "SELECT 1"
             client.query(query).result()
@@ -182,11 +200,11 @@ class DataSourceConnectionService:
                     if not datasets:
                         return True, (
                             "Connection successful, but no datasets found in the project. "
-                            "Check that the service account has bigquery.datasets.list on the project, "
+                            "Check that the connected credential has bigquery.datasets.list on the project, "
                             "or set a Default Dataset to target a specific dataset."
                         )
                 except Exception as e:
-                    return True, f"Connection successful, but could not list datasets: {e}. Set a Default Dataset if the service account only has per-dataset access."
+                    return True, f"Connection successful, but could not list datasets: {e}. Set a Default Dataset if the credential only has per-dataset access."
 
             return True, "Connection successful"
         except Exception as e:
@@ -477,14 +495,9 @@ class DataSourceConnectionService:
         """Execute query against BigQuery."""
         client = None
         try:
-            credentials_info = json.loads(_resolve_gcp_credentials_json(config))
-            credentials = service_account.Credentials.from_service_account_info(credentials_info)
             project_id = config.get("project_id")
             
-            client = bigquery.Client(
-                credentials=credentials,
-                project=project_id
-            )
+            client = _build_bigquery_client(config)
             
             # Apply limit if specified
             query = _apply_optional_limit(sql_query, limit)
@@ -543,10 +556,8 @@ class DataSourceConnectionService:
         """Dry-run a BigQuery query and return estimated bytes processed."""
         client = None
         try:
-            credentials_info = json.loads(_resolve_gcp_credentials_json(config))
-            credentials = service_account.Credentials.from_service_account_info(credentials_info)
             project_id = config.get("project_id")
-            client = bigquery.Client(credentials=credentials, project=project_id)
+            client = _build_bigquery_client(config)
             job_config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
             job = client.query(sql_query, job_config=job_config)
             return int(job.total_bytes_processed or 0)
@@ -682,11 +693,9 @@ class DataSourceConnectionService:
         timeout_seconds: int = 3600,
     ) -> Tuple[List[str], Generator[List[Dict[str, Any]], None, None]]:
         """Stream rows from BigQuery using page iteration (constant memory)."""
-        credentials_info = json.loads(_resolve_gcp_credentials_json(config))
-        credentials = service_account.Credentials.from_service_account_info(credentials_info)
         project_id = config.get("project_id")
 
-        client = bigquery.Client(credentials=credentials, project=project_id)
+        client = _build_bigquery_client(config)
 
         try:
             logger.info("Streaming BigQuery query on project %s", project_id)
@@ -744,11 +753,9 @@ class DataSourceConnectionService:
         """
         import pyarrow as pa
 
-        credentials_info = json.loads(_resolve_gcp_credentials_json(config))
-        credentials = service_account.Credentials.from_service_account_info(credentials_info)
         project_id = config.get("project_id")
 
-        client = bigquery.Client(credentials=credentials, project=project_id)
+        client = _build_bigquery_client(config)
 
         try:
             logger.info("Streaming BigQuery (Arrow) query on project %s", project_id)
@@ -964,14 +971,9 @@ class DataSourceConnectionService:
         """Infer column types from BigQuery query."""
         client = None
         try:
-            credentials_info = json.loads(_resolve_gcp_credentials_json(config))
-            credentials = service_account.Credentials.from_service_account_info(credentials_info)
             project_id = config.get("project_id")
             
-            client = bigquery.Client(
-                credentials=credentials,
-                project=project_id
-            )
+            client = _build_bigquery_client(config)
             
             logger.info(f"Inferring BigQuery schema for project {project_id}")
             
@@ -1202,14 +1204,9 @@ class DataSourceConnectionService:
         """List tables from BigQuery."""
         client = None
         try:
-            credentials_info = json.loads(_resolve_gcp_credentials_json(config))
-            credentials = service_account.Credentials.from_service_account_info(credentials_info)
             project_id = config.get("project_id")
 
-            client = bigquery.Client(
-                credentials=credentials,
-                project=project_id
-            )
+            client = _build_bigquery_client(config)
 
             logger.info(f"Listing BigQuery tables for project {project_id}")
 
@@ -1827,10 +1824,8 @@ class DataSourceConnectionService:
     def _bq_list_columns(config: Dict[str, Any], full_table: str) -> List[Dict[str, str]]:
         client = None
         try:
-            credentials_info = json.loads(_resolve_gcp_credentials_json(config))
-            credentials = service_account.Credentials.from_service_account_info(credentials_info)
             project_id = config.get("project_id", "")
-            client = bigquery.Client(credentials=credentials, project=project_id)
+            client = _build_bigquery_client(config)
             parts = full_table.split(".")
             if len(parts) >= 3:
                 # Already fully-qualified: project.dataset.table

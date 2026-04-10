@@ -1,7 +1,7 @@
 """
 Models package initialization.
 """
-from app.models.user import User, UserStatus
+from app.models.user import AuthProvider, User, UserStatus
 from app.models.resource_share import ResourceShare, ResourceType, SharePermission
 from app.models.models import (
     DataSource,
@@ -37,6 +37,7 @@ from app.models.audit_log import AuditLog, AuditAction, AuditSeverity
 __all__ = [
     "User",
     "UserStatus",
+    "AuthProvider",
     "ResourceShare",
     "ResourceType",
     "SharePermission",
