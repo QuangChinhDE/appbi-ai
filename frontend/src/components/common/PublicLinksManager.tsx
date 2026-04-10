@@ -55,8 +55,8 @@ export function PublicLinksManager({
   const [formName, setFormName] = useState('');
   const [formFilters, setFormFilters] = useState<BaseFilter[]>([]);
   const [formPassword, setFormPassword] = useState('');
+  const [passwordEnabled, setPasswordEnabled] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  // For edit: whether to change the password (or leave it unchanged)
   const [changePassword, setChangePassword] = useState(false);
 
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
@@ -157,16 +157,52 @@ export function PublicLinksManager({
   const activeChartCount = (propChartCount?.size ?? 0) > 0 ? propChartCount! : chartCount;
   const baseDistinctValues = Object.keys(propDistinctValues ?? {}).length > 0 ? propDistinctValues! : dv;
   const activeDistinctValues = useFilterDistinctValues(activeColumns, formFilters, baseDistinctValues);
+  const requiresPasswordValue = passwordEnabled && (
+    view === 'create'
+    || changePassword
+    || !editingLink?.has_password
+  );
+  const isPasswordFormValid = !requiresPasswordValue || formPassword.trim().length > 0;
+
+  const resolvePasswordPayload = (): { password?: string; validationError?: string } => {
+    const trimmedPassword = formPassword.trim();
+
+    if (view === 'create') {
+      if (!passwordEnabled) return {};
+      if (!trimmedPassword) {
+        return { validationError: 'Please enter a password or choose no password' };
+      }
+      return { password: trimmedPassword };
+    }
+
+    if (!editingLink) return {};
+
+    if (!changePassword) {
+      return {};
+    }
+
+    if (!passwordEnabled) {
+      return editingLink.has_password ? { password: '' } : {};
+    }
+
+    if (!trimmedPassword) {
+      return { validationError: 'Please enter a password' };
+    }
+
+    return { password: trimmedPassword };
+  };
 
   // ── Handlers ──
   const handleCreate = async () => {
     if (!formName.trim()) { toast.error('Please enter a name'); return; }
+    const { password, validationError } = resolvePasswordPayload();
+    if (validationError) { toast.error(validationError); return; }
     setCreating(true);
     try {
       const link = await dashboardApi.createPublicLink(dashboardId, {
         name: formName.trim(),
         filters_config: formFilters,
-        password: formPassword.trim() || undefined,
+        password,
       });
       setLinks(prev => [link, ...prev]);
       resetForm();
@@ -181,11 +217,13 @@ export function PublicLinksManager({
 
   const handleUpdate = async () => {
     if (!editingLink) return;
+    const { password, validationError } = resolvePasswordPayload();
+    if (validationError) { toast.error(validationError); return; }
     setSaving(true);
     try {
       const passwordField: { password?: string } = {};
-      if (changePassword) {
-        passwordField.password = formPassword.trim(); // '' = clear, non-empty = new
+      if (password !== undefined) {
+        passwordField.password = password;
       }
       const updated = await dashboardApi.updatePublicLink(dashboardId, editingLink.id, {
         name: formName.trim() || undefined,
@@ -241,6 +279,7 @@ export function PublicLinksManager({
     setFormName(link.name);
     setFormFilters((link.filters_config ?? []) as BaseFilter[]);
     setFormPassword('');
+    setPasswordEnabled(link.has_password);
     setShowPassword(false);
     setChangePassword(false);
     setView('edit');
@@ -255,6 +294,7 @@ export function PublicLinksManager({
     setFormName('');
     setFormFilters([]);
     setFormPassword('');
+    setPasswordEnabled(false);
     setShowPassword(false);
     setChangePassword(false);
     setEditingLink(null);
@@ -518,13 +558,13 @@ export function PublicLinksManager({
                     </div>
                     <div className="flex items-center gap-2">
                       <button
-                        onClick={() => { setChangePassword(true); setFormPassword(''); }}
+                        onClick={() => { setChangePassword(true); setPasswordEnabled(true); setFormPassword(''); }}
                         className="text-xs text-blue-600 hover:underline"
                       >
                         Change
                       </button>
                       <button
-                        onClick={() => { setChangePassword(true); setFormPassword(''); }}
+                        onClick={() => { setChangePassword(true); setPasswordEnabled(false); setFormPassword(''); }}
                         className="text-xs text-red-500 hover:underline"
                       >
                         Remove
@@ -532,20 +572,71 @@ export function PublicLinksManager({
                     </div>
                   </div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-3">
+                    <p className="text-xs text-gray-500">
+                      Public and embed links do not require an AppBI account. If you enable password protection,
+                      viewers only need the password for this link.
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPasswordEnabled(false);
+                          setFormPassword('');
+                          if (view === 'edit' && editingLink?.has_password) {
+                            setChangePassword(true);
+                          } else {
+                            setChangePassword(false);
+                          }
+                        }}
+                        className={`rounded-lg border px-3 py-3 text-left transition-colors ${
+                          !passwordEnabled
+                            ? 'border-blue-300 bg-blue-50'
+                            : 'border-gray-200 bg-white hover:border-gray-300'
+                        }`}
+                      >
+                        <p className="text-sm font-medium text-gray-800">No password</p>
+                        <p className="mt-1 text-xs text-gray-500">
+                          Open immediately with the public or embed link.
+                        </p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPasswordEnabled(true);
+                          if (view === 'edit') {
+                            setChangePassword(true);
+                          }
+                        }}
+                        className={`rounded-lg border px-3 py-3 text-left transition-colors ${
+                          passwordEnabled
+                            ? 'border-amber-300 bg-amber-50'
+                            : 'border-gray-200 bg-white hover:border-gray-300'
+                        }`}
+                      >
+                        <p className="text-sm font-medium text-gray-800">Require password</p>
+                        <p className="mt-1 text-xs text-gray-500">
+                          Viewers enter the link password only.
+                        </p>
+                      </button>
+                    </div>
                     {view === 'edit' && changePassword && (
                       <p className="text-xs text-gray-500">
-                        {editingLink?.has_password
-                          ? 'Leave blank to remove the password, or enter a new one.'
-                          : 'Enter a password to protect this link.'}
+                        {passwordEnabled
+                          ? editingLink?.has_password
+                            ? 'Enter a new password to replace the current one.'
+                            : 'Enter a password to protect this link.'
+                          : 'Save changes to remove the password from this link.'}
                       </p>
                     )}
-                    <div className="relative">
+                    {passwordEnabled ? (
+                      <>
+                        <div className="relative">
                       <input
                         type={showPassword ? 'text' : 'password'}
                         value={formPassword}
                         onChange={e => setFormPassword(e.target.value)}
-                        placeholder={view === 'create' ? 'Leave blank for no password' : 'New password (blank = remove)'}
+                        placeholder="Enter password"
                         className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 pr-10 focus:ring-2 focus:ring-blue-400 focus:border-blue-400 outline-none"
                       />
                       <button
@@ -562,9 +653,19 @@ export function PublicLinksManager({
                         Viewers will need this password · sessions auto-expire after 2 hours
                       </p>
                     )}
+                      </>
+                    ) : (
+                      <p className="text-xs text-gray-500">
+                        Anyone with the link can open it directly. No AppBI login or link password is required.
+                      </p>
+                    )}
                     {view === 'edit' && changePassword && (
                       <button
-                        onClick={() => { setChangePassword(false); setFormPassword(''); }}
+                        onClick={() => {
+                          setChangePassword(false);
+                          setFormPassword('');
+                          setPasswordEnabled(Boolean(editingLink?.has_password));
+                        }}
                         className="text-xs text-gray-400 hover:text-gray-600"
                       >
                         Cancel change
@@ -579,7 +680,7 @@ export function PublicLinksManager({
                 {view === 'create' ? (
                   <button
                     onClick={handleCreate}
-                    disabled={creating || !formName.trim()}
+                    disabled={creating || !formName.trim() || !isPasswordFormValid}
                     className="flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
                   >
                     {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
@@ -588,7 +689,7 @@ export function PublicLinksManager({
                 ) : (
                   <button
                     onClick={handleUpdate}
-                    disabled={saving || !formName.trim()}
+                    disabled={saving || !formName.trim() || !isPasswordFormValid}
                     className="flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
                   >
                     {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
