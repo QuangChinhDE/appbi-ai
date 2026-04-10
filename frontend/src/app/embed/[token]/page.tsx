@@ -28,13 +28,28 @@ import {
   getDashboardChartsForPage,
   normalizeDashboardPages,
 } from '@/lib/dashboard-pages';
-import type { BaseFilter } from '@/lib/filters';
+import { getColumnKey, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
+import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 
 const ResponsiveGridLayout = WidthProvider(Responsive);
 
 type PageState = 'unknown' | 'loading' | 'password_gate' | 'reauth' | 'loaded' | 'error';
+
+function areFiltersEquivalent(left: BaseFilter | null, right: BaseFilter | null): boolean {
+  if (!left || !right) return false;
+  return getFilterKey(left) === getFilterKey(right)
+    && left.operator === right.operator
+    && JSON.stringify(left.value) === JSON.stringify(right.value);
+}
+
+function formatFilterValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).join(', ');
+  }
+  return String(value ?? '');
+}
 
 function useEmbedHeight() {
   useEffect(() => {
@@ -162,6 +177,10 @@ export default function EmbedDashboardPage() {
   const [draftViewerFilters, setDraftViewerFilters] = useState<BaseFilter[]>([]);
   const [appliedViewerFilters, setAppliedViewerFilters] = useState<BaseFilter[]>([]);
   const [isApplyingFilters, setIsApplyingFilters] = useState(false);
+  const [crossFilterState, setCrossFilterState] = useState<{
+    sourceChartId: number;
+    filter: BaseFilter;
+  } | null>(null);
   const [pageState, setPageState] = useState<PageState>('unknown');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
@@ -238,6 +257,36 @@ export default function EmbedDashboardPage() {
     }
   }, [activePageId, currentPageId]);
 
+  useEffect(() => {
+    if (!crossFilterState) return;
+    const sourceExists = visibleDashboardCharts.some(
+      (dashboardChart) => dashboardChart.chart_id === crossFilterState.sourceChartId,
+    );
+    if (!sourceExists) {
+      setCrossFilterState(null);
+    }
+  }, [crossFilterState, visibleDashboardCharts]);
+
+  const handleCrossFilterChange = useCallback((sourceChartId: number, filter: BaseFilter | null) => {
+    setCrossFilterState((current) => {
+      if (!filter) {
+        return current?.sourceChartId === sourceChartId ? null : current;
+      }
+
+      if (
+        current?.sourceChartId === sourceChartId
+        && areFiltersEquivalent(current.filter, filter)
+      ) {
+        return null;
+      }
+
+      return {
+        sourceChartId,
+        filter,
+      };
+    });
+  }, []);
+
   const loadVisibleCharts = useCallback(async (sessionToken?: string) => {
     if (!dashboard) return;
 
@@ -260,17 +309,20 @@ export default function EmbedDashboardPage() {
       return;
     }
 
-    const combinedViewerFilters = appliedViewerFilters;
-
     try {
       const entries = await Promise.all(
         targetCharts.map(async (dashboardChart) => {
+          const requestFilters = crossFilterState?.sourceChartId === dashboardChart.chart_id
+            ? appliedViewerFilters
+            : crossFilterState
+              ? [...appliedViewerFilters, crossFilterState.filter]
+              : appliedViewerFilters;
           try {
             const data = await publicDashboardApi.getChartData(
               token,
               dashboardChart.chart_id,
               sessionToken,
-              combinedViewerFilters,
+              requestFilters,
             );
             return { chartId: dashboardChart.chart_id, data, error: null as string | null };
           } catch (err: any) {
@@ -320,7 +372,7 @@ export default function EmbedDashboardPage() {
         setIsApplyingFilters(false);
       }
     }
-  }, [activePageId, appliedViewerFilters, dashboard, scheduleExpiry, token]);
+  }, [activePageId, appliedViewerFilters, crossFilterState, dashboard, scheduleExpiry, token]);
 
   useEffect(() => {
     if (!dashboard || pageState !== 'loaded') return;
@@ -358,6 +410,33 @@ export default function EmbedDashboardPage() {
   const filterRuntime = useMemo(
     () => buildPublicDashboardFilterRuntime(visibleDashboardCharts, chartData),
     [chartData, visibleDashboardCharts],
+  );
+  const activeSessionToken = mounted ? (getPublicSession(token) ?? undefined) : undefined;
+  const availableFilterColumns = useMemo<ColumnInfo[]>(
+    () => (dashboard?.available_filter_fields?.length
+      ? dashboard.available_filter_fields
+      : filterRuntime.columns),
+    [dashboard?.available_filter_fields, filterRuntime.columns],
+  );
+  const availableFilterChartCount = useMemo(
+    () => (
+      dashboard?.available_filter_fields?.length
+        ? new Map(
+            availableFilterColumns.map((column) => [
+              getColumnKey(column),
+              column.chartCoverage ?? 0,
+            ]),
+          )
+        : filterRuntime.columnChartCount
+    ),
+    [availableFilterColumns, dashboard?.available_filter_fields, filterRuntime.columnChartCount],
+  );
+  const resolvedDistinctValues = usePublicFilterDistinctValues(
+    token,
+    activeSessionToken,
+    availableFilterColumns,
+    draftViewerFilters,
+    filterRuntime.distinctValues,
   );
   const hasPendingFilterChanges = useMemo(
     () => JSON.stringify(draftViewerFilters) !== JSON.stringify(appliedViewerFilters),
@@ -452,12 +531,12 @@ export default function EmbedDashboardPage() {
         </div>
       )}
 
-      {(filterRuntime.columns.length > 0 || draftViewerFilters.length > 0) && (
+      {(availableFilterColumns.length > 0 || draftViewerFilters.length > 0) && (
         <div className="px-4 pt-3">
           <DashboardFilterBar
-            columns={filterRuntime.columns}
-            columnChartCount={filterRuntime.columnChartCount}
-            distinctValues={filterRuntime.distinctValues}
+            columns={availableFilterColumns}
+            columnChartCount={availableFilterChartCount}
+            distinctValues={resolvedDistinctValues}
             filters={draftViewerFilters}
             onFiltersChange={setDraftViewerFilters}
             hasPendingChanges={hasPendingFilterChanges}
@@ -465,6 +544,28 @@ export default function EmbedDashboardPage() {
             onReset={handleResetFilters}
             isApplying={isApplyingFilters}
           />
+        </div>
+      )}
+
+      {crossFilterState && (
+        <div className="px-4 pt-3">
+          <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            <span className="font-medium">
+              Cross-filter from {visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.layout?.custom_title
+                ?? visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.chart?.name
+                ?? `Chart ${crossFilterState.sourceChartId}`}:
+            </span>
+            <span className="truncate">
+              {getFilterDisplayLabel(crossFilterState.filter)} = {formatFilterValue(crossFilterState.filter.value)}
+            </span>
+            <button
+              type="button"
+              onClick={() => setCrossFilterState(null)}
+              className="ml-auto rounded-md border border-amber-300 px-2 py-0.5 text-[11px] font-medium text-amber-800 hover:bg-amber-100"
+            >
+              Clear
+            </button>
+          </div>
         </div>
       )}
 
@@ -515,6 +616,8 @@ export default function EmbedDashboardPage() {
                       error={chartError}
                       title={title}
                       compact
+                      onSelectCrossFilter={(filter) => handleCrossFilterChange(dashboardChart.chart_id, filter)}
+                      isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
                     />
                   </ChartErrorBoundary>
                 </div>

@@ -24,6 +24,8 @@ import { DashboardChartLayout, DashboardPageConfig } from '@/types/api';
 import type { BaseFilter, ColumnInfo, FilterType } from '@/lib/filters';
 import {
   collectJoinKeySemanticFields,
+  getFilterDisplayLabel,
+  getFriendlyFieldLabel,
   getColumnKey,
   getFilterKey,
   inferColumnTypeFromData,
@@ -570,8 +572,8 @@ export default function DashboardDetailPage() {
   const semanticColumnsResult = React.useMemo(() => {
     const columns = new Map<string, ColumnInfo>();
     const counts = new Map<string, Set<number>>();
-    const datasetChartIds = new Map<number, Set<number>>();
     const datasetJoinKeyFields = new Map<number, Set<string>>();
+    const totalDashboardChartCount = dashboard?.dashboard_charts?.length ?? 0;
 
     for (const [datasetId, model] of datasetModelsById.entries()) {
       datasetJoinKeyFields.set(datasetId, collectJoinKeySemanticFields(model));
@@ -587,8 +589,6 @@ export default function DashboardDetailPage() {
         | undefined;
 
       if (!binding?.datasetId) continue;
-      if (!datasetChartIds.has(binding.datasetId)) datasetChartIds.set(binding.datasetId, new Set());
-      datasetChartIds.get(binding.datasetId)!.add(dashboardChart.chart_id);
 
       const model = datasetModelsById.get(binding.datasetId);
       if (!model) continue;
@@ -612,14 +612,12 @@ export default function DashboardDetailPage() {
           joinKeyFields,
         })) continue;
         if (!dimension) continue;
-        const viewLabel = view?.table_display_name || viewName;
-
         const key = semanticField;
         if (!columns.has(key)) {
           columns.set(key, {
             key,
             name: fieldName,
-            label: `${viewLabel}.${dimension.label ?? fieldName}`,
+            label: getFriendlyFieldLabel(dimension.label ?? fieldName),
             type: semanticDimensionToFilterType(dimension.type),
             datasetId: binding.datasetId,
             semanticField,
@@ -634,14 +632,11 @@ export default function DashboardDetailPage() {
       .map((column) => {
         const key = getColumnKey(column);
         const chartCoverage = counts.get(key)?.size ?? 0;
-        const datasetChartCount = column.datasetId
-          ? (datasetChartIds.get(column.datasetId)?.size ?? chartCoverage)
-          : chartCoverage;
         return {
           ...column,
           chartCoverage,
-          datasetChartCount,
-          sharedAcrossDataset: datasetChartCount > 0 && chartCoverage === datasetChartCount,
+          datasetChartCount: totalDashboardChartCount,
+          sharedAcrossDataset: totalDashboardChartCount > 0 && chartCoverage === totalDashboardChartCount,
         };
       })
       .sort((left, right) => {
@@ -983,7 +978,7 @@ export default function DashboardDetailPage() {
               Cross-filter from {activeCrossFilterSourceTitle}:
             </span>
             <span className="truncate">
-              {(activeCrossFilter.label ?? activeCrossFilter.semanticField ?? activeCrossFilter.field)} = {formatFilterValue(activeCrossFilter.value)}
+              {getFilterDisplayLabel(activeCrossFilter)} = {formatFilterValue(activeCrossFilter.value)}
             </span>
             <button
               type="button"

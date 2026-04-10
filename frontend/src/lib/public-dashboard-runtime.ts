@@ -2,6 +2,7 @@ import { getRoleConfigDimensionFields } from '@/components/explore/ExploreChartC
 import { getActiveChartRoleConfig } from '@/lib/chart-config';
 import {
   getColumnKey,
+  getFriendlyFieldLabel,
   inferColumnTypeFromData,
   resolveChartSemanticField,
   type ColumnInfo,
@@ -50,7 +51,7 @@ export function buildPublicDashboardFilterRuntime(
         columns.set(key, {
           key,
           name: field,
-          label: semanticField ?? field,
+          label: getFriendlyFieldLabel(semanticField ?? field),
           datasetId: binding?.datasetId,
           semanticField: semanticField ?? undefined,
           type: inferColumnTypeFromData(field, rows),

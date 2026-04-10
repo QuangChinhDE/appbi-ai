@@ -57,6 +57,28 @@ export const publicDashboardApi = {
     );
     return res.data;
   },
+
+  getFilterDistinctValues: async (
+    token: string,
+    datasetId: number,
+    field: string,
+    sessionToken?: string,
+    limit = 200,
+  ): Promise<{ field: string; values: string[] }> => {
+    const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
+    const res = await publicClient.get(
+      `/public/dashboards/${token}/filters/distinct-values`,
+      {
+        headers,
+        params: {
+          dataset_id: datasetId,
+          field,
+          limit,
+        },
+      },
+    );
+    return res.data;
+  },
 };
 
 // ── Session storage helpers ──────────────────────────────────────────────────

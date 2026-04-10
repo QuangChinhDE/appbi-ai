@@ -121,6 +121,90 @@ export interface DashboardFilterableModelLike {
   explores?: DashboardFilterableExploreLike[];
 }
 
+const UPPERCASE_FIELD_WORDS = new Set([
+  'id',
+  'ip',
+  'sku',
+  'api',
+  'sql',
+  'url',
+  'ui',
+  'ux',
+  'utc',
+]);
+
+function titleCaseTechnicalWord(word: string): string {
+  const trimmed = word.trim();
+  if (!trimmed) return '';
+
+  const lower = trimmed.toLowerCase();
+  if (UPPERCASE_FIELD_WORDS.has(lower)) {
+    return lower.toUpperCase();
+  }
+
+  if (/^[A-Z0-9]{2,}$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
+}
+
+function humanizeTechnicalFieldName(value: string): string {
+  const spaced = value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!spaced) return '';
+
+  return spaced
+    .split(' ')
+    .map(titleCaseTechnicalWord)
+    .join(' ');
+}
+
+export function getFriendlyFieldLabel(value: string | null | undefined): string {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return '';
+
+  const lastSegment = trimmed.split('.').pop()?.trim() ?? trimmed;
+  if (!lastSegment) return '';
+
+  if (
+    /[_-]/.test(lastSegment)
+    || /^[a-z0-9 ]+$/.test(lastSegment)
+    || /[a-z0-9][A-Z]/.test(lastSegment)
+    || !/\s/.test(lastSegment)
+  ) {
+    return humanizeTechnicalFieldName(lastSegment);
+  }
+
+  return lastSegment;
+}
+
+export function getColumnDisplayLabel(
+  column: Pick<ColumnInfo, 'label' | 'name' | 'semanticField'>,
+): string {
+  return (
+    getFriendlyFieldLabel(column.label)
+    || getFriendlyFieldLabel(column.name)
+    || getFriendlyFieldLabel(column.semanticField)
+    || column.name
+  );
+}
+
+export function getFilterDisplayLabel(
+  filter: Pick<BaseFilter, 'label' | 'field' | 'semanticField'>,
+): string {
+  return (
+    getFriendlyFieldLabel(filter.label)
+    || getFriendlyFieldLabel(filter.field)
+    || getFriendlyFieldLabel(filter.semanticField)
+    || filter.field
+  );
+}
+
 export function collectJoinKeySemanticFields(model: DashboardFilterableModelLike | null | undefined): Set<string> {
   const fields = new Set<string>();
 

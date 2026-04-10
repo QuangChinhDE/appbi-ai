@@ -297,6 +297,7 @@ class DashboardResponse(DashboardBase):
     dashboard_charts: List[DashboardChartResponse] = []
     filters_config: Optional[List[Dict[str, Any]]] = None
     public_filters_config: Optional[List[Dict[str, Any]]] = None
+    available_filter_fields: Optional[List[Dict[str, Any]]] = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -2,7 +2,16 @@
 
 import React, { useState, useMemo } from 'react';
 import { Plus, X, Filter, ChevronDown, ChevronRight, Search, Link2, Check, RotateCcw } from 'lucide-react';
-import { BaseFilter, FilterOperator, FilterType, ColumnInfo, getColumnKey, getFilterKey } from '@/lib/filters';
+import {
+  BaseFilter,
+  FilterOperator,
+  FilterType,
+  ColumnInfo,
+  getColumnDisplayLabel,
+  getColumnKey,
+  getFilterDisplayLabel,
+  getFilterKey,
+} from '@/lib/filters';
 import { DateInput } from '@/components/ui/DateInput';
 
 // ─── Type badge helpers ────────────────────────────────────────
@@ -40,7 +49,6 @@ export function DashboardFilterBar({
 }: DashboardFilterBarProps) {
   const [isExpanded, setIsExpanded] = useState(true);
   const [addingField, setAddingField] = useState(false);
-  const [showPartialFields, setShowPartialFields] = useState(false);
   const [addFilterSearch, setAddFilterSearch] = useState('');
   const [searchTerms, setSearchTerms] = useState<Record<string, string>>({});
 
@@ -64,11 +72,16 @@ export function DashboardFilterBar({
 
   const normalizedAddFilterSearch = addFilterSearch.trim().toLowerCase();
 
+  const sharedAvailableColumns = useMemo(
+    () => availableColumns.filter((column) => column.sharedAcrossDataset !== false),
+    [availableColumns],
+  );
+
   const matchingAvailableColumns = useMemo(
-    () => availableColumns.filter((column) => {
+    () => sharedAvailableColumns.filter((column) => {
       if (!normalizedAddFilterSearch) return true;
       const haystack = [
-        column.label,
+        getColumnDisplayLabel(column),
         column.name,
         column.semanticField,
       ]
@@ -77,17 +90,7 @@ export function DashboardFilterBar({
         .toLowerCase();
       return haystack.includes(normalizedAddFilterSearch);
     }),
-    [availableColumns, normalizedAddFilterSearch],
-  );
-
-  const sharedAvailableColumns = useMemo(
-    () => matchingAvailableColumns.filter((column) => column.sharedAcrossDataset !== false),
-    [matchingAvailableColumns],
-  );
-
-  const partialAvailableColumns = useMemo(
-    () => matchingAvailableColumns.filter((column) => column.sharedAcrossDataset === false),
-    [matchingAvailableColumns],
+    [normalizedAddFilterSearch, sharedAvailableColumns],
   );
 
   // ── Mutators ───────────────────────────────────────────────────
@@ -117,12 +120,11 @@ export function DashboardFilterBar({
       type:         col.type,
       operator:     isMultiSelect ? 'in' : col.type === 'date' ? 'between' : 'gte',
       value:        isMultiSelect ? [] : col.type === 'date' ? ['', ''] : '',
-      label:        col.label ?? col.name,
+      label:        getColumnDisplayLabel(col),
     };
     onFiltersChange([...filters, newFilter]);
     setAddingField(false);
     setAddFilterSearch('');
-    setShowPartialFields(false);
     setIsExpanded(true);
   };
 
@@ -212,7 +214,7 @@ export function DashboardFilterBar({
           <span className={`text-xs font-mono w-4 text-center ${TYPE_CLR[column.type]}`}>
             {TYPE_BADGE[column.type]}
           </span>
-          <span className="text-gray-700 group-hover:text-blue-700 truncate">{column.label ?? column.name}</span>
+          <span className="text-gray-700 group-hover:text-blue-700 truncate">{getColumnDisplayLabel(column)}</span>
         </span>
         <span className="flex items-center gap-2 pl-2">
           {sameTypeCount > 0 && (
@@ -221,7 +223,7 @@ export function DashboardFilterBar({
               +{sameTypeCount}
             </span>
           )}
-          <span className={`text-xs ${column.sharedAcrossDataset === false ? 'text-amber-500' : 'text-gray-400'}`}>
+          <span className="text-xs text-gray-400">
             {getCoverageLabel(column)}
           </span>
         </span>
@@ -266,7 +268,7 @@ export function DashboardFilterBar({
                   key={f.id}
                   className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 border border-blue-200 text-blue-700 text-xs rounded-full"
                 >
-                  <span className="font-semibold">{f.label ?? f.field}</span>
+                  <span className="font-semibold">{getFilterDisplayLabel(f)}</span>
                   {f.linkedFields && f.linkedFields.length > 0 && (
                     <Link2 className="w-3 h-3 text-blue-400" />
                   )}
@@ -317,29 +319,28 @@ export function DashboardFilterBar({
                 setAddingField(next);
                 if (!next) {
                   setAddFilterSearch('');
-                  setShowPartialFields(false);
                 }
               }}
-              disabled={availableColumns.length === 0}
+              disabled={sharedAvailableColumns.length === 0}
+              title={sharedAvailableColumns.length === 0 ? 'No shared fields available across all charts' : undefined}
               className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-600 border border-blue-300 rounded-md hover:bg-blue-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <Plus className="w-3 h-3" />
               Add Filter
             </button>
 
-            {addingField && availableColumns.length > 0 && (
+            {addingField && sharedAvailableColumns.length > 0 && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => {
                   setAddingField(false);
                   setAddFilterSearch('');
-                  setShowPartialFields(false);
                 }} />
                 <div className="absolute right-0 top-full mt-1 z-20 bg-white border border-gray-200 rounded-lg shadow-lg w-72 max-h-80 overflow-y-auto">
                   <div className="p-2 border-b border-gray-100">
                     <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Select a field</p>
-                    <p className="text-xs text-gray-400 mt-0.5">Shared fields affect every compatible chart in the dataset.</p>
+                    <p className="text-xs text-gray-400 mt-0.5">Only shared fields that affect all charts are available here.</p>
                   </div>
-                  {availableColumns.length > 8 && (
+                  {sharedAvailableColumns.length > 8 && (
                     <div className="p-2 border-b border-gray-100">
                       <div className="relative">
                         <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
@@ -356,38 +357,22 @@ export function DashboardFilterBar({
                   {sharedAvailableColumns.length > 0 && (
                     <div className="py-1">
                       <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                        Shared fields
+                        Global fields
                       </div>
-                      {sharedAvailableColumns.map(renderColumnOption)}
-                    </div>
-                  )}
-                  {partialAvailableColumns.length > 0 && (
-                    <div className="border-t border-gray-100 py-1">
-                      <button
-                        type="button"
-                        onClick={() => setShowPartialFields((current) => !current)}
-                        className="w-full px-3 py-1.5 flex items-center gap-2 text-xs text-amber-700 hover:bg-amber-50"
-                      >
-                        {showPartialFields
-                          ? <ChevronDown className="w-3.5 h-3.5" />
-                          : <ChevronRight className="w-3.5 h-3.5" />}
-                        <span>Chart-specific fields</span>
-                        <span className="ml-auto text-[11px] text-amber-500">{partialAvailableColumns.length}</span>
-                      </button>
-                      {showPartialFields && (
-                        <div>
-                          <p className="px-3 pb-1 text-[11px] text-amber-500">
-                            These fields only affect a subset of charts.
-                          </p>
-                          {partialAvailableColumns.map(renderColumnOption)}
-                        </div>
-                      )}
+                      {matchingAvailableColumns.map(renderColumnOption)}
                     </div>
                   )}
                   {matchingAvailableColumns.length === 0 && (
-                    <p className="px-3 py-3 text-xs text-gray-400 italic">
-                      No matching fields
-                    </p>
+                    sharedAvailableColumns.length === 0 ? (
+                      <div className="px-3 py-3 text-xs text-gray-400">
+                        <p className="font-medium text-gray-500">No shared fields available.</p>
+                        <p className="mt-1">Use chart-level filters for fields that only affect individual charts.</p>
+                      </div>
+                    ) : (
+                      <p className="px-3 py-3 text-xs text-gray-400 italic">
+                        No matching shared fields
+                      </p>
+                    )
                   )}
                 </div>
               </>
@@ -426,9 +411,15 @@ export function DashboardFilterBar({
       {/* Empty state */}
       {isExpanded && filters.length === 0 && (
         <div className="px-4 py-5 text-center border-t border-gray-100">
-          <p className="text-sm text-gray-400">
-            No filters added. Click <strong>Add Filter</strong> to filter dashboard data.
-          </p>
+          {sharedAvailableColumns.length > 0 ? (
+            <p className="text-sm text-gray-400">
+              No filters added. Click <strong>Add Filter</strong> to filter all charts in this dashboard.
+            </p>
+          ) : (
+            <p className="text-sm text-gray-400">
+              No shared dashboard filters are available here. Use chart-level filters for chart-specific analysis.
+            </p>
+          )}
           {columns.filter(c => c.type === 'date').length > 1 && (
             <p className="text-xs text-teal-500 mt-1">
               <Link2 className="w-3 h-3 inline mr-1" />
@@ -540,7 +531,7 @@ function FilterCard({
           <span className={`text-xs font-mono ${TYPE_CLR[f.type]}`}>
             {TYPE_BADGE[f.type]}
           </span>
-          <span className="text-sm font-semibold text-gray-800 truncate">{f.label ?? f.field}</span>
+          <span className="text-sm font-semibold text-gray-800 truncate">{getFilterDisplayLabel(f)}</span>
           {selected.length > 0 && (
             <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full font-semibold flex-shrink-0">
               {selected.length}
@@ -644,7 +635,7 @@ function FilterCard({
                     <span className={`font-mono text-xs ${TYPE_CLR[col.type]}`}>
                       {TYPE_BADGE[col.type]}
                     </span>
-                    <span className="truncate flex-1">{col.label ?? col.name}</span>
+                    <span className="truncate flex-1">{getColumnDisplayLabel(col)}</span>
                     {count > 0 && (
                       <span className="text-xs text-gray-400 flex-shrink-0">
                         {count} chart{count !== 1 ? 's' : ''}

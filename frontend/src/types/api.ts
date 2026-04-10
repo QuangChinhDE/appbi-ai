@@ -337,6 +337,18 @@ export interface DashboardChart {
   parameters?: Record<string, any> | null;
 }
 
+export interface DashboardFilterField {
+  name: string;
+  type: 'text' | 'number' | 'date' | 'dropdown';
+  key?: string;
+  label?: string;
+  datasetId?: number;
+  semanticField?: string;
+  chartCoverage?: number;
+  datasetChartCount?: number;
+  sharedAcrossDataset?: boolean;
+}
+
 // --- Chart Metadata (semantic/business layer) ---
 export interface ChartMetadata {
   id: number;
@@ -399,6 +411,7 @@ export interface Dashboard {
   filters_config?: any[]; // Dashboard-level filters (hybrid v1)
   public_filters_config?: any[];
   pages_config?: DashboardPageConfig[];
+  available_filter_fields?: DashboardFilterField[];
 }
 
 export interface DashboardCreate {

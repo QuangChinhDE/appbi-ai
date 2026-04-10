@@ -10,8 +10,12 @@ import { chartApi } from '@/lib/api/charts';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { useFilterDistinctValues } from '@/hooks/use-filter-distinct-values';
 import { toast } from 'sonner';
-import type { BaseFilter, ColumnInfo } from '@/lib/filters';
-import { inferColumnTypeFromData } from '@/lib/filters';
+import {
+  getFilterDisplayLabel,
+  inferColumnTypeFromData,
+  type BaseFilter,
+  type ColumnInfo,
+} from '@/lib/filters';
 
 interface PublicLinksManagerProps {
   dashboardId: number;
@@ -110,7 +114,18 @@ export function PublicLinksManager({
         }),
       );
 
-      const sortedCols = Array.from(colMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+      const totalCharts = charts.length;
+      const sortedCols = Array.from(colMap.values())
+        .map((column) => {
+          const coverage = countMap.get(column.name)?.size ?? 0;
+          return {
+            ...column,
+            chartCoverage: coverage,
+            datasetChartCount: totalCharts,
+            sharedAcrossDataset: totalCharts > 0 && coverage === totalCharts,
+          };
+        })
+        .sort((a, b) => a.name.localeCompare(b.name));
       setColumns(sortedCols);
       setChartCount(new Map(Array.from(countMap.entries()).map(([k, s]) => [k, s.size])));
       const result: Record<string, string[]> = {};
@@ -258,7 +273,7 @@ export function PublicLinksManager({
 
   const formatFilterSummary = (filters: any[] | null): string => {
     if (!filters?.length) return 'No filters — shows all data';
-    const names = filters.map((f: any) => f.field).join(', ');
+    const names = filters.map((f: any) => getFilterDisplayLabel(f)).join(', ');
     return `Filtered by: ${names}`;
   };
 

@@ -25,6 +25,7 @@ from app.core.logging import get_logger
 from app.models.models import Dashboard, DashboardChart, DashboardPublicLink
 from app.schemas import DashboardResponse
 from app.services import ChartService
+from app.services.dataset_model_service import get_dataset_model, get_distinct_field_values
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -41,6 +42,142 @@ PUBLIC_SESSION_SECONDS = 7200
 
 class _PasswordBody(BaseModel):
     password: str
+
+
+def _semantic_dimension_to_filter_type(dimension_type: str | None) -> str:
+    normalized = str(dimension_type or "").lower()
+    if normalized in {"date", "datetime"}:
+        return "date"
+    if normalized == "number":
+        return "number"
+    return "dropdown"
+
+
+def _collect_join_key_fields(model: dict | None) -> set[str]:
+    fields: set[str] = set()
+
+    for explore in model.get("explores", []) if isinstance(model, dict) else []:
+        base_view_name = str(explore.get("base_view_name") or "").strip()
+        for join in explore.get("joins", []) or []:
+            if join.get("origin") == "auto_calendar":
+                continue
+
+            from_view = str(join.get("from_view") or base_view_name or "").strip()
+            from_column = str(join.get("from_column") or "").strip()
+            to_view = str(join.get("view") or "").strip()
+            to_column = str(join.get("to_column") or "").strip()
+
+            if from_view and from_column:
+                fields.add(f"{from_view}.{from_column}")
+            if to_view and to_column:
+                fields.add(f"{to_view}.{to_column}")
+
+    return fields
+
+
+def _build_public_filter_fields(db: Session, dash: Dashboard) -> list[dict]:
+    dataset_models: dict[int, dict] = {}
+    dataset_join_key_fields: dict[int, set[str]] = {}
+    columns: dict[str, dict] = {}
+    counts: dict[str, set[int]] = {}
+    total_dashboard_chart_count = len(dash.dashboard_charts or [])
+
+    for dashboard_chart in dash.dashboard_charts or []:
+        chart_config = dashboard_chart.chart.config if dashboard_chart.chart else {}
+        binding = chart_config.get("semanticBinding") if isinstance(chart_config, dict) else None
+        if not isinstance(binding, dict):
+            continue
+
+        dataset_id = binding.get("datasetId")
+        if not isinstance(dataset_id, int):
+            continue
+
+        if dataset_id not in dataset_models:
+            model = get_dataset_model(db, dataset_id)
+            if not model:
+                continue
+            dataset_models[dataset_id] = model
+            dataset_join_key_fields[dataset_id] = _collect_join_key_fields(model)
+
+        model = dataset_models.get(dataset_id)
+        if not model:
+            continue
+
+        views_by_name = {
+            str(view.get("name")): view
+            for view in model.get("views", [])
+            if isinstance(view, dict) and view.get("name")
+        }
+        join_key_fields = dataset_join_key_fields.get(dataset_id, set())
+        candidate_fields = binding.get("dimensionFields") or list((binding.get("fieldMap") or {}).values())
+
+        for semantic_field in candidate_fields:
+            if not isinstance(semantic_field, str) or "." not in semantic_field:
+                continue
+            view_name, field_name = semantic_field.split(".", 1)
+            view = views_by_name.get(view_name)
+            if not isinstance(view, dict) or view.get("hidden_in_canvas"):
+                continue
+
+            dimension = next(
+                (
+                    item for item in (view.get("dimensions") or [])
+                    if isinstance(item, dict) and item.get("name") == field_name
+                ),
+                None,
+            )
+            if not isinstance(dimension, dict):
+                continue
+
+            if bool(dimension.get("hidden")) and semantic_field not in join_key_fields:
+                continue
+
+            if semantic_field not in columns:
+                columns[semantic_field] = {
+                    "key": semantic_field,
+                    "name": field_name,
+                    "label": dimension.get("label") or field_name,
+                    "type": _semantic_dimension_to_filter_type(dimension.get("type")),
+                    "datasetId": dataset_id,
+                    "semanticField": semantic_field,
+                }
+
+            counts.setdefault(semantic_field, set()).add(dashboard_chart.chart_id)
+
+    normalized_columns: list[dict] = []
+    for key, column in columns.items():
+        chart_coverage = len(counts.get(key, set()))
+        normalized_columns.append({
+            **column,
+            "chartCoverage": chart_coverage,
+            "datasetChartCount": total_dashboard_chart_count,
+            "sharedAcrossDataset": total_dashboard_chart_count > 0 and chart_coverage == total_dashboard_chart_count,
+        })
+
+    normalized_columns.sort(
+        key=lambda item: (
+            -(1 if item.get("sharedAcrossDataset") else 0),
+            -(item.get("chartCoverage") or 0),
+            str(item.get("label") or item.get("name") or ""),
+        )
+    )
+
+    return normalized_columns
+
+
+def _resolve_public_filter_field(
+    db: Session,
+    dash: Dashboard,
+    dataset_id: int,
+    field: str,
+) -> dict | None:
+    return next(
+        (
+            item for item in _build_public_filter_fields(db, dash)
+            if item.get("datasetId") == dataset_id and item.get("semanticField") == field
+        ),
+        None,
+    )
 
 
 def _create_public_session(link_token: str) -> str:
@@ -156,7 +293,48 @@ def get_public_dashboard(
         ChartService.hydrate_runtime_config(db, dashboard_chart.chart)
     # Expose the link-specific filters so the frontend can display filter badges
     dash.public_filters_config = public_filters
+    dash.available_filter_fields = _build_public_filter_fields(db, dash)
     return dash
+
+
+@router.get("/dashboards/{token}/filters/distinct-values")
+@_limiter.limit("30/minute")
+def get_public_filter_distinct_values(
+    token: str,
+    request: Request,
+    dataset_id: int = Query(..., ge=1),
+    field: str = Query(..., description="Qualified field name, e.g. orders.country"),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    dash, _ = _get_dashboard_by_token(
+        token,
+        db,
+        session_token=x_public_session,
+        track_access=False,
+    )
+
+    allowed_field = _resolve_public_filter_field(db, dash, dataset_id, field)
+    if not allowed_field:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Filter field is not available for this shared dashboard.",
+        )
+
+    try:
+        return {
+            "field": field,
+            "values": get_distinct_field_values(db, dataset_id, field, limit=limit),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error(f"Public distinct values error for token={token} dataset={dataset_id} field={field}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to load distinct values.",
+        )
 
 
 @router.get("/dashboards/{token}/charts/{chart_id}/data")

@@ -6,7 +6,7 @@ import { useShareDashboard, useUnshareDashboard } from '@/hooks/use-dashboards';
 import { useFilterDistinctValues } from '@/hooks/use-filter-distinct-values';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { toast } from 'sonner';
-import type { BaseFilter, ColumnInfo } from '@/lib/filters';
+import { getFilterDisplayLabel, type BaseFilter, type ColumnInfo } from '@/lib/filters';
 
 interface PublicShareDialogProps {
   dashboardId: number;
@@ -102,7 +102,7 @@ export function PublicShareDialog({
   };
 
   const formatFilterLabel = (f: BaseFilter): string => {
-    const field = f.label ?? f.field;
+    const field = getFilterDisplayLabel(f);
     const val = Array.isArray(f.value) ? f.value.join(' – ') : String(f.value ?? '');
     return `${field}: ${val}`;
   };
