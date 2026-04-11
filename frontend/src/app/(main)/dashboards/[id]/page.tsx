@@ -308,7 +308,8 @@ export default function DashboardDetailPage() {
       setIsAddChartModalOpen(false);
     } catch (error) {
       console.error('Failed to add chart:', error);
-      toast.error('Failed to add chart. Please try again.');
+      const detail = (error as any)?.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : 'Failed to add chart. Please try again.');
     }
   };
 
@@ -329,7 +330,7 @@ export default function DashboardDetailPage() {
     try {
       await removeChartMutation.mutateAsync({
         dashboardId,
-        chartId: dashboardChart.chart_id,
+        dashboardChartId: dashboardChart.id,
       });
       toast.success('Chart removed from dashboard');
     } catch (error) {
@@ -512,7 +513,8 @@ export default function DashboardDetailPage() {
       toast.success('Chart moved to another page');
     } catch (error) {
       console.error('Failed to move chart to page:', error);
-      toast.error('Failed to move chart. Please try again.');
+      const detail = (error as any)?.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : 'Failed to move chart. Please try again.');
     }
   };
 
@@ -738,7 +740,7 @@ export default function DashboardDetailPage() {
     );
   }
 
-  const existingChartIds = dashboard.dashboard_charts?.map((dc) => dc.chart_id) || [];
+  const existingChartIds = visibleDashboardCharts.map((dc) => dc.chart_id);
   const linkedAgentReport = agentReportSpecs.find((spec) => spec.latest_dashboard_id === dashboardId);
   const activeCrossFilter = crossFilterState?.filter ?? null;
   const isRenamingCurrentPage = editingPageId === currentPage?.id;
@@ -995,6 +997,7 @@ export default function DashboardDetailPage() {
           dashboardId={dashboardId}
           dashboardCharts={visibleDashboardCharts}
           canEdit={canEditResource}
+          allowAppearanceEdit={canEditResource}
           onLayoutChange={canEditResource ? handleLayoutChange : undefined}
           onRemoveChart={canEditResource ? handleRemoveChart : undefined}
           removingChartId={removingChartId}

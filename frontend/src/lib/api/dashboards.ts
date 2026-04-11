@@ -48,8 +48,8 @@ export const dashboardApi = {
     return response.data;
   },
 
-  removeChart: async (dashboardId: number, chartId: number): Promise<Dashboard> => {
-    const response = await apiClient.delete(`/dashboards/${dashboardId}/charts/${chartId}`);
+  removeChart: async (dashboardId: number, dashboardChartId: number): Promise<Dashboard> => {
+    const response = await apiClient.delete(`/dashboards/${dashboardId}/charts/${dashboardChartId}`);
     return response.data;
   },
 

@@ -615,6 +615,7 @@ export default function PublicDashboardPage() {
                       chartData={payload}
                       error={chartError}
                       title={title}
+                      layout={dashboardChart.layout}
                       onSelectCrossFilter={(filter) => handleCrossFilterChange(dashboardChart.chart_id, filter)}
                       isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
                     />

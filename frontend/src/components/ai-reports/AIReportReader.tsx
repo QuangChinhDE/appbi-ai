@@ -20,6 +20,7 @@ import {
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { useDashboard } from '@/hooks/use-dashboards';
 import { useAgentReportSpec, useDeleteAgentReportSpec } from '@/hooks/use-agent-report-specs';
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { AgentReportResultSummary, AgentReportRun } from '@/types/agent';
 
 function statusTone(status: string) {
@@ -50,6 +51,7 @@ export default function AIReportReaderPage() {
   const result = (latestSuccessfulRun?.result_summary_json ?? null) as AgentReportResultSummary | null;
   const dashboardId = spec?.latest_dashboard_id ?? null;
   const { data: dashboard, isLoading: isLoadingDashboard } = useDashboard(dashboardId ?? 0);
+  const canEditDashboardAppearance = getResourcePermissions(dashboard?.user_permission).canEdit;
 
   async function handleDeleteReport() {
     if (!spec) return;
@@ -346,7 +348,11 @@ export default function AIReportReaderPage() {
                 )}
               </div>
               {dashboardId && dashboard ? (
-                <DashboardGrid dashboardId={dashboardId} dashboardCharts={dashboard.dashboard_charts || []} />
+                <DashboardGrid
+                  dashboardId={dashboardId}
+                  dashboardCharts={dashboard.dashboard_charts || []}
+                  allowAppearanceEdit={canEditDashboardAppearance}
+                />
               ) : isLoadingDashboard ? (
                 <div className="flex items-center justify-center rounded-lg border border-gray-200 bg-gray-50 px-6 py-16">
                   <Loader2 className="h-5 w-5 animate-spin text-blue-600" />

@@ -331,6 +331,7 @@ export interface DashboardChartLayout {
   h: number;
   custom_title?: string;
   pageId?: string | null;
+  styleConfigOverride?: Record<string, any> | null;
 }
 
 export interface DashboardPageConfig {

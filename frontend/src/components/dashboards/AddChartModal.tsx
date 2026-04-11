@@ -131,7 +131,7 @@ export function AddChartModal({
             </select>
             {availableCharts?.length === 0 && (
               <p className="text-xs text-gray-500 mt-1">
-                All charts are already added to this dashboard.
+                All charts are already added to this page.
               </p>
             )}
           </div>

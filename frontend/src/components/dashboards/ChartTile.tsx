@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { X, Loader2, Pencil, Check, SlidersHorizontal } from 'lucide-react';
+import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
@@ -10,10 +10,10 @@ import {
   getRoleConfigDimensionFields,
   metricKey,
   metricLabel,
-  normalizeChartStyleConfig,
   normalizeRoleConfig,
 } from '@/components/explore/ExploreChartConfig';
 import { getActiveChartRoleConfig } from '@/lib/chart-config';
+import { getEffectiveDashboardChartStyleConfig } from '@/lib/dashboard-chart-style';
 import {
   DashboardFilter,
   applyFiltersToRows,
@@ -27,6 +27,7 @@ import type { BaseFilter, FilterOperator } from '@/lib/filters';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ChartSemanticBinding, DashboardPageConfig } from '@/types/api';
+import { ChartDetailModal } from './ChartDetailModal';
 
 interface ChartTileProps {
   chartId: number;
@@ -34,6 +35,7 @@ interface ChartTileProps {
   dashboardId: number;
   currentLayout: Record<string, any>;
   canEdit?: boolean;
+  allowAppearanceEdit?: boolean;
   onRemove?: (dashboardChartId: number) => void;
   isRemoving?: boolean;
   dashboardFilters?: DashboardFilter[];
@@ -89,6 +91,7 @@ export function ChartTile({
   dashboardId,
   currentLayout,
   canEdit = false,
+  allowAppearanceEdit = false,
   onRemove,
   isRemoving,
   dashboardFilters = [],
@@ -252,6 +255,8 @@ export function ChartTile({
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleInput, setTitleInput] = useState('');
   const [isSavingTitle, setIsSavingTitle] = useState(false);
+  const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+  const [detailModalInitialTab, setDetailModalInitialTab] = useState<'appearance' | 'data'>('data');
   const titleInputRef = useRef<HTMLInputElement>(null);
 
   // Per-tile HAVING filter state (post-aggregation) — persisted in dashboard layout
@@ -280,6 +285,10 @@ export function ChartTile({
 
   const customTitle: string | undefined = currentLayout?.custom_title;
   const displayTitle = customTitle ?? chart?.name ?? '';
+  const effectiveStyleConfig = useMemo(
+    () => getEffectiveDashboardChartStyleConfig(chart, currentLayout),
+    [chart, currentLayout],
+  );
 
   // Focus input when entering edit mode
   useEffect(() => {
@@ -314,6 +323,11 @@ export function ChartTile({
     }
   };
 
+  const openDetailModal = (tab: 'appearance' | 'data') => {
+    setDetailModalInitialTab(tab);
+    setIsDetailModalOpen(true);
+  };
+
   const handleTitleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') saveTitle();
     if (e.key === 'Escape') setIsEditingTitle(false);
@@ -330,9 +344,9 @@ export function ChartTile({
       chartType,
       roleConfig: rc,
       filters: config.baseFilters ?? config.filters ?? [],
-      styleConfig: normalizeChartStyleConfig(config.styleConfig, config.conditional_formatting),
+      styleConfig: effectiveStyleConfig,
     };
-  }, [chart?.config, chart?.chart_type]);
+  }, [chart?.config, chart?.chart_type, effectiveStyleConfig]);
 
   // Notify parent when data is loaded â€” only expose true dimension fields to the global filter bar
   React.useEffect(() => {
@@ -522,6 +536,24 @@ export function ChartTile({
         ) : (
           <>
             <h3 className="text-sm font-semibold truncate flex-1">{displayTitle}</h3>
+            <button
+              onMouseDown={e => e.stopPropagation()}
+              onClick={() => openDetailModal('data')}
+              className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-gray-400 hover:text-blue-600"
+              title="View chart details"
+            >
+              <Eye className="h-3.5 w-3.5" />
+            </button>
+            {allowAppearanceEdit && (
+              <button
+                onMouseDown={e => e.stopPropagation()}
+                onClick={() => openDetailModal('appearance')}
+                className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-gray-400 hover:text-blue-600"
+                title="Edit chart appearance"
+              >
+                <Palette className="h-3.5 w-3.5" />
+              </button>
+            )}
             {canEdit && availablePages.length > 1 && onMoveToPage && (
               <select
                 value={currentPageId ?? ''}
@@ -677,20 +709,27 @@ export function ChartTile({
             chartType={chart.chart_type}
             data={filteredData}
             config={legacyChartConfig}
-            styleConfig={normalizeChartStyleConfig(
-              (chart?.config as any)?.styleConfig,
-              (chart?.config as any)?.conditional_formatting,
-            )}
+            styleConfig={effectiveStyleConfig}
             onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
               ? handleCrossFilterSelection
               : undefined}
           />
         )}
       </div>
+
+      <ChartDetailModal
+        chartId={chartId}
+        isOpen={isDetailModalOpen}
+        onClose={() => setIsDetailModalOpen(false)}
+        title={displayTitle}
+        instanceParameters={instanceParameters}
+        dashboardId={dashboardId}
+        dashboardChartId={dashboardChartId}
+        currentLayout={currentLayout}
+        allowAppearanceEdit={allowAppearanceEdit}
+        initialTab={detailModalInitialTab}
+      />
     </div>
   );
 }
-
-
-
 

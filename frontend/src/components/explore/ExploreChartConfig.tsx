@@ -314,6 +314,145 @@ export function normalizeRoleConfig(chartType: string, roleConfig: ChartRoleConf
   };
 }
 
+const BREAKDOWN_MULTI_METRIC_UNSUPPORTED_TYPES = new Set<ExploreChartType>([
+  'BAR',
+  'HORIZONTAL_BAR',
+  'GROUPED_BAR',
+  'LINE',
+  'AREA',
+  'TIME_SERIES',
+]);
+
+const SINGLE_METRIC_TYPES = new Set<ExploreChartType>([
+  'STACKED_BAR',
+  'PIE',
+  'KPI',
+]);
+
+export function getChartRoleConfigValidationMessage(
+  chartType: string,
+  roleConfig: ChartRoleConfig | null | undefined,
+): string | null {
+  const normalized = normalizeRoleConfig(chartType, roleConfig);
+  const typedChart = chartType as ExploreChartType;
+
+  if (SINGLE_METRIC_TYPES.has(typedChart) && normalized.metrics.length > 1) {
+    return 'This chart type supports only one value column. Remove extra metrics to continue.';
+  }
+
+  if (
+    BREAKDOWN_MULTI_METRIC_UNSUPPORTED_TYPES.has(typedChart)
+    && normalized.breakdown
+    && normalized.metrics.length > 1
+  ) {
+    return 'This chart cannot combine multiple value columns with Breakdown. Keep one metric or clear Breakdown.';
+  }
+
+  return null;
+}
+
+export function getChartRoleConfigRequirementMessage(
+  chartType: string,
+  roleConfig: ChartRoleConfig | null | undefined,
+): string | null {
+  const validationMessage = getChartRoleConfigValidationMessage(chartType, roleConfig);
+  if (validationMessage) {
+    return validationMessage;
+  }
+
+  const normalized = normalizeRoleConfig(chartType, roleConfig);
+
+  if (chartType === 'TABLE') {
+    if (normalized.tableMode !== 'pivot') {
+      return null;
+    }
+    if (!normalized.tableRowDimension) {
+      return 'Choose a row dimension for the pivot table.';
+    }
+    if (!normalized.tableColumnDimension) {
+      return 'Choose a column dimension for the pivot table.';
+    }
+    if (!normalized.tablePivotMetric) {
+      return 'Choose a value measure for the pivot table.';
+    }
+    return null;
+  }
+
+  if (chartType === 'SCATTER') {
+    if (!normalized.scatterX) {
+      return 'Choose an X axis column for the scatter chart.';
+    }
+    if (!normalized.scatterY) {
+      return 'Choose a Y axis column for the scatter chart.';
+    }
+    return null;
+  }
+
+  if (chartType === 'KPI') {
+    return normalized.metrics.length > 0
+      ? null
+      : 'Choose a value column for the KPI card.';
+  }
+
+  if (chartType === 'PIE') {
+    if (!normalized.dimension) {
+      return 'Choose a legend column for the pie chart.';
+    }
+    if (normalized.metrics.length === 0) {
+      return 'Choose a value column for the pie chart.';
+    }
+    return null;
+  }
+
+  if (chartType === 'STACKED_BAR') {
+    if (!normalized.dimension) {
+      return 'Choose an X axis column for the stacked bar chart.';
+    }
+    if (normalized.metrics.length === 0) {
+      return 'Choose a value column for the stacked bar chart.';
+    }
+    if (!normalized.breakdown) {
+      return 'Choose a Stack by column for the stacked bar chart.';
+    }
+    return null;
+  }
+
+  if (chartType === 'BAR_LINE') {
+    if (!normalized.dimension) {
+      return 'Choose an X axis column for the bar + line chart.';
+    }
+    if (normalized.metrics.length === 0) {
+      return 'Choose at least one bar value column for the bar + line chart.';
+    }
+    if (!normalized.lineMetric) {
+      return 'Choose a line value column for the bar + line chart.';
+    }
+    return null;
+  }
+
+  if (chartType === 'TIME_SERIES') {
+    if (!normalized.timeField && !normalized.dimension) {
+      return 'Choose a time field for the time series chart.';
+    }
+    if (normalized.metrics.length === 0) {
+      return 'Choose at least one value column for the time series chart.';
+    }
+    return null;
+  }
+
+  if (!normalized.dimension) {
+    return chartType === 'HORIZONTAL_BAR'
+      ? 'Choose a Y axis column for this chart.'
+      : 'Choose an X axis column for this chart.';
+  }
+
+  if (normalized.metrics.length === 0) {
+    return 'Choose at least one value column for this chart.';
+  }
+
+  return null;
+}
+
 export function getRoleConfigDimensionFields(chartType: string, roleConfig: ChartRoleConfig | null | undefined): string[] {
   const normalized = normalizeRoleConfig(chartType, roleConfig);
   const fields = [normalized.dimension, normalized.timeField];
@@ -798,7 +937,9 @@ interface ExploreChartConfigProps {
   sortLimitColumns?: Col[];
   tableDisplayColumns?: Col[];
   queryMode?: 'generated' | 'custom';
+  validationMessage?: string | null;
   readOnly?: boolean;
+  mode?: 'full' | 'styleOnly';
   onChartTypeChange: (t: ExploreChartType) => void;
   onRoleConfigChange: (c: ChartRoleConfig) => void;
   onStyleConfigChange: (c: ChartStyleConfig) => void;
@@ -812,11 +953,14 @@ export function ExploreChartConfig({
   sortLimitColumns = [],
   tableDisplayColumns = [],
   queryMode = 'generated',
+  validationMessage = null,
   readOnly,
+  mode = 'full',
   onChartTypeChange,
   onRoleConfigChange,
   onStyleConfigChange,
 }: ExploreChartConfigProps) {
+  const isStyleOnly = mode === 'styleOnly';
   const upd = useCallback(
     (patch: Partial<ChartRoleConfig>) => onRoleConfigChange({ ...roleConfig, ...patch }),
     [roleConfig, onRoleConfigChange]
@@ -894,6 +1038,10 @@ export function ExploreChartConfig({
   const hasAdvancedControls = showQuickView && (hasAxis || supportsBenchmarkLine || isBarType || isLineType || chartType === 'PIE' || chartType === 'SCATTER' || chartType === 'TIME_SERIES' || supportsDataSection);
   const chartSortRules = normalizedStyleConfig.chartSortRules ?? [];
   const sortLimitCols = sortLimitColumns;
+  const quickViewStep = isStyleOnly ? 'Step 1' : 'Step 3';
+  const advancedStep = isStyleOnly ? 'Step 2' : 'Step 4';
+  const tableSectionStep = isStyleOnly ? 'Step 1' : 'Step 2';
+  const kpiSetupStep = isStyleOnly ? 'Step 1' : 'Step 3';
 
   useEffect(() => {
     if (chartSortRules.length === 0 || sortLimitCols.length === 0) {
@@ -1053,39 +1201,48 @@ export function ExploreChartConfig({
 
   return (
     <div className={`space-y-4 p-4${readOnly ? ' pointer-events-none opacity-60' : ''}`}>
+      {validationMessage && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+          {validationMessage}
+        </div>
+      )}
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Chart Type ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ visual grid ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
-      <SectionPanel
-        step="Step 1"
-        title="Chart Type"
-        description="Start with the visual form. The required field roles below will adapt to the chart you choose."
-      >
-        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Chart Type</p>
-        <div className="grid grid-cols-4 gap-1">
-          {CHART_TYPE_GRID.map(({ value, label, icon }) => (
-            <button key={value} onClick={() => onChartTypeChange(value)}
-              className={`flex flex-col items-center gap-0.5 px-1 py-1.5 rounded-md text-[10px] leading-tight transition-colors border
-                ${chartType === value
-                  ? 'border-blue-400 bg-blue-50 text-blue-700 font-semibold'
-                  : 'border-transparent hover:bg-gray-50 text-gray-600'
-                }`}
-              title={label}
-            >
-              <span className="text-sm">{icon}</span>
-              <span className="truncate w-full text-center">{label}</span>
-            </button>
-          ))}
-        </div>
-      </SectionPanel>
+      {!isStyleOnly && (
+        <SectionPanel
+          step="Step 1"
+          title="Chart Type"
+          description="Start with the visual form. The required field roles below will adapt to the chart you choose."
+        >
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Chart Type</p>
+          <div className="grid grid-cols-4 gap-1">
+            {CHART_TYPE_GRID.map(({ value, label, icon }) => (
+              <button key={value} onClick={() => onChartTypeChange(value)}
+                className={`flex flex-col items-center gap-0.5 px-1 py-1.5 rounded-md text-[10px] leading-tight transition-colors border
+                  ${chartType === value
+                    ? 'border-blue-400 bg-blue-50 text-blue-700 font-semibold'
+                    : 'border-transparent hover:bg-gray-50 text-gray-600'
+                  }`}
+                title={label}
+              >
+                <span className="text-sm">{icon}</span>
+                <span className="truncate w-full text-center">{label}</span>
+              </button>
+            ))}
+          </div>
+        </SectionPanel>
+      )}
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ TABLE: column picker ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {chartType === 'TABLE' && (
         <SectionPanel
-          step="Step 2"
-          title="Table Structure"
-          description="Choose the visible columns first, then enable only the table behaviors you actually need."
+          step={tableSectionStep}
+          title={isStyleOnly ? 'Table Appearance' : 'Table Structure'}
+          description={isStyleOnly
+            ? 'Adjust formatting and display behaviors for this table without changing its source fields.'
+            : 'Choose the visible columns first, then enable only the table behaviors you actually need.'}
         >
-      {availableColumns.length > 0 && (
+      {!isStyleOnly && availableColumns.length > 0 && (
         <>
         <Disclosure
           title={tableBindingTitle}
@@ -1544,7 +1701,7 @@ export function ExploreChartConfig({
         </SectionPanel>
       )}
 
-      {chartType === 'KPI' && (
+      {!isStyleOnly && chartType === 'KPI' && (
         <SectionPanel
           step="Step 2"
           title="Data Binding"
@@ -1564,7 +1721,7 @@ export function ExploreChartConfig({
 
       {chartType === 'KPI' && (
         <SectionPanel
-          step="Step 3"
+          step={kpiSetupStep}
           title="Card Setup"
           description="Shape the KPI card after choosing its value and optional benchmark metric."
         >
@@ -1792,7 +1949,7 @@ export function ExploreChartConfig({
         </SectionPanel>
       )}
 
-      {chartType !== 'TABLE' && chartType !== 'KPI' && (
+      {!isStyleOnly && chartType !== 'TABLE' && chartType !== 'KPI' && (
         <SectionPanel
           step="Step 2"
           title="Data Binding"
@@ -1894,7 +2051,7 @@ export function ExploreChartConfig({
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Appearance: General ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
       {showQuickView && (
         <SectionPanel
-          step="Step 3"
+          step={quickViewStep}
           title="Quick View"
           description="Keep the most-used presentation controls together, then open Advanced only if the preview still needs extra tuning."
         >
@@ -2000,7 +2157,7 @@ export function ExploreChartConfig({
       )}
       {hasAdvancedControls && (
         <SectionPanel
-          step="Step 4"
+          step={advancedStep}
           title="Advanced"
           description="Open these only when you need extra control over scale, reference lines, or chart-specific shape details."
         >

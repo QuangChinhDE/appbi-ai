@@ -15,6 +15,7 @@ export interface DatasetTableGridProps {
   isLoading?: boolean;
   error?: string | null;
   onRetry?: () => void;
+  readOnly?: boolean;
   onAddColumn?: () => void;
   /** User-defined type overrides loaded from DB: { colName: 'float' | 'date' | ... } */
   typeOverrides?: Record<string, string>;
@@ -579,6 +580,7 @@ export function DatasetTableGrid({
   isLoading = false,
   error = null,
   onRetry,
+  readOnly = false,
   onAddColumn,
   typeOverrides,
   computedColumns,
@@ -790,7 +792,7 @@ export function DatasetTableGrid({
                       </div>
 
                       {/* Format button — gear icon, visible on hover or when active/customised */}
-                      <button
+                      {!readOnly && <button
                         onClick={(e) => {
                           e.stopPropagation();
                           setActiveFormatCol(isActive ? null : column.name);
@@ -805,11 +807,11 @@ export function DatasetTableGrid({
                         title="Định dạng cột"
                       >
                         <Settings2 className="w-3.5 h-3.5" />
-                      </button>
+                      </button>}
                     </div>
 
                     {/* Format popover */}
-                    {isActive && (
+                    {!readOnly && isActive && (
                       <FormatPanel
                         column={column}
                         format={getFormat(column.name)}
@@ -832,7 +834,7 @@ export function DatasetTableGrid({
               })}
 
               {/* Add column button */}
-              {onAddColumn && (
+              {!readOnly && onAddColumn && (
                 <th className="w-16 px-4 py-3 bg-gray-50 border-l">
                   <button
                     onClick={onAddColumn}
@@ -868,7 +870,7 @@ export function DatasetTableGrid({
                     </td>
                   );
                 })}
-                {onAddColumn && <td className="w-16 px-4 py-3 border-l" />}
+                {!readOnly && onAddColumn && <td className="w-16 px-4 py-3 border-l" />}
               </tr>
             ))}
           </tbody>

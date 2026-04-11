@@ -4,8 +4,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Loader2, SlidersHorizontal, X } from 'lucide-react';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
-import { metricKey, metricLabel, normalizeChartStyleConfig } from '@/components/explore/ExploreChartConfig';
+import { metricKey, metricLabel } from '@/components/explore/ExploreChartConfig';
 import { getActiveChartRoleConfig } from '@/lib/chart-config';
+import { getEffectiveDashboardChartStyleConfig } from '@/lib/dashboard-chart-style';
 import {
   getFriendlyFieldLabel,
   inferColumnTypeFromData,
@@ -13,13 +14,14 @@ import {
   type BaseFilter,
   type FilterOperator,
 } from '@/lib/filters';
-import type { Chart, ChartDataResponse, ChartSemanticBinding } from '@/types/api';
+import type { Chart, ChartDataResponse, ChartSemanticBinding, DashboardChartLayout } from '@/types/api';
 
 interface ReadonlyChartTileProps {
   chart: Chart | null | undefined;
   chartData?: ChartDataResponse | null;
   error?: string | null;
   title?: string;
+  layout?: DashboardChartLayout | Record<string, any> | null;
   compact?: boolean;
   onSelectCrossFilter?: (filter: BaseFilter | null) => void;
   isCrossFilterSource?: boolean;
@@ -30,6 +32,7 @@ export function ReadonlyChartTile({
   chartData,
   error = null,
   title,
+  layout = null,
   compact = false,
   onSelectCrossFilter,
   isCrossFilterSource = false,
@@ -49,6 +52,10 @@ export function ReadonlyChartTile({
   )
     ? ((chart.config as Record<string, unknown>).semanticBinding as ChartSemanticBinding)
     : null;
+  const effectiveStyleConfig = useMemo(
+    () => getEffectiveDashboardChartStyleConfig(chart, layout),
+    [chart, layout],
+  );
 
   const handleCrossFilterSelection = (selection: { field: string; value: unknown } | null) => {
     if (!onSelectCrossFilter) return;
@@ -259,10 +266,7 @@ export function ReadonlyChartTile({
               type={chart.chart_type}
               data={chartData.data}
               roleConfig={roleConfig}
-              styleConfig={normalizeChartStyleConfig(
-                (chart.config as any)?.styleConfig,
-                (chart.config as any)?.conditional_formatting,
-              )}
+              styleConfig={effectiveStyleConfig}
               havingFilters={havingFilters}
               preAggregated={chartData.pre_aggregated ?? false}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
@@ -274,10 +278,7 @@ export function ReadonlyChartTile({
               chartType={chart.chart_type}
               data={chartData.data}
               config={(chart.config as any) ?? {}}
-              styleConfig={normalizeChartStyleConfig(
-                (chart.config as any)?.styleConfig,
-                (chart.config as any)?.conditional_formatting,
-              )}
+              styleConfig={effectiveStyleConfig}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
                 ? handleCrossFilterSelection
                 : undefined}

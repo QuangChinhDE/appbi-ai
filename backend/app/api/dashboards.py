@@ -169,20 +169,20 @@ def add_chart_to_dashboard(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
-@router.delete("/{dashboard_id}/charts/{chart_id}", response_model=DashboardResponse)
+@router.delete("/{dashboard_id}/charts/{dashboard_chart_id}", response_model=DashboardResponse)
 def remove_chart_from_dashboard(
     dashboard_id: int,
-    chart_id: int,
+    dashboard_chart_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Remove a chart from a dashboard."""
+    """Remove a chart instance from a dashboard."""
     dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
     try:
-        dashboard = DashboardService.remove_chart(db, dashboard_id, chart_id)
+        dashboard = DashboardService.remove_chart(db, dashboard_id, dashboard_chart_id)
         return dashboard
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -200,12 +200,15 @@ def update_dashboard_layout(
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
     require_edit_access(db, current_user, dash, "dashboards")
-    dashboard = DashboardService.update_layout(
-        db,
-        dashboard_id,
-        request.chart_layouts
-    )
-    return dashboard
+    try:
+        dashboard = DashboardService.update_layout(
+            db,
+            dashboard_id,
+            request.chart_layouts
+        )
+        return dashboard
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 # ============ Public Link Sharing ============
