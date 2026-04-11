@@ -80,6 +80,7 @@ interface ChartPreviewProps {
   };
   styleConfig?: ChartStyleConfig;
   onSelectDataPoint?: (selection: { field: string; value: unknown } | null) => void;
+  onStyleConfigChange?: (nextStyleConfig: ChartStyleConfig) => void;
 }
 
 const DEFAULT_COLORS = [
@@ -202,7 +203,14 @@ function applyTimeGranularity(
     });
 }
 
-export function ChartPreview({ chartType, data, config, styleConfig, onSelectDataPoint }: ChartPreviewProps) {
+export function ChartPreview({
+  chartType,
+  data,
+  config,
+  styleConfig,
+  onSelectDataPoint,
+  onStyleConfigChange,
+}: ChartPreviewProps) {
   const style = useMemo(
     () => normalizeChartStyleConfig(styleConfig, config.conditional_formatting),
     [config.conditional_formatting, styleConfig],
@@ -328,6 +336,12 @@ export function ChartPreview({ chartType, data, config, styleConfig, onSelectDat
     const payload = event?.payload ?? event?.activePayload?.[0]?.payload;
     const labelField = config.labelField ?? config.color_by_dimension;
     emitSelection(labelField, labelField ? payload?.[labelField] : undefined);
+  };
+  const handleTableColumnWidthsChange = (nextWidths: Record<string, number>) => {
+    onStyleConfigChange?.({
+      ...style,
+      tableColumnWidths: Object.keys(nextWidths).length > 0 ? nextWidths : undefined,
+    });
   };
 
   if (!data || data.length === 0) {
@@ -731,6 +745,9 @@ export function ChartPreview({ chartType, data, config, styleConfig, onSelectDat
             showSummaryRow={style.tableShowSummaryRow}
             summaryLabel={style.tableSummaryLabel}
             summaryLabelColumn={style.tableSummaryLabelColumn}
+            columnWidths={style.tableColumnWidths}
+            onColumnWidthsChange={onStyleConfigChange ? handleTableColumnWidthsChange : undefined}
+            columnAlignments={style.tableColumnAlignments}
           />
         </div>
       </div>

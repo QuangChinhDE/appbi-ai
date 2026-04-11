@@ -38,6 +38,24 @@ export interface MessageFeedback {
   comment?: string | null;
 }
 
+export interface ActiveResourceContext {
+  type: 'dataset' | 'table' | 'chart' | 'dashboard';
+  id: number | string;
+  name?: string;
+  dataset_id?: number;
+  dataset_name?: string;
+  table_id?: number;
+  chart_type?: string;
+  chart_count?: number;
+}
+
+export interface ChatSessionContext {
+  dataset_id?: number;
+  dataset_name?: string;
+  active_resource?: ActiveResourceContext | null;
+  [key: string]: any;
+}
+
 export interface ChatMessageData {
   id: string;
   role: 'user' | 'assistant';

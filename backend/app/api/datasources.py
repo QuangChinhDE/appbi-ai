@@ -50,6 +50,41 @@ def _build_query_error_detail(exc: Exception) -> dict:
     }
 
 
+def _validate_datasource_connection_or_raise(ds_type: str, config: dict[str, Any]) -> None:
+    """Validate datasource connectivity before persisting non-manual configs."""
+    if ds_type == "manual":
+        return
+
+    success, message = DataSourceConnectionService.test_connection(ds_type, config)
+    if success:
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=message or "Connection failed",
+    )
+
+
+def _restore_sensitive_config_fields(
+    config: dict[str, Any],
+    existing_config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Rehydrate masked/blank secret fields from a stored datasource config.
+
+    This keeps validation and updates working when the frontend intentionally
+    leaves sensitive inputs blank to mean "keep the stored value".
+    """
+    from app.core.crypto import MASKED_PLACEHOLDER, _SENSITIVE_FIELDS
+
+    restored = dict(config or {})
+    stored = dict(existing_config or {})
+    for field in _SENSITIVE_FIELDS:
+        if restored.get(field, None) in ("", None, MASKED_PLACEHOLDER) and stored.get(field):
+            restored[field] = stored[field]
+    return restored
+
+
 def _normalize_google_oauth_config(
     config: dict[str, Any],
     *,
@@ -265,6 +300,7 @@ def get_data_source(
             detail=f"Data source with ID {data_source_id} not found"
         )
     data_source.user_permission = require_view_access(db, current_user, data_source, "data_sources")
+    stamp_owner_emails(db, [data_source])
     return data_source
 
 
@@ -280,7 +316,11 @@ def create_data_source(
             data_source.config,
             current_user=current_user,
         )
-        return DataSourceCRUDService.create(db, data_source, owner_id=current_user.id)
+        _validate_datasource_connection_or_raise(data_source.type.value, data_source.config)
+        created = DataSourceCRUDService.create(db, data_source, owner_id=current_user.id)
+        created.user_permission = get_effective_permission(db, current_user, created, "data_sources")
+        stamp_owner_emails(db, [created])
+        return created
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -298,13 +338,22 @@ def update_data_source(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Data source with ID {data_source_id} not found")
     require_edit_access(db, current_user, ds, "data_sources")
     try:
+        next_type = data_source_update.type.value if data_source_update.type is not None else ds.type.value
         if data_source_update.config is not None:
-            data_source_update.config = _normalize_google_oauth_config(
+            restored_config = _restore_sensitive_config_fields(
                 data_source_update.config,
+                ds.config,
+            )
+            data_source_update.config = _normalize_google_oauth_config(
+                restored_config,
                 current_user=current_user,
                 existing_config=ds.config,
             )
+            _validate_datasource_connection_or_raise(next_type, data_source_update.config)
         data_source = DataSourceCRUDService.update(db, data_source_id, data_source_update)
+        if data_source is not None:
+            data_source.user_permission = get_effective_permission(db, current_user, data_source, "data_sources")
+            stamp_owner_emails(db, [data_source])
         return data_source
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -369,14 +418,9 @@ def test_data_source_connection(
     # by the frontend (sanitizeConfigForForm strips the '__stored__' sentinel).
     # Re-fill them from the DB so the real (encrypted) credentials are used.
     if request.data_source_id is not None:
-        from app.core.crypto import _SENSITIVE_FIELDS, MASKED_PLACEHOLDER
         db_ds = DataSourceCRUDService.get_by_id(db, request.data_source_id)
         if db_ds and db_ds.config:
-            stored = dict(db_ds.config)
-            for field in _SENSITIVE_FIELDS:
-                if config.get(field, None) in ('', None, MASKED_PLACEHOLDER):
-                    if stored.get(field):
-                        config[field] = stored[field]  # keep encrypted value from DB
+            config = _restore_sensitive_config_fields(config, db_ds.config)
 
     config = _normalize_google_oauth_config(
         config,

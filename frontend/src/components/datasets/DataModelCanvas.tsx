@@ -152,19 +152,24 @@ function DimIcon({ type }: { type: string }) {
 interface ViewCardProps {
   view: DatasetModelView;
   onEdit?: () => void;
-  highlightedCols?: Set<string>;
+  relationshipCols?: Set<string>;
+  calendarCols?: Set<string>;
 }
 
-function ViewCard({ view, onEdit, highlightedCols }: ViewCardProps) {
+function ViewCard({ view, onEdit, relationshipCols, calendarCols }: ViewCardProps) {
   const [dimsOpen, setDimsOpen] = useState(true);
   const [msrOpen,  setMsrOpen]  = useState(false);
+  const emphasizedCols = useMemo(
+    () => new Set([...(relationshipCols ?? []), ...(calendarCols ?? [])]),
+    [relationshipCols, calendarCols],
+  );
 
   // Join columns always appear FIRST so they're visible at scroll=0
   // (avoids measuring a clipped/off-screen element when the list is long)
-  const joinDims  = view.dimensions.filter((d) =>  highlightedCols?.has(d.name));
-  const otherVis  = view.dimensions.filter((d) => !highlightedCols?.has(d.name) && !d.hidden);
+  const joinDims  = view.dimensions.filter((d) => emphasizedCols.has(d.name));
+  const otherVis  = view.dimensions.filter((d) => !emphasizedCols.has(d.name) && !d.hidden);
   const vis       = [...joinDims, ...otherVis];
-  const hid       = view.dimensions.filter((d) =>  d.hidden && !highlightedCols?.has(d.name));
+  const hid       = view.dimensions.filter((d) =>  d.hidden && !emphasizedCols.has(d.name));
   const visM = view.measures.filter((m) => !m.hidden);
 
   return (
@@ -204,27 +209,42 @@ function ViewCard({ view, onEdit, highlightedCols }: ViewCardProps) {
         {dimsOpen && (
           <div className="px-1.5 pb-1.5 space-y-0.5 max-h-48 overflow-y-auto">
             {vis.map((d) => {
-              const isJoin = highlightedCols?.has(d.name);
+              const isRelationship = relationshipCols?.has(d.name) ?? false;
+              const isCalendarJoin = calendarCols?.has(d.name) ?? false;
               return (
                 <div
                   key={d.name}
                   data-col-name={d.name}
                   className={`flex items-center gap-1.5 px-2 py-1 rounded text-[11px]${
-                    isJoin
+                    isRelationship
                       ? ' bg-indigo-50 border-l-2 border-indigo-400 pl-1.5 font-medium'
+                      : isCalendarJoin
+                        ? ' bg-emerald-50 border-l-2 border-emerald-400 pl-1.5'
                       : ' hover:bg-gray-50'
                   }`}
                   title={d.sql || d.name}
                 >
                   <DimIcon type={d.type} />
-                  <span className={`truncate ${isJoin ? 'text-indigo-700' : 'text-gray-700'}`}>
+                  <span className={`truncate ${
+                    isRelationship
+                      ? 'text-indigo-700'
+                      : isCalendarJoin
+                        ? 'text-emerald-700'
+                        : 'text-gray-700'
+                  }`}>
                     {d.label || d.name}
                   </span>
-                  {d.hidden && !isJoin && (
+                  {d.hidden && !isRelationship && !isCalendarJoin && (
                     <span className="ml-auto text-[9px] uppercase tracking-wide text-amber-600">hidden</span>
                   )}
-                  {isJoin && (
+                  {isRelationship && (
                     <Link2 className="w-2.5 h-2.5 text-indigo-400 ml-auto shrink-0" />
+                  )}
+                  {!isRelationship && isCalendarJoin && (
+                    <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-700">
+                      <Calendar className="h-2.5 w-2.5" />
+                      Date
+                    </span>
                   )}
                 </div>
               );
@@ -432,6 +452,162 @@ interface DataModelCanvasProps {
   onEditView?: (view: DatasetModelView) => void;
 }
 
+interface ModelRelationship {
+  fromViewId: number;
+  fromViewName: string;
+  toViewName: string;
+  presentationViewName: string;
+  joinType: string;
+  relationship?: string;
+  fromCol?: string;
+  toCol?: string;
+  origin?: string;
+  managed: boolean;
+  key: string;
+}
+
+interface CalendarLayerBannerProps {
+  calendarView: DatasetModelView | null;
+  bindings: ModelRelationship[];
+  viewsByName: Record<string, DatasetModelView>;
+  showCalendarLayer: boolean;
+  onToggleCalendarLayer: () => void;
+}
+
+function CalendarLayerBanner({
+  calendarView,
+  bindings,
+  viewsByName,
+  showCalendarLayer,
+  onToggleCalendarLayer,
+}: CalendarLayerBannerProps) {
+  const [expanded, setExpanded] = useState(false);
+  const groupedBindings = useMemo(() => {
+    const grouped = new Map<string, { id: number; label: string; fields: string[] }>();
+
+    bindings.forEach((binding) => {
+      if (!binding.fromCol) return;
+      const view = viewsByName[binding.fromViewName];
+      const key = String(view?.id ?? binding.fromViewName);
+      const current = grouped.get(key) ?? {
+        id: view?.id ?? -1,
+        label: getViewLabel(view) || binding.fromViewName,
+        fields: [],
+      };
+      current.fields.push(binding.fromCol);
+      grouped.set(key, current);
+    });
+
+    return Array.from(grouped.values())
+      .map((group) => ({
+        ...group,
+        fields: Array.from(new Set(group.fields)).sort((a, b) => a.localeCompare(b)),
+      }))
+      .sort((a, b) => {
+        if (b.fields.length !== a.fields.length) return b.fields.length - a.fields.length;
+        return a.label.localeCompare(b.label);
+      });
+  }, [bindings, viewsByName]);
+
+  const previewChips = useMemo(() => {
+    const chips: string[] = [];
+    groupedBindings.forEach((group) => {
+      group.fields.forEach((field) => {
+        chips.push(`${group.label}.${field}`);
+      });
+    });
+    return chips.slice(0, 6);
+  }, [groupedBindings]);
+
+  if (!calendarView) return null;
+
+  const tableCount = groupedBindings.length;
+  const bindingCount = bindings.length;
+
+  return (
+    <div className="border-b border-emerald-100 bg-gradient-to-r from-emerald-50 via-white to-teal-50 px-4 py-3">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 rounded-lg bg-emerald-100 p-2 text-emerald-700">
+              <Calendar className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-emerald-950">
+                {getViewLabel(calendarView)} layer {showCalendarLayer ? 'is visible on the canvas' : 'is hidden from the canvas'}
+              </div>
+              <p className="mt-0.5 text-xs leading-5 text-emerald-900/90">
+                {bindingCount > 0
+                  ? `${bindingCount} temporal column${bindingCount !== 1 ? 's are' : ' is'} auto-linked across ${tableCount} table${tableCount !== 1 ? 's' : ''}. The semantic joins still work behind the scenes; the canvas stays cleaner by default.`
+                  : 'The standard date dimension is ready and can be shown on the canvas when you need to inspect it.'}
+              </p>
+              {previewChips.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {previewChips.map((chip) => (
+                    <span
+                      key={chip}
+                      className="rounded-full border border-emerald-200 bg-white/80 px-2 py-0.5 text-[11px] font-medium text-emerald-800"
+                    >
+                      {chip}
+                    </span>
+                  ))}
+                  {bindingCount > previewChips.length && (
+                    <span className="rounded-full border border-emerald-200 bg-white/80 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                      +{bindingCount - previewChips.length} more
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-2">
+          {groupedBindings.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setExpanded((value) => !value)}
+              className="rounded-md border border-emerald-200 bg-white px-3 py-1.5 text-xs font-medium text-emerald-800 transition-colors hover:bg-emerald-50"
+            >
+              {expanded ? 'Hide mappings' : 'View mappings'}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onToggleCalendarLayer}
+            className="rounded-md border border-emerald-300 bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-700"
+          >
+            {showCalendarLayer ? 'Hide date layer' : 'Show date layer'}
+          </button>
+        </div>
+      </div>
+
+      {expanded && groupedBindings.length > 0 && (
+        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {groupedBindings.map((group) => (
+            <div
+              key={`${group.id}-${group.label}`}
+              className="rounded-lg border border-emerald-200/80 bg-white/90 px-3 py-2"
+            >
+              <div className="text-xs font-semibold text-gray-800">{group.label}</div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {group.fields.map((field) => (
+                  <span
+                    key={`${group.label}-${field}`}
+                    className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-800"
+                  >
+                    {field}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function DataModelCanvas({
   datasetId,
   canEdit = true,
@@ -441,20 +617,32 @@ export function DataModelCanvas({
   const generateModel = useGenerateModel();
   const addJoin       = useAddJoin();
   const removeJoin    = useRemoveJoin();
-  const visibleViews = useMemo(
-    () => (model?.views ?? []).filter((view) => !view.hidden_in_canvas),
+  const [showCalendarLayer, setShowCalendarLayer] = useState(false);
+  const calendarPresentationView = useMemo(
+    () => (model?.views ?? []).find((view) => view.view_role === 'calendar_dimension') ?? null,
     [model?.views],
   );
-  const calendarPresentationViewName = useMemo(
-    () => (model?.views ?? []).find((view) => view.view_role === 'calendar_dimension')?.name ?? null,
-    [model?.views],
+  const visibleViews = useMemo(
+    () => (model?.views ?? []).filter((view) => {
+      if (view.hidden_in_canvas) return false;
+      if (!showCalendarLayer && view.view_role === 'calendar_dimension') return false;
+      return true;
+    }),
+    [model?.views, showCalendarLayer],
+  );
+  const layoutExplores = useMemo(
+    () => (model?.explores ?? []).map((explore) => ({
+      ...explore,
+      joins: (explore.joins ?? []).filter((join) => showCalendarLayer || join.origin !== 'auto_calendar'),
+    })),
+    [model?.explores, showCalendarLayer],
   );
 
   // Fixed card positions — topology-aware, computed once per model
   const positions = useMemo<Record<number, { x: number; y: number }>>(() => {
     if (!visibleViews.length) return {};
-    return computeLayout(visibleViews, model?.explores ?? []);
-  }, [model?.model_id, visibleViews, model?.explores]); // eslint-disable-line react-hooks/exhaustive-deps
+    return computeLayout(visibleViews, layoutExplores);
+  }, [model?.model_id, visibleViews, layoutExplores]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Refs to card DOM elements
   const cardRefs = useRef<Record<number, HTMLDivElement | null>>({});
@@ -475,7 +663,7 @@ export function DataModelCanvas({
 
   // ── Relationships ─────────────────────────────────────────────────────────
 
-  const relationships = useMemo(() => {
+  const allRelationships = useMemo<ModelRelationship[]>(() => {
     return (model?.explores ?? []).flatMap((ex) =>
       (ex.joins ?? []).map((j) => {
         const cols = parseSqlOn(j.sql_on ?? '');
@@ -485,7 +673,7 @@ export function DataModelCanvas({
           toViewName:   j.view,
           presentationViewName:
             j.presentation_view
-            ?? (j.origin === 'auto_calendar' ? calendarPresentationViewName ?? j.view : j.view),
+            ?? (j.origin === 'auto_calendar' ? calendarPresentationView?.name ?? j.view : j.view),
           joinType:     j.type ?? 'left',
           relationship: j.relationship,
           fromCol:      j.from_column ?? cols?.fromCol,
@@ -496,16 +684,29 @@ export function DataModelCanvas({
         };
       })
     );
-  }, [model?.explores, calendarPresentationViewName]);
+  }, [model?.explores, calendarPresentationView?.name]);
+
+  const calendarRelationships = useMemo(
+    () => allRelationships.filter((rel) => rel.origin === 'auto_calendar'),
+    [allRelationships],
+  );
+  const relationships = useMemo(
+    () => allRelationships.filter((rel) => showCalendarLayer || rel.origin !== 'auto_calendar'),
+    [allRelationships, showCalendarLayer],
+  );
 
   const viewByName = useMemo(() => {
     const m: Record<string, DatasetModelView> = {};
     visibleViews.forEach((v) => { m[v.name] = v; });
     return m;
   }, [visibleViews]);
+  const joinableViews = useMemo(
+    () => visibleViews.filter((view) => !view.system_managed),
+    [visibleViews],
+  );
 
   // Columns that are part of at least one join (highlighted in cards)
-  const viewHighlights = useMemo<Record<number, Set<string>>>(() => {
+  const relationshipHighlights = useMemo<Record<number, Set<string>>>(() => {
     const h: Record<number, Set<string>> = {};
     for (const rel of relationships) {
       if (rel.fromCol) (h[rel.fromViewId] ??= new Set()).add(rel.fromCol);
@@ -514,6 +715,13 @@ export function DataModelCanvas({
     }
     return h;
   }, [relationships, viewByName, allViewsByName]);
+  const calendarHighlights = useMemo<Record<number, Set<string>>>(() => {
+    const h: Record<number, Set<string>> = {};
+    for (const rel of calendarRelationships) {
+      if (rel.fromCol) (h[rel.fromViewId] ??= new Set()).add(rel.fromCol);
+    }
+    return h;
+  }, [calendarRelationships]);
 
   // ── Column anchor measurement ─────────────────────────────────────────────
 
@@ -680,7 +888,7 @@ export function DataModelCanvas({
     );
   }
 
-  if (!model?.model_id || !visibleViews.length) {
+  if (!model?.model_id || (!visibleViews.length && !calendarRelationships.length)) {
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-4">
         <div className="text-center">
@@ -707,7 +915,8 @@ export function DataModelCanvas({
     );
   }
 
-  const totalRels = relationships.length;
+  const totalRels = allRelationships.filter((rel) => rel.origin !== 'auto_calendar').length;
+  const totalCalendarRels = calendarRelationships.length;
 
   // ── JSX ───────────────────────────────────────────────────────────────────
 
@@ -720,6 +929,7 @@ export function DataModelCanvas({
           <span className="text-xs text-gray-400 shrink-0">
             {visibleViews.length} table{visibleViews.length !== 1 ? 's' : ''} |{' '}
             {totalRels} relationship{totalRels !== 1 ? 's' : ''}
+            {totalCalendarRels > 0 ? ` | ${totalCalendarRels} date link${totalCalendarRels !== 1 ? 's' : ''}` : ''}
           </span>
           {selectedRelationship && (
             <span className="text-xs text-indigo-600 truncate">
@@ -779,6 +989,14 @@ export function DataModelCanvas({
           )}
         </div>
       </div>
+
+      <CalendarLayerBanner
+        calendarView={calendarPresentationView}
+        bindings={calendarRelationships}
+        viewsByName={allViewsByName}
+        showCalendarLayer={showCalendarLayer}
+        onToggleCalendarLayer={() => setShowCalendarLayer((value) => !value)}
+      />
 
       {/* Canvas */}
       <div
@@ -846,7 +1064,8 @@ export function DataModelCanvas({
                       ? () => onEditView(view)
                       : undefined
                   }
-                  highlightedCols={viewHighlights[view.id]}
+                  relationshipCols={relationshipHighlights[view.id]}
+                  calendarCols={calendarHighlights[view.id]}
                 />
               </div>
             );
@@ -859,7 +1078,7 @@ export function DataModelCanvas({
         isOpen={dialogOpen}
         onClose={() => setDialogOpen(false)}
         onSave={handleAddJoin}
-        views={visibleViews}
+        views={joinableViews}
         isSaving={addJoin.isPending}
       />
     </div>

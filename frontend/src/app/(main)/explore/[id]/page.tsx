@@ -27,6 +27,8 @@ import {
   type ChartStyleConfig,
   type MetricConfig,
   DEFAULT_STYLE_CONFIG,
+  getChartRoleConfigRequirementMessage,
+  getChartRoleConfigValidationMessage,
   normalizeChartStyleConfig,
   normalizeRoleConfig,
 } from '@/components/explore/ExploreChartConfig';
@@ -39,6 +41,7 @@ import {
   buildExploreExecuteRequest,
   buildExploreSqlPreview,
   buildQuerySignature,
+  inferRoleConfigFromCustomSql,
   inferQueryColumns,
   normalizeExecuteResponseColumns,
   stripTrailingSqlLimit,
@@ -56,6 +59,13 @@ const PARAM_TYPE_OPTIONS = [
 ];
 
 type QueryMode = 'generated' | 'custom';
+
+const GENERATED_QUERY_LIMIT_OPTIONS = [50, 100, 250, 500, 1000, 2500, 5000, 10000];
+const CUSTOM_QUERY_LIMIT_OPTIONS = [50, 100, 250, 500, 1000, 2500, 5000];
+
+function getMaxQueryLimit(mode: QueryMode): number {
+  return mode === 'custom' ? 5000 : 10000;
+}
 
 interface ExploreQueryState {
   source: QueryMode;
@@ -170,6 +180,8 @@ function createDefaultTableStyleConfig(styleConfig: ChartStyleConfig): ChartStyl
     tableSummaryLabel: DEFAULT_STYLE_CONFIG.tableSummaryLabel,
     tableSummaryLabelColumn: undefined,
     tableSummaryRows: undefined,
+    tableColumnWidths: undefined,
+    tableColumnAlignments: undefined,
   };
 }
 
@@ -338,10 +350,6 @@ function pruneRoleConfigToColumns(
   return next;
 }
 
-function customChartNeedsValueColumn(chartType: ChartType): boolean {
-  return chartType !== 'TABLE' && chartType !== 'SCATTER';
-}
-
 function isSourceTimeColumn(column: ColumnMetadata): boolean {
   const loweredType = String(column.type ?? '').toLowerCase();
   const loweredName = String(column.name ?? '').toLowerCase();
@@ -496,6 +504,27 @@ export default function ExploreDetailPage() {
   const normalizedRoleConfig = sqlMode === 'custom'
     ? normalizedCustomRoleConfig
     : normalizedGeneratedRoleConfig;
+  const effectiveQueryLimit = useMemo(
+    () => Math.min(queryLimit, getMaxQueryLimit(sqlMode)),
+    [queryLimit, sqlMode],
+  );
+  const queryLimitOptions = sqlMode === 'custom'
+    ? CUSTOM_QUERY_LIMIT_OPTIONS
+    : GENERATED_QUERY_LIMIT_OPTIONS;
+  const activeValidationMessage = useMemo(
+    () => getChartRoleConfigValidationMessage(chartType, normalizedRoleConfig),
+    [chartType, normalizedRoleConfig],
+  );
+  const generatedRoleRequirementMessage = useMemo(
+    () => getChartRoleConfigRequirementMessage(chartType, normalizedGeneratedRoleConfig),
+    [chartType, normalizedGeneratedRoleConfig],
+  );
+  const customRoleRequirementMessage = useMemo(
+    () => customQueryState
+      ? getChartRoleConfigRequirementMessage(chartType, normalizedCustomRoleConfig)
+      : null,
+    [chartType, customQueryState, normalizedCustomRoleConfig],
+  );
   const previewColumns = previewData?.columns ?? [];
   const previewRows = previewData?.rows ?? [];
   const executeRequest = useMemo(
@@ -503,9 +532,9 @@ export default function ExploreDetailPage() {
       chartType,
       roleConfig: normalizedGeneratedRoleConfig,
       filters,
-      limit: queryLimit,
+      limit: effectiveQueryLimit,
     }),
-    [chartType, normalizedGeneratedRoleConfig, filters, queryLimit],
+    [chartType, normalizedGeneratedRoleConfig, filters, effectiveQueryLimit],
   );
   const generatedSql = useMemo(
     () => buildExploreSqlPreview({
@@ -513,15 +542,15 @@ export default function ExploreDetailPage() {
       chartType,
       roleConfig: normalizedGeneratedRoleConfig,
       filters,
-      limit: queryLimit,
+      limit: effectiveQueryLimit,
     }),
-    [selectedTable, chartType, normalizedGeneratedRoleConfig, filters, queryLimit],
+    [selectedTable, chartType, normalizedGeneratedRoleConfig, filters, effectiveQueryLimit],
   );
   const currentQuerySignature = useMemo(
     () => buildQuerySignature({
       datasetId: selectedDatasetId,
       tableId: selectedTableId,
-      limit: queryLimit,
+      limit: effectiveQueryLimit,
       sqlMode,
       chartType,
       roleConfig: normalizedRoleConfig,
@@ -532,7 +561,7 @@ export default function ExploreDetailPage() {
     [
       selectedDatasetId,
       selectedTableId,
-      queryLimit,
+      effectiveQueryLimit,
       sqlMode,
       chartType,
       normalizedRoleConfig,
@@ -718,6 +747,13 @@ export default function ExploreDetailPage() {
   }, [chartType, previewColumns]);
 
   useEffect(() => {
+    const maxLimit = getMaxQueryLimit(sqlMode);
+    if (queryLimit > maxLimit) {
+      setQueryLimit(maxLimit);
+    }
+  }, [queryLimit, sqlMode]);
+
+  useEffect(() => {
     if (!customConfigColumns?.length) return;
     setCustomRoleConfig((prev) => pruneRoleConfigToColumns(chartType, prev, customConfigColumns));
   }, [chartType, customConfigColumns]);
@@ -770,6 +806,7 @@ export default function ExploreDetailPage() {
           chartType,
           queryMode: 'custom' as const,
           customSql: sql,
+          limit: effectiveQueryLimit,
           roleConfig,
           customRoleConfig: roleConfig,
           filters,
@@ -781,7 +818,7 @@ export default function ExploreDetailPage() {
           chart_type: chartType,
           config: buildCustomPreviewConfig({ metrics: [] }),
           include_source_sample: true,
-          source_sample_limit: queryLimit,
+          source_sample_limit: effectiveQueryLimit,
         });
 
         const sourceRows = sourceSampleResponse.source_rows ?? [];
@@ -789,13 +826,33 @@ export default function ExploreDetailPage() {
           ? sourceSampleResponse.source_columns
           : Object.keys(sourceRows[0] ?? {});
         const sourceColumns = inferQueryColumns(sourceColumnNames, sourceRows);
+        const inferredConfigs = inferRoleConfigFromCustomSql({
+          sql,
+          chartType,
+          columns: sourceColumns,
+          currentRoleConfig: normalizedCustomRoleConfig,
+        });
+        const fallbackCustomRoleConfig = sourceColumns.length > 0
+          ? (
+            chartType === 'TABLE'
+              ? {
+                  ...syncRoleConfigWithColumns(chartType, normalizedCustomRoleConfig, sourceColumns),
+                  selectedColumns: sourceColumns.map((column) => column.name),
+                }
+              : syncRoleConfigWithColumns(chartType, normalizedCustomRoleConfig, sourceColumns)
+          )
+          : normalizedCustomRoleConfig;
         const nextCustomRoleConfig = sourceColumns.length > 0
-          ? pruneRoleConfigToColumns(chartType, normalizedCustomRoleConfig, sourceColumns)
+          ? pruneRoleConfigToColumns(
+              chartType,
+              inferredConfigs.customRoleConfig ?? fallbackCustomRoleConfig,
+              sourceColumns,
+            )
           : normalizedCustomRoleConfig;
         const nextCustomSignature = buildQuerySignature({
           datasetId: selectedDatasetId,
           tableId: selectedTableId,
-          limit: queryLimit,
+          limit: effectiveQueryLimit,
           sqlMode: 'custom',
           chartType,
           roleConfig: nextCustomRoleConfig,
@@ -809,7 +866,17 @@ export default function ExploreDetailPage() {
           setCustomRoleConfig(nextCustomRoleConfig);
         }
 
-        if (customChartNeedsValueColumn(chartType) && nextCustomRoleConfig.metrics.length === 0) {
+        if (inferredConfigs.generatedRoleConfig) {
+          const nextGeneratedRoleConfig = previewColumns.length > 0
+            ? syncRoleConfigWithColumns(chartType, inferredConfigs.generatedRoleConfig, previewColumns)
+            : normalizeRoleConfig(chartType, inferredConfigs.generatedRoleConfig);
+          if (JSON.stringify(nextGeneratedRoleConfig) !== JSON.stringify(normalizedGeneratedRoleConfig)) {
+            setGeneratedRoleConfig(nextGeneratedRoleConfig);
+          }
+        }
+
+        const nextCustomMessage = getChartRoleConfigRequirementMessage(chartType, nextCustomRoleConfig);
+        if (nextCustomMessage) {
           setCustomQueryState({
             source: 'custom',
             sql,
@@ -821,7 +888,8 @@ export default function ExploreDetailPage() {
             executionTimeMs: sourceSampleResponse.execution_time_ms,
           });
           setCustomLastRunSignature('');
-          toast.info('SQL ran successfully. Choose a value column from the SQL output to preview the chart.');
+          setQueryError(nextCustomMessage);
+          toast.info(nextCustomMessage);
           return;
         }
 
@@ -846,6 +914,12 @@ export default function ExploreDetailPage() {
         });
         setCustomLastRunSignature(nextCustomSignature);
       } else {
+        if (generatedRoleRequirementMessage) {
+          setQueryError(generatedRoleRequirementMessage);
+          toast.error(generatedRoleRequirementMessage);
+          return;
+        }
+
         const response = await executeDatasetQuery.mutateAsync({
           datasetId: selectedDatasetId,
           tableId: selectedTableId,
@@ -901,10 +975,17 @@ export default function ExploreDetailPage() {
         toast.error('Custom SQL cannot be empty');
         return;
       }
+      if (customRoleRequirementMessage) {
+        toast.error(customRoleRequirementMessage);
+        return;
+      }
       if (!customQueryState || currentQuerySignature !== customLastRunSignature) {
         toast.error('Run the custom SQL before saving so the chart uses the latest output columns');
         return;
       }
+    } else if (generatedRoleRequirementMessage) {
+      toast.error(generatedRoleRequirementMessage);
+      return;
     }
 
     const activeSavedRoleConfig = sqlMode === 'custom' ? customRoleConfig : generatedRoleConfig;
@@ -1016,13 +1097,12 @@ export default function ExploreDetailPage() {
   }, [parameterColumns]);
 
   const isConfigBuilderMode = sqlMode === 'generated';
-  const needsCustomMetricSelection = sqlMode === 'custom'
-    && Boolean(customQueryState)
-    && customChartNeedsValueColumn(chartType)
-    && normalizedCustomRoleConfig.metrics.length === 0;
+  const customRunMessage = sqlMode === 'custom' && customQueryState
+    ? customRoleRequirementMessage
+    : null;
   const modeDescription = isConfigBuilderMode
-    ? 'Choose a source table, map fields directly from the left panel, and keep chart setup visible on the same screen.'
-    : 'Write SQL once on the left, run it, then continue configuring the chart from the output columns without leaving this screen.';
+    ? 'Choose a source table, map fields directly from the left panel, and keep chart setup visible on the same screen. Generated queries can preview up to 10,000 rows.'
+    : 'Write SQL once on the left, run it, and Explore will auto-bind chart roles from the SQL output when it can. Custom SQL previews are capped at 5,000 rows to keep runtime responsive.';
 
   // Show loading skeleton while fetching existing chart
   if (!isNew && isChartLoading) {
@@ -1208,15 +1288,20 @@ export default function ExploreDetailPage() {
                 {activeQueryState.executionTimeMs != null ? ` in ${activeQueryState.executionTimeMs}ms` : ''}
               </span>
             )}
+            {effectiveQueryLimit > 1000 && (
+              <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs text-amber-700">
+                Large preview
+              </span>
+            )}
             <label className="flex items-center gap-1 text-xs text-slate-500">
               Limit
               <select
-                value={queryLimit}
+                value={effectiveQueryLimit}
                 onChange={(e) => setQueryLimit(Number(e.target.value))}
                 disabled={!resPerms.canEdit}
                 className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                {[50, 100, 250, 500, 1000].map((value) => <option key={value} value={value}>{value}</option>)}
+                {queryLimitOptions.map((value) => <option key={value} value={value}>{value}</option>)}
               </select>
             </label>
             <button
@@ -1498,12 +1583,12 @@ export default function ExploreDetailPage() {
                     </p>
                   </div>
                 </div>
-              ) : needsCustomMetricSelection ? (
+              ) : customRunMessage ? (
                 <div className="flex h-full items-center justify-center">
                   <div className="max-w-sm text-center">
                     <Settings2 className="mx-auto mb-3 h-10 w-10 text-amber-300" />
-                    <p className="text-sm font-medium text-slate-700">Choose a value column in Chart Setup</p>
-                    <p className="mt-1 text-xs text-slate-400">Your SQL ran successfully. Pick the metric to draw from the SQL output columns on the right.</p>
+                    <p className="text-sm font-medium text-slate-700">Finish the chart roles in Chart Setup</p>
+                    <p className="mt-1 text-xs text-slate-400">{customRunMessage}</p>
                   </div>
                 </div>
               ) : (
@@ -1512,6 +1597,7 @@ export default function ExploreDetailPage() {
                   data={displayedQueryState.chartRows}
                   roleConfig={normalizedRoleConfig}
                   styleConfig={chartStyleConfig}
+                  onStyleConfigChange={setChartStyleConfig}
                   preAggregated={displayedQueryState.chartPreAggregated}
                 />
               )}
@@ -1637,6 +1723,7 @@ export default function ExploreDetailPage() {
               sortLimitColumns={sortLimitColumns}
               tableDisplayColumns={tableDisplayColumns}
               queryMode={sqlMode}
+              validationMessage={activeValidationMessage}
               readOnly={!resPerms.canEdit}
               onChartTypeChange={handleChartTypeChange}
               onRoleConfigChange={sqlMode === 'custom' ? setCustomRoleConfig : setGeneratedRoleConfig}

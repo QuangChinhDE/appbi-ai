@@ -8,6 +8,7 @@ import Link from 'next/link';
 import { DataSource } from '@/types/api';
 import { Database, Settings, Trash2, TestTube, Share2 } from 'lucide-react';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import { OwnerBadge } from '@/components/common/OwnerBadge';
 
 interface DataSourceListProps {
   dataSources: DataSource[];
@@ -87,6 +88,9 @@ export default function DataSourceList({
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
               Created
             </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Created by
+            </th>
             <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
               Actions
             </th>
@@ -122,6 +126,9 @@ export default function DataSourceList({
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                 {new Date(ds.created_at).toLocaleDateString()}
+              </td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                {ds.owner_email ? <OwnerBadge email={ds.owner_email} /> : '—'}
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                 <div className="flex items-center justify-end gap-2">

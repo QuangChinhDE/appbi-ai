@@ -68,14 +68,14 @@ export function GettingStartedGuide({ locale = 'en' }: { locale?: string }) {
       details: [
         'Go to Data Sources in the sidebar',
         'Click "New data source" and choose a type: PostgreSQL, MySQL, BigQuery, Google Sheets, or Manual (CSV/Excel upload)',
-        'Fill in connection details and click "Test Connection" to verify',
+        'Fill in connection details and click "Create" to save. AppBI will validate the connection automatically.',
         'After creating, open the data source to preview schemas and sample rows directly from the source',
         'Add the tables you need into a Dataset and AppBI will query them live',
       ],
       detailsVi: [
         'Vào Data Sources trên sidebar',
         'Nhấn "New data source" và chọn loại: PostgreSQL, MySQL, BigQuery, Google Sheets, hoặc Manual (tải CSV/Excel)',
-        'Điền thông tin kết nối và nhấn "Test Connection" để kiểm tra',
+        'Điền thông tin kết nối rồi nhấn "Create". AppBI sẽ tự kiểm tra kết nối trước khi lưu.',
         'Sau khi tạo xong, mở data source và nhấn "Sync" để đồng bộ danh sách bảng vào hệ thống',
         'Sau khi sync, các bảng sẽ xuất hiện trong Datasets khi bạn thêm table',
       ],
@@ -483,8 +483,8 @@ export function GettingStartedModal({
       title: 'Step 1: Connect a data source', titleVi: 'Bước 1: Kết nối nguồn dữ liệu',
       desc: 'First, connect your database or upload a file so AppBI can access your data.',
       descVi: 'Đầu tiên, kết nối database hoặc tải file lên để AppBI có thể truy cập dữ liệu của bạn.',
-      details: ['Go to Data Sources in the sidebar', 'Click "New data source" and choose a type: PostgreSQL, MySQL, BigQuery, Google Sheets, or Manual (CSV/Excel upload)', 'Fill in connection details and click "Test Connection" to verify', 'Once connected, your tables will be available for the next step'],
-      detailsVi: ['Vào Data Sources trên sidebar', 'Nhấn "New data source" và chọn loại: PostgreSQL, MySQL, BigQuery, Google Sheets, hoặc Manual (tải CSV/Excel)', 'Điền thông tin kết nối và nhấn "Test Connection" để kiểm tra', 'Sau khi kết nối thành công, các bảng dữ liệu sẽ sẵn sàng cho bước tiếp theo'],
+      details: ['Go to Data Sources in the sidebar', 'Click "New data source" and choose a type: PostgreSQL, MySQL, BigQuery, Google Sheets, or Manual (CSV/Excel upload)', 'Fill in connection details and click "Create" to save. AppBI will validate the connection automatically.', 'Once connected, your tables will be available for the next step'],
+      detailsVi: ['Vào Data Sources trên sidebar', 'Nhấn "New data source" và chọn loại: PostgreSQL, MySQL, BigQuery, Google Sheets, hoặc Manual (tải CSV/Excel)', 'Điền thông tin kết nối rồi nhấn "Create". AppBI sẽ tự kiểm tra kết nối trước khi lưu.', 'Sau khi kết nối thành công, các bảng dữ liệu sẽ sẵn sàng cho bước tiếp theo'],
       href: '/datasources', btnLabel: 'Go to Data Sources', btnLabelVi: 'Đi tới Data Sources', done: hasDatasource,
     },
     {

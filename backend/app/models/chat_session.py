@@ -20,6 +20,7 @@ class ChatSession(Base):
     session_id = Column(String(100), unique=True, nullable=False, index=True)
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     title = Column(Text, nullable=False, default="New Conversation")
+    context = Column(JSON, nullable=True, default=dict)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
     last_active = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
     message_count = Column(Integer, default=0, nullable=False)

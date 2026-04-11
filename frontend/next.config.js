@@ -33,8 +33,13 @@ const nextConfig = {
       // REST API proxying is handled by middleware.ts (preserves trailing
       // slashes that next.config.js rewrites strip, avoiding FastAPI redirects
       // that leak the internal Docker hostname).
-      // AI Chat (HTTP + WebSocket)
-      { source: '/chat/:path*', destination: `${chatBase}/chat/:path*` },
+      // AI Chat: keep page routes like /chat/[sessionId] on Next.js and
+      // proxy only the service endpoints that actually belong to ai-chat-service.
+      { source: '/chat/ws', destination: `${chatBase}/chat/ws` },
+      { source: '/chat/stream', destination: `${chatBase}/chat/stream` },
+      { source: '/chat/sessions', destination: `${chatBase}/chat/sessions` },
+      { source: '/chat/sessions/:path*', destination: `${chatBase}/chat/sessions/:path*` },
+      { source: '/chat/cleanup', destination: `${chatBase}/chat/cleanup` },
       // AI Agent
       { source: '/agent/:path*', destination: `${agentBase}/agent/:path*` },
     ];

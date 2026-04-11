@@ -519,6 +519,7 @@ export function ChartDetailModal({
                 data={runtimeRows}
                 roleConfig={normalizedRoleConfig}
                 styleConfig={previewStyleConfig}
+                onStyleConfigChange={setDraftStyleConfig}
                 preAggregated={chartRuntime.pre_aggregated ?? false}
               />
             ) : chart ? (
@@ -527,6 +528,7 @@ export function ChartDetailModal({
                 data={runtimeRows}
                 config={legacyChartConfig}
                 styleConfig={previewStyleConfig}
+                onStyleConfigChange={setDraftStyleConfig}
               />
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-gray-500">

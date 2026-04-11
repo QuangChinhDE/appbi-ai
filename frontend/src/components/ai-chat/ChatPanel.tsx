@@ -14,7 +14,7 @@ import { ChatInput } from './ChatInput';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getAiChatHttpUrl, getAiChatWsUrl } from '@/lib/ai-services';
-import type { ActivityStep, ChatMessageData, ChartPayload, MessageMetrics, MessageFeedback } from './types';
+import type { ActivityStep, ChatMessageData, ChartPayload, ChatSessionContext, MessageMetrics, MessageFeedback } from './types';
 
 interface SuggestionChipsProps {
   suggestions: string[];
@@ -61,6 +61,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const [wsConnected, setWsConnected] = useState(false);
   const [wsError, setWsError] = useState<string | null>(null);
   const [sessionTitle, setSessionTitle] = useState('New Conversation');
+  const [sessionContext, setSessionContext] = useState<ChatSessionContext | null>(null);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [isShareOpen, setIsShareOpen] = useState(false);
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -79,6 +80,10 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
   useEffect(() => {
     let cancelled = false;
+    setMessages([]);
+    setSuggestions([]);
+    setSessionContext(null);
+    setHistoryLoaded(false);
 
     async function init() {
       // Fetch token once — reused for loadHistory, handleFeedback, and WebSocket
@@ -115,6 +120,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       if (!res.ok) return;
       const data = await res.json();
       setSessionTitle(data.title ?? 'New Conversation');
+      setSessionContext(data.context ?? null);
       const restored: ChatMessageData[] = (data.messages ?? []).map(
         (m: { role: string; content: string; message_id?: string; metrics?: MessageMetrics; feedback?: MessageFeedback; charts?: ChartPayload[]; userQuery?: string }) => ({
           id: uuidv4(),
@@ -356,6 +362,10 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   }, [loading, sessionId]);
 
   const isEmpty = historyLoaded && messages.length === 0;
+  const datasetLabel = sessionContext?.dataset_id
+    ? sessionContext.dataset_name?.trim() || `Dataset #${sessionContext.dataset_id}`
+    : null;
+  const isLegacySession = historyLoaded && sessionContext !== null && !sessionContext?.dataset_id;
 
   return (
     <div className="flex flex-col h-full bg-gray-50">
@@ -395,6 +405,18 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         <div className="mx-4 mt-3 px-4 py-2.5 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex items-center justify-between">
           <span>{wsError}</span>
           <button onClick={() => connectWs()} className="ml-3 text-red-600 underline text-xs">Retry</button>
+        </div>
+      )}
+
+      {datasetLabel && (
+        <div className="mx-4 mt-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm text-blue-800">
+          Phiên chat này đang được khóa trong <strong>{datasetLabel}</strong>. AI sẽ chỉ tìm chart, dashboard và dữ liệu trong dataset này.
+        </div>
+      )}
+
+      {isLegacySession && (
+        <div className="mx-4 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
+          Phiên chat này chưa được khóa theo dataset. Để AI trả lời ổn định hơn, hãy tạo conversation mới và chọn dataset ngay từ đầu.
         </div>
       )}
 

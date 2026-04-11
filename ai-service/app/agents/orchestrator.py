@@ -30,13 +30,19 @@ from app.agents.tools import TOOL_SCHEMAS, execute_tool
 
 logger = logging.getLogger(__name__)
 
-async def _execute_tool_rbac(fn_name: str, fn_args: dict, user_role: str, token: str = "") -> dict:
+async def _execute_tool_rbac(
+    fn_name: str,
+    fn_args: dict,
+    user_role: str,
+    token: str = "",
+    scope: Optional[Dict[str, Any]] = None,
+) -> dict:
     """Wrap execute_tool with role-based access control.
 
     Data access is enforced at the backend level (dataset permission checks).
     Viewers can only query tables shared with them — the backend returns 403 otherwise.
     """
-    return await execute_tool(fn_name, fn_args, token=token)
+    return await execute_tool(fn_name, fn_args, token=token, scope=scope)
 
 SYSTEM_PROMPT = """You are a BI data analyst inside AppBI. Your job: answer data questions using real numbers from tools. Be direct, precise, never waste words.
 
@@ -135,6 +141,90 @@ Step 3 — Analyze data and write response using ONLY numbers from actual rows.
   → When the existing chart data is about assignees but user asks about projects → IGNORE the chart, call query_table with project_name as dimension.
 
 ⚠ When filtering, use the EXACT string values from data (check with explore_data if uncertain).
+"""
+
+
+SYSTEM_PROMPT = """You are a BI data analyst inside AppBI. Your job: answer data questions using real numbers from tools. Be direct, precise, never waste words.
+
+You can ONLY access data that has been shared with you through datasets. Never attempt to access data outside of what list_dataset_tables returns.
+If the session scope defines an Active Dataset, treat that dataset_id as a HARD BOUNDARY for every tool call, chart lookup, dashboard lookup, and answer.
+Use saved charts and dashboards only when they belong to that active dataset.
+
+TOOL REFERENCE
+
+search_charts(query)
+  -> charts[] + top_chart_data.rows (real data, already rendered)
+run_chart(chart_id)
+  -> rows[], chart auto-rendered
+search_dashboards(query)
+  -> dashboards[] in the active dataset
+inspect_dashboard(dashboard_id)
+  -> dashboard summary + chart flow + chart descriptions from the saved report
+query_table(dataset_id, table_id, ...)
+  -> rows[] from aggregated query on a dataset table
+list_dataset_tables()
+  -> dataset + table IDs + column names, the single source of truth
+run_dataset_table(dataset_id, table_id)
+  -> raw sample rows
+create_chart(name, dataset_id, table_id, chart_type, config, save)
+  -> creates a new chart from a dataset table
+explore_data(dataset_id, table_id, analysis_type)
+  -> column stats, distributions, or time trends
+explain_insight(dataset_id, table_id, metric_column, aggregation, time_column, comparison, dimension_columns)
+  -> root-cause analysis from the dataset table
+create_dashboard(topic, tables:[{dataset_id, table_id}], chart_count)
+  -> creates a dashboard from tables in the active dataset
+
+DECISION FLOW
+
+Step 1 - Classify the request inside the active dataset:
+  a) Saved dashboard/report/overview/insight flow
+     -> search_dashboards(query), then inspect_dashboard(dashboard_id)
+  b) Existing chart or visualization
+     -> search_charts(query); if top_chart_data.rows is relevant, use it
+  c) Exact numbers, ranking, comparison, ratio, filtering
+     -> list_dataset_tables, then query_table directly
+     -> do NOT rely on chart descriptions for numeric answers
+  d) "tell me about this data" / "what columns?"
+     -> explore_data(overview)
+  e) "why did X change?" / "explain drop"
+     -> explain_insight(...)
+  f) Need a new chart
+     -> create_chart(...)
+  g) Need a new dashboard
+     -> create_dashboard(...)
+
+Step 2 - If you used chart or dashboard context, verify it contains the exact fields needed.
+If chart/dashboard context is not enough for a precise answer, fall back to query_table in the same dataset.
+
+Step 3 - Analyze data and write the answer using ONLY numbers from actual rows.
+For "most/highest/top", scan all rows and verify the maximum value.
+
+RESPONSE FORMAT
+
+Direct answer in 1 sentence with the exact result and value.
+Then list the top 3-7 relevant items from data.
+Then add 1-2 short insight sentences.
+
+ABSOLUTE RULES
+
+- NEVER answer from memory. ALWAYS call a tool first.
+- NEVER fabricate numbers. Every value must come from actual rows.
+- NEVER access datasources or raw SQL directly.
+- NEVER go outside the active dataset scope.
+- ALWAYS respond in Vietnamese.
+- If a tool fails, say so and try an alternative.
+- If the data is unavailable, say: "This data is not available in your shared datasets."
+
+DATA QUALITY RULES
+
+- Boolean columns in this system often contain STRING values: '0'/'1' or 'TRUE'/'FALSE'. Never assume Python booleans.
+- When user asks for a ratio/percentage, get grouped counts from query_table and compute the percentage from those counts.
+- Read column names carefully and match the exact business meaning:
+  "project" -> project_name
+  "person/ai/who" -> assignee
+- If existing chart data is about assignees but user asks about projects, ignore that chart and query project_name instead.
+- When filtering, use the exact string values found in data.
 """
 
 
@@ -337,7 +427,7 @@ async def load_session_from_db(session_id: str, token: str) -> Optional[Conversa
     session = ConversationSession(
         session_id=session_id,
         messages=[],
-        context={"auth_token": token},
+        context={**(data.get("context") or {}), "auth_token": token},
     )
     # Seed title
     session.title = data.get("title", "New Conversation")
@@ -383,6 +473,159 @@ def _trim_history(messages: List[Message], max_messages: int = 20) -> List[Messa
     return trimmed
 
 
+def _describe_active_resource(resource: Dict[str, Any]) -> str:
+    resource_type = str(resource.get("type") or "resource")
+    name = str(resource.get("name") or "").strip()
+    resource_id = resource.get("id")
+    dataset_id = resource.get("dataset_id")
+    table_id = resource.get("table_id")
+
+    details: List[str] = []
+    if name:
+        details.append(name)
+    if resource_id not in (None, ""):
+        details.append(f"id={resource_id}")
+    if dataset_id not in (None, ""):
+        details.append(f"dataset_id={dataset_id}")
+    if table_id not in (None, ""):
+        details.append(f"table_id={table_id}")
+
+    if details:
+        return f"{resource_type}: " + ", ".join(str(detail) for detail in details)
+    return resource_type
+
+
+def _build_session_scope_prompt(session: ConversationSession) -> str:
+    context = session.context or {}
+    dataset_id = context.get("dataset_id")
+    if dataset_id in (None, ""):
+        return ""
+
+    dataset_name = str(context.get("dataset_name") or "").strip() or f"Dataset {dataset_id}"
+    lines = [
+        "## ACTIVE SESSION SCOPE",
+        f"Active dataset: {dataset_name} (dataset_id={dataset_id}).",
+        "Never query, search, or answer from any other dataset in this session.",
+    ]
+
+    active_resource = context.get("active_resource")
+    if isinstance(active_resource, dict) and active_resource.get("type") not in (None, "", "dataset"):
+        lines.append(
+            "Current focus from earlier turns: "
+            f"{_describe_active_resource(active_resource)}."
+        )
+        lines.append(
+            "If the user says 'chart do', 'bao cao tren', or another follow-up reference, "
+            "use this current focus first before searching again."
+        )
+
+    return "\n".join(lines)
+
+
+def _track_active_resource(
+    session: ConversationSession,
+    tool_name: str,
+    tool_result: Dict[str, Any],
+) -> None:
+    if not isinstance(tool_result, dict) or tool_result.get("error"):
+        return
+
+    context = session.context
+    dataset_id = context.get("dataset_id")
+    dataset_name = context.get("dataset_name")
+    resource: Optional[Dict[str, Any]] = None
+
+    if tool_name == "search_charts":
+        top_chart = tool_result.get("top_chart_data") or ((tool_result.get("charts") or [None])[0] or {})
+        chart_id = top_chart.get("chart_id") or top_chart.get("id")
+        if chart_id is not None:
+            resource = {
+                "type": "chart",
+                "id": chart_id,
+                "name": top_chart.get("chart_name") or top_chart.get("name") or "",
+                "chart_type": top_chart.get("chart_type"),
+                "dataset_id": dataset_id,
+                "dataset_name": dataset_name,
+            }
+    elif tool_name == "run_chart":
+        chart_id = tool_result.get("chart_id")
+        if chart_id is not None:
+            resource = {
+                "type": "chart",
+                "id": chart_id,
+                "name": tool_result.get("chart_name") or "",
+                "chart_type": tool_result.get("chart_type"),
+                "dataset_id": dataset_id,
+                "dataset_name": dataset_name,
+            }
+    elif tool_name == "search_dashboards":
+        dashboard = ((tool_result.get("dashboards") or [None])[0] or {})
+        dashboard_id = dashboard.get("id")
+        if dashboard_id is not None:
+            resource = {
+                "type": "dashboard",
+                "id": dashboard_id,
+                "name": dashboard.get("name") or "",
+                "dataset_id": dataset_id,
+                "dataset_name": dataset_name,
+            }
+    elif tool_name == "inspect_dashboard":
+        dashboard_id = tool_result.get("dashboard_id")
+        if dashboard_id is not None:
+            resource = {
+                "type": "dashboard",
+                "id": dashboard_id,
+                "name": tool_result.get("dashboard_name") or "",
+                "chart_count": tool_result.get("chart_count"),
+                "dataset_id": dataset_id,
+                "dataset_name": dataset_name,
+            }
+    elif tool_name == "create_dashboard":
+        dashboard_id = tool_result.get("dashboard_id")
+        if dashboard_id is not None:
+            resource = {
+                "type": "dashboard",
+                "id": dashboard_id,
+                "name": tool_result.get("dashboard_name") or "",
+                "chart_count": tool_result.get("chart_count"),
+                "dataset_id": dataset_id,
+                "dataset_name": dataset_name,
+            }
+    elif tool_name in {"query_table", "run_dataset_table", "explore_data", "explain_insight"}:
+        table_id = tool_result.get("table_id")
+        if table_id is not None:
+            resource = {
+                "type": "table",
+                "id": table_id,
+                "table_id": table_id,
+                "dataset_id": tool_result.get("dataset_id", dataset_id),
+                "dataset_name": dataset_name,
+            }
+    elif tool_name == "create_chart":
+        chart_id = tool_result.get("chart_id")
+        if chart_id is not None:
+            resource = {
+                "type": "chart",
+                "id": chart_id,
+                "name": tool_result.get("chart_name") or "",
+                "chart_type": tool_result.get("chart_type"),
+                "dataset_id": tool_result.get("dataset_id", dataset_id),
+                "dataset_name": dataset_name,
+                "table_id": tool_result.get("table_id"),
+            }
+        elif tool_result.get("table_id") is not None:
+            resource = {
+                "type": "table",
+                "id": tool_result.get("table_id"),
+                "table_id": tool_result.get("table_id"),
+                "dataset_id": tool_result.get("dataset_id", dataset_id),
+                "dataset_name": dataset_name,
+            }
+
+    if resource:
+        context["active_resource"] = resource
+
+
 def _to_llm_messages(session: ConversationSession, turn_context: str = "") -> List[Dict]:
     """Convert session messages to OpenAI API format, injecting per-turn context."""
     system = SYSTEM_PROMPT
@@ -422,8 +665,15 @@ async def run_agent(
     # This replaces the full schema dump (_load_db_context) — much lower token cost
     # and the context is always relevant to what the user is asking about.
     from app.agents.context_builder import build_context
-    ctx_pkg = await build_context(user_message, token=token)
-    turn_context = ctx_pkg.to_prompt_section()
+    ctx_pkg = await build_context(
+        user_message,
+        token=token,
+        dataset_id=session.context.get("dataset_id"),
+    )
+    scope_prompt = _build_session_scope_prompt(session)
+    turn_context = "\n\n".join(
+        section for section in [scope_prompt, ctx_pkg.to_prompt_section()] if section
+    )
     # Cache first turn's context as fallback for tool calls that need session.db_context
     if turn_context and not session.db_context:
         session.db_context = turn_context
@@ -525,7 +775,8 @@ async def run_agent(
                 # Also sync the title in case it was just set this turn
                 await bi_client.upsert_chat_session(
                     session.session_id, session.title,
-                    session.owner_user_id or "", token=token
+                    session.owner_user_id or "", token=token,
+                    context={k: v for k, v in session.context.items() if k != "auth_token"},
                 )
             except Exception:
                 pass  # persistence failure never breaks the chat response
@@ -733,12 +984,19 @@ async def _openai_loop(
             yield ToolCallEvent(tool=fn_name, args=fn_args).model_dump()
 
             try:
-                tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"), token=token)
+                tool_result = await _execute_tool_rbac(
+                    fn_name,
+                    fn_args,
+                    session.context.get("user_role", "viewer"),
+                    token=token,
+                    scope=session.context,
+                )
             except Exception as tool_exc:
                 logger.warning("Tool %s raised exception: %s", fn_name, tool_exc)
                 tool_result = {"error": f"Tool '{fn_name}' failed: {str(tool_exc)[:300]}"}
                 metrics_ctx["tool_errors"] += 1
             tool_calls_made += 1
+            _track_active_resource(session, fn_name, tool_result)
 
             # ── Metrics: track tool usage ──
             metrics_ctx["tool_calls"].append(fn_name)
@@ -914,12 +1172,19 @@ async def _anthropic_loop(
             yield ToolCallEvent(tool=fn_name, args=fn_args).model_dump()
 
             try:
-                tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"), token=token)
+                tool_result = await _execute_tool_rbac(
+                    fn_name,
+                    fn_args,
+                    session.context.get("user_role", "viewer"),
+                    token=token,
+                    scope=session.context,
+                )
             except Exception as tool_exc:
                 logger.warning("Tool %s raised exception: %s", fn_name, tool_exc)
                 tool_result = {"error": f"Tool '{fn_name}' failed: {str(tool_exc)[:300]}"}
                 metrics_ctx["tool_errors"] += 1
             tool_calls_made += 1
+            _track_active_resource(session, fn_name, tool_result)
 
             # ── Metrics: track tool usage ──
             metrics_ctx["tool_calls"].append(fn_name)
@@ -1058,12 +1323,19 @@ async def _gemini_loop(
             yield ToolCallEvent(tool=fn_name, args=fn_args).model_dump()
 
             try:
-                tool_result = await _execute_tool_rbac(fn_name, fn_args, session.context.get("user_role", "viewer"), token=token)
+                tool_result = await _execute_tool_rbac(
+                    fn_name,
+                    fn_args,
+                    session.context.get("user_role", "viewer"),
+                    token=token,
+                    scope=session.context,
+                )
             except Exception as tool_exc:
                 logger.warning("Tool %s raised exception: %s", fn_name, tool_exc)
                 tool_result = {"error": f"Tool '{fn_name}' failed: {str(tool_exc)[:300]}"}
                 metrics_ctx["tool_errors"] += 1
             tool_calls_made += 1
+            _track_active_resource(session, fn_name, tool_result)
 
             # ── Metrics: track tool usage ──
             metrics_ctx["tool_calls"].append(fn_name)
@@ -1179,6 +1451,11 @@ def _tool_summary(tool_name: str, result: Dict) -> str:
         return f"{result.get('row_count', 0)} rows ({result.get('execution_time_ms', 0):.0f}ms)"
     elif tool_name == "search_dashboards":
         return f"Found {result.get('count', 0)} dashboard(s)"
+    elif tool_name == "inspect_dashboard":
+        return (
+            f"Dashboard '{result.get('dashboard_name', '')}': "
+            f"{result.get('chart_count', 0)} charts"
+        )
     elif tool_name == "list_dataset_tables":
         ws_count = len(result.get("datasets", []))
         table_count = sum(len(ws["tables"]) for ws in result.get("datasets", []))

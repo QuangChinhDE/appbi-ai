@@ -112,8 +112,8 @@ export default function DataSourceForm({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Connection test state (for DB types)
-  type TestState = 'idle' | 'testing' | 'ok' | 'fail';
+  // Inline connection feedback (used for save-time guidance and Google auth errors)
+  type TestState = 'idle' | 'fail';
   const [testState, setTestState] = useState<TestState>('idle');
   const [testMessage, setTestMessage] = useState('');
 
@@ -181,37 +181,6 @@ export default function DataSourceForm({
         : prev
     ));
   }, [currentGoogleDatasourceEmail, googleAuthMode, googleDataAccess?.email, isGoogleCloudType]);
-
-  const isDbType = type === DataSourceType.POSTGRESQL || type === DataSourceType.MYSQL;
-
-  const handleTestConnection = useCallback(async () => {
-    setTestState('testing');
-    setTestMessage('');
-    try {
-      const res = await fetch(`${API_BASE}/datasources/test`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ type, config, data_source_id: initialData?.id ?? null }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setTestState('fail');
-        setTestMessage(extractErrorMessage(data, 'Connection failed'));
-        return;
-      }
-      if (data.success) {
-        setTestState('ok');
-        setTestMessage(data.message ?? 'Connection successful');
-      } else {
-        setTestState('fail');
-        setTestMessage(extractErrorMessage(data, 'Connection failed'));
-      }
-    } catch (e: any) {
-      setTestState('fail');
-      setTestMessage(e.message ?? 'Network error');
-    }
-  }, [type, config]);
 
   const handleFileImport = async (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase();
@@ -282,8 +251,6 @@ export default function DataSourceForm({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (readOnly) return;
-    // For non-manual types, require a successful test before saving
-    if (type !== DataSourceType.MANUAL && testState !== 'ok') return;
     onSubmit(
       { name, type, description: description || undefined, config },
       { configModified },
@@ -1020,27 +987,14 @@ export default function DataSourceForm({
         <div className="space-y-4">{renderConfigFields()}</div>
       </div>
 
-      {/* Test connection button + result — for all non-manual types */}
+      {/* Save-time validation guidance for all non-manual types */}
       {type !== DataSourceType.MANUAL && (
         <div className="space-y-2">
-          <button
-            type="button"
-            onClick={handleTestConnection}
-            disabled={testState === 'testing'}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2 border border-blue-400 text-blue-700 rounded-md hover:bg-blue-50 transition-colors disabled:opacity-50"
-          >
-            {testState === 'testing' ? (
-              <><Loader2 className="w-4 h-4 animate-spin" /> Testing connection...</>
-            ) : (
-              <><Radio className="w-4 h-4" /> Test Connection</>
-            )}
-          </button>
-          {testState === 'ok' && (
-            <div className="flex items-center gap-2 p-2.5 bg-green-50 border border-green-200 rounded-md">
-              <CheckCircle className="w-4 h-4 text-green-600 flex-shrink-0" />
-              <span className="text-sm text-green-700">{testMessage}</span>
-            </div>
-          )}
+          <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700">
+            {initialData
+              ? 'Connection will be checked automatically when you save configuration changes.'
+              : 'Connection will be checked automatically when you create this data source.'}
+          </div>
           {testState === 'fail' && (
             <div className="flex items-start gap-2 p-2.5 bg-red-50 border border-red-200 rounded-md">
               <WifiOff className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
@@ -1065,8 +1019,7 @@ export default function DataSourceForm({
         <button
           type="submit"
           className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-          disabled={isLoading || (type !== DataSourceType.MANUAL && testState !== 'ok')}
-          title={type !== DataSourceType.MANUAL && testState !== 'ok' ? 'Test the connection first' : undefined}
+          disabled={isLoading}
         >
           {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
           {initialData ? 'Update' : 'Create'}

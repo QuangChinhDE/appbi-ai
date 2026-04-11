@@ -35,6 +35,7 @@ class SessionUpsert(BaseModel):
     session_id: str
     title: str = "New Conversation"
     owner_user_id: str  # UUID string from JWT
+    context: Optional[dict] = None
 
 
 class MessageAppend(BaseModel):
@@ -132,6 +133,7 @@ def list_sessions(
             "last_active": s.last_active.isoformat(),
             "message_count": s.message_count,
             "is_owner": str(s.owner_id) == str(current_user.id),
+            "context": s.context or {},
         }
         for s in result
     ]
@@ -149,6 +151,8 @@ def upsert_session(
         if str(existing.owner_id) != str(current_user.id):
             raise HTTPException(status_code=403, detail="Access denied")
         existing.title = body.title
+        if body.context is not None:
+            existing.context = body.context
         existing.last_active = datetime.datetime.utcnow()
         db.commit()
         return {"session_id": existing.session_id, "created": False}
@@ -157,6 +161,7 @@ def upsert_session(
         session_id=body.session_id,
         owner_id=current_user.id,
         title=body.title,
+        context=body.context or {},
     )
     db.add(session)
     db.commit()
@@ -195,6 +200,7 @@ def get_session(
         "created_at": s.created_at.isoformat(),
         "last_active": s.last_active.isoformat(),
         "message_count": s.message_count,
+        "context": s.context or {},
         "messages": msgs,
     }
 

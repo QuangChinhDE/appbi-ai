@@ -68,7 +68,7 @@ class ChartPreviewDataRequest(BaseModel):
     config: Dict[str, Any] = Field(default_factory=dict)
     context: Optional[str] = None
     include_source_sample: bool = False
-    source_sample_limit: int = Field(default=100, ge=1, le=1000)
+    source_sample_limit: int = Field(default=100, ge=1, le=5000)
 
 
 class ChartPreviewDataResponse(BaseModel):

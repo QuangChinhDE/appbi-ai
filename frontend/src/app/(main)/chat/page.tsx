@@ -8,6 +8,7 @@ import { toast } from 'sonner';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { ShareDialog } from '@/components/common/ShareDialog';
+import { CreateScopedChatModal } from '@/components/ai-chat/CreateScopedChatModal';
 import { ChatSessionList } from '@/components/ai-chat/ChatSessionList';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getAiChatHttpUrl } from '@/lib/ai-services';
@@ -22,6 +23,7 @@ export default function ChatListPage() {
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [shareSession, setShareSession] = useState<SessionSummary | null>(null);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [authToken, setAuthToken] = useState<string>('');
   const [chatServiceAvailable, setChatServiceAvailable] = useState<boolean | null>(null);
   const { data: permData } = usePermissions();
@@ -70,19 +72,43 @@ export default function ChatListPage() {
   }
 
   async function handleNewChat() {
+    if (!authToken) {
+      toast.error('Authentication is still loading. Please try again in a moment.');
+      return;
+    }
     if (chatServiceAvailable === false) {
       toast.error('AI Chat service is offline. Start ai-chat-service to use chat.');
       return;
     }
+    setIsCreateModalOpen(true);
+  }
 
+  async function handleCreateScopedChat(dataset: { id: number; name: string }) {
     setCreating(true);
     try {
       const response = await fetch(`${getAiChatHttpUrl()}/chat/sessions`, {
         method: 'POST',
-        headers: authHeaders(),
+        headers: {
+          ...authHeaders(),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          context: {
+            dataset_id: dataset.id,
+            dataset_name: dataset.name,
+            active_resource: {
+              type: 'dataset',
+              id: dataset.id,
+              name: dataset.name,
+              dataset_id: dataset.id,
+              dataset_name: dataset.name,
+            },
+          },
+        }),
       });
       if (!response.ok) throw new Error();
       const { session_id } = await response.json();
+      setIsCreateModalOpen(false);
       router.push(`/chat/${session_id}`);
     } catch {
       toast.error('AI Chat service is offline. Start ai-chat-service to create a new chat.');
@@ -158,7 +184,7 @@ export default function ChatListPage() {
         action={
           <button
             onClick={handleNewChat}
-            disabled={creating || chatServiceAvailable === false}
+            disabled={creating || chatServiceAvailable === false || !authToken}
             className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
           >
             {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
@@ -225,6 +251,15 @@ export default function ChatListPage() {
           resourceId={shareSession.session_id}
           resourceName={shareSession.title}
           onClose={() => setShareSession(null)}
+        />
+      )}
+
+      {isCreateModalOpen && (
+        <CreateScopedChatModal
+          isOpen={isCreateModalOpen}
+          creating={creating}
+          onClose={() => setIsCreateModalOpen(false)}
+          onCreate={handleCreateScopedChat}
         />
       )}
     </>

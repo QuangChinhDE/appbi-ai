@@ -88,6 +88,26 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "inspect_dashboard",
+            "description": (
+                "Load a dashboard and summarize its chart flow, chart descriptions, and saved insight context. "
+                "Use this when the user asks about a report/dashboard overview or wants narrative insight from a saved board."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dashboard_id": {
+                        "type": "integer",
+                        "description": "ID of the dashboard to inspect"
+                    }
+                },
+                "required": ["dashboard_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_dataset_tables",
             "description": "List all dataset tables with their column names and types. Call this before query_table to know exact column names available.",
             "parameters": {
@@ -418,17 +438,94 @@ def _fuzzy_score(query: str, text: str) -> int:
     return len(q_words & t_words)
 
 
-async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict[str, Any]:
+async def _resolve_scope_dataset(
+    scope: Optional[Dict[str, Any]],
+    token: str,
+) -> tuple[Optional[int], str, set[int]]:
+    if not isinstance(scope, dict) or scope.get("dataset_id") in (None, ""):
+        return None, "", set()
+
+    dataset_id = int(scope["dataset_id"])
+    dataset = await bi_client.get_dataset(dataset_id, token=token)
+    table_ids = {
+        int(table["id"])
+        for table in dataset.get("tables", [])
+        if table.get("id") is not None
+    }
+    dataset_name = dataset.get("name", "") or str(scope.get("dataset_name") or "")
+    return dataset_id, dataset_name, table_ids
+
+
+def _ensure_dataset_scope(
+    args: Dict[str, Any],
+    scope_dataset_id: Optional[int],
+    tool_name: str,
+) -> Optional[int]:
+    raw_dataset_id = args.get("dataset_id")
+    if scope_dataset_id is None:
+        return int(raw_dataset_id) if raw_dataset_id is not None else None
+
+    if raw_dataset_id is None:
+        args["dataset_id"] = scope_dataset_id
+        return scope_dataset_id
+
+    dataset_id = int(raw_dataset_id)
+    if dataset_id != scope_dataset_id:
+        raise ValueError(
+            f"{tool_name} is restricted to dataset_id={scope_dataset_id} in this conversation."
+        )
+    return dataset_id
+
+
+def _dashboard_matches_scope(dashboard: Dict[str, Any], scoped_table_ids: set[int]) -> bool:
+    charts = dashboard.get("dashboard_charts") or []
+    if not charts or not scoped_table_ids:
+        return False
+
+    found_scoped_chart = False
+    for item in charts:
+        chart = item.get("chart") or {}
+        table_id = chart.get("dataset_table_id")
+        if table_id is None or table_id not in scoped_table_ids:
+            return False
+        found_scoped_chart = True
+    return found_scoped_chart
+
+
+async def execute_tool(
+    name: str,
+    args: Dict[str, Any],
+    token: str = "",
+    scope: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Dispatch tool call and return structured result dict."""
+    scope_dataset_id, scope_dataset_name, scoped_table_ids = await _resolve_scope_dataset(scope, token)
 
     # ── search_charts ──────────────────────────────────────────────────────────
     if name == "search_charts":
         query = args.get("query", "")
         chart_type_filter = args.get("chart_type")
         limit = min(int(args.get("limit", 10)), 20)
+        chart_lookup: Dict[int, Dict[str, Any]] = {}
+
+        if scope_dataset_id and scoped_table_ids:
+            charts = list(chart_lookup.values()) if chart_lookup else await bi_client.list_charts(limit=200, token=token)
+            chart_lookup = {
+                int(chart["id"]): chart
+                for chart in charts
+                if chart.get("dataset_table_id") in scoped_table_ids
+            }
+        elif scope_dataset_id and not scoped_table_ids:
+            return {
+                "count": 0,
+                "charts": [],
+                "error": f"Dataset {scope_dataset_name or scope_dataset_id} has no accessible tables.",
+            }
 
         # --- Try vector search first ---
         vector_hits = await bi_client.search_similar_charts(query, limit=limit * 2, token=token)
+        if chart_lookup:
+            vector_hits = [hit for hit in vector_hits if int(hit.get("id", -1)) in chart_lookup]
         if chart_type_filter:
             vector_hits = [h for h in vector_hits if h.get("chart_type", "").upper() == chart_type_filter.upper()]
 
@@ -439,14 +536,14 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
                     "id": h["id"],
                     "name": h["name"],
                     "chart_type": h.get("chart_type", ""),
-                    "description": h.get("description", ""),
+                    "description": (chart_lookup.get(int(h["id"])) or {}).get("description", h.get("description", "")),
                 }
                 for h in vector_hits[:limit]
             ]
         else:
             # --- Fallback: fuzzy keyword search on chart name only ---
             # (metadata lookup removed — all charts return 404 until AutoTaggingService runs)
-            charts = await bi_client.list_charts(limit=200, token=token)
+            charts = list(chart_lookup.values()) if scope_dataset_id is not None else await bi_client.list_charts(limit=200, token=token)
 
             scored = []
             for c in charts:
@@ -535,6 +632,8 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
         result = await bi_client.get_chart_data(chart_id, token=token)
 
         chart_meta = result.get("chart", {})
+        if scope_dataset_id and chart_meta.get("dataset_table_id") not in scoped_table_ids:
+            return {"error": f"Chart {chart_id} is outside dataset_id={scope_dataset_id} for this conversation."}
         data = result.get("data", [])
 
         # Extract roleConfig from chart config so frontend can render correctly
@@ -555,6 +654,8 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
     elif name == "search_dashboards":
         query = args.get("query", "")
         dashboards = await bi_client.list_dashboards(token=token)
+        if scope_dataset_id:
+            dashboards = [d for d in dashboards if _dashboard_matches_scope(d, scoped_table_ids)]
 
         scored = []
         for d in dashboards:
@@ -569,15 +670,48 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
                 "id": d["id"],
                 "name": d["name"],
                 "description": d.get("description", ""),
-                "chart_count": len(d.get("charts", [])),
+                "chart_count": len(d.get("dashboard_charts", []) or d.get("charts", [])),
             }
             for _, d in scored[:10]
         ]
         return {"count": len(results), "dashboards": results}
 
+    # â”€â”€ inspect_dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    elif name == "inspect_dashboard":
+        dashboard_id = int(args["dashboard_id"])
+        dashboard = await bi_client.get_dashboard(dashboard_id, token=token)
+        if scope_dataset_id and not _dashboard_matches_scope(dashboard, scoped_table_ids):
+            return {"error": f"Dashboard {dashboard_id} is outside dataset_id={scope_dataset_id} for this conversation."}
+
+        chart_summaries = []
+        for item in dashboard.get("dashboard_charts", []):
+            chart = item.get("chart") or {}
+            metadata = chart.get("metadata") or {}
+            chart_summaries.append({
+                "chart_id": chart.get("id") or item.get("chart_id"),
+                "name": chart.get("name", ""),
+                "chart_type": chart.get("chart_type", ""),
+                "dataset_table_id": chart.get("dataset_table_id"),
+                "description": metadata.get("auto_description") or chart.get("description", ""),
+                "metrics": metadata.get("metrics") or [],
+                "dimensions": metadata.get("dimensions") or [],
+            })
+
+        return {
+            "dashboard_id": dashboard_id,
+            "dashboard_name": dashboard.get("name", ""),
+            "description": dashboard.get("description", ""),
+            "chart_count": len(chart_summaries),
+            "charts": chart_summaries,
+        }
+
     # ── list_dataset_tables ──────────────────────────────────────────────────
     elif name == "list_dataset_tables":
         dataset_id_filter = args.get("dataset_id")
+        if scope_dataset_id is not None:
+            if dataset_id_filter is not None and int(dataset_id_filter) != scope_dataset_id:
+                return {"error": f"list_dataset_tables is restricted to dataset_id={scope_dataset_id} in this conversation."}
+            dataset_id_filter = scope_dataset_id
         datasets = await bi_client.list_datasets(token=token)
 
         result = []
@@ -611,8 +745,12 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
 
     # ── query_table ────────────────────────────────────────────────────────────
     elif name == "query_table":
-        dataset_id = int(args["dataset_id"])
+        dataset_id = _ensure_dataset_scope(args, scope_dataset_id, "query_table")
+        if dataset_id is None:
+            return {"error": "query_table requires dataset_id."}
         table_id = int(args["table_id"])
+        if scoped_table_ids and table_id not in scoped_table_ids:
+            return {"error": f"Table {table_id} is outside dataset_id={scope_dataset_id} for this conversation."}
         dimensions = args.get("dimensions") or []
         measures = args.get("measures") or []
         filters = args.get("filters") or []
@@ -643,8 +781,12 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
 
     # ── run_dataset_table ────────────────────────────────────────────────────
     elif name == "run_dataset_table":
-        dataset_id = int(args["dataset_id"])
+        dataset_id = _ensure_dataset_scope(args, scope_dataset_id, "run_dataset_table")
+        if dataset_id is None:
+            return {"error": "run_dataset_table requires dataset_id."}
         table_id = int(args["table_id"])
+        if scoped_table_ids and table_id not in scoped_table_ids:
+            return {"error": f"Table {table_id} is outside dataset_id={scope_dataset_id} for this conversation."}
         limit = min(int(args.get("limit", settings.ai_dataset_table_limit)), settings.ai_dataset_table_limit)
 
         result = await bi_client.preview_dataset_table(dataset_id, table_id, limit=limit, token=token)
@@ -659,8 +801,12 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
     # ── create_chart ───────────────────────────────────────────────────────────
     elif name == "create_chart":
         import datetime as _dt
-        dataset_id = int(args["dataset_id"])
+        dataset_id = _ensure_dataset_scope(args, scope_dataset_id, "create_chart")
+        if dataset_id is None:
+            return {"error": "create_chart requires dataset_id."}
         table_id = int(args["table_id"])
+        if scoped_table_ids and table_id not in scoped_table_ids:
+            return {"error": f"Table {table_id} is outside dataset_id={scope_dataset_id} for this conversation."}
         chart_type = args.get("chart_type", "BAR").upper()
         config = args.get("config") or {}
         chart_name = args.get("name", "AI Chart")
@@ -718,8 +864,12 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
 
     # ── explore_data ───────────────────────────────────────────────────────────
     elif name == "explore_data":
-        dataset_id = int(args["dataset_id"])
+        dataset_id = _ensure_dataset_scope(args, scope_dataset_id, "explore_data")
+        if dataset_id is None:
+            return {"error": "explore_data requires dataset_id."}
         table_id = int(args["table_id"])
+        if scoped_table_ids and table_id not in scoped_table_ids:
+            return {"error": f"Table {table_id} is outside dataset_id={scope_dataset_id} for this conversation."}
         analysis_type = args.get("analysis_type", "overview")
         focus_columns: List[str] = args.get("focus_columns") or []
 
@@ -830,8 +980,12 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
     # ── explain_insight ────────────────────────────────────────────────────────
     elif name == "explain_insight":
         import datetime as _dt
-        dataset_id = int(args["dataset_id"])
+        dataset_id = _ensure_dataset_scope(args, scope_dataset_id, "explain_insight")
+        if dataset_id is None:
+            return {"error": "explain_insight requires dataset_id."}
         table_id = int(args["table_id"])
+        if scoped_table_ids and table_id not in scoped_table_ids:
+            return {"error": f"Table {table_id} is outside dataset_id={scope_dataset_id} for this conversation."}
         metric_col = args["metric_column"]
         agg = args.get("aggregation", "sum")
         time_col = args.get("time_column")
@@ -985,6 +1139,13 @@ async def execute_tool(name: str, args: Dict[str, Any], token: str = "") -> Dict
 
         if not tables_arg:
             return {"error": "No tables provided. Call list_dataset_tables first to find table IDs."}
+
+        if scope_dataset_id is not None:
+            for table in tables_arg:
+                if int(table.get("dataset_id", -1)) != scope_dataset_id:
+                    return {"error": f"create_dashboard is restricted to dataset_id={scope_dataset_id} in this conversation."}
+                if scoped_table_ids and int(table.get("table_id", -1)) not in scoped_table_ids:
+                    return {"error": f"Table {table.get('table_id')} is outside dataset_id={scope_dataset_id} for this conversation."}
 
         # Analyse first table to understand schema
         first = tables_arg[0]

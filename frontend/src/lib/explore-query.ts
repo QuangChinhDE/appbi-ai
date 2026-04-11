@@ -1034,7 +1034,7 @@ export function buildQuerySignature(args: {
     tableId,
     sqlMode,
     chartType,
-    limit: sqlMode === 'generated' ? limit : null,
+    limit,
     request: sqlMode === 'generated' ? request : null,
     roleConfig: sqlMode === 'custom' ? normalizedRoleConfig : null,
     filters: sqlMode === 'custom' ? normalizedFilters : null,

@@ -298,6 +298,7 @@ export interface ExploreChartProps {
   data: Record<string, any>[];
   roleConfig: ChartRoleConfig;
   styleConfig?: ChartStyleConfig;
+  onStyleConfigChange?: (nextStyleConfig: ChartStyleConfig) => void;
   /** Post-aggregation (HAVING) filters ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â applied after group-by+agg */
   havingFilters?: BaseFilter[];
   /** When true, backend already ran GROUP BY aggregation ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â skip client-side applyGroupByAgg */
@@ -310,6 +311,7 @@ function ExploreChartInner({
   data,
   roleConfig,
   styleConfig: _style,
+  onStyleConfigChange,
   havingFilters = [],
   preAggregated = false,
   onSelectDataPoint,
@@ -326,6 +328,7 @@ function ExploreChartInner({
   );
   const {
     roleConfig: normalizedRoleConfig,
+    invalidMessage,
     xField,
     tableData,
     tableColumns,
@@ -366,6 +369,12 @@ function ExploreChartInner({
     d = applyDataLimit(d, dataLimit, dataLimitDir);
     return d;
   }, [scatterPoints, sortRules, dataLimit, dataLimitDir]);
+  const handleTableColumnWidthsChange = (nextWidths: Record<string, number>) => {
+    onStyleConfigChange?.({
+      ...style,
+      tableColumnWidths: Object.keys(nextWidths).length > 0 ? nextWidths : undefined,
+    });
+  };
 
   // Apply time granularity bucketing for TIME_SERIES
   const timeSeriesData = useMemo(() => {
@@ -378,6 +387,10 @@ function ExploreChartInner({
 
   if (!data || data.length === 0) {
     return <EmptyState message="No data. Run the query first." />;
+  }
+
+  if (invalidMessage) {
+    return <EmptyState message={invalidMessage} />;
   }
 
   // Truncation banner ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â shown above the chart when data points exceed MAX_CHART_POINTS
@@ -610,6 +623,9 @@ function ExploreChartInner({
             showSummaryRow={style.tableShowSummaryRow}
             summaryLabel={style.tableSummaryLabel}
             summaryLabelColumn={style.tableSummaryLabelColumn}
+            columnWidths={style.tableColumnWidths}
+            onColumnWidthsChange={onStyleConfigChange ? handleTableColumnWidthsChange : undefined}
+            columnAlignments={style.tableColumnAlignments}
           />
         </div>
       </div>

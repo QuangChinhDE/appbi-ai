@@ -256,13 +256,23 @@ class BIClient:
     # ── Chat session persistence ───────────────────────────────────────────────
 
     async def upsert_chat_session(
-        self, session_id: str, title: str, owner_user_id: str, token: str = ""
+        self,
+        session_id: str,
+        title: str,
+        owner_user_id: str,
+        token: str = "",
+        context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Create or update a chat session record in the backend DB."""
         try:
             await self._http.post(
                 f"{self._base}/chat-sessions",
-                json={"session_id": session_id, "title": title, "owner_user_id": owner_user_id},
+                json={
+                    "session_id": session_id,
+                    "title": title,
+                    "owner_user_id": owner_user_id,
+                    "context": context,
+                },
                 headers=self._auth_headers(token),
             )
         except Exception:

@@ -8,6 +8,7 @@ import { useDataSource, useUpdateDataSource } from '@/hooks/use-datasources';
 import DataSourceForm from '@/components/datasources/DataSourceForm';
 import type { DataSourceCreate } from '@/types/api';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import { OwnerBadge } from '@/components/common/OwnerBadge';
 
 type Tab = 'connection';
 
@@ -103,6 +104,11 @@ export default function DataSourceDetailPage() {
 
   const typeLabel = TYPE_LABELS[dataSource.type] ?? dataSource.type;
   const typeColor = TYPE_COLORS[dataSource.type] ?? 'bg-gray-100 text-gray-600';
+  const createdAt = new Date(dataSource.created_at).toLocaleDateString('vi-VN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     {
@@ -126,14 +132,26 @@ export default function DataSourceDetailPage() {
           </Link>
         </div>
         <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold text-gray-900">{dataSource.name}</h1>
-            <span className={`px-2.5 py-1 text-xs font-semibold rounded-full ${typeColor}`}>
-              {typeLabel}
-            </span>
-            {dataSource.description && (
-              <span className="text-sm text-gray-400">{dataSource.description}</span>
-            )}
+          <div>
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-bold text-gray-900">{dataSource.name}</h1>
+              <span className={`px-2.5 py-1 text-xs font-semibold rounded-full ${typeColor}`}>
+                {typeLabel}
+              </span>
+              {dataSource.description && (
+                <span className="text-sm text-gray-400">{dataSource.description}</span>
+              )}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-500">
+              <span>Created {createdAt}</span>
+              {dataSource.owner_email && (
+                <>
+                  <span className="text-gray-300">•</span>
+                  <span>Created by</span>
+                  <OwnerBadge email={dataSource.owner_email} />
+                </>
+              )}
+            </div>
           </div>
           {resPerms.canEdit && (
           <Link

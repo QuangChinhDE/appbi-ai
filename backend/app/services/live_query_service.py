@@ -574,7 +574,8 @@ def build_live_agg_query(
     Build an aggregation query for direct source execution.
 
     Returns (sql, pre_aggregated).
-    Stricter limits than DuckDB path: chart ≤ 1000, TABLE ≤ 5000, SCATTER ≤ 5000.
+    Defaults stay conservative (chart 1000, TABLE/SCATTER 5000), while
+    preview callers may request a higher limit up to a 5000-row server cap.
     """
     qi = _quote_identifier
     ctype = str(getattr(chart_type, "value", chart_type) or "").upper()
@@ -584,11 +585,16 @@ def build_live_agg_query(
     quoted_row_order_alias = qi(row_order_alias, dialect)
     quoted_group_order_alias = qi(group_order_alias, dialect)
 
+    def resolve_limit(default_limit: int) -> int:
+        if limit_override is None:
+            return default_limit
+        return max(1, min(int(limit_override), 5000))
+
     where_clause = _build_where_clause(filters, dialect)
     where_sql = f" WHERE {where_clause}" if where_clause else ""
 
     if not role_config:
-        limit = limit_override or 500
+        limit = resolve_limit(500)
         return f"SELECT * FROM {base_table}{where_sql} LIMIT {int(limit)}", False
 
     dimension = role_config.get("dimension")
@@ -625,7 +631,7 @@ def build_live_agg_query(
             else:
                 metric_sql = f"SUM({quoted_metric_field}) AS {quoted_alias}"
 
-            limit = limit_override or 5000
+            limit = resolve_limit(5000)
             ordered_base_table = (
                 f"(SELECT *, ROW_NUMBER() OVER () AS {quoted_row_order_alias} "
                 f"FROM {base_table}) AS _appbi_ordered"
@@ -645,13 +651,13 @@ def build_live_agg_query(
             )
 
         cols = ", ".join(qi(c, dialect) for c in selected_cols) if selected_cols else "*"
-        limit = limit_override or 5000
+        limit = resolve_limit(5000)
         return f"SELECT {cols} FROM {base_table}{where_sql} LIMIT {int(limit)}", True
 
     # SCATTER: raw points up to 5000
     if ctype == "SCATTER":
         sx, sy = role_config.get("scatterX"), role_config.get("scatterY")
-        limit = limit_override or 5000
+        limit = resolve_limit(5000)
         if sx and sy:
             return (
                 f"SELECT {qi(sx, dialect)}, {qi(sy, dialect)} FROM {base_table}{where_sql} LIMIT {int(limit)}",
@@ -730,7 +736,7 @@ def build_live_agg_query(
         )
 
     # Stricter limit for live queries
-    limit = limit_override or 1000
+    limit = resolve_limit(1000)
     sql += f" LIMIT {int(limit)}"
     return sql, True
 

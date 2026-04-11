@@ -14,6 +14,10 @@ class ChatRequest(BaseModel):
     context: Optional[Dict[str, Any]] = None   # {dataset_id, chart_ids, ...}
 
 
+class SessionCreateRequest(BaseModel):
+    context: Optional[Dict[str, Any]] = None
+
+
 # ── Outbound streaming events ──────────────────────────────────────────────────
 
 class ThinkingEvent(BaseModel):
@@ -120,3 +124,4 @@ class SessionSummary(BaseModel):
     last_active: datetime
     message_count: int
     last_message: Optional[str] = None
+    context: Optional[Dict[str, Any]] = None

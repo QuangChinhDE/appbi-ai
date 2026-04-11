@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import type { TableColumnAlignment } from '@/types/api';
 import {
   SortConfig,
   ConditionalFormatRule,
@@ -32,12 +33,50 @@ export interface TableVisualizationProps {
   summaryLabelColumn?: string;
   onRowClick?: (row: any) => void; // Drilldown trigger
   enableDrilldown?: boolean;
+  columnWidths?: Record<string, number>;
+  onColumnWidthsChange?: (columnWidths: Record<string, number>) => void;
+  columnAlignments?: Record<string, TableColumnAlignment>;
+  enableColumnResize?: boolean;
 }
 
-export function TableVisualization({ 
-  data, 
-  columns, 
-  maxRows = 200, 
+const MIN_COLUMN_WIDTH = 96;
+
+function sanitizeColumnWidths(
+  widths: Record<string, number> | null | undefined,
+): Record<string, number> {
+  if (!widths) return {};
+
+  return Object.fromEntries(
+    Object.entries(widths)
+      .filter(([columnName, width]) => columnName.trim() && Number.isFinite(Number(width)) && Number(width) > 0)
+      .map(([columnName, width]) => [columnName, Math.max(Math.round(Number(width)), MIN_COLUMN_WIDTH)]),
+  );
+}
+
+function getColumnAlignment(
+  column: string,
+  columnAlignments: Record<string, TableColumnAlignment> | null | undefined,
+): TableColumnAlignment {
+  const alignment = columnAlignments?.[column];
+  return alignment === 'center' || alignment === 'right' ? alignment : 'left';
+}
+
+function getHeaderJustifyClass(alignment: TableColumnAlignment): string {
+  switch (alignment) {
+    case 'center':
+      return 'justify-center';
+    case 'right':
+      return 'justify-end';
+    case 'left':
+    default:
+      return 'justify-start';
+  }
+}
+
+export function TableVisualization({
+  data,
+  columns,
+  maxRows = 200,
   className,
   sorts = [],
   onSortChange,
@@ -48,26 +87,133 @@ export function TableVisualization({
   summaryLabel = 'Total',
   summaryLabelColumn,
   onRowClick,
-  enableDrilldown = false
+  enableDrilldown = false,
+  columnWidths,
+  onColumnWidthsChange,
+  columnAlignments,
+  enableColumnResize = true,
 }: TableVisualizationProps) {
   const rows = data ?? [];
   const cols = columns ?? (rows.length > 0 ? Object.keys(rows[0]) : []);
-
-  if (cols.length === 0 || rows.length === 0) {
-    return (
-      <div className={clsx("p-8", className)}>
-        <div className="text-center text-sm text-gray-500">
-          No data to display.
-        </div>
-      </div>
-    );
-  }
+  const colsKey = useMemo(() => cols.join('\u0000'), [cols]);
+  const sanitizedColumnWidths = useMemo(() => sanitizeColumnWidths(columnWidths), [columnWidths]);
+  const hasExternalColumnWidthControl = onColumnWidthsChange !== undefined || columnWidths !== undefined;
+  const [liveColumnWidths, setLiveColumnWidths] = useState<Record<string, number>>(sanitizedColumnWidths);
+  const [activeResizeColumn, setActiveResizeColumn] = useState<string | null>(null);
+  const headerCellRefs = useRef<Record<string, HTMLTableCellElement | null>>({});
+  const liveColumnWidthsRef = useRef<Record<string, number>>(liveColumnWidths);
+  const resizeStateRef = useRef<{ column: string; startX: number; startWidth: number } | null>(null);
 
   const displayRows = rows.slice(0, maxRows);
   const numericColumns = useMemo(
     () => cols.filter((col) => rows.some((row) => parseNumericCellValue(row?.[col]) !== null)),
     [cols, rows],
   );
+
+  useEffect(() => {
+    liveColumnWidthsRef.current = liveColumnWidths;
+  }, [liveColumnWidths]);
+
+  useEffect(() => {
+    setLiveColumnWidths((current) => {
+      const next: Record<string, number> = {};
+
+      cols.forEach((col) => {
+        const explicitWidth = sanitizedColumnWidths[col];
+        const fallbackWidth = current[col];
+        const resolvedWidth = hasExternalColumnWidthControl
+          ? explicitWidth
+          : explicitWidth ?? fallbackWidth;
+        if (typeof resolvedWidth === 'number' && resolvedWidth > 0) {
+          next[col] = resolvedWidth;
+        }
+      });
+
+      const currentKeys = Object.keys(current).filter((col) => cols.includes(col));
+      const nextKeys = Object.keys(next);
+      const isSameLength = currentKeys.length === nextKeys.length;
+      const isSameValues = isSameLength && nextKeys.every((col) => current[col] === next[col]);
+
+      return isSameValues ? current : next;
+    });
+  }, [cols, colsKey, hasExternalColumnWidthControl, sanitizedColumnWidths]);
+
+  useLayoutEffect(() => {
+    if (cols.length === 0) {
+      return;
+    }
+
+    setLiveColumnWidths((current) => {
+      const next = { ...current };
+      let changed = false;
+
+      cols.forEach((col) => {
+        if (next[col]) {
+          return;
+        }
+
+        const measuredWidth = Math.ceil(headerCellRefs.current[col]?.getBoundingClientRect().width ?? 0);
+        if (measuredWidth > 0) {
+          next[col] = Math.max(measuredWidth, MIN_COLUMN_WIDTH);
+          changed = true;
+        }
+      });
+
+      return changed ? next : current;
+    });
+  }, [cols, colsKey, liveColumnWidths]);
+
+  useEffect(() => {
+    if (!activeResizeColumn) {
+      return;
+    }
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const activeResize = resizeStateRef.current;
+      if (!activeResize) {
+        return;
+      }
+
+      const deltaX = event.clientX - activeResize.startX;
+      const nextWidth = Math.max(Math.round(activeResize.startWidth + deltaX), MIN_COLUMN_WIDTH);
+
+      setLiveColumnWidths((current) => {
+        if (current[activeResize.column] === nextWidth) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [activeResize.column]: nextWidth,
+        };
+      });
+    };
+
+    const handleMouseUp = () => {
+      const nextWidths = sanitizeColumnWidths(liveColumnWidthsRef.current);
+      if (onColumnWidthsChange) {
+        onColumnWidthsChange(nextWidths);
+      }
+
+      resizeStateRef.current = null;
+      setActiveResizeColumn(null);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [activeResizeColumn, onColumnWidthsChange]);
+
   const resolvedSummaryLabelColumn = useMemo(() => {
     if (summaryLabelColumn && cols.includes(summaryLabelColumn)) {
       return summaryLabelColumn;
@@ -132,6 +278,16 @@ export function TableVisualization({
       return totalRow;
     });
   }, [cols, numericColumns, resolvedSummaryLabelColumn, resolvedSummaryRows, rows]);
+
+  if (cols.length === 0 || rows.length === 0) {
+    return (
+      <div className={clsx("p-8", className)}>
+        <div className="text-center text-sm text-gray-500">
+          No data to display.
+        </div>
+      </div>
+    );
+  }
   
   // Handle column header click for sorting
   const handleHeaderClick = (column: string) => {
@@ -179,26 +335,88 @@ export function TableVisualization({
     );
   };
 
+  const startColumnResize = (column: string, event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const currentWidth = liveColumnWidthsRef.current[column]
+      ?? Math.ceil(headerCellRefs.current[column]?.getBoundingClientRect().width ?? 0)
+      ?? MIN_COLUMN_WIDTH;
+
+    resizeStateRef.current = {
+      column,
+      startX: event.clientX,
+      startWidth: Math.max(currentWidth, MIN_COLUMN_WIDTH),
+    };
+    setActiveResizeColumn(column);
+  };
+
+  const allColumnWidthsResolved = cols.every((col) => typeof liveColumnWidths[col] === 'number' && liveColumnWidths[col] > 0);
+  const tableWidth = allColumnWidthsResolved
+    ? cols.reduce((total, col) => total + liveColumnWidths[col], 0)
+    : undefined;
+
   return (
     <div className={clsx("h-full overflow-auto", className)}>
-      <table className="min-w-full border-separate border-spacing-0 text-sm">
+      <table
+        className="border-separate border-spacing-0 text-sm min-w-full"
+        style={{
+          tableLayout: allColumnWidthsResolved ? 'fixed' : 'auto',
+          width: tableWidth,
+        }}
+      >
+          <colgroup>
+            {cols.map((col) => (
+              <col
+                key={`col-${col}`}
+                style={liveColumnWidths[col] ? { width: liveColumnWidths[col] } : undefined}
+              />
+            ))}
+          </colgroup>
           <thead className="bg-gray-50 sticky top-0 z-10">
             <tr>
-              {cols.map((col) => (
-                <th 
-                  key={col} 
-                  className={clsx(
-                    "px-4 py-3 text-left font-semibold text-gray-700 border-b-2 border-gray-200 whitespace-nowrap",
-                    onSortChange && "cursor-pointer hover:bg-gray-100 select-none"
-                  )}
-                  onClick={() => handleHeaderClick(col)}
-                >
-                  <div className="flex items-center">
-                    <span>{col}</span>
-                    {getSortIndicator(col)}
-                  </div>
-                </th>
-              ))}
+              {cols.map((col) => {
+                const alignment = getColumnAlignment(col, columnAlignments);
+
+                return (
+                  <th
+                    key={col}
+                    ref={(element) => {
+                      headerCellRefs.current[col] = element;
+                    }}
+                    className={clsx(
+                      "group/table-header relative border-b-2 border-gray-200 px-4 py-3 font-semibold text-gray-700",
+                      onSortChange && "cursor-pointer hover:bg-gray-100 select-none",
+                    )}
+                    style={{ textAlign: alignment }}
+                    onClick={() => handleHeaderClick(col)}
+                  >
+                    <div className={clsx("flex min-w-0 items-center gap-1.5", getHeaderJustifyClass(alignment))}>
+                      <span className="truncate whitespace-nowrap">{col}</span>
+                      {getSortIndicator(col)}
+                    </div>
+
+                    {enableColumnResize && (
+                      <button
+                        type="button"
+                        aria-label={`Resize ${col} column`}
+                        className="absolute right-0 top-0 h-full w-3 cursor-col-resize touch-none select-none"
+                        onMouseDown={(event) => startColumnResize(col, event)}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <span
+                          className={clsx(
+                            "absolute inset-y-2 right-1/2 w-px -translate-x-1/2 rounded-full transition-colors",
+                            activeResizeColumn === col
+                              ? "bg-blue-500"
+                              : "bg-gray-300 opacity-0 group-hover/table-header:opacity-100",
+                          )}
+                        />
+                      </button>
+                    )}
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
@@ -214,17 +432,21 @@ export function TableVisualization({
               >
                 {cols.map((col) => {
                   const cellValue = row[col];
+                  const alignment = getColumnAlignment(col, columnAlignments);
                   const heatmapStyle = getHeatmapCellStyle(cellValue, col, heatmapRules, heatmapStats);
                   const conditionalStyle = getCellStyle(cellValue, col, conditionalFormatting, row);
                   const style = Object.keys(conditionalStyle).length > 0 ? conditionalStyle : heatmapStyle;
                   
                   return (
-                    <td 
-                      key={col} 
-                      className="px-4 py-2.5 border-b border-gray-100"
-                      style={style}
+                    <td
+                      key={col}
+                      className="border-b border-gray-100 px-4 py-2.5 align-top"
+                      style={{
+                        ...style,
+                        textAlign: alignment,
+                      }}
                     >
-                      {formatCellValue(cellValue)}
+                      <div className="break-words">{formatCellValue(cellValue)}</div>
                     </td>
                   );
                 })}
@@ -241,18 +463,23 @@ export function TableVisualization({
                     summaryIndex % 2 === 0 ? "bg-slate-100" : "bg-slate-50",
                   )}
                 >
-                  {cols.map((col) => (
-                    <td
-                      key={`summary-${summaryIndex}-${col}`}
-                      className={clsx(
-                        "px-4 py-2.5 border-b border-slate-200",
-                        summaryIndex % 2 === 0 ? "bg-slate-100" : "bg-slate-50",
-                        summaryIndex === 0 && "border-t-2 border-slate-300",
-                      )}
-                    >
-                      {formatCellValue(summaryRow[col])}
-                    </td>
-                  ))}
+                  {cols.map((col) => {
+                    const alignment = getColumnAlignment(col, columnAlignments);
+
+                    return (
+                      <td
+                        key={`summary-${summaryIndex}-${col}`}
+                        className={clsx(
+                          "border-b border-slate-200 px-4 py-2.5 align-top",
+                          summaryIndex % 2 === 0 ? "bg-slate-100" : "bg-slate-50",
+                          summaryIndex === 0 && "border-t-2 border-slate-300",
+                        )}
+                        style={{ textAlign: alignment }}
+                      >
+                        <div className="break-words">{formatCellValue(summaryRow[col])}</div>
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tfoot>

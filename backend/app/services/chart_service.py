@@ -637,6 +637,7 @@ def _execute_chart_runtime_for_table(
     *,
     extra_filters: list | None = None,
     filter_context: str | None = None,
+    limit_override: int | None = None,
 ) -> Dict[str, Any]:
     """Execute chart runtime against a dataset table.
 
@@ -680,6 +681,7 @@ def _execute_chart_runtime_for_table(
             all_filters,
             cal_sql,
             extra_filters=[],
+            limit_override=limit_override,
         )
 
     # ── Derived / calculated table: build live SQL from definition ──
@@ -707,6 +709,7 @@ def _execute_chart_runtime_for_table(
                     [],
                     filtered_live_sql,
                     extra_filters=[],
+                    limit_override=limit_override,
                 )
 
             live_datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
@@ -719,10 +722,12 @@ def _execute_chart_runtime_for_table(
                 return LiveQueryService.execute_chart_query_from_sql(
                     live_datasource, chart_type, role_config, filters, live_sql,
                     extra_filters=live_filters,
+                    limit_override=limit_override,
                 )
             return LiveQueryService.execute_chart_query(
                 live_datasource, live_proxy_table, chart_type, role_config, filters,
                 extra_filters=normalized_extra_filters,
+                limit_override=limit_override,
             )
         except DatasetTableSqlError as exc:
             raise ValueError(str(exc)) from exc
@@ -738,6 +743,7 @@ def _execute_chart_runtime_for_table(
             filters,
             custom_sql,
             extra_filters=normalized_extra_filters,
+            limit_override=limit_override,
         )
 
     if datasource is None:
@@ -751,10 +757,12 @@ def _execute_chart_runtime_for_table(
         return LiveQueryService.execute_chart_query_from_sql(
             datasource, chart_type, role_config, filters, live_sql,
             extra_filters=live_filters,
+            limit_override=limit_override,
         )
     return LiveQueryService.execute_chart_query(
         datasource, db_table, chart_type, role_config, filters,
         extra_filters=normalized_extra_filters,
+        limit_override=limit_override,
     )
 
 
@@ -990,6 +998,13 @@ class ChartService:
 
         config = chart_config or {}
         custom_sql = get_chart_custom_sql(config)
+        limit_override = None
+        raw_limit_override = config.get("limit")
+        if raw_limit_override is not None:
+            try:
+                limit_override = max(1, min(int(raw_limit_override), 5000))
+            except (TypeError, ValueError):
+                limit_override = None
         normalized_role_config = normalize_chart_role_config(
             chart_type,
             get_chart_active_role_config(config),
@@ -1005,6 +1020,7 @@ class ChartService:
 
             ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
             timeout = 60 if ds_type == "bigquery" else 30
+            source_sample_limit = max(1, min(int(source_sample_limit), 5000))
             source_columns, source_rows, source_execution_time_ms = DataSourceConnectionService.execute_query(
                 ds_type,
                 datasource.config,
@@ -1031,6 +1047,7 @@ class ChartService:
             config,
             extra_filters=extra_filters,
             filter_context=filter_context,
+            limit_override=limit_override,
         )
 
         preview["data"] = result["data"]

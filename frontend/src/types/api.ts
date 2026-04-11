@@ -42,6 +42,8 @@ export interface TableHeatmapRule {
   maxColor?: string;
 }
 
+export type TableColumnAlignment = 'left' | 'center' | 'right';
+
 export type TableSummaryCalculation =
   | 'sum'
   | 'avg'

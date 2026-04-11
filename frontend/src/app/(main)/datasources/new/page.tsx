@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Settings } from 'lucide-react';
+import { toast } from 'sonner';
 import DataSourceForm from '@/components/datasources/DataSourceForm';
 import { useCreateDataSource } from '@/hooks/use-datasources';
 import type { DataSourceCreate } from '@/types/api';
@@ -17,10 +18,13 @@ export default function NewDataSourcePage() {
 
   const handleCreate = async (data: DataSourceCreate, _meta: { configModified: boolean }) => {
     try {
-      const created = await createMutation.mutateAsync(data);
-      router.push(`/datasources/${created.id}?tab=connection`);
+      await createMutation.mutateAsync(data);
+      toast.success('Data source created successfully.');
+      router.push('/datasources');
     } catch (error: any) {
-      alert(`Failed to create data source: ${error.response?.data?.detail || error.message}`);
+      const detail = error.response?.data?.detail;
+      const message = typeof detail === 'string' ? detail : detail?.message || error.message;
+      toast.error(`Failed to create data source: ${message}`);
     }
   };
 

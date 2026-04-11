@@ -1,6 +1,7 @@
 import { applyFiltersToRows } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import {
+  getChartRoleConfigValidationMessage,
   metricKey,
   metricLabel,
   normalizeRoleConfig,
@@ -19,6 +20,7 @@ export interface ChartSeriesDef {
 
 export interface ExploreChartModel {
   roleConfig: ChartRoleConfig;
+  invalidMessage?: string;
   xField?: string;
   tableData: Record<string, any>[];
   tableColumns: string[];
@@ -256,6 +258,7 @@ export function buildExploreChartModel(args: {
 
   const emptyModel: ExploreChartModel = {
     roleConfig: normalizedRoleConfig,
+    invalidMessage: undefined,
     xField,
     tableData,
     tableColumns,
@@ -282,6 +285,14 @@ export function buildExploreChartModel(args: {
 
   if (!data.length) {
     return emptyModel;
+  }
+
+  const invalidMessage = getChartRoleConfigValidationMessage(type, normalizedRoleConfig);
+  if (invalidMessage) {
+    return {
+      ...emptyModel,
+      invalidMessage,
+    };
   }
 
   if (type === 'TABLE') {

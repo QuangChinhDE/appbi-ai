@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import uuid
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Query, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -13,7 +13,15 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 
 from app.config import settings
-from app.schemas.chat import ChatRequest, ConversationSession, DoneEvent, ErrorEvent, FeedbackRequest, SessionSummary
+from app.schemas.chat import (
+    ChatRequest,
+    ConversationSession,
+    DoneEvent,
+    ErrorEvent,
+    FeedbackRequest,
+    SessionCreateRequest,
+    SessionSummary,
+)
 from app.agents.orchestrator import get_or_create_session, run_agent, cleanup_expired_sessions, _sessions, load_session_from_db
 
 logger = logging.getLogger(__name__)
@@ -21,6 +29,13 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 _ALGORITHM = "HS256"
 _bearer = HTTPBearer(auto_error=False)
+
+
+def _public_context(context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Strip server-only fields before returning session context to the client."""
+    if not isinstance(context, dict):
+        return {}
+    return {k: v for k, v in context.items() if k != "auth_token"}
 
 
 def _decode_ws_token(token: str | None) -> dict | None:
@@ -161,12 +176,13 @@ async def websocket_chat(
 # ── REST streaming (SSE-compatible) ───────────────────────────────────────────
 
 @router.post("/stream")
-async def chat_stream(req: ChatRequest, auth: dict = Depends(_require_auth)):
+async def chat_stream(req: ChatRequest, auth_ctx: tuple = Depends(_require_auth_raw)):
     """
     POST endpoint that streams NDJSON events (one per line).
     Useful for clients that cannot use WebSocket (e.g. curl, Postman).
     Requires Authorization: Bearer <jwt> header.
     """
+    auth, raw_token = auth_ctx
     user_id: str = auth.get("sub", "")
     ai_level: str = auth.get("ai_level", "view")
     user_role: str = "editor" if ai_level in ("edit", "full") else "viewer"
@@ -174,6 +190,7 @@ async def chat_stream(req: ChatRequest, auth: dict = Depends(_require_auth)):
     context = req.context or {}
     context["user_role"] = user_role
     context["user_id"] = user_id
+    context["auth_token"] = raw_token
     session = get_or_create_session(req.session_id, context)
     if session.owner_user_id == "":
         session.owner_user_id = user_id
@@ -215,20 +232,36 @@ async def list_sessions(auth_ctx: tuple = Depends(_require_auth_raw)):
             last_active=s["last_active"],
             message_count=s.get("message_count", 0),
             last_message=last_msg,
+            context=_public_context(s.get("context")),
         ))
     return result
 
 
 @router.post("/sessions", status_code=201)
-async def create_session(auth_ctx: tuple = Depends(_require_auth_raw)):
+async def create_session(
+    body: SessionCreateRequest | None = None,
+    auth_ctx: tuple = Depends(_require_auth_raw),
+):
     """Create a new empty session and persist it to DB."""
     auth, token = auth_ctx
     user_id: str = auth.get("sub", "")
     from app.clients.bi_client import bi_client
     new_id = str(uuid.uuid4())
-    session = ConversationSession(session_id=new_id, owner_user_id=user_id)
+    session_context = body.context.copy() if body and body.context else {}
+    session_context["auth_token"] = token
+    session = ConversationSession(
+        session_id=new_id,
+        owner_user_id=user_id,
+        context=session_context,
+    )
     _sessions[new_id] = session
-    await bi_client.upsert_chat_session(new_id, "New Conversation", user_id, token=token)
+    await bi_client.upsert_chat_session(
+        new_id,
+        "New Conversation",
+        user_id,
+        token=token,
+        context=body.context if body else None,
+    )
     return {"session_id": new_id}
 
 
@@ -279,6 +312,7 @@ async def get_session(session_id: str, auth_ctx: tuple = Depends(_require_auth_r
         "title": s.title,
         "created_at": s.created_at.isoformat(),
         "last_active": s.last_active.isoformat(),
+        "context": _public_context(s.context),
         "messages": msgs,
     }
 

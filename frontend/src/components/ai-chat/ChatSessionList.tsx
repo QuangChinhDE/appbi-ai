@@ -4,6 +4,7 @@ import React from 'react';
 import { useRouter } from 'next/navigation';
 import { MessageSquareText, Trash2, Clock, Loader2, ExternalLink, Share2 } from 'lucide-react';
 import type { ViewMode } from '@/components/common/PageListLayout';
+import type { ChatSessionContext } from './types';
 
 export interface SessionSummary {
   session_id: string;
@@ -12,6 +13,7 @@ export interface SessionSummary {
   last_active: string;
   message_count: number;
   last_message: string | null;
+  context?: ChatSessionContext | null;
 }
 
 interface ChatSessionListProps {
@@ -30,6 +32,11 @@ function timeAgo(iso: string) {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs} giờ trước`;
   return `${Math.floor(hrs / 24)} ngày trước`;
+}
+
+function getDatasetLabel(context?: ChatSessionContext | null) {
+  if (!context?.dataset_id) return null;
+  return context.dataset_name?.trim() || `Dataset #${context.dataset_id}`;
 }
 
 export function ChatSessionList({ sessions, viewMode, onDelete, onShare, deletingId }: ChatSessionListProps) {
@@ -73,7 +80,14 @@ export function ChatSessionList({ sessions, viewMode, onDelete, onShare, deletin
             {sessions.map((s) => (
               <tr key={s.session_id} className="hover:bg-gray-50">
                 <td className="px-6 py-4">
-                  <div className="text-sm font-medium text-gray-900 max-w-xs truncate">{s.title}</div>
+                  <div className="max-w-xs">
+                    <div className="text-sm font-medium text-gray-900 truncate">{s.title}</div>
+                    {getDatasetLabel(s.context) && (
+                      <span className="mt-1 inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+                        {getDatasetLabel(s.context)}
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="px-6 py-4">
                   <div className="text-sm text-gray-500 max-w-sm truncate">
@@ -143,6 +157,11 @@ export function ChatSessionList({ sessions, viewMode, onDelete, onShare, deletin
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-gray-900 truncate leading-snug">{s.title}</p>
+              {getDatasetLabel(s.context) && (
+                <span className="mt-1 inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+                  {getDatasetLabel(s.context)}
+                </span>
+              )}
               <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1">
                 <Clock className="h-3 w-3" /> {timeAgo(s.last_active)}
               </p>
