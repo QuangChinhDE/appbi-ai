@@ -104,6 +104,43 @@ function normalizeTableDisplayColumns(
   ));
 }
 
+function inferSortLimitColumns(
+  chartType: ChartType,
+  rows: Record<string, any>[],
+  roleConfig: ChartRoleConfig,
+  preAggregated: boolean,
+): ColumnMetadata[] {
+  if (!rows.length || chartType === 'TABLE' || chartType === 'KPI') {
+    return [];
+  }
+
+  const model = buildExploreChartModel({
+    type: chartType,
+    data: rows,
+    roleConfig,
+    preAggregated,
+  });
+
+  const sortRows = (() => {
+    if (chartType === 'SCATTER') {
+      return model.scatterPoints;
+    }
+    if (chartType === 'PIE') {
+      return model.pieData;
+    }
+    if (chartType === 'BAR_LINE') {
+      return model.comboData;
+    }
+    return model.categoricalData;
+  })();
+
+  if (!sortRows.length) {
+    return [];
+  }
+
+  return inferQueryColumns(Object.keys(sortRows[0] ?? {}), sortRows);
+}
+
 function createDefaultTableRoleConfig(roleConfig: ChartRoleConfig): ChartRoleConfig {
   return {
     ...roleConfig,
@@ -556,6 +593,30 @@ export default function ExploreDetailPage() {
       normalizedRoleConfig,
     );
   }, [chartType, displayedQueryState?.chartPreAggregated, displayedQueryState?.chartRows, normalizedRoleConfig, previewRows]);
+
+  const sortLimitColumns = useMemo(() => {
+    const inferenceRows = displayedQueryState?.chartRows?.length
+      ? displayedQueryState.chartRows
+      : displayedQueryState?.rows?.length
+        ? displayedQueryState.rows
+        : (sqlMode === 'generated' ? previewRows : []);
+    const inferredColumns = inferSortLimitColumns(
+      chartType,
+      inferenceRows,
+      normalizedRoleConfig,
+      displayedQueryState?.chartRows?.length ? displayedQueryState.chartPreAggregated : false,
+    );
+
+    return inferredColumns;
+  }, [
+    chartType,
+    displayedQueryState?.chartPreAggregated,
+    displayedQueryState?.chartRows,
+    displayedQueryState?.rows,
+    normalizedRoleConfig,
+    previewRows,
+    sqlMode,
+  ]);
 
   const mappingSummary = useMemo(() => {
     if (chartType === 'TABLE') {
@@ -1573,6 +1634,7 @@ export default function ExploreDetailPage() {
               roleConfig={activeRoleConfig}
               styleConfig={chartStyleConfig}
               availableColumns={configColumns}
+              sortLimitColumns={sortLimitColumns}
               tableDisplayColumns={tableDisplayColumns}
               queryMode={sqlMode}
               readOnly={!resPerms.canEdit}

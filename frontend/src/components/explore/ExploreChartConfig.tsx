@@ -795,6 +795,7 @@ interface ExploreChartConfigProps {
   roleConfig: ChartRoleConfig;
   styleConfig: ChartStyleConfig;
   availableColumns: Col[];
+  sortLimitColumns?: Col[];
   tableDisplayColumns?: Col[];
   queryMode?: 'generated' | 'custom';
   readOnly?: boolean;
@@ -808,6 +809,7 @@ export function ExploreChartConfig({
   roleConfig,
   styleConfig,
   availableColumns,
+  sortLimitColumns = [],
   tableDisplayColumns = [],
   queryMode = 'generated',
   readOnly,
@@ -891,6 +893,20 @@ export function ExploreChartConfig({
   const showQuickView = !['TABLE', 'KPI'].includes(chartType);
   const hasAdvancedControls = showQuickView && (hasAxis || supportsBenchmarkLine || isBarType || isLineType || chartType === 'PIE' || chartType === 'SCATTER' || chartType === 'TIME_SERIES' || supportsDataSection);
   const chartSortRules = normalizedStyleConfig.chartSortRules ?? [];
+  const sortLimitCols = sortLimitColumns;
+
+  useEffect(() => {
+    if (chartSortRules.length === 0 || sortLimitCols.length === 0) {
+      return;
+    }
+
+    const validColumnNames = new Set(sortLimitCols.map((column) => column.name));
+    const nextRules = chartSortRules.filter((rule) => validColumnNames.has(rule.field));
+
+    if (nextRules.length !== chartSortRules.length) {
+      updStyle({ chartSortRules: nextRules });
+    }
+  }, [chartSortRules, sortLimitCols, updStyle]);
 
   const setTableConditionalFormatting = (rules: ConditionalFormatRule[]) => {
     updStyle({ tableConditionalFormatting: rules.length > 0 ? rules : undefined });
@@ -2190,18 +2206,25 @@ export function ExploreChartConfig({
         </Disclosure>
       )}
 
-      {/* Data: Sort & Limit */}
+      {/* Sort & Limit */}
       {supportsDataSection && (
-        <Disclosure title="Data: Sort & Limit" hint="Sort by one or multiple columns before rendering, then optionally cap the number of displayed rows.">
+        <Disclosure title="Sort & Limit" hint="Sort by the chart output columns before rendering, then optionally cap the number of displayed rows.">
           {/* Sort rules */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-gray-600">Sort Rules</span>
               <button type="button"
-                onClick={() => updStyle({ chartSortRules: [...chartSortRules, { field: allCols[0]?.name ?? '', direction: 'asc' }] })}
-                className="text-xs text-blue-600 hover:text-blue-800">+ Add rule</button>
+                onClick={() => {
+                  if (sortLimitCols.length === 0) return;
+                  updStyle({ chartSortRules: [...chartSortRules, { field: sortLimitCols[0].name, direction: 'asc' }] });
+                }}
+                disabled={sortLimitCols.length === 0}
+                className="text-xs text-blue-600 hover:text-blue-800 disabled:cursor-not-allowed disabled:text-gray-300">+ Add rule</button>
             </div>
-            {chartSortRules.length === 0 && (
+            {chartSortRules.length === 0 && sortLimitCols.length === 0 && (
+              <p className="text-[11px] text-gray-400">Run the query or finish field mapping to sort the chart output.</p>
+            )}
+            {chartSortRules.length === 0 && sortLimitCols.length > 0 && (
               <p className="text-[11px] text-gray-400">No sort applied — data shown in query order.</p>
             )}
             {chartSortRules.map((rule, i) => (
@@ -2210,7 +2233,7 @@ export function ExploreChartConfig({
                 <select value={rule.field}
                   onChange={e => updStyle({ chartSortRules: chartSortRules.map((r, ri) => ri === i ? { ...r, field: e.target.value } : r) })}
                   className="flex-1 px-1.5 py-1 text-xs border border-gray-300 rounded-md bg-white min-w-0">
-                  {allCols.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                  {sortLimitCols.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                 </select>
                 <select value={rule.direction}
                   onChange={e => updStyle({ chartSortRules: chartSortRules.map((r, ri) => ri === i ? { ...r, direction: e.target.value as 'asc' | 'desc' } : r) })}
