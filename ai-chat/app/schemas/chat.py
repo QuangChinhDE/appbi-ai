@@ -76,6 +76,7 @@ class MetricsEvent(BaseModel):
     data_rows_analyzed: int = 0         # total rows from tool results
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
+    intent: Optional[str] = None        # classified intent: LOOKUP/EXPLORE/INSIGHT/CREATE
 
 
 class SuggestionsEvent(BaseModel):

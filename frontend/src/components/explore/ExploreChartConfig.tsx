@@ -747,15 +747,17 @@ function SectionPanel({
 }: {
   step: string;
   title: string;
-  description: string;
+  description?: string;
   children: React.ReactNode;
 }) {
   return (
     <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div className="border-b border-slate-100 px-4 py-3">
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">{step}</p>
-        <h3 className="mt-1 text-sm font-semibold text-slate-800">{title}</h3>
-        <p className="mt-1 text-xs text-slate-500">{description}</p>
+        <div className="mt-1 flex items-center gap-1">
+          <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
+          {description && <HelpTooltip text={description} />}
+        </div>
       </div>
       <div className="space-y-3 px-4 py-4">
         {children}
@@ -1494,11 +1496,9 @@ export function ExploreChartConfig({
           defaultOpen
         >
           <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2">
-            <div>
+            <div className="flex items-center gap-1">
               <div className="text-xs font-semibold text-gray-700">Resizable columns</div>
-              <p className="mt-1 text-[11px] text-gray-500">
-                Drag the divider on a column header in the preview to widen or shrink that column.
-              </p>
+              <HelpTooltip text="Drag the divider on a column header in the preview to widen or shrink that column." />
             </div>
             <button
               type="button"
@@ -1918,11 +1918,8 @@ export function ExploreChartConfig({
           <Disclosure title={chartBindingTitle} hint={chartRoleSectionHint} defaultOpen>
             <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll}
               onChange={v => upd({ metrics: v })} />
-            <MetricSlot label="Benchmark Metric" hint="optional dynamic comparison" single value={benchmarkMetric} options={numOrAll}
+            <MetricSlot label="Benchmark Metric" hint="In Custom SQL mode, choose a second numeric SQL output column. Use {benchmark}, {delta}, or {deltaPercent} in the Context Template." single value={benchmarkMetric} options={numOrAll}
               onChange={v => upd({ benchmarkMetric: v[0] || undefined })} />
-            <p className="text-[11px] text-gray-500">
-              In Custom SQL mode, choose a second numeric SQL output column for Benchmark Metric, then use {`{benchmark}`}, {`{delta}`}, or {`{deltaPercent}`} in the Context Template.
-            </p>
           </Disclosure>
         </SectionPanel>
       )}
@@ -1999,12 +1996,6 @@ export function ExploreChartConfig({
             </div>
           </div>
 
-          {normalizedRoleConfig.benchmarkMetric && (
-            <p className="text-[11px] text-gray-500">
-              Dynamic benchmark is currently driven by {metricLabel(normalizedRoleConfig.benchmarkMetric)}.
-              Manual Benchmark is only used when no Benchmark Metric is set, and you can keep the benchmark hidden while still using it in the template or delta.
-            </p>
-          )}
 
           <Toggle
             label="Show benchmark value block"
@@ -2605,10 +2596,7 @@ export function ExploreChartConfig({
                 className="text-xs text-blue-600 hover:text-blue-800 disabled:cursor-not-allowed disabled:text-gray-300">+ Add rule</button>
             </div>
             {chartSortRules.length === 0 && sortLimitCols.length === 0 && (
-              <p className="text-[11px] text-gray-400">Run the query or finish field mapping to sort the chart output.</p>
-            )}
-            {chartSortRules.length === 0 && sortLimitCols.length > 0 && (
-              <p className="text-[11px] text-gray-400">No sort applied — data shown in query order.</p>
+              <p className="text-[11px] text-gray-400 italic">Run query first to enable sorting.</p>
             )}
             {chartSortRules.map((rule, i) => (
               <div key={i} className="flex items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 p-2">

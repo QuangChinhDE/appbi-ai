@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { Plus, Trash2, ChevronDown } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, Info } from 'lucide-react';
 import { getFilterTypeForColumn, getDistinctValues, type FilterType } from '@/lib/filters';
 import { DateInput } from '@/components/ui/DateInput';
 
@@ -172,7 +172,13 @@ export function FilterBuilder({
       })}
 
       {filters.length === 0 && (
-        <p className="text-xs text-gray-400 italic py-0.5">No filters — chart shows all data.</p>
+        <span className="group/help relative inline-flex items-center gap-1 text-xs text-gray-400 italic py-0.5 cursor-default">
+          No filters
+          <Info className="h-3 w-3 text-gray-400 transition-colors group-hover/help:text-blue-500" />
+          <span className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden w-56 rounded-md bg-slate-900 px-2.5 py-2 text-[11px] font-normal not-italic tracking-normal text-white shadow-lg group-hover/help:block">
+            Chart shows all data when no filters are applied.
+          </span>
+        </span>
       )}
 
       {!readOnly && (

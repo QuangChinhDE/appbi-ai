@@ -6,6 +6,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Save, ArrowLeft, ChevronDown, ChevronRight, Pencil, Check, Search, Plus, Trash2, Tag, Settings2, Bot, Play, RotateCcw, Database, Code2, Eye } from 'lucide-react';
+import { HelpTooltip } from '@/components/ui/HelpTooltip';
 import { useDataset, useTablePreview, useExecuteDatasetTableQueryMutation, type ColumnMetadata } from '@/hooks/use-datasets';
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
@@ -772,6 +773,7 @@ export default function ExploreDetailPage() {
     setCustomSqlDraft('');
   }, [selectedDatasetId, selectedTableId]);
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const handleEditSql = () => {
     setSqlMode('custom');
     setCustomSqlDraft((current) => (current.trim() ? current : stripTrailingSqlLimit(generatedSql)));
@@ -1253,26 +1255,26 @@ export default function ExploreDetailPage() {
                   <Database className="h-3.5 w-3.5" />
                   Config Builder
                 </button>
-                <button
-                  onClick={handleEditSql}
-                  disabled={!resPerms.canEdit}
-                  className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                    !isConfigBuilderMode
-                      ? 'bg-white text-amber-700 shadow-sm'
-                      : 'text-slate-600 hover:bg-white/70'
-                  }`}
-                >
-                  <Code2 className="h-3.5 w-3.5" />
-                  Custom SQL
-                </button>
+                <span className="group/csql relative inline-flex">
+                  <button
+                    disabled
+                    className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium text-slate-400 opacity-50"
+                  >
+                    <Code2 className="h-3.5 w-3.5" />
+                    Custom SQL
+                  </button>
+                  <span className="pointer-events-none absolute left-0 top-full z-50 mt-1.5 hidden w-52 rounded-md bg-slate-900 px-2.5 py-2 text-[11px] text-white shadow-lg group-hover/csql:block">
+                    Temporarily unavailable — will be re-enabled in a future update.
+                  </span>
+                </span>
               </div>
             </div>
 
-            <div className="min-w-0 pt-0.5">
+            <div className="min-w-0 pt-0.5 flex items-center gap-1.5">
               <p className="text-sm font-medium text-slate-700">
                 {isConfigBuilderMode ? 'Build from a table' : 'Shape the source with SQL'}
               </p>
-              <p className="text-xs text-slate-500">{modeDescription}</p>
+              <HelpTooltip text={modeDescription} />
             </div>
           </div>
 
@@ -1324,14 +1326,14 @@ export default function ExploreDetailPage() {
             isConfigBuilderMode ? 'w-72' : 'w-[25rem]'
           }`}>
             <div className="border-b border-slate-200 px-4 py-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                {isConfigBuilderMode ? 'Source' : 'SQL / Output'}
-              </p>
-              <p className="mt-1 text-xs text-slate-500">
-                {isConfigBuilderMode
+              <div className="flex items-center gap-1">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  {isConfigBuilderMode ? 'Source' : 'SQL / Output'}
+                </p>
+                <HelpTooltip text={isConfigBuilderMode
                   ? 'Choose the dataset and table here. Open schema only when you need to confirm field types before mapping on the right.'
-                  : 'The SQL result becomes the chart source after each run.'}
-              </p>
+                  : 'The SQL result becomes the chart source after each run.'} />
+              </div>
               <div className="mt-3">
                 <ExploreSourceSelector
                   selectedDatasetId={selectedDatasetId}
@@ -1469,9 +1471,9 @@ export default function ExploreDetailPage() {
             ) : (
               <div className="flex min-h-0 flex-1 flex-col">
                 <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-                  <div>
+                  <div className="flex items-center gap-1.5">
                     <p className="text-sm font-medium text-slate-700">Custom SQL</p>
-                    <p className="text-xs text-slate-400">Run SQL to refresh the output columns used by Chart Setup.</p>
+                    <HelpTooltip text="Run SQL to refresh the output columns used by Chart Setup." />
                   </div>
                   {resPerms.canEdit && (
                     <button
@@ -1497,7 +1499,6 @@ export default function ExploreDetailPage() {
                 <div className="min-h-0 flex-1 overflow-hidden">
                   <div className="border-b border-slate-200 px-4 py-3">
                     <p className="text-sm font-medium text-slate-700">Output Columns</p>
-                    <p className="text-xs text-slate-400">These are the columns Chart Setup can bind to after the latest run.</p>
                   </div>
                   <div className="min-h-0 space-y-2 overflow-y-auto px-4 py-4">
                     {customQueryState?.columns?.length ? (
@@ -1519,7 +1520,6 @@ export default function ExploreDetailPage() {
                       <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center">
                         <Code2 className="mx-auto mb-3 h-8 w-8 text-amber-300" />
                         <p className="text-sm font-medium text-slate-700">Run SQL to load output columns</p>
-                        <p className="mt-1 text-xs text-slate-400">After that, the right-side Chart Setup will work directly on the SQL result set.</p>
                       </div>
                     )}
                   </div>
@@ -1538,11 +1538,6 @@ export default function ExploreDetailPage() {
                   <h2 className="mt-1 truncate text-lg font-semibold text-slate-900">
                     {chartNameInput || 'Untitled chart'}
                   </h2>
-                  <p className="mt-1 text-sm text-slate-500">
-                    {isConfigBuilderMode
-                      ? 'Build from the selected table, run once, then fine-tune the chart without changing screens.'
-                      : 'The preview uses the latest SQL output together with the chart mapping and style settings on the right.'}
-                  </p>
                 </div>
                 <div className="flex flex-wrap justify-end gap-2">
                   <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
@@ -1683,20 +1678,8 @@ export default function ExploreDetailPage() {
               }`}>
                 {sqlMode === 'custom' ? 'Map directly from SQL output columns' : 'Keep mapping and styling in one place'}
               </p>
-              <p className={`mt-1 text-xs ${
-                sqlMode === 'custom' ? 'text-amber-700' : 'text-slate-500'
-              }`}>
-                {sqlMode === 'custom'
-                  ? 'Everything below works against the latest SQL result set. Run SQL again whenever you change aliases, joins, or selected columns.'
-                  : 'Build the chart entirely from the steps below. Use the left panel only to switch tables or inspect schema.'}
-              </p>
-              {sqlMode === 'generated' && (
-                <p className="mt-2 text-[11px] text-slate-500">
-                  Switch to Custom SQL when you need calculated fields, CTEs, or a pre-shaped table before visualization.
-                </p>
-              )}
               {sqlMode === 'custom' && (
-                <p className="mt-2 text-[11px] text-amber-700">
+                <p className="mt-1 text-[11px] text-amber-700">
                   Save uses the latest SQL you ran together with the chart options below.
                 </p>
               )}

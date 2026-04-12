@@ -23,6 +23,8 @@ from app.schemas.chat import (
     SessionSummary,
 )
 from app.agents.orchestrator import get_or_create_session, run_agent, cleanup_expired_sessions, _sessions, load_session_from_db
+from app.agents.governance import rate_limiter, check_token_budget, aggregate_session_usage
+from app.agents.intent_classifier import IntentType
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -115,6 +117,16 @@ async def websocket_chat(
         try:
             async for event in run_agent(message, session):
                 await ws.send_json(event)
+                # Phase 3: token budget check on metrics event
+                if isinstance(event, dict) and event.get("type") == "metrics":
+                    intent_str = session.context.get("_last_intent", "default")
+                    check_token_budget(
+                        input_tokens=event.get("input_tokens"),
+                        output_tokens=event.get("output_tokens"),
+                        user_id=user_id,
+                        session_id=session.session_id,
+                        intent=intent_str,
+                    )
             await ws.send_json(DoneEvent(session_id=session.session_id).model_dump())
         except asyncio.CancelledError:
             await ws.send_json({"type": "done", "session_id": session.session_id, "cancelled": True})
@@ -149,6 +161,17 @@ async def websocket_chat(
             if not message:
                 await ws.send_json(ErrorEvent(content="Message is empty").model_dump())
                 continue
+
+            # Phase 3: rate limit check (uses last known intent or 'default')
+            # We check against 'default' pre-classification; the real intent is checked
+            # post-classification inside run_agent via session context
+            allowed, remaining = rate_limiter.check(user_id, "default")
+            if not allowed:
+                await ws.send_json(ErrorEvent(
+                    content="Bạn đã gửi quá nhiều yêu cầu. Vui lòng đợi một lúc rồi thử lại."
+                ).model_dump())
+                continue
+            rate_limiter.record(user_id, "default")
 
             await _cancel_current()
 
@@ -361,3 +384,193 @@ async def cleanup_sessions(auth: dict = Depends(_require_auth)):
     """Manually trigger expired session cleanup (any authenticated user)."""
     count = cleanup_expired_sessions()
     return {"removed": count}
+
+
+# ── Phase 3: Usage & Governance endpoints ─────────────────────────────────────
+
+@router.get("/usage/{session_id}")
+async def get_session_usage(session_id: str, auth_ctx: tuple = Depends(_require_auth_raw)):
+    """
+    Return token usage and estimated cost for a session.
+    Aggregates from metrics stored on assistant messages.
+    """
+    auth, token = auth_ctx
+    user_id: str = auth.get("sub", "")
+
+    # Try in-memory first, fall back to DB load
+    if session_id not in _sessions:
+        s = await load_session_from_db(session_id, token)
+        if s is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+    else:
+        s = _check_session_owner(session_id, user_id)
+
+    return aggregate_session_usage(s)
+
+
+@router.get("/rate-limits")
+async def get_rate_limits(auth: dict = Depends(_require_auth)):
+    """Return current rate limit usage for the authenticated user."""
+    user_id: str = auth.get("sub", "")
+    usage = rate_limiter.get_usage(user_id)
+    return {
+        "user_id": user_id,
+        "limits": usage,
+        "limits_config": {
+            "LOOKUP":  {"requests": 60, "window": "1 hour"},
+            "EXPLORE": {"requests": 30, "window": "1 hour"},
+            "INSIGHT": {"requests": 10, "window": "1 hour"},
+            "CREATE":  {"requests": 20, "window": "1 hour"},
+        },
+    }
+
+
+# ── Phase 4: Feedback analytics endpoint ─────────────────────────────────────
+
+@router.get("/admin/feedback-stats")
+async def get_feedback_stats(auth_ctx: tuple = Depends(_require_auth_raw)):
+    """
+    Return AI Chat satisfaction stats per intent type.
+    Loads feedback from all rated messages in the backend DB.
+    Admin-level endpoint — any authenticated user can view.
+    """
+    auth, token = auth_ctx
+    from app.agents.feedback_analyzer import get_feedback_analyzer
+    analyzer = get_feedback_analyzer()
+    if not analyzer._loaded:
+        await analyzer.load_feedback(token=token)
+    return {
+        "satisfaction_by_intent": analyzer.get_satisfaction_stats(),
+        "total_rated": len(analyzer._examples),
+        "best_insight_examples": [
+            {
+                "question": ex.question[:100],
+                "tools_used": ex.tool_calls,
+                "rating": ex.rating,
+            }
+            for ex in analyzer.get_best_examples(intent="INSIGHT", limit=5)
+        ],
+        "insight_failure_patterns": analyzer.get_failure_patterns(intent="INSIGHT"),
+    }
+
+
+@router.post("/admin/feedback-reload")
+async def reload_feedback(auth_ctx: tuple = Depends(_require_auth_raw)):
+    """Force reload of feedback examples cache (use after collecting new ratings)."""
+    auth, token = auth_ctx
+    from app.agents.feedback_analyzer import get_feedback_analyzer
+    analyzer = get_feedback_analyzer()
+    analyzer._loaded = False  # Force fresh load
+    count = await analyzer.load_feedback(token=token)
+    return {"loaded_examples": count}
+
+
+# ── Phase UI: Dataset-aware initial suggestions ───────────────────────────────
+
+@router.get("/initial-suggestions")
+async def get_initial_suggestions(
+    session_id: str,
+    auth_ctx: tuple = Depends(_require_auth_raw),
+):
+    """
+    Return 4-6 contextual starter questions based on the session's dataset.
+
+    Used by the frontend empty-state to replace hardcoded QUICK_PROMPTS.
+    If no dataset is scoped, returns generic data analysis questions.
+    """
+    auth, token = auth_ctx
+
+    # Get session context to find dataset
+    session = _sessions.get(session_id)
+    dataset_id = session.context.get("dataset_id") if session else None
+    dataset_name = session.context.get("dataset_name") if session else None
+
+    if not dataset_id:
+        return {"suggestions": _generic_starter_questions()}
+
+    # Load dataset tables to build context-aware questions
+    from app.clients.bi_client import bi_client
+    try:
+        dataset = await bi_client.get_dataset(int(dataset_id), token=token)
+        tables = dataset.get("tables", [])
+        suggestions = _dataset_starter_questions(tables, str(dataset_name or f"Dataset {dataset_id}"))
+        return {"suggestions": suggestions}
+    except Exception:
+        return {"suggestions": _generic_starter_questions()}
+
+
+def _collect_columns(tables: list) -> list[dict]:
+    """Flatten all column names from dataset tables."""
+    cols = []
+    for tbl in tables[:5]:  # cap at 5 tables
+        for c in (tbl.get("columns_cache") or {}).get("columns", []):
+            if isinstance(c, dict):
+                cols.append({"name": c.get("name", ""), "type": c.get("type", ""), "table": tbl.get("display_name", "")})
+        if tbl.get("column_stats"):
+            for col_name in list(tbl["column_stats"].keys())[:20]:
+                cols.append({"name": col_name, "type": "", "table": tbl.get("display_name", "")})
+    return cols
+
+
+def _dataset_starter_questions(tables: list, dataset_name: str) -> list[str]:
+    """
+    Generate contextual starter questions based on the dataset's tables and columns.
+    Uses keyword detection on column names — no LLM call needed.
+    """
+    cols = _collect_columns(tables)
+    col_names_lower = {c["name"].lower() for c in cols}
+    tbl_names = [t.get("display_name") or t.get("name", "") for t in tables[:3]]
+    tbl_label = tbl_names[0] if tbl_names else dataset_name
+
+    questions: list[str] = []
+
+    # Always add: overview question
+    questions.append(f"Tổng quan về dữ liệu trong {dataset_name} là gì?")
+
+    # Time-based questions if date columns exist
+    date_keywords = {"date", "time", "created", "updated", "month", "year", "ngày", "tháng", "năm", "at"}
+    if any(any(kw in name for kw in date_keywords) for name in col_names_lower):
+        questions.append(f"Xu hướng dữ liệu của {tbl_label} theo thời gian như thế nào?")
+
+    # Status/completion questions
+    status_keywords = {"status", "state", "completed", "done", "active", "trạng thái", "hoàn thành", "is_"}
+    if any(any(kw in name for kw in status_keywords) for name in col_names_lower):
+        questions.append("Phân bổ theo trạng thái hiện tại là gì?")
+
+    # Person/assignee questions
+    person_keywords = {"assignee", "user", "person", "owner", "created_by", "nhân viên", "người dùng", "member"}
+    if any(any(kw in name for kw in person_keywords) for name in col_names_lower):
+        questions.append("Top 10 nhân viên/người dùng hoạt động nhiều nhất?")
+
+    # Revenue/metric questions
+    metric_keywords = {"revenue", "amount", "value", "total", "count", "sum", "price", "cost", "doanh thu", "giá trị"}
+    if any(any(kw in name for kw in metric_keywords) for name in col_names_lower):
+        questions.append(f"Tổng các chỉ số quan trọng trong {tbl_label} là bao nhiêu?")
+
+    # Project/category questions
+    project_keywords = {"project", "category", "group", "type", "team", "department", "dự án", "nhóm", "loại"}
+    if any(any(kw in name for kw in project_keywords) for name in col_names_lower):
+        questions.append("So sánh hiệu suất giữa các nhóm/dự án?")
+
+    # Deadline/completion questions
+    deadline_keywords = {"deadline", "due", "miss", "overdue", "late", "trễ", "hạn"}
+    if any(any(kw in name for kw in deadline_keywords) for name in col_names_lower):
+        questions.append("Tỷ lệ trễ deadline hiện tại là bao nhiêu %?")
+
+    # Always add: create dashboard question
+    questions.append(f"Tạo dashboard tổng quan cho {dataset_name}")
+
+    # Return first 6 questions
+    return questions[:6]
+
+
+def _generic_starter_questions() -> list[str]:
+    """Fallback questions when no dataset is scoped."""
+    return [
+        "Dataset nào tôi đang có quyền truy cập?",
+        "Tổng quan về dữ liệu trong hệ thống là gì?",
+        "Tạo dashboard từ dữ liệu hiện có",
+        "Dữ liệu có chart và báo cáo nào?",
+        "Phân tích xu hướng theo thời gian",
+        "Top 10 kết quả theo chỉ số quan trọng nhất",
+    ]

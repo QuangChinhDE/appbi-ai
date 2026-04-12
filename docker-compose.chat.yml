@@ -2,7 +2,7 @@ services:
   ai-chat-service:
     build:
       context: .
-      dockerfile: ai-service/Dockerfile
+      dockerfile: ai-chat/Dockerfile
     restart: unless-stopped
     environment:
       BI_API_URL: http://backend:8000/api/v1

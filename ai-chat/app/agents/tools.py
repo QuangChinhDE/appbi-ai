@@ -189,6 +189,27 @@ TOOL_SCHEMAS = [
                         "type": "integer",
                         "default": 20,
                         "description": "Max rows to return (default 20, max 200)"
+                    },
+                    "date_bucket": {
+                        "type": "object",
+                        "description": (
+                            "Optional: truncate a date/datetime column to a time unit for GROUP BY. "
+                            "Use this to aggregate by month, week, quarter, or year. "
+                            "Example: date_bucket={column:'created_at', granularity:'month'} "
+                            "will GROUP BY month and return a 'created_at_month' column."
+                        ),
+                        "properties": {
+                            "column": {
+                                "type": "string",
+                                "description": "The date/datetime column to truncate"
+                            },
+                            "granularity": {
+                                "type": "string",
+                                "enum": ["day", "week", "month", "quarter", "year"],
+                                "description": "Time unit to truncate to"
+                            }
+                        },
+                        "required": ["column", "granularity"]
                     }
                 },
                 "required": ["dataset_id", "table_id"]
@@ -425,6 +446,34 @@ TOOL_SCHEMAS = [
         }
     },
 ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tool subset helpers — Phase 2
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Tool name sets per intent — restricts model's choices to relevant tools only
+TOOLS_LOOKUP  = {"search_charts", "run_chart", "search_dashboards", "inspect_dashboard",
+                  "list_dataset_tables", "query_table"}
+TOOLS_EXPLORE = {"list_dataset_tables", "run_dataset_table", "explore_data",
+                  "search_charts", "search_dashboards", "inspect_dashboard"}
+TOOLS_INSIGHT = {"list_dataset_tables", "query_table", "explore_data", "explain_insight",
+                  "search_charts", "run_chart", "search_dashboards", "inspect_dashboard"}
+TOOLS_VIZ     = {"list_dataset_tables", "create_chart", "create_dashboard", "query_table"}
+
+# Index for fast lookup
+_TOOL_INDEX: Dict[str, dict] = {t["function"]["name"]: t for t in TOOL_SCHEMAS}
+
+
+def get_tool_schemas(tool_names: Optional[List[str]] = None) -> List[dict]:
+    """Return TOOL_SCHEMAS filtered to the requested tool names.
+
+    If tool_names is None or empty, returns the full TOOL_SCHEMAS list.
+    Unknown names are silently skipped (defensive).
+    """
+    if not tool_names:
+        return TOOL_SCHEMAS
+    return [_TOOL_INDEX[n] for n in tool_names if n in _TOOL_INDEX]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

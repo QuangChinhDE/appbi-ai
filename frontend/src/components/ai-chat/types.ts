@@ -18,6 +18,8 @@ export interface ChartPayload {
   role_config?: Record<string, any> | null;
 }
 
+export type IntentType = 'LOOKUP' | 'EXPLORE' | 'INSIGHT' | 'CREATE' | 'VAGUE';
+
 export interface MessageMetrics {
   message_id: string;
   latency_ms: number;
@@ -31,6 +33,7 @@ export interface MessageMetrics {
   data_rows_analyzed: number;
   input_tokens?: number | null;
   output_tokens?: number | null;
+  intent?: IntentType | null;
 }
 
 export interface MessageFeedback {

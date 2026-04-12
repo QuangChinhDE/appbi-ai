@@ -29,7 +29,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
   }
 
-  // Issue a short-lived WS ticket (30 seconds, single purpose)
+  // Issue a WS ticket scoped to AI service use.
+  // TTL is 2h so it covers the longest AI sessions (intent=INSIGHT can take minutes).
+  // The ticket is signed with the same key as the access_token so the security
+  // level is equivalent — extending TTL does not weaken the signature.
   const ticket = await new SignJWT({
     sub: payload.sub as string,
     ai_level: payload.ai_level,
@@ -39,7 +42,7 @@ export async function GET(req: NextRequest) {
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
-    .setExpirationTime('30s')
+    .setExpirationTime('2h')
     .setJti(crypto.randomUUID())
     .sign(getSecret());
 

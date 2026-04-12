@@ -7,6 +7,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { DataSourceType, DataSourceCreate } from '@/types/api';
 import { Loader2, UploadCloud, FileSpreadsheet, X, CheckCircle, AlertCircle, Radio, WifiOff, Eye, EyeOff } from 'lucide-react';
+import { HelpTooltip } from '@/components/ui/HelpTooltip';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 
@@ -308,6 +309,7 @@ export default function DataSourceForm({
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Schema <span className="text-gray-400 font-normal">(optional)</span>
+                  <HelpTooltip text="Leave empty to use default (public)" />
                 </label>
                 <input
                   type="text"
@@ -316,7 +318,6 @@ export default function DataSourceForm({
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   placeholder="public"
                 />
-                <p className="text-xs text-gray-400 mt-0.5">Leave empty to use default (public)</p>
               </div>
             )}
           </div>
@@ -519,8 +520,9 @@ export default function DataSourceForm({
           {!platformGcp?.available && (
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-sm font-medium text-gray-700">
+                <label className="text-sm font-medium text-gray-700 flex items-center">
                   Service Account JSON
+                  <HelpTooltip text="Paste the entire JSON key file content from your Google Cloud service account." />
                 </label>
                 <button
                   type="button"
@@ -540,9 +542,6 @@ export default function DataSourceForm({
                 rows={6}
                 required={!initialData || !config.credentials_json}
               />
-              <p className="text-xs text-gray-500 mt-1">
-                Paste the entire JSON key file content
-              </p>
             </div>
           )}
 
@@ -627,8 +626,9 @@ export default function DataSourceForm({
             )}
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center">
                 Spreadsheet URL or ID
+                <HelpTooltip text="Paste the full Google Sheets link — AppBI will extract the spreadsheet ID automatically." />
               </label>
               <input
                 type="text"
@@ -642,14 +642,12 @@ export default function DataSourceForm({
                 placeholder="Paste a Google Sheets URL or Spreadsheet ID"
                 required
               />
-              <p className="text-xs text-gray-500 mt-1">
-                Paste the full Google Sheets link and AppBI will extract the spreadsheet ID automatically.
-              </p>
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center">
                 Sheet Name (Optional)
+                <HelpTooltip text="Leave empty to use the first sheet." />
               </label>
               <input
                 type="text"
@@ -658,9 +656,6 @@ export default function DataSourceForm({
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 placeholder="Sheet1"
               />
-              <p className="text-xs text-gray-500 mt-1">
-                Leave empty to use the first sheet
-              </p>
             </div>
           </>
         );
@@ -715,8 +710,9 @@ export default function DataSourceForm({
           {!platformGcp?.available && (
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-sm font-medium text-gray-700">
+                <label className="text-sm font-medium text-gray-700 flex items-center">
                   Service Account JSON
+                  <HelpTooltip text="Paste the entire JSON key file content from your Google Cloud service account." />
                 </label>
                 <button
                   type="button"
@@ -736,15 +732,13 @@ export default function DataSourceForm({
                 rows={4}
                 required={!initialData || !config.credentials_json}
               />
-              <p className="text-xs text-gray-500 mt-1">
-                Paste your Google Service Account JSON credentials
-              </p>
             </div>
           )}
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center">
               Spreadsheet URL hoặc ID
+              <HelpTooltip text="Dán toàn bộ link Google Sheets — ID sẽ được tự động trích xuất." />
             </label>
             <input
               type="text"
@@ -759,14 +753,12 @@ export default function DataSourceForm({
               placeholder="Dán link Google Sheets hoặc Spreadsheet ID"
               required
             />
-            <p className="text-xs text-gray-500 mt-1">
-              Dán toàn bộ link Google Sheets — ID sẽ được tự động trích xuất
-            </p>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center">
               Sheet Name (Optional)
+              <HelpTooltip text="Leave empty to use the first sheet." />
             </label>
             <input
               type="text"
@@ -775,9 +767,6 @@ export default function DataSourceForm({
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="Sheet1"
             />
-            <p className="text-xs text-gray-500 mt-1">
-              Leave empty to use the first sheet
-            </p>
           </div>
         </>
       );
@@ -949,8 +938,9 @@ export default function DataSourceForm({
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
-          Type <span className="text-red-500">*</span>
+        <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center">
+          Type <span className="text-red-500 ml-0.5">*</span>
+          {initialData && <HelpTooltip text="Type cannot be changed after creation." />}
         </label>
         <select
           value={type}
@@ -964,9 +954,6 @@ export default function DataSourceForm({
           <option value={DataSourceType.GOOGLE_SHEETS}>Google Sheets</option>
           <option value={DataSourceType.MANUAL}>Manual Table</option>
         </select>
-        {initialData && (
-          <p className="text-xs text-gray-500 mt-1">Type cannot be changed after creation</p>
-        )}
       </div>
 
       <div>

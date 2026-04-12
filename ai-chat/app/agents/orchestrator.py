@@ -30,6 +30,14 @@ from app.agents.tools import TOOL_SCHEMAS, execute_tool
 
 logger = logging.getLogger(__name__)
 
+# BASE_SYSTEM_PROMPT is loaded from prompts/base.py.
+# Intent-specific variants (LOOKUP, EXPLORE, INSIGHT, CREATE) extend it.
+# Use _get_base_prompt() to access it at runtime to avoid circular imports.
+def _get_base_prompt() -> str:
+    from app.prompts import BASE_SYSTEM_PROMPT
+    return BASE_SYSTEM_PROMPT
+
+
 async def _execute_tool_rbac(
     fn_name: str,
     fn_args: dict,
@@ -43,189 +51,6 @@ async def _execute_tool_rbac(
     Viewers can only query tables shared with them — the backend returns 403 otherwise.
     """
     return await execute_tool(fn_name, fn_args, token=token, scope=scope)
-
-SYSTEM_PROMPT = """You are a BI data analyst inside AppBI. Your job: answer data questions using real numbers from tools. Be direct, precise, never waste words.
-
-You can ONLY access data that has been shared with you through Dataset Datasets. Never attempt to access data outside of what list_dataset_tables returns.
-
-━━━ TOOL REFERENCE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-search_charts(query)          → charts[] + top_chart_data.rows (REAL DATA, already rendered)
-run_chart(chart_id)           → rows[], chart auto-rendered
-query_table(ws, tbl, ...)     → rows[] — aggregated query on dataset table
-list_dataset_tables()       → dataset + table IDs, column names — SINGLE SOURCE OF TRUTH
-run_dataset_table(ws, tbl)  → raw sample rows
-
-create_chart(name, dataset_id, table_id, chart_type, config, save)
-  → Renders a NEW chart from any table. Chart appears automatically on screen.
-  → config: { dimensions:[], metrics:[{column, aggregation}], limit }
-  → save=true to persist permanently. Call list_dataset_tables first.
-
-explore_data(dataset_id, table_id, analysis_type)
-  → analysis_type: "overview" | "distribution" | "time_patterns"
-  → Returns column stats, value distributions, or time trends
-
-explain_insight(dataset_id, table_id, metric_column, aggregation, time_column, comparison, dimension_columns)
-  → Drill-down analysis: current vs previous period + dimension breakdown
-  → comparison: "week_over_week" | "month_over_month" | "year_over_year"
-  → Returns change_pct and top contributing dimensions
-
-create_dashboard(topic, tables:[{dataset_id, table_id}], chart_count)
-  → Auto-generates a full dashboard with multiple charts + saves it
-  → Call list_dataset_tables first to get dataset_id + table_id
-
-━━━ DECISION FLOW ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Step 1 — Call search_charts(query).
-  • top_chart_data.rows exists?
-    YES → The chart is already displayed. READ top_chart_data.rows.
-         ⚠ CRITICAL: check if the ROWS contain the columns needed to answer.
-         If the chart data does NOT contain the column the user asked about
-         (e.g. user asks about "miss_deadline" but chart only has status/assignee),
-         IGNORE the chart data and go to Step 2.
-         If the data is relevant → go to Step 3.
-    NO  → go to Step 2.
-
-Step 2 — No usable chart data. Choose the right approach:
-  a) "tell me about X data" / "what columns?" → explore_data(overview)
-  b) "why did X change?" / "explain drop" → explain_insight(...)
-  c) User needs a NEW chart visualization → create_chart(...)
-  d) "build me a dashboard" → create_dashboard(...)
-  e) Any data question → call list_dataset_tables, then query_table with the right column.
-     ⚠ CRITICAL — column matching:
-       • User asks about "project" → dimension = "project_name"
-       • User asks about "person/ai/who" → dimension = "assignee"
-       Never substitute one for the other.
-
-Step 3 — Analyze data and write response using ONLY numbers from actual rows.
-  ⚠ For "most/highest/top" → scan ALL rows, find actual MAX value.
-  ⚠ Do NOT assume first row is the answer — VERIFY by comparing values.
-
-━━━ RESPONSE FORMAT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-**[Direct answer — 1 sentence with the top result and exact value]**
-
-• [Item 1]: [value] — [note]
-• [Item 2]: [value] — [note]
-(list top 3–7 items from data)
-
-[Insight: 1–2 sentences on pattern, gap, or contrast]
-
-━━━ ABSOLUTE RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-✗ NEVER answer from memory — ALWAYS call a tool first.
-✗ NEVER ask "Do you want to see a chart?" — charts render automatically.
-✗ NEVER write [CHART:id] in text — system handles chart display.
-✗ NEVER fabricate numbers — every value MUST come from actual rows[].
-✗ NEVER access datasources or raw SQL directly — only use dataset tables.
-✓ ALWAYS respond in Vietnamese (Tiếng Việt) — regardless of what language the user writes in.
-✓ When creating a chart: call list_dataset_tables FIRST to get dataset_id + table_id.
-✓ If a tool fails, say so and try an alternative.
-✓ If user asks about data you cannot see, say "This data is not available in your shared datasets."
-
-━━━ DATA QUALITY RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-⚠ Columns typed "boolean" ALWAYS contain STRING values in this system: '0'=false/inactive, '1'=true/active, 'TRUE'/'FALSE' for deadline columns.
-  → NEVER use filter value = true/false/True/False.
-  → For status: filter value = '0' (incomplete) or '1' (complete).
-  → For miss_deadline: filter value = 'TRUE' (missed) or 'FALSE' (on-time).
-
-⚠ When user asks for a RATIO/PERCENTAGE ("tỷ lệ", "bao nhiêu %", "phần trăm"):
-  → Call query_table with that column as a DIMENSION (to get count per value) + task_id as measure (count).
-  → e.g. for miss_deadline ratio: dimensions=["miss_deadline"], measures=[{field:"task_id",function:"count"}]
-  → Then compute: (count where TRUE) / (total count) × 100 = percentage.
-
-⚠ READ COLUMN NAMES CAREFULLY. Match user's question to EXACT column:
-  → "project" / "dự án" → use project_name column, NEVER use assignee
-  → "person/ai/who" / "nhân viên/người" → use assignee column, NEVER use project_name
-  → When the existing chart data is about assignees but user asks about projects → IGNORE the chart, call query_table with project_name as dimension.
-
-⚠ When filtering, use the EXACT string values from data (check with explore_data if uncertain).
-"""
-
-
-SYSTEM_PROMPT = """You are a BI data analyst inside AppBI. Your job: answer data questions using real numbers from tools. Be direct, precise, never waste words.
-
-You can ONLY access data that has been shared with you through datasets. Never attempt to access data outside of what list_dataset_tables returns.
-If the session scope defines an Active Dataset, treat that dataset_id as a HARD BOUNDARY for every tool call, chart lookup, dashboard lookup, and answer.
-Use saved charts and dashboards only when they belong to that active dataset.
-
-TOOL REFERENCE
-
-search_charts(query)
-  -> charts[] + top_chart_data.rows (real data, already rendered)
-run_chart(chart_id)
-  -> rows[], chart auto-rendered
-search_dashboards(query)
-  -> dashboards[] in the active dataset
-inspect_dashboard(dashboard_id)
-  -> dashboard summary + chart flow + chart descriptions from the saved report
-query_table(dataset_id, table_id, ...)
-  -> rows[] from aggregated query on a dataset table
-list_dataset_tables()
-  -> dataset + table IDs + column names, the single source of truth
-run_dataset_table(dataset_id, table_id)
-  -> raw sample rows
-create_chart(name, dataset_id, table_id, chart_type, config, save)
-  -> creates a new chart from a dataset table
-explore_data(dataset_id, table_id, analysis_type)
-  -> column stats, distributions, or time trends
-explain_insight(dataset_id, table_id, metric_column, aggregation, time_column, comparison, dimension_columns)
-  -> root-cause analysis from the dataset table
-create_dashboard(topic, tables:[{dataset_id, table_id}], chart_count)
-  -> creates a dashboard from tables in the active dataset
-
-DECISION FLOW
-
-Step 1 - Classify the request inside the active dataset:
-  a) Saved dashboard/report/overview/insight flow
-     -> search_dashboards(query), then inspect_dashboard(dashboard_id)
-  b) Existing chart or visualization
-     -> search_charts(query); if top_chart_data.rows is relevant, use it
-  c) Exact numbers, ranking, comparison, ratio, filtering
-     -> list_dataset_tables, then query_table directly
-     -> do NOT rely on chart descriptions for numeric answers
-  d) "tell me about this data" / "what columns?"
-     -> explore_data(overview)
-  e) "why did X change?" / "explain drop"
-     -> explain_insight(...)
-  f) Need a new chart
-     -> create_chart(...)
-  g) Need a new dashboard
-     -> create_dashboard(...)
-
-Step 2 - If you used chart or dashboard context, verify it contains the exact fields needed.
-If chart/dashboard context is not enough for a precise answer, fall back to query_table in the same dataset.
-
-Step 3 - Analyze data and write the answer using ONLY numbers from actual rows.
-For "most/highest/top", scan all rows and verify the maximum value.
-
-RESPONSE FORMAT
-
-Direct answer in 1 sentence with the exact result and value.
-Then list the top 3-7 relevant items from data.
-Then add 1-2 short insight sentences.
-
-ABSOLUTE RULES
-
-- NEVER answer from memory. ALWAYS call a tool first.
-- NEVER fabricate numbers. Every value must come from actual rows.
-- NEVER access datasources or raw SQL directly.
-- NEVER go outside the active dataset scope.
-- ALWAYS respond in Vietnamese.
-- If a tool fails, say so and try an alternative.
-- If the data is unavailable, say: "This data is not available in your shared datasets."
-
-DATA QUALITY RULES
-
-- Boolean columns in this system often contain STRING values: '0'/'1' or 'TRUE'/'FALSE'. Never assume Python booleans.
-- When user asks for a ratio/percentage, get grouped counts from query_table and compute the percentage from those counts.
-- Read column names carefully and match the exact business meaning:
-  "project" -> project_name
-  "person/ai/who" -> assignee
-- If existing chart data is about assignees but user asks about projects, ignore that chart and query project_name instead.
-- When filtering, use the exact string values found in data.
-"""
 
 
 def _make_openai_client():
@@ -473,6 +298,24 @@ def _trim_history(messages: List[Message], max_messages: int = 20) -> List[Messa
     return trimmed
 
 
+def _truncate_tool_result(result: dict, max_rows: int = 50) -> dict:
+    """
+    Truncate large row arrays before storing in message history.
+
+    Without this, a query returning 200 rows × 20 columns (~6 KB) gets stored
+    in every subsequent context window, bloating costs and degrading quality.
+    The AI already read the full rows during tool execution; the truncated
+    version is just for history reconstruction.
+    """
+    out = {k: v for k, v in result.items() if k != "auto_chart"}
+    for key in ("rows", "data"):
+        val = out.get(key)
+        if isinstance(val, list) and len(val) > max_rows:
+            out[key] = val[:max_rows]
+            out["_truncated"] = f"{key} capped at {max_rows} of {len(val)} rows in history"
+    return out
+
+
 def _describe_active_resource(resource: Dict[str, Any]) -> str:
     resource_type = str(resource.get("type") or "resource")
     name = str(resource.get("name") or "").strip()
@@ -626,9 +469,17 @@ def _track_active_resource(
         context["active_resource"] = resource
 
 
-def _to_llm_messages(session: ConversationSession, turn_context: str = "") -> List[Dict]:
-    """Convert session messages to OpenAI API format, injecting per-turn context."""
-    system = SYSTEM_PROMPT
+def _to_llm_messages(
+    session: ConversationSession,
+    turn_context: str = "",
+    system_prompt: str = "",
+) -> List[Dict]:
+    """Convert session messages to OpenAI API format, injecting per-turn context.
+
+    system_prompt: override from AgentConfig (intent-specific variant).
+                   Falls back to BASE_SYSTEM_PROMPT when not provided.
+    """
+    system = system_prompt or _get_base_prompt()
     # Per-turn context overrides the cached session context (more relevant, less noisy)
     if turn_context:
         system += "\n\n" + turn_context
@@ -658,12 +509,64 @@ async def run_agent(
     """
     Drive one conversation turn.
     Yields serialised event dicts ready to be sent over WebSocket.
+
+    Phase 1 additions:
+    - classify_intent() routes to the right AgentConfig (prompt + token budget)
+    - VAGUE intent returns a clarification question without calling any tools
     """
     token: str = session.context.get("auth_token", "")
 
-    # Build per-turn context: top-N relevant tables + charts via vector search.
-    # This replaces the full schema dump (_load_db_context) — much lower token cost
-    # and the context is always relevant to what the user is asking about.
+    # ── Step 0: Classify intent to select the right agent config ──
+    provider_chain = _build_provider_chain()
+    primary_provider = provider_chain[0]["provider"] if provider_chain else "openrouter"
+    primary_model = provider_chain[0]["model"] if provider_chain else ""
+
+    from app.agents.intent_classifier import classify_intent, IntentType
+    agent_config = await classify_intent(user_message, primary_provider, primary_model)
+    logger.debug("intent_classifier → %s (max_tokens=%d, tool_limit=%d)",
+                 agent_config.intent, agent_config.max_tokens, agent_config.tool_call_limit)
+
+    # Phase 3: store intent in session context for governance/usage tracking
+    session.context["_last_intent"] = agent_config.intent.value
+
+    # ── VAGUE: return clarification question without any tool calls ──
+    if agent_config.intent == IntentType.VAGUE:
+        clarification = agent_config.clarification_question or (
+            "Bạn muốn phân tích khía cạnh nào? "
+            "Ví dụ: tra cứu số liệu, khám phá dữ liệu, tìm nguyên nhân, hay tạo biểu đồ?"
+        )
+        session.messages.append(Message(role="user", content=user_message))
+        session.messages.append(Message(role="assistant", content=clarification))
+        yield TextEvent(content=clarification).model_dump()
+        yield DoneEvent().model_dump()
+
+        # Persist clarification exchange
+        try:
+            from app.clients.bi_client import bi_client
+            await bi_client.append_chat_messages(
+                session.session_id,
+                [
+                    {"role": "user", "content": user_message},
+                    {"role": "assistant", "content": clarification},
+                ],
+                token=token,
+            )
+        except Exception:
+            pass
+        return
+
+    # ── Phase 4: Enrich INSIGHT prompt with few-shot examples from positive feedback ──
+    from app.agents.intent_classifier import IntentType as _IntentType
+    if agent_config.intent == _IntentType.INSIGHT:
+        try:
+            from app.agents.feedback_analyzer import get_enriched_insight_prompt
+            agent_config.system_prompt = await get_enriched_insight_prompt(
+                agent_config.system_prompt, token=token
+            )
+        except Exception:
+            pass  # enrichment failure never breaks the chat
+
+    # ── Step 1: Build per-turn context ──
     from app.agents.context_builder import build_context
     ctx_pkg = await build_context(
         user_message,
@@ -684,8 +587,6 @@ async def run_agent(
     # Auto-title: use the first user message (truncated)
     if session.title == "New Conversation":
         session.title = user_message[:60] + ("…" if len(user_message) > 60 else "")
-
-    provider_chain = _build_provider_chain()
 
     # Track chart data collected during this turn so we can embed charts
     chart_data_cache: Dict[int, Dict] = {}
@@ -723,6 +624,7 @@ async def run_agent(
                 message_id=message_id,
                 token=token,
                 turn_context=turn_context,
+                agent_config=agent_config,
             ):
                 if isinstance(event, dict) and event.get("type") == "chart":
                     turn_charts.append(event)
@@ -743,6 +645,7 @@ async def run_agent(
                 data_rows_analyzed=metrics_ctx["data_rows_analyzed"],
                 input_tokens=metrics_ctx["input_tokens"],
                 output_tokens=metrics_ctx["output_tokens"],
+                intent=agent_config.intent.value if agent_config else None,
             )
             yield metrics_event.model_dump()
 
@@ -833,23 +736,24 @@ async def _run_with_provider(
     message_id: str,
     token: str = "",
     turn_context: str = "",
+    agent_config=None,
 ) -> AsyncGenerator[Dict, None]:
     """Run the tool-calling loop for a single provider."""
 
     if provider == "openai":
         client = _make_openai_client()
         yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-        async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context):
+        async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context, agent_config=agent_config):
             yield event
     elif provider == "anthropic":
         client = _make_anthropic_client()
         yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-        async for event in _anthropic_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context):
+        async for event in _anthropic_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context, agent_config=agent_config):
             yield event
     elif provider == "gemini":
         gemini_model = _make_gemini_model(model)
         yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-        async for event in _gemini_loop(gemini_model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context):
+        async for event in _gemini_loop(gemini_model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context, agent_config=agent_config):
             yield event
     elif provider == "openrouter":
         api_keys = settings.active_api_keys
@@ -864,7 +768,7 @@ async def _run_with_provider(
                 client = _make_openrouter_client(api_key=api_key)
                 if key_index == 1:
                     yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
-                async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context):
+                async for event in _openai_loop(client, model, session, tool_calls_made, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context, agent_config=agent_config):
                     yield event
                 return  # success — stop key rotation
             except Exception as exc:
@@ -893,13 +797,23 @@ async def _openai_loop(
     metrics_ctx: Dict[str, Any],
     token: str = "",
     turn_context: str = "",
+    agent_config=None,
 ) -> AsyncGenerator[Dict, None]:
     from openai import AsyncOpenAI
+    from app.agents.tools import get_tool_schemas
 
     LLM_TIMEOUT = 45  # seconds per LLM call
 
-    while tool_calls_made <= settings.ai_max_tool_calls:
-        llm_messages = _to_llm_messages(session, turn_context=turn_context)
+    # Resolve config values — fall back to safe defaults when no config provided
+    max_tokens = agent_config.max_tokens if agent_config else 1024
+    tool_call_limit = agent_config.tool_call_limit if agent_config else settings.ai_max_tool_calls
+    system_prompt = agent_config.system_prompt if agent_config else ""
+    force_first_tool = agent_config.force_first_tool if agent_config else True
+    # Phase 2: intent-specific tool set reduces noise and wrong tool choices
+    active_tools = get_tool_schemas(agent_config.tool_names if agent_config else None)
+
+    while tool_calls_made <= tool_call_limit:
+        llm_messages = _to_llm_messages(session, turn_context=turn_context, system_prompt=system_prompt)
 
         # Accumulate streamed response
         collected_content = ""
@@ -907,18 +821,19 @@ async def _openai_loop(
 
         # Force a tool call on the first turn so model doesn't answer from memory
         force_tool = "auto"
-        if tool_calls_made == 0:
+        if tool_calls_made == 0 and force_first_tool:
             force_tool = "required"
 
         response = await asyncio.wait_for(
             client.chat.completions.create(
                 model=model,
                 messages=llm_messages,
-                tools=TOOL_SCHEMAS,
+                tools=active_tools,
                 tool_choice=force_tool,
                 stream=True,
                 temperature=0.2,
-                max_tokens=1024,
+                max_tokens=max_tokens,
+                stream_options={"include_usage": True},
             ),
             timeout=LLM_TIMEOUT,
         )
@@ -927,6 +842,11 @@ async def _openai_loop(
         current_tc: Dict[str, Any] = {}
 
         async for chunk in response:
+            # B4 fix: extract token usage from final streaming chunk (stream_options=include_usage)
+            if hasattr(chunk, "usage") and chunk.usage is not None:
+                metrics_ctx["input_tokens"] = (metrics_ctx["input_tokens"] or 0) + (chunk.usage.prompt_tokens or 0)
+                metrics_ctx["output_tokens"] = (metrics_ctx["output_tokens"] or 0) + (chunk.usage.completion_tokens or 0)
+
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta is None:
                 continue
@@ -983,6 +903,7 @@ async def _openai_loop(
 
             yield ToolCallEvent(tool=fn_name, args=fn_args).model_dump()
 
+            tool_result: dict
             try:
                 tool_result = await _execute_tool_rbac(
                     fn_name,
@@ -992,9 +913,19 @@ async def _openai_loop(
                     scope=session.context,
                 )
             except Exception as tool_exc:
+                err_str = str(tool_exc)
                 logger.warning("Tool %s raised exception: %s", fn_name, tool_exc)
-                tool_result = {"error": f"Tool '{fn_name}' failed: {str(tool_exc)[:300]}"}
-                metrics_ctx["tool_errors"] += 1
+                # Detect expired / invalid auth token — bail out immediately so the
+                # user gets a clear message rather than an empty or garbled response.
+                if "401" in err_str or "unauthorized" in err_str.lower():
+                    yield ErrorEvent(
+                        content=(
+                            "Phiên đăng nhập hết hạn trong khi AI đang xử lý. "
+                            "Vui lòng tải lại trang và thử lại."
+                        )
+                    ).model_dump()
+                    return
+                tool_result = {"error": f"Tool '{fn_name}' thất bại: {err_str[:300]}"}
             tool_calls_made += 1
             _track_active_resource(session, fn_name, tool_result)
 
@@ -1049,8 +980,8 @@ async def _openai_loop(
             summary = _tool_summary(fn_name, tool_result)
             yield ToolResultEvent(tool=fn_name, summary=summary).model_dump()
 
-            # Append tool result to session (strip auto_chart from stored message to save tokens)
-            stored = {k: v for k, v in tool_result.items() if k != "auto_chart"}
+            # Append tool result to session (B5: truncate rows + strip auto_chart to save tokens)
+            stored = _truncate_tool_result(tool_result)
             result_str = json.dumps(stored, ensure_ascii=False, default=str)
             session.messages.append(Message(
                 role="tool",
@@ -1059,7 +990,7 @@ async def _openai_loop(
                 name=fn_name,
             ))
 
-        if tool_calls_made >= settings.ai_max_tool_calls:
+        if tool_calls_made >= tool_call_limit:
             session.messages.append(Message(
                 role="user",
                 content="[System: max tool calls reached. Please provide your final answer now.]",
@@ -1078,7 +1009,16 @@ async def _anthropic_loop(
     metrics_ctx: Dict[str, Any],
     token: str = "",
     turn_context: str = "",
+    agent_config=None,
 ) -> AsyncGenerator[Dict, None]:
+
+    from app.agents.tools import get_tool_schemas
+
+    # Resolve config values
+    max_tokens = agent_config.max_tokens if agent_config else 1024
+    tool_call_limit = agent_config.tool_call_limit if agent_config else settings.ai_max_tool_calls
+    system_prompt = agent_config.system_prompt if agent_config else _get_base_prompt()
+    active_tools = get_tool_schemas(agent_config.tool_names if agent_config else None)
 
     # Convert schemas for Anthropic
     anthropic_tools = [
@@ -1087,10 +1027,10 @@ async def _anthropic_loop(
             "description": t["function"]["description"],
             "input_schema": t["function"]["parameters"],
         }
-        for t in TOOL_SCHEMAS
+        for t in active_tools
     ]
 
-    while tool_calls_made <= settings.ai_max_tool_calls:
+    while tool_calls_made <= tool_call_limit:
         # Build Anthropic message list
         anthropic_messages = []
         for m in _trim_history(session.messages):
@@ -1124,14 +1064,19 @@ async def _anthropic_loop(
         response = await asyncio.wait_for(
             client.messages.create(
                 model=model,
-                max_tokens=1024,
-                system=SYSTEM_PROMPT + ("\n\n" + turn_context if turn_context else ""),
+                max_tokens=max_tokens,
+                system=system_prompt + ("\n\n" + turn_context if turn_context else ""),
                 messages=anthropic_messages,
                 tools=anthropic_tools,
                 temperature=0.2,
             ),
             timeout=LLM_TIMEOUT,
         )
+
+        # B4 fix: extract token usage from Anthropic non-streaming response
+        if hasattr(response, "usage") and response.usage is not None:
+            metrics_ctx["input_tokens"] = (metrics_ctx["input_tokens"] or 0) + (response.usage.input_tokens or 0)
+            metrics_ctx["output_tokens"] = (metrics_ctx["output_tokens"] or 0) + (response.usage.output_tokens or 0)
 
         text_content = ""
         tool_uses = []
@@ -1171,6 +1116,7 @@ async def _anthropic_loop(
 
             yield ToolCallEvent(tool=fn_name, args=fn_args).model_dump()
 
+            tool_result: dict
             try:
                 tool_result = await _execute_tool_rbac(
                     fn_name,
@@ -1180,9 +1126,17 @@ async def _anthropic_loop(
                     scope=session.context,
                 )
             except Exception as tool_exc:
+                err_str = str(tool_exc)
                 logger.warning("Tool %s raised exception: %s", fn_name, tool_exc)
-                tool_result = {"error": f"Tool '{fn_name}' failed: {str(tool_exc)[:300]}"}
-                metrics_ctx["tool_errors"] += 1
+                if "401" in err_str or "unauthorized" in err_str.lower():
+                    yield ErrorEvent(
+                        content=(
+                            "Phiên đăng nhập hết hạn trong khi AI đang xử lý. "
+                            "Vui lòng tải lại trang và thử lại."
+                        )
+                    ).model_dump()
+                    return
+                tool_result = {"error": f"Tool '{fn_name}' thất bại: {err_str[:300]}"}
             tool_calls_made += 1
             _track_active_resource(session, fn_name, tool_result)
 
@@ -1222,7 +1176,8 @@ async def _anthropic_loop(
             summary = _tool_summary(fn_name, tool_result)
             yield ToolResultEvent(tool=fn_name, summary=summary).model_dump()
 
-            stored = {k: v for k, v in tool_result.items() if k != "auto_chart"}
+            # B5 fix: truncate rows + strip auto_chart before storing in history
+            stored = _truncate_tool_result(tool_result)
             result_str = json.dumps(stored, ensure_ascii=False, default=str)
             session.messages.append(Message(
                 role="tool",
@@ -1231,7 +1186,7 @@ async def _anthropic_loop(
                 name=fn_name,
             ))
 
-        if tool_calls_made >= settings.ai_max_tool_calls:
+        if tool_calls_made >= tool_call_limit:
             break
 
 # ── Gemini loop ────────────────────────────────────────────────────────────────
@@ -1244,6 +1199,7 @@ async def _gemini_loop(
     metrics_ctx: Dict[str, Any],
     token: str = "",
     turn_context: str = "",
+    agent_config=None,
 ) -> AsyncGenerator[Dict, None]:
     try:
         import google.generativeai.protos as protos
@@ -1373,7 +1329,8 @@ async def _gemini_loop(
             summary = _tool_summary(fn_name, tool_result)
             yield ToolResultEvent(tool=fn_name, summary=summary).model_dump()
 
-            stored = {k: v for k, v in tool_result.items() if k != "auto_chart"}
+            # B5 fix: truncate rows + strip auto_chart before storing in history
+            stored = _truncate_tool_result(tool_result)
             result_str = json.dumps(stored, ensure_ascii=False, default=str)
             session.messages.append(Message(
                 role="tool",
@@ -1389,7 +1346,8 @@ async def _gemini_loop(
                 ))
             )
 
-        if tool_calls_made >= settings.ai_max_tool_calls:
+        _gemini_tool_call_limit = agent_config.tool_call_limit if agent_config else settings.ai_max_tool_calls
+        if tool_calls_made >= _gemini_tool_call_limit:
             # Send all function responses then force a final answer
             try:
                 await asyncio.wait_for(chat.send_message_async(response_parts), timeout=LLM_TIMEOUT)

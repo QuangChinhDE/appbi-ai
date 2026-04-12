@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Loader2, AlertCircle, X, Plus, ChevronDown, Code } from 'lucide-react';
+import { HelpTooltip } from '@/components/ui/HelpTooltip';
 import { useDataSources } from '@/hooks/use-datasources';
 import { useDatasourceTables, useDatasourceTableColumns } from '@/hooks/use-datasets';
 import type { AddTableInput } from '@/hooks/use-datasets';
@@ -158,9 +159,6 @@ function ColumnTagAutocomplete({
           </div>
         )}
       </div>
-      {selected.length === 0 && !loading && (
-        <p className="text-xs text-gray-400">Để trống = lấy tất cả cột (*)</p>
-      )}
     </div>
   );
 }
@@ -553,7 +551,10 @@ export function QueryTableTab({
           <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 space-y-4">
             {/* Base table */}
             <div>
-              <label className="block text-xs font-semibold text-gray-600 mb-1">Bảng nguồn *</label>
+              <label className="block text-xs font-semibold text-gray-600 mb-1 flex items-center">
+                Bảng nguồn *
+                <HelpTooltip text="Chọn datasource bên trên trước để hiện danh sách bảng." />
+              </label>
               {!selectedDatasourceId ? (
                 <p className="text-xs text-gray-400 italic">Chọn datasource trước</p>
               ) : loadingTables ? (
@@ -575,8 +576,9 @@ export function QueryTableTab({
               <>
                 {/* Column picker */}
                 <div>
-                  <label className="block text-xs font-semibold text-gray-600 mb-1">
+                  <label className="block text-xs font-semibold text-gray-600 mb-1 flex items-center">
                     Cột cần lấy
+                    <HelpTooltip text="Để trống = lấy tất cả cột (*)" />
                   </label>
                   <ColumnTagAutocomplete
                     columns={availableColumns}

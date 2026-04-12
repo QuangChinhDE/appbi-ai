@@ -16,6 +16,7 @@ import {
   Sigma,
   Search,
   Table as TableIcon,
+  Info,
 } from 'lucide-react';
 import {
   useDatasetModel,
@@ -104,8 +105,14 @@ export function ExploreColumnPanel({
 
   if (!model?.model_id || views.length === 0) {
     return (
-      <div className="px-4 py-3 text-xs text-gray-400 italic">
-        No data model. Generate one from the dataset Model tab.
+      <div className="group/help relative px-4 py-3 flex items-center gap-1.5 text-xs text-gray-400 italic cursor-default">
+        No data model.
+        <span className="inline-flex items-center">
+          <Info className="h-3.5 w-3.5 text-gray-400 transition-colors group-hover/help:text-blue-500" />
+          <span className="pointer-events-none absolute left-4 top-full z-50 mt-1 hidden w-64 rounded-md bg-slate-900 px-2.5 py-2 text-[11px] font-normal not-italic tracking-normal text-white shadow-lg group-hover/help:block">
+            Generate a data model from the dataset Model tab to start using the column panel.
+          </span>
+        </span>
       </div>
     );
   }

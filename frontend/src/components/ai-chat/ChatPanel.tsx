@@ -25,28 +25,32 @@ interface SuggestionChipsProps {
 function SuggestionChips({ suggestions, onSelect, disabled }: SuggestionChipsProps) {
   if (!suggestions || suggestions.length === 0) return null;
   return (
-    <div className="flex flex-wrap gap-2 px-4 py-2">
-      {suggestions.map((s, i) => (
-        <button
-          key={i}
-          onClick={() => onSelect(s)}
-          disabled={disabled}
-          className="text-xs px-3 py-1.5 bg-blue-50 border border-blue-200 text-blue-700 rounded-full hover:bg-blue-100 hover:border-blue-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
-        >
-          {s}
-        </button>
-      ))}
+    <div className="px-4 py-2 border-t border-gray-100 bg-white/80">
+      <p className="text-[10px] text-gray-400 mb-1.5">Câu hỏi tiếp theo:</p>
+      <div className="flex flex-wrap gap-1.5">
+        {suggestions.map((s, i) => (
+          <button
+            key={i}
+            onClick={() => onSelect(s)}
+            disabled={disabled}
+            className="text-xs px-3 py-1.5 bg-blue-50 border border-blue-200 text-blue-700 rounded-full hover:bg-blue-100 hover:border-blue-300 transition-all disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+          >
+            {s}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
 
-const QUICK_PROMPTS = [
-  'Top 10 đội có điểm FIFA cao nhất?',
-  'So sánh điểm trung bình giữa các Confederation',
-  'Cầu thủ ghi bàn nhiều nhất lịch sử World Cup?',
-  'Tổng số bàn thắng theo từng kỳ World Cup',
-  'Phân bổ các đội theo Confederation',
-  'Dashboard nào liên quan đến World Cup?',
+// Generic fallback prompts — used when no dataset is scoped or fetch fails
+const GENERIC_PROMPTS = [
+  'Dataset nào tôi đang có quyền truy cập?',
+  'Tổng quan về dữ liệu trong hệ thống là gì?',
+  'Tạo dashboard từ dữ liệu hiện có',
+  'Dữ liệu có chart và báo cáo nào sẵn?',
+  'Phân tích xu hướng theo thời gian',
+  'Top 10 kết quả theo chỉ số quan trọng nhất',
 ];
 
 interface ChatPanelProps {
@@ -65,6 +69,8 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [isShareOpen, setIsShareOpen] = useState(false);
   const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [initialPrompts, setInitialPrompts] = useState<string[]>(GENERIC_PROMPTS);
+  const [promptsLoading, setPromptsLoading] = useState(false);
 
   const { data: permData } = usePermissions();
   const canShare = hasPermission(permData?.permissions, 'ai_chat', 'edit');
@@ -100,6 +106,8 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       if (!cancelled) {
         await loadHistory(token);
         connectWs(token);
+        // Fetch dataset-aware starter questions after session is loaded
+        fetchInitialSuggestions(token);
       }
     }
 
@@ -110,6 +118,29 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
+
+  async function fetchInitialSuggestions(token?: string) {
+    const t = token ?? tokenRef.current;
+    setPromptsLoading(true);
+    try {
+      const headers: Record<string, string> = {};
+      if (t) headers['Authorization'] = `Bearer ${t}`;
+      const res = await fetch(
+        `${getAiChatHttpUrl()}/chat/initial-suggestions?session_id=${sessionId}`,
+        { headers },
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.suggestions) && data.suggestions.length > 0) {
+          setInitialPrompts(data.suggestions);
+        }
+      }
+    } catch {
+      // Keep generic prompts on error
+    } finally {
+      setPromptsLoading(false);
+    }
+  }
 
   async function loadHistory(token?: string) {
     try {
@@ -262,11 +293,23 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
       case 'done':
         setLoading(false);
-        upsertCurrentAiMsg(msg => ({
-          ...msg,
-          isThinking: false,
-          activitySteps: (msg.activitySteps ?? []).map(s => ({ ...s, status: 'done' as const })),
-        }));
+        upsertCurrentAiMsg(msg => {
+          const cleanText = (msg.text ?? '').replace(/\[CHART:\d+\]/g, '').trim();
+          const toolErrors = msg.metrics?.tool_errors ?? 0;
+          // If AI finished but produced no text — show a clear fallback so the
+          // user is never left staring at an empty bubble.
+          const fallback = !cleanText
+            ? (toolErrors > 0
+                ? '⚠️ AI không thể hoàn thành yêu cầu (có lỗi trong quá trình lấy dữ liệu). Vui lòng tải lại trang và thử lại.'
+                : '_(AI không có phản hồi. Vui lòng thử diễn đạt câu hỏi theo cách khác.)_')
+            : undefined;
+          return {
+            ...msg,
+            isThinking: false,
+            text: fallback ?? msg.text,
+            activitySteps: (msg.activitySteps ?? []).map(s => ({ ...s, status: 'done' as const })),
+          };
+        });
         currentAiMsgIdRef.current = null;
         setMessages(prev => {
           const first = prev.find(m => m.role === 'user');
@@ -383,10 +426,23 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         </div>
         <div className="flex-1 min-w-0">
           <h1 className="text-sm font-semibold text-gray-900 truncate">{sessionTitle}</h1>
-          <p className="text-xs">
-            {wsConnected
-              ? <span className="text-green-600">● Connected</span>
-              : <span className="text-red-500">● Disconnected</span>}
+          <p className="text-xs flex items-center gap-1.5">
+            {loading ? (
+              <span className="text-blue-500 flex items-center gap-1">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                Đang phân tích…
+              </span>
+            ) : wsConnected ? (
+              <span className="text-green-600 flex items-center gap-1">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />
+                Sẵn sàng
+              </span>
+            ) : (
+              <span className="text-red-500 flex items-center gap-1">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-400" />
+                Mất kết nối
+              </span>
+            )}
           </p>
         </div>
         {canShare && (
@@ -423,27 +479,57 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       {/* Message list */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
         {isEmpty && (
-          <div className="flex flex-col items-center justify-center h-full gap-6 py-12">
-            <div className="w-16 h-16 rounded-2xl bg-blue-50 flex items-center justify-center">
-              <Bot className="h-8 w-8 text-blue-500" />
+          <div className="flex flex-col items-center justify-center h-full gap-5 py-10">
+            {/* Avatar */}
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-md">
+              <Bot className="h-8 w-8 text-white" />
             </div>
+
+            {/* Greeting */}
             <div className="text-center">
-              <h2 className="text-lg font-semibold text-gray-800 mb-1">Xin chào! Tôi là AI Data Assistant</h2>
-              <p className="text-sm text-gray-500 max-w-sm">
-                Hỏi tôi về dữ liệu trong hệ thống — tôi sẽ tìm chart phù hợp, chạy query và phân tích kết quả cho bạn.
+              <h2 className="text-lg font-semibold text-gray-800 mb-1">
+                {datasetLabel
+                  ? `Phân tích ${datasetLabel}`
+                  : 'Xin chào! Tôi là AI Data Assistant'}
+              </h2>
+              <p className="text-sm text-gray-500 max-w-sm leading-relaxed">
+                {datasetLabel
+                  ? `Hỏi tôi về dữ liệu trong dataset này — tra cứu số liệu, khám phá xu hướng, phân tích nguyên nhân hoặc tạo biểu đồ.`
+                  : 'Hỏi tôi về dữ liệu trong hệ thống — tôi sẽ tìm chart phù hợp, chạy query và phân tích kết quả cho bạn.'}
               </p>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-xl">
-              {QUICK_PROMPTS.map((prompt) => (
-                <button
-                  key={prompt}
-                  onClick={() => sendMessage(prompt)}
-                  disabled={!wsConnected || loading}
-                  className="text-left px-3.5 py-2.5 text-sm text-gray-700 bg-white border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  {prompt}
-                </button>
+
+            {/* Capability badges */}
+            <div className="flex flex-wrap gap-2 justify-center">
+              {[
+                { icon: '🔍', label: 'Tra cứu số liệu' },
+                { icon: '🔬', label: 'Khám phá dữ liệu' },
+                { icon: '💡', label: 'Phân tích sâu' },
+                { icon: '🎨', label: 'Tạo biểu đồ' },
+              ].map(cap => (
+                <span key={cap.label} className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-50 border border-gray-200 rounded-full text-xs text-gray-600">
+                  <span>{cap.icon}</span>{cap.label}
+                </span>
               ))}
+            </div>
+
+            {/* Dynamic starter questions */}
+            <div className="w-full max-w-xl">
+              <p className="text-xs text-gray-400 text-center mb-2">
+                {promptsLoading ? 'Đang tải gợi ý…' : 'Gợi ý câu hỏi:'}
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {initialPrompts.map((prompt) => (
+                  <button
+                    key={prompt}
+                    onClick={() => sendMessage(prompt)}
+                    disabled={!wsConnected || loading || promptsLoading}
+                    className="text-left px-3.5 py-2.5 text-sm text-gray-700 bg-white border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50/60 transition-all disabled:opacity-40 disabled:cursor-not-allowed group"
+                  >
+                    <span className="group-hover:text-blue-700 transition-colors">{prompt}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         )}

@@ -281,7 +281,6 @@ export function DimensionMeasureEditor({ datasetId, view, onClose }: DimensionMe
           <h3 className="text-sm font-semibold text-gray-900">
             {view.table_display_name || view.name}
           </h3>
-          <p className="text-xs text-gray-500">Edit fields and measures</p>
         </div>
         <button onClick={onClose} className="p-1 hover:bg-gray-100 rounded">
           <X className="w-4 h-4" />

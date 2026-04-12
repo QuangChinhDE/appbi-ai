@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, Code, Database, Loader2, Sigma, X } from 'lucide-react';
+import { HelpTooltip } from '@/components/ui/HelpTooltip';
 
 import { useDataSources } from '@/hooks/use-datasources';
 import { useAddTableToDataset, useUpdateTable } from '@/hooks/use-datasets';
@@ -62,7 +63,10 @@ function EditPhysicalForm({
       </div>
 
       <div>
-        <label className="mb-2 block text-sm font-medium text-gray-700">Display name *</label>
+        <label className="mb-2 flex items-center text-sm font-medium text-gray-700">
+          Display name *
+          <HelpTooltip text="This is the name shown inside the dataset." />
+        </label>
         <input
           type="text"
           value={displayName}
@@ -72,7 +76,6 @@ function EditPhysicalForm({
           disabled={isLoading}
           autoFocus
         />
-        <p className="mt-1 text-xs text-gray-500">This is the name shown inside the dataset.</p>
       </div>
 
       {saveError && (
@@ -195,9 +198,11 @@ export function AddTableModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
         <div className="flex items-start justify-between gap-4 border-b px-6 py-4">
-          <div>
+          <div className="flex items-center gap-2">
             <h2 className="text-xl font-semibold text-gray-900">{modalTitle}</h2>
-            <p className="mt-1 text-sm text-gray-500">{modalDescription}</p>
+            {isEditMode
+              ? <span className="text-sm text-gray-400">{modalDescription}</span>
+              : <HelpTooltip text={modalDescription} />}
           </div>
           <button
             type="button"

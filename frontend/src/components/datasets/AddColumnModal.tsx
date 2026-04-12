@@ -14,6 +14,7 @@
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { X, Loader2, AlertCircle, Play, ChevronDown, ChevronRight, Info } from 'lucide-react';
+import { HelpTooltip } from '@/components/ui/HelpTooltip';
 import type { DatasetTable, Transformation } from '@/hooks/use-datasets';
 import * as formulajs from 'formulajs';
 
@@ -381,13 +382,11 @@ export function AddColumnModal({
 
         {/* Header */}
         <div className="flex items-start justify-between px-6 py-4 border-b shrink-0">
-          <div>
+          <div className="flex items-center gap-1.5">
             <h2 className="text-lg font-semibold text-gray-900">
               {isEditMode ? `Sửa cột: ${editingStep?.params.newField}` : 'Thêm cột tính toán'}
             </h2>
-            <p className="text-xs text-gray-500 mt-0.5">
-              {isEditMode ? 'Sửa công thức Excel · tên cột không thể đổi' : 'Dùng công thức Excel để tạo cột mới từ dữ liệu hiện có'}
-            </p>
+            <HelpTooltip text={isEditMode ? 'Sửa công thức Excel · tên cột không thể đổi' : 'Dùng công thức Excel để tạo cột mới từ dữ liệu hiện có'} />
           </div>
           <button onClick={onClose} disabled={isSaving} className="text-gray-400 hover:text-gray-600 mt-0.5">
             <X className="w-5 h-5" />
@@ -419,7 +418,10 @@ export function AddColumnModal({
             {/* Column chips — grouped by source table */}
             {resolvedGroups.length > 0 && (
               <div>
-                <p className="text-xs text-gray-500 mb-1.5 font-medium">Cột khả dụng — click để chèn:</p>
+                <p className="text-xs text-gray-500 mb-1.5 font-medium flex items-center">
+                  Cột khả dụng
+                  <HelpTooltip text="Click vào tên cột để chèn vào công thức." />
+                </p>
                 <div className="space-y-2 max-h-28 overflow-y-auto">
                   {resolvedGroups.map((group) => (
                     <div key={group.sourceLabel}>
@@ -445,8 +447,9 @@ export function AddColumnModal({
 
             {/* Formula input */}
             <div>
-              <label className="text-sm font-medium text-gray-700 block mb-1">
-                Công thức <span className="text-red-500">*</span>
+              <label className="text-sm font-medium text-gray-700 flex items-center mb-1">
+                Công thức <span className="text-red-500 ml-0.5">*</span>
+                <HelpTooltip text="Dùng [TênCột] để tham chiếu cột · cú pháp y hệt Excel" />
               </label>
               <div className="relative border border-gray-300 rounded-md overflow-hidden focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-500">
                 <textarea
@@ -469,9 +472,6 @@ export function AddColumnModal({
                   }}
                 />
               </div>
-              <p className="mt-1 text-[10px] text-gray-400">
-                Dùng <code className="bg-gray-100 px-0.5 rounded">[TênCột]</code> để tham chiếu cột · cú pháp y hệt Excel
-              </p>
             </div>
 
             {/* Live preview */}
@@ -602,7 +602,6 @@ export function AddColumnModal({
 
         {/* Footer */}
         <div className="flex items-center justify-between px-6 py-3 border-t bg-gray-50 rounded-b-xl">
-          <p className="text-[11px] text-gray-400">Tính toán trong trình duyệt · cú pháp Excel</p>
           <div className="flex gap-3">
             <button onClick={onClose} disabled={isSaving} className="px-4 py-2 text-sm text-gray-700 hover:text-gray-900">Huỷ</button>
             <button

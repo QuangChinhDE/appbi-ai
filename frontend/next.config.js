@@ -35,20 +35,29 @@ const nextConfig = {
       // that leak the internal Docker hostname).
       // AI Chat: keep page routes like /chat/[sessionId] on Next.js and
       // proxy only the service endpoints that actually belong to ai-chat-service.
+      // NOTE: /chat/ws WebSocket upgrade is NOT proxied by Next.js rewrites.
+      // The browser must connect directly using NEXT_PUBLIC_AI_CHAT_WS_URL.
       { source: '/chat/ws', destination: `${chatBase}/chat/ws` },
       { source: '/chat/stream', destination: `${chatBase}/chat/stream` },
       { source: '/chat/sessions', destination: `${chatBase}/chat/sessions` },
       { source: '/chat/sessions/:path*', destination: `${chatBase}/chat/sessions/:path*` },
       { source: '/chat/cleanup', destination: `${chatBase}/chat/cleanup` },
+      // New AI Chat endpoints (Phase 1-4 upgrade)
+      { source: '/chat/initial-suggestions', destination: `${chatBase}/chat/initial-suggestions` },
+      { source: '/chat/rate-limits', destination: `${chatBase}/chat/rate-limits` },
+      { source: '/chat/usage/:path*', destination: `${chatBase}/chat/usage/:path*` },
+      { source: '/chat/admin/:path*', destination: `${chatBase}/chat/admin/:path*` },
       // AI Agent
       { source: '/agent/:path*', destination: `${agentBase}/agent/:path*` },
     ];
   },
   env: {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || '/api/v1',
-    // AI URLs are intentionally NOT baked here.
-    // frontend/src/lib/ai-services.ts derives them at runtime from window.location,
-    // unless the deploy environment explicitly sets NEXT_PUBLIC_AI_* overrides.
+    // WebSocket URL must be baked — Next.js rewrites can't proxy WS upgrades.
+    // Set NEXT_PUBLIC_AI_CHAT_WS_URL in .env:
+    //   Local dev (no nginx): ws://localhost:8001/chat/ws
+    //   Production (nginx):   wss://yourdomain.com/chat/ws  (or leave empty)
+    NEXT_PUBLIC_AI_CHAT_WS_URL: process.env.NEXT_PUBLIC_AI_CHAT_WS_URL || '',
   },
 };
 

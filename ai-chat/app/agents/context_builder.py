@@ -27,8 +27,30 @@ def _fuzzy_score(query: str, text: str) -> int:
 
 
 def _extract_columns(table_payload: Dict[str, Any]) -> List[Any]:
+    """Extract column metadata, including sample values when available.
+
+    Phase 2 enhancement: include sample_values from column_stats so the AI
+    knows what actual values exist (e.g. status='0'/'1', miss_deadline='TRUE'/'FALSE').
+    This eliminates filter value guessing and reduces wrong query attempts.
+    """
     if table_payload.get("column_stats"):
-        return list(table_payload["column_stats"].keys())
+        cols = []
+        for col_name, stats in table_payload["column_stats"].items():
+            col_info: Dict[str, Any] = {
+                "name": col_name,
+                "type": stats.get("dtype", "unknown"),
+            }
+            # Add sample values for low-cardinality (categorical) columns
+            top_vals = stats.get("top_values") or stats.get("top_values_count") or {}
+            if isinstance(top_vals, dict) and 0 < len(top_vals) <= 20:
+                col_info["sample_values"] = list(top_vals.keys())[:5]
+            elif isinstance(top_vals, list) and 0 < len(top_vals) <= 20:
+                col_info["sample_values"] = [str(v) for v in top_vals[:5]]
+            # Add min/max for numeric columns
+            if stats.get("min") is not None and stats.get("max") is not None:
+                col_info["range"] = f"{stats['min']} – {stats['max']}"
+            cols.append(col_info)
+        return cols
 
     columns_cache = table_payload.get("columns_cache")
     if isinstance(columns_cache, dict):
@@ -77,7 +99,18 @@ class ContextPackage:
                     col_strs = []
                     for c in cols_preview:
                         if isinstance(c, dict):
-                            col_strs.append(f"{c.get('name', c)}:{c.get('type', '?')}")
+                            name = c.get("name", str(c))
+                            col_type = c.get("type", "?")
+                            sample = c.get("sample_values")
+                            col_range = c.get("range")
+                            if sample:
+                                col_strs.append(
+                                    f"{name}:{col_type} (values: {', '.join(repr(str(v)) for v in sample)})"
+                                )
+                            elif col_range:
+                                col_strs.append(f"{name}:{col_type} (range: {col_range})")
+                            else:
+                                col_strs.append(f"{name}:{col_type}")
                         else:
                             col_strs.append(str(c))
                     lines.append(f"  Columns: {', '.join(col_strs)}")
@@ -195,12 +228,18 @@ async def build_context(
             pkg.tables = scoped_tables[:max_tables]
             pkg.fallback_used = True
         else:
+            # B6 fix: hard cap at 50 tables total to prevent context explosion
+            _FALLBACK_TABLE_CAP = 50
             try:
                 datasets = await bi_client.list_datasets(token=token)
                 for dataset in datasets:
+                    if len(pkg.tables) >= _FALLBACK_TABLE_CAP:
+                        break
                     try:
                         ws_detail = await bi_client.get_dataset(dataset["id"], token=token)
                         for tbl in ws_detail.get("tables", []):
+                            if len(pkg.tables) >= _FALLBACK_TABLE_CAP:
+                                break
                             pkg.tables.append({
                                 "id": tbl["id"],
                                 "dataset_id": dataset["id"],
@@ -212,6 +251,12 @@ async def build_context(
                         pass
                 if pkg.tables:
                     pkg.fallback_used = True
+                    if len(pkg.tables) >= _FALLBACK_TABLE_CAP:
+                        logger.warning(
+                            "context_builder: fallback hit cap of %d tables — "
+                            "enable vector embeddings for better context quality",
+                            _FALLBACK_TABLE_CAP,
+                        )
             except Exception as exc:
                 logger.warning("context_builder: fallback table load error — %s", exc)
 

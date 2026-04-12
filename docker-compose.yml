@@ -99,11 +99,14 @@ services:
       dockerfile: Dockerfile
       args:
         # NEXT_PUBLIC_API_URL is baked as a relative path so it works on any domain.
-        # AI service URLs are NOT baked — derived at runtime from window.location automatically.
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api/v1}
         NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED: ${NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED:-true}
         NEXT_PUBLIC_AUTH_GOOGLE_ENABLED: ${NEXT_PUBLIC_AUTH_GOOGLE_ENABLED:-false}
         NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
+        # WebSocket cannot be proxied through Next.js rewrites — must be baked.
+        # Local dev (no nginx): ws://localhost:8001/chat/ws
+        # Production (with nginx): wss://yourdomain.com/chat/ws  (or leave empty)
+        NEXT_PUBLIC_AI_CHAT_WS_URL: ${NEXT_PUBLIC_AI_CHAT_WS_URL:-}
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000/api/v1

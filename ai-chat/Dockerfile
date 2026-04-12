@@ -4,10 +4,10 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
-COPY ai-service/requirements.txt .
+COPY ai-chat/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY ai-service/app/ ./app/
+COPY ai-chat/app/ ./app/
 
 EXPOSE 8001
 
