@@ -23,6 +23,7 @@ from app.models.resource_share import ResourceType
 from app.models.user import User
 from app.schemas import (
     DatasetCreate,
+    DatasetDictionaryResponse,
     DatasetUpdate,
     DatasetResponse,
     DatasetWithTables,
@@ -58,6 +59,11 @@ from app.services.dataset_table_sql_service import (
     validate_and_clean_derived_query,
 )
 from app.services.dataset_model_service import generate_dataset_model
+from app.services.dataset_dictionary_service import (
+    build_dictionary_context,
+    build_dictionary_stats,
+    normalize_dictionary_payload,
+)
 from app.services.description_pipeline_service import (
     DescriptionPipelineService,
     resolve_session_factory,
@@ -381,6 +387,24 @@ def _serialize_table_description(table) -> dict:
     }
 
 
+def _serialize_dataset_dictionary(dataset_obj: Dataset) -> dict:
+    dictionary = normalize_dictionary_payload(getattr(dataset_obj, "dictionary", None))
+    stats = build_dictionary_stats(dictionary, getattr(dataset_obj, "tables", None) or [])
+    return {
+        "dictionary": dictionary,
+        "dictionary_updated_at": (
+            dataset_obj.dictionary_updated_at.isoformat()
+            if getattr(dataset_obj, "dictionary_updated_at", None)
+            else None
+        ),
+        "stats": stats,
+        "compiled_context": build_dictionary_context(
+            dataset_obj,
+            getattr(dataset_obj, "tables", None) or [],
+        ),
+    }
+
+
 def _sync_dataset_model_safely(db: Session, dataset_id: int) -> None:
     try:
         generate_dataset_model(db, dataset_id, force=False)
@@ -622,6 +646,53 @@ def delete_dataset(
     success = DatasetCRUDService.delete_dataset(db, dataset_id)
     if not success:
         raise HTTPException(status_code=404, detail="Dataset not found")
+
+
+@router.get("/{dataset_id}/dictionary", response_model=DatasetDictionaryResponse)
+def get_dataset_dictionary(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    dataset_obj = DatasetCRUDService.get_dataset_by_id(db, dataset_id, include_tables=True)
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, dataset_obj, "datasets")
+    return _serialize_dataset_dictionary(dataset_obj)
+
+
+@router.put("/{dataset_id}/dictionary", response_model=DatasetDictionaryResponse)
+def update_dataset_dictionary(
+    dataset_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    dataset_obj = DatasetCRUDService.get_dataset_by_id(db, dataset_id, include_tables=True)
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, dataset_obj, "datasets")
+
+    normalized_dictionary = normalize_dictionary_payload(body)
+    dataset_obj.dictionary = normalized_dictionary or None
+    dataset_obj.dictionary_updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(dataset_obj)
+    dataset_obj = DatasetCRUDService.get_dataset_by_id(db, dataset_id, include_tables=True)
+    return _serialize_dataset_dictionary(dataset_obj)
+
+
+@router.get("/{dataset_id}/dictionary/context", response_model=DatasetDictionaryResponse)
+def get_dataset_dictionary_context(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    dataset_obj = DatasetCRUDService.get_dataset_by_id(db, dataset_id, include_tables=True)
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, dataset_obj, "datasets")
+    return _serialize_dataset_dictionary(dataset_obj)
 
 
 # ===== Table Endpoints =====

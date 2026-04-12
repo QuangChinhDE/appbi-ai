@@ -1,4 +1,5 @@
 """CRUD service for Datasets (Table-based Datasets)"""
+from datetime import datetime
 import re
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session, joinedload
@@ -22,6 +23,7 @@ from app.services.dataset_table_sql_service import (
     normalize_dataset_table_sql_alias,
     rewrite_dataset_table_aliases_in_sql,
 )
+from app.services.dataset_dictionary_service import normalize_dictionary_payload
 
 
 LOOKUP_TABLE_IDENTIFIER_PREFIX = "dataset-table://"
@@ -219,6 +221,10 @@ class DatasetCRUDService:
             name=dataset_in.name,
             description=dataset_in.description,
             settings=settings,
+            dictionary=normalize_dictionary_payload(
+                dataset_in.dictionary.model_dump() if getattr(dataset_in, "dictionary", None) else None
+            ) or None,
+            dictionary_updated_at=datetime.utcnow() if getattr(dataset_in, "dictionary", None) else None,
             owner_id=owner_id,
         )
         db.add(db_dataset)
@@ -248,6 +254,7 @@ class DatasetCRUDService:
         # Update only provided fields
         update_data = dataset_in.model_dump(exclude_unset=True)
         incoming_settings = update_data.pop("settings", None)
+        incoming_dictionary = update_data.pop("dictionary", None)
         for key, value in update_data.items():
             setattr(db_dataset, key, value)
 
@@ -266,6 +273,11 @@ class DatasetCRUDService:
                     (current_settings.get("calendar_dimension") or {}).get("enabled", False)
                 ),
             )
+
+        if incoming_dictionary is not None:
+            normalized_dictionary = normalize_dictionary_payload(incoming_dictionary)
+            db_dataset.dictionary = normalized_dictionary or None
+            db_dataset.dictionary_updated_at = datetime.utcnow()
 
         if get_calendar_settings(db_dataset, enabled_default=False).get("enabled"):
             ensure_calendar_table(db, db_dataset)

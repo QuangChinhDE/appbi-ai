@@ -22,6 +22,7 @@ import {
   ChevronLeft as ChevronLeftPag,
   ChevronRight,
   Bot,
+  BookOpen,
   Sigma,
 } from 'lucide-react';
 import {
@@ -39,6 +40,7 @@ import { ManageColumnsDrawer } from '@/components/datasets/ManageColumnsDrawer';
 import { AddColumnModal, buildFNS, type LookupTableOption } from '@/components/datasets/AddColumnModal';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { TableDescriptionPanel } from '@/components/datasets/TableDescriptionPanel';
+import { DatasetDictionaryPanel } from '@/components/datasets/DatasetDictionaryPanel';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { DataModelCanvas } from '@/components/datasets/DataModelCanvas';
 import { DimensionMeasureEditor } from '@/components/datasets/DimensionMeasureEditor';
@@ -428,7 +430,7 @@ export default function DatasetDetailPage() {
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingTable, setIsDeletingTable] = useState(false);
   const [isDescModalOpen, setIsDescModalOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'tables' | 'model'>('tables');
+  const [activeTab, setActiveTab] = useState<'tables' | 'dictionary' | 'model'>('tables');
   const [editingView, setEditingView] = useState<DatasetModelView | null>(null);
   const [calendarDraft, setCalendarDraft] = useState<CalendarDimensionSettings>(DEFAULT_CALENDAR_SETTINGS);
   const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
@@ -1148,6 +1150,19 @@ export default function DatasetDetailPage() {
             </span>
           </button>
           <button
+            onClick={() => setActiveTab('dictionary')}
+            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'dictionary'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              <BookOpen className="w-4 h-4" />
+              Catalog
+            </span>
+          </button>
+          <button
             onClick={() => setActiveTab('model')}
             className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
               activeTab === 'model'
@@ -1171,6 +1186,13 @@ export default function DatasetDetailPage() {
               onEditView={(view) => setEditingView(view)}
             />
           </div>
+        ) : activeTab === 'dictionary' ? (
+          <DatasetDictionaryPanel
+            datasetId={datasetId!}
+            datasetName={dataset.name}
+            tables={dataset.tables ?? []}
+            canEdit={resPerms.canEdit}
+          />
         ) : dataset.tables.length === 0 ? (
           // Empty state - no tables
           <div className="flex-1 flex items-center justify-center">

@@ -1,6 +1,6 @@
 """Schemas for Datasets (Table-based Datasets)"""
 from datetime import date, datetime
-from typing import Optional, List, Dict, Any, Union
+from typing import Literal, Optional, List, Dict, Any, Union
 from pydantic import BaseModel, Field, model_validator
 from uuid import UUID
 
@@ -21,11 +21,84 @@ class CalendarDimensionSettings(BaseModel):
 class DatasetSettings(BaseModel):
     calendar_dimension: CalendarDimensionSettings = Field(default_factory=CalendarDimensionSettings)
 
+
+class DatasetDictionaryTerm(BaseModel):
+    term: str = Field(..., min_length=1, max_length=120)
+    definition: str = Field(..., min_length=1, max_length=1000)
+    category: Literal["metric", "dimension", "entity", "rule", "other"] = "other"
+    synonyms: List[str] = Field(default_factory=list)
+    related_tables: List[int] = Field(default_factory=list)
+    related_columns: List[str] = Field(default_factory=list)
+    examples: List[str] = Field(default_factory=list)
+
+
+class DatasetDictionaryColumnQuality(BaseModel):
+    required: Optional[bool] = None
+    unique: Optional[bool] = None
+    accepted_values: List[str] = Field(default_factory=list)
+    min_value: Optional[Union[str, float, int]] = None
+    max_value: Optional[Union[str, float, int]] = None
+    pattern: Optional[str] = Field(default=None, max_length=500)
+    format_hint: Optional[Literal["email", "phone", "url", "date", "datetime", "currency", "percent", "custom"]] = None
+    null_threshold_percent: Optional[float] = Field(default=None, ge=0, le=100)
+    distinct_threshold: Optional[float] = Field(default=None, ge=0)
+    severity: Optional[Literal["info", "warning", "error"]] = None
+    notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+class DatasetDictionaryColumnNote(BaseModel):
+    column_name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    business_name: Optional[str] = Field(default=None, max_length=255)
+    examples: List[str] = Field(default_factory=list)
+    quality: Optional[DatasetDictionaryColumnQuality] = None
+
+
+class DatasetDictionaryTableNote(BaseModel):
+    table_id: int
+    business_role: Optional[str] = Field(default=None, max_length=300)
+    grain: Optional[str] = Field(default=None, max_length=300)
+    join_hint: Optional[str] = Field(default=None, max_length=1000)
+    owner_note: Optional[str] = Field(default=None, max_length=1000)
+    freshness_expectation: Optional[str] = Field(default=None, max_length=300)
+    row_count_expectation: Optional[str] = Field(default=None, max_length=1000)
+    important_columns: List[str] = Field(default_factory=list)
+    column_notes: List[DatasetDictionaryColumnNote] = Field(default_factory=list)
+
+
+class DatasetDictionary(BaseModel):
+    overview: Optional[str] = Field(default=None, max_length=2000)
+    business_purpose: Optional[str] = Field(default=None, max_length=2000)
+    usage_guidelines: Optional[str] = Field(default=None, max_length=2000)
+    ai_context: Optional[str] = Field(default=None, max_length=4000)
+    default_filters: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    glossary: List[DatasetDictionaryTerm] = Field(default_factory=list)
+    table_notes: List[DatasetDictionaryTableNote] = Field(default_factory=list)
+
+
+class DatasetDictionaryStats(BaseModel):
+    glossary_terms: int = 0
+    warnings: int = 0
+    default_filters: int = 0
+    table_notes: int = 0
+    covered_tables: int = 0
+    total_tables: int = 0
+
+
+class DatasetDictionaryResponse(BaseModel):
+    dictionary: DatasetDictionary = Field(default_factory=DatasetDictionary)
+    dictionary_updated_at: Optional[datetime] = None
+    stats: DatasetDictionaryStats = Field(default_factory=DatasetDictionaryStats)
+    compiled_context: str = ""
+
+
 class DatasetBase(BaseModel):
     """Base dataset schema"""
     name: str = Field(..., min_length=1, max_length=200)
     description: Optional[str] = None
     settings: Optional[DatasetSettings] = None
+    dictionary: Optional[DatasetDictionary] = None
 
 
 class DatasetCreate(DatasetBase):
@@ -46,6 +119,7 @@ class DatasetResponse(DatasetBase):
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    dictionary_updated_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

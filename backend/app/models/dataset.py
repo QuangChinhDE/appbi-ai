@@ -20,6 +20,8 @@ class Dataset(Base):
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     settings = Column(JSONB, nullable=True, default=None)
+    dictionary = Column(JSONB, nullable=True, default=None)
+    dictionary_updated_at = Column(DateTime, nullable=True, default=None)
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)

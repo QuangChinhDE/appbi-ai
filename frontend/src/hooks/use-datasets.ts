@@ -11,6 +11,8 @@ export interface Dataset {
   name: string;
   description?: string;
   settings?: DatasetSettings;
+  dictionary?: DatasetDictionary | null;
+  dictionary_updated_at?: string | null;
   owner_id?: string;
   owner_email?: string;
   user_permission?: 'none' | 'view' | 'edit' | 'full';
@@ -30,6 +32,90 @@ export interface CalendarDimensionSettings {
 
 export interface DatasetSettings {
   calendar_dimension: CalendarDimensionSettings;
+}
+
+export type DatasetDictionaryCategory = 'metric' | 'dimension' | 'entity' | 'rule' | 'other';
+
+export interface DatasetDictionaryTerm {
+  term: string;
+  definition: string;
+  category: DatasetDictionaryCategory;
+  synonyms: string[];
+  related_tables: number[];
+  related_columns: string[];
+  examples: string[];
+}
+
+export type DatasetDictionaryQualitySeverity = 'info' | 'warning' | 'error';
+export type DatasetDictionaryQualityFormatHint =
+  | 'email'
+  | 'phone'
+  | 'url'
+  | 'date'
+  | 'datetime'
+  | 'currency'
+  | 'percent'
+  | 'custom';
+
+export interface DatasetDictionaryColumnQuality {
+  required?: boolean;
+  unique?: boolean;
+  accepted_values: string[];
+  min_value?: string | number;
+  max_value?: string | number;
+  pattern?: string;
+  format_hint?: DatasetDictionaryQualityFormatHint;
+  null_threshold_percent?: number;
+  distinct_threshold?: number;
+  severity?: DatasetDictionaryQualitySeverity;
+  notes?: string;
+}
+
+export interface DatasetDictionaryColumnNote {
+  column_name: string;
+  description?: string;
+  business_name?: string;
+  examples: string[];
+  quality?: DatasetDictionaryColumnQuality;
+}
+
+export interface DatasetDictionaryTableNote {
+  table_id: number;
+  business_role?: string;
+  grain?: string;
+  join_hint?: string;
+  owner_note?: string;
+  freshness_expectation?: string;
+  row_count_expectation?: string;
+  important_columns: string[];
+  column_notes: DatasetDictionaryColumnNote[];
+}
+
+export interface DatasetDictionary {
+  overview?: string;
+  business_purpose?: string;
+  usage_guidelines?: string;
+  ai_context?: string;
+  default_filters: string[];
+  warnings: string[];
+  glossary: DatasetDictionaryTerm[];
+  table_notes: DatasetDictionaryTableNote[];
+}
+
+export interface DatasetDictionaryStats {
+  glossary_terms: number;
+  warnings: number;
+  default_filters: number;
+  table_notes: number;
+  covered_tables: number;
+  total_tables: number;
+}
+
+export interface DatasetDictionaryResponse {
+  dictionary: DatasetDictionary;
+  dictionary_updated_at?: string | null;
+  stats: DatasetDictionaryStats;
+  compiled_context: string;
 }
 
 export interface Transformation {
@@ -168,6 +254,7 @@ export const datasetKeys = {
   details: () => [...datasetKeys.all, 'detail'] as const,
   detail: (id: number) => [...datasetKeys.details(), id] as const,
   tables: (datasetId: number) => [...datasetKeys.detail(datasetId), 'tables'] as const,
+  dictionary: (datasetId: number) => [...datasetKeys.detail(datasetId), 'dictionary'] as const,
   tablePreview: (datasetId: number, tableId: number) => 
     [...datasetKeys.detail(datasetId), 'table', tableId, 'preview'] as const,
 };
@@ -224,6 +311,20 @@ export function useDatasetTables(datasetId: number | null) {
       return response.data;
     },
     enabled: datasetId !== null,
+  });
+}
+
+export function useDatasetDictionary(datasetId: number | null) {
+  return useQuery({
+    queryKey: datasetKeys.dictionary(datasetId!),
+    queryFn: async () => {
+      const response = await api.get<DatasetDictionaryResponse>(
+        `/datasets/${datasetId}/dictionary`
+      );
+      return response.data;
+    },
+    enabled: datasetId !== null,
+    staleTime: 5_000,
   });
 }
 
@@ -372,6 +473,25 @@ export function useTablePreview(
     enabled: datasetId !== null && tableId !== null && (options.enabled ?? true),
     retry: (failureCount: number, error: any) => {
       return failureCount < 2;
+    },
+  });
+}
+
+export function useUpdateDatasetDictionary(datasetId: number) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (input: DatasetDictionary) => {
+      const response = await api.put<DatasetDictionaryResponse>(
+        `/datasets/${datasetId}/dictionary`,
+        input
+      );
+      return response.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.dictionary(datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.detail(datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.lists() });
     },
   });
 }
