@@ -526,6 +526,37 @@ class AutoTaggingService:
             return False, str(exc)
 
     @staticmethod
+    def preview_table_description(db: Session, table_id: int) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+        """Generate AI description without saving — returns the raw LLM payload for user review.
+
+        Returns: (success, payload_or_None, error_or_None)
+        payload keys: description, column_descriptions, common_questions
+        """
+        try:
+            from app.models.dataset import DatasetTable
+            table = db.query(DatasetTable).filter(DatasetTable.id == table_id).first()
+            if not table:
+                return False, None, "Table not found"
+
+            result = LLMClient.complete_json(
+                _build_table_prompt(table),
+                system=_TABLE_DESCRIBE_SYSTEM,
+                max_tokens=800,
+            )
+            if not result:
+                return False, None, "AI provider returned no payload"
+
+            return True, {
+                "description": result.get("description") or "",
+                "column_descriptions": result.get("column_descriptions") or {},
+                "common_questions": result.get("common_questions") or [],
+            }, None
+
+        except Exception as exc:
+            logger.warning("AutoTaggingService: preview_table %s failed - %s", table_id, exc)
+            return False, None, str(exc)
+
+    @staticmethod
     def describe_table(db: Session, table_id: int, force: bool = False) -> bool:
         """Compatibility wrapper; orchestration should prefer describe_table_detailed()."""
         ok, _ = AutoTaggingService.describe_table_detailed(db, table_id)

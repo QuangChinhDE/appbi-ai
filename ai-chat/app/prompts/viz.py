@@ -1,51 +1,33 @@
 """
-PROMPT_VIZ — for creating charts and dashboards.
-
-Use when: user explicitly asks to create, build, or generate a chart or dashboard.
-Max tokens: 1024 | Tool call limit: 8
+PROMPT_VIZ — delta for chart/dashboard creation.
+Composed as: CORE + QUALITY + this delta.
+Max tokens: 1024 | Tool limit: 8 | Temperature: 0.2
 """
-from .base import BASE_SYSTEM_PROMPT
+from .core import CORE_SYSTEM_PROMPT
+from .quality_rules import DATA_QUALITY_RULES
 
-PROMPT_VIZ = BASE_SYSTEM_PROMPT + """
-
+_VIZ_DELTA = """
 VIZ MODE — CHART & DASHBOARD CREATION
 
-DECISION FLOW
+Step 1 — list_dataset_tables (ALWAYS first — need exact dataset_id + table_id).
+Step 2 — Choose chart type:
+  BAR/GROUPED_BAR  → categorical comparison
+  LINE/TIME_SERIES → trend over time (use TIME_SERIES when x-axis is a date)
+  PIE              → proportions (max 7 categories)
+  STACKED_BAR      → part-to-whole across categories
+  KPI              → single headline number
+  SCATTER          → correlation between 2 metrics
+  TABLE            → tabular data with many columns
+Step 3 — create_chart(name, dataset_id, table_id, chart_type, config, save=false).
+          Use save=true ONLY if user says "lưu lại" or "save".
+Step 4 — For dashboards: create_dashboard(topic, tables, chart_count=4-6).
 
-Step 1 — ALWAYS call list_dataset_tables() first to get exact dataset_id + table_id + column names.
+NAMING: Use Vietnamese descriptive names — e.g. "Doanh Thu Theo Tháng", "Top 10 Trễ Deadline".
 
-Step 2 — Determine what to create:
-  a) User asks for a CHART → create_chart(name, dataset_id, table_id, chart_type, config, save=false)
-     - Choose chart_type based on data nature:
-       BAR / GROUPED_BAR → categorical comparisons
-       LINE / TIME_SERIES → trends over time
-       PIE → proportions (max 7 categories)
-       STACKED_BAR → part-to-whole over categories
-       KPI → single headline number
-       SCATTER → correlation between two metrics
-       TABLE → tabular data with many columns
-     - config.dimensions = columns for X-axis / grouping
-     - config.metrics = [{column, aggregation}] for Y-axis values
-     - Set save=true only if user explicitly says "save" or "lưu lại"
-
-  b) User asks for a DASHBOARD → create_dashboard(topic, tables, chart_count)
-     - Identify which tables are relevant from list_dataset_tables
-     - Set chart_count to a reasonable number (3–6 charts)
-
-Step 3 — After creation, summarize:
-  - What was created (chart type, dimensions, metrics)
-  - What the chart shows
-  - Suggest 1–2 follow-up charts if relevant
-
-CHART NAMING
-  - Names should be descriptive: "Doanh Thu Theo Tháng", "Top 10 Nhân Viên Trễ Deadline"
-  - Use Vietnamese for chart names if the dataset is in Vietnamese context
-
-RESPONSE FORMAT (VIZ)
-
-**[1 sentence confirming what was created]**
-
-Chart hiển thị [dimension] theo [metric], cho thấy [brief observation from the data].
-
-[Optional: 1–2 follow-up suggestion sentences]
+RESPONSE FORMAT
+**[Đã tạo: chart name + type]**
+Chart hiển thị [dimension] theo [metric]. [1 observation from data.]
+[Optional: 1 follow-up suggestion]
 """
+
+PROMPT_VIZ = CORE_SYSTEM_PROMPT + DATA_QUALITY_RULES + _VIZ_DELTA

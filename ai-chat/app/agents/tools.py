@@ -21,10 +21,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "search_charts",
-            "description": (
-                "Search for pre-built charts in the BI system. Call this FIRST for any data question. "
-                "Returns top_chart_data with real data rows if a chart matches — read those rows to analyze."
-            ),
+            "description": "Search pre-built charts. Returns top_chart_data.rows with real data if a chart matches.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -51,11 +48,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_chart",
-            "description": (
-                "Execute a pre-built chart and return its data rows. "
-                "The chart is automatically rendered on the user's screen. "
-                "Only needed if search_charts did not include top_chart_data."
-            ),
+            "description": "Execute a chart and return rows[]. Chart renders automatically. Use when search_charts has no top_chart_data.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -72,7 +65,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "search_dashboards",
-            "description": "Search for dashboards by name or description. Useful when user asks about a dashboard or topic overview.",
+            "description": "Search dashboards by name. Use when user asks about a report, overview, or dashboard topic.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -89,10 +82,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "inspect_dashboard",
-            "description": (
-                "Load a dashboard and summarize its chart flow, chart descriptions, and saved insight context. "
-                "Use this when the user asks about a report/dashboard overview or wants narrative insight from a saved board."
-            ),
+            "description": "Load dashboard details: chart list, descriptions, saved insight context.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -109,7 +99,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "list_dataset_tables",
-            "description": "List all dataset tables with their column names and types. Call this before query_table to know exact column names available.",
+            "description": "List dataset tables with column names and types. Always call before query_table to get exact column names.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -127,12 +117,9 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "query_table",
             "description": (
-                "Run an aggregated analytical query on a dataset table. "
-                "Supports GROUP BY (dimensions), aggregations (measures: sum/avg/count/min/max/count_distinct), "
-                "WHERE filters, ORDER BY, and LIMIT. "
-                "Always prefer this over run_dataset_table to avoid loading raw data. "
-                "Measure result columns are aliased as {field}_{function} (e.g. total_points_sum). "
-                "Use order_by with the aliased measure name to rank results."
+                "Aggregated query: GROUP BY dimensions, aggregate measures (sum/avg/count/min/max/count_distinct). "
+                "Measure columns aliased as {field}_{function} (e.g. revenue_sum). "
+                "Use aliased name in order_by. Supports filters and date_bucket for time aggregation."
             ),
             "parameters": {
                 "type": "object",
@@ -220,12 +207,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_dataset_table",
-            "description": (
-                "Fetch a sample of raw rows from a dataset table (no aggregation). "
-                f"Use only for exploring data shape/samples. "
-                "PREFER query_table for any analytical question. "
-                f"Returns up to {settings.ai_dataset_table_limit} rows."
-            ),
+            "description": f"Raw sample rows (no aggregation). Use only to inspect data shape. Returns up to {settings.ai_dataset_table_limit} rows. Prefer query_table for analysis.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -252,10 +234,8 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "create_chart",
             "description": (
-                "Create a new chart visualization from a dataset table. "
-                "Use when no existing chart matches what the user needs and you have identified the right table and columns. "
-                "Call list_dataset_tables first to get dataset_id and table_id. "
-                "With save=false returns a chart preview; save=true persists the chart permanently."
+                "Create a chart from a dataset table. Call list_dataset_tables first. "
+                "save=false for preview, save=true to persist permanently."
             ),
             "parameters": {
                 "type": "object",
@@ -322,12 +302,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "explore_data",
-            "description": (
-                "Profile a dataset table to discover patterns, distributions, and data quality. "
-                "Use when user says 'tell me about this data', 'what columns does this table have?', "
-                "'anything interesting?', or before creating charts. "
-                "Returns column stats, sample values, cardinality, null rates, and data patterns."
-            ),
+            "description": "Profile a table: total_rows count, column stats, sample values, null rates. Use for data overview or distribution analysis.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -363,9 +338,8 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "explain_insight",
             "description": (
-                "Drill down into a metric to find root cause of a change. "
-                "Use when user asks 'why did X change?', 'what caused the drop in Y?', 'explain this trend'. "
-                "Compares current period vs previous period and breaks down by dimension columns to find the biggest contributors."
+                "Root-cause analysis: compares current vs previous period for a metric, "
+                "then breaks down by dimension columns to find biggest contributors. Returns change_pct and drill_downs."
             ),
             "parameters": {
                 "type": "object",
@@ -410,11 +384,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "create_dashboard",
-            "description": (
-                "Automatically generate a complete dashboard with multiple charts from dataset tables. "
-                "Use when user asks 'build me a dashboard', 'create a dashboard for X', "
-                "'I need a monitoring page'. Auto-selects chart types based on data schema."
-            ),
+            "description": "Auto-generate a full dashboard with multiple charts from dataset tables.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -929,6 +899,28 @@ async def execute_tool(
         rows_sample = sample.get("rows", [])
         total_rows_in_sample = len(rows_sample)
 
+        # Step 2: get ACTUAL total row count (critical — sample_rows ≠ total rows)
+        total_rows: Optional[int] = None
+        try:
+            if all_columns:
+                count_result = await bi_client.execute_table_query(
+                    dataset_id=dataset_id,
+                    table_id=table_id,
+                    measures=[{"field": all_columns[0], "function": "count"}],
+                    limit=1,
+                    token=token,
+                )
+                count_rows = count_result.get("rows", [])
+                if count_rows:
+                    first_row = count_rows[0]
+                    # Result column is aliased as {field}_count
+                    count_key = f"{all_columns[0]}_count"
+                    total_rows = first_row.get(count_key) or first_row.get("count") or first_row.get(list(first_row.keys())[0])
+                    if total_rows is not None:
+                        total_rows = int(total_rows)
+        except Exception:
+            pass  # non-critical — fall back to sample note
+
         target_cols = [c for c in all_columns if not focus_columns or c in focus_columns][:10]
 
         if analysis_type == "overview":
@@ -949,15 +941,20 @@ async def execute_tool(
                     "min": min(numeric_vals) if numeric_vals else None,
                     "max": max(numeric_vals) if numeric_vals else None,
                 }
-            return {
+            result = {
                 "analysis_type": "overview",
                 "table_id": table_id,
                 "dataset_id": dataset_id,
-                "sample_rows": total_rows_in_sample,
                 "columns": all_columns,
                 "column_stats": col_stats,
-                "note": "Stats based on sample of up to 50 rows",
             }
+            if total_rows is not None:
+                result["total_rows"] = total_rows
+                result["note"] = f"Column stats computed from sample of {total_rows_in_sample} rows. Total dataset: {total_rows} rows."
+            else:
+                result["sample_rows"] = total_rows_in_sample
+                result["note"] = f"Stats based on sample of {total_rows_in_sample} rows — total row count unavailable."
+            return result
 
         elif analysis_type == "distribution":
             # For each categorical column, get value counts

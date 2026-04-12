@@ -2,7 +2,7 @@ services:
   ai-chat-service:
     build:
       context: .
-      dockerfile: ai-service/Dockerfile
+      dockerfile: ai-chat/Dockerfile
     restart: unless-stopped
     environment:
       BI_API_URL: http://backend:8000/api/v1
@@ -21,6 +21,10 @@ services:
       OPENROUTER_API_KEY_5: ${OPENROUTER_API_KEY_5:-}
       OPENROUTER_SITE_URL: ${OPENROUTER_SITE_URL:-http://localhost:${FRONTEND_PORT:-3000}}
       OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-AppBI AI Chat}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_FAST_MODEL: ${GEMINI_FAST_MODEL:-gemini-2.0-flash}
+      GEMINI_BALANCED_MODEL: ${GEMINI_BALANCED_MODEL:-gemini-2.5-flash-lite}
+      GEMINI_INSIGHT_MODEL: ${GEMINI_INSIGHT_MODEL:-gemini-2.5-flash}
       AI_SESSION_TTL_MINUTES: ${AI_SESSION_TTL_MINUTES:-30}
       AI_MAX_TOOL_CALLS: ${AI_MAX_TOOL_CALLS:-8}
       AI_DATASET_TABLE_LIMIT: ${AI_DATASET_TABLE_LIMIT:-50}
@@ -46,7 +50,7 @@ services:
   ai-agent-service:
     build:
       context: .
-      dockerfile: ai-agent-service/Dockerfile
+      dockerfile: ai-report/Dockerfile
     restart: unless-stopped
     environment:
       BI_API_URL: http://backend:8000/api/v1

@@ -9,6 +9,7 @@ import {
   Plus,
   Search,
   ShieldCheck,
+  Sparkles,
   Table2,
   Tags,
   Trash2,
@@ -27,6 +28,8 @@ import {
   type DatasetDictionaryTerm,
   type DatasetTable,
 } from '@/hooks/use-datasets';
+import { usePreviewTableDescription, type TableDescriptionPreview } from '@/hooks/useDescription';
+import { AiDescriptionDiffModal } from './AiDescriptionDiffModal';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { toast } from 'sonner';
 
@@ -698,6 +701,14 @@ export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit
   const [draft, setDraft] = useState<DatasetDictionary>(() => normalizeDictionary(null));
   const [isDirty, setIsDirty] = useState(false);
 
+  // AI diff modal state
+  const [aiDiffOpen, setAiDiffOpen] = useState(false);
+  const [aiDraftPayload, setAiDraftPayload] = useState<TableDescriptionPreview | null>(null);
+  const previewMut = usePreviewTableDescription(
+    datasetId,
+    selectedTableId ?? 0,
+  );
+
   // Sync draft from server (only when not dirty)
   useEffect(() => {
     if (!isDirty) setDraft(normalizeDictionary(data?.dictionary));
@@ -807,6 +818,61 @@ export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit
         }),
     [draft.glossary, glossarySearch],
   );
+
+  // ─── AI generation handler ────────────────────────────────────────────────
+
+  const handleGenerateWithAi = async () => {
+    if (!selectedTableId) return;
+    try {
+      const payload = await previewMut.mutateAsync();
+      setAiDraftPayload(payload);
+      setAiDiffOpen(true);
+    } catch {
+      toast.error('AI generation failed. Please try again.');
+    }
+  };
+
+  const handleApplyAiDraft = (edited: TableDescriptionPreview) => {
+    // Map AI description fields into the dictionary table note fields
+    patch((current) => ({
+      ...current,
+      table_notes: current.table_notes.map((item) =>
+        item.table_id === selectedTableId
+          ? {
+              ...item,
+              // business_role gets the table-level description
+              business_role: edited.description || item.business_role,
+              // column_notes: merge AI column descriptions into existing notes
+              column_notes: mergeColumnDescriptions(
+                item.column_notes ?? [],
+                edited.column_descriptions,
+              ),
+            }
+          : item,
+      ),
+    }));
+    setAiDiffOpen(false);
+    setAiDraftPayload(null);
+    toast.success('AI description applied to dictionary. Save to persist changes.');
+  };
+
+  /** Merge AI-generated column_descriptions into existing DatasetDictionaryColumnNote array. */
+  function mergeColumnDescriptions(
+    existing: DatasetDictionaryColumnNote[],
+    aiDescs: Record<string, string>,
+  ): DatasetDictionaryColumnNote[] {
+    const merged = existing.map((note) => ({
+      ...note,
+      description: aiDescs[note.column_name] ?? note.description,
+    }));
+    const existingNames = new Set(existing.map((n) => n.column_name));
+    for (const [colName, desc] of Object.entries(aiDescs)) {
+      if (!existingNames.has(colName)) {
+        merged.push({ column_name: colName, description: desc, examples: [] });
+      }
+    }
+    return merged;
+  }
 
   // ─── Loading / error states ────────────────────────────────────────────────
 
@@ -990,6 +1056,17 @@ export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit
                     )}
                   </button>
                   <div className="flex-1" />
+                  {canEdit && (
+                    <button
+                      type="button"
+                      onClick={handleGenerateWithAi}
+                      disabled={previewMut.isPending}
+                      className="mr-2 inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Sparkles className={`h-3.5 w-3.5 ${previewMut.isPending ? 'animate-spin' : ''}`} />
+                      {previewMut.isPending ? 'Generating…' : 'Generate with AI'}
+                    </button>
+                  )}
                   {canEdit && (
                     <button
                       type="button"
@@ -1599,6 +1676,23 @@ export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit
       <div className="shrink-0 border-t border-gray-100 px-5 py-2 text-xs text-gray-400">
         {canEdit ? (isDirty ? 'Unsaved changes — click Save to persist.' : 'All changes saved.') : 'View only'}
       </div>
+
+      {/* AI Description Diff Modal */}
+      {aiDiffOpen && aiDraftPayload && selectedTable && (
+        <AiDescriptionDiffModal
+          tableName={tableLabel(selectedTable)}
+          current={{
+            description: selectedTableNote?.business_role ?? '',
+            column_descriptions: Object.fromEntries(
+              (selectedTableNote?.column_notes ?? []).map((c: DatasetDictionaryColumnNote) => [c.column_name, c.description ?? '']),
+            ),
+            common_questions: [],
+          }}
+          aiDraft={aiDraftPayload}
+          onApply={handleApplyAiDraft}
+          onClose={() => { setAiDiffOpen(false); setAiDraftPayload(null); }}
+        />
+      )}
 
       {/* Column modal */}
       <ColumnModal

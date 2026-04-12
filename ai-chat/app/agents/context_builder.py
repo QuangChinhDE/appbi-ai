@@ -186,40 +186,41 @@ async def build_context(
         logger.warning("context_builder: table search error — %s", exc)
 
     try:
-        if dataset_id and scoped_table_ids:
-            charts = await bi_client.list_charts(limit=200, token=token)
-            scoped_charts = [
-                chart for chart in charts
-                if chart.get("dataset_table_id") in scoped_table_ids
+        # D1 fix: always try vector search first (works cross-language).
+        # Fuzzy match is only a fallback when vector returns nothing.
+        chart_hits = await bi_client.search_similar_charts(
+            user_message,
+            limit=max_charts,
+            token=token,
+        )
+        # Filter to dataset scope if set
+        if chart_hits and dataset_id and scoped_table_ids:
+            chart_hits = [
+                c for c in chart_hits
+                if c.get("dataset_table_id") in scoped_table_ids
+                or c.get("dataset_id") == int(dataset_id)
             ]
+        if chart_hits:
+            pkg.charts = [
+                c for c in chart_hits
+                if c.get("similarity", 1.0) >= _MIN_SIMILARITY
+            ]
+
+        # Fallback: fuzzy match within scoped dataset if vector returned nothing
+        if not pkg.charts and dataset_id and scoped_table_ids:
+            all_charts = await bi_client.list_charts(limit=200, token=token)
+            scoped_charts = [c for c in all_charts if c.get("dataset_table_id") in scoped_table_ids]
             scored = []
             for chart in scoped_charts:
-                search_text = " ".join(
-                    filter(None, [chart.get("name", ""), chart.get("description", "")])
-                )
+                search_text = " ".join(filter(None, [chart.get("name", ""), chart.get("description", "")]))
                 score = _fuzzy_score(user_message, search_text)
                 if score > 0:
                     scored.append((score, chart))
             scored.sort(key=lambda item: item[0], reverse=True)
             pkg.charts = [
-                {
-                    "id": chart["id"],
-                    "name": chart.get("name", ""),
-                    "chart_type": chart.get("chart_type", ""),
-                }
-                for _, chart in scored[:max_charts]
+                {"id": c["id"], "name": c.get("name", ""), "chart_type": c.get("chart_type", "")}
+                for _, c in scored[:max_charts]
             ]
-        else:
-            chart_hits = await bi_client.search_similar_charts(
-                user_message,
-                limit=max_charts,
-                token=token,
-            )
-            if chart_hits:
-                pkg.charts = [
-                    c for c in chart_hits
-                    if c.get("similarity", 1.0) >= _MIN_SIMILARITY
-                ]
     except Exception as exc:
         logger.warning("context_builder: chart search error — %s", exc)
 

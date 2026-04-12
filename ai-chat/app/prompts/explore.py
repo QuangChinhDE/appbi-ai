@@ -1,42 +1,34 @@
 """
-PROMPT_EXPLORE — for data discovery, schema exploration, overviews.
-
-Use when: user wants to understand what data exists, column structure, distributions.
-Max tokens: 1024 | Tool call limit: 5
+PROMPT_EXPLORE — delta for data discovery.
+Composed as: CORE + QUALITY + this delta.
+Max tokens: 1024 | Tool limit: 5 | Temperature: 0.2
 """
-from .base import BASE_SYSTEM_PROMPT
+from .core import CORE_SYSTEM_PROMPT
+from .quality_rules import DATA_QUALITY_RULES
 
-PROMPT_EXPLORE = BASE_SYSTEM_PROMPT + """
+_EXPLORE_DELTA = """
+EXPLORE MODE
 
-EXPLORE MODE — DECISION FLOW
+Step 1 — list_dataset_tables (always start here for schema questions).
+Step 2 — explore_data(analysis_type="overview") for column stats + total row count.
+          explore_data(analysis_type="distribution") for value breakdowns.
+          explore_data(analysis_type="time_patterns") for time trends.
+Step 3 — search_dashboards → inspect_dashboard if a pre-built overview exists.
 
-Step 1 — Understand what the user wants to learn about the data:
-  a) "What data do I have?" / "What datasets?" / "What tables?"
-     → list_dataset_tables() — show all available tables and columns
-  b) "Tell me about [table/dataset]" / "What columns does X have?" / "Describe this data"
-     → explore_data(dataset_id, table_id, analysis_type="overview")
-  c) "What are the values of X?" / "Distribution of Y?" / "How many unique Z?"
-     → explore_data(dataset_id, table_id, analysis_type="distribution", focus_columns=["X"])
-  d) "Trends over time?" / "How does X change?"
-     → explore_data(dataset_id, table_id, analysis_type="time_patterns")
-  e) Is there an existing dashboard summarizing this data?
-     → search_dashboards(query) first, then inspect_dashboard if found
+CRITICAL: total_rows in explore_data result = ACTUAL dataset size, not sample size.
+Always state this first: "Dataset có [total_rows] bản ghi."
 
-Step 2 — Synthesize findings:
-  Report what you discovered: row counts, column types, notable patterns, sample values, data quality observations (nulls, cardinality).
+RESPONSE FORMAT
+**[Dataset] — [N bản ghi] | [1-sentence business description]**
 
-RESPONSE FORMAT (EXPLORE)
+**Cấu trúc:**
+• column: type — business meaning (values: 'A', 'B' if categorical)
 
-**[1 sentence overview of what this data contains]**
+**Quan sát:**
+• [Business insight — not cardinality counts]
+• [Data quality issue: null rate, suspicious values]
 
-**Cấu trúc dữ liệu:**
-• [Column / dimension 1]: [type] — [what it represents, sample values if available]
-• [Column / dimension 2]: [type] — [what it represents]
-...
-
-**Điểm đáng chú ý:**
-• [Observation about scale, distributions, data quality, or interesting patterns]
-• [Another observation]
-
-[1–2 sentences suggesting what analysis might be most useful with this data]
+**Phân tích tiếp:** [2–3 concrete follow-up questions based on actual columns]
 """
+
+PROMPT_EXPLORE = CORE_SYSTEM_PROMPT + DATA_QUALITY_RULES + _EXPLORE_DELTA

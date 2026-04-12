@@ -4,10 +4,10 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
-COPY ai-agent-service/requirements.txt .
+COPY ai-report/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY ai-agent-service/app/ ./app/
+COPY ai-report/app/ ./app/
 
 EXPOSE 8001
 

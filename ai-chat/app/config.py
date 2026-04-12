@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field("", alias="ANTHROPIC_API_KEY")
     gemini_api_key: str = Field("", alias="GEMINI_API_KEY")
 
+    # Gemini per-role model overrides
+    # Tier 1 — fastest/cheapest: Intent Classifier, QueryAgent (LOOKUP), Suggestion Generator
+    gemini_fast_model: str = Field("gemini-2.5-flash-lite", alias="GEMINI_FAST_MODEL")
+    # Tier 2 — balanced: ExploreAgent, VizAgent (CREATE) — need schema understanding
+    gemini_balanced_model: str = Field("gemini-2.5-flash-lite", alias="GEMINI_BALANCED_MODEL")
+    # Tier 3 — best reasoning: InsightAgent Phase A (planning) + Phase B (execution)
+    gemini_insight_model: str = Field("gemini-2.5-flash", alias="GEMINI_INSIGHT_MODEL")
+
     @property
     def active_api_keys(self) -> List[str]:
         """All configured OpenRouter keys in priority order (KEY_1..5 first, then bare KEY)."""
@@ -70,11 +78,30 @@ class Settings(BaseSettings):
 
     @property
     def active_provider(self) -> str:
+        """Auto-detect provider: gemini if GEMINI_API_KEY is set, else openrouter."""
+        if self.gemini_api_key.strip():
+            return "gemini"
         return "openrouter"
 
     @property
     def active_model(self) -> str:
+        """Default model for the active provider (Tier 1 fast model)."""
+        if self.active_provider == "gemini":
+            return self.gemini_fast_model
         return self.ai_chat_model.strip() or self.llm_model
+
+    def gemini_model_for_intent(self, intent_value: str) -> str:
+        """Return the appropriate Gemini model tier for a given intent string.
+
+        INSIGHT          → Tier 3: gemini-2.5-flash      (heavy reasoning)
+        EXPLORE / CREATE → Tier 2: gemini-2.5-flash-lite  (schema understanding)
+        LOOKUP / VAGUE   → Tier 1: gemini-2.0-flash       (fast/cheap)
+        """
+        if intent_value == "INSIGHT":
+            return self.gemini_insight_model
+        if intent_value in ("EXPLORE", "CREATE"):
+            return self.gemini_balanced_model
+        return self.gemini_fast_model
 
     @property
     def fallback_chain(self) -> List[dict]:

@@ -1666,6 +1666,37 @@ def update_table_description(
     return _serialize_table_description(table)
 
 
+@router.post("/{dataset_id}/tables/{table_id}/description/preview")
+def preview_table_description(
+    dataset_id: int,
+    table_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Run AI description generation synchronously and return the draft without saving.
+
+    Used by the Dictionary diff modal so users can review and edit the AI output
+    before choosing to apply it.
+    """
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, ds, "datasets")
+
+    table = db.query(DatasetTable).filter(
+        DatasetTable.id == table_id,
+        DatasetTable.dataset_id == dataset_id,
+    ).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    from app.services.auto_tagging_service import AutoTaggingService
+    ok, payload, error = AutoTaggingService.preview_table_description(db, table_id)
+    if not ok:
+        raise HTTPException(status_code=502, detail=error or "AI generation failed")
+    return payload
+
+
 @router.post("/{dataset_id}/tables/{table_id}/description/regenerate")
 def regenerate_table_description(
     dataset_id: int,

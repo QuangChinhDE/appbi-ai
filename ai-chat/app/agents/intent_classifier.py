@@ -32,6 +32,8 @@ class AgentConfig:
     tool_call_limit: int
     system_prompt: str
     force_first_tool: bool
+    temperature: float = 0.2        # Per-intent: INSIGHT=0.5, LOOKUP=0.1, others=0.2
+    max_history: int = 20           # Per-intent: INSIGHT=50 to survive long tool chains
     # Restricted tool set for this intent (None = use all tools)
     tool_names: Optional[List[str]] = None
     # Only set when intent == VAGUE
@@ -52,6 +54,8 @@ def _make_config(intent: IntentType, clarification: Optional[str] = None) -> Age
             "tool_call_limit": 6,
             "system_prompt": PROMPT_LOOKUP,
             "force_first_tool": True,
+            "temperature": 0.1,   # factual, deterministic
+            "max_history": 20,
             "tool_names": list(TOOLS_LOOKUP),
         },
         IntentType.EXPLORE: {
@@ -59,13 +63,17 @@ def _make_config(intent: IntentType, clarification: Optional[str] = None) -> Age
             "tool_call_limit": 5,
             "system_prompt": PROMPT_EXPLORE,
             "force_first_tool": True,
+            "temperature": 0.2,
+            "max_history": 20,
             "tool_names": list(TOOLS_EXPLORE),
         },
         IntentType.INSIGHT: {
-            "max_tokens": 3000,
-            "tool_call_limit": 15,
+            "max_tokens": 2500,   # execution phase; planning adds ~600 extra
+            "tool_call_limit": 12,
             "system_prompt": PROMPT_INSIGHT,
-            "force_first_tool": False,  # INSIGHT plans first, then queries
+            "force_first_tool": False,  # planning phase first, then tool loop
+            "temperature": 0.5,   # narrative synthesis needs creativity
+            "max_history": 50,    # survive 12 tool calls + prior turns
             "tool_names": list(TOOLS_INSIGHT),
         },
         IntentType.CREATE: {
@@ -73,6 +81,8 @@ def _make_config(intent: IntentType, clarification: Optional[str] = None) -> Age
             "tool_call_limit": 8,
             "system_prompt": PROMPT_VIZ,
             "force_first_tool": True,
+            "temperature": 0.2,
+            "max_history": 20,
             "tool_names": list(TOOLS_VIZ),
         },
         IntentType.VAGUE: {
@@ -80,6 +90,8 @@ def _make_config(intent: IntentType, clarification: Optional[str] = None) -> Age
             "tool_call_limit": 0,
             "system_prompt": BASE_SYSTEM_PROMPT,
             "force_first_tool": False,
+            "temperature": 0.0,   # deterministic clarification
+            "max_history": 10,
             "tool_names": None,
         },
     }
@@ -91,6 +103,8 @@ def _make_config(intent: IntentType, clarification: Optional[str] = None) -> Age
         tool_call_limit=p["tool_call_limit"],
         system_prompt=p["system_prompt"],
         force_first_tool=p["force_first_tool"],
+        temperature=p["temperature"],
+        max_history=p["max_history"],
         tool_names=p["tool_names"],
         clarification_question=clarification,
     )
@@ -240,6 +254,23 @@ async def _llm_classify(
                 max_tokens=60,
             )
             raw = (resp.content[0].text if resp.content else "").strip()
+
+        elif provider == "gemini":
+            import google.genai as genai
+            import google.genai.types as gtypes
+            from app.config import settings as _s
+            _clf_client = genai.Client(api_key=_s.gemini_api_key)
+            _clf_model_name = model or _s.gemini_fast_model
+            _resp = await _clf_client.aio.models.generate_content(
+                model=_clf_model_name,
+                contents=prompt,
+                config=gtypes.GenerateContentConfig(
+                    system_instruction=_CLASSIFY_SYSTEM,
+                    temperature=0.0,
+                    max_output_tokens=60,
+                ),
+            )
+            raw = (_resp.text or "").strip()
 
         else:
             # Unknown provider — safe default

@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { Save, ArrowLeft, ChevronDown, ChevronRight, Pencil, Check, Search, Plus, Trash2, Tag, Settings2, Bot, Play, RotateCcw, Database, Code2, Eye } from 'lucide-react';
+import { Save, ArrowLeft, ChevronDown, ChevronRight, Pencil, Check, Search, Settings2, Play, RotateCcw, Database, Code2, Eye } from 'lucide-react';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
 import { useDataset, useTablePreview, useExecuteDatasetTableQueryMutation, type ColumnMetadata } from '@/hooks/use-datasets';
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
@@ -35,8 +35,7 @@ import {
 } from '@/components/explore/ExploreChartConfig';
 import { toast } from 'sonner';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
-import { ChartDescriptionPanel } from '@/components/explore/ChartDescriptionPanel';
-import { AppModalShell } from '@/components/common/AppModalShell';
+import { ChartDescriptionDrawer, ChartDescriptionTrigger } from '@/components/explore/ChartDescriptionDrawer';
 import {
   buildExploreChartResult,
   buildExploreExecuteRequest,
@@ -51,13 +50,6 @@ import type { ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
 
 type ChartType = ExploreChartType;
 
-const DOMAIN_OPTIONS = ['sales', 'marketing', 'finance', 'operations', 'hr', 'product', 'logistics'];
-const INTENT_OPTIONS = ['trend', 'comparison', 'ranking', 'summary', 'distribution', 'composition'];
-const PARAM_TYPE_OPTIONS = [
-  { value: 'time_range', label: 'Time Range' },
-  { value: 'dimension', label: 'Dimension' },
-  { value: 'measure', label: 'Measure' },
-];
 
 type QueryMode = 'generated' | 'custom';
 
@@ -382,6 +374,7 @@ export default function ExploreDetailPage() {
 
   // isConfigOpen removed - chart config panel is always visible in right panel
   const [isFiltersOpen, setIsFiltersOpen] = useState(true);
+  const [isDescDrawerOpen, setIsDescDrawerOpen] = useState(false);
   const [isSchemaSnapshotOpen, setIsSchemaSnapshotOpen] = useState(false);
   // resultTab removed - new layout shows chart + table simultaneously, SQL via sqlMode toggle
   const [queryLimit, setQueryLimit] = useState(100);
@@ -393,18 +386,14 @@ export default function ExploreDetailPage() {
   const [generatedLastRunSignature, setGeneratedLastRunSignature] = useState('');
   const [customLastRunSignature, setCustomLastRunSignature] = useState('');
 
-  // Metadata state
-  const [isMetaOpen, setIsMetaOpen] = useState(false);
+  // Metadata state (persisted on save, not shown in sidebar UI)
   const [metaDomain, setMetaDomain] = useState('');
   const [metaIntent, setMetaIntent] = useState('');
   const [metaMetrics, setMetaMetrics] = useState<string[]>([]);
   const [metaDimensions, setMetaDimensions] = useState<string[]>([]);
   const [metaTags, setMetaTags] = useState<string[]>([]);
-  const [metaChipInput, setMetaChipInput] = useState({ metric: '', dimension: '', tag: '' });
 
   // Parameters state
-  const [isParamsOpen, setIsParamsOpen] = useState(false);
-  const [isDescModalOpen, setIsDescModalOpen] = useState(false);
   type ParamRow = ChartParameterCreate & { _key: string };
   const [paramRows, setParamRows] = useState<ParamRow[]>([]);
 
@@ -1061,27 +1050,6 @@ export default function ExploreDetailPage() {
     }
   };
 
-  // Metadata helpers
-  const addChip = (field: 'metric' | 'dimension' | 'tag') => {
-    const val = metaChipInput[field].trim();
-    if (!val) return;
-    if (field === 'metric') setMetaMetrics((p) => (p.includes(val) ? p : [...p, val]));
-    if (field === 'dimension') setMetaDimensions((p) => (p.includes(val) ? p : [...p, val]));
-    if (field === 'tag') setMetaTags((p) => (p.includes(val) ? p : [...p, val]));
-    setMetaChipInput((p) => ({ ...p, [field]: '' }));
-  };
-  const removeChip = (field: 'metric' | 'dimension' | 'tag', val: string) => {
-    if (field === 'metric') setMetaMetrics((p) => p.filter((v) => v !== val));
-    if (field === 'dimension') setMetaDimensions((p) => p.filter((v) => v !== val));
-    if (field === 'tag') setMetaTags((p) => p.filter((v) => v !== val));
-  };
-
-  // Parameter helpers
-  const addParamRow = () =>
-    setParamRows((p) => [...p, { _key: String(Date.now()), parameter_name: '', parameter_type: 'dimension', column_mapping: null, default_value: null, description: null }]);
-  const updateParamRow = (key: string, field: string, value: any) =>
-    setParamRows((p) => p.map((r) => (r._key === key ? { ...r, [field]: value } : r)));
-  const removeParamRow = (key: string) => setParamRows((p) => p.filter((r) => r._key !== key));
 
   useEffect(() => {
     if (!parameterColumns.length) return;
@@ -1214,15 +1182,6 @@ export default function ExploreDetailPage() {
             ) : chartDescInput ? (
               <span className="text-xs text-slate-400">{chartDescInput}</span>
             ) : null}
-            {!isNew && chartId && (
-              <button
-                onClick={() => setIsDescModalOpen(true)}
-                className="rounded p-1.5 text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-600"
-                title="AI Description"
-              >
-                <Bot className="h-4 w-4" />
-              </button>
-            )}
             {resPerms.canEdit && (
               <button
                 onClick={handleSaveLook}
@@ -1237,62 +1196,68 @@ export default function ExploreDetailPage() {
         </div>
       </div>
 
-      <div className="shrink-0 border-b border-slate-200 bg-white px-4 py-3">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex min-w-0 flex-1 items-start gap-4">
-            <div className="shrink-0">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Mode</p>
-              <div className="mt-1 inline-flex rounded-2xl border border-slate-200 bg-slate-100 p-1">
+      <div className="shrink-0 border-b border-slate-200 bg-white px-4 py-1.5">
+        <div className="flex items-center justify-between gap-3">
+          {/* Left: Mode toggle + description */}
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Mode</span>
+            <div className="inline-flex rounded-xl border border-slate-200 bg-slate-100 p-0.5">
+              <button
+                onClick={handleUseGeneratedQuery}
+                disabled={!resPerms.canEdit}
+                className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  isConfigBuilderMode
+                    ? 'bg-white text-blue-700 shadow-sm'
+                    : 'text-slate-600 hover:bg-white/70'
+                }`}
+              >
+                <Database className="h-3 w-3" />
+                Config Builder
+              </button>
+              <span className="group/csql relative inline-flex">
                 <button
-                  onClick={handleUseGeneratedQuery}
-                  disabled={!resPerms.canEdit}
-                  className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                    isConfigBuilderMode
-                      ? 'bg-white text-blue-700 shadow-sm'
-                      : 'text-slate-600 hover:bg-white/70'
-                  }`}
+                  disabled
+                  className="inline-flex cursor-not-allowed items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-400 opacity-50"
                 >
-                  <Database className="h-3.5 w-3.5" />
-                  Config Builder
+                  <Code2 className="h-3 w-3" />
+                  Custom SQL
                 </button>
-                <span className="group/csql relative inline-flex">
-                  <button
-                    disabled
-                    className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium text-slate-400 opacity-50"
-                  >
-                    <Code2 className="h-3.5 w-3.5" />
-                    Custom SQL
-                  </button>
-                  <span className="pointer-events-none absolute left-0 top-full z-50 mt-1.5 hidden w-52 rounded-md bg-slate-900 px-2.5 py-2 text-[11px] text-white shadow-lg group-hover/csql:block">
-                    Temporarily unavailable — will be re-enabled in a future update.
-                  </span>
+                <span className="pointer-events-none absolute left-0 top-full z-50 mt-1.5 hidden w-52 rounded-md bg-slate-900 px-2.5 py-2 text-[11px] text-white shadow-lg group-hover/csql:block">
+                  Temporarily unavailable — will be re-enabled in a future update.
                 </span>
-              </div>
+              </span>
             </div>
-
-            <div className="min-w-0 pt-0.5 flex items-center gap-1.5">
-              <p className="text-sm font-medium text-slate-700">
+            <div className="min-w-0 hidden sm:flex items-center gap-1">
+              <span className="truncate text-xs text-slate-500">
                 {isConfigBuilderMode ? 'Build from a table' : 'Shape the source with SQL'}
-              </p>
+              </span>
               <HelpTooltip text={modeDescription} />
             </div>
           </div>
 
+          {/* Right: AI Description + status + limit + run */}
           <div className="flex shrink-0 items-center gap-2">
+            {!isNew && chartId && (
+              <ChartDescriptionTrigger
+                chartId={chartId}
+                canEdit={resPerms.canEdit}
+                onClick={() => setIsDescDrawerOpen(true)}
+              />
+            )}
             {isQueryDirty && (
-              <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
-                Run again to refresh preview
+              <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">
+                Run to refresh
               </span>
             )}
             {activeQueryState && (
-              <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-500">
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-500">
                 {activeQueryState.rows.length} row{activeQueryState.rows.length === 1 ? '' : 's'}
-                {activeQueryState.executionTimeMs != null ? ` in ${activeQueryState.executionTimeMs}ms` : ''}
+                {activeQueryState.executionTimeMs != null ? ` · ${activeQueryState.executionTimeMs}ms` : ''}
               </span>
             )}
             {effectiveQueryLimit > 1000 && (
-              <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs text-amber-700">
-                Large preview
+              <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs text-amber-700">
+                Large
               </span>
             )}
             <label className="flex items-center gap-1 text-xs text-slate-500">
@@ -1301,7 +1266,7 @@ export default function ExploreDetailPage() {
                 value={effectiveQueryLimit}
                 onChange={(e) => setQueryLimit(Number(e.target.value))}
                 disabled={!resPerms.canEdit}
-                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
+                className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {queryLimitOptions.map((value) => <option key={value} value={value}>{value}</option>)}
               </select>
@@ -1309,11 +1274,11 @@ export default function ExploreDetailPage() {
             <button
               onClick={() => void handleRunQuery()}
               disabled={isRunningQuery || (isConfigBuilderMode && isPreviewLoading)}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
             >
               {isRunningQuery
-                ? <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                : <Play className="h-3.5 w-3.5" />}
+                ? <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                : <Play className="h-3 w-3" />}
               {isRunningQuery ? 'Running...' : 'Run'}
             </button>
           </div>
@@ -1758,249 +1723,19 @@ export default function ExploreDetailPage() {
               )}
             </div>
 
-            {/* Metadata */}
-            <div className="border-t">
-              <button
-                onClick={() => setIsMetaOpen((o) => !o)}
-                className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 transition-colors"
-              >
-                <div className="flex items-center gap-2">
-                  <Tag className="w-3.5 h-3.5 text-gray-400" />
-                  <span className="text-xs font-semibold text-gray-700">Metadata</span>
-                  {(metaDomain || metaIntent || metaMetrics.length > 0 || metaTags.length > 0) && (
-                    <span className="w-2 h-2 rounded-full bg-blue-500" />
-                  )}
-                </div>
-                {isMetaOpen
-                  ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
-                  : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}
-              </button>
-              {isMetaOpen && (
-                <div className={`px-4 pb-4 space-y-3${!resPerms.canEdit ? ' pointer-events-none opacity-60' : ''}`}>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Domain</label>
-                      <select value={metaDomain} onChange={(e) => setMetaDomain(e.target.value)}
-                        className="w-full px-2 py-1.5 border border-gray-200 rounded text-xs bg-white">
-                        <option value="">None</option>
-                        {DOMAIN_OPTIONS.map((d) => <option key={d} value={d}>{d}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Intent</label>
-                      <select value={metaIntent} onChange={(e) => setMetaIntent(e.target.value)}
-                        className="w-full px-2 py-1.5 border border-gray-200 rounded text-xs bg-white">
-                        <option value="">None</option>
-                        {INTENT_OPTIONS.map((i) => <option key={i} value={i}>{i}</option>)}
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Metrics chips */}
-                  {(() => {
-                    const chips = metaMetrics;
-                    const suggested = activeRoleConfig.metrics.map((m) => m.field).filter((f) => !chips.includes(f));
-                    return (
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">Metrics</label>
-                        {suggested.length > 0 && (
-                          <div className="flex flex-wrap gap-1 mb-1.5">
-                            <span className="text-[10px] text-gray-400 self-center">Suggest:</span>
-                            {suggested.map((s) => (
-                              <button key={s} type="button" onClick={() => setMetaMetrics((p) => [...p, s])}
-                                className="px-1.5 py-0.5 text-[10px] border border-dashed border-blue-300 text-blue-500 rounded-full hover:bg-blue-50">
-                                +{s}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                        <div className="flex flex-wrap gap-1 mb-1">
-                          {chips.map((v) => (
-                            <span key={v} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] rounded-full bg-blue-100 text-blue-700">
-                              {v}
-                              <button type="button" onClick={() => removeChip('metric', v)} className="hover:opacity-70 ml-0.5">x</button>
-                            </span>
-                          ))}
-                        </div>
-                        <div className="flex gap-1">
-                          <input value={metaChipInput.metric}
-                            onChange={(e) => setMetaChipInput((p) => ({ ...p, metric: e.target.value }))}
-                            onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addChip('metric'))}
-                            placeholder="Business name, Enter to add"
-                            className="flex-1 px-2 py-1 border border-gray-200 rounded text-xs" />
-                          <button type="button" onClick={() => addChip('metric')}
-                            className="px-2 py-1 bg-gray-100 border border-gray-200 rounded text-xs hover:bg-gray-200">+</button>
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* Dimensions chips */}
-                  {(() => {
-                    const chips = metaDimensions;
-                    const suggested = (activeRoleConfig.dimension ? [activeRoleConfig.dimension] : []).filter((f) => !chips.includes(f));
-                    return (
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">Dimensions</label>
-                        {suggested.length > 0 && (
-                          <div className="flex flex-wrap gap-1 mb-1.5">
-                            <span className="text-[10px] text-gray-400 self-center">Suggest:</span>
-                            {suggested.map((s) => (
-                              <button key={s} type="button" onClick={() => setMetaDimensions((p) => [...p, s])}
-                                className="px-1.5 py-0.5 text-[10px] border border-dashed border-green-300 text-green-600 rounded-full hover:bg-green-50">
-                                +{s}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                        <div className="flex flex-wrap gap-1 mb-1">
-                          {chips.map((v) => (
-                            <span key={v} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] rounded-full bg-green-100 text-green-700">
-                              {v}
-                              <button type="button" onClick={() => removeChip('dimension', v)} className="hover:opacity-70 ml-0.5">x</button>
-                            </span>
-                          ))}
-                        </div>
-                        <div className="flex gap-1">
-                          <input value={metaChipInput.dimension}
-                            onChange={(e) => setMetaChipInput((p) => ({ ...p, dimension: e.target.value }))}
-                            onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addChip('dimension'))}
-                            placeholder="Business name, Enter to add"
-                            className="flex-1 px-2 py-1 border border-gray-200 rounded text-xs" />
-                          <button type="button" onClick={() => addChip('dimension')}
-                            className="px-2 py-1 bg-gray-100 border border-gray-200 rounded text-xs hover:bg-gray-200">+</button>
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* Tags */}
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Tags</label>
-                    <div className="flex flex-wrap gap-1 mb-1">
-                      {metaTags.map((v) => (
-                        <span key={v} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] rounded-full bg-gray-100 text-gray-600">
-                          {v}
-                          <button type="button" onClick={() => removeChip('tag', v)} className="hover:opacity-70 ml-0.5">x</button>
-                        </span>
-                      ))}
-                    </div>
-                    <div className="flex gap-1">
-                      <input value={metaChipInput.tag}
-                        onChange={(e) => setMetaChipInput((p) => ({ ...p, tag: e.target.value }))}
-                        onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addChip('tag'))}
-                        placeholder="Tag, Enter to add"
-                        className="flex-1 px-2 py-1 border border-gray-200 rounded text-xs" />
-                      <button type="button" onClick={() => addChip('tag')}
-                        className="px-2 py-1 bg-gray-100 border border-gray-200 rounded text-xs hover:bg-gray-200">+</button>
-                    </div>
-                  </div>
-                  {!isNew && <p className="text-[10px] text-gray-400 italic">Saved on "Update"</p>}
-                </div>
-              )}
-            </div>
-
-            {/* Parameters */}
-            <div className="border-t">
-              <button
-                onClick={() => setIsParamsOpen((o) => !o)}
-                className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 transition-colors"
-              >
-                <div className="flex items-center gap-2">
-                  <Settings2 className="w-3.5 h-3.5 text-gray-400" />
-                  <span className="text-xs font-semibold text-gray-700">Parameters</span>
-                  {paramRows.length > 0 && (
-                    <span className="px-1.5 py-0.5 text-[10px] bg-purple-100 text-purple-700 rounded-full font-medium">
-                      {paramRows.length}
-                    </span>
-                  )}
-                </div>
-                {isParamsOpen
-                  ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
-                  : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}
-              </button>
-              {isParamsOpen && (
-                <div className={`px-4 pb-4 space-y-2${!resPerms.canEdit ? ' pointer-events-none opacity-60' : ''}`}>
-                  <p className="text-[10px] text-gray-400">
-                    {sqlMode === 'custom'
-                      ? 'Filters this chart accepts from a dashboard, based on the SQL output columns.'
-                      : 'Filters this chart accepts from a dashboard.'}
-                  </p>
-                  {paramRows.map((row) => (
-                    <div key={row._key} className="bg-gray-50 rounded border border-gray-200 p-2 space-y-1.5">
-                      <div className="flex items-center gap-1">
-                        <input
-                          value={row.parameter_name}
-                          onChange={(e) => updateParamRow(row._key, 'parameter_name', e.target.value)}
-                          placeholder="param_name"
-                          className="flex-1 px-2 py-1 border border-gray-200 rounded text-xs"
-                        />
-                        {resPerms.canEdit && (
-                          <button type="button" onClick={() => removeParamRow(row._key)}
-                            className="text-gray-400 hover:text-red-500 p-0.5">
-                            <Trash2 className="w-3 h-3" />
-                          </button>
-                        )}
-                      </div>
-                      <select
-                        value={row.parameter_type}
-                        onChange={(e) => updateParamRow(row._key, 'parameter_type', e.target.value)}
-                        className="w-full px-2 py-1 border border-gray-200 rounded text-xs bg-white"
-                      >
-                        {PARAM_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                      </select>
-                      <select
-                        value={row.column_mapping?.column ?? ''}
-                        onChange={(e) => {
-                          const column = e.target.value;
-                          const columnMeta = parameterColumns.find((c) => c.name === column);
-                          updateParamRow(row._key, 'column_mapping',
-                            column ? { column, type: columnMeta?.type ?? 'string' } : null);
-                        }}
-                        className="w-full px-2 py-1 border border-gray-200 rounded text-xs bg-white"
-                      >
-                        <option value="">Column mapping (optional)</option>
-                        {parameterColumns.map((col) => (
-                          <option key={col.name} value={col.name}>{col.name} ({col.type})</option>
-                        ))}
-                      </select>
-                      <input
-                        value={row.default_value ?? ''}
-                        onChange={(e) => updateParamRow(row._key, 'default_value', e.target.value || null)}
-                        placeholder="Default value (optional)"
-                        className="w-full px-2 py-1 border border-gray-200 rounded text-xs"
-                      />
-                    </div>
-                  ))}
-                  {resPerms.canEdit && (
-                    <button type="button" onClick={addParamRow}
-                      className="flex items-center gap-1 text-xs text-purple-600 hover:text-purple-700 font-medium">
-                      <Plus className="w-3 h-3" /> Add Parameter
-                    </button>
-                  )}
-                  {!isNew && <p className="text-[10px] text-gray-400 italic">Saved on "Update"</p>}
-                </div>
-              )}
-            </div>
-
           </div>
         )}
       </div>
       </div>
 
-      {/* AI Description Modal */}
-      {isDescModalOpen && chartId && (
-        <AppModalShell
-          onClose={() => setIsDescModalOpen(false)}
-          title="AI Description"
-          description="Separate from the manual note shown under the chart title."
-          icon={<Bot className="h-5 w-5" />}
-          maxWidthClass="max-w-3xl"
-          panelClassName="max-h-[85vh]"
-          bodyClassName="p-6"
-        >
-          <ChartDescriptionPanel chartId={chartId} canEdit={resPerms.canEdit} />
-        </AppModalShell>
+      {/* AI Description drawer — opened from MODE bar */}
+      {!isNew && chartId && (
+        <ChartDescriptionDrawer
+          chartId={chartId}
+          canEdit={resPerms.canEdit}
+          open={isDescDrawerOpen}
+          onClose={() => setIsDescDrawerOpen(false)}
+        />
       )}
     </div>
   );

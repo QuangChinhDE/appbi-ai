@@ -21,7 +21,6 @@ import {
   Pencil,
   ChevronLeft as ChevronLeftPag,
   ChevronRight,
-  Bot,
   BookOpen,
   Sigma,
 } from 'lucide-react';
@@ -39,9 +38,7 @@ import { AddTableModal } from '@/components/datasets/AddTableModalV2';
 import { ManageColumnsDrawer } from '@/components/datasets/ManageColumnsDrawer';
 import { AddColumnModal, buildFNS, type LookupTableOption } from '@/components/datasets/AddColumnModal';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
-import { TableDescriptionPanel } from '@/components/datasets/TableDescriptionPanel';
 import { DatasetDictionaryPanel } from '@/components/datasets/DatasetDictionaryPanel';
-import { AppModalShell } from '@/components/common/AppModalShell';
 import { DataModelCanvas } from '@/components/datasets/DataModelCanvas';
 import { DimensionMeasureEditor } from '@/components/datasets/DimensionMeasureEditor';
 import type { Transformation } from '@/hooks/use-datasets';
@@ -429,7 +426,6 @@ export default function DatasetDetailPage() {
   const [tableToDelete, setTableToDelete] = useState<{ id: number; name: string } | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingTable, setIsDeletingTable] = useState(false);
-  const [isDescModalOpen, setIsDescModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'tables' | 'dictionary' | 'model'>('tables');
   const [editingView, setEditingView] = useState<DatasetModelView | null>(null);
   const [calendarDraft, setCalendarDraft] = useState<CalendarDimensionSettings>(DEFAULT_CALENDAR_SETTINGS);
@@ -1104,20 +1100,6 @@ export default function DatasetDetailPage() {
                                     <Trash2 className="h-3.5 w-3.5" />
                                   </button>
                                 )}
-                                {!isGeneratedCalendarTable(table) && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      startTransition(() => setSelectedTableId(table.id));
-                                      replaceTableInUrl(table.id);
-                                      setIsDescModalOpen(true);
-                                    }}
-                                    className="rounded p-1 text-gray-400 hover:bg-blue-100 hover:text-blue-600"
-                                    title="AI Description"
-                                  >
-                                    <Bot className="h-3.5 w-3.5" />
-                                  </button>
-                                )}
                               </div>
                             ))}
                           </div>
@@ -1482,20 +1464,6 @@ export default function DatasetDetailPage() {
         </div>
       )}
 
-      {/* AI Description Modal */}
-      {isDescModalOpen && selectedTableId && datasetId && !selectedTableIsGenerated && (
-        <AppModalShell
-          onClose={() => setIsDescModalOpen(false)}
-          title="AI Description"
-          description={selectedTable?.display_name || selectedTable?.source_table_name}
-          icon={<Bot className="h-5 w-5" />}
-          maxWidthClass="max-w-3xl"
-          panelClassName="max-h-[85vh]"
-          bodyClassName="p-6"
-        >
-          <TableDescriptionPanel datasetId={datasetId} tableId={selectedTableId} canEdit={resPerms.canEdit} />
-        </AppModalShell>
-      )}
 
       {/* Dimension/Measure Editor Panel */}
       {editingView && datasetId && (

@@ -87,6 +87,21 @@ export function useRegenerateTableDescription(datasetId: number, tableId: number
   });
 }
 
+export interface TableDescriptionPreview {
+  description: string;
+  column_descriptions: Record<string, string>;
+  common_questions: string[];
+}
+
+export function usePreviewTableDescription(datasetId: number, tableId: number) {
+  return useMutation<TableDescriptionPreview>({
+    mutationFn: () =>
+      apiClient
+        .post(`/datasets/${datasetId}/tables/${tableId}/description/preview`, {})
+        .then((r) => r.data),
+  });
+}
+
 export function useChartDescription(chartId: number | null) {
   return useQuery<ChartDescription>({
     queryKey: ['chart-description', chartId],

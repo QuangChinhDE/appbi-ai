@@ -2,7 +2,7 @@ services:
   ai-agent-service:
     build:
       context: .
-      dockerfile: ai-agent-service/Dockerfile
+      dockerfile: ai-report/Dockerfile
     restart: unless-stopped
     environment:
       BI_API_URL: http://backend:8000/api/v1
