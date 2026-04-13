@@ -56,11 +56,11 @@ class DatasetDictionaryColumnNote(BaseModel):
 
 class DatasetDictionaryTableNote(BaseModel):
     table_id: int
-    business_role: Optional[str] = Field(default=None, max_length=300)
-    grain: Optional[str] = Field(default=None, max_length=300)
-    join_hint: Optional[str] = Field(default=None, max_length=1000)
-    owner_note: Optional[str] = Field(default=None, max_length=1000)
-    freshness_expectation: Optional[str] = Field(default=None, max_length=300)
+    business_role: Optional[str] = Field(default=None, max_length=2000)
+    grain: Optional[str] = Field(default=None, max_length=2000)
+    join_hint: Optional[str] = Field(default=None, max_length=2000)
+    owner_note: Optional[str] = Field(default=None, max_length=2000)
+    freshness_expectation: Optional[str] = Field(default=None, max_length=2000)
     row_count_expectation: Optional[str] = Field(default=None, max_length=1000)
     important_columns: List[str] = Field(default_factory=list)
     column_notes: List[DatasetDictionaryColumnNote] = Field(default_factory=list)
