@@ -22,6 +22,8 @@ from app.models.semantic import (
 from app.models.dataset import (
     Dataset,
     DatasetTable,
+    DatasetQualityRule,
+    DatasetQualityRun,
 )
 from app.models.anomaly import (
     MonitoredMetric,
@@ -53,6 +55,8 @@ __all__ = [
     "SemanticModel",
     "Dataset",
     "DatasetTable",
+    "DatasetQualityRule",
+    "DatasetQualityRun",
     "SemanticExplore",
     "SyncJob",
     "MonitoredMetric",

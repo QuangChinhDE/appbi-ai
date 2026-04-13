@@ -21,7 +21,7 @@ import {
   Pencil,
   ChevronLeft as ChevronLeftPag,
   ChevronRight,
-  BookOpen,
+  ShieldCheck,
   Sigma,
 } from 'lucide-react';
 import {
@@ -38,9 +38,9 @@ import { AddTableModal } from '@/components/datasets/AddTableModalV2';
 import { ManageColumnsDrawer } from '@/components/datasets/ManageColumnsDrawer';
 import { AddColumnModal, buildFNS, type LookupTableOption } from '@/components/datasets/AddColumnModal';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
-import { DatasetDictionaryPanel } from '@/components/datasets/DatasetDictionaryPanel';
+import { DatasetQualityPanel } from '@/components/datasets/DatasetQualityPanel';
 import { DataModelCanvas } from '@/components/datasets/DataModelCanvas';
-import { DimensionMeasureEditor } from '@/components/datasets/DimensionMeasureEditor';
+import { ModelViewEditPanel } from '@/components/datasets/ModelViewEditPanel';
 import type { Transformation } from '@/hooks/use-datasets';
 import type { DatasetModelView } from '@/hooks/use-dataset-model';
 import { toast } from 'sonner';
@@ -426,8 +426,22 @@ export default function DatasetDetailPage() {
   const [tableToDelete, setTableToDelete] = useState<{ id: number; name: string } | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingTable, setIsDeletingTable] = useState(false);
-  const [activeTab, setActiveTab] = useState<'tables' | 'dictionary' | 'model'>('tables');
   const [editingView, setEditingView] = useState<DatasetModelView | null>(null);
+
+  // Tab routing via searchParam — ?tab=tables|quality|model
+  // backward compat: ?tab=catalog → quality
+  const activeTab = useMemo((): 'tables' | 'quality' | 'model' => {
+    const t = searchParams.get('tab');
+    if (t === 'quality' || t === 'catalog') return 'quality';
+    if (t === 'model') return 'model';
+    return 'tables';
+  }, [searchParams]);
+
+  const setActiveTab = useCallback((tab: 'tables' | 'quality' | 'model') => {
+    const next = new URLSearchParams(searchParams.toString());
+    next.set('tab', tab);
+    router.replace(`?${next.toString()}`);
+  }, [router, searchParams]);
   const [calendarDraft, setCalendarDraft] = useState<CalendarDimensionSettings>(DEFAULT_CALENDAR_SETTINGS);
   const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
 
@@ -1012,7 +1026,7 @@ export default function DatasetDetailPage() {
                         </div>
                       </button>
 
-                      {resPerms.canEdit && (
+                      {resPerms.canEdit && activeTab === 'tables' && (
                         group === 'calendar' ? (
                           <button
                             type="button"
@@ -1132,16 +1146,16 @@ export default function DatasetDetailPage() {
             </span>
           </button>
           <button
-            onClick={() => setActiveTab('dictionary')}
+            onClick={() => setActiveTab('quality')}
             className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === 'dictionary'
+              activeTab === 'quality'
                 ? 'border-blue-600 text-blue-600'
                 : 'border-transparent text-gray-500 hover:text-gray-700'
             }`}
           >
             <span className="flex items-center gap-2">
-              <BookOpen className="w-4 h-4" />
-              Catalog
+              <ShieldCheck className="w-4 h-4" />
+              Quality
             </span>
           </button>
           <button
@@ -1161,17 +1175,25 @@ export default function DatasetDetailPage() {
 
         {activeTab === 'model' ? (
           /* ── Model Tab ── */
-          <div className="flex-1 overflow-hidden">
+          <div className="flex-1 overflow-hidden relative">
             <DataModelCanvas
               datasetId={datasetId!}
               canEdit={resPerms.canEdit}
               onEditView={(view) => setEditingView(view)}
             />
+            {editingView && datasetId && (
+              <ModelViewEditPanel
+                datasetId={datasetId}
+                view={editingView}
+                tables={dataset.tables ?? []}
+                canEdit={resPerms.canEdit}
+                onClose={() => setEditingView(null)}
+              />
+            )}
           </div>
-        ) : activeTab === 'dictionary' ? (
-          <DatasetDictionaryPanel
+        ) : activeTab === 'quality' ? (
+          <DatasetQualityPanel
             datasetId={datasetId!}
-            datasetName={dataset.name}
             tables={dataset.tables ?? []}
             canEdit={resPerms.canEdit}
           />
@@ -1465,14 +1487,6 @@ export default function DatasetDetailPage() {
       )}
 
 
-      {/* Dimension/Measure Editor Panel */}
-      {editingView && datasetId && (
-        <DimensionMeasureEditor
-          datasetId={datasetId}
-          view={editingView}
-          onClose={() => setEditingView(null)}
-        />
-      )}
     </div>
   );
 }

@@ -41,6 +41,7 @@ from app.services import (
     DatasetCRUDService,
     DataSourceConnectionService,
     EmbeddingService,
+    DatasetQualityService,
 )
 from app.services import query_cache
 from app.services.chart_contracts import normalize_filter_conditions
@@ -2118,3 +2119,174 @@ def remove_model_join(
     except Exception as e:
         logger.error(f"Failed to remove join for dataset {dataset_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ===== Data Quality Endpoints =====
+
+from app.models.dataset import DatasetQualityRule, DatasetQualityRun
+from app.schemas.dataset import (
+    QualityRuleCreate,
+    QualityRuleUpdate,
+    QualityRuleResponse,
+    QualityRunTriggerResponse,
+    QualityRunResponse,
+    QualitySummaryResponse,
+)
+
+
+def _get_dataset_or_404(db: Session, dataset_id: int) -> Dataset:
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return ds
+
+
+# ── Rules ──────────────────────────────────────────────────────────────────
+
+@router.get("/{dataset_id}/quality/summary", response_model=QualitySummaryResponse)
+def get_quality_summary(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Aggregated quality summary: rule counts, score, dimension breakdown."""
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_view_access(db, current_user, ds, "datasets")
+    return DatasetQualityService.get_summary(db, dataset_id)
+
+
+@router.get("/{dataset_id}/quality/rules", response_model=List[QualityRuleResponse])
+def list_quality_rules(
+    dataset_id: int,
+    table_id: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all quality rules for a dataset, optionally filtered by table."""
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_view_access(db, current_user, ds, "datasets")
+    return DatasetQualityService.list_rules(db, dataset_id, table_id=table_id)
+
+
+@router.post("/{dataset_id}/quality/rules", response_model=QualityRuleResponse, status_code=201)
+def create_quality_rule(
+    dataset_id: int,
+    body: QualityRuleCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create a new quality rule."""
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_edit_access(db, current_user, ds, "datasets")
+
+    # Verify table belongs to dataset
+    table = db.query(DatasetTable).filter(
+        DatasetTable.id == body.table_id,
+        DatasetTable.dataset_id == dataset_id,
+    ).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found in this dataset")
+
+    return DatasetQualityService.create_rule(db, dataset_id, body)
+
+
+@router.put("/{dataset_id}/quality/rules/{rule_id}", response_model=QualityRuleResponse)
+def update_quality_rule(
+    dataset_id: int,
+    rule_id: int,
+    body: QualityRuleUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update a quality rule."""
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_edit_access(db, current_user, ds, "datasets")
+
+    rule = db.query(DatasetQualityRule).filter(
+        DatasetQualityRule.id == rule_id,
+        DatasetQualityRule.dataset_id == dataset_id,
+    ).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Quality rule not found")
+
+    return DatasetQualityService.update_rule(db, rule, body)
+
+
+@router.delete("/{dataset_id}/quality/rules/{rule_id}", status_code=204)
+def delete_quality_rule(
+    dataset_id: int,
+    rule_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a quality rule."""
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_edit_access(db, current_user, ds, "datasets")
+
+    rule = db.query(DatasetQualityRule).filter(
+        DatasetQualityRule.id == rule_id,
+        DatasetQualityRule.dataset_id == dataset_id,
+    ).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Quality rule not found")
+
+    DatasetQualityService.delete_rule(db, rule)
+
+
+# ── Runs ───────────────────────────────────────────────────────────────────
+
+@router.post(
+    "/{dataset_id}/quality/runs",
+    response_model=QualityRunTriggerResponse,
+    status_code=202,
+)
+def trigger_quality_run(
+    dataset_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Trigger a full quality-check run in the background."""
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_edit_access(db, current_user, ds, "datasets")
+
+    run = DatasetQualityService.create_run(
+        db,
+        dataset_id,
+        triggered_by_id=str(current_user.id),
+    )
+    background_tasks.add_task(DatasetQualityService.execute_run, run.id)
+    return QualityRunTriggerResponse(run_id=run.id, status=run.status)
+
+
+@router.get("/{dataset_id}/quality/runs", response_model=List[QualityRunResponse])
+def list_quality_runs(
+    dataset_id: int,
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List recent quality run history."""
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_view_access(db, current_user, ds, "datasets")
+    return DatasetQualityService.list_runs(db, dataset_id, limit=limit)
+
+
+@router.get("/{dataset_id}/quality/runs/{run_id}", response_model=QualityRunResponse)
+def get_quality_run(
+    dataset_id: int,
+    run_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get a specific quality run result (used for polling)."""
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_view_access(db, current_user, ds, "datasets")
+
+    run = db.query(DatasetQualityRun).filter(
+        DatasetQualityRun.id == run_id,
+        DatasetQualityRun.dataset_id == dataset_id,
+    ).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Quality run not found")
+    return run

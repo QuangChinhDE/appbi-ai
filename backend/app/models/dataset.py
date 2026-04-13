@@ -1,7 +1,7 @@
 """
 Dataset Models - Table-based dataset like NocoDB/Airtable
 """
-from sqlalchemy import Column, Integer, BigInteger, String, Boolean, DateTime, ForeignKey, Text, JSON
+from sqlalchemy import Column, Integer, BigInteger, String, Boolean, DateTime, Float, ForeignKey, Text, JSON
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -26,8 +26,10 @@ class Dataset(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
     
-    # Relationship
+    # Relationships
     tables = relationship("DatasetTable", back_populates="dataset", cascade="all, delete-orphan")
+    quality_rules = relationship("DatasetQualityRule", back_populates="dataset", cascade="all, delete-orphan")
+    quality_runs = relationship("DatasetQualityRun", back_populates="dataset", cascade="all, delete-orphan")
 
 
 class DatasetTable(Base):
@@ -86,4 +88,55 @@ class DatasetTable(Base):
 
     # Relationships
     dataset = relationship("Dataset", back_populates="tables")
+    quality_rules = relationship("DatasetQualityRule", back_populates="table", cascade="all, delete-orphan")
+
+
+class DatasetQualityRule(Base):
+    """
+    A single data-quality expectation on a table or column.
+
+    dimension  ∈ { completeness | validity | uniqueness | consistency | timeliness | accuracy }
+    rule_type  is a string code within that dimension, e.g. "not_null", "accepted_values".
+    config     is a JSONB bag of parameters that depend on rule_type.
+    """
+    __tablename__ = "dataset_quality_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
+    table_id = Column(Integer, ForeignKey("dataset_tables.id", ondelete="CASCADE"), nullable=False, index=True)
+    column_name = Column(String(255), nullable=True)   # None → table-level rule
+    dimension = Column(String(50), nullable=False)     # e.g. "completeness"
+    rule_type = Column(String(80), nullable=False)     # e.g. "not_null"
+    name = Column(String(255), nullable=False)         # human label
+    config = Column(JSONB, nullable=True, default=dict)
+    severity = Column(String(20), nullable=False, default="warning")  # info | warning | error
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
+
+    # Relationships
+    dataset = relationship("Dataset", back_populates="quality_rules")
+    table = relationship("DatasetTable", back_populates="quality_rules")
+
+
+class DatasetQualityRun(Base):
+    """
+    A recorded execution of all quality rules for a dataset.
+    Results are stored as JSONB: { "<rule_id>": { passed, rows_checked, rows_failed, detail } }
+    """
+    __tablename__ = "dataset_quality_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="queued")   # queued | running | completed | failed
+    score = Column(Float, nullable=True)                            # 0–100 overall pass-rate
+    results = Column(JSONB, nullable=True)                          # per-rule detail
+    error_message = Column(Text, nullable=True)
+    triggered_by_id = Column(String(36), nullable=True)             # user UUID string
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
+
+    # Relationships
+    dataset = relationship("Dataset", back_populates="quality_runs")
 

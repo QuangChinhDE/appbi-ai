@@ -70,6 +70,15 @@ from app.schemas.dataset import (
     OrderBySpec,
     ColumnMetadata as DatasetColumnMetadata,
     DatasourceTable,
+    # Quality
+    QualityRuleCreate,
+    QualityRuleUpdate,
+    QualityRuleResponse,
+    QualityRuleResult,
+    QualityRunTriggerResponse,
+    QualityRunResponse,
+    QualityDimensionSummary,
+    QualitySummaryResponse,
 )
 from app.schemas.agent_report import (
     AgentReportSpecCreate,
@@ -147,6 +156,15 @@ __all__ = [
     "FilterCondition",
     "DatasetColumnMetadata",
     "DatasourceTable",
+    # Quality
+    "QualityRuleCreate",
+    "QualityRuleUpdate",
+    "QualityRuleResponse",
+    "QualityRuleResult",
+    "QualityRunTriggerResponse",
+    "QualityRunResponse",
+    "QualityDimensionSummary",
+    "QualitySummaryResponse",
 
     # AI Agent saved reports
     "AgentReportSpecCreate",

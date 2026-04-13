@@ -279,3 +279,134 @@ class ExecuteQueryResponse(BaseModel):
     """Response schema for executed query"""
     columns: List[ColumnMetadata]
     rows: List[Dict[str, Any]]
+
+
+# ===== Dataset Quality Schemas =====
+
+QualityDimension = Literal[
+    "completeness", "validity", "uniqueness", "consistency", "timeliness", "accuracy"
+]
+QualitySeverity = Literal["info", "warning", "error"]
+
+
+class QualityRuleConfig(BaseModel):
+    """
+    Flexible config bag — validated loosely here; the service layer does
+    rule_type-specific validation before execution.
+
+    Common fields by rule_type:
+      not_null            → {}
+      not_blank           → {}
+      completeness_pct    → { threshold: float (0-100) }
+      accepted_values     → { values: list[str] }
+      pattern_match       → { pattern: str, flags?: str }
+      range_check         → { min?: float|str, max?: float|str }
+      format_check        → { format: "email"|"url"|"date"|"datetime"|"phone" }
+      unique_column       → {}
+      unique_combo        → { columns: list[str] }
+      cross_column_check  → { expression: str }   (SQL boolean expr)
+      freshness_days      → { max_days: int, column: str }
+      row_count_range     → { min?: int, max?: int }
+      statistical_range   → { min_z?: float, max_z?: float }
+    """
+    model_config = {"extra": "allow"}
+
+    threshold: Optional[float] = Field(default=None, ge=0, le=100)
+    values: Optional[List[str]] = Field(default=None)
+    pattern: Optional[str] = Field(default=None, max_length=500)
+    flags: Optional[str] = Field(default=None, max_length=10)
+    min: Optional[Union[str, float, int]] = Field(default=None)
+    max: Optional[Union[str, float, int]] = Field(default=None)
+    format: Optional[str] = Field(default=None, max_length=50)
+    columns: Optional[List[str]] = Field(default=None)
+    expression: Optional[str] = Field(default=None, max_length=1000)
+    column: Optional[str] = Field(default=None, max_length=255)
+    max_days: Optional[int] = Field(default=None, ge=0)
+    min_z: Optional[float] = Field(default=None)
+    max_z: Optional[float] = Field(default=None)
+
+
+class QualityRuleCreate(BaseModel):
+    table_id: int
+    column_name: Optional[str] = Field(default=None, max_length=255)
+    dimension: QualityDimension
+    rule_type: str = Field(..., min_length=1, max_length=80)
+    name: str = Field(..., min_length=1, max_length=255)
+    config: Optional[QualityRuleConfig] = Field(default_factory=QualityRuleConfig)
+    severity: QualitySeverity = "warning"
+    enabled: bool = True
+
+
+class QualityRuleUpdate(BaseModel):
+    column_name: Optional[str] = Field(default=None, max_length=255)
+    dimension: Optional[QualityDimension] = None
+    rule_type: Optional[str] = Field(default=None, max_length=80)
+    name: Optional[str] = Field(default=None, max_length=255)
+    config: Optional[QualityRuleConfig] = None
+    severity: Optional[QualitySeverity] = None
+    enabled: Optional[bool] = None
+
+
+class QualityRuleResponse(BaseModel):
+    id: int
+    dataset_id: int
+    table_id: int
+    column_name: Optional[str] = None
+    dimension: str
+    rule_type: str
+    name: str
+    config: Optional[Dict[str, Any]] = None
+    severity: str
+    enabled: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class QualityRuleResult(BaseModel):
+    """Result for a single rule within a run."""
+    rule_id: int
+    passed: bool
+    rows_checked: Optional[int] = None
+    rows_failed: Optional[int] = None
+    detail: Optional[str] = None
+
+
+class QualityRunTriggerResponse(BaseModel):
+    run_id: int
+    status: str
+
+
+class QualityRunResponse(BaseModel):
+    id: int
+    dataset_id: int
+    status: str
+    score: Optional[float] = None
+    results: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+    triggered_by_id: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class QualityDimensionSummary(BaseModel):
+    dimension: str
+    total: int
+    enabled: int
+    passed: Optional[int] = None
+    failed: Optional[int] = None
+
+
+class QualitySummaryResponse(BaseModel):
+    """Aggregated summary for the Quality tab header."""
+    total_rules: int
+    enabled_rules: int
+    covered_tables: int
+    covered_columns: int
+    last_run: Optional[QualityRunResponse] = None
+    score: Optional[float] = None          # from last completed run
+    dimension_breakdown: List[QualityDimensionSummary] = Field(default_factory=list)

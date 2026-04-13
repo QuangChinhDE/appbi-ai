@@ -13,6 +13,7 @@ from app.services.auto_tagging_service import AutoTaggingService
 from app.services.schema_change_service import SchemaChangeService
 from app.services.feedback_processor import FeedbackProcessor
 from app.services.description_pipeline_service import DescriptionPipelineService
+from app.services.dataset_quality_service import DatasetQualityService
 
 __all__ = [
     "DataSourceConnectionService",
@@ -27,4 +28,5 @@ __all__ = [
     "SchemaChangeService",
     "FeedbackProcessor",
     "DescriptionPipelineService",
+    "DatasetQualityService",
 ]

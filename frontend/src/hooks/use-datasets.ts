@@ -247,6 +247,118 @@ export interface DatasourceColumn {
 
 // ===== Query Keys =====
 
+// ===== Quality Types =====
+
+export type QualityDimension =
+  | 'completeness'
+  | 'validity'
+  | 'uniqueness'
+  | 'consistency'
+  | 'timeliness'
+  | 'accuracy';
+
+export type QualitySeverity = 'info' | 'warning' | 'error';
+
+export interface QualityRuleConfig {
+  threshold?: number;
+  values?: string[];
+  pattern?: string;
+  flags?: string;
+  min?: string | number;
+  max?: string | number;
+  format?: string;
+  columns?: string[];
+  expression?: string;
+  column?: string;
+  max_days?: number;
+  min_z?: number;
+  max_z?: number;
+  [key: string]: unknown;
+}
+
+export interface QualityRule {
+  id: number;
+  dataset_id: number;
+  table_id: number;
+  column_name?: string | null;
+  dimension: QualityDimension;
+  rule_type: string;
+  name: string;
+  config?: QualityRuleConfig | null;
+  severity: QualitySeverity;
+  enabled: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface QualityRuleCreate {
+  table_id: number;
+  column_name?: string | null;
+  dimension: QualityDimension;
+  rule_type: string;
+  name: string;
+  config?: QualityRuleConfig;
+  severity?: QualitySeverity;
+  enabled?: boolean;
+}
+
+export interface QualityRuleUpdate {
+  column_name?: string | null;
+  dimension?: QualityDimension;
+  rule_type?: string;
+  name?: string;
+  config?: QualityRuleConfig;
+  severity?: QualitySeverity;
+  enabled?: boolean;
+}
+
+export interface QualityRuleResult {
+  passed: boolean;
+  rows_checked?: number | null;
+  rows_failed?: number | null;
+  detail?: string | null;
+  skipped?: boolean;
+  error?: boolean;
+}
+
+export interface QualityRun {
+  id: number;
+  dataset_id: number;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  score?: number | null;
+  results?: Record<string, QualityRuleResult> | null;
+  error_message?: string | null;
+  triggered_by_id?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at?: string | null;
+}
+
+export interface QualityRunTriggerResponse {
+  run_id: number;
+  status: string;
+}
+
+export interface QualityDimensionSummary {
+  dimension: QualityDimension;
+  total: number;
+  enabled: number;
+  passed?: number | null;
+  failed?: number | null;
+}
+
+export interface QualitySummary {
+  total_rules: number;
+  enabled_rules: number;
+  covered_tables: number;
+  covered_columns: number;
+  last_run?: QualityRun | null;
+  score?: number | null;
+  dimension_breakdown: QualityDimensionSummary[];
+}
+
+// ===== Query Keys =====
+
 export const datasetKeys = {
   all: ['datasets'] as const,
   lists: () => [...datasetKeys.all, 'list'] as const,
@@ -255,8 +367,15 @@ export const datasetKeys = {
   detail: (id: number) => [...datasetKeys.details(), id] as const,
   tables: (datasetId: number) => [...datasetKeys.detail(datasetId), 'tables'] as const,
   dictionary: (datasetId: number) => [...datasetKeys.detail(datasetId), 'dictionary'] as const,
-  tablePreview: (datasetId: number, tableId: number) => 
+  tablePreview: (datasetId: number, tableId: number) =>
     [...datasetKeys.detail(datasetId), 'table', tableId, 'preview'] as const,
+  qualityRules: (datasetId: number) => [...datasetKeys.detail(datasetId), 'quality', 'rules'] as const,
+  qualityRulesTable: (datasetId: number, tableId: number) =>
+    [...datasetKeys.detail(datasetId), 'quality', 'rules', tableId] as const,
+  qualitySummary: (datasetId: number) => [...datasetKeys.detail(datasetId), 'quality', 'summary'] as const,
+  qualityRuns: (datasetId: number) => [...datasetKeys.detail(datasetId), 'quality', 'runs'] as const,
+  qualityRun: (datasetId: number, runId: number) =>
+    [...datasetKeys.detail(datasetId), 'quality', 'runs', runId] as const,
 };
 
 export const datasourceTableKeys = {
@@ -570,6 +689,132 @@ export function useExecuteDatasetTableQueryMutation() {
         request
       );
       return response.data;
+    },
+  });
+}
+
+// ===== Quality Hooks =====
+
+export function useQualitySummary(datasetId: number | null) {
+  return useQuery({
+    queryKey: datasetKeys.qualitySummary(datasetId!),
+    queryFn: async () => {
+      const res = await api.get<QualitySummary>(`/datasets/${datasetId}/quality/summary`);
+      return res.data;
+    },
+    enabled: datasetId !== null,
+    staleTime: 10_000,
+  });
+}
+
+export function useQualityRules(datasetId: number | null, tableId?: number) {
+  return useQuery({
+    queryKey: tableId
+      ? datasetKeys.qualityRulesTable(datasetId!, tableId)
+      : datasetKeys.qualityRules(datasetId!),
+    queryFn: async () => {
+      const params = tableId ? `?table_id=${tableId}` : '';
+      const res = await api.get<QualityRule[]>(
+        `/datasets/${datasetId}/quality/rules${params}`
+      );
+      return res.data;
+    },
+    enabled: datasetId !== null,
+  });
+}
+
+export function useCreateQualityRule(datasetId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: QualityRuleCreate) => {
+      const res = await api.post<QualityRule>(
+        `/datasets/${datasetId}/quality/rules`,
+        body
+      );
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.qualityRules(datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.qualitySummary(datasetId) });
+    },
+  });
+}
+
+export function useUpdateQualityRule(datasetId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ ruleId, body }: { ruleId: number; body: QualityRuleUpdate }) => {
+      const res = await api.put<QualityRule>(
+        `/datasets/${datasetId}/quality/rules/${ruleId}`,
+        body
+      );
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.qualityRules(datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.qualitySummary(datasetId) });
+    },
+  });
+}
+
+export function useDeleteQualityRule(datasetId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (ruleId: number) => {
+      await api.delete(`/datasets/${datasetId}/quality/rules/${ruleId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.qualityRules(datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.qualitySummary(datasetId) });
+    },
+  });
+}
+
+export function useTriggerQualityRun(datasetId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const res = await api.post<QualityRunTriggerResponse>(
+        `/datasets/${datasetId}/quality/runs`
+      );
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.qualityRuns(datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.qualitySummary(datasetId) });
+    },
+  });
+}
+
+export function useQualityRuns(datasetId: number | null) {
+  return useQuery({
+    queryKey: datasetKeys.qualityRuns(datasetId!),
+    queryFn: async () => {
+      const res = await api.get<QualityRun[]>(`/datasets/${datasetId}/quality/runs?limit=20`);
+      return res.data;
+    },
+    enabled: datasetId !== null,
+  });
+}
+
+export function useQualityRunPoll(
+  datasetId: number | null,
+  runId: number | null,
+  enabled = false,
+) {
+  return useQuery({
+    queryKey: datasetKeys.qualityRun(datasetId!, runId!),
+    queryFn: async () => {
+      const res = await api.get<QualityRun>(
+        `/datasets/${datasetId}/quality/runs/${runId}`
+      );
+      return res.data;
+    },
+    enabled: enabled && datasetId !== null && runId !== null,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return 2000;
+      return data.status === 'queued' || data.status === 'running' ? 2000 : false;
     },
   });
 }
