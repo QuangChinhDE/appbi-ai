@@ -2,7 +2,7 @@
 API package initialization.
 """
 from fastapi import APIRouter
-from app.api import auth, datasources, charts, dashboards, datasets, users, shares, permissions, anomaly, feedback, chat_sessions, agent_report_specs, public
+from app.api import auth, datasources, charts, dashboards, datasets, users, shares, permissions, anomaly, feedback, chat_sessions, agent_report_specs, public, report_templates
 from app.routers import semantic
 
 # Create main API router
@@ -35,5 +35,8 @@ api_router.include_router(agent_report_specs.router)
 
 # Public unauthenticated endpoints (shared dashboard links)
 api_router.include_router(public.router)
+
+# Report Templates
+api_router.include_router(report_templates.router)
 
 __all__ = ["api_router"]

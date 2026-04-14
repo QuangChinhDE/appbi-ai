@@ -39,13 +39,14 @@ interface UserRecord {
 /* ───────────── constants ───────────── */
 
 const MODULE_LABELS: Record<string, string> = {
-  data_sources:   'Data sources',
-  datasets:       'Datasets',
-  explore_charts: 'Explore + charts',
-  dashboards:     'Dashboards',
-  ai_chat:        'AI chat',
-  ai_agent:       'AI agent',
-  settings:       'Settings',
+  data_sources:      'Data sources',
+  datasets:          'Datasets',
+  explore_charts:    'Explore + charts',
+  dashboards:        'Dashboards',
+  report_templates:  'Report templates',
+  ai_chat:           'AI chat',
+  ai_agent:          'AI agent',
+  settings:          'Settings',
 };
 
 const LEVEL_STYLES: Record<string, { bg: string; text: string; ring: string }> = {

@@ -1413,6 +1413,7 @@ def preview_dataset_table(
             db_table=target_table,
             limit=limit,
             offset=offset,
+            filters=[f.model_dump() for f in preview_request.filters] if preview_request.filters else None,
         )
         rows = result["rows"]
         columns = result["columns"]

@@ -17,6 +17,7 @@ import {
   Shield,
   Bot,
   HelpCircle,
+  FileText,
 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -43,6 +44,7 @@ const ALL_NAV_ITEMS: NavItem[] = [
   { labelKey: 'sidebar.nav.datasets', href: '/datasets', icon: <Database className="h-5 w-5" />, module: 'datasets' },
   { labelKey: 'sidebar.nav.explore', href: '/explore', icon: <Search className="h-5 w-5" />, module: 'explore_charts' },
   { labelKey: 'sidebar.nav.dashboards', href: '/dashboards', icon: <LayoutDashboard className="h-5 w-5" />, module: 'dashboards' },
+  { labelKey: 'sidebar.nav.templates', href: '/templates', icon: <FileText className="h-5 w-5" />, module: 'report_templates' },
   { labelKey: 'sidebar.nav.aiReports', href: '/ai-reports', icon: <Bot className="h-5 w-5" />, module: 'ai_agent' },
   { labelKey: 'sidebar.nav.aiChat', href: '/chat', icon: <MessageSquareText className="h-5 w-5" />, module: 'ai_chat' },
   { labelKey: 'sidebar.nav.settings', href: '/permissions', icon: <Shield className="h-5 w-5" />, module: 'settings' },

@@ -58,3 +58,4 @@ _quarantine/
 _create_ds.py
 README.md
 install-docker-and-run.sh
+*.xlsx

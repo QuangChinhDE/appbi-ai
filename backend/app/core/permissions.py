@@ -34,6 +34,7 @@ _RESOURCE_TO_MODULE: Dict[str, str] = {
     "dataset": "datasets",
     "datasource": "data_sources",
     "chat_session": "ai_chat",
+    "report_template": "report_templates",
 }
 
 

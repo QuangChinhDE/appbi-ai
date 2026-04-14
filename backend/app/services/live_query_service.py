@@ -865,8 +865,13 @@ def _get_bigquery_earliest_partition_date(
     return _get_bigquery_partition_metadata(config, source_table_name).get("earliest_partition_date")
 
 
-def _build_preview_sql(base_sql: str, limit: int, offset: int) -> str:
-    sql = f"SELECT * FROM ({base_sql}) AS _appbi_live LIMIT {int(limit)}"
+def _build_preview_sql(base_sql: str, limit: int, offset: int,
+                       filters: list | None = None, dialect: str = "postgresql") -> str:
+    where = _build_where_clause(filters or [], dialect)
+    inner = f"SELECT * FROM ({base_sql}) AS _appbi_live"
+    if where:
+        inner += f" WHERE {where}"
+    sql = f"{inner} LIMIT {int(limit)}"
     if offset:
         sql += f" OFFSET {int(offset)}"
     return sql
@@ -883,9 +888,11 @@ class LiveQueryService:
         db_table,
         limit: int = 100,
         offset: int = 0,
+        filters: list | None = None,
     ) -> Dict[str, Any]:
         """Preview dataset rows directly from the source with cache + cost guard."""
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+        dialect = "bigquery" if ds_type == "bigquery" else "postgresql"
 
         from app.core.crypto import decrypt_config
         config = decrypt_config(datasource.config)
@@ -896,6 +903,7 @@ class LiveQueryService:
         cache_payload = {
             "limit": limit,
             "offset": offset,
+            "filters": [f if isinstance(f, dict) else f.dict() for f in (filters or [])],
             "transformations": getattr(db_table, "transformations", None) or [],
             "type_overrides": normalize_type_overrides(getattr(db_table, "type_overrides", None)),
         }
@@ -945,7 +953,8 @@ class LiveQueryService:
                         partition_days_ago=partition_days_ago,
                         bigquery_partition_meta=partition_metadata,
                     )
-                    sql = _build_preview_sql(plan.sql, limit, offset)
+                    filter_dicts = [f if isinstance(f, dict) else f.dict() for f in (filters or [])]
+                    sql = _build_preview_sql(plan.sql, limit, offset, filter_dicts, dialect)
                     estimated_bytes = _estimate_bigquery_bytes(config, sql)
                     max_bytes = settings.BQ_MAX_BYTES_SCANNED
                     if estimated_bytes > max_bytes:
@@ -992,7 +1001,8 @@ class LiveQueryService:
                     db_table,
                     apply_type_overrides=True,
                 )
-                sql = _build_preview_sql(plan.sql, limit, offset)
+                filter_dicts = [f if isinstance(f, dict) else f.dict() for f in (filters or [])]
+                sql = _build_preview_sql(plan.sql, limit, offset, filter_dicts, dialect)
                 estimated_bytes = _estimate_bigquery_bytes(config, sql)
                 max_bytes = settings.BQ_MAX_BYTES_SCANNED
                 if estimated_bytes > max_bytes:
@@ -1021,7 +1031,8 @@ class LiveQueryService:
                 }
         else:
             plan = build_live_base_query_plan(datasource, db_table, apply_type_overrides=True)
-            sql = _build_preview_sql(plan.sql, limit, offset)
+            filter_dicts = [f if isinstance(f, dict) else f.dict() for f in (filters or [])]
+            sql = _build_preview_sql(plan.sql, limit, offset, filter_dicts, dialect)
 
             if ds_type == "bigquery":
                 estimated_bytes = _estimate_bigquery_bytes(config, sql)

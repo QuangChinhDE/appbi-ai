@@ -106,6 +106,9 @@ def _normalize_permissions(user: User) -> dict:
         else:
             normalized["ai_agent"] = "none"
 
+    if "report_templates" not in normalized:
+        normalized["report_templates"] = normalized.get("dashboards", "none")
+
     return normalized
 
 

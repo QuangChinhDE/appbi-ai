@@ -28,6 +28,7 @@ MODULES = [
     "datasets",
     "explore_charts",
     "dashboards",
+    "report_templates",
     "ai_chat",
     "ai_agent",
     "settings",
@@ -35,13 +36,14 @@ MODULES = [
 
 # Per-module allowed levels (enforces business rules)
 MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
-    "data_sources":   ["none", "view", "edit", "full"],
-    "datasets":       ["none", "view", "edit", "full"],
-    "explore_charts": ["none", "view", "edit", "full"],
-    "dashboards":     ["none", "view", "edit", "full"],
-    "ai_chat":        ["none", "view", "edit", "full"],
-    "ai_agent":       ["none", "view", "edit", "full"],
-    "settings":       ["none", "full"],
+    "data_sources":      ["none", "view", "edit", "full"],
+    "datasets":          ["none", "view", "edit", "full"],
+    "explore_charts":    ["none", "view", "edit", "full"],
+    "dashboards":        ["none", "view", "edit", "full"],
+    "report_templates":  ["none", "view", "edit", "full"],
+    "ai_chat":           ["none", "view", "edit", "full"],
+    "ai_agent":          ["none", "view", "edit", "full"],
+    "settings":          ["none", "full"],
 }
 
 LEVEL_ORDER = {"none": 0, "view": 1, "edit": 2, "full": 3}
@@ -54,6 +56,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "full",
         "explore_charts": "full",
         "dashboards": "full",
+        "report_templates": "full",
         "ai_chat": "full",
         "ai_agent": "full",
         "settings": "full",
@@ -63,6 +66,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "edit",
         "explore_charts": "edit",
         "dashboards": "edit",
+        "report_templates": "edit",
         "ai_chat": "edit",
         "ai_agent": "edit",
         "settings": "none",
@@ -72,6 +76,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "view",
         "explore_charts": "view",
         "dashboards": "view",
+        "report_templates": "view",
         "ai_chat": "view",
         "ai_agent": "none",
         "settings": "none",
@@ -81,6 +86,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "none",
         "explore_charts": "none",
         "dashboards": "view",
+        "report_templates": "none",
         "ai_chat": "none",
         "ai_agent": "none",
         "settings": "none",
@@ -146,6 +152,8 @@ def _get_user_permissions(user: User) -> Dict[str, str]:
     base.update({k: v for k, v in stored.items() if k in MODULES})
     if "ai_agent" not in stored:
         base["ai_agent"] = _infer_legacy_ai_agent_level(base)
+    if "report_templates" not in stored:
+        base["report_templates"] = stored.get("dashboards", "none")
     return base
 
 

@@ -18,6 +18,7 @@ class ResourceType(str, enum.Enum):
     DATASET_MODEL = "dataset_model"
     DATASOURCE = "datasource"
     CHAT_SESSION = "chat_session"
+    REPORT_TEMPLATE = "report_template"
 
 
 class SharePermission(str, enum.Enum):

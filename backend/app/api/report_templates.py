@@ -1,0 +1,163 @@
+"""
+API router for report template endpoints.
+"""
+from typing import Any, Dict, List
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from sqlalchemy.orm import Session
+
+from app.core import get_db
+from app.core.dependencies import (
+    get_current_user,
+    require_permission,
+    require_edit_access,
+    require_full_access,
+    get_effective_permission,
+)
+from app.core.permissions import _owned_or_shared, stamp_owner_emails
+from app.models.report_template import ReportTemplate
+from app.models.resource_share import ResourceType
+from app.models.user import User
+from app.schemas.report_template import (
+    ReportTemplateCreate,
+    ReportTemplateUpdate,
+    ReportTemplateResponse,
+)
+from app.services.report_template_service import ReportTemplateService
+
+router = APIRouter(prefix="/report-templates", tags=["report-templates"])
+
+
+@router.get("/", response_model=List[ReportTemplateResponse])
+def list_templates(
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List report templates visible to the current user."""
+    items = (
+        _owned_or_shared(db, ReportTemplate, ResourceType.REPORT_TEMPLATE, current_user)
+        .order_by(ReportTemplate.updated_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    for item in items:
+        item.user_permission = get_effective_permission(
+            db, current_user, item, "report_templates",
+        )
+    stamp_owner_emails(db, items)
+    return items
+
+
+@router.get("/{template_id}", response_model=ReportTemplateResponse)
+def get_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get a single report template by ID."""
+    tpl = ReportTemplateService.get_by_id(db, template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Report template not found")
+    tpl.user_permission = get_effective_permission(
+        db, current_user, tpl, "report_templates",
+    )
+    stamp_owner_emails(db, [tpl])
+    return tpl
+
+
+@router.post("/", response_model=ReportTemplateResponse, status_code=status.HTTP_201_CREATED)
+def create_template(
+    payload: ReportTemplateCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("report_templates", "edit")),
+):
+    """Create a new report template."""
+    try:
+        tpl = ReportTemplateService.create(db, payload, owner_id=current_user.id)
+        tpl.user_permission = "full"
+        stamp_owner_emails(db, [tpl])
+        return tpl
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/{template_id}", response_model=ReportTemplateResponse)
+def update_template(
+    template_id: int,
+    payload: ReportTemplateUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update a report template."""
+    tpl = ReportTemplateService.get_by_id(db, template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Report template not found")
+    require_edit_access(db, current_user, tpl, "report_templates")
+    updated = ReportTemplateService.update(db, template_id, payload)
+    updated.user_permission = get_effective_permission(
+        db, current_user, updated, "report_templates",
+    )
+    stamp_owner_emails(db, [updated])
+    return updated
+
+
+@router.delete("/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a report template."""
+    tpl = ReportTemplateService.get_by_id(db, template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Report template not found")
+    require_full_access(db, current_user, tpl, "report_templates")
+    ReportTemplateService.delete(db, template_id)
+
+
+# ── Excel import ───────────────────────────────────────────────────────
+
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+@router.post("/import-excel", response_model=List[Dict[str, Any]])
+async def import_excel(
+    file: UploadFile = File(...),
+    _current_user: User = Depends(require_permission("report_templates", "edit")),
+):
+    """
+    Parse an uploaded .xlsx file and return a list of template blocks
+    matching the Excel layout.  The frontend can then use these blocks
+    to populate a new or existing template.
+    """
+    # Validate content type
+    if file.content_type not in (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/octet-stream",
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Only .xlsx files are supported.",
+        )
+
+    # Read with size limit
+    contents = await file.read()
+    if len(contents) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=400, detail="File too large (max 10 MB).")
+    if len(contents) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    try:
+        from app.services.excel_parser import parse_excel_to_blocks
+
+        blocks = parse_excel_to_blocks(contents)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Failed to parse Excel file: {exc}",
+        )
+
+    return blocks

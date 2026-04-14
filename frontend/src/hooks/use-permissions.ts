@@ -6,9 +6,9 @@ export type PermissionLevel = 'none' | 'view' | 'edit' | 'full';
 export type ModuleKey =
   | 'data_sources'
   | 'datasets'
-  | 'datasets'
   | 'explore_charts'
   | 'dashboards'
+  | 'report_templates'
   | 'ai_chat'
   | 'ai_agent'
   | 'settings';

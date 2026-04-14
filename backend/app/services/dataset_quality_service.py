@@ -109,6 +109,14 @@ def _q(col: str) -> str:
     return '"' + col.replace('"', '""') + '"'
 
 
+def _numeric_cast_expr(expr: str, dialect: str) -> str:
+    if dialect == "bigquery":
+        return f"CAST({expr} AS FLOAT64)"
+    if dialect == "mysql":
+        return f"CAST({expr} AS DOUBLE)"
+    return f"CAST({expr} AS DOUBLE PRECISION)"
+
+
 def _build_check_sql(
     table_ref: str,
     rule_type: str,
@@ -146,9 +154,10 @@ def _build_check_sql(
     if rule_type == "not_blank":
         if not qcol:
             return None
+        blank_condition = f"TRIM(CAST({qcol} AS TEXT)) = ''"
         return (
             f"SELECT COUNT(*) AS rows_checked, "
-            f"{filter_expr(f\"TRIM(CAST({qcol} AS TEXT)) = ''\")} AS rows_failed "
+            f"{filter_expr(blank_condition)} AS rows_failed "
             f"FROM {table_ref}"
         )
 
@@ -313,17 +322,19 @@ def _build_check_sql(
             return None
         min_z = config.get("min_z")
         max_z = config.get("max_z")
+        numeric_expr = _numeric_cast_expr(qcol, dialect)
+        stddev_fn = "STDDEV_SAMP" if dialect == "bigquery" else "STDDEV"
         conditions = []
         if min_z is not None:
-            conditions.append(f"(CAST({qcol} AS FLOAT) - avg_val) / NULLIF(std_val, 0) < {min_z}")
+            conditions.append(f"({numeric_expr} - avg_val) / NULLIF(std_val, 0) < {min_z}")
         if max_z is not None:
-            conditions.append(f"(CAST({qcol} AS FLOAT) - avg_val) / NULLIF(std_val, 0) > {max_z}")
+            conditions.append(f"({numeric_expr} - avg_val) / NULLIF(std_val, 0) > {max_z}")
         if not conditions:
             return None
         cond = " OR ".join(conditions)
         return (
             f"WITH stats AS ("
-            f"  SELECT AVG(CAST({qcol} AS FLOAT)) AS avg_val, STDDEV(CAST({qcol} AS FLOAT)) AS std_val "
+            f"  SELECT AVG({numeric_expr}) AS avg_val, {stddev_fn}({numeric_expr}) AS std_val "
             f"  FROM {table_ref}"
             f") "
             f"SELECT COUNT(*) AS rows_checked, "
@@ -369,6 +380,25 @@ def _dialect_for_ds(datasource) -> str:
         "mysql": "mysql",
         "postgresql": "postgresql",
     }.get(ds_type, "postgresql")
+
+
+def _resolve_execution_table_and_datasource(
+    db: Session,
+    dataset_obj: Dataset,
+    db_table: DatasetTable,
+    ds_map: Dict[int, Any],
+) -> Tuple[DatasetTable, Any]:
+    datasource = ds_map.get(db_table.datasource_id) if db_table.datasource_id else None
+
+    if datasource is None and db_table.source_kind == "derived_table":
+        from app.services.dataset_table_sql_service import build_live_proxy_table_for_dataset_table
+
+        datasource, proxy_table = build_live_proxy_table_for_dataset_table(db, dataset_obj, db_table)
+        if datasource is not None:
+            ds_map[datasource.id] = datasource
+        return proxy_table, datasource
+
+    return db_table, datasource
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +541,8 @@ class DatasetQualityService:
         if latest_run and latest_run.results:
             rule_id_to_dim = {r.id: r.dimension for r in rules}
             for rule_id_str, res in latest_run.results.items():
+                if not isinstance(res, dict):
+                    continue
                 try:
                     rid = int(rule_id_str)
                 except (ValueError, TypeError):
@@ -590,6 +622,10 @@ class DatasetQualityService:
         run.started_at = datetime.utcnow()
         db.commit()
 
+        dataset_obj = db.query(Dataset).filter(Dataset.id == run.dataset_id).first()
+        if dataset_obj is None:
+            raise ValueError(f"Dataset {run.dataset_id} not found")
+
         rules = DatasetQualityService.list_rules(db, run.dataset_id)
         enabled_rules = [r for r in rules if r.enabled]
 
@@ -619,7 +655,7 @@ class DatasetQualityService:
         passed_count = 0
 
         for rule in enabled_rules:
-            result = DatasetQualityService._execute_single_rule(rule, table_map, ds_map)
+            result = DatasetQualityService._execute_single_rule(db, dataset_obj, rule, table_map, ds_map)
             results[str(rule.id)] = result
             if result.get("passed"):
                 passed_count += 1
@@ -638,6 +674,8 @@ class DatasetQualityService:
 
     @staticmethod
     def _execute_single_rule(
+        db: Session,
+        dataset_obj: Dataset,
         rule: DatasetQualityRule,
         table_map: Dict[int, DatasetTable],
         ds_map: Dict[int, Any],
@@ -662,7 +700,21 @@ class DatasetQualityService:
                 "skipped": True,
             }
 
-        table_ref, _ = _table_ref_for_source(db_table)
+        try:
+            execution_table, datasource = _resolve_execution_table_and_datasource(db, dataset_obj, db_table, ds_map)
+        except Exception as exc:
+            logger.warning(
+                f"[quality] Rule {rule.id} ({rule.rule_type}) failed to resolve execution target: {exc}"
+            )
+            return {
+                "passed": False,
+                "rows_checked": None,
+                "rows_failed": None,
+                "detail": f"Execution target error: {str(exc)[:500]}",
+                "error": True,
+            }
+
+        table_ref, _ = _table_ref_for_source(execution_table)
         if not table_ref:
             return {
                 "passed": False,
@@ -672,7 +724,15 @@ class DatasetQualityService:
                 "skipped": True,
             }
 
-        datasource = ds_map.get(db_table.datasource_id) if db_table.datasource_id else None
+        if datasource is None:
+            return {
+                "passed": False,
+                "rows_checked": None,
+                "rows_failed": None,
+                "detail": "Data source not found for this table",
+                "skipped": True,
+            }
+
         dialect = _dialect_for_ds(datasource)
 
         config = rule.config or {}
@@ -721,7 +781,16 @@ class DatasetQualityService:
             rows_checked = _coerce_int(row.get("rows_checked"))
             rows_failed = _coerce_int(row.get("rows_failed"))
 
-            passed = (rows_failed is None or rows_failed == 0)
+            if rows_failed is None:
+                return {
+                    "passed": False,
+                    "rows_checked": rows_checked,
+                    "rows_failed": None,
+                    "detail": "Quality query returned an invalid rows_failed value",
+                    "error": True,
+                }
+
+            passed = rows_failed == 0
             detail = None if passed else f"{rows_failed} row(s) failed out of {rows_checked}"
 
             return {

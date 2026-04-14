@@ -596,10 +596,6 @@ export default function DatasetDetailPage() {
       tableId: selectedTableId,
       input: { transformations },
     });
-
-    // Refresh preview to show updated data
-    refetchPreview();
-    refetchDataset();
   };
 
   // Handle table deletion with dependency check
@@ -665,8 +661,6 @@ export default function DatasetDetailPage() {
           type_overrides: updatedOverrides,
         },
       });
-      refetchDataset();
-      if (overrideChanged) refetchPreview();
     } catch (error: any) {
       const message = extractDatasetErrorMessage(error, 'Khong the cap nhat dinh dang cot');
       toast.error(message);
@@ -697,8 +691,6 @@ export default function DatasetDetailPage() {
       tableId: selectedTableId,
       input: { transformations: withSelectFixed },
     });
-    refetchDataset();
-    refetchPreview();
   };
 
   // Handle editing an existing computed column's formula
@@ -976,6 +968,9 @@ export default function DatasetDetailPage() {
           )}
         </div>
 
+        {/* Search Tables + Table Groups - only on Tables tab */}
+        {activeTab === 'tables' && (
+        <>
         {/* Search Tables */}
         <div className="p-4 border-b">
           <div className="relative">
@@ -1126,51 +1121,51 @@ export default function DatasetDetailPage() {
             </div>
           )}
         </div>
+        </>
+        )}
       </div>
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col bg-gray-50 overflow-hidden">
-        {/* Tab Bar */}
-        <div className="bg-white border-b px-6 flex items-center gap-0 shrink-0">
-          <button
-            onClick={() => setActiveTab('tables')}
-            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === 'tables'
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            <span className="flex items-center gap-2">
-              <Database className="w-4 h-4" />
-              Tables
-            </span>
-          </button>
-          <button
-            onClick={() => setActiveTab('quality')}
-            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === 'quality'
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            <span className="flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4" />
-              Quality
-            </span>
-          </button>
-          <button
-            onClick={() => setActiveTab('model')}
-            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === 'model'
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}
-          >
-            <span className="flex items-center gap-2">
-              <Sigma className="w-4 h-4" />
-              Model
-            </span>
-          </button>
+        {/* Header with pill-shaped tab toggle */}
+        <div className="shrink-0 border-b border-slate-200 bg-white px-5 py-2">
+          <div className="flex items-center gap-4">
+            <div className="inline-flex rounded-xl border border-slate-200 bg-slate-100 p-0.5">
+              <button
+                onClick={() => setActiveTab('tables')}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                  activeTab === 'tables'
+                    ? 'bg-white text-blue-700 shadow-sm'
+                    : 'text-slate-600 hover:bg-white/70'
+                }`}
+              >
+                <Database className="h-3.5 w-3.5" />
+                Tables
+              </button>
+              <button
+                onClick={() => setActiveTab('quality')}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                  activeTab === 'quality'
+                    ? 'bg-white text-blue-700 shadow-sm'
+                    : 'text-slate-600 hover:bg-white/70'
+                }`}
+              >
+                <ShieldCheck className="h-3.5 w-3.5" />
+                Quality
+              </button>
+              <button
+                onClick={() => setActiveTab('model')}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                  activeTab === 'model'
+                    ? 'bg-white text-blue-700 shadow-sm'
+                    : 'text-slate-600 hover:bg-white/70'
+                }`}
+              >
+                <Sigma className="h-3.5 w-3.5" />
+                Model
+              </button>
+            </div>
+          </div>
         </div>
 
         {activeTab === 'model' ? (

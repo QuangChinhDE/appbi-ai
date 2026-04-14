@@ -48,6 +48,7 @@ import {
   type QualityRule,
   type QualityRuleConfig,
   type QualityRuleCreate,
+  type QualityFormat,
   type QualityRun,
   type QualityRuleUpdate,
   type QualitySeverity,
@@ -156,7 +157,7 @@ const SEVERITY_META: Record<QualitySeverity, { label: string; color: string; ico
   error: { label: 'Error', color: 'text-red-500', icon: XCircle },
 };
 
-const FORMAT_OPTIONS = ['email', 'url', 'date', 'datetime', 'phone'];
+const FORMAT_OPTIONS: QualityFormat[] = ['email', 'url', 'date', 'datetime', 'phone'];
 
 // ---------------------------------------------------------------------------
 // Small shared utilities
@@ -308,7 +309,7 @@ function ConfigFields({ ruleType, config, onPatch }: ConfigFieldsProps) {
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-600">Format type</label>
           <select value={config.format ?? ''}
-            onChange={(e) => onPatch({ format: e.target.value || undefined })}
+            onChange={(e) => onPatch({ format: (e.target.value || undefined) as QualityFormat | undefined })}
             className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none">
             <option value="">— select —</option>
             {FORMAT_OPTIONS.map((f) => <option key={f} value={f}>{f}</option>)}
@@ -482,7 +483,7 @@ function RuleEditor({ datasetId, tables, editingRule, defaultTableId, onClose, o
   const isPending = createMutation.isPending || updateMutation.isPending;
 
   return (
-    <div className="flex h-full flex-col bg-white border-l border-gray-200 w-[22rem] shrink-0">
+    <div className="flex h-full w-full flex-col bg-white border-l border-gray-200 md:w-[22rem] md:shrink-0">
       <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-4 py-3">
         <h3 className="text-sm font-semibold text-gray-800">{isEdit ? 'Edit Rule' : 'New Rule'}</h3>
         <button onClick={onClose} className="rounded p-1 hover:bg-gray-100">
@@ -671,26 +672,50 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
   const [showRuns, setShowRuns] = useState(false);
   const [pollingRunId, setPollingRunId] = useState<number | null>(null);
 
-  const { data: summary } = useQualitySummary(datasetId);
-  const { data: allRules = [], refetch: refetchRules } = useQualityRules(datasetId);
-  const { data: runs = [], refetch: refetchRuns } = useQualityRuns(datasetId);
+  const {
+    data: summary,
+    refetch: refetchSummary,
+    isLoading: loadingSummary,
+    error: summaryError,
+  } = useQualitySummary(datasetId);
+  const {
+    data: allRules = [],
+    refetch: refetchRules,
+    isLoading: loadingRules,
+    error: rulesError,
+  } = useQualityRules(datasetId);
+  const {
+    data: runs = [],
+    refetch: refetchRuns,
+    isLoading: loadingRuns,
+    error: runsError,
+  } = useQualityRuns(datasetId);
   const triggerRun = useTriggerQualityRun(datasetId);
   const deleteRule = useDeleteQualityRule(datasetId);
 
   const { data: pollingRun } = useQualityRunPoll(datasetId, pollingRunId, pollingRunId !== null);
 
   useEffect(() => {
+    if (pollingRunId !== null) return;
+    const activeRun = runs.find((run) => run.status === 'queued' || run.status === 'running');
+    if (activeRun) {
+      setPollingRunId(activeRun.id);
+      setShowRuns(true);
+    }
+  }, [runs, pollingRunId]);
+
+  useEffect(() => {
     if (pollingRun && (pollingRun.status === 'completed' || pollingRun.status === 'failed')) {
       setPollingRunId(null);
-      refetchRules();
       refetchRuns();
+      refetchSummary();
       if (pollingRun.status === 'completed') {
         toast.success(`Quality run complete — score: ${pollingRun.score?.toFixed(0) ?? '?'}%`);
       } else {
         toast.error('Quality run failed');
       }
     }
-  }, [pollingRun, refetchRules, refetchRuns]);
+  }, [pollingRun, refetchRules, refetchRuns, refetchSummary]);
 
   const isRunning = pollingRunId !== null || runs[0]?.status === 'running' || runs[0]?.status === 'queued';
 
@@ -731,6 +756,10 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
   }, [filteredRules]);
 
   const latestCompletedRun = runs.find((r) => r.status === 'completed') ?? null;
+  const latestRun = runs[0] ?? null;
+  const latestFailedRun = latestRun?.status === 'failed' ? latestRun : null;
+  const hasPanelError = Boolean(summaryError || rulesError || runsError);
+  const isBootstrapping = !summary && !allRules.length && !runs.length && (loadingSummary || loadingRules || loadingRuns);
 
   const runResultsMap: Record<number, any> = useMemo(() => {
     if (!latestCompletedRun?.results) return {};
@@ -740,14 +769,18 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
   }, [latestCompletedRun]);
 
   return (
-    <div className="flex h-full min-h-0 overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden lg:flex-row">
       {/* Left sidebar */}
-      <aside className="flex w-52 shrink-0 flex-col border-r border-gray-200 bg-gray-50 overflow-hidden">
+      <aside className="flex w-full shrink-0 flex-col overflow-hidden border-b border-gray-200 bg-gray-50 lg:w-52 lg:border-b-0 lg:border-r">
         {/* Score */}
         <div className="border-b border-gray-200 px-3 py-3">
           <div className="flex items-center justify-between mb-1">
             <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide">Quality Score</span>
-            {summary?.score != null ? (
+            {loadingSummary && !summary ? (
+              <span className="inline-flex items-center gap-1 text-xs text-gray-400">
+                <Loader2 className="h-3 w-3 animate-spin" /> Loading...
+              </span>
+            ) : summary?.score != null ? (
               <ScoreBadge score={summary.score} />
             ) : (
               <span className="text-xs text-gray-400">No run yet</span>
@@ -757,6 +790,34 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
             <p className="text-[11px] text-gray-500">
               {summary.enabled_rules} rules · {summary.covered_tables} tables
             </p>
+          )}
+          {latestFailedRun && (
+            <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-2.5 py-2 text-[11px] text-red-700">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <div className="min-w-0">
+                  <p className="font-medium">Latest quality run failed</p>
+                  <p className="mt-0.5 break-words text-red-600">
+                    {latestFailedRun.error_message || 'Open Run History to inspect the failure details.'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowRuns(true)}
+                    className="mt-2 text-[11px] font-medium text-red-700 underline underline-offset-2"
+                  >
+                    Open run history
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {!latestFailedRun && isRunning && (
+            <div className="mt-3 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-2 text-[11px] text-blue-700">
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                A quality run is in progress. Scores will refresh automatically.
+              </div>
+            </div>
           )}
         </div>
 
@@ -777,7 +838,7 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
         )}
 
         {/* Tables */}
-        <div className="flex-1 overflow-y-auto py-1">
+        <div className="flex-1 overflow-y-auto py-1 max-lg:max-h-56">
           <p className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400">Tables</p>
           <button onClick={() => setSelectedTableId(null)}
             className={`flex w-full items-center gap-2 px-3 py-1.5 text-xs transition-colors ${
@@ -868,7 +929,38 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
 
         {/* Rules list */}
         <div className="flex-1 overflow-y-auto">
-          {filteredRules.length === 0 ? (
+          {hasPanelError ? (
+            <div className="mx-4 my-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <p className="font-medium">Could not load quality data</p>
+                  <p className="mt-1 text-red-600">
+                    {(summaryError as Error | undefined)?.message
+                      || (rulesError as Error | undefined)?.message
+                      || (runsError as Error | undefined)?.message
+                      || 'Please retry.'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      refetchSummary();
+                      refetchRules();
+                      refetchRuns();
+                    }}
+                    className="mt-3 inline-flex items-center gap-1.5 rounded border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" /> Retry
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : isBootstrapping || (loadingRules && !allRules.length) ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+              <Loader2 className="h-8 w-8 animate-spin text-gray-300" />
+              <p className="text-sm text-gray-400">Loading quality rules...</p>
+            </div>
+          ) : filteredRules.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
               <ShieldCheck className="h-10 w-10 text-gray-200" />
               <p className="text-sm text-gray-400">No rules defined yet</p>
@@ -947,14 +1039,18 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
 
       {/* Right panel — rule editor */}
       {editorOpen && canEdit && (
-        <RuleEditor
-          datasetId={datasetId}
-          tables={tables}
-          editingRule={editingRule}
-          defaultTableId={selectedTableId ?? undefined}
-          onClose={() => setEditorOpen(false)}
-          onSaved={() => { setEditorOpen(false); refetchRules(); }}
-        />
+        <div className="fixed inset-0 z-40 bg-black/20 lg:contents">
+          <div className="absolute inset-x-0 bottom-0 top-20 lg:static">
+            <RuleEditor
+              datasetId={datasetId}
+              tables={tables}
+              editingRule={editingRule}
+              defaultTableId={selectedTableId ?? undefined}
+              onClose={() => setEditorOpen(false)}
+              onSaved={() => { setEditorOpen(false); }}
+            />
+          </div>
+        </div>
       )}
     </div>
   );

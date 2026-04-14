@@ -33,6 +33,7 @@ from app.models.ai_feedback import AIFeedback
 from app.models.agent_report import AgentReportSpec, AgentReportRun
 from app.models.revoked_token import RevokedToken
 from app.models.audit_log import AuditLog, AuditAction, AuditSeverity
+from app.models.report_template import ReportTemplate
 # Commented out - using hybrid approach with filters_config JSON field instead
 # from app.models.dashboard_filter import DashboardFilter
 
@@ -68,4 +69,5 @@ __all__ = [
     "AuditLog",
     "AuditAction",
     "AuditSeverity",
+    "ReportTemplate",
 ]

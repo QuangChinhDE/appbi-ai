@@ -217,11 +217,21 @@ class ColumnMetadata(BaseModel):
     nullable: bool = True
 
 
+class FilterCondition(BaseModel):
+    """Filter condition"""
+    field: str
+    operator: str = Field(
+        ...,
+        pattern="^(=|!=|>|<|>=|<=|LIKE|IN|eq|neq|gt|gte|lt|lte|like|in|not_in|between|contains|not_contains|starts_with|is_null|is_not_null)$",
+    )
+    value: Any = None
+
+
 class TablePreviewRequest(BaseModel):
     """Request schema for table preview"""
     limit: int = Field(default=100, ge=1, le=1000)
     offset: int = Field(default=0, ge=0)
-    filters: Optional[Dict[str, Any]] = None  # For future filtering
+    filters: Optional[List[FilterCondition]] = None
     sort: Optional[Dict[str, str]] = None  # {'column': 'asc'|'desc'}
 
 
@@ -248,16 +258,6 @@ class AggregationSpec(BaseModel):
     """Aggregation specification"""
     field: str
     function: str = Field(..., pattern="^(sum|avg|count|min|max|count_distinct)$")
-
-
-class FilterCondition(BaseModel):
-    """Filter condition"""
-    field: str
-    operator: str = Field(
-        ...,
-        pattern="^(=|!=|>|<|>=|<=|LIKE|IN|eq|neq|gt|gte|lt|lte|like|in|not_in|between|contains|not_contains|starts_with|is_null|is_not_null)$",
-    )
-    value: Any = None
 
 
 class OrderBySpec(BaseModel):

@@ -259,6 +259,8 @@ export type QualityDimension =
 
 export type QualitySeverity = 'info' | 'warning' | 'error';
 
+export type QualityFormat = 'email' | 'url' | 'date' | 'datetime' | 'phone';
+
 export interface QualityRuleConfig {
   threshold?: number;
   values?: string[];
@@ -266,7 +268,7 @@ export interface QualityRuleConfig {
   flags?: string;
   min?: string | number;
   max?: string | number;
-  format?: string;
+  format?: QualityFormat;
   columns?: string[];
   expression?: string;
   column?: string;
@@ -547,9 +549,59 @@ export function useUpdateTable() {
       );
       return response.data;
     },
-    onSuccess: (_data: DatasetTable, variables: { datasetId: number; tableId: number; input: UpdateTableInput }) => {
-      queryClient.invalidateQueries({ queryKey: datasetKeys.detail(variables.datasetId) });
-      queryClient.invalidateQueries({ queryKey: datasetKeys.tables(variables.datasetId) });
+    onMutate: async (variables: { datasetId: number; tableId: number; input: UpdateTableInput }) => {
+      await queryClient.cancelQueries({ queryKey: datasetKeys.detail(variables.datasetId) });
+      await queryClient.cancelQueries({ queryKey: datasetKeys.tables(variables.datasetId) });
+
+      const previousDetail = queryClient.getQueryData<DatasetWithTables>(
+        datasetKeys.detail(variables.datasetId)
+      );
+      const previousTables = queryClient.getQueryData<DatasetTable[]>(
+        datasetKeys.tables(variables.datasetId)
+      );
+
+      const patchTable = (table: DatasetTable): DatasetTable =>
+        table.id === variables.tableId
+          ? {
+              ...table,
+              ...variables.input,
+              updated_at: new Date().toISOString(),
+            }
+          : table;
+
+      queryClient.setQueryData<DatasetWithTables>(
+        datasetKeys.detail(variables.datasetId),
+        (current) => current ? { ...current, tables: current.tables.map(patchTable) } : current,
+      );
+
+      queryClient.setQueryData<DatasetTable[]>(
+        datasetKeys.tables(variables.datasetId),
+        (current) => current ? current.map(patchTable) : current,
+      );
+
+      return { previousDetail, previousTables };
+    },
+    onError: (_error, variables, context) => {
+      if (context?.previousDetail) {
+        queryClient.setQueryData(datasetKeys.detail(variables.datasetId), context.previousDetail);
+      }
+      if (context?.previousTables) {
+        queryClient.setQueryData(datasetKeys.tables(variables.datasetId), context.previousTables);
+      }
+    },
+    onSuccess: (data: DatasetTable, variables: { datasetId: number; tableId: number; input: UpdateTableInput }) => {
+      queryClient.setQueryData<DatasetWithTables>(
+        datasetKeys.detail(variables.datasetId),
+        (current) => current ? {
+          ...current,
+          tables: current.tables.map((table) => table.id === variables.tableId ? data : table),
+        } : current,
+      );
+      queryClient.setQueryData<DatasetTable[]>(
+        datasetKeys.tables(variables.datasetId),
+        (current) => current ? current.map((table) => table.id === variables.tableId ? data : table) : current,
+      );
+      queryClient.invalidateQueries({ queryKey: datasetKeys.tablePreview(variables.datasetId, variables.tableId) });
     },
   });
 }
@@ -607,8 +659,39 @@ export function useUpdateDatasetDictionary(datasetId: number) {
       );
       return response.data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: datasetKeys.dictionary(datasetId) });
+    onMutate: async (input) => {
+      await queryClient.cancelQueries({ queryKey: datasetKeys.dictionary(datasetId) });
+
+      const previousDictionary = queryClient.getQueryData<DatasetDictionaryResponse>(
+        datasetKeys.dictionary(datasetId)
+      );
+
+      queryClient.setQueryData<DatasetDictionaryResponse>(
+        datasetKeys.dictionary(datasetId),
+        (current) => ({
+          dictionary: input,
+          dictionary_updated_at: current?.dictionary_updated_at ?? new Date().toISOString(),
+          stats: current?.stats ?? {
+            glossary_terms: input.glossary?.length ?? 0,
+            warnings: input.warnings?.length ?? 0,
+            default_filters: input.default_filters?.length ?? 0,
+            table_notes: input.table_notes?.length ?? 0,
+            covered_tables: input.table_notes?.length ?? 0,
+            total_tables: current?.stats?.total_tables ?? 0,
+          },
+          compiled_context: current?.compiled_context ?? '',
+        })
+      );
+
+      return { previousDictionary };
+    },
+    onError: (_error, _input, context) => {
+      if (context?.previousDictionary) {
+        queryClient.setQueryData(datasetKeys.dictionary(datasetId), context.previousDictionary);
+      }
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(datasetKeys.dictionary(datasetId), data);
       queryClient.invalidateQueries({ queryKey: datasetKeys.detail(datasetId) });
       queryClient.invalidateQueries({ queryKey: datasetKeys.lists() });
     },

@@ -166,6 +166,41 @@ export function useUpdateModelView() {
       );
       return response.data;
     },
+    onMutate: async (variables) => {
+      await queryClient.cancelQueries({ queryKey: modelKeys.detail(variables.datasetId) });
+
+      const previousModel = queryClient.getQueryData<DatasetModelResponse>(
+        modelKeys.detail(variables.datasetId)
+      );
+
+      queryClient.setQueryData<DatasetModelResponse>(
+        modelKeys.detail(variables.datasetId),
+        (current) => {
+          if (!current) return current;
+          return {
+            ...current,
+            views: current.views.map((view) =>
+              view.id === variables.viewId
+                ? {
+                    ...view,
+                    ...variables.data,
+                    dimensions: variables.data.dimensions ?? view.dimensions,
+                    measures: variables.data.measures ?? view.measures,
+                    description: variables.data.description ?? view.description,
+                  }
+                : view
+            ),
+          };
+        }
+      );
+
+      return { previousModel };
+    },
+    onError: (_error, variables, context) => {
+      if (context?.previousModel) {
+        queryClient.setQueryData(modelKeys.detail(variables.datasetId), context.previousModel);
+      }
+    },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: modelKeys.detail(variables.datasetId) });
     },
