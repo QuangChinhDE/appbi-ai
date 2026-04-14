@@ -24,9 +24,10 @@ function inferColType(filter: TemplateFilter, tables: any[] | undefined): ColTyp
   const cache = table?.columns_cache;
   if (!cache) return 'text';
 
-  const colDef = Array.isArray(cache)
-    ? cache.find((c: any) => (c.name ?? c) === filter.column)
-    : cache[filter.column];
+  const colList = Array.isArray(cache)
+    ? cache
+    : (cache.columns && Array.isArray(cache.columns) ? cache.columns : []);
+  const colDef = colList.find((c: any) => (c.name ?? c) === filter.column);
 
   const raw = (typeof colDef === 'object' ? colDef?.type : colDef) ?? '';
   const type = String(raw).toLowerCase();

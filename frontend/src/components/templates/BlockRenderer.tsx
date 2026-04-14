@@ -11,14 +11,15 @@ import { ImageBlockRenderer } from './blocks/ImageBlockRenderer';
 
 interface BlockRendererProps {
   block: TemplateBlock;
+  printMode?: boolean;
 }
 
-export function BlockRenderer({ block }: BlockRendererProps) {
+export function BlockRenderer({ block, printMode }: BlockRendererProps) {
   switch (block.type) {
     case 'title':
       return <TitleBlockRenderer config={block.config} />;
     case 'table':
-      return <TableBlockRenderer config={block.config} />;
+      return <TableBlockRenderer config={block.config} printMode={printMode} />;
     case 'signature':
       return <SignatureBlockRenderer config={block.config} />;
     case 'text':

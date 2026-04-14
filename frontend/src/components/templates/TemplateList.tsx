@@ -66,7 +66,7 @@ export function TemplateList({ templates, onDelete, deletingId }: TemplateListPr
                 {tpl.page_size} · {tpl.orientation}
               </td>
               <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
-                {tpl.blocks?.length ?? 0} blocks
+                {Array.isArray(tpl.blocks) ? tpl.blocks.length : 1} blocks
               </td>
               <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
                 {new Date(tpl.updated_at).toLocaleDateString()}

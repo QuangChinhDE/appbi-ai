@@ -3,7 +3,7 @@ API router for report template endpoints.
 """
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -171,15 +171,18 @@ def export_template_excel(
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
-@router.post("/import-excel", response_model=List[Dict[str, Any]])
+@router.post("/import-excel")
 async def import_excel(
     file: UploadFile = File(...),
+    format: str = Query("blocks", regex="^(blocks|sheet)$"),
     _current_user: User = Depends(require_permission("report_templates", "edit")),
 ):
     """
-    Parse an uploaded .xlsx file and return a list of template blocks
-    matching the Excel layout.  The frontend can then use these blocks
-    to populate a new or existing template.
+    Parse an uploaded .xlsx file and return template data.
+
+    Query params:
+      format=blocks  → legacy TemplateBlock[] list (default)
+      format=sheet   → SheetData v2 dict for spreadsheet editor
     """
     # Validate content type
     if file.content_type not in (
@@ -199,9 +202,12 @@ async def import_excel(
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
     try:
-        from app.services.excel_parser import parse_excel_to_blocks
-
-        blocks = parse_excel_to_blocks(contents)
+        if format == "sheet":
+            from app.services.excel_parser import parse_excel_to_sheet
+            return parse_excel_to_sheet(contents)
+        else:
+            from app.services.excel_parser import parse_excel_to_blocks
+            blocks = parse_excel_to_blocks(contents)
     except Exception as exc:
         raise HTTPException(
             status_code=422,

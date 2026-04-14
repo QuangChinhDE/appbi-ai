@@ -57,3 +57,51 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ── Template Print Styles ─────────────────────────────────── */
+
+@media print {
+  /* Page setup */
+  @page {
+    size: A4;
+    margin: 10mm;
+  }
+
+  /* Hide all app chrome: header, sidebar, navigation, buttons */
+  body > *:not(.template-print-host) {
+    /* fallback; main hiding is via print:hidden utility on elements */
+  }
+
+  .template-print-root {
+    background: white !important;
+    padding: 0 !important;
+  }
+
+  .template-print-page {
+    box-shadow: none !important;
+    width: 100% !important;
+    min-height: auto !important;
+    padding: 0 !important;
+  }
+
+  /* Table headers repeat on every printed page */
+  thead {
+    display: table-header-group;
+  }
+
+  /* Avoid breaking inside table rows */
+  tr {
+    break-inside: avoid;
+  }
+
+  /* Avoid breaking inside blocks */
+  .template-print-table-block {
+    break-inside: auto; /* allow tables to span pages */
+  }
+
+  /* Preserve background colors */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+}

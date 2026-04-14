@@ -36,7 +36,8 @@ export function TemplateCardGrid({ templates, onDelete, deletingId }: TemplateCa
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       {templates.map((tpl) => {
-        const blockSummary = (tpl.blocks ?? []).reduce<Record<string, number>>((acc, b) => {
+        const rawBlocks = tpl.blocks;
+        const blockSummary = (Array.isArray(rawBlocks) ? rawBlocks : []).reduce<Record<string, number>>((acc, b) => {
           acc[b.type] = (acc[b.type] || 0) + 1;
           return acc;
         }, {});
@@ -85,7 +86,7 @@ export function TemplateCardGrid({ templates, onDelete, deletingId }: TemplateCa
                   {BLOCK_TYPE_ICONS[type] ?? '?'} {count}
                 </span>
               ))}
-              {(tpl.blocks ?? []).length === 0 && (
+              {(!tpl.blocks || (Array.isArray(tpl.blocks) && tpl.blocks.length === 0)) && (
                 <span className="text-xs text-gray-400">Empty template</span>
               )}
             </div>

@@ -26,6 +26,8 @@ import {
   ChevronRight,
   Copy,
   Database,
+  Eye,
+  Filter,
   Info,
   Loader2,
   Pencil,
@@ -194,17 +196,17 @@ function getColumnOptions(tables: DatasetTable[], tableId: number): string[] {
 // ---------------------------------------------------------------------------
 
 function RuleResultPill({ result }: {
-  result?: { passed?: boolean; skipped?: boolean; error?: boolean; rows_failed?: number | null; rows_checked?: number | null } | null;
+  result?: { passed?: boolean; skipped?: boolean; error?: boolean; rows_failed?: number | null; rows_checked?: number | null; detail?: string | null } | null;
 }) {
   if (!result) return null;
   if (result.skipped)
-    return <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-500">skipped</span>;
+    return <span title={result.detail ?? undefined} className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-500 cursor-help">skipped</span>;
   if (result.error)
-    return <span className="inline-flex items-center gap-0.5 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-600"><XCircle className="h-3 w-3" />error</span>;
+    return <span title={result.detail ?? 'Execution error'} className="inline-flex items-center gap-0.5 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-600 cursor-help"><XCircle className="h-3 w-3" />error</span>;
   if (result.passed)
-    return <span className="inline-flex items-center gap-0.5 rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-medium text-green-700"><CheckCircle2 className="h-3 w-3" />pass</span>;
+    return <span title={result.detail ?? 'All rows passed'} className="inline-flex items-center gap-0.5 rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-medium text-green-700 cursor-help"><CheckCircle2 className="h-3 w-3" />pass</span>;
   const detail = result.rows_failed != null ? `${result.rows_failed} fail` : 'fail';
-  return <span className="inline-flex items-center gap-0.5 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700"><XCircle className="h-3 w-3" />{detail}</span>;
+  return <span title={result.detail ?? undefined} className="inline-flex items-center gap-0.5 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700 cursor-help"><XCircle className="h-3 w-3" />{detail}</span>;
 }
 
 function InlineToggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
@@ -743,6 +745,235 @@ function RuleEditorDrawer({
 }
 
 // ---------------------------------------------------------------------------
+// Rule Execution Log Modal
+// ---------------------------------------------------------------------------
+
+interface RuleLogEntry {
+  ruleId: number;
+  ruleName: string;
+  ruleType: string;
+  dimension: string;
+  tableName: string;
+  columnName?: string | null;
+  result: {
+    passed?: boolean;
+    skipped?: boolean;
+    error?: boolean;
+    rows_checked?: number | null;
+    rows_failed?: number | null;
+    detail?: string | null;
+    sql?: string | null;
+    log?: string[];
+    elapsed_ms?: number;
+  };
+}
+
+function RuleLogModal({
+  entries,
+  initialExpandedId,
+  onClose,
+}: {
+  entries: RuleLogEntry[];
+  initialExpandedId?: number | null;
+  onClose: () => void;
+}) {
+  const [filter, setFilter] = useState<'all' | 'pass' | 'fail' | 'error' | 'skip'>('all');
+  const [expandedId, setExpandedId] = useState<number | null>(initialExpandedId ?? null);
+  const [searchText, setSearchText] = useState('');
+
+  const filtered = useMemo(() => {
+    let list = entries;
+    if (filter === 'pass') list = list.filter((e) => e.result.passed && !e.result.skipped);
+    else if (filter === 'fail') list = list.filter((e) => !e.result.passed && !e.result.skipped && !e.result.error);
+    else if (filter === 'error') list = list.filter((e) => e.result.error);
+    else if (filter === 'skip') list = list.filter((e) => e.result.skipped);
+    if (searchText.trim()) {
+      const q = searchText.toLowerCase();
+      list = list.filter((e) =>
+        e.ruleName.toLowerCase().includes(q) ||
+        e.ruleType.toLowerCase().includes(q) ||
+        e.dimension.toLowerCase().includes(q) ||
+        e.tableName.toLowerCase().includes(q) ||
+        (e.columnName || '').toLowerCase().includes(q) ||
+        (e.result.detail || '').toLowerCase().includes(q) ||
+        (e.result.sql || '').toLowerCase().includes(q) ||
+        (e.result.log || []).some((l) => l.toLowerCase().includes(q))
+      );
+    }
+    return list;
+  }, [entries, filter, searchText]);
+
+  const counts = useMemo(() => {
+    const pass = entries.filter((e) => e.result.passed && !e.result.skipped).length;
+    const fail = entries.filter((e) => !e.result.passed && !e.result.skipped && !e.result.error).length;
+    const error = entries.filter((e) => e.result.error).length;
+    const skip = entries.filter((e) => e.result.skipped).length;
+    return { pass, fail, error, skip, all: entries.length };
+  }, [entries]);
+
+  function statusLabel(r: RuleLogEntry['result']) {
+    if (r.skipped) return { text: 'SKIP', cls: 'bg-gray-100 text-gray-500' };
+    if (r.error) return { text: 'ERROR', cls: 'bg-red-100 text-red-600' };
+    if (r.passed) return { text: 'PASS', cls: 'bg-green-100 text-green-700' };
+    return { text: 'FAIL', cls: 'bg-red-100 text-red-700' };
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
+      <div className="fixed inset-4 z-50 flex items-center justify-center" onClick={onClose}>
+        <div
+          className="w-[900px] h-[600px] bg-white rounded-2xl shadow-2xl border border-gray-200 flex flex-col overflow-hidden"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* ── Header ── */}
+          <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-5 py-3.5">
+            <div className="flex items-center gap-2">
+              <Eye className="h-5 w-5 text-blue-600" />
+              <h2 className="text-base font-semibold text-gray-900">Quality Run Log</h2>
+              <span className="text-xs text-gray-400">{entries.length} rules</span>
+            </div>
+            <button onClick={onClose} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          {/* ── Filter bar ── */}
+          <div className="flex items-center gap-2 border-b border-gray-100 px-5 py-2.5 bg-gray-50 flex-wrap">
+            {/* Status filters */}
+            {([
+              ['all', `All (${counts.all})`, ''],
+              ['pass', `Pass (${counts.pass})`, 'text-green-700'],
+              ['fail', `Fail (${counts.fail})`, 'text-red-700'],
+              ['error', `Error (${counts.error})`, 'text-orange-600'],
+              ['skip', `Skip (${counts.skip})`, 'text-gray-500'],
+            ] as [typeof filter, string, string][]).map(([key, label, clr]) => (
+              <button
+                key={key}
+                onClick={() => setFilter(key)}
+                className={`rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors ${
+                  filter === key
+                    ? 'border-blue-500 bg-blue-50 text-blue-700'
+                    : `border-gray-200 ${clr || 'text-gray-500'} hover:border-gray-300 hover:bg-white`
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+            <div className="flex-1" />
+            {/* Search */}
+            <div className="relative">
+              <Filter className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-gray-400" />
+              <input
+                type="text"
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+                placeholder="Search logs…"
+                className="w-48 rounded-lg border border-gray-200 bg-white py-1 pl-7 pr-2 text-xs focus:border-blue-400 focus:outline-none"
+              />
+            </div>
+          </div>
+
+          {/* ── Log entries ── */}
+          <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
+            {filtered.length === 0 ? (
+              <div className="flex items-center justify-center py-12 text-sm text-gray-400">
+                No matching rules
+              </div>
+            ) : filtered.map((entry) => {
+              const st = statusLabel(entry.result);
+              const isExpanded = expandedId === entry.ruleId;
+              const logLines = entry.result.log ?? [];
+              return (
+                <div key={entry.ruleId}>
+                  {/* Rule summary row */}
+                  <button
+                    onClick={() => setExpandedId(isExpanded ? null : entry.ruleId)}
+                    className="w-full flex items-center gap-3 px-5 py-2.5 text-left hover:bg-gray-50 transition-colors"
+                  >
+                    {isExpanded
+                      ? <ChevronDown className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                      : <ChevronRight className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                    }
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide shrink-0 ${st.cls}`}>
+                      {st.text}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm font-medium text-gray-800 truncate block">{entry.ruleName}</span>
+                      <span className="text-xs text-gray-400">
+                        {entry.tableName}
+                        {entry.columnName ? ` › ${entry.columnName}` : ''}
+                        {' · '}
+                        <span className="font-mono">{entry.ruleType}</span>
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0 text-xs text-gray-400">
+                      {entry.result.rows_checked != null && (
+                        <span>checked: <strong className="text-gray-600">{entry.result.rows_checked}</strong></span>
+                      )}
+                      {entry.result.rows_failed != null && entry.result.rows_failed > 0 && (
+                        <span>failed: <strong className="text-red-600">{entry.result.rows_failed}</strong></span>
+                      )}
+                      {entry.result.elapsed_ms != null && (
+                        <span className="tabular-nums">{entry.result.elapsed_ms}ms</span>
+                      )}
+                    </div>
+                  </button>
+
+                  {/* Expanded detail */}
+                  {isExpanded && (
+                    <div className="bg-gray-50 border-t border-gray-100 px-5 py-3 space-y-3">
+                      {/* Detail message */}
+                      {entry.result.detail && (
+                        <div className="flex items-start gap-2">
+                          <span className="text-[10px] font-bold uppercase text-gray-400 shrink-0 w-12 pt-0.5">Detail</span>
+                          <p className="text-xs text-gray-700">{entry.result.detail}</p>
+                        </div>
+                      )}
+                      {/* SQL */}
+                      {entry.result.sql && (
+                        <div className="flex items-start gap-2">
+                          <span className="text-[10px] font-bold uppercase text-gray-400 shrink-0 w-12 pt-0.5">SQL</span>
+                          <pre className="flex-1 rounded-lg bg-gray-900 text-green-300 text-xs p-3 overflow-x-auto font-mono leading-relaxed whitespace-pre-wrap break-all">
+                            {entry.result.sql}
+                          </pre>
+                        </div>
+                      )}
+                      {/* Execution log */}
+                      {logLines.length > 0 && (
+                        <div className="flex items-start gap-2">
+                          <span className="text-[10px] font-bold uppercase text-gray-400 shrink-0 w-12 pt-0.5">Log</span>
+                          <div className="flex-1 rounded-lg bg-gray-900 text-gray-300 text-xs p-3 overflow-x-auto font-mono leading-relaxed max-h-60 overflow-y-auto">
+                            {logLines.map((line, i) => {
+                              const isErr = /error|fail|exception/i.test(line);
+                              const isPass = /^.+\]\s*PASS/i.test(line);
+                              return (
+                                <div
+                                  key={i}
+                                  className={`whitespace-pre-wrap break-all ${
+                                    isErr ? 'text-red-400' : isPass ? 'text-green-400' : ''
+                                  }`}
+                                >
+                                  {line}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Dimension Group
 // ---------------------------------------------------------------------------
 
@@ -758,12 +989,13 @@ interface DimensionGroupProps {
   onToggleRule: (rule: QualityRule) => void;
   onDeleteRule: (rule: QualityRule) => void;
   onDuplicateRule: (rule: QualityRule) => void;
+  onViewLog: (rule: QualityRule) => void;
   togglingIds: Set<number>;
 }
 
 function DimensionGroup({
   dimKey, rules, tables, runResultsMap, canEdit, isRunning,
-  onAddRule, onEditRule, onToggleRule, onDeleteRule, onDuplicateRule, togglingIds,
+  onAddRule, onEditRule, onToggleRule, onDeleteRule, onDuplicateRule, onViewLog, togglingIds,
 }: DimensionGroupProps) {
   const [collapsed, setCollapsed] = useState(false);
   const def = dimDef(dimKey);
@@ -889,8 +1121,19 @@ function DimensionGroup({
                     </div>
                   </div>
 
-                  {/* Last run result */}
-                  <RuleResultPill result={result} />
+                  {/* Last run result + view log */}
+                  <div className="flex items-center gap-1 shrink-0">
+                    <RuleResultPill result={result} />
+                    {result && (
+                      <button
+                        onClick={() => onViewLog(rule)}
+                        className="rounded p-1 text-gray-300 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+                        title="View execution log"
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
 
                   {/* Actions */}
                   <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1037,6 +1280,8 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
   const [duplicatingRule, setDuplicatingRule]   = useState<QualityRule | null>(null);
   const [deletingRule, setDeletingRule]         = useState<QualityRule | null>(null);
   const [togglingIds, setTogglingIds]           = useState<Set<number>>(new Set());
+  const [logModalOpen, setLogModalOpen]         = useState(false);
+  const [logFocusRuleId, setLogFocusRuleId]     = useState<number | null>(null);
 
   // Run state
   const [pollingRunId, setPollingRunId] = useState<number | null>(null);
@@ -1154,6 +1399,33 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
     }
     return counts;
   }, [allRules, tableFilter]);
+
+  // Build log entries for the modal
+  const logEntries: RuleLogEntry[] = useMemo(() => {
+    return allRules
+      .filter((r) => r.id in runResultsMap)
+      .map((r) => ({
+        ruleId: r.id,
+        ruleName: r.name,
+        ruleType: r.rule_type,
+        dimension: r.dimension,
+        tableName: tables.find((t) => t.id === r.table_id)?.display_name
+          ?? tables.find((t) => t.id === r.table_id)?.source_table_name
+          ?? '',
+        columnName: r.column_name,
+        result: runResultsMap[r.id],
+      }));
+  }, [allRules, runResultsMap, tables]);
+
+  function handleViewLog(rule: QualityRule) {
+    setLogFocusRuleId(rule.id);
+    setLogModalOpen(true);
+  }
+
+  function handleOpenAllLogs() {
+    setLogFocusRuleId(null);
+    setLogModalOpen(true);
+  }
 
   // Open editor for new rule
   function openNewRule(dim?: QualityDimension) {
@@ -1322,138 +1594,123 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
         </div>
       )}
 
-      {/* ── Summary Dashboard ── */}
+      {/* ── Summary Bar ── */}
       {(overallScore !== null || runStats || dimBreakdown.length > 0 || allRules.length > 0) && (
-        <div className="shrink-0 border-b border-gray-100 bg-gray-50 px-4 py-3">
-          <div className="flex items-start gap-3">
+        <div className="shrink-0 border-b border-gray-100 bg-gray-50/80 px-4 py-2">
+          <div className="flex items-center gap-3">
 
-            {/* ── Left: Score + stat pills ── */}
-            <div className="flex items-center gap-2 flex-wrap flex-1">
-
-              {/* Score ring card */}
-              {overallScore !== null ? (
-                <div className={`flex items-center gap-3 rounded-xl border px-4 py-2.5 ${
-                  overallScore >= 90
-                    ? 'border-green-200 bg-green-50'
-                    : overallScore >= 70
-                    ? 'border-yellow-200 bg-yellow-50'
-                    : 'border-red-200 bg-red-50'
-                }`}>
-                  {/* Mini ring */}
-                  <div className="relative h-10 w-10 shrink-0">
-                    <svg viewBox="0 0 36 36" className="h-10 w-10 -rotate-90">
-                      <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor"
-                        className={overallScore >= 90 ? 'text-green-100' : overallScore >= 70 ? 'text-yellow-100' : 'text-red-100'}
-                        strokeWidth="3.5" />
-                      <circle cx="18" cy="18" r="15" fill="none"
-                        stroke={overallScore >= 90 ? '#16a34a' : overallScore >= 70 ? '#ca8a04' : '#dc2626'}
-                        strokeWidth="3.5"
-                        strokeDasharray={`${(overallScore / 100) * 94.25} 94.25`}
-                        strokeLinecap="round" />
-                    </svg>
-                    <span className={`absolute inset-0 flex items-center justify-center text-[10px] font-bold ${
-                      overallScore >= 90 ? 'text-green-700' : overallScore >= 70 ? 'text-yellow-700' : 'text-red-700'
-                    }`}>
-                      {overallScore.toFixed(0)}
-                    </span>
-                  </div>
-                  <div>
-                    <p className={`text-lg font-bold leading-none ${
-                      overallScore >= 90 ? 'text-green-700' : overallScore >= 70 ? 'text-yellow-700' : 'text-red-700'
-                    }`}>{overallScore.toFixed(0)}%</p>
-                    <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wide mt-0.5">Quality Score</p>
-                  </div>
+            {/* ── Score ── */}
+            {overallScore !== null ? (
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="relative h-8 w-8 shrink-0">
+                  <svg viewBox="0 0 36 36" className="h-8 w-8 -rotate-90">
+                    <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor"
+                      className={overallScore >= 90 ? 'text-green-100' : overallScore >= 70 ? 'text-yellow-100' : 'text-red-100'}
+                      strokeWidth="3.5" />
+                    <circle cx="18" cy="18" r="15" fill="none"
+                      stroke={overallScore >= 90 ? '#16a34a' : overallScore >= 70 ? '#ca8a04' : '#dc2626'}
+                      strokeWidth="3.5"
+                      strokeDasharray={`${(overallScore / 100) * 94.25} 94.25`}
+                      strokeLinecap="round" />
+                  </svg>
                 </div>
-              ) : (
-                /* No run yet — placeholder */
-                <div className="flex items-center gap-3 rounded-xl border border-dashed border-gray-200 bg-white px-4 py-2.5">
-                  <div className="h-10 w-10 rounded-full border-2 border-dashed border-gray-200 flex items-center justify-center shrink-0">
-                    <ShieldCheck className="h-4 w-4 text-gray-300" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-gray-400">No run yet</p>
-                    <p className="text-[10px] text-gray-300 mt-0.5">Run checks to see score</p>
-                  </div>
-                </div>
-              )}
+                <span className={`text-sm font-bold ${
+                  overallScore >= 90 ? 'text-green-700' : overallScore >= 70 ? 'text-yellow-700' : 'text-red-700'
+                }`}>{overallScore.toFixed(0)}%</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 shrink-0">
+                <ShieldCheck className="h-4 w-4 text-gray-300" />
+                <span className="text-xs text-gray-400">No run</span>
+              </div>
+            )}
 
-              {/* Stat pills: Pass / Fail / Error / Skip */}
-              {runStats && (
-                <div className="flex items-center gap-1.5">
-                  <div className="flex items-center gap-1.5 rounded-lg border border-green-200 bg-white px-3 py-2">
-                    <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0" />
-                    <span className="text-sm font-bold text-green-700">{runStats.pass}</span>
-                    <span className="text-[10px] text-green-500 font-medium uppercase tracking-wide">Pass</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-2">
-                    <XCircle className="h-3.5 w-3.5 text-red-400 shrink-0" />
-                    <span className="text-sm font-bold text-red-600">{runStats.fail}</span>
-                    <span className="text-[10px] text-red-400 font-medium uppercase tracking-wide">Fail</span>
-                  </div>
-                  {runStats.error > 0 && (
-                    <div className="flex items-center gap-1.5 rounded-lg border border-orange-200 bg-white px-3 py-2">
-                      <AlertTriangle className="h-3.5 w-3.5 text-orange-400 shrink-0" />
-                      <span className="text-sm font-bold text-orange-600">{runStats.error}</span>
-                      <span className="text-[10px] text-orange-400 font-medium uppercase tracking-wide">Error</span>
-                    </div>
-                  )}
-                  {runStats.skipped > 0 && (
-                    <div className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2">
-                      <Info className="h-3.5 w-3.5 text-gray-300 shrink-0" />
-                      <span className="text-sm font-bold text-gray-500">{runStats.skipped}</span>
-                      <span className="text-[10px] text-gray-400 font-medium uppercase tracking-wide">Skip</span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+            {/* ── Divider ── */}
+            {runStats && <div className="h-4 w-px bg-gray-200 shrink-0" />}
 
-            {/* ── Right: Per-dimension health strip ── */}
+            {/* ── Stat counts (inline text) ── */}
+            {runStats && (
+              <div className="flex items-center gap-2.5 text-xs shrink-0">
+                <span className="flex items-center gap-1">
+                  <CheckCircle2 className="h-3 w-3 text-green-500" />
+                  <span className="font-semibold text-green-700">{runStats.pass}</span>
+                  <span className="text-gray-400">pass</span>
+                </span>
+                <span className="flex items-center gap-1">
+                  <XCircle className="h-3 w-3 text-red-400" />
+                  <span className="font-semibold text-red-600">{runStats.fail}</span>
+                  <span className="text-gray-400">fail</span>
+                </span>
+                {runStats.error > 0 && (
+                  <span className="flex items-center gap-1">
+                    <AlertTriangle className="h-3 w-3 text-orange-400" />
+                    <span className="font-semibold text-orange-600">{runStats.error}</span>
+                    <span className="text-gray-400">error</span>
+                  </span>
+                )}
+                {runStats.skipped > 0 && (
+                  <span className="flex items-center gap-1">
+                    <Info className="h-3 w-3 text-gray-300" />
+                    <span className="font-semibold text-gray-500">{runStats.skipped}</span>
+                    <span className="text-gray-400">skip</span>
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* ── Divider ── */}
+            {dimBreakdown.length > 0 && <div className="h-4 w-px bg-gray-200 shrink-0" />}
+
+            {/* ── Dimension chips (horizontal) ── */}
             {dimBreakdown.length > 0 && (
-              <div className="flex flex-col gap-1 shrink-0 min-w-[160px]">
+              <div className="flex items-center gap-1 flex-wrap flex-1 min-w-0">
                 {dimBreakdown.map((dim) => {
                   const meta = DQ_DIMENSIONS.find((d) => d.key === dim.dimension);
                   const total = dim.enabled;
                   if (total === 0) return null;
                   const passed = dim.passed ?? 0;
-                  const failed = dim.failed ?? 0;
                   const pct = total > 0 ? Math.round((passed / total) * 100) : 0;
-                  const healthy = failed === 0;
+                  const healthy = pct === 100;
                   const active = dimFilter === dim.dimension;
                   return (
                     <button
                       key={dim.dimension}
                       onClick={() => setDimFilter(active ? 'all' : dim.dimension as QualityDimension)}
-                      title={`${passed}/${total} rules passed`}
-                      className={`flex items-center gap-2 rounded-lg px-2.5 py-1 text-left transition-colors ${
+                      title={`${meta?.label ?? dim.dimension}: ${passed}/${total} passed`}
+                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors ${
                         active
-                          ? `${meta?.bg ?? 'bg-gray-100'} ${meta?.border ?? 'border-gray-200'} border`
-                          : 'hover:bg-gray-100'
+                          ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-300'
+                          : healthy
+                          ? 'text-green-700 bg-green-50/60 hover:bg-green-50'
+                          : 'text-red-600 bg-red-50/60 hover:bg-red-50'
                       }`}
                     >
-                      <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${healthy ? 'bg-green-500' : 'bg-red-400'}`} />
-                      <span className="text-[11px] text-gray-600 font-medium flex-1 truncate">{meta?.label ?? dim.dimension}</span>
-                      {/* Mini progress bar */}
-                      <div className="h-1 w-16 rounded-full bg-gray-100 overflow-hidden shrink-0">
-                        <div
-                          className={`h-full rounded-full ${healthy ? 'bg-green-400' : 'bg-red-400'}`}
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                      <span className={`text-[10px] font-semibold w-7 text-right shrink-0 ${healthy ? 'text-green-600' : 'text-red-500'}`}>
-                        {pct}%
-                      </span>
+                      <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${active ? 'bg-blue-500' : healthy ? 'bg-green-500' : 'bg-red-400'}`} />
+                      <span className="truncate">{meta?.label ?? dim.dimension}</span>
+                      <span className={`tabular-nums ${active ? 'text-blue-500' : healthy ? 'text-green-500' : 'text-red-400'}`}>{pct}%</span>
                     </button>
                   );
                 })}
               </div>
             )}
 
-            {/* No-run hint for dim breakdown */}
+            {/* ── Logs button ── */}
+            {logEntries.length > 0 && (
+              <button
+                onClick={handleOpenAllLogs}
+                className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-500 hover:bg-gray-50 hover:border-gray-300 transition-colors shrink-0"
+                title="View execution logs"
+              >
+                <Eye className="h-3 w-3" />
+                Logs
+              </button>
+            )}
+
+            {/* No-run hint */}
             {overallScore === null && !runStats && dimBreakdown.length === 0 && allRules.length > 0 && (
               <div className="flex items-center gap-1.5 text-xs text-gray-400">
                 <Info className="h-3.5 w-3.5" />
-                Run checks to see quality scores
+                Run checks to see scores
               </div>
             )}
           </div>
@@ -1532,6 +1789,7 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
                   onToggleRule={handleToggleRule}
                   onDeleteRule={setDeletingRule}
                   onDuplicateRule={setDuplicatingRule}
+                  onViewLog={handleViewLog}
                   togglingIds={togglingIds}
                 />
               );
@@ -1572,6 +1830,15 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
           onConfirm={handleDeleteConfirm}
           onCancel={() => setDeletingRule(null)}
           isPending={deleteMutation.isPending}
+        />
+      )}
+
+      {/* ── Rule Log Modal ── */}
+      {logModalOpen && logEntries.length > 0 && (
+        <RuleLogModal
+          entries={logEntries}
+          initialExpandedId={logFocusRuleId}
+          onClose={() => { setLogModalOpen(false); setLogFocusRuleId(null); }}
         />
       )}
     </div>

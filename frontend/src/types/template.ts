@@ -57,6 +57,23 @@ export interface TableRowDef {
   isHeader?: boolean;
 }
 
+/* ── Dataset-level data source binding ─────────────────────── */
+
+export interface TableDataSourceColumn {
+  column: string;           // actual DB column name
+  label: string;            // display header label
+  width?: number;           // optional column width (px)
+  align?: 'left' | 'center' | 'right';
+}
+
+export interface TableDataSource {
+  datasetId: number;
+  tableId: number;
+  datasetName?: string;     // for display
+  tableName?: string;       // for display
+  columns: TableDataSourceColumn[];
+}
+
 export interface TableConfig {
   heading?: string;
   showBorder?: boolean;
@@ -64,6 +81,7 @@ export interface TableConfig {
   columnWidths?: number[];  // px per column (auto if omitted)
   rowHeights?: number[];    // px per row (auto if omitted)
   rows: TableRowDef[];
+  dataSource?: TableDataSource;  // block-level dataset binding
 }
 
 /* ── Block ─────────────────────────────────────────────────── */
@@ -95,7 +113,7 @@ export interface ReportTemplate {
   description?: string;
   page_size: string;
   orientation: string;
-  blocks: TemplateBlock[];
+  blocks: TemplateBlock[] | SheetData;
   filters?: TemplateFilter[];
   owner_id?: string;
   owner_email?: string;
@@ -109,7 +127,7 @@ export interface ReportTemplateCreate {
   description?: string;
   page_size?: string;
   orientation?: string;
-  blocks?: TemplateBlock[];
+  blocks?: TemplateBlock[] | SheetData;
   filters?: TemplateFilter[];
 }
 
@@ -118,7 +136,7 @@ export interface ReportTemplateUpdate {
   description?: string;
   page_size?: string;
   orientation?: string;
-  blocks?: TemplateBlock[];
+  blocks?: TemplateBlock[] | SheetData;
   filters?: TemplateFilter[];
 }
 
@@ -131,6 +149,52 @@ export const PAGE_SIZES: Record<string, { width: number; height: number }> = {
 };
 
 export const PAGE_MARGIN = 24;
+
+/* ── Spreadsheet types (v2 format) ─────────────────────────── */
+
+export interface SpreadsheetCell {
+  value: CellValue;
+  bold?: boolean;
+  italic?: boolean;
+  align?: 'left' | 'center' | 'right';
+  bg?: string;
+  fontSize?: number;
+}
+
+export interface MergeRange {
+  r1: number;
+  c1: number;
+  r2: number;
+  c2: number;
+}
+
+export interface SheetData {
+  version: 2;
+  colCount: number;
+  rowCount: number;
+  colWidths: number[];
+  rowHeights: number[];
+  cells: Record<string, SpreadsheetCell>;
+  merges: MergeRange[];
+}
+
+export function isSheetData(data: unknown): data is SheetData {
+  return !!data && typeof data === 'object' && !Array.isArray(data) && (data as any).version === 2;
+}
+
+export function createDefaultSheet(_pageSize = 'A4', _orientation = 'portrait'): SheetData {
+  const colCount = 26;
+  const rowCount = 100;
+  return {
+    version: 2,
+    colCount,
+    rowCount,
+    colWidths: Array(colCount).fill(100),
+    rowHeights: Array(rowCount).fill(28),
+    cells: {},
+    merges: [],
+  };
+}
 
 /* ── Helpers ───────────────────────────────────────────────── */
 

@@ -2,14 +2,53 @@
 
 import React from 'react';
 import { Database } from 'lucide-react';
-import type { TableConfig, TableCellDef, CellValue } from '@/types/template';
+import type { TableConfig, TableCellDef, TableRowDef, CellValue } from '@/types/template';
 import { isDataField, isFormula, cellDisplayText } from '@/types/template';
+
+/* ── Helper: render cells for a single row ─────────────────── */
+
+function renderRowCells(row: TableRowDef, showBorder: boolean) {
+  return row.cells.map((cell, ci) => {
+    if (cell.hidden) return null;
+
+    // Skip merged-away cells
+    if (ci > 0) {
+      let skip = false;
+      for (let prev = 0; prev < ci; prev++) {
+        if (row.cells[prev].hidden) continue;
+        const prevSpan = row.cells[prev].colSpan ?? 1;
+        if (prev + prevSpan > ci) { skip = true; break; }
+      }
+      if (skip) return null;
+    }
+
+    const span = cell.colSpan ?? 1;
+    const Tag = row.isHeader ? 'th' : 'td';
+
+    return (
+      <Tag
+        key={ci}
+        colSpan={span > 1 ? span : undefined}
+        rowSpan={cell.rowSpan && cell.rowSpan > 1 ? cell.rowSpan : undefined}
+        className={`px-2 py-1 break-words ${showBorder ? 'border border-gray-300' : ''}
+          ${cell.bold || row.isHeader ? 'font-semibold' : ''}
+          ${cell.align === 'center' ? 'text-center' : cell.align === 'right' ? 'text-right' : 'text-left'}
+          ${row.isHeader ? 'text-gray-700' : 'text-gray-800'}
+        `}
+        style={{ backgroundColor: cell.bg || undefined }}
+      >
+        <CellValueDisplay value={cell.value} />
+      </Tag>
+    );
+  });
+}
 
 interface TableBlockRendererProps {
   config: Record<string, any>;
+  printMode?: boolean;
 }
 
-export function TableBlockRenderer({ config }: TableBlockRendererProps) {
+export function TableBlockRenderer({ config, printMode }: TableBlockRendererProps) {
   const heading = config.heading || '';
   const showBorder = config.showBorder !== false;
   const tbl = config as Partial<TableConfig>;
@@ -21,7 +60,7 @@ export function TableBlockRenderer({ config }: TableBlockRendererProps) {
     const totalColWidth = colWidths?.reduce((sum, width) => sum + width, 0) ?? 0;
 
     return (
-      <div className="h-full overflow-y-auto overflow-x-hidden px-1 py-1">
+      <div className={printMode ? 'px-1 py-1' : 'h-full overflow-y-auto overflow-x-hidden px-1 py-1'}>
         {heading && <p className="mb-1 text-xs font-semibold text-gray-700">{heading}</p>}
         <table
           className={`w-full text-xs border-collapse ${showBorder ? 'border border-gray-300' : ''}`}
@@ -37,46 +76,31 @@ export function TableBlockRenderer({ config }: TableBlockRendererProps) {
               ))}
             </colgroup>
           )}
+          {/* Separate header rows into <thead> so they repeat on each printed page */}
+          {tbl.rows.some((r) => r.isHeader) && (
+            <thead>
+              {tbl.rows.filter((r) => r.isHeader).map((row, ri) => (
+                <tr
+                  key={`h-${ri}`}
+                  className="bg-gray-100"
+                  style={rowHeights?.[ri] ? { height: rowHeights[ri] } : undefined}
+                >
+                  {renderRowCells(row, showBorder)}
+                </tr>
+              ))}
+            </thead>
+          )}
           <tbody>
-            {tbl.rows.map((row, ri) => (
+            {tbl.rows.filter((r) => !r.isHeader).map((row, ri) => (
               <tr
                 key={ri}
-                className={row.isHeader ? 'bg-gray-100' : ri % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}
-                style={rowHeights?.[ri] ? { height: rowHeights[ri] } : undefined}
+                className={ri % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}
+                style={{
+                  ...(rowHeights?.[ri] ? { height: rowHeights[ri] } : {}),
+                  breakInside: 'avoid',
+                }}
               >
-                {row.cells.map((cell, ci) => {
-                  if (cell.hidden) return null;
-
-                  // Skip merged-away cells
-                  if (ci > 0) {
-                    let skip = false;
-                    for (let prev = 0; prev < ci; prev++) {
-                      if (row.cells[prev].hidden) continue;
-                      const prevSpan = row.cells[prev].colSpan ?? 1;
-                      if (prev + prevSpan > ci) { skip = true; break; }
-                    }
-                    if (skip) return null;
-                  }
-
-                  const span = cell.colSpan ?? 1;
-                  const Tag = row.isHeader ? 'th' : 'td';
-
-                  return (
-                    <Tag
-                      key={ci}
-                      colSpan={span > 1 ? span : undefined}
-                      rowSpan={cell.rowSpan && cell.rowSpan > 1 ? cell.rowSpan : undefined}
-                      className={`px-2 py-1 break-words ${showBorder ? 'border border-gray-300' : ''}
-                        ${cell.bold || row.isHeader ? 'font-semibold' : ''}
-                        ${cell.align === 'center' ? 'text-center' : cell.align === 'right' ? 'text-right' : 'text-left'}
-                        ${row.isHeader ? 'text-gray-700' : 'text-gray-800'}
-                      `}
-                      style={{ backgroundColor: cell.bg || undefined }}
-                    >
-                      <CellValueDisplay value={cell.value} />
-                    </Tag>
-                  );
-                })}
+                {renderRowCells(row, showBorder)}
               </tr>
             ))}
           </tbody>

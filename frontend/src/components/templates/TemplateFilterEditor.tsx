@@ -47,11 +47,16 @@ export function TemplateFilterEditor({
   );
 
   const selectedTable = tables?.find((t) => t.id === draftTableId);
-  const columns: string[] = selectedTable?.columns_cache
-    ? Array.isArray(selectedTable.columns_cache)
-      ? selectedTable.columns_cache.map((c: any) => c.name ?? c)
-      : Object.keys(selectedTable.columns_cache)
-    : [];
+  const columns: string[] = (() => {
+    const cc = selectedTable?.columns_cache;
+    if (!cc) return [];
+    if (Array.isArray(cc)) return cc.map((c: any) => c.name ?? c);
+    if (cc.columns && Array.isArray(cc.columns))
+      return cc.columns.map((c: any) => c.name ?? c).filter(Boolean);
+    if (cc.source_columns && Array.isArray(cc.source_columns))
+      return cc.source_columns.map(String);
+    return [];
+  })();
 
   const resetDraft = () => {
     setAddStep('idle');

@@ -1,11 +1,11 @@
 'use client';
 
 import React, { useState } from 'react';
-import { X, Database, RefreshCw } from 'lucide-react';
-import type { TemplateBlock, CellValue, DataFieldBinding, TableConfig } from '@/types/template';
+import { X, Database, Unlink } from 'lucide-react';
+import type { TemplateBlock, CellValue, DataFieldBinding, TableConfig, TableDataSource } from '@/types/template';
 import { isDataField } from '@/types/template';
-import { getRepeatingRowSource } from '@/lib/templateUtils';
 import { DataFieldPicker } from './DataFieldPicker';
+import { TableDataSourcePicker } from './TableDataSourcePicker';
 
 interface BlockSettingsProps {
   block: TemplateBlock;
@@ -99,26 +99,53 @@ export function BlockSettings({ block, onChange, onClose }: BlockSettingsProps) 
           </>
         )}
 
-        {/* ── Table block — binding summary ───────────────────── */}
+        {/* ── Table block — data source + binding summary ────── */}
         {block.type === 'table' && (() => {
           const tableCfg = block.config as Partial<TableConfig>;
-          const allCells = tableCfg.rows?.flatMap((r) => r.cells) ?? [];
-          const boundCells = allCells.filter((c) => isDataField(c.value as CellValue));
-          const boundCount = boundCells.length;
+          const currentDataSource = tableCfg.dataSource as TableDataSource | undefined;
 
-          const repeatRowCount = tableCfg.rows?.filter((r) =>
-            !r.isHeader && getRepeatingRowSource(r) !== null,
-          ).length ?? 0;
+          const handleDataSourceApply = (source: TableDataSource, generatedConfig: Partial<TableConfig>) => {
+            onChange({
+              ...block,
+              config: {
+                ...cfg,
+                ...generatedConfig,
+                heading: cfg.heading || '',  // preserve heading
+              },
+            });
+          };
 
-          const sources = [...new Set(
-            boundCells.map((c) => {
-              const b = c.value as DataFieldBinding;
-              return `${b.datasetId}:${b.tableId}`;
-            }),
-          )];
+          const handleDisconnect = () => {
+            const { dataSource: _, ...rest } = cfg;
+            onChange({ ...block, config: rest });
+          };
 
           return (
             <>
+              {/* Data Source — inline picker */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-blue-500 flex items-center gap-1">
+                    <Database className="h-3 w-3" />
+                    Data Source
+                  </p>
+                  {currentDataSource && (
+                    <button
+                      onClick={handleDisconnect}
+                      className="inline-flex items-center gap-1 text-[10px] text-gray-400 hover:text-red-500 transition-colors"
+                    >
+                      <Unlink className="h-2.5 w-2.5" />
+                      Disconnect
+                    </button>
+                  )}
+                </div>
+
+                <TableDataSourcePicker
+                  current={currentDataSource}
+                  onApply={handleDataSourceApply}
+                />
+              </div>
+
               <label className="block">
                 <span className="text-gray-600">Table heading</span>
                 <input type="text" value={cfg.heading ?? ''} onChange={(e) => updateConfig({ heading: e.target.value })}
@@ -130,31 +157,6 @@ export function BlockSettings({ block, onChange, onClose }: BlockSettingsProps) 
                   className="rounded border-gray-300" />
                 <span className="text-gray-600">Show borders</span>
               </label>
-
-              {/* Data binding summary */}
-              <div className="rounded-md border border-gray-200 bg-gray-50 p-2.5 space-y-1">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 mb-1.5">Data bindings</p>
-                {boundCount === 0 ? (
-                  <p className="text-xs text-gray-400 italic">No data bindings yet — select a cell in the table editor below and click "Data"</p>
-                ) : (
-                  <>
-                    <p className="text-xs text-gray-600">
-                      <span className="font-medium text-gray-800">{boundCount}</span> cell{boundCount !== 1 ? 's' : ''} bound to data
-                    </p>
-                    {repeatRowCount > 0 && (
-                      <p className="flex items-center gap-1 text-xs text-emerald-700">
-                        <RefreshCw className="h-3 w-3" />
-                        <span className="font-medium">{repeatRowCount}</span> repeating row{repeatRowCount !== 1 ? 's' : ''}
-                      </p>
-                    )}
-                    {sources.length > 0 && (
-                      <p className="text-[10px] text-gray-400 truncate">
-                        Sources: {sources.join(', ')}
-                      </p>
-                    )}
-                  </>
-                )}
-              </div>
             </>
           );
         })()}

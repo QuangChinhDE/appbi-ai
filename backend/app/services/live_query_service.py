@@ -282,6 +282,62 @@ def _describe_bigquery_partition_target(partition_metadata: Optional[Dict[str, A
     return "unpartitioned"
 
 
+def _convert_dq_identifiers_to_backticks(sql: str) -> str:
+    """Convert double-quoted SQL identifiers to backtick-quoted identifiers.
+
+    BigQuery uses backticks for identifiers; double-quotes denote string
+    literals.  The visual SQL builder (and some manual queries) may produce
+    ``SELECT "col" FROM "schema.table"`` which is valid PostgreSQL but invalid
+    BigQuery.  This function rewrites those double-quoted segments to backticks
+    while leaving single-quoted string literals untouched.
+    """
+    import re
+
+    # Match double-quoted segments that look like identifiers (not inside
+    # single-quoted strings).  We walk through the SQL character by character
+    # to respect single-quoted string boundaries.
+    result: list[str] = []
+    i = 0
+    length = len(sql)
+    while i < length:
+        ch = sql[i]
+        if ch == "'":
+            # Skip single-quoted string literal entirely
+            j = i + 1
+            while j < length:
+                if sql[j] == "'" and j + 1 < length and sql[j + 1] == "'":
+                    j += 2  # escaped quote
+                elif sql[j] == "'":
+                    j += 1
+                    break
+                else:
+                    j += 1
+            result.append(sql[i:j])
+            i = j
+        elif ch == '"':
+            # Double-quoted identifier → convert to backtick
+            j = i + 1
+            ident_chars: list[str] = []
+            while j < length:
+                if sql[j] == '"' and j + 1 < length and sql[j + 1] == '"':
+                    ident_chars.append('"')
+                    j += 2  # escaped double-quote
+                elif sql[j] == '"':
+                    j += 1
+                    break
+                else:
+                    ident_chars.append(sql[j])
+                    j += 1
+            result.append("`")
+            result.append("".join(ident_chars))
+            result.append("`")
+            i = j
+        else:
+            result.append(ch)
+            i += 1
+    return "".join(result)
+
+
 def _build_source_select_query(
     datasource,
     db_table,
@@ -294,7 +350,14 @@ def _build_source_select_query(
     table_identifier = db_table.source_table_name or db_table.display_name
     if db_table.source_kind == "sql_query" and db_table.source_query:
         validate_select_only(db_table.source_query)
-        return f"SELECT * FROM ({db_table.source_query}) AS _source"
+        source_sql = db_table.source_query
+        # BigQuery uses backticks for identifiers; double-quotes denote string
+        # literals.  Convert any double-quoted identifiers coming from the
+        # visual SQL builder (or old data) to backtick-quoted identifiers so
+        # BigQuery can execute them correctly.
+        if dialect == "bigquery":
+            source_sql = _convert_dq_identifiers_to_backticks(source_sql)
+        return f"SELECT * FROM ({source_sql}) AS _source"
     base_ref = _build_base_table_ref(ds_type, datasource.config, table_identifier, dialect)
     sql = f"SELECT * FROM {base_ref}"
     if (

@@ -558,7 +558,16 @@ class DatasetQualityService:
     def get_summary(db: Session, dataset_id: int) -> QualitySummaryResponse:
         rules = DatasetQualityService.list_rules(db, dataset_id)
         enabled_rules = [r for r in rules if r.enabled]
-        latest_run = DatasetQualityService.get_latest_run(db, dataset_id)
+        # Use the latest COMPLETED run for score/breakdown (not queued/running/failed)
+        latest_run = (
+            db.query(DatasetQualityRun)
+            .filter(
+                DatasetQualityRun.dataset_id == dataset_id,
+                DatasetQualityRun.status == "completed",
+            )
+            .order_by(DatasetQualityRun.created_at.desc())
+            .first()
+        )
 
         covered_tables = len({r.table_id for r in rules})
         covered_columns = len({r.column_name for r in rules if r.column_name})
@@ -571,7 +580,7 @@ class DatasetQualityService:
             if r.enabled:
                 dim_enabled[r.dimension] = dim_enabled.get(r.dimension, 0) + 1
 
-        # Merge run results into breakdown
+        # Merge run results into breakdown (exclude skipped/error rules)
         dim_passed: Dict[str, int] = {}
         dim_failed: Dict[str, int] = {}
         if latest_run and latest_run.results:
@@ -585,6 +594,9 @@ class DatasetQualityService:
                     continue
                 dim = rule_id_to_dim.get(rid)
                 if not dim:
+                    continue
+                # Skip errored/skipped rules — they don't count toward pass/fail
+                if res.get("skipped") or res.get("error"):
                     continue
                 if res.get("passed"):
                     dim_passed[dim] = dim_passed.get(dim, 0) + 1
@@ -689,23 +701,26 @@ class DatasetQualityService:
 
         results: Dict[str, Any] = {}
         passed_count = 0
-        total = len(enabled_rules)
+        scorable_count = 0  # rules thực sự chạy được (không bị error/skip)
 
         # Ghi tổng số rules ngay từ đầu để FE biết denominator
         run.progress_done = 0
-        run.progress_total = total
+        run.progress_total = len(enabled_rules)
         db.commit()
 
         for idx, rule in enumerate(enabled_rules, start=1):
             result = DatasetQualityService._execute_single_rule(db, dataset_obj, rule, table_map, ds_map)
             results[str(rule.id)] = result
-            if result.get("passed"):
-                passed_count += 1
+            # Chỉ tính score cho rules thực sự chạy được (không bị error/skip)
+            if not result.get("skipped") and not result.get("error"):
+                scorable_count += 1
+                if result.get("passed"):
+                    passed_count += 1
             # Commit progress sau mỗi rule để FE poll thấy tiến trình
             run.progress_done = idx
             db.commit()
 
-        score = round(passed_count / total * 100, 1) if total else 100.0
+        score = round(passed_count / scorable_count * 100, 1) if scorable_count else 100.0
 
         run.status = "completed"
         run.score = score
@@ -714,7 +729,8 @@ class DatasetQualityService:
         db.commit()
         logger.info(
             f"[quality_run:{run_id}] Completed. "
-            f"{passed_count}/{len(enabled_rules)} rules passed. Score={score}"
+            f"{passed_count}/{scorable_count} scorable rules passed "
+            f"({len(enabled_rules)} total enabled). Score={score}"
         )
 
     @staticmethod
@@ -725,62 +741,76 @@ class DatasetQualityService:
         table_map: Dict[int, DatasetTable],
         ds_map: Dict[int, Any],
     ) -> Dict[str, Any]:
-        """Execute one rule and return a result dict."""
+        """Execute one rule and return a result dict with execution log."""
+        import traceback as _tb
+
+        log_entries: List[str] = []
+        started = time.time()
+
+        def _log(msg: str) -> None:
+            elapsed = round((time.time() - started) * 1000)
+            log_entries.append(f"[{elapsed}ms] {msg}")
+
+        def _result(base: Dict[str, Any]) -> Dict[str, Any]:
+            elapsed_ms = round((time.time() - started) * 1000)
+            base["log"] = log_entries
+            base["elapsed_ms"] = elapsed_ms
+            return base
+
+        _log(f"Start rule '{rule.name}' (type={rule.rule_type}, dim={rule.dimension})")
+        _log(f"Target: table_id={rule.table_id}, column={rule.column_name or '(table-level)'}")
+
         db_table = table_map.get(rule.table_id)
         if not db_table:
-            return {
-                "passed": False,
-                "rows_checked": None,
-                "rows_failed": None,
-                "detail": "Table not found",
-                "skipped": True,
-            }
+            _log("ERROR: Table not found in dataset")
+            return _result({
+                "passed": False, "rows_checked": None, "rows_failed": None,
+                "detail": "Table not found", "skipped": True,
+            })
+
+        _log(f"Table: '{db_table.display_name or db_table.source_table_name}' (kind={db_table.source_kind})")
 
         if db_table.source_kind == "generated_calendar":
-            return {
-                "passed": True,
-                "rows_checked": None,
-                "rows_failed": None,
-                "detail": "Calendar table — skipped",
-                "skipped": True,
-            }
+            _log("SKIP: Calendar table — no data to check")
+            return _result({
+                "passed": False, "rows_checked": None, "rows_failed": None,
+                "detail": "Calendar table — skipped", "skipped": True,
+            })
 
         try:
+            _log("Resolving execution table and datasource…")
             execution_table, datasource = _resolve_execution_table_and_datasource(db, dataset_obj, db_table, ds_map)
+            _log(f"Resolved: source={execution_table.source_table_name or '(query)'}, ds={'found' if datasource else 'None'}")
         except Exception as exc:
-            logger.warning(
-                f"[quality] Rule {rule.id} ({rule.rule_type}) failed to resolve execution target: {exc}"
-            )
-            return {
-                "passed": False,
-                "rows_checked": None,
-                "rows_failed": None,
-                "detail": f"Execution target error: {str(exc)[:500]}",
-                "error": True,
-            }
+            _log(f"ERROR resolving execution target: {exc}")
+            _log(_tb.format_exc()[:800])
+            return _result({
+                "passed": False, "rows_checked": None, "rows_failed": None,
+                "detail": f"Execution target error: {str(exc)[:500]}", "error": True,
+            })
 
         table_ref, _ = _table_ref_for_source(execution_table)
         if not table_ref:
-            return {
-                "passed": False,
-                "rows_checked": None,
-                "rows_failed": None,
-                "detail": "Cannot build table reference for this source kind",
-                "skipped": True,
-            }
+            _log("ERROR: Cannot build table reference for this source kind")
+            return _result({
+                "passed": False, "rows_checked": None, "rows_failed": None,
+                "detail": "Cannot build table reference for this source kind", "skipped": True,
+            })
+        _log(f"Table ref: {table_ref[:200]}")
 
         if datasource is None:
-            return {
-                "passed": False,
-                "rows_checked": None,
-                "rows_failed": None,
-                "detail": "Data source not found for this table",
-                "skipped": True,
-            }
+            _log("ERROR: Data source not found for this table")
+            return _result({
+                "passed": False, "rows_checked": None, "rows_failed": None,
+                "detail": "Data source not found for this table", "skipped": True,
+            })
 
         dialect = _dialect_for_ds(datasource)
+        _log(f"Dialect: {dialect}")
 
         config = rule.config or {}
+        _log(f"Rule config: {str(config)[:300]}")
+
         check_sql = _build_check_sql(
             table_ref=table_ref,
             rule_type=rule.rule_type,
@@ -790,13 +820,13 @@ class DatasetQualityService:
         )
 
         if not check_sql:
-            return {
-                "passed": False,
-                "rows_checked": None,
-                "rows_failed": None,
-                "detail": f"Cannot compile rule_type '{rule.rule_type}' — missing config",
-                "skipped": True,
-            }
+            _log(f"ERROR: Cannot compile rule_type '{rule.rule_type}' — missing or invalid config")
+            return _result({
+                "passed": False, "rows_checked": None, "rows_failed": None,
+                "detail": f"Cannot compile rule_type '{rule.rule_type}' — missing config", "skipped": True,
+            })
+
+        _log(f"Generated SQL: {check_sql}")
 
         try:
             from app.services.datasource_service import DataSourceConnectionService
@@ -806,56 +836,54 @@ class DatasetQualityService:
                 if datasource
                 else "postgresql"
             )
-            columns, rows, _ = DataSourceConnectionService.execute_query(
+            _log(f"Executing query against {ds_type}…")
+            columns, rows, exec_ms = DataSourceConnectionService.execute_query(
                 ds_type=ds_type,
                 config=datasource.config if datasource else {},
                 sql_query=check_sql,
                 limit=2,
                 timeout_seconds=60,
             )
+            _log(f"Query executed in {round(exec_ms)}ms — returned {len(rows)} row(s)")
 
             if not rows:
-                return {
-                    "passed": True,
-                    "rows_checked": 0,
-                    "rows_failed": 0,
-                    "detail": "No rows returned",
-                }
+                _log("PASS: No rows returned (empty table)")
+                return _result({
+                    "passed": True, "rows_checked": 0, "rows_failed": 0,
+                    "detail": "No rows returned", "sql": check_sql,
+                })
 
             row = rows[0]
+            _log(f"Raw result: {row}")
             rows_checked = _coerce_int(row.get("rows_checked"))
             rows_failed = _coerce_int(row.get("rows_failed"))
 
             if rows_failed is None:
-                return {
-                    "passed": False,
-                    "rows_checked": rows_checked,
-                    "rows_failed": None,
+                _log(f"ERROR: rows_failed is not a valid integer: {row.get('rows_failed')!r}")
+                return _result({
+                    "passed": False, "rows_checked": rows_checked, "rows_failed": None,
                     "detail": "Quality query returned an invalid rows_failed value",
-                    "error": True,
-                }
+                    "error": True, "sql": check_sql,
+                })
 
             passed = rows_failed == 0
             detail = None if passed else f"{rows_failed} row(s) failed out of {rows_checked}"
+            _log(f"{'PASS' if passed else 'FAIL'}: checked={rows_checked}, failed={rows_failed}")
 
-            return {
-                "passed": passed,
-                "rows_checked": rows_checked,
-                "rows_failed": rows_failed,
-                "detail": detail,
-            }
+            return _result({
+                "passed": passed, "rows_checked": rows_checked, "rows_failed": rows_failed,
+                "detail": detail, "sql": check_sql,
+            })
 
         except Exception as exc:
-            logger.warning(
-                f"[quality] Rule {rule.id} ({rule.rule_type}) failed to execute: {exc}"
-            )
-            return {
-                "passed": False,
-                "rows_checked": None,
-                "rows_failed": None,
+            _log(f"EXECUTION ERROR: {exc}")
+            _log(_tb.format_exc()[:1200])
+            logger.warning(f"[quality] Rule {rule.id} ({rule.rule_type}) failed: {exc}")
+            return _result({
+                "passed": False, "rows_checked": None, "rows_failed": None,
                 "detail": f"Execution error: {str(exc)[:500]}",
-                "error": True,
-            }
+                "error": True, "sql": check_sql,
+            })
 
 
 def _coerce_int(value) -> Optional[int]:

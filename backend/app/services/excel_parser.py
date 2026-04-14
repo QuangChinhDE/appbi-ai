@@ -431,3 +431,122 @@ def parse_excel_to_blocks(file_bytes: bytes) -> List[Dict[str, Any]]:
 
     wb.close()
     return blocks
+
+
+# ── Sheet format parser (v2 spreadsheet) ───────────────────────────────
+
+def parse_excel_to_sheet(file_bytes: bytes) -> Dict[str, Any]:
+    """
+    Parse an Excel file and return a SheetData (v2) dict suitable for the
+    spreadsheet editor.  Unlike parse_excel_to_blocks() which creates
+    separate block objects, this maps the first worksheet directly into a
+    single grid structure: { version, colCount, rowCount, colWidths,
+    rowHeights, cells, merges }.
+    """
+    wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
+    ws = wb.active
+    if ws is None:
+        wb.close()
+        return _empty_sheet()
+
+    if (
+        ws.max_row is None
+        or ws.max_column is None
+        or ws.min_row is None
+        or ws.min_column is None
+    ):
+        wb.close()
+        return _empty_sheet()
+
+    min_row, max_row = ws.min_row, ws.max_row
+    min_col, max_col = ws.min_column, ws.max_column
+    num_cols = max_col - min_col + 1
+    num_rows = max_row - min_row + 1
+
+    # --- Column widths (scaled to A4 usable width) ---
+    raw_col_widths = [_col_width_px(ws, c) for c in range(min_col, max_col + 1)]
+    col_widths = _normalize_widths_to_total(raw_col_widths, USABLE_W)
+    _auto_widen_columns(ws, min_row, max_row, min_col, max_col, col_widths)
+    col_widths = _normalize_widths_to_total(col_widths, USABLE_W)
+
+    # --- Row heights ---
+    row_heights: List[float] = []
+    for r in range(min_row, max_row + 1):
+        row_heights.append(round(_row_height_px(ws, r), 1))
+
+    # --- Merges ---
+    anchor_map, hidden_cells = _build_merge_map(ws)
+    merges: List[Dict[str, int]] = []
+    for (r, c), (rs, cs) in anchor_map.items():
+        if rs > 1 or cs > 1:
+            merges.append({
+                "r1": r - min_row,
+                "c1": c - min_col,
+                "r2": r - min_row + rs - 1,
+                "c2": c - min_col + cs - 1,
+            })
+
+    # --- Cells (sparse) ---
+    cells: Dict[str, Dict[str, Any]] = {}
+    for r in range(min_row, max_row + 1):
+        for c in range(min_col, max_col + 1):
+            if (r, c) in hidden_cells:
+                continue
+
+            cell = ws.cell(row=r, column=c)
+            text = _cell_value_str(cell)
+
+            cell_def: Dict[str, Any] = {"value": text}
+
+            # Style
+            font = cell.font
+            if font:
+                if font.bold:
+                    cell_def["bold"] = True
+                if font.italic:
+                    cell_def["italic"] = True
+
+            alignment = cell.alignment
+            if alignment and alignment.horizontal:
+                h = alignment.horizontal.lower()
+                if h in ("left", "center", "right"):
+                    cell_def["align"] = h
+
+            fill = cell.fill
+            if fill and fill.fgColor:
+                bg = _color_hex(fill.fgColor)
+                if bg:
+                    cell_def["bg"] = bg
+
+            # Only store non-empty cells
+            has_content = text != ""
+            has_format = cell_def.get("bold") or cell_def.get("italic") or cell_def.get("align") or cell_def.get("bg")
+            if has_content or has_format:
+                key = f"{r - min_row},{c - min_col}"
+                cells[key] = cell_def
+
+    wb.close()
+
+    return {
+        "version": 2,
+        "colCount": num_cols,
+        "rowCount": num_rows,
+        "colWidths": col_widths,
+        "rowHeights": row_heights,
+        "cells": cells,
+        "merges": merges,
+    }
+
+
+def _empty_sheet() -> Dict[str, Any]:
+    """Return an empty 10×40 sheet."""
+    col_w = round(USABLE_W / 10, 1)
+    return {
+        "version": 2,
+        "colCount": 10,
+        "rowCount": 40,
+        "colWidths": [col_w] * 10,
+        "rowHeights": [28.0] * 40,
+        "cells": {},
+        "merges": [],
+    }

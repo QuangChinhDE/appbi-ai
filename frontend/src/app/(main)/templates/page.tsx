@@ -86,7 +86,7 @@ export default function TemplatesPage() {
             },
             {
               label: t('overview.templates.blocks'),
-              value: templateItems.reduce((s, t) => s + (t.blocks?.length ?? 0), 0),
+              value: templateItems.reduce((s, t) => s + (Array.isArray(t.blocks) ? t.blocks.length : 1), 0),
               helper: t('overview.templates.blocksHelper'),
             },
             {

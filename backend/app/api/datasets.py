@@ -1477,6 +1477,12 @@ def preview_dataset_table(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        error_msg = str(e)
+        # Surface SQL syntax / execution errors as 400 instead of hiding behind 500
+        lower_msg = error_msg.lower()
+        if any(kw in lower_msg for kw in ("syntax error", "invalidquery", "invalid query", "parse error")):
+            logger.warning("Preview SQL error for table %d: %s", table_id, error_msg)
+            raise HTTPException(status_code=400, detail=f"SQL error: {error_msg}")
         logger.error("Failed to preview table: %s", e)
         raise HTTPException(status_code=500, detail="Failed to preview table.")
 

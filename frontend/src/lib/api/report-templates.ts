@@ -33,10 +33,10 @@ export const reportTemplateApi = {
     await apiClient.delete(`/report-templates/${id}`);
   },
 
-  importExcel: async (file: File): Promise<any[]> => {
+  importExcel: async (file: File, format: 'blocks' | 'sheet' = 'blocks'): Promise<any> => {
     const formData = new FormData();
     formData.append('file', file);
-    const response = await apiClient.post('/report-templates/import-excel', formData, {
+    const response = await apiClient.post(`/report-templates/import-excel?format=${format}`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
     return response.data;
