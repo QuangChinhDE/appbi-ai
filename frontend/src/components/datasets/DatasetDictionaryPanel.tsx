@@ -15,6 +15,7 @@ import {
   Check,
   Plus,
   Search,
+  Table2,
   Tags,
   Trash2,
 } from 'lucide-react';
@@ -51,11 +52,195 @@ const emptyTerm = (): DatasetDictionaryTerm => ({
 const fmtTime = (value?: string | null) =>
   value && !Number.isNaN(new Date(value).getTime()) ? new Date(value).toLocaleString() : null;
 
+type DictPanelTab = 'overview' | 'glossary';
+
+// ─── DictionaryOverview ───────────────────────────────────────────────────────
+
+function DictionaryOverview({
+  draft,
+  tables,
+}: {
+  draft: DatasetDictionary;
+  tables: DatasetTable[];
+}) {
+  const [search, setSearch] = useState('');
+
+  const tableMap = useMemo(
+    () => new Map(tables.map((t) => [t.id, t])),
+    [tables],
+  );
+
+  // Flatten all column_notes across tables that have at least one documented column
+  const rows = useMemo(() => {
+    const result: {
+      tableName: string;
+      tableId: number;
+      column_name: string;
+      business_name: string;
+      description: string;
+      examples: string[];
+    }[] = [];
+
+    for (const tn of draft.table_notes) {
+      if (tn.column_notes.length === 0) continue;
+      const table = tableMap.get(tn.table_id);
+      const name = tableLabel(table);
+      for (const cn of tn.column_notes) {
+        result.push({
+          tableName: name,
+          tableId: tn.table_id,
+          column_name: cn.column_name,
+          business_name: cn.business_name ?? '',
+          description: cn.description ?? '',
+          examples: cn.examples ?? [],
+        });
+      }
+    }
+    return result;
+  }, [draft.table_notes, tableMap]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter(
+      (r) =>
+        r.tableName.toLowerCase().includes(q) ||
+        r.column_name.toLowerCase().includes(q) ||
+        r.business_name.toLowerCase().includes(q) ||
+        r.description.toLowerCase().includes(q),
+    );
+  }, [rows, search]);
+
+  // Group by table for a cleaner display
+  const grouped = useMemo(() => {
+    const map = new Map<number, { tableName: string; items: typeof filtered }>();
+    for (const row of filtered) {
+      let group = map.get(row.tableId);
+      if (!group) {
+        group = { tableName: row.tableName, items: [] };
+        map.set(row.tableId, group);
+      }
+      group.items.push(row);
+    }
+    return Array.from(map.values());
+  }, [filtered]);
+
+  const totalTables = grouped.length;
+  const totalColumns = filtered.length;
+
+  return (
+    <div className="flex h-full flex-col">
+      {/* Toolbar */}
+      <div className="flex shrink-0 items-center gap-3 border-b border-gray-100 px-5 py-2.5">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search table, column, description…"
+            className="w-full rounded-md border border-gray-200 py-1.5 pl-8 pr-3 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <span className="text-[11px] text-gray-400 shrink-0">
+          {totalColumns} column{totalColumns !== 1 ? 's' : ''} across {totalTables} table{totalTables !== 1 ? 's' : ''}
+        </span>
+      </div>
+
+      {/* Table */}
+      <div className="flex-1 overflow-y-auto">
+        {rows.length === 0 ? (
+          <div className="flex h-full items-center justify-center p-8">
+            <div className="max-w-sm text-center">
+              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-gray-100">
+                <Table2 className="h-5 w-5 text-gray-400" />
+              </div>
+              <h3 className="text-base font-semibold text-gray-900">No column dictionary yet</h3>
+              <p className="mt-2 text-sm text-gray-500">
+                Select a table in the model and add column descriptions in the Dictionary tab.
+              </p>
+            </div>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="flex h-full items-center justify-center p-8 text-sm text-gray-400">
+            No columns match &quot;{search}&quot;.
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {grouped.map((group) => (
+              <div key={group.tableName}>
+                {/* Table header */}
+                <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-gray-100 bg-gray-50 px-5 py-2">
+                  <Table2 className="h-3.5 w-3.5 text-gray-400" />
+                  <span className="text-xs font-semibold text-gray-700">{group.tableName}</span>
+                  <span className="text-[10px] text-gray-400">({group.items.length})</span>
+                </div>
+                {/* Columns */}
+                <table className="min-w-full">
+                  <thead className="border-b border-gray-50 bg-white">
+                    <tr>
+                      <th className="px-5 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-400 w-[180px]">Column</th>
+                      <th className="px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-400 w-[160px]">Business Name</th>
+                      <th className="px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-400">Description</th>
+                      <th className="px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-400 w-[160px]">Examples</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {group.items.map((row) => (
+                      <tr key={`${row.tableId}-${row.column_name}`} className="hover:bg-blue-50/30 transition-colors">
+                        <td className="px-5 py-2">
+                          <span className="font-mono text-xs font-medium text-gray-900">{row.column_name}</span>
+                        </td>
+                        <td className="px-3 py-2">
+                          {row.business_name ? (
+                            <span className="text-xs text-gray-700">{row.business_name}</span>
+                          ) : (
+                            <span className="text-[11px] text-gray-300">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 max-w-[320px]">
+                          {row.description ? (
+                            <p className="text-[11px] text-gray-600 leading-relaxed line-clamp-2">{row.description}</p>
+                          ) : (
+                            <span className="text-[11px] text-gray-300">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          {row.examples.length > 0 ? (
+                            <div className="flex flex-wrap gap-1">
+                              {row.examples.slice(0, 3).map((ex, i) => (
+                                <span key={i} className="inline-block rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">
+                                  {ex}
+                                </span>
+                              ))}
+                              {row.examples.length > 3 && (
+                                <span className="text-[10px] text-gray-400">+{row.examples.length - 3}</span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-[11px] text-gray-300">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main panel ───────────────────────────────────────────────────────────────
 
 export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit }: Props) {
   const { data, isLoading, error } = useDatasetDictionary(datasetId);
   const update = useUpdateDatasetDictionary(datasetId);
+
+  // Panel tab
+  const [panelTab, setPanelTab] = useState<DictPanelTab>('overview');
 
   // Glossary state
   const [glossarySearch, setGlossarySearch] = useState('');
@@ -138,15 +323,38 @@ export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit
 
       {/* ── Top bar ── */}
       <div className="flex shrink-0 items-center gap-3 border-b border-gray-200 px-5 py-3">
-        <div className="inline-flex items-center gap-1.5">
-          <Tags className="h-4 w-4 text-gray-500" />
-          <span className="text-sm font-semibold text-gray-900">Business Glossary</span>
+        {/* Tab switcher */}
+        <div className="inline-flex rounded-md border border-gray-200 bg-gray-50 p-0.5">
+          <button
+            type="button"
+            onClick={() => setPanelTab('overview')}
+            className={`inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium transition-colors ${
+              panelTab === 'overview'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <Table2 className="h-3.5 w-3.5" />
+            All Tables
+          </button>
+          <button
+            type="button"
+            onClick={() => setPanelTab('glossary')}
+            className={`inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium transition-colors ${
+              panelTab === 'glossary'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <Tags className="h-3.5 w-3.5" />
+            Glossary
+          </button>
         </div>
         <div className="flex-1" />
         <span className="text-xs text-gray-400">
           {updatedAt ? `Saved ${updatedAt}` : datasetName}
         </span>
-        {canEdit && (
+        {canEdit && panelTab === 'glossary' && (
           <button
             type="button"
             onClick={save}
@@ -159,7 +367,13 @@ export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit
         )}
       </div>
 
+      {/* ── Overview (All Tables) tab ── */}
+      {panelTab === 'overview' && (
+        <DictionaryOverview draft={draft} tables={tables} />
+      )}
+
       {/* ── Glossary section ── */}
+      {panelTab === 'glossary' && (
       <div className="flex min-h-0 flex-1">
 
         {/* Left panel — term list */}
@@ -421,6 +635,7 @@ export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit
           )}
         </div>
       </div>
+      )}
 
       {/* Status bar */}
       <div className="shrink-0 border-t border-gray-100 px-5 py-2 text-xs text-gray-400">
