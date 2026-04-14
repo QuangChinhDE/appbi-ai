@@ -1073,6 +1073,7 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
 
     setPollingRunId(null);
     setLastRunResult({ status: pollingRun.status, score: pollingRun.score });
+    refetchRules();   // cập nhật badge pass/fail trên từng rule
     refetchRuns();
     refetchSummary();
   }, [pollingRun?.id, pollingRun?.status]);
@@ -1321,100 +1322,138 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
         </div>
       )}
 
-      {/* ── Quick-view Summary Cards ── */}
-      {(overallScore !== null || runStats || dimBreakdown.length > 0) && (
-        <div className="shrink-0 border-b border-gray-100 bg-white px-4 py-3">
-          <div className="flex items-stretch gap-3 flex-wrap">
+      {/* ── Summary Dashboard ── */}
+      {(overallScore !== null || runStats || dimBreakdown.length > 0 || allRules.length > 0) && (
+        <div className="shrink-0 border-b border-gray-100 bg-gray-50 px-4 py-3">
+          <div className="flex items-start gap-3">
 
-            {/* Score card */}
-            {overallScore !== null && (
-              <div className={`flex flex-col items-center justify-center min-w-[80px] rounded-xl border px-4 py-2.5 ${
-                overallScore >= 90
-                  ? 'border-green-200 bg-green-50'
-                  : overallScore >= 70
-                  ? 'border-yellow-200 bg-yellow-50'
-                  : 'border-red-200 bg-red-50'
-              }`}>
-                <span className={`text-2xl font-bold leading-none ${
-                  overallScore >= 90 ? 'text-green-700' : overallScore >= 70 ? 'text-yellow-700' : 'text-red-700'
+            {/* ── Left: Score + stat pills ── */}
+            <div className="flex items-center gap-2 flex-wrap flex-1">
+
+              {/* Score ring card */}
+              {overallScore !== null ? (
+                <div className={`flex items-center gap-3 rounded-xl border px-4 py-2.5 ${
+                  overallScore >= 90
+                    ? 'border-green-200 bg-green-50'
+                    : overallScore >= 70
+                    ? 'border-yellow-200 bg-yellow-50'
+                    : 'border-red-200 bg-red-50'
                 }`}>
-                  {overallScore.toFixed(0)}%
-                </span>
-                <span className="mt-1 text-[10px] font-medium text-gray-400 uppercase tracking-wide">Score</span>
-              </div>
-            )}
-
-            {/* Pass / Fail / Error counts */}
-            {runStats && (
-              <div className="flex items-stretch gap-2">
-                <div className="flex flex-col items-center justify-center min-w-[56px] rounded-xl border border-green-200 bg-green-50 px-3 py-2.5">
-                  <span className="text-lg font-bold text-green-700 leading-none">{runStats.pass}</span>
-                  <span className="mt-1 text-[10px] font-medium text-green-500 uppercase tracking-wide">Pass</span>
-                </div>
-                <div className="flex flex-col items-center justify-center min-w-[56px] rounded-xl border border-red-200 bg-red-50 px-3 py-2.5">
-                  <span className="text-lg font-bold text-red-600 leading-none">{runStats.fail}</span>
-                  <span className="mt-1 text-[10px] font-medium text-red-400 uppercase tracking-wide">Fail</span>
-                </div>
-                {runStats.error > 0 && (
-                  <div className="flex flex-col items-center justify-center min-w-[56px] rounded-xl border border-orange-200 bg-orange-50 px-3 py-2.5">
-                    <span className="text-lg font-bold text-orange-600 leading-none">{runStats.error}</span>
-                    <span className="mt-1 text-[10px] font-medium text-orange-400 uppercase tracking-wide">Error</span>
+                  {/* Mini ring */}
+                  <div className="relative h-10 w-10 shrink-0">
+                    <svg viewBox="0 0 36 36" className="h-10 w-10 -rotate-90">
+                      <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor"
+                        className={overallScore >= 90 ? 'text-green-100' : overallScore >= 70 ? 'text-yellow-100' : 'text-red-100'}
+                        strokeWidth="3.5" />
+                      <circle cx="18" cy="18" r="15" fill="none"
+                        stroke={overallScore >= 90 ? '#16a34a' : overallScore >= 70 ? '#ca8a04' : '#dc2626'}
+                        strokeWidth="3.5"
+                        strokeDasharray={`${(overallScore / 100) * 94.25} 94.25`}
+                        strokeLinecap="round" />
+                    </svg>
+                    <span className={`absolute inset-0 flex items-center justify-center text-[10px] font-bold ${
+                      overallScore >= 90 ? 'text-green-700' : overallScore >= 70 ? 'text-yellow-700' : 'text-red-700'
+                    }`}>
+                      {overallScore.toFixed(0)}
+                    </span>
                   </div>
-                )}
-                {runStats.skipped > 0 && (
-                  <div className="flex flex-col items-center justify-center min-w-[56px] rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5">
-                    <span className="text-lg font-bold text-gray-500 leading-none">{runStats.skipped}</span>
-                    <span className="mt-1 text-[10px] font-medium text-gray-400 uppercase tracking-wide">Skip</span>
+                  <div>
+                    <p className={`text-lg font-bold leading-none ${
+                      overallScore >= 90 ? 'text-green-700' : overallScore >= 70 ? 'text-yellow-700' : 'text-red-700'
+                    }`}>{overallScore.toFixed(0)}%</p>
+                    <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wide mt-0.5">Quality Score</p>
                   </div>
-                )}
-              </div>
-            )}
+                </div>
+              ) : (
+                /* No run yet — placeholder */
+                <div className="flex items-center gap-3 rounded-xl border border-dashed border-gray-200 bg-white px-4 py-2.5">
+                  <div className="h-10 w-10 rounded-full border-2 border-dashed border-gray-200 flex items-center justify-center shrink-0">
+                    <ShieldCheck className="h-4 w-4 text-gray-300" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-gray-400">No run yet</p>
+                    <p className="text-[10px] text-gray-300 mt-0.5">Run checks to see score</p>
+                  </div>
+                </div>
+              )}
 
-            {/* Divider */}
-            {dimBreakdown.length > 0 && (overallScore !== null || runStats) && (
-              <div className="w-px bg-gray-100 self-stretch mx-1" />
-            )}
+              {/* Stat pills: Pass / Fail / Error / Skip */}
+              {runStats && (
+                <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 rounded-lg border border-green-200 bg-white px-3 py-2">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0" />
+                    <span className="text-sm font-bold text-green-700">{runStats.pass}</span>
+                    <span className="text-[10px] text-green-500 font-medium uppercase tracking-wide">Pass</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-2">
+                    <XCircle className="h-3.5 w-3.5 text-red-400 shrink-0" />
+                    <span className="text-sm font-bold text-red-600">{runStats.fail}</span>
+                    <span className="text-[10px] text-red-400 font-medium uppercase tracking-wide">Fail</span>
+                  </div>
+                  {runStats.error > 0 && (
+                    <div className="flex items-center gap-1.5 rounded-lg border border-orange-200 bg-white px-3 py-2">
+                      <AlertTriangle className="h-3.5 w-3.5 text-orange-400 shrink-0" />
+                      <span className="text-sm font-bold text-orange-600">{runStats.error}</span>
+                      <span className="text-[10px] text-orange-400 font-medium uppercase tracking-wide">Error</span>
+                    </div>
+                  )}
+                  {runStats.skipped > 0 && (
+                    <div className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2">
+                      <Info className="h-3.5 w-3.5 text-gray-300 shrink-0" />
+                      <span className="text-sm font-bold text-gray-500">{runStats.skipped}</span>
+                      <span className="text-[10px] text-gray-400 font-medium uppercase tracking-wide">Skip</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
 
-            {/* Per-dimension health pills */}
+            {/* ── Right: Per-dimension health strip ── */}
             {dimBreakdown.length > 0 && (
-              <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex flex-col gap-1 shrink-0 min-w-[160px]">
                 {dimBreakdown.map((dim) => {
                   const meta = DQ_DIMENSIONS.find((d) => d.key === dim.dimension);
                   const total = dim.enabled;
                   if (total === 0) return null;
                   const passed = dim.passed ?? 0;
                   const failed = dim.failed ?? 0;
-                  const pct = total > 0 ? Math.round((passed / total) * 100) : null;
+                  const pct = total > 0 ? Math.round((passed / total) * 100) : 0;
                   const healthy = failed === 0;
+                  const active = dimFilter === dim.dimension;
                   return (
                     <button
                       key={dim.dimension}
-                      onClick={() => setDimFilter(dimFilter === dim.dimension ? 'all' : dim.dimension as QualityDimension)}
-                      title={`${dim.dimension}: ${passed}/${total} passed`}
-                      className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
-                        dimFilter === dim.dimension
-                          ? `${meta?.bg ?? 'bg-gray-100'} ${meta?.color ?? 'text-gray-700'} ${meta?.border ?? 'border-gray-300'}`
-                          : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50'
+                      onClick={() => setDimFilter(active ? 'all' : dim.dimension as QualityDimension)}
+                      title={`${passed}/${total} rules passed`}
+                      className={`flex items-center gap-2 rounded-lg px-2.5 py-1 text-left transition-colors ${
+                        active
+                          ? `${meta?.bg ?? 'bg-gray-100'} ${meta?.border ?? 'border-gray-200'} border`
+                          : 'hover:bg-gray-100'
                       }`}
                     >
-                      <span className={`h-1.5 w-1.5 rounded-full ${healthy ? 'bg-green-500' : 'bg-red-500'}`} />
-                      <span>{meta?.label ?? dim.dimension}</span>
-                      {pct !== null && (
-                        <span className={`font-semibold ${healthy ? 'text-green-600' : 'text-red-500'}`}>
-                          {pct}%
-                        </span>
-                      )}
+                      <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${healthy ? 'bg-green-500' : 'bg-red-400'}`} />
+                      <span className="text-[11px] text-gray-600 font-medium flex-1 truncate">{meta?.label ?? dim.dimension}</span>
+                      {/* Mini progress bar */}
+                      <div className="h-1 w-16 rounded-full bg-gray-100 overflow-hidden shrink-0">
+                        <div
+                          className={`h-full rounded-full ${healthy ? 'bg-green-400' : 'bg-red-400'}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                      <span className={`text-[10px] font-semibold w-7 text-right shrink-0 ${healthy ? 'text-green-600' : 'text-red-500'}`}>
+                        {pct}%
+                      </span>
                     </button>
                   );
                 })}
               </div>
             )}
 
-            {/* No-run hint */}
-            {overallScore === null && !runStats && dimBreakdown.length > 0 && (
+            {/* No-run hint for dim breakdown */}
+            {overallScore === null && !runStats && dimBreakdown.length === 0 && allRules.length > 0 && (
               <div className="flex items-center gap-1.5 text-xs text-gray-400">
                 <Info className="h-3.5 w-3.5" />
-                Run rules to see quality scores
+                Run checks to see quality scores
               </div>
             )}
           </div>

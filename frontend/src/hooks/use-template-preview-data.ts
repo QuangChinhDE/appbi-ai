@@ -9,11 +9,11 @@ import type {
   CellValue,
   DataFieldBinding,
   TableConfig,
-  TableRowDef,
   TemplateBlock,
   TemplateFilter,
 } from '@/types/template';
 import { isDataField, isFormula } from '@/types/template';
+import { getRepeatingRowSource } from '@/lib/templateUtils';
 
 const PREVIEW_LIMIT = 1000;
 
@@ -162,15 +162,6 @@ function resolveTextContent(content: unknown, sources: RuntimeSourceMap): string
   return content;
 }
 
-function getRepeatingRowSource(row: TableRowDef): string | null {
-  const rowSources = row.cells
-    .map((cell) => cell.value)
-    .filter((value): value is DataFieldBinding => isDataField(value as CellValue) && !(value as DataFieldBinding).agg)
-    .map((binding) => runtimeSourceKey(binding));
-
-  const uniqueSources = Array.from(new Set(rowSources));
-  return uniqueSources.length === 1 ? uniqueSources[0] : null;
-}
 
 function resolveTableBlock(block: TemplateBlock, sources: RuntimeSourceMap): TemplateBlock {
   const tableConfig = block.config as Partial<TableConfig>;

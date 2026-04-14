@@ -1,9 +1,11 @@
 """
 API router for report template endpoints.
 """
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core import get_db
@@ -116,6 +118,52 @@ def delete_template(
         raise HTTPException(status_code=404, detail="Report template not found")
     require_full_access(db, current_user, tpl, "report_templates")
     ReportTemplateService.delete(db, template_id)
+
+
+# ── Excel export ──────────────────────────────────────────────────────
+
+
+class ExportExcelRequest(BaseModel):
+    active_filters: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+@router.post("/{template_id}/export-excel")
+def export_template_excel(
+    template_id: int,
+    payload: ExportExcelRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Export a report template as .xlsx with live dataset data applied.
+    The client passes active filter values; the service resolves all bound
+    data fields and returns a ready-to-open Excel file.
+    """
+    tpl = ReportTemplateService.get_by_id(db, template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Report template not found")
+
+    perm = get_effective_permission(db, current_user, tpl, "report_templates")
+    if perm == "none":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    try:
+        from app.services.excel_export_service import export_template_to_excel
+
+        xlsx_bytes = export_template_to_excel(db, tpl, payload.active_filters)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to export template: {exc}",
+        )
+
+    safe_name = (tpl.name or "report").replace(" ", "_").replace("/", "_")
+    filename = f"{safe_name}.xlsx"
+    return StreamingResponse(
+        iter([xlsx_bytes]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ── Excel import ───────────────────────────────────────────────────────

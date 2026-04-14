@@ -166,11 +166,12 @@ def _build_check_sql(
             return None
         threshold = float(config.get("threshold") or 0)
         max_null_pct = 100.0 - threshold
-        # rows_failed = 1 if null% > max_null_pct else 0  (table-level flag)
+        null_count_expr = filter_expr(f"{qcol} IS NULL")
+        # rows_failed = null count if null% > max_null_pct else 0  (table-level flag)
         return (
             f"SELECT COUNT(*) AS rows_checked, "
-            f"CASE WHEN (COUNT(*) FILTER (WHERE {qcol} IS NULL) * 100.0 / NULLIF(COUNT(*), 0)) > {max_null_pct} "
-            f"THEN COUNT(*) FILTER (WHERE {qcol} IS NULL) ELSE 0 END AS rows_failed "
+            f"CASE WHEN ({null_count_expr} * 100.0 / NULLIF(COUNT(*), 0)) > {max_null_pct} "
+            f"THEN {null_count_expr} ELSE 0 END AS rows_failed "
             f"FROM {table_ref}"
         )
 
@@ -270,8 +271,9 @@ def _build_check_sql(
         if not cols:
             return None
         combo = ", ".join(_q(c) for c in cols)
+        # COALESCE handles the case where no duplicates exist (subquery returns 0 rows → SUM = NULL)
         return (
-            f"SELECT SUM(cnt) AS rows_checked, SUM(cnt - 1) AS rows_failed FROM ("
+            f"SELECT COALESCE(SUM(cnt), 0) AS rows_checked, COALESCE(SUM(cnt - 1), 0) AS rows_failed FROM ("
             f"  SELECT COUNT(*) AS cnt FROM {table_ref} GROUP BY {combo} HAVING COUNT(*) > 1"
             f") dups"
         )

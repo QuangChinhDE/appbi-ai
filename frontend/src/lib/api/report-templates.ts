@@ -41,4 +41,29 @@ export const reportTemplateApi = {
     });
     return response.data;
   },
+
+  exportExcel: async (
+    id: number,
+    activeFilters: Array<{ filterId: string; value: any }>,
+    templateName?: string,
+  ): Promise<void> => {
+    const response = await apiClient.post(
+      `/report-templates/${id}/export-excel`,
+      { active_filters: activeFilters },
+      { responseType: 'arraybuffer' },
+    );
+    const blob = new Blob([response.data], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = templateName
+      ? `${templateName.replace(/[/\\?%*:|"<>]/g, '_')}.xlsx`
+      : `template_${id}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  },
 };

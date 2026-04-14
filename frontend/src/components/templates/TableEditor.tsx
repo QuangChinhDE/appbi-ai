@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Plus, Trash2, Database, Merge, Bold, AlignLeft, AlignCenter, AlignRight, GripVertical } from 'lucide-react';
+import { Plus, Trash2, Database, Merge, Bold, AlignLeft, AlignCenter, AlignRight, GripVertical, RefreshCw, Pencil } from 'lucide-react';
 import type { TableConfig, TableRowDef, TableCellDef, CellValue, DataFieldBinding } from '@/types/template';
 import { isDataField, isFormula, cellDisplayText } from '@/types/template';
+import { getRepeatingRowSource } from '@/lib/templateUtils';
 import { DataFieldPicker } from './DataFieldPicker';
 
 /* ── Helpers ───────────────────────────────────────────────── */
@@ -72,6 +73,12 @@ export function TableEditor({ config, onChange }: TableEditorProps) {
   const handleDoubleClick = (r: number, c: number) => {
     const cell = rows[r]?.cells[c];
     if (!cell) return;
+    // If cell has a data binding, open the picker to re-configure instead of text-edit
+    if (isDataField(cell.value as CellValue)) {
+      setSelectedCell({ r, c });
+      setShowFieldPicker(true);
+      return;
+    }
     setEditingCell({ r, c });
   };
 
@@ -79,7 +86,6 @@ export function TableEditor({ config, onChange }: TableEditorProps) {
     if (e.key === 'Enter' || e.key === 'Tab') {
       e.preventDefault();
       setEditingCell(null);
-      // move to next cell
       if (e.key === 'Tab') {
         const nc = c + 1 < cols ? c + 1 : 0;
         const nr = nc === 0 ? (r + 1 < rows.length ? r + 1 : 0) : r;
@@ -136,7 +142,6 @@ export function TableEditor({ config, onChange }: TableEditorProps) {
       if (ri !== r) return row;
       const cells = [...row.cells];
       cells[fromC] = { ...cells[fromC], colSpan: toC - fromC + 1 };
-      // clear merged-away cells
       for (let i = fromC + 1; i <= toC && i < cells.length; i++) {
         cells[i] = { ...cells[i], value: '', colSpan: undefined };
       }
@@ -258,15 +263,25 @@ export function TableEditor({ config, onChange }: TableEditorProps) {
 
             <div className="mx-1 h-4 w-px bg-gray-200" />
 
-            {/* Data field */}
+            {/* Data field — shows "Edit binding" when cell already has a binding */}
             <div className="relative">
-              <button
-                onClick={(e) => { e.stopPropagation(); setShowFieldPicker(!showFieldPicker); }}
-                className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-gray-600 hover:bg-gray-50"
-                title="Insert data field from dataset"
-              >
-                <Database className="h-3 w-3" /> Data
-              </button>
+              {isDataField(selCell.value as CellValue) ? (
+                <button
+                  onClick={(e) => { e.stopPropagation(); setShowFieldPicker(!showFieldPicker); }}
+                  className="inline-flex items-center gap-1 rounded border border-blue-300 bg-blue-50 px-2 py-1 text-blue-700 hover:bg-blue-100"
+                  title="Re-configure this data field binding"
+                >
+                  <Pencil className="h-3 w-3" /> Edit binding
+                </button>
+              ) : (
+                <button
+                  onClick={(e) => { e.stopPropagation(); setShowFieldPicker(!showFieldPicker); }}
+                  className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-gray-600 hover:bg-gray-50"
+                  title="Insert data field from dataset"
+                >
+                  <Database className="h-3 w-3" /> Data
+                </button>
+              )}
               {showFieldPicker && (
                 <div className="absolute top-full left-0 z-50 mt-1" onClick={(e) => e.stopPropagation()}>
                   <DataFieldPicker
@@ -311,66 +326,90 @@ export function TableEditor({ config, onChange }: TableEditorProps) {
       <div className="overflow-auto rounded border border-gray-300">
         <table className="w-full border-collapse text-xs">
           <tbody>
-            {rows.map((row, ri) => (
-              <tr key={ri} className={row.isHeader ? 'bg-gray-100' : ri % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}>
-                {/* Row grip */}
-                <td className="w-5 border border-gray-200 bg-gray-50 text-center text-gray-300 select-none">
-                  <GripVertical className="h-3 w-3 mx-auto" />
-                </td>
-                {row.cells.map((cell, ci) => {
-                  if (cell.hidden) return null;
+            {rows.map((row, ri) => {
+              const repeatSourceKey = row.isHeader ? null : getRepeatingRowSource(row);
+              const trClass = row.isHeader
+                ? 'bg-gray-100'
+                : repeatSourceKey
+                  ? 'bg-emerald-50/40'
+                  : ri % 2 === 0 ? 'bg-white' : 'bg-gray-50/50';
 
-                  // Skip cells that are "merged away"
-                  if (ci > 0) {
-                    // Check if a previous cell in this row spans over this one
-                    let skip = false;
-                    for (let prev = 0; prev < ci; prev++) {
-                      if (row.cells[prev].hidden) continue;
-                      const prevSpan = row.cells[prev].colSpan ?? 1;
-                      if (prev + prevSpan > ci) { skip = true; break; }
+              return (
+                <tr key={ri} className={trClass}>
+                  {/* Row type indicator in grip column */}
+                  <td
+                    className="w-5 border border-gray-200 bg-gray-50/80 text-center select-none cursor-default"
+                    title={
+                      row.isHeader
+                        ? 'Header row'
+                        : repeatSourceKey
+                          ? 'Repeating row — expands once per data row at preview/export time'
+                          : 'Static row'
                     }
-                    if (skip) return null;
-                  }
+                  >
+                    {row.isHeader ? (
+                      <span className="inline-flex items-center justify-center rounded bg-blue-100 px-0.5 text-[9px] font-bold text-blue-700">H</span>
+                    ) : repeatSourceKey ? (
+                      <RefreshCw className="h-2.5 w-2.5 mx-auto text-emerald-600" />
+                    ) : (
+                      <GripVertical className="h-3 w-3 mx-auto text-gray-300" />
+                    )}
+                  </td>
 
-                  const isEditing = editingCell?.r === ri && editingCell?.c === ci;
-                  const isSel = sel?.r === ri && sel?.c === ci;
-                  const isMergeTarget = mergeStart && mergeStart.r === ri && mergeStart.c === ci;
-                  const span = cell.colSpan ?? 1;
+                  {row.cells.map((cell, ci) => {
+                    if (cell.hidden) return null;
 
-                  return (
-                    <td
-                      key={ci}
-                      colSpan={span > 1 ? span : undefined}
-                      onClick={(e) => handleCellClick(e, ri, ci)}
-                      onDoubleClick={() => handleDoubleClick(ri, ci)}
-                      className={`border border-gray-200 px-2 py-1.5 min-w-[60px] transition-colors cursor-cell
-                        ${cell.bold ? 'font-semibold' : ''}
-                        ${cell.align === 'center' ? 'text-center' : cell.align === 'right' ? 'text-right' : 'text-left'}
-                        ${isSel ? 'ring-2 ring-inset ring-blue-500 bg-blue-50/30' : ''}
-                        ${isMergeTarget ? 'ring-2 ring-inset ring-orange-400' : ''}
-                        ${row.isHeader ? 'font-semibold text-gray-700' : 'text-gray-800'}
-                      `}
-                      style={{ backgroundColor: cell.bg || undefined }}
-                    >
-                      {isEditing && typeof cell.value === 'string' ? (
-                        <input
-                          ref={editRef}
-                          type="text"
-                          value={cell.value}
-                          onChange={(e) => setCellValue(ri, ci, e.target.value)}
-                          onKeyDown={(e) => handleInputKey(e, ri, ci)}
-                          onBlur={() => setEditingCell(null)}
-                          className="w-full bg-transparent outline-none"
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                      ) : (
-                        <CellDisplay value={cell.value} />
-                      )}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
+                    // Skip cells merged away by a previous cell
+                    if (ci > 0) {
+                      let skip = false;
+                      for (let prev = 0; prev < ci; prev++) {
+                        if (row.cells[prev].hidden) continue;
+                        const prevSpan = row.cells[prev].colSpan ?? 1;
+                        if (prev + prevSpan > ci) { skip = true; break; }
+                      }
+                      if (skip) return null;
+                    }
+
+                    const isEditing = editingCell?.r === ri && editingCell?.c === ci;
+                    const isSel = sel?.r === ri && sel?.c === ci;
+                    const isMergeTarget = mergeStart && mergeStart.r === ri && mergeStart.c === ci;
+                    const span = cell.colSpan ?? 1;
+
+                    return (
+                      <td
+                        key={ci}
+                        colSpan={span > 1 ? span : undefined}
+                        onClick={(e) => handleCellClick(e, ri, ci)}
+                        onDoubleClick={() => handleDoubleClick(ri, ci)}
+                        className={`border border-gray-200 px-2 py-1.5 min-w-[60px] transition-colors cursor-cell
+                          ${cell.bold ? 'font-semibold' : ''}
+                          ${cell.align === 'center' ? 'text-center' : cell.align === 'right' ? 'text-right' : 'text-left'}
+                          ${isSel ? 'ring-2 ring-inset ring-blue-500 bg-blue-50/30' : ''}
+                          ${isMergeTarget ? 'ring-2 ring-inset ring-orange-400' : ''}
+                          ${row.isHeader ? 'font-semibold text-gray-700' : 'text-gray-800'}
+                        `}
+                        style={{ backgroundColor: cell.bg || undefined }}
+                      >
+                        {isEditing && typeof cell.value === 'string' ? (
+                          <input
+                            ref={editRef}
+                            type="text"
+                            value={cell.value}
+                            onChange={(e) => setCellValue(ri, ci, e.target.value)}
+                            onKeyDown={(e) => handleInputKey(e, ri, ci)}
+                            onBlur={() => setEditingCell(null)}
+                            className="w-full bg-transparent outline-none"
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                        ) : (
+                          <CellDisplay value={cell.value} />
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -385,10 +424,20 @@ function CellDisplay({ value }: { value: CellValue }) {
     return <span className="whitespace-pre-wrap">{value || '\u00A0'}</span>;
   }
   if (isDataField(value)) {
+    // Aggregated bindings — purple chip
+    if (value.agg) {
+      return (
+        <span className="inline-flex items-center gap-1 rounded bg-purple-100 px-1.5 py-0.5 text-[10px] font-medium text-purple-700">
+          <Database className="h-2.5 w-2.5" />
+          {value.agg}({value.label ? value.label.split('.').pop() : value.column})
+        </span>
+      );
+    }
+    // Row-by-row (repeating) bindings — blue chip
     return (
       <span className="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
-        <Database className="h-2.5 w-2.5" />
-        {value.label ?? value.column}
+        <RefreshCw className="h-2.5 w-2.5" />
+        {'{{'}{value.label ? value.label.split('.').pop() : value.column}{'}}'}
       </span>
     );
   }

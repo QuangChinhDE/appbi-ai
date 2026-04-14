@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useState } from 'react';
-import { X, Database } from 'lucide-react';
-import type { TemplateBlock, CellValue, DataFieldBinding } from '@/types/template';
+import { X, Database, RefreshCw } from 'lucide-react';
+import type { TemplateBlock, CellValue, DataFieldBinding, TableConfig } from '@/types/template';
 import { isDataField } from '@/types/template';
+import { getRepeatingRowSource } from '@/lib/templateUtils';
 import { DataFieldPicker } from './DataFieldPicker';
 
 interface BlockSettingsProps {
@@ -24,7 +25,6 @@ export function BlockSettings({ block, onChange, onClose }: BlockSettingsProps) 
     onChange({ ...block, layout: { ...block.layout, ...patch } });
   };
 
-  /** Insert a data field binding into text block content */
   const insertTextDataField = (binding: DataFieldBinding) => {
     const current: CellValue[] = Array.isArray(cfg.content)
       ? cfg.content
@@ -76,7 +76,7 @@ export function BlockSettings({ block, onChange, onClose }: BlockSettingsProps) 
       <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-3 text-sm">
         <p className="text-xs text-gray-400 uppercase tracking-wider">{block.type} block</p>
 
-        {/* ── Title block settings ──────────────────────────────────── */}
+        {/* ── Title block ─────────────────────────────────────── */}
         {block.type === 'title' && (
           <>
             <label className="block">
@@ -99,27 +99,67 @@ export function BlockSettings({ block, onChange, onClose }: BlockSettingsProps) 
           </>
         )}
 
-        {/* ── Table block settings (basic options — editing via TableEditor panel) */}
-        {block.type === 'table' && (
-          <>
-            <label className="block">
-              <span className="text-gray-600">Table heading</span>
-              <input type="text" value={cfg.heading ?? ''} onChange={(e) => updateConfig({ heading: e.target.value })}
-                placeholder="Table title…"
-                className="mt-1 w-full rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
-            </label>
-            <label className="flex items-center gap-2">
-              <input type="checkbox" checked={cfg.showBorder ?? true} onChange={(e) => updateConfig({ showBorder: e.target.checked })}
-                className="rounded border-gray-300" />
-              <span className="text-gray-600">Show borders</span>
-            </label>
-            <p className="text-xs text-gray-400 mt-2">
-              Click the table block, then use the editor panel below the canvas to edit cells, merge columns, and link data fields.
-            </p>
-          </>
-        )}
+        {/* ── Table block — binding summary ───────────────────── */}
+        {block.type === 'table' && (() => {
+          const tableCfg = block.config as Partial<TableConfig>;
+          const allCells = tableCfg.rows?.flatMap((r) => r.cells) ?? [];
+          const boundCells = allCells.filter((c) => isDataField(c.value as CellValue));
+          const boundCount = boundCells.length;
 
-        {/* ── Signature block settings ──────────────────────────────── */}
+          const repeatRowCount = tableCfg.rows?.filter((r) =>
+            !r.isHeader && getRepeatingRowSource(r) !== null,
+          ).length ?? 0;
+
+          const sources = [...new Set(
+            boundCells.map((c) => {
+              const b = c.value as DataFieldBinding;
+              return `${b.datasetId}:${b.tableId}`;
+            }),
+          )];
+
+          return (
+            <>
+              <label className="block">
+                <span className="text-gray-600">Table heading</span>
+                <input type="text" value={cfg.heading ?? ''} onChange={(e) => updateConfig({ heading: e.target.value })}
+                  placeholder="Table title…"
+                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={cfg.showBorder ?? true} onChange={(e) => updateConfig({ showBorder: e.target.checked })}
+                  className="rounded border-gray-300" />
+                <span className="text-gray-600">Show borders</span>
+              </label>
+
+              {/* Data binding summary */}
+              <div className="rounded-md border border-gray-200 bg-gray-50 p-2.5 space-y-1">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 mb-1.5">Data bindings</p>
+                {boundCount === 0 ? (
+                  <p className="text-xs text-gray-400 italic">No data bindings yet — select a cell in the table editor below and click "Data"</p>
+                ) : (
+                  <>
+                    <p className="text-xs text-gray-600">
+                      <span className="font-medium text-gray-800">{boundCount}</span> cell{boundCount !== 1 ? 's' : ''} bound to data
+                    </p>
+                    {repeatRowCount > 0 && (
+                      <p className="flex items-center gap-1 text-xs text-emerald-700">
+                        <RefreshCw className="h-3 w-3" />
+                        <span className="font-medium">{repeatRowCount}</span> repeating row{repeatRowCount !== 1 ? 's' : ''}
+                      </p>
+                    )}
+                    {sources.length > 0 && (
+                      <p className="text-[10px] text-gray-400 truncate">
+                        Sources: {sources.join(', ')}
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            </>
+          );
+        })()}
+
+        {/* ── Signature block ──────────────────────────────────── */}
         {block.type === 'signature' && (
           <label className="block">
             <span className="text-gray-600">Signature columns (comma-separated titles)</span>
@@ -134,7 +174,7 @@ export function BlockSettings({ block, onChange, onClose }: BlockSettingsProps) 
           </label>
         )}
 
-        {/* ── Text block settings ───────────────────────────────────── */}
+        {/* ── Text block ───────────────────────────────────────── */}
         {block.type === 'text' && (() => {
           const segments: CellValue[] = Array.isArray(cfg.content)
             ? cfg.content
@@ -226,7 +266,7 @@ export function BlockSettings({ block, onChange, onClose }: BlockSettingsProps) 
           );
         })()}
 
-        {/* ── Image block settings ──────────────────────────────────── */}
+        {/* ── Image block ──────────────────────────────────────── */}
         {block.type === 'image' && (
           <>
             <label className="block">
@@ -244,7 +284,7 @@ export function BlockSettings({ block, onChange, onClose }: BlockSettingsProps) 
           </>
         )}
 
-        {/* ── Spacer ────────────────────────────────────────────────── */}
+        {/* ── Spacer ────────────────────────────────────────────── */}
         {block.type === 'spacer' && (
           <p className="text-gray-400 text-xs">Adjust height by resizing the block on the canvas.</p>
         )}
