@@ -410,6 +410,7 @@ def _sync_dataset_model_safely(db: Session, dataset_id: int) -> None:
     try:
         generate_dataset_model(db, dataset_id, force=False)
     except Exception as exc:
+        db.rollback()
         logger.warning("Dataset model sync skipped for dataset %s: %s", dataset_id, exc)
 
 
