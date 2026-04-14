@@ -373,6 +373,12 @@ class QualityRuleResult(BaseModel):
     detail: Optional[str] = None
 
 
+class QualityRuleDuplicateRequest(BaseModel):
+    """Request body for duplicating a quality rule."""
+    target_table_id: Optional[int] = Field(default=None, description="Target table ID; omit to keep same table")
+    name_suffix: str = Field(default=" (copy)", max_length=80)
+
+
 class QualityRunTriggerResponse(BaseModel):
     run_id: int
     status: str
@@ -384,6 +390,8 @@ class QualityRunResponse(BaseModel):
     status: str
     score: Optional[float] = None
     results: Optional[Dict[str, Any]] = None
+    progress_done: Optional[int] = None
+    progress_total: Optional[int] = None
     error_message: Optional[str] = None
     triggered_by_id: Optional[str] = None
     started_at: Optional[datetime] = None

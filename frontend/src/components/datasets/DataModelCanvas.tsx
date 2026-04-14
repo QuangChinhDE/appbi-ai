@@ -15,6 +15,7 @@ import React, {
   useCallback,
 } from 'react';
 import {
+  BookOpen,
   Loader2,
   RefreshCw,
   ChevronDown,
@@ -29,6 +30,7 @@ import {
   Plus,
   Trash2,
   Link2,
+  X,
 } from 'lucide-react';
 import {
   useDatasetModel,
@@ -40,6 +42,7 @@ import {
   type DatasetModelExplore,
 } from '@/hooks/use-dataset-model';
 import { RelationshipDialog } from './RelationshipDialog';
+import { DatasetDictionaryPanel } from './DatasetDictionaryPanel';
 import { toast } from 'sonner';
 
 // ─── Layout constants ────────────────────────────────────────────────────────
@@ -152,11 +155,12 @@ function DimIcon({ type }: { type: string }) {
 interface ViewCardProps {
   view: DatasetModelView;
   onEdit?: () => void;
+  isSelected?: boolean;
   relationshipCols?: Set<string>;
   calendarCols?: Set<string>;
 }
 
-function ViewCard({ view, onEdit, relationshipCols, calendarCols }: ViewCardProps) {
+function ViewCard({ view, onEdit, isSelected, relationshipCols, calendarCols }: ViewCardProps) {
   const [dimsOpen, setDimsOpen] = useState(true);
   const [msrOpen,  setMsrOpen]  = useState(false);
   const emphasizedCols = useMemo(
@@ -174,13 +178,17 @@ function ViewCard({ view, onEdit, relationshipCols, calendarCols }: ViewCardProp
 
   return (
     <div
-      className="bg-white rounded-lg border border-gray-200 shadow-sm select-none"
+      className={`bg-white rounded-lg border shadow-sm select-none transition-all ${
+        isSelected ? 'border-blue-400 shadow-blue-100 shadow-md ring-2 ring-blue-300/50' : 'border-gray-200'
+      }`}
       style={{ width: CARD_WIDTH }}
     >
       {/* Header */}
-      <div className="px-3 py-2.5 border-b bg-gradient-to-r from-blue-50 to-indigo-50 rounded-t-lg flex items-center justify-between">
+      <div className={`px-3 py-2.5 border-b rounded-t-lg flex items-center justify-between bg-gradient-to-r ${
+        isSelected ? 'from-blue-100 to-indigo-100' : 'from-blue-50 to-indigo-50'
+      }`}>
         <div className="flex items-center gap-2 min-w-0">
-          <div className="w-2 h-2 rounded-full bg-blue-500 shrink-0" />
+          <div className={`w-2 h-2 rounded-full shrink-0 ${isSelected ? 'bg-blue-600' : 'bg-blue-500'}`} />
           <span className="font-semibold text-sm text-gray-800 truncate">
             {getViewLabel(view)}
           </span>
@@ -188,8 +196,12 @@ function ViewCard({ view, onEdit, relationshipCols, calendarCols }: ViewCardProp
         {onEdit && (
           <button
             onClick={onEdit}
-            className="p-1 rounded hover:bg-white/60 text-gray-400 hover:text-gray-600 transition-colors shrink-0"
-            title="Edit fields"
+            className={`p-1 rounded transition-colors shrink-0 ${
+              isSelected
+                ? 'bg-blue-500 text-white hover:bg-blue-600'
+                : 'hover:bg-white/60 text-gray-400 hover:text-gray-600'
+            }`}
+            title={isSelected ? 'Editing this view' : 'Edit this view'}
           >
             <Pencil className="w-3 h-3" />
           </button>
@@ -448,8 +460,11 @@ function RelLine({
 
 interface DataModelCanvasProps {
   datasetId: number;
+  datasetName?: string;
+  tables?: { id: number; display_name?: string; source_table_name?: string }[];
   canEdit?: boolean;
-  onEditView?: (view: DatasetModelView) => void;
+  selectedViewId?: number | null;
+  onSelectView?: (view: DatasetModelView) => void;
 }
 
 interface ModelRelationship {
@@ -610,14 +625,18 @@ function CalendarLayerBanner({
 
 export function DataModelCanvas({
   datasetId,
+  datasetName = 'Dataset',
+  tables = [],
   canEdit = true,
-  onEditView,
+  selectedViewId,
+  onSelectView,
 }: DataModelCanvasProps) {
   const { data: model, isLoading, error, refetch } = useDatasetModel(datasetId);
   const generateModel = useGenerateModel();
   const addJoin       = useAddJoin();
   const removeJoin    = useRemoveJoin();
   const [showCalendarLayer, setShowCalendarLayer] = useState(false);
+  const [dictModalOpen, setDictModalOpen] = useState(false);
   const calendarPresentationView = useMemo(
     () => (model?.views ?? []).find((view) => view.view_role === 'calendar_dimension') ?? null,
     [model?.views],
@@ -963,6 +982,16 @@ export function DataModelCanvas({
               Delete
             </button>
           )}
+          {/* Dictionary modal button */}
+          <button
+            onClick={() => setDictModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600
+              border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+            title="View & edit dataset dictionary"
+          >
+            <BookOpen className="w-3.5 h-3.5" />
+            Dictionary
+          </button>
           {canEdit && (
             <button
               onClick={() => { setSelectedRelKey(null); setDialogOpen(true); }}
@@ -1060,10 +1089,11 @@ export function DataModelCanvas({
                 <ViewCard
                   view={view}
                   onEdit={
-                    canEdit && onEditView && !view.system_managed
-                      ? () => onEditView(view)
+                    onSelectView && !view.system_managed
+                      ? () => onSelectView(view)
                       : undefined
                   }
+                  isSelected={selectedViewId === view.id}
                   relationshipCols={relationshipHighlights[view.id]}
                   calendarCols={calendarHighlights[view.id]}
                 />
@@ -1081,6 +1111,43 @@ export function DataModelCanvas({
         views={joinableViews}
         isSaving={addJoin.isPending}
       />
+
+      {/* Dataset Dictionary Modal */}
+      {dictModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-stretch justify-end">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/30 backdrop-blur-[2px]"
+            onClick={() => setDictModalOpen(false)}
+          />
+          {/* Panel — slides in from right, wide enough for 2-col layout */}
+          <div className="relative z-10 flex w-full max-w-4xl flex-col bg-white shadow-2xl">
+            {/* Modal header */}
+            <div className="flex shrink-0 items-center gap-3 border-b border-gray-200 px-5 py-3">
+              <BookOpen className="h-4 w-4 text-gray-500" />
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wide">Dataset</p>
+                <h2 className="text-sm font-semibold text-gray-900 truncate">{datasetName} — Dictionary</h2>
+              </div>
+              <button
+                onClick={() => setDictModalOpen(false)}
+                className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            {/* Dictionary panel content */}
+            <div className="flex-1 overflow-hidden">
+              <DatasetDictionaryPanel
+                datasetId={datasetId}
+                datasetName={datasetName}
+                tables={tables as any}
+                canEdit={canEdit}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

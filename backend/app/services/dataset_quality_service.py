@@ -194,12 +194,20 @@ def _build_check_sql(
         pattern = str(config.get("pattern") or "").replace("'", "''")
         if not pattern:
             return None
+        flags = str(config.get("flags") or "").lower()
+        case_insensitive = "i" in flags
         if dialect == "bigquery":
-            cond = f"NOT REGEXP_CONTAINS(CAST({qcol} AS STRING), r'{pattern}')"
+            cond = f"NOT REGEXP_CONTAINS(CAST({qcol} AS STRING), r'(?{'i' if case_insensitive else ''}{pattern})')"
         elif dialect == "mysql":
-            cond = f"CAST({qcol} AS CHAR) NOT REGEXP '{pattern}'"
+            # MySQL REGEXP is case-insensitive by default; use BINARY to force case-sensitive
+            if case_insensitive:
+                cond = f"CAST({qcol} AS CHAR) NOT REGEXP '{pattern}'"
+            else:
+                cond = f"BINARY CAST({qcol} AS CHAR) NOT REGEXP '{pattern}'"
         else:
-            cond = f"CAST({qcol} AS TEXT) !~ '{pattern}'"
+            # PostgreSQL: ~* for case-insensitive, !~ for case-sensitive
+            op = "!~*" if case_insensitive else "!~"
+            cond = f"CAST({qcol} AS TEXT) {op} '{pattern}'"
         return (
             f"SELECT COUNT(*) AS rows_checked, "
             f"{filter_expr(f'{qcol} IS NOT NULL AND {cond}')} AS rows_failed "
@@ -470,6 +478,32 @@ class DatasetQualityService:
         return rule
 
     @staticmethod
+    def duplicate_rule(
+        db: Session,
+        rule: DatasetQualityRule,
+        target_table_id: Optional[int] = None,
+        name_suffix: str = " (copy)",
+    ) -> DatasetQualityRule:
+        """Duplicate an existing rule, optionally to a different table."""
+        new_rule = DatasetQualityRule(
+            dataset_id=rule.dataset_id,
+            table_id=target_table_id if target_table_id is not None else rule.table_id,
+            column_name=rule.column_name,
+            dimension=rule.dimension,
+            rule_type=rule.rule_type,
+            name=rule.name + name_suffix,
+            config=dict(rule.config) if rule.config else {},
+            severity=rule.severity,
+            enabled=rule.enabled,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(new_rule)
+        db.commit()
+        db.refresh(new_rule)
+        return new_rule
+
+    @staticmethod
     def delete_rule(db: Session, rule: DatasetQualityRule) -> None:
         db.delete(rule)
         db.commit()
@@ -653,14 +687,23 @@ class DatasetQualityService:
 
         results: Dict[str, Any] = {}
         passed_count = 0
+        total = len(enabled_rules)
 
-        for rule in enabled_rules:
+        # Ghi tổng số rules ngay từ đầu để FE biết denominator
+        run.progress_done = 0
+        run.progress_total = total
+        db.commit()
+
+        for idx, rule in enumerate(enabled_rules, start=1):
             result = DatasetQualityService._execute_single_rule(db, dataset_obj, rule, table_map, ds_map)
             results[str(rule.id)] = result
             if result.get("passed"):
                 passed_count += 1
+            # Commit progress sau mỗi rule để FE poll thấy tiến trình
+            run.progress_done = idx
+            db.commit()
 
-        score = round(passed_count / len(enabled_rules) * 100, 1) if enabled_rules else 100.0
+        score = round(passed_count / total * 100, 1) if total else 100.0
 
         run.status = "completed"
         run.score = score

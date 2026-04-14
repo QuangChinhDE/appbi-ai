@@ -329,6 +329,8 @@ export interface QualityRun {
   status: 'queued' | 'running' | 'completed' | 'failed';
   score?: number | null;
   results?: Record<string, QualityRuleResult> | null;
+  progress_done?: number | null;
+  progress_total?: number | null;
   error_message?: string | null;
   triggered_by_id?: string | null;
   started_at?: string | null;
@@ -853,6 +855,27 @@ export function useDeleteQualityRule(datasetId: number) {
   });
 }
 
+export function useDuplicateQualityRule(datasetId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ ruleId, targetTableId, nameSuffix }: {
+      ruleId: number;
+      targetTableId?: number;
+      nameSuffix?: string;
+    }) => {
+      const res = await api.post<QualityRule>(
+        `/datasets/${datasetId}/quality/rules/${ruleId}/duplicate`,
+        { target_table_id: targetTableId ?? null, name_suffix: nameSuffix ?? ' (copy)' }
+      );
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.qualityRules(datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.qualitySummary(datasetId) });
+    },
+  });
+}
+
 export function useTriggerQualityRun(datasetId: number) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -894,10 +917,16 @@ export function useQualityRunPoll(
       return res.data;
     },
     enabled: enabled && datasetId !== null && runId !== null,
+    // Chỉ poll khi đang queued/running, tự dừng khi completed/failed
     refetchInterval: (query) => {
       const data = query.state.data;
       if (!data) return 2000;
-      return data.status === 'queued' || data.status === 'running' ? 2000 : false;
+      if (data.status === 'queued' || data.status === 'running') return 2000;
+      return false; // dừng poll ngay khi có kết quả
     },
+    // Không dùng staleTime mặc định — luôn fetch fresh khi enabled
+    staleTime: 0,
+    // Không retry khi poll bị lỗi tạm thời
+    retry: false,
   });
 }

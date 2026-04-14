@@ -131,6 +131,8 @@ class DatasetQualityRun(Base):
     status = Column(String(20), nullable=False, default="queued")   # queued | running | completed | failed
     score = Column(Float, nullable=True)                            # 0–100 overall pass-rate
     results = Column(JSONB, nullable=True)                          # per-rule detail
+    progress_done = Column(Integer, nullable=True)                  # rules checked so far
+    progress_total = Column(Integer, nullable=True)                 # total enabled rules
     error_message = Column(Text, nullable=True)
     triggered_by_id = Column(String(36), nullable=True)             # user UUID string
     started_at = Column(DateTime, nullable=True)

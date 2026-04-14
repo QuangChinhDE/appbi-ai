@@ -71,6 +71,8 @@ def _dialect_for_ds_type(ds_type: str) -> str:
         "bigquery": "bigquery",
         "postgresql": "postgresql",
         "mysql": "mysql",
+        "google_sheets": "duckdb",
+        "manual": "duckdb",
     }.get(ds_type_val, "postgresql")
 
 

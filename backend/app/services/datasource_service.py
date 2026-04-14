@@ -1334,53 +1334,93 @@ class DataSourceConnectionService:
         sql_query: str,
         limit: int = None
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
-        """Execute query against Google Sheets.
+        """Execute SQL query against Google Sheets using DuckDB.
 
-        Sheet resolution order:
-          1. Parse the sheet name from the SQL (e.g. SELECT * FROM "Sheet1")
-          2. Look it up in the local snapshot (config['sheets']) — no API call
-          3. Fall back to a live API call when the snapshot is missing
+        Data resolution order:
+          1. Use local snapshot (config['sheets']) — no API call
+          2. Fall back to a live API call when the snapshot is missing
+
+        All sheets are registered as DuckDB in-memory tables so any SQL
+        (WHERE, GROUP BY, ORDER BY, JOINs, CTEs) is fully supported.
         """
         try:
-            from app.services.manual_table_connector import extract_sheet_name_from_sql
-
-            # Determine which sheet the query is targeting
-            parsed_name = extract_sheet_name_from_sql(sql_query)
-            # extract_sheet_name_from_sql returns 'manual_data' as sentinel when not found
-            sheet_name = parsed_name if (parsed_name and parsed_name != 'manual_data') \
-                else config.get('sheet_name')
-
+            # ── Collect all sheet data (snapshot or live API) ─────────────────
             cached_sheets = config.get('sheets')
 
             if cached_sheets:
-                # Resolve sheet: exact match → first available
-                if sheet_name and sheet_name in cached_sheets:
-                    sheet_data = cached_sheets[sheet_name]
-                elif cached_sheets:
-                    first = next(iter(cached_sheets))
-                    logger.warning(
-                        f"Sheet '{sheet_name}' not in snapshot; using '{first}' instead"
-                    )
-                    sheet_data = cached_sheets[first]
-                else:
-                    return [], []
-
-                columns = [col['name'] for col in sheet_data.get('columns', [])]
-                rows = sheet_data.get('rows', [])
-                logger.info(f"Google Sheets data from cache: {len(rows)} rows")
+                all_sheets = cached_sheets  # dict[sheet_name -> {columns, rows}]
+                logger.info(f"Google Sheets data from cache: {len(all_sheets)} sheets")
             else:
-                # No snapshot — live API call
+                # No snapshot — live API call for every sheet
                 from app.services.google_sheets_connector import create_google_sheets_connector
                 connector = create_google_sheets_connector(config)
                 spreadsheet_id = config.get('spreadsheet_id')
-                data = connector.get_sheet_data(spreadsheet_id, sheet_name=sheet_name)
-                columns = [col['name'] for col in data['columns']]
-                rows = data['rows']
-                logger.info(f"Google Sheets data via API: {len(rows)} rows")
+                sheet_names = connector.list_sheets(spreadsheet_id)
+                all_sheets = {}
+                for sn in sheet_names:
+                    data = connector.get_sheet_data(spreadsheet_id, sheet_name=sn)
+                    all_sheets[sn] = data
+                logger.info(f"Google Sheets data via API: {len(all_sheets)} sheets")
 
+            # ── Try DuckDB first (full SQL support) ───────────────────────────
+            try:
+                import duckdb
+                import pyarrow as pa
+
+                con = duckdb.connect(database=":memory:")
+
+                for sheet_name, sheet_data in all_sheets.items():
+                    rows = sheet_data.get('rows', [])
+                    col_defs = sheet_data.get('columns', [])
+                    col_names = [c['name'] for c in col_defs]
+
+                    if rows:
+                        arrays = [pa.array([r.get(c) for r in rows]) for c in col_names]
+                        table = pa.table(dict(zip(col_names, arrays)))
+                    else:
+                        table = pa.table({c: pa.array([], type=pa.string()) for c in col_names})
+
+                    safe_name = sheet_name.replace(" ", "_")
+                    con.register(safe_name, table)
+                    if safe_name != sheet_name:
+                        con.register(sheet_name, table)
+
+                final_sql = sql_query
+                if limit:
+                    final_sql = f"SELECT * FROM ({sql_query}) _lim LIMIT {limit}"
+
+                result = con.execute(final_sql)
+                columns = [desc[0] for desc in result.description]
+                raw_rows = result.fetchall()
+                con.close()
+
+                rows = [dict(zip(columns, row)) for row in raw_rows]
+                logger.info(f"DuckDB executed Google Sheets query: {len(rows)} rows")
+                return columns, rows
+
+            except ImportError:
+                logger.warning("DuckDB not available; falling back to raw sheet scan")
+
+            # ── Fallback: raw sheet scan (simple SELECT * only) ───────────────
+            from app.services.manual_table_connector import extract_sheet_name_from_sql
+
+            parsed_name = extract_sheet_name_from_sql(sql_query)
+            sheet_name = parsed_name if (parsed_name and parsed_name != 'manual_data') \
+                else config.get('sheet_name')
+
+            if sheet_name and sheet_name in all_sheets:
+                sheet_data = all_sheets[sheet_name]
+            elif all_sheets:
+                first = next(iter(all_sheets))
+                logger.warning(f"Sheet '{sheet_name}' not found; using '{first}' instead")
+                sheet_data = all_sheets[first]
+            else:
+                return [], []
+
+            columns = [col['name'] for col in sheet_data.get('columns', [])]
+            rows = sheet_data.get('rows', [])
             if limit:
                 rows = rows[:limit]
-
             return columns, rows
 
         except Exception as e:

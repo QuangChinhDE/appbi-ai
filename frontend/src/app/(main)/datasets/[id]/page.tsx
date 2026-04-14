@@ -426,7 +426,7 @@ export default function DatasetDetailPage() {
   const [tableToDelete, setTableToDelete] = useState<{ id: number; name: string } | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingTable, setIsDeletingTable] = useState(false);
-  const [editingView, setEditingView] = useState<DatasetModelView | null>(null);
+  const [selectedView, setSelectedView] = useState<DatasetModelView | null>(null);
 
   // Tab routing via searchParam — ?tab=tables|quality|model
   // backward compat: ?tab=catalog → quality
@@ -438,6 +438,7 @@ export default function DatasetDetailPage() {
   }, [searchParams]);
 
   const setActiveTab = useCallback((tab: 'tables' | 'quality' | 'model') => {
+    if (tab !== 'model') setSelectedView(null);
     const next = new URLSearchParams(searchParams.toString());
     next.set('tab', tab);
     router.replace(`?${next.toString()}`);
@@ -947,411 +948,375 @@ export default function DatasetDetailPage() {
   }
 
   return (
-    <div className="flex h-full overflow-hidden">
-      {/* Left Sidebar */}
-      <div className="w-80 border-r bg-white flex flex-col">
-        {/* Sidebar Header */}
-        <div className="p-4 border-b">
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* ── Single top header: 1 dòng, compact ── */}
+      <div className="shrink-0 flex items-center gap-3 border-b border-slate-200 bg-white px-4 h-11">
+        {/* Breadcrumb */}
+        <button
+          onClick={() => router.push('/datasets')}
+          className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800 transition-colors"
+        >
+          <ChevronLeft className="w-4 h-4" />
+          Datasets
+        </button>
+        <span className="text-gray-300">/</span>
+        <span className="text-sm font-medium text-gray-900 truncate max-w-[200px]">{dataset.name}</span>
+
+        {/* Divider */}
+        <div className="w-px h-5 bg-gray-200 mx-1" />
+
+        {/* Tab navigation */}
+        <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5">
           <button
-            onClick={() => router.push('/datasets')}
-            className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 mb-3 transition-colors"
+            onClick={() => setActiveTab('tables')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+              activeTab === 'tables'
+                ? 'bg-white text-blue-700 shadow-sm'
+                : 'text-slate-500 hover:bg-white/60'
+            }`}
           >
-            <ChevronLeft className="w-4 h-4" />
-            Back to Datasets
+            <Database className="h-3.5 w-3.5" />
+            Tables
           </button>
-          
-          <h1 className="text-lg font-semibold text-gray-900 mb-1">
-            {dataset.name}
-          </h1>
-          {dataset.description && (
-            <p className="text-sm text-gray-600">{dataset.description}</p>
-          )}
+          <button
+            onClick={() => setActiveTab('quality')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+              activeTab === 'quality'
+                ? 'bg-white text-blue-700 shadow-sm'
+                : 'text-slate-500 hover:bg-white/60'
+            }`}
+          >
+            <ShieldCheck className="h-3.5 w-3.5" />
+            Quality
+          </button>
+          <button
+            onClick={() => setActiveTab('model')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+              activeTab === 'model'
+                ? 'bg-white text-blue-700 shadow-sm'
+                : 'text-slate-500 hover:bg-white/60'
+            }`}
+          >
+            <Sigma className="h-3.5 w-3.5" />
+            Model
+          </button>
         </div>
 
-        {/* Search Tables + Table Groups - only on Tables tab */}
-        {activeTab === 'tables' && (
-        <>
-        {/* Search Tables */}
-        <div className="p-4 border-b">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              type="text"
-              placeholder="Search tables..."
-              value={tableSearchQuery}
-              onChange={(e) => setTableSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+        {/* Spacer */}
+        <div className="flex-1" />
+
+        {/* Table-level actions — chỉ hiện ở tab Tables khi có table được chọn */}
+        {activeTab === 'tables' && selectedTable && !selectedTableIsGenerated && (
+          <div className="flex items-center gap-1">
+            {resPerms.canEdit && (
+              <button
+                onClick={() => setIsManageColumnsOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded transition-colors"
+              >
+                <Columns className="w-3.5 h-3.5" />
+                Columns
+              </button>
+            )}
+            {resPerms.canEdit && (
+              <button
+                onClick={() => setIsAddColumnModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Add Column
+              </button>
+            )}
+            <div className="w-px h-4 bg-gray-200 mx-1" />
+            <label className="flex items-center gap-1.5 text-xs text-gray-500">
+              Rows:
+              <select
+                value={previewLimit}
+                onChange={(e) => { setPreviewLimit(Number(e.target.value)); setPage(1); }}
+                className="px-1.5 py-0.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value={10}>10</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+                <option value={200}>200</option>
+                <option value={500}>500</option>
+                <option value={1000}>1000</option>
+              </select>
+            </label>
+            <button
+              onClick={() => refetchPreview()}
+              disabled={loadingPreview}
+              className="p-1 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors disabled:opacity-40"
+              title="Refresh preview"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingPreview ? 'animate-spin' : ''}`} />
+            </button>
           </div>
-        </div>
-
-        {/* Tables List */}
-        <div className="flex-1 overflow-y-auto p-2">
-          {tableSearchQuery && filteredTables.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-gray-200 px-4 py-6 text-center text-sm text-gray-500">
-              No tables match your search
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {(['calendar', 'source', 'calculated'] as TableGroupKey[]).map((group) => {
-                const tablesInGroup = groupedTables[group];
-                const totalCount = groupCounts[group];
-                const isCollapsed = collapsedGroups[group];
-                const shouldRenderGroup = tableSearchQuery ? tablesInGroup.length > 0 : true;
-
-                if (!shouldRenderGroup) return null;
-
-                return (
-                  <div key={group} className="overflow-hidden rounded-xl border border-gray-200 bg-white">
-                    <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-3 py-3">
-                      <button
-                        type="button"
-                        onClick={() => toggleGroup(group)}
-                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                      >
-                        <span className="text-gray-400">
-                          {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                        </span>
-                        {getTableGroupIcon(group)}
-                        <div className="min-w-0">
-                          <div className="text-sm font-semibold text-gray-900">{getTableGroupLabel(group)}</div>
-                          <div className="text-xs text-gray-500">
-                            {tableSearchQuery ? `${tablesInGroup.length} matching` : `${totalCount} table${totalCount === 1 ? '' : 's'}`}
-                          </div>
-                        </div>
-                      </button>
-
-                      {resPerms.canEdit && activeTab === 'tables' && (
-                        group === 'calendar' ? (
-                          <button
-                            type="button"
-                            onClick={openCalendarModal}
-                            className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50"
-                          >
-                            <Plus className="h-3.5 w-3.5" />
-                            {calendarEnabled ? 'Edit' : 'Add'}
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={group === 'source' ? openSourceTableModal : openCalculatedTableModal}
-                            className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50"
-                          >
-                            <Plus className="h-3.5 w-3.5" />
-                            Add
-                          </button>
-                        )
-                      )}
-                    </div>
-
-                    {!isCollapsed && (
-                      <div className="p-2">
-                        {tablesInGroup.length === 0 ? (
-                          <div className="rounded-lg border border-dashed border-gray-200 px-3 py-5 text-center text-xs text-gray-500">
-                            {getTableGroupEmptyMessage(group)}
-                          </div>
-                        ) : (
-                          <div className="space-y-1">
-                            {tablesInGroup.map((table: DatasetTable) => (
-                              <div
-                                key={table.id}
-                                className={`group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors cursor-pointer ${
-                                  selectedTableId === table.id
-                                    ? 'bg-blue-50 text-blue-900'
-                                    : 'text-gray-900 hover:bg-gray-50'
-                                }`}
-                                onClick={() => {
-                                  startTransition(() => setSelectedTableId(table.id));
-                                  replaceTableInUrl(table.id);
-                                }}
-                              >
-                                {getTableIcon(table)}
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-2">
-                                    <div className="truncate text-sm font-medium">
-                                      {getTablePrimaryName(table)}
-                                    </div>
-                                    <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-600">
-                                      {getTableBadgeLabel(table)}
-                                    </span>
-                                  </div>
-                                  {getTableSecondaryName(table) && (
-                                    <div className="truncate text-xs text-gray-500">
-                                      {getTableSecondaryName(table)}
-                                    </div>
-                                  )}
-                                </div>
-                                {resPerms.canEdit && !isGeneratedCalendarTable(table) && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      openEditTableModal(table);
-                                    }}
-                                    className="rounded p-1 text-gray-400 hover:bg-blue-100 hover:text-blue-600"
-                                    title="Chỉnh sửa bảng"
-                                  >
-                                    <Pencil className="h-3.5 w-3.5" />
-                                  </button>
-                                )}
-                                {resPerms.canDelete && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setDeleteConstraints(null);
-                                      setTableToDelete({
-                                        id: table.id,
-                                        name: table.display_name || table.source_table_name || `Table ${table.id}`,
-                                      });
-                                    }}
-                                    className="rounded p-1 text-gray-400 hover:bg-red-100 hover:text-red-600"
-                                    title="Xóa bảng"
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </button>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-        </>
         )}
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col bg-gray-50 overflow-hidden">
-        {/* Header with pill-shaped tab toggle */}
-        <div className="shrink-0 border-b border-slate-200 bg-white px-5 py-2">
-          <div className="flex items-center gap-4">
-            <div className="inline-flex rounded-xl border border-slate-200 bg-slate-100 p-0.5">
-              <button
-                onClick={() => setActiveTab('tables')}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                  activeTab === 'tables'
-                    ? 'bg-white text-blue-700 shadow-sm'
-                    : 'text-slate-600 hover:bg-white/70'
-                }`}
-              >
-                <Database className="h-3.5 w-3.5" />
-                Tables
-              </button>
-              <button
-                onClick={() => setActiveTab('quality')}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                  activeTab === 'quality'
-                    ? 'bg-white text-blue-700 shadow-sm'
-                    : 'text-slate-600 hover:bg-white/70'
-                }`}
-              >
-                <ShieldCheck className="h-3.5 w-3.5" />
-                Quality
-              </button>
-              <button
-                onClick={() => setActiveTab('model')}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                  activeTab === 'model'
-                    ? 'bg-white text-blue-700 shadow-sm'
-                    : 'text-slate-600 hover:bg-white/70'
-                }`}
-              >
-                <Sigma className="h-3.5 w-3.5" />
-                Model
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {activeTab === 'model' ? (
-          /* ── Model Tab ── */
-          <div className="flex-1 overflow-hidden relative">
-            <DataModelCanvas
-              datasetId={datasetId!}
-              canEdit={resPerms.canEdit}
-              onEditView={(view) => setEditingView(view)}
-            />
-            {editingView && datasetId && (
-              <ModelViewEditPanel
-                datasetId={datasetId}
-                view={editingView}
-                tables={dataset.tables ?? []}
-                canEdit={resPerms.canEdit}
-                onClose={() => setEditingView(null)}
-              />
-            )}
-          </div>
-        ) : activeTab === 'quality' ? (
-          <DatasetQualityPanel
-            datasetId={datasetId!}
-            tables={dataset.tables ?? []}
-            canEdit={resPerms.canEdit}
-          />
-        ) : dataset.tables.length === 0 ? (
-          // Empty state - no tables
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-center max-w-md px-4">
-              <div className="text-gray-400 mb-4">
-                <Database className="w-16 h-16 mx-auto" />
+      {/* ── Body: sidebar + content (sidebar chỉ khi tab=tables) ── */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Sidebar — chỉ render khi tab Tables */}
+        {activeTab === 'tables' && (
+          <div className="w-72 shrink-0 border-r bg-white flex flex-col overflow-hidden">
+            {/* Search */}
+            <div className="px-3 py-2 border-b">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search tables..."
+                  value={tableSearchQuery}
+                  onChange={(e) => setTableSearchQuery(e.target.value)}
+                  className="w-full pl-8 pr-3 py-1.5 text-xs border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
               </div>
-              <h2 className="text-xl font-semibold text-gray-900 mb-2">
-                No tables yet
-              </h2>
-              <p className="text-gray-600 mb-6">
-                Use the add actions in the left sidebar to create a source table, a calculated table, or a Date table.
-              </p>
-              {!resPerms.canEdit && (
-                <p className="text-sm text-gray-500">
-                  Ask an editor on this dataset to add tables for you.
-                </p>
+            </div>
+
+            {/* Table Groups */}
+            <div className="flex-1 overflow-y-auto p-2">
+              {tableSearchQuery && filteredTables.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-gray-200 px-4 py-6 text-center text-xs text-gray-500">
+                  No tables match your search
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {(['calendar', 'source', 'calculated'] as TableGroupKey[]).map((group) => {
+                    const tablesInGroup = groupedTables[group];
+                    const totalCount = groupCounts[group];
+                    const isCollapsed = collapsedGroups[group];
+                    const shouldRenderGroup = tableSearchQuery ? tablesInGroup.length > 0 : true;
+                    if (!shouldRenderGroup) return null;
+
+                    return (
+                      <div key={group} className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+                        <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-2.5 py-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleGroup(group)}
+                            className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                          >
+                            <span className="text-gray-400">
+                              {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                            </span>
+                            {getTableGroupIcon(group)}
+                            <span className="text-xs font-semibold text-gray-800">{getTableGroupLabel(group)}</span>
+                            <span className="text-xs text-gray-400">
+                              {tableSearchQuery ? `${tablesInGroup.length}` : `${totalCount}`}
+                            </span>
+                          </button>
+
+                          {resPerms.canEdit && (
+                            group === 'calendar' ? (
+                              <button
+                                type="button"
+                                onClick={openCalendarModal}
+                                className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-50"
+                              >
+                                <Plus className="h-3 w-3" />
+                                {calendarEnabled ? 'Edit' : 'Add'}
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={group === 'source' ? openSourceTableModal : openCalculatedTableModal}
+                                className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-50"
+                              >
+                                <Plus className="h-3 w-3" />
+                                Add
+                              </button>
+                            )
+                          )}
+                        </div>
+
+                        {!isCollapsed && (
+                          <div className="p-1.5">
+                            {tablesInGroup.length === 0 ? (
+                              <div className="rounded border border-dashed border-gray-200 px-3 py-4 text-center text-[11px] text-gray-400">
+                                {getTableGroupEmptyMessage(group)}
+                              </div>
+                            ) : (
+                              <div className="space-y-0.5">
+                                {tablesInGroup.map((table: DatasetTable) => (
+                                  <div
+                                    key={table.id}
+                                    className={`group relative flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors cursor-pointer ${
+                                      selectedTableId === table.id
+                                        ? 'bg-blue-50 text-blue-900'
+                                        : 'text-gray-800 hover:bg-gray-50'
+                                    }`}
+                                    onClick={() => {
+                                      startTransition(() => setSelectedTableId(table.id));
+                                      replaceTableInUrl(table.id);
+                                    }}
+                                  >
+                                    {getTableIcon(table)}
+                                    <div className="min-w-0 flex-1">
+                                      <div className="truncate text-xs font-medium leading-tight">
+                                        {getTablePrimaryName(table)}
+                                      </div>
+                                      {getTableSecondaryName(table) && (
+                                        <div className="truncate text-[11px] text-gray-400 leading-tight">
+                                          {getTableSecondaryName(table)}
+                                        </div>
+                                      )}
+                                    </div>
+                                    {resPerms.canEdit && !isGeneratedCalendarTable(table) && (
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); openEditTableModal(table); }}
+                                        className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-gray-400 hover:bg-blue-100 hover:text-blue-600 transition-opacity"
+                                        title="Edit table"
+                                      >
+                                        <Pencil className="h-3 w-3" />
+                                      </button>
+                                    )}
+                                    {resPerms.canDelete && (
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setDeleteConstraints(null);
+                                          setTableToDelete({
+                                            id: table.id,
+                                            name: table.display_name || table.source_table_name || `Table ${table.id}`,
+                                          });
+                                        }}
+                                        className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-gray-400 hover:bg-red-100 hover:text-red-600 transition-opacity"
+                                        title="Delete table"
+                                      >
+                                        <Trash2 className="h-3 w-3" />
+                                      </button>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
           </div>
-        ) : selectedTable ? (
-          <>
-            {/* Top Bar */}
-            <div className="bg-white border-b px-6 py-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <h2 className="text-lg font-semibold text-gray-900">
-                    {selectedTableTitle}
-                  </h2>
-                  {selectedTableSubtitle && (
-                    <span className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded">
-                      {selectedTableSubtitle}
-                    </span>
-                  )}
-                  {selectedTableIsGenerated && (
-                    <span className="px-2 py-1 text-xs font-medium text-blue-700 bg-blue-50 rounded">
-                      System-managed
-                    </span>
-                  )}
+        )}
+
+        {/* ── Main Content ── */}
+        <div className="flex-1 flex flex-col bg-gray-50 overflow-hidden">
+          {activeTab === 'model' ? (
+            <div className="flex-1 overflow-hidden flex flex-row">
+              {/* ERD canvas — takes remaining width */}
+              <div className="flex-1 overflow-hidden min-w-0">
+                <DataModelCanvas
+                  datasetId={datasetId!}
+                  datasetName={dataset.name}
+                  tables={dataset.tables ?? []}
+                  canEdit={resPerms.canEdit}
+                  selectedViewId={selectedView?.id ?? null}
+                  onSelectView={(view) => setSelectedView((prev) => prev?.id === view.id ? null : view)}
+                />
+              </div>
+              {/* Side panel — 520px, only when a view is selected */}
+              {selectedView && (
+                <div className="w-[520px] shrink-0 overflow-hidden flex flex-col">
+                  <ModelViewEditPanel
+                    datasetId={datasetId!}
+                    view={selectedView}
+                    tables={dataset.tables ?? []}
+                    canEdit={resPerms.canEdit}
+                  />
                 </div>
-                
-                <div className="flex items-center gap-3">
-                  {resPerms.canEdit && !selectedTableIsGenerated && (
-                  <button
-                    onClick={() => setIsManageColumnsOpen(true)}
-                    className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded transition-colors"
-                  >
-                    <Columns className="w-4 h-4" />
-                    Columns
-                  </button>
-                  )}
-                  
-                  {resPerms.canEdit && !selectedTableIsGenerated && (
-                  <button
-                    onClick={() => setIsAddColumnModalOpen(true)}
-                    className="flex items-center gap-2 px-3 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Add Column
-                  </button>
-                  )}
-                  
-                  <div className="w-px h-6 bg-gray-300" />
-                  
-                  <label className="flex items-center gap-2 text-sm text-gray-600">
-                    Limit:
-                    <select
-                      value={previewLimit}
-                      onChange={(e) => { setPreviewLimit(Number(e.target.value)); setPage(1); }}
-                      className="px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <option value={10}>10</option>
-                      <option value={50}>50</option>
-                      <option value={100}>100</option>
-                      <option value={200}>200</option>
-                      <option value={500}>500</option>
-                      <option value={1000}>1000</option>
-                    </select>
-                  </label>
-                  
-                  <button
-                    onClick={() => refetchPreview()}
-                    disabled={loadingPreview}
-                    className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded transition-colors disabled:opacity-50"
-                    title="Refresh preview"
-                  >
-                    <RefreshCw className={`w-4 h-4 ${loadingPreview ? 'animate-spin' : ''}`} />
-                  </button>
+              )}
+            </div>
+          ) : activeTab === 'quality' ? (
+            <DatasetQualityPanel
+              datasetId={datasetId!}
+              tables={dataset.tables ?? []}
+              canEdit={resPerms.canEdit}
+            />
+          ) : dataset.tables.length === 0 ? (
+            <div className="flex-1 flex items-center justify-center">
+              <div className="text-center max-w-md px-4">
+                <div className="text-gray-300 mb-4">
+                  <Database className="w-14 h-14 mx-auto" />
                 </div>
+                <h2 className="text-lg font-semibold text-gray-900 mb-2">No tables yet</h2>
+                <p className="text-sm text-gray-500 mb-6">
+                  Use the add actions in the sidebar to create a source table, a calculated table, or a Date table.
+                </p>
               </div>
             </div>
+          ) : selectedTable ? (
+            <>
+              {/* Grid Body */}
+              <div className="flex-1 overflow-auto p-4">
+                {previewError && (previewError as any)?.response?.status === 422 ? (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="text-center max-w-sm">
+                      <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto mb-3" />
+                      <h3 className="text-base font-semibold text-gray-900 mb-1">Chưa sync</h3>
+                      <p className="text-sm text-gray-600 mb-4">
+                        Bảng này chưa được đồng bộ vào DuckDB. Nếu bạn vừa chạy Sync, hãy đợi vài giây — trang sẽ tự động cập nhật khi sync xong.
+                      </p>
+                      <button
+                        onClick={() => refetchPreview()}
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700"
+                      >
+                        <RefreshCw className="w-4 h-4" />
+                        Thử lại ngay
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <DatasetTableGrid
+                    columns={computedPreviewData?.columns || []}
+                    rows={computedPreviewData?.rows || []}
+                    isLoading={loadingPreview}
+                    error={previewError instanceof Error ? previewError.message : null}
+                    onRetry={() => refetchPreview()}
+                    onAddColumn={resPerms.canEdit && !selectedTableIsGenerated ? () => setIsAddColumnModalOpen(true) : undefined}
+                    onDeleteColumn={resPerms.canEdit && !selectedTableIsGenerated ? handleDeleteColumn : undefined}
+                    onEditColumn={resPerms.canEdit && !selectedTableIsGenerated ? handleEditColumn : undefined}
+                    computedColumns={computedColumnNames}
+                    typeOverrides={(selectedTable as any)?.type_overrides}
+                    columnFormatsDb={(selectedTable as any)?.column_formats}
+                    onColumnFormatChange={handleColumnFormatChange}
+                  />
+                )}
+              </div>
 
-            {/* Grid Body */}
-            <div className="flex-1 overflow-auto p-6">
-              {previewError && (previewError as any)?.response?.status === 422 ? (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-center max-w-sm">
-                    <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto mb-3" />
-                    <h3 className="text-base font-semibold text-gray-900 mb-1">Chưa sync</h3>
-                    <p className="text-sm text-gray-600 mb-4">
-                      Bảng này chưa được đồng bộ vào DuckDB. Nếu bạn vừa chạy Sync, hãy đợi vài giây — trang sẽ tự động cập nhật khi sync xong.
-                    </p>
+              {/* Pagination Bar */}
+              {!loadingPreview && previewData && !((previewError as any)?.response?.status === 422) && (
+                <div className="bg-white border-t px-4 py-2 flex items-center justify-between text-xs text-gray-500 flex-shrink-0">
+                  <span>
+                    {previewData.rows.length === 0
+                      ? 'Không có dữ liệu'
+                      : `Dòng ${previewOffset + 1}–${previewOffset + previewData.rows.length}`}
+                  </span>
+                  <div className="flex items-center gap-1.5">
                     <button
-                      onClick={() => refetchPreview()}
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700"
+                      onClick={() => setPage((p) => Math.max(1, p - 1))}
+                      disabled={page === 1}
+                      className="p-1 border rounded disabled:opacity-40 hover:bg-gray-50 transition-colors"
+                      title="Trang trước"
                     >
-                      <RefreshCw className="w-4 h-4" />
-                      Thử lại ngay
+                      <ChevronLeftPag className="w-3.5 h-3.5" />
+                    </button>
+                    <span className="px-1.5 font-medium">Trang {page}</span>
+                    <button
+                      onClick={() => setPage((p) => p + 1)}
+                      disabled={!previewData.has_more}
+                      className="p-1 border rounded disabled:opacity-40 hover:bg-gray-50 transition-colors"
+                      title="Trang tiếp"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
-              ) : (
-                  <DatasetTableGrid
-                  columns={computedPreviewData?.columns || []}
-                  rows={computedPreviewData?.rows || []}
-                  isLoading={loadingPreview}
-                  error={previewError instanceof Error ? previewError.message : null}
-                  onRetry={() => refetchPreview()}
-                  onAddColumn={resPerms.canEdit && !selectedTableIsGenerated ? () => setIsAddColumnModalOpen(true) : undefined}
-                  onDeleteColumn={resPerms.canEdit && !selectedTableIsGenerated ? handleDeleteColumn : undefined}
-                  onEditColumn={resPerms.canEdit && !selectedTableIsGenerated ? handleEditColumn : undefined}
-                  computedColumns={computedColumnNames}
-                  typeOverrides={(selectedTable as any)?.type_overrides}
-                  columnFormatsDb={(selectedTable as any)?.column_formats}
-                  onColumnFormatChange={handleColumnFormatChange}
-                />
               )}
-            </div>
-
-            {/* Pagination Bar */}
-            {!loadingPreview && previewData && !((previewError as any)?.response?.status === 422) && (
-              <div className="bg-white border-t px-6 py-3 flex items-center justify-between text-sm text-gray-600 flex-shrink-0">
-                <span>
-                  {previewData.rows.length === 0
-                    ? 'Không có dữ liệu'
-                    : `Dòng ${previewOffset + 1}–${previewOffset + previewData.rows.length}`}
-                </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    disabled={page === 1}
-                    className="p-1.5 border rounded disabled:opacity-40 hover:bg-gray-50 transition-colors"
-                    title="Trang trước"
-                  >
-                    <ChevronLeftPag className="w-4 h-4" />
-                  </button>
-                  <span className="px-2 font-medium">Trang {page}</span>
-                  <button
-                    onClick={() => setPage((p) => p + 1)}
-                    disabled={!previewData.has_more}
-                    className="p-1.5 border rounded disabled:opacity-40 hover:bg-gray-50 transition-colors"
-                    title="Trang tiếp"
-                  >
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            )}
-          </>
-        ) : null}
+            </>
+          ) : null}
+        </div>
       </div>
 
       <CalendarDimensionModal

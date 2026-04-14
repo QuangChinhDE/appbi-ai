@@ -2129,6 +2129,7 @@ from app.schemas.dataset import (
     QualityRuleCreate,
     QualityRuleUpdate,
     QualityRuleResponse,
+    QualityRuleDuplicateRequest,
     QualityRunTriggerResponse,
     QualityRunResponse,
     QualitySummaryResponse,
@@ -2232,6 +2233,42 @@ def delete_quality_rule(
         raise HTTPException(status_code=404, detail="Quality rule not found")
 
     DatasetQualityService.delete_rule(db, rule)
+
+
+@router.post("/{dataset_id}/quality/rules/{rule_id}/duplicate", response_model=QualityRuleResponse, status_code=201)
+def duplicate_quality_rule(
+    dataset_id: int,
+    rule_id: int,
+    body: QualityRuleDuplicateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Duplicate a quality rule, optionally to a different table."""
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_edit_access(db, current_user, ds, "datasets")
+
+    rule = db.query(DatasetQualityRule).filter(
+        DatasetQualityRule.id == rule_id,
+        DatasetQualityRule.dataset_id == dataset_id,
+    ).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Quality rule not found")
+
+    # Validate target table belongs to this dataset
+    if body.target_table_id is not None:
+        from app.models.dataset import DatasetTable as DT
+        target_table = db.query(DT).filter(
+            DT.id == body.target_table_id,
+            DT.dataset_id == dataset_id,
+        ).first()
+        if not target_table:
+            raise HTTPException(status_code=404, detail="Target table not found in this dataset")
+
+    return DatasetQualityService.duplicate_rule(
+        db, rule,
+        target_table_id=body.target_table_id,
+        name_suffix=body.name_suffix,
+    )
 
 
 # ── Runs ───────────────────────────────────────────────────────────────────

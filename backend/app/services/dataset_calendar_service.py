@@ -208,10 +208,40 @@ def build_calendar_sample_rows(settings: Dict[str, Any], limit: int = 64) -> Lis
 def build_calendar_live_sql(settings: Dict[str, Any], dialect: str) -> str:
     """Generate calendar SQL for live query execution against a real database.
 
-    Supports bigquery, postgresql, and mysql dialects.
+    Supports bigquery, postgresql, mysql, and duckdb dialects.
+    duckdb is used for google_sheets and manual datasources.
     """
     start_date = settings["start_date"]
     end_date = settings["end_date"]
+
+    if dialect == "duckdb":
+        return f"""
+WITH RECURSIVE calendar_series AS (
+  SELECT DATE '{start_date}' AS d
+  UNION ALL
+  SELECT d + INTERVAL '1 day' FROM calendar_series WHERE d < DATE '{end_date}'
+)
+SELECT
+  d AS date,
+  CAST(strftime(d, '%Y%m%d') AS BIGINT) AS date_key,
+  CAST(EXTRACT(YEAR FROM d) AS INTEGER) AS year,
+  CAST(EXTRACT(QUARTER FROM d) AS INTEGER) AS quarter,
+  CAST(EXTRACT(YEAR FROM d) AS VARCHAR) || '-Q' || CAST(EXTRACT(QUARTER FROM d) AS VARCHAR) AS year_quarter,
+  CAST(EXTRACT(MONTH FROM d) AS INTEGER) AS month,
+  monthname(d) AS month_name,
+  substr(monthname(d), 1, 3) AS month_short,
+  strftime(d, '%Y-%m') AS year_month,
+  CAST(strftime(d, '%V') AS INTEGER) AS week_of_year_iso,
+  d - ((CAST(strftime(d, '%u') AS INTEGER) - 1) * INTERVAL '1 day') AS week_start_date,
+  d + ((7 - CAST(strftime(d, '%u') AS INTEGER)) * INTERVAL '1 day') AS week_end_date,
+  CAST(EXTRACT(DAY FROM d) AS INTEGER) AS day_of_month,
+  CAST(strftime(d, '%u') AS INTEGER) AS day_of_week_iso,
+  dayname(d) AS day_name,
+  CASE WHEN CAST(strftime(d, '%u') AS INTEGER) IN (6, 7) THEN TRUE ELSE FALSE END AS is_weekend,
+  d - ((CAST(EXTRACT(DAY FROM d) AS INTEGER) - 1) * INTERVAL '1 day') AS month_start_date,
+  (d - ((CAST(EXTRACT(DAY FROM d) AS INTEGER) - 1) * INTERVAL '1 day') + INTERVAL '1 month' - INTERVAL '1 day') AS month_end_date
+FROM calendar_series
+""".strip()
 
     if dialect == "bigquery":
         return f"""
