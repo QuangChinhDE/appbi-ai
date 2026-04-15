@@ -33,6 +33,19 @@ class ReportTemplateService:
         return db.query(ReportTemplate).filter(ReportTemplate.id == template_id).first()
 
     @staticmethod
+    def _serialize_blocks(blocks):
+        """Serialize blocks — handles both List[TemplateBlock] and SheetData dict."""
+        if isinstance(blocks, dict):
+            # SheetData v2 format — store as-is
+            return blocks
+        if isinstance(blocks, list):
+            return [
+                b.model_dump() if hasattr(b, "model_dump") else b
+                for b in blocks
+            ]
+        return blocks
+
+    @staticmethod
     def create(
         db: Session,
         payload: ReportTemplateCreate,
@@ -43,7 +56,7 @@ class ReportTemplateService:
             description=payload.description,
             page_size=payload.page_size,
             orientation=payload.orientation,
-            blocks=[b.model_dump() for b in payload.blocks],
+            blocks=ReportTemplateService._serialize_blocks(payload.blocks),
             filters=payload.filters or [],
             owner_id=owner_id,
         )
@@ -67,10 +80,9 @@ class ReportTemplateService:
 
         # Serialise blocks if present
         if "blocks" in update_data and update_data["blocks"] is not None:
-            update_data["blocks"] = [
-                b.model_dump() if hasattr(b, "model_dump") else b
-                for b in update_data["blocks"]
-            ]
+            update_data["blocks"] = ReportTemplateService._serialize_blocks(
+                update_data["blocks"]
+            )
 
         for key, value in update_data.items():
             setattr(db_obj, key, value)

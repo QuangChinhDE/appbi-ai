@@ -41,6 +41,8 @@ _RESOURCE_TO_MODULE: Dict[str, str] = {
 def get_user_module_permission(user: User, module: str) -> str:
     """Return effective permission level string for a user on a module."""
     perms: dict = user.permissions or {}
+    if module == "report_templates" and "report_templates" not in perms:
+        return perms.get("dashboards", "none")
     return perms.get(module, "none")
 
 

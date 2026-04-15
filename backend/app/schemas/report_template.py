@@ -44,7 +44,7 @@ class ReportTemplateBase(BaseModel):
 
 class ReportTemplateCreate(ReportTemplateBase):
     """Request body for creating a template."""
-    blocks: List[TemplateBlock] = Field(default_factory=list)
+    blocks: Any = Field(default_factory=list, description="List[TemplateBlock] or SheetData dict (version 2)")
     filters: List[Dict[str, Any]] = Field(default_factory=list)
 
 
@@ -54,14 +54,14 @@ class ReportTemplateUpdate(BaseModel):
     description: Optional[str] = None
     page_size: Optional[str] = None
     orientation: Optional[str] = None
-    blocks: Optional[List[TemplateBlock]] = None
+    blocks: Optional[Any] = Field(None, description="List[TemplateBlock] or SheetData dict (version 2)")
     filters: Optional[List[Dict[str, Any]]] = None
 
 
 class ReportTemplateResponse(ReportTemplateBase):
     """JSON sent back to the client."""
     id: int
-    blocks: List[Dict[str, Any]] = Field(default_factory=list)
+    blocks: Any = Field(default_factory=list, description="List[block dicts] or SheetData dict")
     filters: List[Dict[str, Any]] = Field(default_factory=list)
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None

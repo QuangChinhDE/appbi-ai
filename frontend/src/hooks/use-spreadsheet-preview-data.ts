@@ -8,12 +8,13 @@ import { datasetKeys, type TablePreviewResponse } from '@/hooks/use-datasets';
 import type {
   SheetData,
   SpreadsheetCell,
+  SpreadsheetBorders,
   MergeRange,
   CellValue,
   DataFieldBinding,
   TemplateFilter,
 } from '@/types/template';
-import { isDataField } from '@/types/template';
+import { hasSpreadsheetBorders, isDataField } from '@/types/template';
 
 const PREVIEW_LIMIT = 1000;
 
@@ -141,9 +142,74 @@ export interface ResolvedCell {
   align?: 'left' | 'center' | 'right';
   bg?: string;
   fontSize?: number;
+  borders?: SpreadsheetBorders;
   colSpan?: number;
   rowSpan?: number;
   hidden?: boolean;
+}
+
+function toResolvedCell(cell: SpreadsheetCell, text: string): ResolvedCell {
+  return {
+    text,
+    bold: cell.bold,
+    italic: cell.italic,
+    align: cell.align,
+    bg: cell.bg,
+    fontSize: cell.fontSize,
+    borders: cell.borders ? { ...cell.borders } : undefined,
+  };
+}
+
+function isResolvedCellUsed(cell: ResolvedCell): boolean {
+  return !!(
+    cell.text ||
+    cell.bold ||
+    cell.italic ||
+    cell.align ||
+    cell.bg ||
+    cell.fontSize ||
+    hasSpreadsheetBorders(cell.borders) ||
+    cell.colSpan ||
+    cell.rowSpan
+  );
+}
+
+function trimResolvedSheet(sheet: ResolvedSheet): ResolvedSheet {
+  let lastUsedRow = -1;
+  let lastUsedCol = -1;
+
+  sheet.rows.forEach((row, rowIndex) => {
+    row.cells.forEach((cell, colIndex) => {
+      if (cell.hidden || !isResolvedCellUsed(cell)) return;
+      lastUsedRow = Math.max(lastUsedRow, rowIndex);
+      lastUsedCol = Math.max(lastUsedCol, colIndex + (cell.colSpan ?? 1) - 1);
+    });
+  });
+
+  if (lastUsedRow < 0 || lastUsedCol < 0) {
+    return {
+      colCount: 0,
+      colWidths: [],
+      rows: [],
+      merges: [],
+    };
+  }
+
+  return {
+    colCount: lastUsedCol + 1,
+    colWidths: sheet.colWidths.slice(0, lastUsedCol + 1),
+    rows: sheet.rows.slice(0, lastUsedRow + 1).map((row) => ({
+      ...row,
+      cells: row.cells.slice(0, lastUsedCol + 1),
+    })),
+    merges: sheet.merges.filter(
+      (merge) =>
+        merge.r1 <= lastUsedRow &&
+        merge.r2 <= lastUsedRow &&
+        merge.c1 <= lastUsedCol &&
+        merge.c2 <= lastUsedCol,
+    ),
+  };
 }
 
 function resolveSheet(sheet: SheetData, sources: RuntimeSourceMap): ResolvedSheet {
@@ -168,14 +234,10 @@ function resolveSheet(sheet: SheetData, sources: RuntimeSourceMap): ResolvedShee
         const rowCells: ResolvedCell[] = [];
         for (let ci = 0; ci < colCount; ci++) {
           const cell = cells[`${ri},${ci}`] ?? { value: '' };
-          rowCells.push({
-            text: typeof cell.value === 'string' ? cell.value : resolveBinding(cell.value as DataFieldBinding, sources),
-            bold: cell.bold,
-            italic: cell.italic,
-            align: cell.align,
-            bg: cell.bg,
-            fontSize: cell.fontSize,
-          });
+          const text = typeof cell.value === 'string'
+            ? cell.value
+            : resolveBinding(cell.value as DataFieldBinding, sources);
+          rowCells.push(toResolvedCell(cell, text));
         }
         resolvedRows.push({ height: rowHeights[ri] ?? 28, cells: rowCells });
         resolvedRowIdx++;
@@ -193,14 +255,7 @@ function resolveSheet(sheet: SheetData, sources: RuntimeSourceMap): ResolvedShee
             } else {
               text = '';
             }
-            rowCells.push({
-              text,
-              bold: cell.bold,
-              italic: cell.italic,
-              align: cell.align,
-              bg: cell.bg,
-              fontSize: cell.fontSize,
-            });
+            rowCells.push(toResolvedCell(cell, text));
           }
           resolvedRows.push({ height: rowHeights[ri] ?? 28, cells: rowCells });
           resolvedRowIdx++;
@@ -219,14 +274,7 @@ function resolveSheet(sheet: SheetData, sources: RuntimeSourceMap): ResolvedShee
         } else {
           text = '';
         }
-        rowCells.push({
-          text,
-          bold: cell.bold,
-          italic: cell.italic,
-          align: cell.align,
-          bg: cell.bg,
-          fontSize: cell.fontSize,
-        });
+        rowCells.push(toResolvedCell(cell, text));
       }
       resolvedRows.push({ height: rowHeights[ri] ?? 28, cells: rowCells });
       resolvedRowIdx++;
@@ -265,7 +313,7 @@ function resolveSheet(sheet: SheetData, sources: RuntimeSourceMap): ResolvedShee
     }
   }
 
-  return { colCount, colWidths, rows: resolvedRows, merges: adjustedMerges };
+  return trimResolvedSheet({ colCount, colWidths, rows: resolvedRows, merges: adjustedMerges });
 }
 
 /* ── Error helper ──────────────────────────────────────────── */

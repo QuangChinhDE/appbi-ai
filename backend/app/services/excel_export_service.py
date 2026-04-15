@@ -16,7 +16,7 @@ from io import BytesIO
 from typing import Any
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from sqlalchemy.orm import Session
 
@@ -36,6 +36,19 @@ logger = get_logger(__name__)
 # Characters-per-pixel constant (mirrors excel_parser.py)
 _CHAR_TO_PX = 7.5
 _EXPORT_ROW_LIMIT = 5000
+
+
+def _sheet_border(borders: dict[str, Any] | None) -> Border | None:
+    if not borders:
+        return None
+
+    thin = Side(style="thin", color="000000")
+    return Border(
+        top=thin if borders.get("top") else Side(),
+        right=thin if borders.get("right") else Side(),
+        bottom=thin if borders.get("bottom") else Side(),
+        left=thin if borders.get("left") else Side(),
+    )
 
 
 # ── Binding traversal (mirrors collectValueBindings in use-template-preview-data.ts) ──
@@ -366,6 +379,10 @@ def _write_table_block(ws, block: dict, source_map: dict[str, list[dict]], start
             bg = _css_to_hex(cell_def.get("bg"))
             if bg:
                 xl_cell.fill = PatternFill(fill_type="solid", fgColor=bg)
+
+            border = _sheet_border(cell_def.get("borders"))
+            if border:
+                xl_cell.border = border
 
             # Merge columns
             if col_span > 1:

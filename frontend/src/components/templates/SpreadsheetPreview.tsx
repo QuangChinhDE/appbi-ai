@@ -4,6 +4,17 @@ import React, { useMemo } from 'react';
 import type { ResolvedSheet, ResolvedRow, ResolvedCell } from '@/hooks/use-spreadsheet-preview-data';
 import { PAGE_SIZES, PAGE_MARGIN } from '@/types/template';
 
+const PREVIEW_BORDER_COLOR = '#111827';
+
+function getPreviewBorderStyle(cell: ResolvedCell): React.CSSProperties {
+  return {
+    borderTop: cell.borders?.top ? `1px solid ${PREVIEW_BORDER_COLOR}` : undefined,
+    borderRight: cell.borders?.right ? `1px solid ${PREVIEW_BORDER_COLOR}` : undefined,
+    borderBottom: cell.borders?.bottom ? `1px solid ${PREVIEW_BORDER_COLOR}` : undefined,
+    borderLeft: cell.borders?.left ? `1px solid ${PREVIEW_BORDER_COLOR}` : undefined,
+  };
+}
+
 interface SpreadsheetPreviewProps {
   resolved: ResolvedSheet | null;
   pageSize?: string;
@@ -106,7 +117,7 @@ export function SpreadsheetPreview({
                         colSpan={cell.colSpan}
                         rowSpan={cell.rowSpan}
                         className={[
-                          'border border-gray-300 px-1.5 py-0.5 break-words',
+                          'px-1.5 py-0.5 break-words align-top',
                           cell.bold ? 'font-bold' : '',
                           cell.italic ? 'italic' : '',
                           cell.align === 'center' ? 'text-center' : cell.align === 'right' ? 'text-right' : 'text-left',
@@ -114,6 +125,7 @@ export function SpreadsheetPreview({
                         style={{
                           backgroundColor: cell.bg || undefined,
                           fontSize: cell.fontSize ? `${cell.fontSize}px` : undefined,
+                          ...getPreviewBorderStyle(cell),
                         }}
                       >
                         {cell.text}

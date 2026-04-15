@@ -6,8 +6,8 @@ import {
   Merge, Plus, Trash2, Database, ChevronDown, Paintbrush,
   Pencil, RefreshCw, Copy, ClipboardPaste,
 } from 'lucide-react';
-import type { SheetData, SpreadsheetCell, MergeRange, CellValue, DataFieldBinding } from '@/types/template';
-import { isDataField, cellDisplayText } from '@/types/template';
+import type { SheetData, SpreadsheetCell, SpreadsheetBorders, MergeRange, CellValue, DataFieldBinding } from '@/types/template';
+import { hasSpreadsheetBorders, isDataField, cellDisplayText } from '@/types/template';
 import { DataFieldPicker } from './DataFieldPicker';
 
 /* ── Constants ─────────────────────────────────────────────── */
@@ -19,8 +19,10 @@ const MIN_COL_W = 30;
 const MIN_ROW_H = 16;
 const AUTO_GROW_ROWS = 50;
 const AUTO_GROW_THRESHOLD = 5;
+const EXPLICIT_BORDER_COLOR = '#111827';
 
 const BG_PRESETS = ['', '#fef9c3', '#dcfce7', '#dbeafe', '#fce7f3', '#f3e8ff', '#fed7aa', '#e5e7eb'];
+const BORDER_SIDES = ['top', 'right', 'bottom', 'left'] as const;
 
 /* ── Helpers ────────────────────────────────────────────────── */
 
@@ -51,7 +53,7 @@ function setCell(
   const next = { ...cells };
   const v = cell.value;
   const hasContent = (typeof v === 'string' && v !== '') || (typeof v === 'object' && v !== null);
-  const hasFormat = cell.bold || cell.italic || cell.align || cell.bg || cell.fontSize;
+  const hasFormat = cell.bold || cell.italic || cell.align || cell.bg || cell.fontSize || hasSpreadsheetBorders(cell.borders);
   if (!hasContent && !hasFormat) {
     delete next[ck(r, c)];
   } else {
@@ -91,6 +93,15 @@ function isRepeatingRow(cells: Record<string, SpreadsheetCell>, row: number, col
   if (sources.length === 0) return null;
   const unique = new Set(sources);
   return unique.size === 1 ? sources[0] : null;
+}
+
+function getExplicitBorderStyle(borders?: SpreadsheetBorders): React.CSSProperties {
+  return {
+    borderTop: borders?.top ? `1px solid ${EXPLICIT_BORDER_COLOR}` : undefined,
+    borderRight: borders?.right ? `1px solid ${EXPLICIT_BORDER_COLOR}` : undefined,
+    borderBottom: borders?.bottom ? `1px solid ${EXPLICIT_BORDER_COLOR}` : undefined,
+    borderLeft: borders?.left ? `1px solid ${EXPLICIT_BORDER_COLOR}` : undefined,
+  };
 }
 
 function shiftCells(
@@ -340,18 +351,18 @@ export function SpreadsheetEditor({ data, onChange, readOnly = false }: Spreadsh
   /* ── Formatting (range-aware) ── */
 
   const applyToRange = useCallback(
-    (fn: (cur: SpreadsheetCell) => Partial<SpreadsheetCell>) => {
+    (fn: (cur: SpreadsheetCell, r: number, c: number) => Partial<SpreadsheetCell>) => {
       if (!sel) return;
       if (selRange && isSelRange) {
         const newCells = { ...cells };
         for (let r = selRange.r1; r <= selRange.r2; r++) {
           for (let c = selRange.c1; c <= selRange.c2; c++) {
             const cur = getCell(newCells, r, c);
-            const patch = fn(cur);
+            const patch = fn(cur, r, c);
             const updated = { ...cur, ...patch };
             const v = updated.value;
             const hasContent = (typeof v === 'string' && v !== '') || (typeof v === 'object' && v !== null);
-            const hasFormat = updated.bold || updated.italic || updated.align || updated.bg || updated.fontSize;
+            const hasFormat = updated.bold || updated.italic || updated.align || updated.bg || updated.fontSize || hasSpreadsheetBorders(updated.borders);
             if (!hasContent && !hasFormat) {
               delete newCells[ck(r, c)];
             } else {
@@ -362,10 +373,50 @@ export function SpreadsheetEditor({ data, onChange, readOnly = false }: Spreadsh
         updateData({ cells: newCells });
       } else {
         const cur = getCell(cells, sel.row, sel.col);
-        updateCell(sel.row, sel.col, fn(cur));
+        updateCell(sel.row, sel.col, fn(cur, sel.row, sel.col));
       }
     },
     [sel, selRange, isSelRange, cells, updateCell, updateData],
+  );
+
+  const handleBorderAction = useCallback(
+    (mode: 'all' | 'clear' | (typeof BORDER_SIDES)[number]) => {
+      if (!sel || !selRange) return;
+
+      const anchorBorders = getCell(cells, sel.row, sel.col).borders;
+      const enableAll = !BORDER_SIDES.every((side) => !!anchorBorders?.[side]);
+      const enableSide = mode === 'clear' ? false : !anchorBorders?.[mode as keyof SpreadsheetBorders];
+
+      applyToRange((cur, r, c) => {
+        if (mode === 'clear') {
+          return { borders: undefined };
+        }
+
+        if (mode === 'all') {
+          return {
+            borders: enableAll ? { top: true, right: true, bottom: true, left: true } : undefined,
+          };
+        }
+
+        const nextBorders: SpreadsheetBorders = { ...(cur.borders ?? {}) };
+        const shouldApply =
+          (mode === 'top' && r === selRange.r1) ||
+          (mode === 'right' && c === selRange.c2) ||
+          (mode === 'bottom' && r === selRange.r2) ||
+          (mode === 'left' && c === selRange.c1);
+
+        if (shouldApply) {
+          if (enableSide) {
+            nextBorders[mode] = true;
+          } else {
+            delete nextBorders[mode];
+          }
+        }
+
+        return { borders: hasSpreadsheetBorders(nextBorders) ? nextBorders : undefined };
+      });
+    },
+    [sel, selRange, cells, applyToRange],
   );
 
   const toggleBoldRange = useCallback(() => {
@@ -821,6 +872,39 @@ export function SpreadsheetEditor({ data, onChange, readOnly = false }: Spreadsh
 
           <div className="mx-1 h-4 w-px bg-gray-300" />
 
+          {/* Borders */}
+          <div className="inline-flex items-center gap-1 rounded border border-gray-200 bg-white p-1">
+            <button
+              onClick={() => handleBorderAction('all')}
+              disabled={!sel}
+              className={`rounded px-2 py-1 text-[11px] disabled:opacity-30 ${BORDER_SIDES.every((side) => !!selCell?.borders?.[side]) ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`}
+              title="Toggle all borders for selection"
+            >
+              All
+            </button>
+            {BORDER_SIDES.map((side) => (
+              <button
+                key={side}
+                onClick={() => handleBorderAction(side)}
+                disabled={!sel}
+                className={`rounded px-2 py-1 text-[11px] capitalize disabled:opacity-30 ${selCell?.borders?.[side] ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`}
+                title={`Toggle ${side} border for selection`}
+              >
+                {side}
+              </button>
+            ))}
+            <button
+              onClick={() => handleBorderAction('clear')}
+              disabled={!sel}
+              className="rounded px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 disabled:opacity-30"
+              title="Clear borders in selection"
+            >
+              Clear
+            </button>
+          </div>
+
+          <div className="mx-1 h-4 w-px bg-gray-300" />
+
           {/* Merge */}
           {sel && selMerge?.origin && selMerge.merge ? (
             <button
@@ -1087,6 +1171,7 @@ export function SpreadsheetEditor({ data, onChange, readOnly = false }: Spreadsh
                           maxWidth: merge.colSpan
                             ? colWidths.slice(ci, ci + (merge.colSpan ?? 1)).reduce((s, w) => s + w, 0)
                             : colWidths[ci],
+                          ...getExplicitBorderStyle(cell.borders),
                         }}
                       >
                         {isEd ? (

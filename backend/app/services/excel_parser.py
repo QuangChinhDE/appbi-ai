@@ -83,6 +83,20 @@ def _color_hex(color) -> Optional[str]:
     return None
 
 
+def _border_sides(border) -> Optional[Dict[str, bool]]:
+    """Extract a simple per-side border map from an openpyxl Border."""
+    if border is None:
+        return None
+
+    sides: Dict[str, bool] = {}
+    for side_name in ("top", "right", "bottom", "left"):
+        side = getattr(border, side_name, None)
+        if side is not None and getattr(side, "style", None):
+            sides[side_name] = True
+
+    return sides or None
+
+
 def _cell_value_str(cell: Cell) -> str:
     """Return the display string for a cell value."""
     if cell.value is None:
@@ -518,9 +532,19 @@ def parse_excel_to_sheet(file_bytes: bytes) -> Dict[str, Any]:
                 if bg:
                     cell_def["bg"] = bg
 
+            borders = _border_sides(cell.border)
+            if borders:
+                cell_def["borders"] = borders
+
             # Only store non-empty cells
             has_content = text != ""
-            has_format = cell_def.get("bold") or cell_def.get("italic") or cell_def.get("align") or cell_def.get("bg")
+            has_format = (
+                cell_def.get("bold")
+                or cell_def.get("italic")
+                or cell_def.get("align")
+                or cell_def.get("bg")
+                or cell_def.get("borders")
+            )
             if has_content or has_format:
                 key = f"{r - min_row},{c - min_col}"
                 cells[key] = cell_def

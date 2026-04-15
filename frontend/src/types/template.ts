@@ -152,6 +152,14 @@ export const PAGE_MARGIN = 24;
 
 /* ── Spreadsheet types (v2 format) ─────────────────────────── */
 
+export type SpreadsheetBorderSide = 'top' | 'right' | 'bottom' | 'left';
+
+export type SpreadsheetBorders = Partial<Record<SpreadsheetBorderSide, boolean>>;
+
+export function hasSpreadsheetBorders(borders?: SpreadsheetBorders | null): boolean {
+  return !!(borders?.top || borders?.right || borders?.bottom || borders?.left);
+}
+
 export interface SpreadsheetCell {
   value: CellValue;
   bold?: boolean;
@@ -159,6 +167,7 @@ export interface SpreadsheetCell {
   align?: 'left' | 'center' | 'right';
   bg?: string;
   fontSize?: number;
+  borders?: SpreadsheetBorders;
 }
 
 export interface MergeRange {

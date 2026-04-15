@@ -104,15 +104,30 @@ _FORMAT_PATTERNS = {
 # SQL builder helpers
 # ---------------------------------------------------------------------------
 
-def _q(col: str) -> str:
-    """Double-quote an identifier (PostgreSQL-safe)."""
+def _q(col: str, dialect: str = "postgresql") -> str:
+    """Quote an identifier using the correct delimiter for the dialect."""
+    if dialect in ("bigquery", "mysql"):
+        return '`' + col.replace('`', '``') + '`'
     return '"' + col.replace('"', '""') + '"'
+
+
+def _text_cast(expr: str, dialect: str) -> str:
+    """CAST to text using the dialect-appropriate type name."""
+    if dialect == "bigquery":
+        return f"CAST({expr} AS STRING)"
+    if dialect == "mysql":
+        return f"CAST({expr} AS CHAR)"
+    if dialect == "duckdb":
+        return f"CAST({expr} AS VARCHAR)"
+    return f"CAST({expr} AS TEXT)"
 
 
 def _numeric_cast_expr(expr: str, dialect: str) -> str:
     if dialect == "bigquery":
         return f"CAST({expr} AS FLOAT64)"
     if dialect == "mysql":
+        return f"CAST({expr} AS DECIMAL(38,6))"
+    if dialect == "duckdb":
         return f"CAST({expr} AS DOUBLE)"
     return f"CAST({expr} AS DOUBLE PRECISION)"
 
@@ -132,14 +147,14 @@ def _build_check_sql(
     dialect    — 'postgresql' | 'mysql' | 'bigquery'  (affects NULL filter syntax)
     """
     # BigQuery / MySQL use slightly different filter syntax; default to ANSI FILTER
-    use_filter_clause = dialect != "mysql"  # MySQL doesn't support FILTER (WHERE ...)
-
     def filter_expr(condition: str) -> str:
-        if use_filter_clause:
+        if dialect == "bigquery":
+            return f"COUNTIF({condition})"
+        if dialect != "mysql":
             return f"COUNT(*) FILTER (WHERE {condition})"
         return f"SUM(CASE WHEN {condition} THEN 1 ELSE 0 END)"
 
-    qcol = _q(col) if col else None
+    qcol = _q(col, dialect) if col else None
 
     # ── Completeness ───────────────────────────────────────────────────────
     if rule_type == "not_null":
@@ -154,7 +169,7 @@ def _build_check_sql(
     if rule_type == "not_blank":
         if not qcol:
             return None
-        blank_condition = f"TRIM(CAST({qcol} AS TEXT)) = ''"
+        blank_condition = f"TRIM({_text_cast(qcol, dialect)}) = ''"
         return (
             f"SELECT COUNT(*) AS rows_checked, "
             f"{filter_expr(blank_condition)} AS rows_failed "
@@ -185,7 +200,7 @@ def _build_check_sql(
         escaped = ", ".join("'" + v.replace("'", "''") + "'" for v in values)
         return (
             f"SELECT COUNT(*) AS rows_checked, "
-            f"{filter_expr(f'{qcol} IS NOT NULL AND CAST({qcol} AS TEXT) NOT IN ({escaped})')} AS rows_failed "
+            f"{filter_expr(f'{qcol} IS NOT NULL AND {_text_cast(qcol, dialect)} NOT IN ({escaped})')} AS rows_failed "
             f"FROM {table_ref}"
         )
 
@@ -202,13 +217,16 @@ def _build_check_sql(
         elif dialect == "mysql":
             # MySQL REGEXP is case-insensitive by default; use BINARY to force case-sensitive
             if case_insensitive:
-                cond = f"CAST({qcol} AS CHAR) NOT REGEXP '{pattern}'"
+                cond = f"{_text_cast(qcol, dialect)} NOT REGEXP '{pattern}'"
             else:
-                cond = f"BINARY CAST({qcol} AS CHAR) NOT REGEXP '{pattern}'"
+                cond = f"BINARY {_text_cast(qcol, dialect)} NOT REGEXP '{pattern}'"
+        elif dialect == "duckdb":
+            options = ", 'i'" if case_insensitive else ""
+            cond = f"NOT regexp_matches({_text_cast(qcol, dialect)}, '{pattern}'{options})"
         else:
             # PostgreSQL: ~* for case-insensitive, !~ for case-sensitive
             op = "!~*" if case_insensitive else "!~"
-            cond = f"CAST({qcol} AS TEXT) {op} '{pattern}'"
+            cond = f"{_text_cast(qcol, dialect)} {op} '{pattern}'"
         return (
             f"SELECT COUNT(*) AS rows_checked, "
             f"{filter_expr(f'{qcol} IS NOT NULL AND {cond}')} AS rows_failed "
@@ -223,10 +241,10 @@ def _build_check_sql(
         mx = config.get("max")
         if mn is not None:
             val = f"'{mn}'" if isinstance(mn, str) else str(mn)
-            conditions.append(f"CAST({qcol} AS NUMERIC) < {val}")
+            conditions.append(f"{_numeric_cast_expr(qcol, dialect)} < {val}")
         if mx is not None:
             val = f"'{mx}'" if isinstance(mx, str) else str(mx)
-            conditions.append(f"CAST({qcol} AS NUMERIC) > {val}")
+            conditions.append(f"{_numeric_cast_expr(qcol, dialect)} > {val}")
         if not conditions:
             return None
         cond = " OR ".join(conditions)
@@ -245,11 +263,13 @@ def _build_check_sql(
             return None
         escaped_pat = pattern.replace("'", "''")
         if dialect == "bigquery":
-            cond = f"NOT REGEXP_CONTAINS(CAST({qcol} AS STRING), r'{escaped_pat}')"
+            cond = f"NOT REGEXP_CONTAINS({_text_cast(qcol, dialect)}, r'{escaped_pat}')"
         elif dialect == "mysql":
-            cond = f"CAST({qcol} AS CHAR) NOT REGEXP '{escaped_pat}'"
+            cond = f"{_text_cast(qcol, dialect)} NOT REGEXP '{escaped_pat}'"
+        elif dialect == "duckdb":
+            cond = f"NOT regexp_matches({_text_cast(qcol, dialect)}, '{escaped_pat}')"
         else:
-            cond = f"CAST({qcol} AS TEXT) !~ '{escaped_pat}'"
+            cond = f"{_text_cast(qcol, dialect)} !~ '{escaped_pat}'"
         return (
             f"SELECT COUNT(*) AS rows_checked, "
             f"{filter_expr(f'{qcol} IS NOT NULL AND {cond}')} AS rows_failed "
@@ -270,7 +290,7 @@ def _build_check_sql(
         cols: List[str] = config.get("columns") or ([] if not col else [col])
         if not cols:
             return None
-        combo = ", ".join(_q(c) for c in cols)
+        combo = ", ".join(_q(c, dialect) for c in cols)
         # COALESCE handles the case where no duplicates exist (subquery returns 0 rows → SUM = NULL)
         return (
             f"SELECT COALESCE(SUM(cnt), 0) AS rows_checked, COALESCE(SUM(cnt - 1), 0) AS rows_failed FROM ("
@@ -296,13 +316,15 @@ def _build_check_sql(
         if not date_col:
             return None
         max_days = int(config.get("max_days") or 1)
-        qdate = _q(date_col)
+        qdate = _q(date_col, dialect)
         if dialect == "bigquery":
             age_expr = f"DATE_DIFF(CURRENT_DATE(), CAST(MAX({qdate}) AS DATE), DAY)"
         elif dialect == "mysql":
             age_expr = f"DATEDIFF(CURDATE(), CAST(MAX({qdate}) AS DATE))"
+        elif dialect == "duckdb":
+            age_expr = f"date_diff('day', CAST(MAX({qdate}) AS DATE), CURRENT_DATE)"
         else:
-            age_expr = f"EXTRACT(DAY FROM NOW() - MAX({qdate}::timestamptz))"
+            age_expr = f"EXTRACT(DAY FROM NOW() - CAST(MAX({qdate}) AS TIMESTAMPTZ))"
         return (
             f"SELECT COUNT(*) AS rows_checked, "
             f"CASE WHEN {age_expr} > {max_days} THEN 1 ELSE 0 END AS rows_failed "
@@ -355,7 +377,11 @@ def _build_check_sql(
     return None
 
 
-def _table_ref_for_source(db_table: DatasetTable) -> Tuple[Optional[str], Optional[str]]:
+def _table_ref_for_source(
+    db_table: DatasetTable,
+    datasource: Any = None,
+    dialect: str = "postgresql",
+) -> Tuple[Optional[str], Optional[str]]:
     """
     Return (table_ref_sql, dialect) for use in quality check SQL.
     table_ref_sql is a FROM-able reference: a quoted table name or a sub-query.
@@ -366,12 +392,31 @@ def _table_ref_for_source(db_table: DatasetTable) -> Tuple[Optional[str], Option
 
     if db_table.source_kind == "physical_table":
         tbl = db_table.source_table_name or ""
-        # Already includes schema, e.g. "public.orders" — wrap safely
-        parts = tbl.split(".", 1)
-        if len(parts) == 2:
-            ref = f'"{parts[0]}"."{parts[1]}"'
-        else:
-            ref = f'"{tbl}"'
+        if dialect == "bigquery":
+            from app.core.crypto import decrypt_config
+
+            config = decrypt_config(getattr(datasource, "config", {}) or {})
+            project_id = str(config.get("project_id") or "").strip()
+            default_dataset = str(config.get("dataset") or config.get("default_dataset") or "").strip()
+            parts = [part.strip().strip("`").strip('"').strip("'") for part in tbl.split(".") if part and str(part).strip()]
+            if len(parts) >= 3:
+                return f"`{parts[-3]}.{parts[-2]}.{parts[-1]}`", None
+            if len(parts) == 2:
+                if project_id:
+                    return f"`{project_id}.{parts[0]}.{parts[1]}`", None
+                return f"`{parts[0]}.{parts[1]}`", None
+            if len(parts) == 1:
+                if project_id and default_dataset:
+                    return f"`{project_id}.{default_dataset}.{parts[0]}`", None
+                if default_dataset:
+                    return f"`{default_dataset}.{parts[0]}`", None
+                return f"`{parts[0]}`", None
+            return None, None
+
+        parts = [part for part in tbl.split(".") if part]
+        if not parts:
+            return None, None
+        ref = ".".join(_q(part, dialect) for part in parts)
         return ref, None  # dialect resolved from datasource.type at call time
 
     if db_table.source_kind in ("sql_query", "derived_table"):
@@ -387,6 +432,8 @@ def _dialect_for_ds(datasource) -> str:
     ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
     return {
         "bigquery": "bigquery",
+        "google_sheets": "duckdb",
+        "manual": "duckdb",
         "mysql": "mysql",
         "postgresql": "postgresql",
     }.get(ds_type, "postgresql")
@@ -789,7 +836,8 @@ class DatasetQualityService:
                 "detail": f"Execution target error: {str(exc)[:500]}", "error": True,
             })
 
-        table_ref, _ = _table_ref_for_source(execution_table)
+        dialect = _dialect_for_ds(datasource)
+        table_ref, _ = _table_ref_for_source(execution_table, datasource, dialect)
         if not table_ref:
             _log("ERROR: Cannot build table reference for this source kind")
             return _result({
