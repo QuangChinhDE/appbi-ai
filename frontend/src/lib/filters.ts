@@ -124,6 +124,7 @@ export interface ColumnInfo {
   label?: string;
   datasetId?: number;
   semanticField?: string;
+  defaultLinkedFields?: string[];
   chartCoverage?: number;
   datasetChartCount?: number;
   sharedAcrossDataset?: boolean;

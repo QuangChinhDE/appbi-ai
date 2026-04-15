@@ -664,7 +664,58 @@ export default function DashboardDetailPage() {
     };
   }, [dashboard?.dashboard_charts, datasetModelsById]);
 
-  // Auto-seed a default date filter when dashboard has no filters but has date columns.
+  const calendarDateColumns = React.useMemo<ColumnInfo[]>(() => {
+    const totalDashboardChartCount = dashboard?.dashboard_charts?.length ?? 0;
+    const semanticFields = new Set<string>();
+    const chartsWithCalendar = new Set<number>();
+    const datasetIds = new Set<number>();
+
+    for (const dashboardChart of dashboard?.dashboard_charts ?? []) {
+      const binding = (dashboardChart.chart?.config as any)?.semanticBinding as
+        | {
+            datasetId?: number;
+            calendarFieldMappings?: Array<{
+              semanticField?: string;
+              calendarField?: string;
+            }>;
+          }
+        | undefined;
+
+      if (binding?.datasetId != null) {
+        datasetIds.add(binding.datasetId);
+      }
+
+      const dateMappings = (binding?.calendarFieldMappings ?? []).filter(
+        (mapping) => (
+          mapping?.calendarField === 'date'
+          && typeof mapping?.semanticField === 'string'
+          && mapping.semanticField.includes('.')
+        ),
+      );
+      if (dateMappings.length === 0) continue;
+
+      chartsWithCalendar.add(dashboardChart.chart_id);
+      dateMappings.forEach((mapping) => semanticFields.add(String(mapping.semanticField)));
+    }
+
+    const orderedSemanticFields = Array.from(semanticFields).sort();
+    if (orderedSemanticFields.length === 0) return [];
+
+    return [{
+      key: orderedSemanticFields[0],
+      name: 'date',
+      label: 'Date',
+      type: 'date',
+      semanticField: orderedSemanticFields[0],
+      datasetId: datasetIds.size === 1 ? Array.from(datasetIds)[0] : undefined,
+      defaultLinkedFields: orderedSemanticFields.slice(1),
+      chartCoverage: chartsWithCalendar.size,
+      datasetChartCount: totalDashboardChartCount,
+      sharedAcrossDataset: totalDashboardChartCount > 0 && chartsWithCalendar.size === totalDashboardChartCount,
+    }];
+  }, [dashboard?.dashboard_charts]);
+
+  // Auto-seed a default date filter from the dataset calendar/date table when available.
   React.useEffect(() => {
     if (dateFilterAutoSeededRef.current) return;
     if (!filtersSeededRef.current) return;
@@ -673,16 +724,11 @@ export default function DashboardDetailPage() {
       return;
     }
 
-    const semanticDateColumns = semanticColumnsResult.columns.filter((column) => column.type === 'date');
-    if (semanticDateColumns.length === 0) return;
+    const dateCol = calendarDateColumns[0];
+    if (!dateCol) return;
 
     dateFilterAutoSeededRef.current = true;
-
-    const dateCol = semanticDateColumns[0];
     const dateColKey = getColumnKey(dateCol);
-    const linkedDateFields = semanticDateColumns
-      .filter((column) => getColumnKey(column) !== dateColKey)
-      .map((column) => getColumnKey(column));
     const preset = 'this_month' as const;
 
     const defaultDateFilter: BaseFilter = {
@@ -696,12 +742,12 @@ export default function DashboardDetailPage() {
       value: computeDatePresetRange(preset),
       label: getColumnDisplayLabel(dateCol),
       datePreset: preset,
-      linkedFields: linkedDateFields.length > 0 ? linkedDateFields : undefined,
+      linkedFields: dateCol.defaultLinkedFields?.length ? [...dateCol.defaultLinkedFields] : undefined,
     };
 
     setDraftGlobalFilters([defaultDateFilter]);
     setAppliedGlobalFilters([defaultDateFilter]);
-  }, [draftGlobalFilters, semanticColumnsResult.columns]);
+  }, [draftGlobalFilters, calendarDateColumns]);
 
   const activeSemanticDistinctColumns = React.useMemo(() => {
     if (semanticColumnsResult.columns.length === 0 || draftGlobalFilters.length === 0) {
@@ -741,13 +787,26 @@ export default function DashboardDetailPage() {
     return values;
   }, [activeSemanticDistinctColumns, semanticDistinctQueries]);
 
-  const resolvedAvailableColumns = semanticColumnsResult.columns.length > 0
-    ? semanticColumnsResult.columns
+  const semanticFieldColumns = React.useMemo(
+    () => semanticColumnsResult.columns.filter((column) => column.type !== 'date'),
+    [semanticColumnsResult.columns],
+  );
+  const semanticFilterChartCount = React.useMemo(() => {
+    const next = new Map(semanticColumnsResult.chartCount);
+    calendarDateColumns.forEach((column) => {
+      next.set(getColumnKey(column), column.chartCoverage ?? 0);
+    });
+    return next;
+  }, [semanticColumnsResult.chartCount, calendarDateColumns]);
+  const hasSemanticFilterColumns = calendarDateColumns.length > 0 || semanticFieldColumns.length > 0;
+
+  const resolvedAvailableColumns = hasSemanticFilterColumns
+    ? [...calendarDateColumns, ...semanticFieldColumns]
     : availableColumns;
-  const resolvedColumnChartCount = semanticColumnsResult.columns.length > 0
-    ? semanticColumnsResult.chartCount
+  const resolvedColumnChartCount = hasSemanticFilterColumns
+    ? semanticFilterChartCount
     : columnChartCount;
-  const resolvedDistinctValues = semanticColumnsResult.columns.length > 0
+  const resolvedDistinctValues = hasSemanticFilterColumns
     ? semanticDistinctValues
     : distinctValues;
 

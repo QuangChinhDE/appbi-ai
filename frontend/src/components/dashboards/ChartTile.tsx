@@ -85,6 +85,32 @@ function coerceParameterAtom(rawValue: unknown, mappingType: string) {
   return typeof rawValue === 'string' ? rawValue.trim() : rawValue;
 }
 
+function expandLinkedFilterTargets(filter: BaseFilter): BaseFilter[] {
+  const primaryTarget = filter.fieldKey ?? filter.semanticField ?? filter.field;
+  const refs = [primaryTarget, ...(filter.linkedFields ?? [])]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+
+  const targets: BaseFilter[] = [];
+  const seen = new Set<string>();
+
+  for (const ref of refs) {
+    if (seen.has(ref)) continue;
+    seen.add(ref);
+
+    const isSemanticRef = ref.includes('.');
+    targets.push({
+      ...filter,
+      field: isSemanticRef ? ref.split('.').pop() ?? filter.field : ref,
+      fieldKey: ref,
+      semanticField: isSemanticRef ? ref : undefined,
+      linkedFields: undefined,
+    });
+  }
+
+  return targets.length > 0 ? targets : [{ ...filter, linkedFields: undefined }];
+}
+
 export function ChartTile({
   chartId,
   dashboardChartId,
@@ -167,74 +193,58 @@ export function ChartTile({
   // Build server-side filters from dashboard + global filters for server-side push-down
   const serverFilters = useMemo(() => {
     const filters: Record<string, unknown>[] = [];
+    const seen = new Set<string>();
     filters.push(...parameterFilters);
-    for (const gf of [...globalFilters, ...crossFilters]) {
-      if (gf.value === undefined || gf.value === null || gf.value === '') continue;
-      const resolvedField = resolveChartFieldForFilter(gf, chartSemanticBinding);
-      const semanticRef = gf.semanticField ?? gf.fieldKey;
-      const canDeferToSemanticJoin = Boolean(
-        semanticRef
-        && semanticRef.includes('.')
-        && (
-          gf.datasetId == null
-          || chartSemanticBinding?.datasetId == null
-          || gf.datasetId === chartSemanticBinding.datasetId
-        ),
-      );
-      if (!resolvedField && !canDeferToSemanticJoin) continue;
-      const field = resolvedField ?? gf.field;
-      const calendarMapping = resolveCalendarFieldMapping(
-        chartSemanticBinding,
-        gf.semanticField ?? gf.fieldKey,
-      );
-      filters.push({
-        field,
-        operator: gf.operator,
-        value: gf.value,
-        semanticField: gf.semanticField,
-        datasetId: gf.datasetId,
-        ...(calendarMapping ? {
-          calendarField: calendarMapping.calendarField,
-          calendarSourceField: calendarMapping.sourceField,
-        } : {}),
-      });
-      if (!chartSemanticBinding && !gf.semanticField && gf.linkedFields) {
-        for (const lf of gf.linkedFields) {
-          filters.push({ field: lf, operator: gf.operator, value: gf.value });
-        }
+
+    const appendServerFilters = (sourceFilter: BaseFilter) => {
+      if (sourceFilter.value === undefined || sourceFilter.value === null || sourceFilter.value === '') {
+        return;
       }
-    }
-    for (const df of dashboardFilters) {
-      if (df.value === undefined || df.value === null || df.value === '') continue;
-      const resolvedField = resolveChartFieldForFilter(df, chartSemanticBinding);
-      const semanticRef = df.semanticField ?? df.fieldKey;
-      const canDeferToSemanticJoin = Boolean(
-        semanticRef
-        && semanticRef.includes('.')
-        && (
-          df.datasetId == null
-          || chartSemanticBinding?.datasetId == null
-          || df.datasetId === chartSemanticBinding.datasetId
-        ),
-      );
-      if (!resolvedField && !canDeferToSemanticJoin) continue;
-      const field = resolvedField ?? df.field;
-      const calendarMapping = resolveCalendarFieldMapping(
-        chartSemanticBinding,
-        df.semanticField ?? df.fieldKey,
-      );
-      filters.push({
-        field,
-        operator: df.operator,
-        value: df.value,
-        semanticField: df.semanticField,
-        datasetId: df.datasetId,
-        ...(calendarMapping ? {
-          calendarField: calendarMapping.calendarField,
-          calendarSourceField: calendarMapping.sourceField,
-        } : {}),
-      });
-    }
+
+      for (const targetFilter of expandLinkedFilterTargets(sourceFilter)) {
+        const resolvedField = resolveChartFieldForFilter(targetFilter, chartSemanticBinding);
+        const semanticRef = targetFilter.semanticField ?? targetFilter.fieldKey;
+        const canDeferToSemanticJoin = Boolean(
+          semanticRef
+          && semanticRef.includes('.')
+          && (
+            targetFilter.datasetId == null
+            || chartSemanticBinding?.datasetId == null
+            || targetFilter.datasetId === chartSemanticBinding.datasetId
+          )
+        );
+        if (!resolvedField && !canDeferToSemanticJoin) continue;
+
+        const field = resolvedField ?? targetFilter.field;
+        const calendarMapping = resolveCalendarFieldMapping(chartSemanticBinding, semanticRef);
+        const dedupeKey = JSON.stringify([
+          field,
+          targetFilter.operator,
+          targetFilter.value,
+          targetFilter.semanticField ?? null,
+          targetFilter.datasetId ?? null,
+          calendarMapping?.sourceField ?? null,
+        ]);
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+
+        filters.push({
+          field,
+          operator: targetFilter.operator,
+          value: targetFilter.value,
+          semanticField: targetFilter.semanticField,
+          datasetId: targetFilter.datasetId,
+          ...(calendarMapping ? {
+            calendarField: calendarMapping.calendarField,
+            calendarSourceField: calendarMapping.sourceField,
+          } : {}),
+        });
+      }
+    };
+
+    [...globalFilters, ...crossFilters].forEach(appendServerFilters);
+    dashboardFilters.forEach(appendServerFilters);
+
     return filters.length > 0 ? filters : undefined;
   }, [globalFilters, crossFilters, dashboardFilters, parameterFilters, chartSemanticBinding]);
 
@@ -368,22 +378,43 @@ export function ChartTile({
   const filteredData = useMemo(() => {
     if (rawRows.length === 0) return rawRows;
     if (preAggregated) return rawRows;
+
+    const resolveClientFilters = (sourceFilters: BaseFilter[]) => {
+      if (sourceFilters.length === 0 || rows.length === 0) return [] as BaseFilter[];
+      const availableFields = Object.keys(rows[0] ?? {});
+      const applicable = new Map<string, BaseFilter>();
+
+      sourceFilters.forEach((filter) => {
+        expandLinkedFilterTargets(filter).forEach((targetFilter) => {
+          const resolved = resolveFilterForChartData(targetFilter, {
+            binding: chartSemanticBinding,
+            availableFields,
+          });
+          if (!resolved) return;
+
+          const key = JSON.stringify([resolved.field, resolved.operator, resolved.value]);
+          if (!applicable.has(key)) {
+            applicable.set(key, resolved);
+          }
+        });
+      });
+
+      return Array.from(applicable.values());
+    };
+
     // Non-pre-aggregated fallback: apply filters client-side
     let rows = exploreConfig?.filters?.length
       ? applyFilters(rawRows, exploreConfig.filters)
       : rawRows;
     if (!exploreConfig && dashboardFilters.length > 0) {
-      rows = applyFiltersToRows(rows, dashboardFilters);
+      const applicableDashboardFilters = resolveClientFilters(dashboardFilters);
+      if (applicableDashboardFilters.length > 0) {
+        rows = applyFiltersToRows(rows, applicableDashboardFilters);
+      }
     }
     const runtimeFilters = [...globalFilters, ...crossFilters];
     if (runtimeFilters.length > 0 && rows.length > 0) {
-      const availableFields = Object.keys(rows[0] ?? {});
-      const applicable = runtimeFilters
-        .map(f => resolveFilterForChartData(f, {
-          binding: chartSemanticBinding,
-          availableFields,
-        }))
-        .filter((f): f is BaseFilter => f !== null);
+      const applicable = resolveClientFilters(runtimeFilters);
       if (applicable.length > 0) {
         rows = applyFiltersToRows(rows, applicable);
       }

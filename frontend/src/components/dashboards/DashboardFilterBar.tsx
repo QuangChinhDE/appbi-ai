@@ -104,9 +104,10 @@ export function DashboardFilterBar({
 
     const isMultiSelect = col.type === 'text' || col.type === 'dropdown';
 
-    // Auto-link: for date columns, auto-link ALL other date columns on the dashboard
-    let linkedFields: string[] | undefined;
-    if (col.type === 'date' && !col.semanticField) {
+    let linkedFields = col.defaultLinkedFields ? [...col.defaultLinkedFields] : undefined;
+
+    // Auto-link legacy non-semantic date columns when no explicit linked targets are provided.
+    if (!linkedFields?.length && col.type === 'date' && !col.semanticField) {
       linkedFields = columns
         .filter(c => c.type === 'date' && getColumnKey(c) !== columnKey && !usedFields.has(getColumnKey(c)))
         .map(c => getColumnKey(c));
