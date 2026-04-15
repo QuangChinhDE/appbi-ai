@@ -404,7 +404,7 @@ export function QueryTableTab({
   const [vInit] = useState(() => {
     const v = parseVisualSql(initialQuery);
     return {
-      mode: (v ? 'visual' : initialQuery ? 'advanced' : 'visual') as 'visual' | 'advanced',
+      mode: (v ? 'visual' : 'advanced') as 'visual' | 'advanced',
       baseTable: v?.baseTable ?? '',
       columns: v?.columns ?? [],
       joins: (v?.joins ?? []).map(j => ({ ...j, id: Math.random().toString(36).slice(2) })) as JoinSpec[],
@@ -572,6 +572,9 @@ export function QueryTableTab({
             {mode === 'visual' ? 'Chuyển sang SQL nâng cao' : 'Dùng Visual Builder'}
           </button>
         </div>
+        <p className="mb-2 text-xs text-gray-500">
+          WHERE, GROUP BY, CTE, va bieu thuc SQL tu do chi ho tro trong SQL nang cao.
+        </p>
 
         {mode === 'visual' ? (
           <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 space-y-4">

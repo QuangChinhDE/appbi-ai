@@ -357,6 +357,61 @@ def _format_type_audit_error(audits: List[Dict[str, Any]]) -> str:
     return "Không thể đổi kiểu cột vì dữ liệu không cast an toàn. " + " | ".join(parts)
 
 
+def _normalize_preview_error_message(exc: Exception) -> str:
+    return " ".join(str(exc).split()).strip()
+
+
+def _is_fixable_preview_error(exc: Exception) -> bool:
+    if isinstance(exc, ValueError):
+        return True
+
+    lower_msg = _normalize_preview_error_message(exc).lower()
+    return any(
+        token in lower_msg
+        for token in (
+            "syntax error",
+            "invalidquery",
+            "invalid query",
+            "parse error",
+            "credential",
+            "oauth",
+            "permission denied",
+            "access denied",
+            "unauthorized",
+            "forbidden",
+            "not found",
+            "does not exist",
+            "no such",
+            "scan",
+        )
+    )
+
+
+def _preview_live_table_draft(
+    datasource: DataSource,
+    table_draft: Any,
+    *,
+    limit: int = 200,
+) -> tuple[List[DatasetColumnMetadata], List[Dict[str, Any]]]:
+    result = LiveQueryService.execute_preview_query(
+        datasource=datasource,
+        db_table=table_draft,
+        limit=limit,
+        offset=0,
+    )
+    preview_columns = list(result.get("columns") or [])
+    preview_rows = list(result.get("rows") or [])
+    preview_metadata = [
+        DatasetColumnMetadata(
+            name=column_name,
+            type=_infer_column_type(column_name, index, preview_rows),
+            nullable=True,
+        )
+        for index, column_name in enumerate(preview_columns)
+    ]
+    return preview_metadata, preview_rows
+
+
 def _build_table_draft(db_table, table_update) -> Any:
     update_data = table_update.model_dump(exclude_unset=True)
     return SimpleNamespace(
@@ -761,23 +816,10 @@ def add_table_to_dataset(
                     ds,
                     derived_draft,
                 )
-                result = LiveQueryService.execute_preview_query(
-                    datasource=datasource,
-                    db_table=live_proxy_table,
-                    limit=200,
-                    offset=0,
+                inferred_metadata, inferred_rows = _preview_live_table_draft(
+                    datasource,
+                    live_proxy_table,
                 )
-                preview_columns = list(result.get("columns") or [])
-                preview_rows = list(result.get("rows") or [])
-                inferred_metadata = [
-                    DatasetColumnMetadata(
-                        name=column_name,
-                        type=_infer_column_type(column_name, index, preview_rows),
-                        nullable=True,
-                    )
-                    for index, column_name in enumerate(preview_columns)
-                ]
-                inferred_rows = preview_rows
             except DatasetTableSqlError as exc:
                 status_code = 422 if getattr(exc, "code", "") == "NOT_SYNCED" else 400
                 detail: Any = str(exc)
@@ -799,8 +841,34 @@ def add_table_to_dataset(
             try:
                 # Validate and clean the query
                 table.source_query = QueryValidator.validate_and_clean(table.source_query)
+                if datasource is None:
+                    raise HTTPException(status_code=404, detail="Datasource not found")
+
+                sql_query_draft = SimpleNamespace(
+                    id=None,
+                    dataset_id=dataset_id,
+                    datasource_id=table.datasource_id,
+                    source_kind="sql_query",
+                    source_table_name=None,
+                    source_query=table.source_query,
+                    display_name=str(table.display_name or "Untitled Table").strip(),
+                    enabled=table.enabled,
+                    transformations=table.transformations or [],
+                    type_overrides=None,
+                    columns_cache=None,
+                )
+                inferred_metadata, inferred_rows = _preview_live_table_draft(
+                    datasource,
+                    sql_query_draft,
+                )
             except QueryValidationError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid SQL query: {str(e)}")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except Exception as exc:
+                if _is_fixable_preview_error(exc):
+                    raise HTTPException(status_code=400, detail=_normalize_preview_error_message(exc)) from exc
+                raise
         
         try:
             db_table = DatasetCRUDService.add_table_to_dataset(
@@ -972,22 +1040,10 @@ def update_dataset_table(
                     ds,
                     table_draft,
                 )
-                result = LiveQueryService.execute_preview_query(
-                    datasource=datasource,
-                    db_table=live_proxy_table,
-                    limit=200,
-                    offset=0,
+                preview_metadata, preview_rows = _preview_live_table_draft(
+                    datasource,
+                    live_proxy_table,
                 )
-                preview_columns = list(result.get("columns") or [])
-                preview_rows = list(result.get("rows") or [])
-                preview_metadata = [
-                    DatasetColumnMetadata(
-                        name=column_name,
-                        type=_infer_column_type(column_name, index, preview_rows),
-                        nullable=True,
-                    )
-                    for index, column_name in enumerate(preview_columns)
-                ]
             except DatasetTableSqlError as exc:
                 status_code = 422 if getattr(exc, "code", "") == "NOT_SYNCED" else 400
                 detail: Any = str(exc)
@@ -1000,8 +1056,23 @@ def update_dataset_table(
             from app.services.query_validator import QueryValidator, QueryValidationError
             try:
                 table_update.source_query = QueryValidator.validate_and_clean(table_update.source_query)
+                datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+                if not datasource:
+                    raise HTTPException(status_code=404, detail="Datasource not found")
+
+                table_draft = _build_table_draft(db_table, table_update)
+                preview_metadata, preview_rows = _preview_live_table_draft(
+                    datasource,
+                    table_draft,
+                )
             except QueryValidationError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid SQL query: {str(e)}")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except Exception as exc:
+                if _is_fixable_preview_error(exc):
+                    raise HTTPException(status_code=400, detail=_normalize_preview_error_message(exc)) from exc
+                raise
 
     if table_update.type_overrides is not None:
         normalized_overrides = normalize_type_overrides(table_update.type_overrides)
@@ -1478,12 +1549,12 @@ def preview_dataset_table(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        error_msg = str(e)
-        # Surface SQL syntax / execution errors as 400 instead of hiding behind 500
-        lower_msg = error_msg.lower()
-        if any(kw in lower_msg for kw in ("syntax error", "invalidquery", "invalid query", "parse error")):
-            logger.warning("Preview SQL error for table %d: %s", table_id, error_msg)
-            raise HTTPException(status_code=400, detail=f"SQL error: {error_msg}")
+        error_msg = _normalize_preview_error_message(e)
+        if _is_fixable_preview_error(e):
+            logger.warning("Preview execution error for table %d: %s", table_id, error_msg)
+            if any(kw in error_msg.lower() for kw in ("syntax error", "invalidquery", "invalid query", "parse error")):
+                raise HTTPException(status_code=400, detail=f"SQL error: {error_msg}")
+            raise HTTPException(status_code=400, detail=error_msg or "Preview query failed.")
         logger.error("Failed to preview table: %s", e)
         raise HTTPException(status_code=500, detail="Failed to preview table.")
 
