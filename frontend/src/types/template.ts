@@ -1,96 +1,151 @@
 /**
- * TypeScript types for the Report Template module.
+ * TypeScript types for the Report Template module (v3 — Builder).
  */
 
-/* ── Layout ────────────────────────────────────────────────── */
+/* ── Layout & column types ─────────────────────────────────── */
 
-export interface TemplateBlockLayout {
-  x: number;      // px from page left edge
-  y: number;      // px from page top edge
-  width: number;  // px
-  height: number; // px
-}
+export type LayoutType = 'table' | 'card' | 'cross-tab';
+export type ColumnType = 'raw' | 'input' | 'formula' | 'subtotal';
+export type NumberFormat = 'integer' | 'decimal' | 'percentage' | 'text';
 
-/* ── Data binding ──────────────────────────────────────────── */
+/* ── Column definition ─────────────────────────────────────── */
 
-/**
- * A value in any text/cell can be one of:
- *   - plain string  → "Hello"
- *   - data binding  → { type: 'field', datasetId, tableId, column, agg? }
- *   - formula       → { type: 'formula', expression }
- *
- * Use `resolveCellValue()` at render-time to get the display string.
- */
-export interface DataFieldBinding {
-  type: 'field';
-  datasetId: number;
-  tableId: number;
-  column: string;
-  agg?: 'sum' | 'avg' | 'min' | 'max' | 'count' | 'first' | 'last';
-  format?: string;          // e.g. "#,##0", "dd/MM/yyyy"
-  label?: string;           // friendly display name
-}
-
-export interface FormulaBinding {
-  type: 'formula';
-  expression: string;       // e.g. "=SUM(field1) * 1.1"
-  format?: string;
-}
-
-export type CellValue = string | DataFieldBinding | FormulaBinding;
-
-/* ── Table structures ──────────────────────────────────────── */
-
-export interface TableCellDef {
-  value: CellValue;
-  colSpan?: number;
-  rowSpan?: number;
-  hidden?: boolean;
-  bold?: boolean;
-  italic?: boolean;
-  align?: 'left' | 'center' | 'right';
-  bg?: string;              // background color
-}
-
-export interface TableRowDef {
-  cells: TableCellDef[];
-  isHeader?: boolean;
-}
-
-/* ── Dataset-level data source binding ─────────────────────── */
-
-export interface TableDataSourceColumn {
-  column: string;           // actual DB column name
-  label: string;            // display header label
-  width?: number;           // optional column width (px)
-  align?: 'left' | 'center' | 'right';
-}
-
-export interface TableDataSource {
-  datasetId: number;
-  tableId: number;
-  datasetName?: string;     // for display
-  tableName?: string;       // for display
-  columns: TableDataSourceColumn[];
-}
-
-export interface TableConfig {
-  heading?: string;
-  showBorder?: boolean;
-  columns: number;          // total column count
-  columnWidths?: number[];  // px per column (auto if omitted)
-  rowHeights?: number[];    // px per row (auto if omitted)
-  rows: TableRowDef[];
-  dataSource?: TableDataSource;  // block-level dataset binding
-}
-
-/* ── Block ─────────────────────────────────────────────────── */
-
-export interface TemplateBlock {
+export interface TemplateColumn {
   id: string;
-  type: 'title' | 'table' | 'signature' | 'text' | 'spacer' | 'image';
-  layout: TemplateBlockLayout;
-  config: Record<string, any>;
+  key: string;               // unique key referenced in formulas
+  label: string;             // display header text
+  type: ColumnType;
+  sourceColumn?: string;     // maps to dataset column (raw / input)
+  expression?: string;       // formula expression (formula / subtotal)
+  width?: number;            // px
+  align?: 'left' | 'center' | 'right';
+  format?: NumberFormat;
+  suffix?: string;           // e.g. "KIP", "USD", "%"
+  bold?: boolean;
+  highlightNegative?: boolean;
+  visible?: boolean;         // default true
+}
+
+/* ── Data source binding ───────────────────────────────────── */
+
+export interface TemplateDataSource {
+  datasetId: number;
+  tableId: number;
+  datasetName?: string;
+  tableName?: string;
+}
+
+/* ── Cross-tab config ──────────────────────────────────────── */
+
+export interface CrossTabConfig {
+  rowColumns: string[];       // column keys for row headers
+  pivotColumn: string;        // column whose distinct values become columns
+  valueColumn: string;        // column for cell values
+  showRowTotal?: boolean;
+  showColumnTotal?: boolean;
+}
+
+/* ── Card config ───────────────────────────────────────────── */
+
+export interface CardConfig {
+  cardsPerRow: number;         // 2, 3, 4
+  titleColumn: string;         // column key for card title
+  subtitleColumns?: string[];  // column keys for subtitle line
+  totalLabel?: string;
+  deductionColumns?: string[]; // columns shown as negative
+}
+
+/* ── Template definition (v3) — stored in blocks JSON field ── */
+
+/* ── Header / Footer config ─────────────────────────────────── */
+
+export interface HeaderLine {
+  text: string;
+  rightText?: string;            // optional right-side text (2-column header row)
+  align?: 'left' | 'center' | 'right';
+  bold?: boolean;
+  fontSize?: 'sm' | 'base' | 'lg' | 'xl';
+}
+
+/* ── Column groups (merged header rows) ────────────────────── */
+
+export interface ColumnGroup {
+  id: string;
+  label: string;
+  columnIds: string[];           // IDs of columns this group spans
+}
+
+export interface TemplateFooter {
+  lines?: HeaderLine[];         // free-text lines (notes, conditions, etc.)
+  signatureSlots?: number;      // number of blank signature boxes (e.g. 3)
+  signatureLabels?: string[];   // labels under each signature box
+}
+
+/* ── Color theme ────────────────────────────────────────────── */
+
+export interface TemplateTheme {
+  headerBg: string;           // table header background  (hex)
+  headerText: string;         // table header text color  (hex)
+  groupBg: string;            // group band / section bg  (hex)
+  groupText: string;          // group band text          (hex)
+  subtotalBg: string;         // subtotal row bg          (hex)
+  subtotalText: string;       // subtotal row text        (hex)
+  accentColor: string;        // accent / primary color   (hex)
+  sectionBg?: string;         // section header bg        (hex)
+  sectionText?: string;       // section header text      (hex)
+}
+
+export const PRESET_THEMES: Record<string, TemplateTheme> = {
+  'dark-blue': {
+    headerBg: '#073763', headerText: '#ffffff',
+    groupBg: '#c9daf8', groupText: '#073763',
+    subtotalBg: '#dbeafe', subtotalText: '#1e40af',
+    accentColor: '#4a86e8',
+    sectionBg: '#c9daf8', sectionText: '#073763',
+  },
+  'light-gray': {
+    headerBg: '#374151', headerText: '#f9fafb',
+    groupBg: '#f3f4f6', groupText: '#374151',
+    subtotalBg: '#f9fafb', subtotalText: '#111827',
+    accentColor: '#6b7280',
+    sectionBg: '#f3f4f6', sectionText: '#374151',
+  },
+  'green': {
+    headerBg: '#065f46', headerText: '#ffffff',
+    groupBg: '#d1fae5', groupText: '#065f46',
+    subtotalBg: '#ecfdf5', subtotalText: '#047857',
+    accentColor: '#10b981',
+    sectionBg: '#d1fae5', sectionText: '#065f46',
+  },
+  'orange': {
+    headerBg: '#9a3412', headerText: '#ffffff',
+    groupBg: '#ffedd5', groupText: '#9a3412',
+    subtotalBg: '#fff7ed', subtotalText: '#c2410c',
+    accentColor: '#f97316',
+    sectionBg: '#ffedd5', sectionText: '#9a3412',
+  },
+};
+
+export const DEFAULT_THEME: TemplateTheme = PRESET_THEMES['dark-blue'];
+
+export interface TemplateDefinition {
+  version: 3;
+  layout: LayoutType;
+  dataSource?: TemplateDataSource;
+  columns: TemplateColumn[];
+  groupBy?: string;           // column key to group rows
+  showSubtotals?: boolean;
+  theme?: TemplateTheme;      // color customization
+  header?: {
+    lines?: HeaderLine[];     // multi-line header (company, address, title, etc.)
+    title: string;            // supports {{variable}} placeholders
+    meta?: string;
+  };
+  footer?: TemplateFooter;
+  columnGroups?: ColumnGroup[];  // merged header row groups
+  crossTabConfig?: CrossTabConfig;
+  cardConfig?: CardConfig;
+  variables?: Record<string, string>;
 }
 
 /* ── Filter ────────────────────────────────────────────────── */
@@ -105,7 +160,7 @@ export interface TemplateFilter {
   defaultValue?: string;
 }
 
-/* ── Template ──────────────────────────────────────────────── */
+/* ── API types (match backend schemas) ─────────────────────── */
 
 export interface ReportTemplate {
   id: number;
@@ -113,7 +168,7 @@ export interface ReportTemplate {
   description?: string;
   page_size: string;
   orientation: string;
-  blocks: TemplateBlock[] | SheetData;
+  blocks: TemplateDefinition | Record<string, any>;
   filters?: TemplateFilter[];
   owner_id?: string;
   owner_email?: string;
@@ -127,7 +182,7 @@ export interface ReportTemplateCreate {
   description?: string;
   page_size?: string;
   orientation?: string;
-  blocks?: TemplateBlock[] | SheetData;
+  blocks?: TemplateDefinition;
   filters?: TemplateFilter[];
 }
 
@@ -136,88 +191,21 @@ export interface ReportTemplateUpdate {
   description?: string;
   page_size?: string;
   orientation?: string;
-  blocks?: TemplateBlock[] | SheetData;
+  blocks?: TemplateDefinition;
   filters?: TemplateFilter[];
 }
 
-/* ── Page constants ───────────────────────────────────────── */
+/* ── Type guards & helpers ─────────────────────────────────── */
 
-export const PAGE_SIZES: Record<string, { width: number; height: number }> = {
-  A4: { width: 794, height: 1123 },
-  A3: { width: 1123, height: 1587 },
-  Letter: { width: 816, height: 1056 },
-};
-
-export const PAGE_MARGIN = 24;
-
-/* ── Spreadsheet types (v2 format) ─────────────────────────── */
-
-export type SpreadsheetBorderSide = 'top' | 'right' | 'bottom' | 'left';
-
-export type SpreadsheetBorders = Partial<Record<SpreadsheetBorderSide, boolean>>;
-
-export function hasSpreadsheetBorders(borders?: SpreadsheetBorders | null): boolean {
-  return !!(borders?.top || borders?.right || borders?.bottom || borders?.left);
+export function isTemplateDefinition(data: unknown): data is TemplateDefinition {
+  return !!data && typeof data === 'object' && (data as any).version === 3;
 }
 
-export interface SpreadsheetCell {
-  value: CellValue;
-  bold?: boolean;
-  italic?: boolean;
-  align?: 'left' | 'center' | 'right';
-  bg?: string;
-  fontSize?: number;
-  borders?: SpreadsheetBorders;
-}
-
-export interface MergeRange {
-  r1: number;
-  c1: number;
-  r2: number;
-  c2: number;
-}
-
-export interface SheetData {
-  version: 2;
-  colCount: number;
-  rowCount: number;
-  colWidths: number[];
-  rowHeights: number[];
-  cells: Record<string, SpreadsheetCell>;
-  merges: MergeRange[];
-}
-
-export function isSheetData(data: unknown): data is SheetData {
-  return !!data && typeof data === 'object' && !Array.isArray(data) && (data as any).version === 2;
-}
-
-export function createDefaultSheet(_pageSize = 'A4', _orientation = 'portrait'): SheetData {
-  const colCount = 26;
-  const rowCount = 100;
+export function createDefaultDefinition(): TemplateDefinition {
   return {
-    version: 2,
-    colCount,
-    rowCount,
-    colWidths: Array(colCount).fill(100),
-    rowHeights: Array(rowCount).fill(28),
-    cells: {},
-    merges: [],
+    version: 3,
+    layout: 'table',
+    columns: [],
+    header: { title: '' },
   };
-}
-
-/* ── Helpers ───────────────────────────────────────────────── */
-
-export function isDataField(v: CellValue): v is DataFieldBinding {
-  return typeof v === 'object' && v !== null && v.type === 'field';
-}
-
-export function isFormula(v: CellValue): v is FormulaBinding {
-  return typeof v === 'object' && v !== null && v.type === 'formula';
-}
-
-export function cellDisplayText(v: CellValue): string {
-  if (typeof v === 'string') return v;
-  if (isDataField(v)) return v.label ?? `{{${v.column}}}`;
-  if (isFormula(v)) return v.expression;
-  return '';
 }

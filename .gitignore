@@ -32,9 +32,11 @@ docs/
 
 # Demo/test scripts (local only)
 seed_demo.py
+seed_demo_templates.sql
 scope-foodball-demo.xlsx
 verify-docker.sh
 verify-docker.ps1
+template_demo.html
 
 # Test & debug scripts (local only — not for repo)
 test_*.py
@@ -59,3 +61,4 @@ _create_ds.py
 README.md
 install-docker-and-run.sh
 *.xlsx
+*.csv
