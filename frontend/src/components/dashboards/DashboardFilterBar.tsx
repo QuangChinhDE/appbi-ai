@@ -1,11 +1,14 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
-import { Plus, X, Filter, ChevronDown, ChevronRight, Search, Link2, Check, RotateCcw } from 'lucide-react';
+import { Plus, X, Filter, ChevronDown, ChevronRight, Search, Link2, Check, RotateCcw, Calendar } from 'lucide-react';
 import {
   BaseFilter,
   FilterOperator,
   FilterType,
+  DatePreset,
+  DATE_PRESET_LABELS,
+  computeDatePresetRange,
   ColumnInfo,
   getColumnDisplayLabel,
   getColumnKey,
@@ -94,7 +97,7 @@ export function DashboardFilterBar({
   );
 
   // ── Mutators ───────────────────────────────────────────────────
-  const addFilter = (columnKey: string) => {
+  const addFilter = (columnKey: string, preset?: DatePreset) => {
     const col = columns.find(c => getColumnKey(c) === columnKey);
     if (!col) return;
     if (usedFields.has(columnKey)) return;
@@ -110,6 +113,9 @@ export function DashboardFilterBar({
       if (!linkedFields.length) linkedFields = undefined;
     }
 
+    const datePreset = col.type === 'date' ? (preset ?? 'this_month') : undefined;
+    const dateValue = datePreset && datePreset !== 'custom' ? computeDatePresetRange(datePreset) : ['', ''];
+
     const newFilter: BaseFilter = {
       id:           `gf-${Date.now()}`,
       field:        col.name,
@@ -119,8 +125,9 @@ export function DashboardFilterBar({
       linkedFields,
       type:         col.type,
       operator:     isMultiSelect ? 'in' : col.type === 'date' ? 'between' : 'gte',
-      value:        isMultiSelect ? [] : col.type === 'date' ? ['', ''] : '',
+      value:        isMultiSelect ? [] : col.type === 'date' ? dateValue : '',
       label:        getColumnDisplayLabel(col),
+      datePreset,
     };
     onFiltersChange([...filters, newFilter]);
     setAddingField(false);
@@ -157,7 +164,14 @@ export function DashboardFilterBar({
     onFiltersChange(filters.map(f => f.id === filterId ? { ...f, value: [] } : f));
 
   const updateValue = (filterId: string, value: any) =>
-    onFiltersChange(filters.map(f => f.id === filterId ? { ...f, value } : f));
+    onFiltersChange(filters.map(f => f.id === filterId ? { ...f, value, datePreset: f.type === 'date' ? 'custom' : f.datePreset } : f));
+
+  const updateDatePreset = (filterId: string, preset: DatePreset) =>
+    onFiltersChange(filters.map(f => {
+      if (f.id !== filterId) return f;
+      if (preset === 'custom') return { ...f, datePreset: 'custom' };
+      return { ...f, datePreset: preset, operator: 'between' as FilterOperator, value: computeDatePresetRange(preset) };
+    }));
 
   const updateOperator = (filterId: string, operator: FilterOperator) =>
     onFiltersChange(filters.map(f => {
@@ -269,6 +283,9 @@ export function DashboardFilterBar({
                   className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 border border-blue-200 text-blue-700 text-xs rounded-full"
                 >
                   <span className="font-semibold">{getFilterDisplayLabel(f)}</span>
+                  {f.datePreset && f.datePreset !== 'custom' && (
+                    <span className="opacity-70">{DATE_PRESET_LABELS[f.datePreset]}</span>
+                  )}
                   {f.linkedFields && f.linkedFields.length > 0 && (
                     <Link2 className="w-3 h-3 text-blue-400" />
                   )}
@@ -335,10 +352,9 @@ export function DashboardFilterBar({
                   setAddingField(false);
                   setAddFilterSearch('');
                 }} />
-                <div className="absolute right-0 top-full mt-1 z-20 bg-white border border-gray-200 rounded-lg shadow-lg w-72 max-h-80 overflow-y-auto">
+                <div className="absolute right-0 top-full mt-1 z-20 bg-white border border-gray-200 rounded-lg shadow-lg w-80 max-h-[28rem] overflow-y-auto">
                   <div className="p-2 border-b border-gray-100">
-                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Select a field</p>
-                    <p className="text-xs text-gray-400 mt-0.5">Only shared fields that affect all charts are available here.</p>
+                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Add a filter</p>
                   </div>
                   {sharedAvailableColumns.length > 8 && (
                     <div className="p-2 border-b border-gray-100">
@@ -354,14 +370,35 @@ export function DashboardFilterBar({
                       </div>
                     </div>
                   )}
-                  {sharedAvailableColumns.length > 0 && (
-                    <div className="py-1">
-                      <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                        Global fields
-                      </div>
-                      {matchingAvailableColumns.map(renderColumnOption)}
-                    </div>
-                  )}
+
+                  {/* ── Date filter section ─────────────────────────── */}
+                  {(() => {
+                    const dateColumns = matchingAvailableColumns.filter(c => c.type === 'date');
+                    const fieldColumns = matchingAvailableColumns.filter(c => c.type !== 'date');
+                    return (
+                      <>
+                        {dateColumns.length > 0 && (
+                          <div className="py-1 border-b border-gray-100">
+                            <div className="px-3 py-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-teal-600">
+                              <Calendar className="w-3 h-3" />
+                              Filter theo Ngày
+                            </div>
+                            {dateColumns.map(renderColumnOption)}
+                          </div>
+                        )}
+                        {fieldColumns.length > 0 && (
+                          <div className="py-1">
+                            <div className="px-3 py-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                              <Filter className="w-3 h-3" />
+                              Filter theo Trường
+                            </div>
+                            {fieldColumns.map(renderColumnOption)}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+
                   {matchingAvailableColumns.length === 0 && (
                     sharedAvailableColumns.length === 0 ? (
                       <div className="px-3 py-3 text-xs text-gray-400">
@@ -400,6 +437,7 @@ export function DashboardFilterBar({
               onDeselectAll={() => deselectAll(f.id)}
               onUpdateValue={v => updateValue(f.id, v)}
               onUpdateOperator={op => updateOperator(f.id, op)}
+              onUpdateDatePreset={preset => updateDatePreset(f.id, preset)}
               onToggleLinkedField={col => toggleLinkedField(f.id, col)}
               onClear={() => clearFilter(f.id)}
               onRemove={() => removeFilter(f.id)}
@@ -449,6 +487,7 @@ interface FilterCardProps {
   onDeselectAll: () => void;
   onUpdateValue: (value: any) => void;
   onUpdateOperator: (op: FilterOperator) => void;
+  onUpdateDatePreset: (preset: DatePreset) => void;
   onToggleLinkedField: (columnName: string) => void;
   onClear: () => void;
   onRemove: () => void;
@@ -468,6 +507,7 @@ function FilterCard({
   onDeselectAll,
   onUpdateValue,
   onUpdateOperator,
+  onUpdateDatePreset,
   onToggleLinkedField,
   onClear,
   onRemove,
@@ -587,7 +627,7 @@ function FilterCard({
         ) : f.type === 'number' ? (
           <NumberBody filter={f} onUpdateValue={onUpdateValue} onUpdateOperator={onUpdateOperator} />
         ) : f.type === 'date' ? (
-          <DateBody filter={f} onUpdateValue={onUpdateValue} onUpdateOperator={onUpdateOperator} />
+          <DateBody filter={f} onUpdateValue={onUpdateValue} onUpdateOperator={onUpdateOperator} onUpdateDatePreset={onUpdateDatePreset} />
         ) : null}
       </div>
 
@@ -798,44 +838,72 @@ function DateBody({
   filter: f,
   onUpdateValue,
   onUpdateOperator,
+  onUpdateDatePreset,
 }: {
   filter: BaseFilter;
   onUpdateValue: (v: any) => void;
   onUpdateOperator: (op: FilterOperator) => void;
+  onUpdateDatePreset: (preset: DatePreset) => void;
 }) {
+  const activePreset = f.datePreset ?? 'custom';
+  const isCustom = activePreset === 'custom';
+
   return (
     <div className="space-y-2">
+      {/* ── Date preset selector ──────────────────────────── */}
       <select
-        value={f.operator}
-        onChange={e => onUpdateOperator(e.target.value as FilterOperator)}
-        className="w-full text-xs border border-gray-200 rounded px-2 py-1 bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+        value={activePreset}
+        onChange={e => onUpdateDatePreset(e.target.value as DatePreset)}
+        className="w-full text-xs border border-gray-200 rounded px-2 py-1 bg-white focus:ring-1 focus:ring-teal-400 outline-none font-medium text-teal-700"
       >
-        <option value="between">↔ between dates</option>
-        <option value="eq">= on date</option>
-        <option value="gt">&gt; after</option>
-        <option value="gte">≥ on or after</option>
-        <option value="lt">&lt; before</option>
-        <option value="lte">≤ on or before</option>
+        {(Object.entries(DATE_PRESET_LABELS) as [DatePreset, string][]).map(([key, label]) => (
+          <option key={key} value={key}>{label}</option>
+        ))}
       </select>
-      {f.operator === 'between' ? (
-        <div className="space-y-1.5">
-          <DateInput
-            value={Array.isArray(f.value) ? f.value[0] ?? '' : ''}
-            onChange={d => onUpdateValue([d, Array.isArray(f.value) ? f.value[1] ?? '' : ''])}
-            placeholder="Từ ngày DD/MM/YYYY"
-          />
-          <DateInput
-            value={Array.isArray(f.value) ? f.value[1] ?? '' : ''}
-            onChange={d => onUpdateValue([Array.isArray(f.value) ? f.value[0] ?? '' : '', d])}
-            placeholder="Đến ngày DD/MM/YYYY"
-          />
-        </div>
-      ) : (
-        <DateInput
-          value={typeof f.value === 'string' ? f.value : ''}
-          onChange={d => onUpdateValue(d)}
-          placeholder="DD/MM/YYYY"
-        />
+
+      {/* ── Operator + manual date inputs (only when custom) ── */}
+      {isCustom && (
+        <>
+          <select
+            value={f.operator}
+            onChange={e => onUpdateOperator(e.target.value as FilterOperator)}
+            className="w-full text-xs border border-gray-200 rounded px-2 py-1 bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+          >
+            <option value="between">↔ between dates</option>
+            <option value="eq">= on date</option>
+            <option value="gt">&gt; after</option>
+            <option value="gte">≥ on or after</option>
+            <option value="lt">&lt; before</option>
+            <option value="lte">≤ on or before</option>
+          </select>
+          {f.operator === 'between' ? (
+            <div className="space-y-1.5">
+              <DateInput
+                value={Array.isArray(f.value) ? f.value[0] ?? '' : ''}
+                onChange={d => onUpdateValue([d, Array.isArray(f.value) ? f.value[1] ?? '' : ''])}
+                placeholder="Từ ngày DD/MM/YYYY"
+              />
+              <DateInput
+                value={Array.isArray(f.value) ? f.value[1] ?? '' : ''}
+                onChange={d => onUpdateValue([Array.isArray(f.value) ? f.value[0] ?? '' : '', d])}
+                placeholder="Đến ngày DD/MM/YYYY"
+              />
+            </div>
+          ) : (
+            <DateInput
+              value={typeof f.value === 'string' ? f.value : ''}
+              onChange={d => onUpdateValue(d)}
+              placeholder="DD/MM/YYYY"
+            />
+          )}
+        </>
+      )}
+
+      {/* ── Computed range preview (non-custom) ──────────── */}
+      {!isCustom && Array.isArray(f.value) && f.value[0] && (
+        <p className="text-[11px] text-gray-500">
+          {f.value[0]} → {f.value[1]}
+        </p>
       )}
     </div>
   );

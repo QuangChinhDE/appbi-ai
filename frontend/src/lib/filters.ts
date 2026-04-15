@@ -19,6 +19,39 @@ export type FilterOperator =
 
 export type FilterType = 'text' | 'number' | 'date' | 'dropdown';
 
+export type DatePreset =
+  | 'custom'
+  | 'today'
+  | 'yesterday'
+  | 'this_week'
+  | 'last_week'
+  | 'this_month'
+  | 'last_month'
+  | 'this_quarter'
+  | 'last_quarter'
+  | 'this_year'
+  | 'last_year'
+  | 'last_7_days'
+  | 'last_30_days'
+  | 'last_90_days';
+
+export const DATE_PRESET_LABELS: Record<DatePreset, string> = {
+  custom: 'Tùy chọn',
+  today: 'Hôm nay',
+  yesterday: 'Hôm qua',
+  this_week: 'Tuần này',
+  last_week: 'Tuần trước',
+  this_month: 'Tháng này',
+  last_month: 'Tháng trước',
+  this_quarter: 'Quý này',
+  last_quarter: 'Quý trước',
+  this_year: 'Năm nay',
+  last_year: 'Năm trước',
+  last_7_days: '7 ngày qua',
+  last_30_days: '30 ngày qua',
+  last_90_days: '90 ngày qua',
+};
+
 /**
  * Base filter structure used by both Explore and Dashboard
  */
@@ -33,6 +66,7 @@ export interface BaseFilter {
   operator: FilterOperator;  // default depends on type
   value: any;                // string | number | [min,max] | array
   label?: string;            // optional user-friendly label
+  datePreset?: DatePreset;   // for date filters: selected preset or 'custom'
 }
 
 /**
@@ -519,5 +553,90 @@ export function getDefaultOperator(type: FilterType): FilterOperator {
     case 'number': return 'eq';
     case 'text': return 'contains';
     default: return 'eq';
+  }
+}
+
+/**
+ * Compute [startDate, endDate] range for a date preset (YYYY-MM-DD strings).
+ * Returns ['', ''] for 'custom'.
+ */
+export function computeDatePresetRange(preset: DatePreset): [string, string] {
+  const now = new Date();
+  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  const today = fmt(now);
+
+  switch (preset) {
+    case 'today':
+      return [today, today];
+    case 'yesterday': {
+      const d = new Date(now); d.setDate(d.getDate() - 1);
+      const s = fmt(d);
+      return [s, s];
+    }
+    case 'this_week': {
+      const d = new Date(now);
+      const day = d.getDay();
+      const diffToMonday = day === 0 ? 6 : day - 1;
+      d.setDate(d.getDate() - diffToMonday);
+      const end = new Date(d); end.setDate(end.getDate() + 6);
+      return [fmt(d), fmt(end)];
+    }
+    case 'last_week': {
+      const d = new Date(now);
+      const day = d.getDay();
+      const diffToMonday = day === 0 ? 6 : day - 1;
+      d.setDate(d.getDate() - diffToMonday - 7);
+      const end = new Date(d); end.setDate(end.getDate() + 6);
+      return [fmt(d), fmt(end)];
+    }
+    case 'this_month': {
+      const start = new Date(now.getFullYear(), now.getMonth(), 1);
+      const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      return [fmt(start), fmt(end)];
+    }
+    case 'last_month': {
+      const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const end = new Date(now.getFullYear(), now.getMonth(), 0);
+      return [fmt(start), fmt(end)];
+    }
+    case 'this_quarter': {
+      const q = Math.floor(now.getMonth() / 3);
+      const start = new Date(now.getFullYear(), q * 3, 1);
+      const end = new Date(now.getFullYear(), q * 3 + 3, 0);
+      return [fmt(start), fmt(end)];
+    }
+    case 'last_quarter': {
+      const q = Math.floor(now.getMonth() / 3) - 1;
+      const y = q < 0 ? now.getFullYear() - 1 : now.getFullYear();
+      const qn = ((q % 4) + 4) % 4;
+      const start = new Date(y, qn * 3, 1);
+      const end = new Date(y, qn * 3 + 3, 0);
+      return [fmt(start), fmt(end)];
+    }
+    case 'this_year': {
+      const start = new Date(now.getFullYear(), 0, 1);
+      const end = new Date(now.getFullYear(), 11, 31);
+      return [fmt(start), fmt(end)];
+    }
+    case 'last_year': {
+      const start = new Date(now.getFullYear() - 1, 0, 1);
+      const end = new Date(now.getFullYear() - 1, 11, 31);
+      return [fmt(start), fmt(end)];
+    }
+    case 'last_7_days': {
+      const d = new Date(now); d.setDate(d.getDate() - 6);
+      return [fmt(d), today];
+    }
+    case 'last_30_days': {
+      const d = new Date(now); d.setDate(d.getDate() - 29);
+      return [fmt(d), today];
+    }
+    case 'last_90_days': {
+      const d = new Date(now); d.setDate(d.getDate() - 89);
+      return [fmt(d), today];
+    }
+    case 'custom':
+    default:
+      return ['', ''];
   }
 }

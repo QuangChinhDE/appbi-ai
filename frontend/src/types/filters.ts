@@ -6,6 +6,7 @@
 export type {
   FilterOperator,
   FilterType,
+  DatePreset,
   BaseFilter,
   DashboardFilter,
 } from '@/lib/filters';

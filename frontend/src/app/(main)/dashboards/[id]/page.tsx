@@ -24,6 +24,8 @@ import { DashboardChartLayout, DashboardPageConfig } from '@/types/api';
 import type { BaseFilter, ColumnInfo, FilterType } from '@/lib/filters';
 import {
   collectJoinKeySemanticFields,
+  computeDatePresetRange,
+  getColumnDisplayLabel,
   getFilterDisplayLabel,
   getFriendlyFieldLabel,
   getColumnKey,
@@ -209,6 +211,8 @@ export default function DashboardDetailPage() {
     setDraftGlobalFilters(initial);
     setAppliedGlobalFilters(initial);
   }, [dashboard]);
+
+  const dateFilterAutoSeededRef = React.useRef(false);
 
   React.useEffect(() => {
     if (!crossFilterState) return;
@@ -659,6 +663,45 @@ export default function DashboardDetailPage() {
       chartCount: new Map(Array.from(counts.entries()).map(([key, ids]) => [key, ids.size])),
     };
   }, [dashboard?.dashboard_charts, datasetModelsById]);
+
+  // Auto-seed a default date filter when dashboard has no filters but has date columns.
+  React.useEffect(() => {
+    if (dateFilterAutoSeededRef.current) return;
+    if (!filtersSeededRef.current) return;
+    if (draftGlobalFilters.length > 0) {
+      dateFilterAutoSeededRef.current = true;
+      return;
+    }
+
+    const semanticDateColumns = semanticColumnsResult.columns.filter((column) => column.type === 'date');
+    if (semanticDateColumns.length === 0) return;
+
+    dateFilterAutoSeededRef.current = true;
+
+    const dateCol = semanticDateColumns[0];
+    const dateColKey = getColumnKey(dateCol);
+    const linkedDateFields = semanticDateColumns
+      .filter((column) => getColumnKey(column) !== dateColKey)
+      .map((column) => getColumnKey(column));
+    const preset = 'this_month' as const;
+
+    const defaultDateFilter: BaseFilter = {
+      id: `gf-default-date-${Date.now()}`,
+      field: dateCol.name,
+      fieldKey: dateColKey,
+      semanticField: dateCol.semanticField,
+      datasetId: dateCol.datasetId,
+      type: 'date',
+      operator: 'between',
+      value: computeDatePresetRange(preset),
+      label: getColumnDisplayLabel(dateCol),
+      datePreset: preset,
+      linkedFields: linkedDateFields.length > 0 ? linkedDateFields : undefined,
+    };
+
+    setDraftGlobalFilters([defaultDateFilter]);
+    setAppliedGlobalFilters([defaultDateFilter]);
+  }, [draftGlobalFilters, semanticColumnsResult.columns]);
 
   const activeSemanticDistinctColumns = React.useMemo(() => {
     if (semanticColumnsResult.columns.length === 0 || draftGlobalFilters.length === 0) {
