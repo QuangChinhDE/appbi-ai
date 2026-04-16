@@ -274,13 +274,25 @@ export function ChartPreview({
   const dataLimit = style.dataLimit;
   const dataLimitDir = style.dataLimitDirection ?? 'top';
   const lineDash = style.lineStyle === 'dashed' ? '5 5' : undefined;
+  const timeSeriesGranularity = (style.timeGranularity as TimeGranularity) ?? 'raw';
+  const timeSeriesValueFields = config.yFields?.length ? config.yFields : (config.valueField ? [config.valueField] : []);
+
+  const chartOutputData = useMemo(() => {
+    if (chartType !== ChartType.TIME_SERIES || !config.timeField || timeSeriesValueFields.length === 0) {
+      return data;
+    }
+
+    return timeSeriesGranularity !== 'raw'
+      ? applyTimeGranularity(data, config.timeField, timeSeriesValueFields, timeSeriesGranularity)
+      : data;
+  }, [chartType, config.timeField, data, timeSeriesGranularity, timeSeriesValueFields]);
 
   // Sorted + limited data for categorical charts
   const sortedData = useMemo(() => {
-    let d = applySortRules(data, sortRules);
+    let d = applySortRules(chartOutputData, sortRules);
     d = applyDataLimit(d, dataLimit, dataLimitDir);
     return d;
-  }, [data, sortRules, dataLimit, dataLimitDir]);
+  }, [chartOutputData, sortRules, dataLimit, dataLimitDir]);
 
   const ChartTitleEl = chartTitle ? (
     <div className="text-center text-sm font-semibold text-gray-700 mb-1">{chartTitle}</div>
@@ -612,11 +624,9 @@ export function ChartPreview({
 
   // Render Time Series Chart
   if (chartType === ChartType.TIME_SERIES && config.timeField && config.valueField) {
-    const gran = (style.timeGranularity as TimeGranularity) ?? 'raw';
-    const tsValueFields = config.yFields?.length ? config.yFields : [config.valueField];
-    const tsData = gran !== 'raw'
-      ? applyTimeGranularity(sortedData, config.timeField, tsValueFields, gran)
-      : sortedData;
+    const gran = timeSeriesGranularity;
+    const tsValueFields = timeSeriesValueFields;
+    const tsData = sortedData;
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}

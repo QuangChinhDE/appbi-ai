@@ -66,6 +66,9 @@ export function BuilderCanvas({
   const theme: TemplateTheme = definition.theme ?? DEFAULT_THEME;
   const headerLines = definition.header?.lines ?? [];
   const footer = definition.footer ?? {};
+  const titleAlign = definition.header?.titleAlign ?? 'left';
+  const titleFontCls = FONT_SIZE_MAP[definition.header?.titleFontSize ?? 'base'] ?? 'text-sm';
+  const titleWeightCls = definition.header?.titleBold === false ? 'font-medium' : 'font-bold';
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden bg-gray-100">
@@ -175,15 +178,21 @@ export function BuilderCanvas({
 
               {/* Report title */}
               {definition.header?.title && (
-                <div className="flex items-center justify-between">
+                <div className="relative">
                   <span
-                    className={`text-base font-bold ${isPreview ? 'text-gray-900' : ''}`}
+                    className={`${titleFontCls} ${titleWeightCls} block ${
+                      titleAlign === 'center'
+                        ? 'text-center'
+                        : titleAlign === 'right'
+                          ? 'text-right'
+                          : 'text-left'
+                    } ${isPreview ? 'text-gray-900' : ''}`}
                     style={!isPreview ? { color: theme.headerText } : undefined}
                   >
                     {definition.header.title}
                   </span>
                   {definition.header?.meta && (
-                    <span className={`text-xs font-mono ${isPreview ? 'text-gray-500' : 'text-gray-400'}`}>
+                    <span className={`absolute right-0 top-0 text-xs font-mono ${isPreview ? 'text-gray-500' : 'text-gray-400'}`}>
                       {definition.header.meta}
                     </span>
                   )}

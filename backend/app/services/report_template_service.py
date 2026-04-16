@@ -1,7 +1,5 @@
-"""
-CRUD service for report templates.
-"""
-from typing import List, Optional
+"""CRUD service for report templates."""
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -13,6 +11,15 @@ from app.schemas.report_template import (
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _default_template_definition() -> Dict[str, Any]:
+    return {
+        "version": 3,
+        "layout": "table",
+        "columns": [],
+        "header": {"title": ""},
+    }
 
 
 class ReportTemplateService:
@@ -33,17 +40,36 @@ class ReportTemplateService:
         return db.query(ReportTemplate).filter(ReportTemplate.id == template_id).first()
 
     @staticmethod
-    def _serialize_blocks(blocks):
-        """Serialize blocks — handles both List[TemplateBlock] and SheetData dict."""
-        if isinstance(blocks, dict):
-            # SheetData v2 format — store as-is
-            return blocks
+    def _serialize_blocks(blocks: Any) -> Dict[str, Any]:
+        """Persist only TemplateDefinition v3 payloads."""
+        if blocks is None:
+            return _default_template_definition()
+
         if isinstance(blocks, list):
-            return [
-                b.model_dump() if hasattr(b, "model_dump") else b
-                for b in blocks
-            ]
-        return blocks
+            if len(blocks) == 0:
+                return _default_template_definition()
+            raise ValueError("Only TemplateDefinition v3 is supported for report templates.")
+
+        if not isinstance(blocks, dict):
+            raise ValueError("Template blocks must be a TemplateDefinition v3 object.")
+        if blocks.get("version") != 3:
+            raise ValueError("Only TemplateDefinition v3 is supported for report templates.")
+        columns = blocks.get("columns")
+        if not isinstance(columns, list):
+            raise ValueError("TemplateDefinition v3 requires a 'columns' list.")
+
+        normalized = dict(blocks)
+        normalized.setdefault("layout", "table")
+
+        header = normalized.get("header")
+        if header is None:
+            normalized["header"] = {"title": ""}
+        elif not isinstance(header, dict):
+            raise ValueError("TemplateDefinition v3 header must be an object.")
+        else:
+            normalized["header"] = {**header, "title": str(header.get("title", ""))}
+
+        return normalized
 
     @staticmethod
     def create(

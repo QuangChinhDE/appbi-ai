@@ -17,6 +17,7 @@ import {
   type ChartRoleConfig,
   type ChartStyleConfig,
 } from '@/components/explore/ExploreChartConfig';
+import { buildExploreChartModel } from '@/components/explore/chartDataAdapter';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { useDataset } from '@/hooks/use-datasets';
 import { chartApi } from '@/lib/api/charts';
@@ -217,6 +218,43 @@ function deriveAppearanceRoleConfig(columns: ColumnMetadata[], chartType: string
   }
 }
 
+function inferSortLimitColumns(
+  chartType: string,
+  rows: Record<string, any>[],
+  roleConfig: ChartRoleConfig,
+  preAggregated: boolean,
+): ColumnMetadata[] {
+  if (!rows.length || chartType === 'TABLE' || chartType === 'KPI') {
+    return [];
+  }
+
+  const model = buildExploreChartModel({
+    type: chartType,
+    data: rows,
+    roleConfig,
+    preAggregated,
+  });
+
+  const sortRows = (() => {
+    if (chartType === 'SCATTER') {
+      return model.scatterPoints;
+    }
+    if (chartType === 'PIE') {
+      return model.pieData;
+    }
+    if (chartType === 'BAR_LINE') {
+      return model.comboData;
+    }
+    return model.categoricalData;
+  })();
+
+  if (!sortRows.length) {
+    return [];
+  }
+
+  return inferQueryColumns(Object.keys(sortRows[0] ?? {}), sortRows);
+}
+
 export function ChartDetailModal({
   chartId,
   isOpen,
@@ -356,6 +394,18 @@ export function ChartDetailModal({
     }
     return deriveAppearanceRoleConfig(appearanceColumns, exploreChartType);
   }, [activeRoleConfig, appearanceColumns, exploreChartType, normalizedRoleConfig]);
+  const sortLimitColumns = useMemo(() => {
+    if (!activeRoleConfig || !normalizedRoleConfig) {
+      return appearanceColumns;
+    }
+
+    return inferSortLimitColumns(
+      exploreChartType,
+      runtimeRows,
+      normalizedRoleConfig,
+      chartRuntime?.pre_aggregated ?? false,
+    );
+  }, [activeRoleConfig, appearanceColumns, chartRuntime?.pre_aggregated, exploreChartType, normalizedRoleConfig, runtimeRows]);
   const previewStyleConfig = canEditAppearance ? draftStyleConfig : savedStyleConfig;
 
   const isLoadingPreview = isLoadingChart || isLoadingRuntime || (queryMode === 'custom' && customSourcePreview.isLoading);
@@ -600,7 +650,7 @@ export function ChartDetailModal({
                   roleConfig={appearanceRoleConfig}
                   styleConfig={draftStyleConfig}
                   availableColumns={appearanceColumns}
-                  sortLimitColumns={appearanceColumns}
+                  sortLimitColumns={sortLimitColumns}
                   tableDisplayColumns={appearanceColumns}
                   queryMode={queryMode}
                   mode="styleOnly"

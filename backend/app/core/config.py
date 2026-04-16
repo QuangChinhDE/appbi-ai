@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     GCP_SERVICE_ACCOUNT_JSON: str = ""
     GCP_SERVICE_ACCOUNT_EMAIL: str = ""
 
-    # AI / Embedding (OpenRouter-only runtime)
+    # AI / Embedding
     # Primary key (backward-compat) + up to 5 numbered keys for rotation
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_API_KEY_1: str = ""
@@ -102,6 +102,9 @@ class Settings(BaseSettings):
     OPENROUTER_SITE_URL: str = "http://localhost:3000"
     OPENROUTER_APP_NAME: str = "AppBI"
     AI_DESCRIPTION_MODEL: str = "openai/gpt-4o-mini"
+    GEMINI_API_KEY: str = ""
+    GEMINI_IMPORT_MODEL: str = "gemini-2.5-flash-lite"
+    OPENROUTER_GEMINI_IMPORT_MODEL: str = "google/gemini-2.5-flash-lite"
     OPENROUTER_EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
     OPENROUTER_EMBEDDING_DIMENSIONS: int = 768
 
@@ -117,6 +120,24 @@ class Settings(BaseSettings):
     @property
     def active_description_model(self) -> str:
         return self.AI_DESCRIPTION_MODEL.strip() or "openai/gpt-4o-mini"
+
+    @property
+    def template_import_ai_provider(self) -> str:
+        if self.GEMINI_API_KEY.strip():
+            return "gemini"
+        if self.active_api_keys:
+            return "openrouter-gemini"
+        return "unavailable"
+
+    @property
+    def template_import_ai_available(self) -> bool:
+        return self.template_import_ai_provider != "unavailable"
+
+    @property
+    def template_import_ai_model(self) -> str:
+        if self.template_import_ai_provider == "gemini":
+            return self.GEMINI_IMPORT_MODEL.strip() or "gemini-2.5-flash-lite"
+        return self.OPENROUTER_GEMINI_IMPORT_MODEL.strip() or "google/gemini-2.5-flash-lite"
 
     @property
     def active_api_keys(self) -> List[str]:

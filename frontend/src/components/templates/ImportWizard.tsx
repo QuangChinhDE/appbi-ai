@@ -4,7 +4,7 @@ import React, { useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   X, Upload, Loader2, ChevronRight, ChevronLeft,
-  CheckCircle2, AlertTriangle, FileSpreadsheet, Database,
+  CheckCircle2, AlertTriangle, FileSpreadsheet, Database, Sparkles,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { useImportAnalyze, useImportConfirm } from '@/hooks/use-import-analysis';
@@ -12,6 +12,8 @@ import type {
   AnalysisResponse,
   AnalysisColumn,
   AnalysisHeaderLine,
+  AnalysisTitleStyle,
+  AnalysisFooterLine,
   AnalysisColumnGroup,
   ImportConfirmPayload,
 } from '@/types/import-analysis';
@@ -32,10 +34,12 @@ export function ImportWizard({ open, onClose }: ImportWizardProps) {
   const [editedColumns, setEditedColumns] = useState<AnalysisColumn[]>([]);
   const [editedGroups, setEditedGroups] = useState<AnalysisColumnGroup[]>([]);
   const [editedHeaderLines, setEditedHeaderLines] = useState<AnalysisHeaderLine[]>([]);
+  const [editedTitleStyle, setEditedTitleStyle] = useState<AnalysisTitleStyle>({});
 
   // Step 3
   const [templateName, setTemplateName] = useState('');
   const [includeData, setIncludeData] = useState(true);
+  const [useAiAssist, setUseAiAssist] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null!);  // non-null assertion for ref compat
   const analyzeMutation = useImportAnalyze();
@@ -45,11 +49,12 @@ export function ImportWizard({ open, onClose }: ImportWizardProps) {
     (f: File) => {
       setFile(f);
       analyzeMutation.mutate(
-        { file: f },
+        { file: f, aiEnhance: useAiAssist },
         {
           onSuccess: (result) => {
             setAnalysis(result);
             setEditedTitle(result.report_title);
+            setEditedTitleStyle(result.report_title_style ?? {});
             setEditedColumns(result.columns);
             setEditedGroups(result.column_groups);
             setEditedHeaderLines(result.header_lines);
@@ -62,18 +67,19 @@ export function ImportWizard({ open, onClose }: ImportWizardProps) {
         },
       );
     },
-    [analyzeMutation],
+    [analyzeMutation, useAiAssist],
   );
 
   const handleSheetChange = useCallback(
     (sheetName: string) => {
       if (!file) return;
       analyzeMutation.mutate(
-        { file, sheetName },
+        { file, sheetName, aiEnhance: useAiAssist },
         {
           onSuccess: (result) => {
             setAnalysis(result);
             setEditedTitle(result.report_title);
+            setEditedTitleStyle(result.report_title_style ?? {});
             setEditedColumns(result.columns);
             setEditedGroups(result.column_groups);
             setEditedHeaderLines(result.header_lines);
@@ -81,7 +87,7 @@ export function ImportWizard({ open, onClose }: ImportWizardProps) {
         },
       );
     },
-    [file, analyzeMutation],
+    [file, analyzeMutation, useAiAssist],
   );
 
   const handleConfirm = useCallback(() => {
@@ -94,6 +100,7 @@ export function ImportWizard({ open, onClose }: ImportWizardProps) {
       include_data: includeData,
       analyzed_sheet: analysis.analyzed_sheet,
       report_title: editedTitle,
+      report_title_style: editedTitleStyle,
       report_meta: analysis.report_meta,
       header_lines: editedHeaderLines,
       columns: editedColumns,
@@ -116,7 +123,7 @@ export function ImportWizard({ open, onClose }: ImportWizardProps) {
         toast.error(`Loi tao template: ${err.message}`);
       },
     });
-  }, [analysis, templateName, includeData, editedTitle, editedHeaderLines, editedColumns, editedGroups, confirmMutation, onClose, router]);
+  }, [analysis, templateName, includeData, editedTitle, editedTitleStyle, editedHeaderLines, editedColumns, editedGroups, confirmMutation, onClose, router]);
 
   const handleReset = () => {
     setStep(1);
@@ -149,6 +156,8 @@ export function ImportWizard({ open, onClose }: ImportWizardProps) {
             <Step1Upload
               file={file}
               isAnalyzing={analyzeMutation.isPending}
+              useAiAssist={useAiAssist}
+              onUseAiAssistChange={setUseAiAssist}
               onFileSelect={handleFileSelect}
               fileInputRef={fileInputRef}
             />
@@ -160,6 +169,7 @@ export function ImportWizard({ open, onClose }: ImportWizardProps) {
               editedColumns={editedColumns}
               editedGroups={editedGroups}
               editedHeaderLines={editedHeaderLines}
+              editedTitleStyle={editedTitleStyle}
               onTitleChange={setEditedTitle}
               onColumnsChange={setEditedColumns}
               onSheetChange={handleSheetChange}
@@ -266,11 +276,15 @@ function StepIndicator({ current }: { current: number }) {
 function Step1Upload({
   file,
   isAnalyzing,
+  useAiAssist,
+  onUseAiAssistChange,
   onFileSelect,
   fileInputRef,
 }: {
   file: File | null;
   isAnalyzing: boolean;
+  useAiAssist: boolean;
+  onUseAiAssistChange: (value: boolean) => void;
   onFileSelect: (f: File) => void;
   fileInputRef: React.RefObject<HTMLInputElement>;
 }) {
@@ -286,7 +300,14 @@ function Step1Upload({
     return (
       <div className="flex flex-col items-center justify-center py-20">
         <Loader2 className="h-8 w-8 animate-spin text-blue-600 mb-4" />
-        <p className="text-sm font-medium text-gray-700">Dang phan tich cau truc file...</p>
+        <p className="text-sm font-medium text-gray-700">
+          {useAiAssist ? 'Dang phan tich bang code va de Gemini refine template...' : 'Dang phan tich cau truc file...'}
+        </p>
+        {useAiAssist && (
+          <p className="mt-1 max-w-md text-center text-xs text-gray-500">
+            Code dang tach bang va du lieu truoc, sau do AI chi mapping tieu de, header, footer va merge groups vao module Template.
+          </p>
+        )}
         <p className="text-xs text-gray-400 mt-1">{file?.name}</p>
       </div>
     );
@@ -318,6 +339,28 @@ function Step1Upload({
           }}
         />
       </div>
+      <label className={`mt-4 flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition-colors ${
+        useAiAssist ? 'border-amber-300 bg-amber-50' : 'border-gray-200 bg-white hover:bg-gray-50'
+      }`}>
+        <input
+          type="checkbox"
+          checked={useAiAssist}
+          onChange={(e) => onUseAiAssistChange(e.target.checked)}
+          className="mt-0.5 h-4 w-4 rounded border-gray-300 text-amber-600"
+        />
+        <div>
+          <div className="flex items-center gap-2 text-sm font-medium text-gray-900">
+            <Sparkles className="h-4 w-4 text-amber-500" />
+            Cho phep AI refine giao dien template
+          </div>
+          <p className="mt-1 text-xs leading-relaxed text-gray-500">
+            He thong van xu ly bang va data bang code truoc. Sau do Gemini chi refine cach map tieu de, thong tin dau trang, footer va merge cot vao cac truong cua module Template.
+          </p>
+          <p className="mt-1 text-[11px] text-gray-400">
+            Hop hon voi file Excel co nhieu header merge, bao gia va bieu mau trinh bay phuc tap.
+          </p>
+        </div>
+      </label>
       <p className="mt-4 text-center text-xs text-gray-400">
         He thong se tu dong nhan dang: tieu de, cot du lieu, nhom cot, ghi chu, o ky ten
       </p>
@@ -330,6 +373,7 @@ function Step1Upload({
 function Step2Preview({
   analysis,
   editedTitle,
+  editedTitleStyle,
   editedColumns,
   editedGroups,
   editedHeaderLines,
@@ -340,6 +384,7 @@ function Step2Preview({
 }: {
   analysis: AnalysisResponse;
   editedTitle: string;
+  editedTitleStyle: AnalysisTitleStyle;
   editedColumns: AnalysisColumn[];
   editedGroups: AnalysisColumnGroup[];
   editedHeaderLines: AnalysisHeaderLine[];
@@ -352,6 +397,34 @@ function Step2Preview({
     analysis.confidence > 0.7 ? 'text-green-600 bg-green-50 border-green-200' :
     analysis.confidence > 0.4 ? 'text-amber-600 bg-amber-50 border-amber-200' :
     'text-red-600 bg-red-50 border-red-200';
+  const aiAssist = analysis.ai_assist;
+  const aiStatusTone =
+    aiAssist?.status === 'applied'
+      ? 'border-amber-200 bg-amber-50 text-amber-800'
+      : aiAssist?.requested
+        ? 'border-gray-200 bg-gray-50 text-gray-700'
+        : '';
+
+  const aiProviderLabel = aiAssist?.provider === 'gemini'
+    ? 'Gemini'
+    : aiAssist?.provider === 'openrouter-gemini'
+      ? 'Gemini via OpenRouter'
+      : 'AI';
+  const titleAlignClass =
+    editedTitleStyle.align === 'center'
+      ? 'text-center'
+      : editedTitleStyle.align === 'right'
+        ? 'text-right'
+        : 'text-left';
+  const titleWeightClass = editedTitleStyle.bold === false ? 'font-medium' : 'font-bold';
+  const titleSizeClass =
+    editedTitleStyle.font_size === 'xl'
+      ? 'text-lg'
+      : editedTitleStyle.font_size === 'lg'
+        ? 'text-base'
+        : editedTitleStyle.font_size === 'sm'
+          ? 'text-xs'
+          : 'text-sm';
 
   return (
     <div className="px-6 py-4 space-y-4">
@@ -379,6 +452,23 @@ function Step2Preview({
         )}
       </div>
 
+      {aiAssist?.requested && (
+        <div className={`rounded-lg border px-3 py-2 ${aiStatusTone}`}>
+          <div className="flex items-center gap-2 text-xs font-medium">
+            <Sparkles className="h-3.5 w-3.5" />
+            {aiAssist.applied ? `${aiProviderLabel} da refine mapping giao dien` : `${aiProviderLabel} khong duoc ap dung cho lan phan tich nay`}
+          </div>
+          <p className="mt-1 text-[11px] leading-relaxed opacity-80">
+            {aiAssist.message || 'Rule-based parse van duoc giu la lop xu ly chinh cho table va dataset.'}
+          </p>
+          {aiAssist.model && (
+            <p className="mt-1 text-[10px] font-mono opacity-70">
+              Model: {aiAssist.model}
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Header lines */}
       {(editedHeaderLines.length > 0 || editedTitle) && (
         <Section title="Tieu de bao cao">
@@ -389,7 +479,7 @@ function Step2Preview({
             </p>
           ))}
           <input
-            className="mt-1 w-full rounded border border-gray-200 bg-gray-50 px-2 py-1.5 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-400"
+            className={`mt-1 w-full rounded border border-gray-200 bg-gray-50 px-2 py-1.5 outline-none focus:ring-2 focus:ring-blue-400 ${titleAlignClass} ${titleWeightClass} ${titleSizeClass}`}
             value={editedTitle}
             onChange={(e) => onTitleChange(e.target.value)}
             placeholder="Ten bao cao chinh"
@@ -488,9 +578,26 @@ function Step2Preview({
       {/* Footer + signatures */}
       {(analysis.footer_lines.length > 0 || analysis.signature_count > 0) && (
         <Section title="Footer">
-          {analysis.footer_lines.map((line, i) => (
-            <p key={i} className="text-xs text-gray-600">{line}</p>
-          ))}
+          {analysis.footer_lines.map((line, i) => {
+            const footerLine: AnalysisHeaderLine = typeof line === 'string'
+              ? { text: line, align: 'left', bold: false, font_size: 'sm' }
+              : line;
+            return (
+              <p
+                key={i}
+                className={`text-xs text-gray-600 ${footerLine.bold ? 'font-semibold' : ''} ${
+                  footerLine.align === 'center'
+                    ? 'text-center'
+                    : footerLine.align === 'right'
+                      ? 'text-right'
+                      : 'text-left'
+                }`}
+              >
+                {footerLine.text}
+                {footerLine.right_text && <span className="float-right text-gray-500">{footerLine.right_text}</span>}
+              </p>
+            );
+          })}
           {analysis.signature_count > 0 && (
             <div className="mt-1 flex gap-2">
               {analysis.signature_labels.map((label, i) => (

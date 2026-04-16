@@ -14,10 +14,12 @@ before confirming template creation.
 
 from __future__ import annotations
 
+from collections import Counter
 import re
 import unicodedata
 from dataclasses import dataclass, field, asdict
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import openpyxl
@@ -50,6 +52,14 @@ _META_KEYWORDS = {
     "ty gia", "tỷ giá", "exchange", "rate",
     "ky bao cao", "kỳ báo cáo", "period",
     "ngay", "ngày", "date", "thang", "tháng", "nam", "năm",
+}
+
+_FOOTER_KEYWORDS = {
+    "ghi chú", "ghi chu", "lưu ý", "luu y", "note", "notes",
+}
+
+_TITLE_KEYWORDS = {
+    "báo giá", "bao gia", "quotation", "quote",
 }
 
 _CURRENCY_PATTERNS = re.compile(
@@ -164,16 +174,16 @@ def _infer_column_type(
     if not samples:
         return "text", "left", None, False
 
-    num_count = sum(1 for v in samples if _is_numeric_text(v))
-    pct_count = sum(1 for v in samples if "%" in v)
+    numeric_samples = [v for v in samples if _is_numeric_text(v)]
+    num_count = len(numeric_samples)
+    pct_count = sum(1 for v in numeric_samples if "%" in v)
     has_negative = any(
         v.startswith("-") or v.startswith("(")
-        for v in samples
-        if _is_numeric_text(v)
+        for v in numeric_samples
     )
 
     # Percentage
-    if pct_count >= len(samples) * 0.5:
+    if numeric_samples and pct_count >= len(numeric_samples) * 0.5:
         return "percentage", "right", "%", has_negative
 
     # Numeric
@@ -199,6 +209,7 @@ def _infer_column_type(
 
 def _to_snake_case(label: str) -> str:
     """Convert label to snake_case key, stripping diacritics."""
+    label = (label or "").replace("Đ", "D").replace("đ", "d")
     # Normalize unicode → decompose diacritics
     nfkd = unicodedata.normalize("NFKD", label)
     ascii_only = nfkd.encode("ascii", "ignore").decode("ascii")
@@ -221,6 +232,47 @@ def _contains_keyword(texts: List[str], keywords: set) -> bool:
     """Check if any text in list contains a keyword."""
     joined = " ".join(texts).lower()
     return any(kw in joined for kw in keywords)
+
+
+def _normalize_search_text(text: str) -> str:
+    nfkd = unicodedata.normalize("NFKD", text or "")
+    ascii_only = nfkd.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", ascii_only).strip().lower()
+
+
+def _joined_row_text(info: _RowInfo) -> str:
+    return " ".join(str(text).strip() for text in info.texts if str(text).strip()).strip()
+
+
+def _is_major_break_row(info: _RowInfo) -> bool:
+    row_text = _joined_row_text(info)
+    if not row_text:
+        return False
+
+    normalized = _normalize_search_text(row_text)
+    if any(keyword in normalized for keyword in _FOOTER_KEYWORDS):
+        return True
+    if normalized.startswith(("ii.", "iii.", "iv.", "v.", "vi.", "vii.", "viii.", "ix.", "x.")):
+        return True
+    if "tong ket" in normalized:
+        return True
+    return False
+
+
+def _extract_explicit_title(row_text: str) -> Optional[str]:
+    """Extract a business-facing title from a header row when a title keyword is present."""
+    compact = re.sub(r"\s+", " ", row_text or "").strip().rstrip(":- ")
+    if not compact:
+        return None
+
+    lowered = compact.lower()
+    for keyword in _TITLE_KEYWORDS:
+        idx = lowered.find(keyword)
+        if idx >= 0:
+            title = compact[idx:].strip().rstrip(":- ")
+            if title:
+                return title[0].upper() + title[1:]
+    return None
 
 
 # ── Main analyzer ─────────────────────────────────────────────────────
@@ -440,7 +492,17 @@ def _detect_header_zone(
     # Header rows: everything above column group rows
     header_rows = [r for r in rows_above if r not in col_group_rows]
 
-    # Find title: row with widest merge or largest text that's bold
+    explicit_title_row = None
+    explicit_title = None
+    for r in header_rows:
+        info = row_infos[r]
+        row_text = " ".join(info.texts).strip()
+        extracted = _extract_explicit_title(row_text)
+        if extracted:
+            explicit_title_row = r
+            explicit_title = extracted
+
+    # Find title fallback: row with widest merge or largest text that's bold
     best_title_row = None
     best_title_score = 0
     for r in header_rows:
@@ -459,8 +521,13 @@ def _detect_header_zone(
         if not row_text:
             continue
 
-        # Check if this is the title row
-        if r == best_title_row and best_title_score > 2:
+        # Prefer explicit title rows like "bao gia ..." over company-name rows.
+        if r == explicit_title_row and explicit_title:
+            report_title = explicit_title
+            continue
+
+        # Check if this is the fallback title row
+        if not explicit_title and r == best_title_row and best_title_score > 2:
             report_title = row_text
             continue
 
@@ -580,6 +647,7 @@ def _detect_data_zone(
     subtotal_rows: List[int] = []
     consecutive_empty = 0
     expected_fill = len(columns)
+    seen_data_rows = 0
 
     for r in range(data_start, max_row + 1):
         info = row_infos.get(r)
@@ -590,9 +658,13 @@ def _detect_data_zone(
             continue
         consecutive_empty = 0
 
+        if seen_data_rows >= 3 and _is_major_break_row(info):
+            break
+
         # Check if this looks like a data or subtotal row
         if info.non_empty_count >= expected_fill * 0.3:
             data_end = r
+            seen_data_rows += 1
             # Subtotal: bold row with different pattern
             if (
                 info.all_bold
@@ -622,6 +694,23 @@ def _detect_data_zone(
                 group_by_column = col["key"]
                 break
 
+    if group_by_column:
+        group_col = next((col for col in columns if col["key"] == group_by_column), None)
+        if group_col:
+            source_col_idx = group_col["source_col_idx"]
+            distinct_values = set()
+            non_empty_values = 0
+            for r in range(data_start, data_end + 1):
+                value = ws.cell(row=r, column=source_col_idx).value
+                text = str(value).strip() if value is not None else ""
+                if not text or _is_numeric_text(text):
+                    continue
+                non_empty_values += 1
+                distinct_values.add(text)
+
+            if non_empty_values == 0 or len(distinct_values) >= max(3, int(non_empty_values * 0.8)):
+                group_by_column = None
+
     return data_end, group_by_column, show_subtotals, subtotal_bg
 
 
@@ -639,11 +728,19 @@ def _detect_footer(
     footer_lines: List[str] = []
     signature_count = 0
     signature_labels: List[str] = []
+    capture_notes = False
+    note_row_max_span = max(1, max_col - min_col)
 
     for r in range(footer_start, max_row + 1):
         info = row_infos.get(r)
         if info is None or info.is_empty:
+            if capture_notes:
+                capture_notes = False
             continue
+
+        row_text = _joined_row_text(info)
+        normalized_row = _normalize_search_text(row_text)
+        is_footer_marker = any(keyword in normalized_row for keyword in _FOOTER_KEYWORDS)
 
         # Check for signature keywords
         if _contains_keyword(info.texts, _SIGNATURE_KEYWORDS):
@@ -653,6 +750,7 @@ def _detect_footer(
                 if any(kw in text_lower for kw in _SIGNATURE_KEYWORDS):
                     signature_labels.append(text)
                     signature_count += 1
+            capture_notes = False
             continue
 
         # Check for bordered empty cells (signature boxes)
@@ -664,15 +762,27 @@ def _detect_footer(
             if not text and borders and borders.get("bottom"):
                 bordered_empty += 1
 
-        if bordered_empty >= 2:
+        if bordered_empty >= 2 and info.non_empty_count == 0:
             if not signature_count:
                 signature_count = bordered_empty
+            capture_notes = False
             continue
 
-        # Regular footer text
-        row_text = " ".join(info.texts).strip()
-        if row_text:
-            footer_lines.append(row_text)
+        if is_footer_marker:
+            capture_notes = True
+            if row_text:
+                footer_lines.append(row_text)
+            continue
+
+        if capture_notes:
+            is_note_continuation = (
+                info.non_empty_count <= 1
+                or info.max_merge_span >= note_row_max_span
+            )
+            if is_note_continuation and row_text:
+                footer_lines.append(row_text)
+                continue
+            capture_notes = False
 
     return footer_lines, signature_count, signature_labels
 
@@ -831,15 +941,296 @@ def _compute_confidence(
     return min(score, 1.0)
 
 
+def _coerce_numberish_value(value: Any) -> Optional[Any]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return value
+
+    text = str(value).strip()
+    if text in ("", "-", "—", "–"):
+        return None
+
+    negative = False
+    if text.startswith("(") and text.endswith(")"):
+        negative = True
+        text = text[1:-1]
+
+    is_percentage = text.endswith("%")
+    if is_percentage:
+        text = text[:-1]
+
+    cleaned = text.replace(",", "").replace(" ", "").replace("\xa0", "")
+    if not cleaned:
+        return None
+
+    try:
+        number: Any = float(cleaned) if "." in cleaned else int(cleaned)
+    except ValueError:
+        return None
+
+    if negative:
+        number = -number
+    if is_percentage:
+        number = number / 100
+    return number
+
+
 # ── CSV analyzer ─────────────────────────────────────────────────────
+
+_CSV_TITLE_KEYWORDS = {
+    "bang", "bao gia", "quotation", "quote", "report", "payroll",
+}
+
+_CSV_HELPER_KEYWORDS = {
+    "cong thuc", "formula", "co dinh", "fixed",
+}
+
+_CSV_AUXILIARY_HEADER_KEYWORDS = {
+    "bao cao", "chi tiet", "kiem tra", "chia cong theo bhxh",
+    "ghi chu", "phat hien", "so bi trung", "dac biet",
+}
+
+
+def _normalize_text_value(text: str) -> str:
+    text = (text or "").replace("Đ", "D").replace("đ", "d")
+    nfkd = unicodedata.normalize("NFKD", text or "")
+    ascii_only = nfkd.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", ascii_only).strip().lower()
+
+
+def _is_csv_ignored_header_text(text: str) -> bool:
+    normalized = _normalize_text_value(text)
+    if not normalized:
+        return False
+    if normalized.startswith("#"):
+        return True
+    if any(keyword in normalized for keyword in _CSV_HELPER_KEYWORDS):
+        return True
+    return any(keyword in normalized for keyword in _CSV_AUXILIARY_HEADER_KEYWORDS)
+
+
+def _csv_row_text(row: List[str]) -> str:
+    return ", ".join(cell.strip() for cell in row if cell and cell.strip())
+
+
+def _csv_primary_row_text(row: List[str], max_gap: int = 3) -> str:
+    indexed = [(idx, cell.strip()) for idx, cell in enumerate(row) if cell and cell.strip()]
+    if not indexed:
+        return ""
+
+    parts = [indexed[0][1]]
+    last_idx = indexed[0][0]
+    for idx, text in indexed[1:]:
+        if idx - last_idx > max_gap:
+            break
+        parts.append(text)
+        last_idx = idx
+
+    return ", ".join(parts)
+
+
+def _classify_csv_row(row: List[str]) -> Dict[str, Any]:
+    indexed_non_empty = [
+        (idx, str(cell).strip())
+        for idx, cell in enumerate(row)
+        if str(cell).strip()
+    ]
+    non_empty = [cell for _, cell in indexed_non_empty]
+    normalized = [_normalize_text_value(cell) for cell in non_empty]
+    counts = Counter(normalized)
+    helper_hits = sum(
+        1
+        for text in normalized
+        if any(keyword in text for keyword in _CSV_HELPER_KEYWORDS)
+    )
+    numeric_count = sum(1 for cell in non_empty if _is_numeric_text(cell))
+    return {
+        "non_empty_count": len(non_empty),
+        "numeric_count": numeric_count,
+        "numeric_ratio": (numeric_count / len(non_empty)) if non_empty else 0.0,
+        "max_text_len": max((len(cell) for cell in non_empty), default=0),
+        "texts": non_empty,
+        "helper_ratio": (helper_hits / len(non_empty)) if non_empty else 0.0,
+        "top_repeat_ratio": (max(counts.values()) / len(non_empty)) if counts else 0.0,
+        "first_non_empty_idx": indexed_non_empty[0][0] if indexed_non_empty else None,
+        "last_non_empty_idx": indexed_non_empty[-1][0] if indexed_non_empty else None,
+    }
+
+
+def _looks_like_csv_data_row(info: Dict[str, Any], width: int) -> bool:
+    min_cells = max(4, int(width * 0.45))
+    return (
+        info["non_empty_count"] >= min_cells
+        and (info["numeric_count"] >= 2 or info["numeric_ratio"] >= 0.2)
+    )
+
+
+def _find_csv_data_start(row_infos: List[Dict[str, Any]], width: int) -> int:
+    for idx, info in enumerate(row_infos):
+        if not _looks_like_csv_data_row(info, width):
+            continue
+        future_data = sum(
+            1
+            for next_info in row_infos[idx + 1: idx + 4]
+            if _looks_like_csv_data_row(next_info, width)
+        )
+        if future_data >= 1:
+            return idx
+
+    for idx, info in enumerate(row_infos):
+        if info["non_empty_count"] >= max(3, int(width * 0.4)):
+            return min(idx + 1, len(row_infos) - 1)
+    return 0
+
+
+def _select_csv_header_rows(row_infos: List[Dict[str, Any]], data_start_idx: int) -> List[int]:
+    candidates: List[int] = []
+    blank_streak = 0
+
+    for idx in range(data_start_idx - 1, -1, -1):
+        info = row_infos[idx]
+        if info["non_empty_count"] == 0:
+            blank_streak += 1
+            if candidates and blank_streak >= 2:
+                break
+            continue
+
+        blank_streak = 0
+        candidates.insert(0, idx)
+        if len(candidates) >= 6:
+            break
+
+    filtered = [
+        idx
+        for idx in candidates
+        if row_infos[idx]["non_empty_count"] > 1
+        and row_infos[idx]["helper_ratio"] < 0.5
+    ]
+
+    if not filtered:
+        return []
+
+    anchor_rows = filtered[-3:]
+    anchor_start = min(
+        row_infos[idx]["first_non_empty_idx"]
+        for idx in anchor_rows
+        if row_infos[idx]["first_non_empty_idx"] is not None
+    )
+    anchor_density = max(row_infos[idx]["non_empty_count"] for idx in anchor_rows)
+    density_floor = max(4, int(anchor_density * 0.45))
+
+    return [
+        idx
+        for idx in filtered
+        if (
+            row_infos[idx]["first_non_empty_idx"] is not None
+            and row_infos[idx]["first_non_empty_idx"] <= anchor_start + 12
+        )
+        or row_infos[idx]["non_empty_count"] >= density_floor
+    ]
+
+
+def _expand_csv_header_row(row: List[str], lower_rows: List[List[str]]) -> List[str]:
+    filled = [str(cell).strip() for cell in row]
+    last_text = ""
+    last_text_idx = -1
+
+    for idx, text in enumerate(filled):
+        if text:
+            last_text = text
+            last_text_idx = idx
+            continue
+        if not last_text:
+            continue
+
+        next_non_empty = next((j for j in range(idx + 1, len(filled)) if filled[j]), None)
+        if next_non_empty is None:
+            continue
+        if last_text_idx >= 0 and (next_non_empty - last_text_idx) > 3:
+            continue
+
+        has_lower_content = any(
+            idx < len(lower_row) and str(lower_row[idx]).strip()
+            for lower_row in lower_rows
+        )
+        if has_lower_content:
+            filled[idx] = last_text
+
+    return filled
+
+
+def _pick_csv_title_and_header_lines(
+    all_rows: List[List[str]],
+    row_infos: List[Dict[str, Any]],
+    first_header_idx: int,
+) -> Tuple[str, List[Dict[str, Any]]]:
+    preamble_rows = [idx for idx in range(first_header_idx) if row_infos[idx]["non_empty_count"] > 0]
+    header_anchor_start = row_infos[first_header_idx].get("first_non_empty_idx")
+    row_texts = {
+        idx: _csv_primary_row_text(all_rows[idx]) or _csv_row_text(all_rows[idx])
+        for idx in preamble_rows
+    }
+
+    title_idx: Optional[int] = None
+    for idx in reversed(preamble_rows):
+        normalized = _normalize_text_value(row_texts[idx])
+        if any(keyword in normalized for keyword in _CSV_TITLE_KEYWORDS):
+            title_idx = idx
+            break
+
+    if title_idx is None:
+        for idx in reversed(preamble_rows):
+            if len(row_texts[idx]) >= 10:
+                title_idx = idx
+                break
+
+    title_suffix_idx: Optional[int] = None
+    report_title = ""
+    if title_idx is not None:
+        report_title = row_texts[title_idx]
+        following_rows = [idx for idx in preamble_rows if idx > title_idx]
+        for idx in following_rows:
+            normalized = _normalize_text_value(row_texts[idx])
+            if _contains_keyword([normalized], _META_KEYWORDS):
+                report_title = f"{report_title} - {row_texts[idx]}"
+                title_suffix_idx = idx
+                break
+
+    header_lines: List[Dict[str, Any]] = []
+    for idx in preamble_rows:
+        if idx == title_idx or idx == title_suffix_idx:
+            continue
+        text = row_texts[idx]
+        if not text:
+            continue
+        if (
+            header_anchor_start is not None
+            and row_infos[idx].get("first_non_empty_idx") is not None
+            and row_infos[idx]["first_non_empty_idx"] > header_anchor_start + 12
+            and row_infos[idx]["non_empty_count"] <= 8
+            and text.lstrip()[:1].isdigit()
+        ):
+            continue
+        normalized = _normalize_text_value(text)
+        if any(keyword in normalized for keyword in _CSV_TITLE_KEYWORDS):
+            continue
+        header_lines.append({
+            "text": text,
+            "right_text": None,
+            "align": "left",
+            "bold": False,
+            "font_size": "base",
+        })
+
+    return report_title, header_lines
 
 def analyze_csv_structure(
     file_bytes: bytes,
     filename: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Analyze a CSV file.  CSV has no formatting, so detection is simpler:
-    first row = headers, remaining = data, no merged cells / groups / footer.
+    Analyze a CSV file with support for title rows and multi-row table headers.
     """
     import csv
     import io
@@ -853,7 +1244,7 @@ def analyze_csv_structure(
     reader = csv.reader(io.StringIO(text))
     all_rows = list(reader)
     if not all_rows:
-        sheet_name = (filename or "data").rsplit(".", 1)[0]
+        sheet_name = Path(filename).stem if filename else "data"
         return {
             "header_lines": [], "report_title": "", "report_meta": None,
             "column_groups": [], "columns": [], "group_by_column": None,
@@ -865,42 +1256,44 @@ def analyze_csv_structure(
             "sheet_names": [sheet_name], "analyzed_sheet": sheet_name,
         }
 
-    sheet_name = (filename or "data").rsplit(".", 1)[0]
+    sheet_name = Path(filename).stem if filename else "data"
+    width = max((len(row) for row in all_rows), default=0)
+    row_infos = [_classify_csv_row(row) for row in all_rows]
 
-    # Skip leading empty rows or rows that look like headers (non-tabular)
-    header_zone_lines: List[Dict] = []
-    data_header_idx = 0
-    report_title = ""
+    data_start_idx = _find_csv_data_start(row_infos, width)
+    header_row_indices = _select_csv_header_rows(row_infos, data_start_idx)
 
-    # Heuristic: the "data header" row is the first row where most cells have short text
-    for i, row in enumerate(all_rows):
-        non_empty = [c.strip() for c in row if c.strip()]
-        if len(non_empty) >= 3 and all(len(c) <= 50 for c in non_empty):
-            # Check if next row has numeric data
-            if i + 1 < len(all_rows):
-                next_non_empty = [c.strip() for c in all_rows[i + 1] if c.strip()]
-                numeric_count = sum(1 for c in next_non_empty if _is_numeric_text(c))
-                if numeric_count > len(next_non_empty) * 0.2 or i == 0:
-                    data_header_idx = i
-                    break
-        # This row is part of header zone
-        row_text = ",".join(c.strip() for c in row if c.strip())
-        if row_text:
-            if not report_title and len(row_text) > 10:
-                report_title = row_text
-            else:
-                header_zone_lines.append({
-                    "text": row_text, "right_text": None,
-                    "align": "left", "bold": False, "font_size": "base",
-                })
+    if not header_row_indices:
+        header_row_indices = [max(0, data_start_idx - 1)]
 
-    # Extract columns
-    header_row = all_rows[data_header_idx]
+    report_title, header_zone_lines = _pick_csv_title_and_header_lines(
+        all_rows,
+        row_infos,
+        header_row_indices[0],
+    )
+
+    expanded_header_rows: List[List[str]] = []
+    for pos, row_idx in enumerate(header_row_indices):
+        lower_rows = [all_rows[idx] for idx in header_row_indices[pos + 1:]]
+        expanded_header_rows.append(_expand_csv_header_row(all_rows[row_idx], lower_rows))
+
+    # Extract columns by combining header fragments from top -> bottom.
     columns: List[Dict] = []
-    for ci, cell_text in enumerate(header_row):
-        label = cell_text.strip()
+    for ci in range(width):
+        parts: List[str] = []
+        for row in expanded_header_rows:
+            label_part = row[ci].strip() if ci < len(row) else ""
+            if not label_part:
+                continue
+            if _is_csv_ignored_header_text(label_part):
+                continue
+            if not parts or parts[-1] != label_part:
+                parts.append(label_part)
+
+        label = " - ".join(parts).strip(" -")
         if not label:
             continue
+
         key = _to_snake_case(label) or f"col_{ci + 1}"
         existing_keys = [c["key"] for c in columns]
         if key in existing_keys:
@@ -913,7 +1306,7 @@ def analyze_csv_structure(
         })
 
     # Sample data rows for type inference
-    data_rows = all_rows[data_header_idx + 1:]
+    data_rows = all_rows[data_start_idx:]
     for col in columns:
         ci = col["source_col_idx"]
         values = []
@@ -952,7 +1345,13 @@ def analyze_csv_structure(
     ]
 
     total_data_rows = len(data_rows)
-    confidence = 0.3
+    confidence = 0.35
+    if report_title:
+        confidence += 0.1
+    if header_zone_lines:
+        confidence += 0.1
+    if len(header_row_indices) > 1:
+        confidence += 0.1
     if total_data_rows >= 3:
         confidence += 0.2
     if len(columns) >= 3:
@@ -980,6 +1379,150 @@ def analyze_csv_structure(
         "sheet_names": [sheet_name],
         "analyzed_sheet": sheet_name,
     }
+
+
+def extract_excel_import_sheet_data(
+    file_bytes: bytes,
+    sheet_name: Optional[str] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Extract structured rows for import-confirm using the same Excel heuristics as analyze."""
+    wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
+    try:
+        if sheet_name and sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+        else:
+            ws = wb.active
+            sheet_name = ws.title
+
+        min_row = ws.min_row or 1
+        max_row = ws.max_row or 1
+        min_col = ws.min_column or 1
+        max_col = ws.max_column or 1
+        num_cols = max_col - min_col + 1
+
+        anchor_map, hidden_set = _build_merge_map(ws)
+        row_infos: Dict[int, _RowInfo] = {}
+        for r in range(min_row, max_row + 1):
+            row_infos[r] = _classify_row(ws, r, min_col, max_col, anchor_map, hidden_set, num_cols)
+
+        data_header_row = _find_data_header_row(row_infos, min_row, max_row, num_cols)
+        if data_header_row is None:
+            return sheet_name, {"columns": [], "rows": []}
+
+        columns, col_indices = _detect_columns(ws, data_header_row, min_col, max_col, anchor_map, hidden_set)
+        data_start = data_header_row + 1
+        data_end, _, _, _ = _detect_data_zone(ws, row_infos, data_start, max_row, columns, min_col)
+        _enrich_columns_with_data(ws, columns, col_indices, data_start, data_end)
+
+        rows = _extract_data_preview(ws, columns, col_indices, data_start, data_end)
+        schema = [
+            {
+                "name": col["key"],
+                "type": "number" if col["format"] in ("integer", "decimal", "percentage") else "string",
+            }
+            for col in columns
+        ]
+        numeric_keys = {col["name"] for col in schema if col["type"] == "number"}
+        for row in rows:
+            for key in numeric_keys:
+                row[key] = _coerce_numberish_value(row.get(key))
+        return sheet_name, {"columns": schema, "rows": rows}
+    finally:
+        wb.close()
+
+
+def extract_csv_import_sheet_data(
+    file_bytes: bytes,
+    filename: Optional[str] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Extract structured CSV rows for import-confirm using the same header heuristics as analyze."""
+    import csv
+    import io
+
+    try:
+        text = file_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = file_bytes.decode("latin-1")
+
+    all_rows = list(csv.reader(io.StringIO(text)))
+    sheet_name = Path(filename).stem if filename else "Sheet1"
+    if not all_rows:
+        return sheet_name, {"columns": [], "rows": []}
+
+    width = max((len(row) for row in all_rows), default=0)
+    row_infos = [_classify_csv_row(row) for row in all_rows]
+    data_start_idx = _find_csv_data_start(row_infos, width)
+    header_row_indices = _select_csv_header_rows(row_infos, data_start_idx)
+    if not header_row_indices:
+        header_row_indices = [max(0, data_start_idx - 1)]
+
+    expanded_header_rows: List[List[str]] = []
+    for pos, row_idx in enumerate(header_row_indices):
+        lower_rows = [all_rows[idx] for idx in header_row_indices[pos + 1:]]
+        expanded_header_rows.append(_expand_csv_header_row(all_rows[row_idx], lower_rows))
+
+    columns: List[Dict[str, Any]] = []
+    for ci in range(width):
+        parts: List[str] = []
+        for row in expanded_header_rows:
+            label_part = row[ci].strip() if ci < len(row) else ""
+            if not label_part:
+                continue
+            if _is_csv_ignored_header_text(label_part):
+                continue
+            if not parts or parts[-1] != label_part:
+                parts.append(label_part)
+
+        label = " - ".join(parts).strip(" -")
+        if not label:
+            continue
+
+        key = _to_snake_case(label) or f"col_{ci + 1}"
+        existing_keys = [c["key"] for c in columns]
+        if key in existing_keys:
+            key = f"{key}_{ci + 1}"
+
+        columns.append({
+            "label": label,
+            "key": key,
+            "format": "text",
+            "source_col_idx": ci,
+        })
+
+    data_rows = all_rows[data_start_idx:]
+    for col in columns:
+        ci = col["source_col_idx"]
+        values = [row[ci].strip() for row in data_rows[:20] if ci < len(row)]
+        fmt, _, _, _ = _infer_column_type(values)
+        col["format"] = fmt
+
+    rows: List[Dict[str, Any]] = []
+    for row in data_rows:
+        row_dict: Dict[str, Any] = {}
+        has_value = False
+        for col in columns:
+            ci = col["source_col_idx"]
+            raw_val = row[ci].strip() if ci < len(row) else ""
+            if col["format"] in ("integer", "decimal", "percentage"):
+                value = _coerce_numberish_value(raw_val)
+            else:
+                value = raw_val
+
+            row_dict[col["key"]] = value
+            if value not in ("", None):
+                has_value = True
+
+        if has_value:
+            rows.append(row_dict)
+
+    schema = [
+        {
+            "name": col["key"],
+            "type": "number" if col["format"] in ("integer", "decimal", "percentage") else "string",
+        }
+        for col in columns
+    ]
+    return sheet_name, {"columns": schema, "rows": rows}
 
 
 def _default_theme() -> Dict[str, str]:

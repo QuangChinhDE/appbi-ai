@@ -3,8 +3,8 @@ import { reportTemplateApi } from '@/lib/api/report-templates';
 import type { AnalysisResponse, ImportConfirmPayload, ImportConfirmResponse } from '@/types/import-analysis';
 
 export function useImportAnalyze() {
-  return useMutation<AnalysisResponse, Error, { file: File; sheetName?: string }>({
-    mutationFn: ({ file, sheetName }) => reportTemplateApi.importAnalyze(file, sheetName),
+  return useMutation<AnalysisResponse, Error, { file: File; sheetName?: string; aiEnhance?: boolean }>({
+    mutationFn: ({ file, sheetName, aiEnhance }) => reportTemplateApi.importAnalyze(file, sheetName, aiEnhance),
   });
 }
 

@@ -1,6 +1,4 @@
-"""
-Pydantic schemas for report templates.
-"""
+"""Pydantic schemas for report templates."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -10,24 +8,13 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
-# ---------------------------------------------------------------------------
-# Block sub-schemas (used inside the blocks JSON array)
-# ---------------------------------------------------------------------------
-
-class TemplateBlockLayout(BaseModel):
-    """Pixel-based position for a single block on the page canvas."""
-    x: float = 48
-    y: float = 48
-    width: float = 698
-    height: float = 100
-
-
-class TemplateBlock(BaseModel):
-    """A single block inside a template."""
-    id: str = Field(..., description="Client-generated UUID")
-    type: str = Field(..., description="title | table | signature | text | spacer | image")
-    layout: TemplateBlockLayout
-    config: Dict[str, Any] = Field(default_factory=dict)
+def _default_template_definition() -> Dict[str, Any]:
+    return {
+        "version": 3,
+        "layout": "table",
+        "columns": [],
+        "header": {"title": ""},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +31,7 @@ class ReportTemplateBase(BaseModel):
 
 class ReportTemplateCreate(ReportTemplateBase):
     """Request body for creating a template."""
-    blocks: Any = Field(default_factory=list, description="List[TemplateBlock] or SheetData dict (version 2)")
+    blocks: Any = Field(default_factory=_default_template_definition, description="TemplateDefinition v3")
     filters: List[Dict[str, Any]] = Field(default_factory=list)
 
 
@@ -54,14 +41,14 @@ class ReportTemplateUpdate(BaseModel):
     description: Optional[str] = None
     page_size: Optional[str] = None
     orientation: Optional[str] = None
-    blocks: Optional[Any] = Field(None, description="List[TemplateBlock] or SheetData dict (version 2)")
+    blocks: Optional[Any] = Field(None, description="TemplateDefinition v3")
     filters: Optional[List[Dict[str, Any]]] = None
 
 
 class ReportTemplateResponse(ReportTemplateBase):
     """JSON sent back to the client."""
     id: int
-    blocks: Any = Field(default_factory=list, description="List[block dicts] or SheetData dict")
+    blocks: Any = Field(default_factory=_default_template_definition, description="TemplateDefinition v3")
     filters: List[Dict[str, Any]] = Field(default_factory=list)
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None

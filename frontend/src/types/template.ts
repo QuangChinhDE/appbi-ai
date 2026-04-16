@@ -140,6 +140,9 @@ export interface TemplateDefinition {
     lines?: HeaderLine[];     // multi-line header (company, address, title, etc.)
     title: string;            // supports {{variable}} placeholders
     meta?: string;
+    titleAlign?: 'left' | 'center' | 'right';
+    titleFontSize?: 'sm' | 'base' | 'lg' | 'xl';
+    titleBold?: boolean;
   };
   footer?: TemplateFooter;
   columnGroups?: ColumnGroup[];  // merged header row groups

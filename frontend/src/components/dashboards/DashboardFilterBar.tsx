@@ -75,13 +75,13 @@ export function DashboardFilterBar({
 
   const normalizedAddFilterSearch = addFilterSearch.trim().toLowerCase();
 
-  const sharedAvailableColumns = useMemo(
-    () => availableColumns.filter((column) => column.sharedAcrossDataset !== false),
+  const addableColumns = useMemo(
+    () => availableColumns.filter((column) => column.sharedAcrossDataset !== false || column.type === 'date'),
     [availableColumns],
   );
 
   const matchingAvailableColumns = useMemo(
-    () => sharedAvailableColumns.filter((column) => {
+    () => addableColumns.filter((column) => {
       if (!normalizedAddFilterSearch) return true;
       const haystack = [
         getColumnDisplayLabel(column),
@@ -93,7 +93,7 @@ export function DashboardFilterBar({
         .toLowerCase();
       return haystack.includes(normalizedAddFilterSearch);
     }),
-    [normalizedAddFilterSearch, sharedAvailableColumns],
+    [addableColumns, normalizedAddFilterSearch],
   );
 
   // ── Mutators ───────────────────────────────────────────────────
@@ -339,15 +339,15 @@ export function DashboardFilterBar({
                   setAddFilterSearch('');
                 }
               }}
-              disabled={sharedAvailableColumns.length === 0}
-              title={sharedAvailableColumns.length === 0 ? 'No shared fields available across all charts' : undefined}
+              disabled={addableColumns.length === 0}
+              title={addableColumns.length === 0 ? 'No dashboard filter fields available' : undefined}
               className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-600 border border-blue-300 rounded-md hover:bg-blue-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <Plus className="w-3 h-3" />
               Add Filter
             </button>
 
-            {addingField && sharedAvailableColumns.length > 0 && (
+            {addingField && addableColumns.length > 0 && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => {
                   setAddingField(false);
@@ -357,7 +357,7 @@ export function DashboardFilterBar({
                   <div className="p-2 border-b border-gray-100">
                     <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Add a filter</p>
                   </div>
-                  {sharedAvailableColumns.length > 8 && (
+                  {addableColumns.length > 8 && (
                     <div className="p-2 border-b border-gray-100">
                       <div className="relative">
                         <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
@@ -401,9 +401,9 @@ export function DashboardFilterBar({
                   })()}
 
                   {matchingAvailableColumns.length === 0 && (
-                    sharedAvailableColumns.length === 0 ? (
+                    addableColumns.length === 0 ? (
                       <div className="px-3 py-3 text-xs text-gray-400">
-                        <p className="font-medium text-gray-500">No shared fields available.</p>
+                        <p className="font-medium text-gray-500">No dashboard filter fields available.</p>
                         <p className="mt-1">Use chart-level filters for fields that only affect individual charts.</p>
                       </div>
                     ) : (
@@ -450,7 +450,7 @@ export function DashboardFilterBar({
       {/* Empty state */}
       {isExpanded && filters.length === 0 && (
         <div className="px-4 py-5 text-center border-t border-gray-100">
-          {sharedAvailableColumns.length > 0 ? (
+          {addableColumns.length > 0 ? (
             <p className="text-sm text-gray-400">
               No filters added. Click <strong>Add Filter</strong> to filter all charts in this dashboard.
             </p>

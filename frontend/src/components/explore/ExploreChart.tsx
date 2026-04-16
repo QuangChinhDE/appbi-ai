@@ -347,16 +347,31 @@ function ExploreChartInner({
   } = model;
   const { dimension, metrics, scatterX, scatterY } = normalizedRoleConfig;
 
-  // Apply sort + limit to categorical/combo/scatter data
+  // Apply sort + limit to chart-output rows before rendering.
   const sortRules = style.chartSortRules ?? [];
   const dataLimit = style.dataLimit;
   const dataLimitDir = style.dataLimitDirection ?? 'top';
 
+  const categoricalOutputData = useMemo(() => {
+    if (type !== 'LINE' && type !== 'TIME_SERIES') {
+      return categoricalData;
+    }
+
+    const gran = style.timeGranularity ?? 'raw';
+    const tf = normalizedRoleConfig.timeField || xField;
+
+    if (!tf || gran === 'raw') {
+      return categoricalData;
+    }
+
+    return applyTimeGranularity(categoricalData, tf, metrics, gran);
+  }, [type, categoricalData, style.timeGranularity, normalizedRoleConfig.timeField, xField, metrics]);
+
   const sortedCategoricalData = useMemo(() => {
-    let d = applySortRules(categoricalData, sortRules);
+    let d = applySortRules(categoricalOutputData, sortRules);
     d = applyDataLimit(d, dataLimit, dataLimitDir);
     return d;
-  }, [categoricalData, sortRules, dataLimit, dataLimitDir]);
+  }, [categoricalOutputData, sortRules, dataLimit, dataLimitDir]);
 
   const sortedComboData = useMemo(() => {
     let d = applySortRules(comboData, sortRules);
@@ -376,14 +391,10 @@ function ExploreChartInner({
     });
   };
 
-  // Apply time granularity bucketing for TIME_SERIES
   const timeSeriesData = useMemo(() => {
     if (type !== 'LINE' && type !== 'TIME_SERIES') return sortedCategoricalData;
-    const gran = style.timeGranularity ?? 'raw';
-    const tf = normalizedRoleConfig.timeField || xField;
-    if (!tf || gran === 'raw') return sortedCategoricalData;
-    return applyTimeGranularity(sortedCategoricalData, tf, metrics, gran);
-  }, [type, sortedCategoricalData, style.timeGranularity, normalizedRoleConfig.timeField, xField, metrics]);
+    return sortedCategoricalData;
+  }, [type, sortedCategoricalData]);
 
   if (!data || data.length === 0) {
     return <EmptyState message="No data. Run the query first." />;

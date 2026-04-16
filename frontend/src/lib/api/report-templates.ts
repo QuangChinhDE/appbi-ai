@@ -38,15 +38,6 @@ export const reportTemplateApi = {
     await apiClient.delete(`/report-templates/${id}`);
   },
 
-  importExcel: async (file: File, format: 'blocks' | 'sheet' = 'blocks'): Promise<any> => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const response = await apiClient.post(`/report-templates/import-excel?format=${format}`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    return response.data;
-  },
-
   exportExcel: async (
     id: number,
     activeFilters: Array<{ filterId: string; value: any }>,
@@ -72,10 +63,13 @@ export const reportTemplateApi = {
     URL.revokeObjectURL(url);
   },
 
-  importAnalyze: async (file: File, sheetName?: string): Promise<AnalysisResponse> => {
+  importAnalyze: async (file: File, sheetName?: string, aiEnhance: boolean = false): Promise<AnalysisResponse> => {
     const formData = new FormData();
     formData.append('file', file);
-    const params = sheetName ? `?sheet_name=${encodeURIComponent(sheetName)}` : '';
+    const searchParams = new URLSearchParams();
+    if (sheetName) searchParams.set('sheet_name', sheetName);
+    if (aiEnhance) searchParams.set('ai_enhance', 'true');
+    const params = searchParams.toString() ? `?${searchParams.toString()}` : '';
     const response = await apiClient.post(`/report-templates/import-analyze${params}`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });

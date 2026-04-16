@@ -10,6 +10,14 @@ export interface AnalysisHeaderLine {
   font_size: 'sm' | 'base' | 'lg' | 'xl';
 }
 
+export interface AnalysisTitleStyle {
+  align?: 'left' | 'center' | 'right';
+  bold?: boolean;
+  font_size?: 'sm' | 'base' | 'lg' | 'xl';
+}
+
+export type AnalysisFooterLine = string | AnalysisHeaderLine;
+
 export interface AnalysisColumnGroup {
   label: string;
   start_col_idx: number;
@@ -45,16 +53,26 @@ export interface AnalysisTheme {
   accent_color?: string;
 }
 
+export interface AnalysisAiAssist {
+  requested: boolean;
+  applied: boolean;
+  status: 'not_requested' | 'applied' | 'unavailable' | 'unsupported' | 'failed';
+  provider?: string;
+  model?: string;
+  message?: string;
+}
+
 export interface AnalysisResponse {
   file_token: string;
   header_lines: AnalysisHeaderLine[];
   report_title: string;
+  report_title_style?: AnalysisTitleStyle;
   report_meta?: string;
   column_groups: AnalysisColumnGroup[];
   columns: AnalysisColumn[];
   group_by_column?: string;
   show_subtotals: boolean;
-  footer_lines: string[];
+  footer_lines: AnalysisFooterLine[];
   signature_count: number;
   signature_labels: string[];
   theme: AnalysisTheme;
@@ -64,6 +82,7 @@ export interface AnalysisResponse {
   confidence: number;
   sheet_names: string[];
   analyzed_sheet: string;
+  ai_assist?: AnalysisAiAssist;
 }
 
 export interface ImportConfirmPayload {
@@ -74,13 +93,14 @@ export interface ImportConfirmPayload {
   include_data: boolean;
   analyzed_sheet: string;
   report_title: string;
+  report_title_style?: AnalysisTitleStyle;
   report_meta?: string;
   header_lines: AnalysisHeaderLine[];
   columns: AnalysisColumn[];
   column_groups: AnalysisColumnGroup[];
   group_by_column?: string;
   show_subtotals: boolean;
-  footer_lines: string[];
+  footer_lines: AnalysisFooterLine[];
   signature_count: number;
   signature_labels: string[];
   theme: AnalysisTheme;

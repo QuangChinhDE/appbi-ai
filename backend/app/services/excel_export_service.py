@@ -51,7 +51,7 @@ def _sheet_border(borders: dict[str, Any] | None) -> Border | None:
     )
 
 
-# ── Binding traversal (mirrors collectValueBindings in use-template-preview-data.ts) ──
+# ── Binding traversal for template value bindings ──
 
 
 def _collect_bindings_from_value(value: Any, out: list[dict]) -> None:

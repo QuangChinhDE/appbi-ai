@@ -75,6 +75,54 @@ def _collect_join_key_fields(model: dict | None) -> set[str]:
     return fields
 
 
+def _build_public_calendar_filter_fields(dash: Dashboard) -> list[dict]:
+    semantic_fields: set[str] = set()
+    charts_with_calendar: set[int] = set()
+    dataset_ids: set[int] = set()
+    total_dashboard_chart_count = len(dash.dashboard_charts or [])
+
+    for dashboard_chart in dash.dashboard_charts or []:
+        chart_config = dashboard_chart.chart.config if dashboard_chart.chart else {}
+        binding = chart_config.get("semanticBinding") if isinstance(chart_config, dict) else None
+        if not isinstance(binding, dict):
+            continue
+
+        dataset_id = binding.get("datasetId")
+        if isinstance(dataset_id, int):
+            dataset_ids.add(dataset_id)
+
+        date_mappings = [
+            mapping for mapping in (binding.get("calendarFieldMappings") or [])
+            if isinstance(mapping, dict)
+            and mapping.get("calendarField") == "date"
+            and isinstance(mapping.get("semanticField"), str)
+            and "." in str(mapping.get("semanticField"))
+        ]
+        if not date_mappings:
+            continue
+
+        charts_with_calendar.add(dashboard_chart.chart_id)
+        for mapping in date_mappings:
+            semantic_fields.add(str(mapping["semanticField"]))
+
+    ordered_semantic_fields = sorted(semantic_fields)
+    if not ordered_semantic_fields:
+        return []
+
+    return [{
+        "key": ordered_semantic_fields[0],
+        "name": "date",
+        "label": "Date",
+        "type": "date",
+        "semanticField": ordered_semantic_fields[0],
+        "datasetId": next(iter(dataset_ids)) if len(dataset_ids) == 1 else None,
+        "defaultLinkedFields": ordered_semantic_fields[1:],
+        "chartCoverage": len(charts_with_calendar),
+        "datasetChartCount": total_dashboard_chart_count,
+        "sharedAcrossDataset": total_dashboard_chart_count > 0 and len(charts_with_calendar) == total_dashboard_chart_count,
+    }]
+
+
 def _build_public_filter_fields(db: Session, dash: Dashboard) -> list[dict]:
     dataset_models: dict[int, dict] = {}
     dataset_join_key_fields: dict[int, set[str]] = {}
@@ -161,6 +209,11 @@ def _build_public_filter_fields(db: Session, dash: Dashboard) -> list[dict]:
             str(item.get("label") or item.get("name") or ""),
         )
     )
+
+    calendar_columns = _build_public_calendar_filter_fields(dash)
+    if calendar_columns:
+        non_date_columns = [item for item in normalized_columns if item.get("type") != "date"]
+        return [*calendar_columns, *non_date_columns]
 
     return normalized_columns
 

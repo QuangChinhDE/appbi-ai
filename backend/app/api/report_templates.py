@@ -20,6 +20,7 @@ from app.core.dependencies import (
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models.report_template import ReportTemplate
+from app.models import DataSource, Dataset
 from app.models.resource_share import ResourceType
 from app.models.user import User
 from app.schemas.report_template import (
@@ -28,6 +29,10 @@ from app.schemas.report_template import (
     ReportTemplateResponse,
 )
 from app.services.report_template_service import ReportTemplateService
+from app.services.template_import_ai_service import (
+    build_ai_assist_meta,
+    refine_import_analysis_with_ai,
+)
 
 # ── In-memory file cache for import workflow ─────────────────────────
 _file_cache: Dict[str, Tuple[bytes, float]] = {}
@@ -52,6 +57,67 @@ def _get_cached_file(token: str) -> Optional[bytes]:
     if entry:
         del _file_cache[token]
     return None
+
+
+def _build_unique_name(db: Session, model: Any, base_name: str) -> str:
+    candidate = str(base_name or "").strip() or "Imported Resource"
+    suffix = 2
+    while db.query(model).filter(model.name == candidate).first() is not None:
+        candidate = f"{base_name} ({suffix})"
+        suffix += 1
+    return candidate
+
+
+_ALLOWED_TEXT_ALIGN = {"left", "center", "right"}
+_ALLOWED_FONT_SIZES = {"sm", "base", "lg", "xl"}
+
+
+def _normalize_text_line(item: Any, *, default_font_size: str = "base", default_align: str = "left", default_bold: bool = False) -> Optional[Dict[str, Any]]:
+    if isinstance(item, str):
+        text = item.strip()
+        if not text:
+            return None
+        return {
+            "text": text,
+            "rightText": None,
+            "align": default_align,
+            "bold": default_bold,
+            "fontSize": default_font_size,
+        }
+
+    if not isinstance(item, dict):
+        return None
+
+    text = str(item.get("text") or "").strip()
+    right_text = str(item.get("right_text") or item.get("rightText") or "").strip() or None
+    if not text and not right_text:
+        return None
+
+    align = str(item.get("align") or default_align).lower()
+    font_size = str(item.get("font_size") or item.get("fontSize") or default_font_size).lower()
+    return {
+        "text": text,
+        "rightText": right_text,
+        "align": align if align in _ALLOWED_TEXT_ALIGN else default_align,
+        "bold": bool(item.get("bold", default_bold)),
+        "fontSize": font_size if font_size in _ALLOWED_FONT_SIZES else default_font_size,
+    }
+
+
+def _normalize_title_style(style: Any) -> Dict[str, Any]:
+    if not isinstance(style, dict):
+        return {}
+
+    normalized: Dict[str, Any] = {}
+    align = str(style.get("align") or "").lower()
+    if align in _ALLOWED_TEXT_ALIGN:
+        normalized["titleAlign"] = align
+    font_size = str(style.get("font_size") or style.get("fontSize") or "").lower()
+    if font_size in _ALLOWED_FONT_SIZES:
+        normalized["titleFontSize"] = font_size
+    if "bold" in style:
+        normalized["titleBold"] = bool(style.get("bold"))
+    return normalized
 
 router = APIRouter(prefix="/report-templates", tags=["report-templates"])
 
@@ -124,7 +190,10 @@ def update_template(
     if not tpl:
         raise HTTPException(status_code=404, detail="Report template not found")
     require_edit_access(db, current_user, tpl, "report_templates")
-    updated = ReportTemplateService.update(db, template_id, payload)
+    try:
+        updated = ReportTemplateService.update(db, template_id, payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     updated.user_permission = get_effective_permission(
         db, current_user, updated, "report_templates",
     )
@@ -192,55 +261,9 @@ def export_template_excel(
     )
 
 
-# ── Excel import ───────────────────────────────────────────────────────
+# ── Smart import ───────────────────────────────────────────────────────
 
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
-
-
-@router.post("/import-excel")
-async def import_excel(
-    file: UploadFile = File(...),
-    format: str = Query("blocks", regex="^(blocks|sheet)$"),
-    _current_user: User = Depends(require_permission("report_templates", "edit")),
-):
-    """
-    Parse an uploaded .xlsx file and return template data.
-
-    Query params:
-      format=blocks  → legacy TemplateBlock[] list (default)
-      format=sheet   → SheetData v2 dict for spreadsheet editor
-    """
-    # Validate content type
-    if file.content_type not in (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/octet-stream",
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="Only .xlsx files are supported.",
-        )
-
-    # Read with size limit
-    contents = await file.read()
-    if len(contents) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=400, detail="File too large (max 10 MB).")
-    if len(contents) == 0:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-
-    try:
-        if format == "sheet":
-            from app.services.excel_parser import parse_excel_to_sheet
-            return parse_excel_to_sheet(contents)
-        else:
-            from app.services.excel_parser import parse_excel_to_blocks
-            blocks = parse_excel_to_blocks(contents)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Failed to parse Excel file: {exc}",
-        )
-
-    return blocks
 
 
 # ── Smart import: analyze + confirm ───────────────────────────────────
@@ -250,6 +273,7 @@ async def import_excel(
 async def import_analyze(
     file: UploadFile = File(...),
     sheet_name: Optional[str] = Query(None),
+    ai_enhance: bool = Query(False),
     _current_user: User = Depends(require_permission("report_templates", "edit")),
 ):
     """
@@ -291,8 +315,19 @@ async def import_analyze(
             detail=f"Failed to analyze Excel file: {exc}",
         )
 
+    ai_meta = build_ai_assist_meta(requested=ai_enhance, applied=False, status="not_requested")
+    if ai_enhance:
+        result, ai_meta = refine_import_analysis_with_ai(
+            file_bytes=contents,
+            analysis=result,
+            filename=file.filename,
+            sheet_name=sheet_name,
+            is_csv=is_csv,
+        )
+
     token = _cache_file(contents)
     result["file_token"] = token
+    result["ai_assist"] = ai_meta
     return result
 
 
@@ -305,13 +340,14 @@ class ImportConfirmRequest(BaseModel):
     analyzed_sheet: str = "Sheet1"
     # Confirmed analysis (possibly user-edited)
     report_title: str = ""
+    report_title_style: Dict[str, Any] = Field(default_factory=dict)
     report_meta: Optional[str] = None
     header_lines: List[Dict[str, Any]] = Field(default_factory=list)
     columns: List[Dict[str, Any]] = Field(default_factory=list)
     column_groups: List[Dict[str, Any]] = Field(default_factory=list)
     group_by_column: Optional[str] = None
     show_subtotals: bool = False
-    footer_lines: List[str] = Field(default_factory=list)
+    footer_lines: List[Any] = Field(default_factory=list)
     signature_count: int = 0
     signature_labels: List[str] = Field(default_factory=list)
     theme: Dict[str, str] = Field(default_factory=dict)
@@ -335,6 +371,20 @@ def import_confirm(
     import uuid as _u
 
     # ── 1. Build TemplateDefinition v3 ───────────────────────────────
+    theme_def = None
+    if payload.theme:
+        theme_def = {
+            "headerBg": payload.theme.get("header_bg") or "#073763",
+            "headerText": payload.theme.get("header_text") or "#ffffff",
+            "groupBg": payload.theme.get("group_bg") or "#c9daf8",
+            "groupText": payload.theme.get("group_text") or "#073763",
+            "subtotalBg": payload.theme.get("subtotal_bg") or "#dbeafe",
+            "subtotalText": payload.theme.get("subtotal_text") or "#1e40af",
+            "accentColor": payload.theme.get("accent_color") or payload.theme.get("header_bg") or "#073763",
+            "sectionBg": payload.theme.get("group_bg") or "#c9daf8",
+            "sectionText": payload.theme.get("group_text") or "#073763",
+        }
+
     columns_def = []
     for i, col in enumerate(payload.columns):
         col_id = str(_u.uuid4())
@@ -370,39 +420,47 @@ def import_confirm(
             })
 
     header_lines_def = [
-        {
-            "text": hl.get("text", ""),
-            "rightText": hl.get("right_text"),
-            "align": hl.get("align", "center"),
-            "bold": hl.get("bold", True),
-            "fontSize": hl.get("font_size", "base"),
-        }
-        for hl in payload.header_lines
+        line
+        for line in (
+            _normalize_text_line(hl, default_font_size="base", default_align="left", default_bold=True)
+            for hl in payload.header_lines
+        )
+        if line
     ]
 
     footer_def = {}
     if payload.footer_lines:
-        footer_def["lines"] = [
-            {"text": line, "align": "left", "fontSize": "sm"}
-            for line in payload.footer_lines
+        footer_lines_def = [
+            line
+            for line in (
+                _normalize_text_line(line, default_font_size="sm", default_align="left", default_bold=False)
+                for line in payload.footer_lines
+            )
+            if line
         ]
+        if footer_lines_def:
+            footer_def["lines"] = footer_lines_def
     if payload.signature_count > 0:
         footer_def["signatureSlots"] = payload.signature_count
         footer_def["signatureLabels"] = payload.signature_labels
+
+    header_def: Dict[str, Any] = {
+        "title": payload.report_title,
+        "meta": payload.report_meta,
+        "lines": header_lines_def,
+    }
+    header_def.update(_normalize_title_style(payload.report_title_style))
 
     definition: Dict[str, Any] = {
         "version": 3,
         "layout": "table",
         "columns": columns_def,
-        "header": {
-            "title": payload.report_title,
-            "meta": payload.report_meta,
-            "lines": header_lines_def,
-        },
+        "header": header_def,
         "groupBy": payload.group_by_column,
         "showSubtotals": payload.show_subtotals,
-        "theme": payload.theme or None,
     }
+    if theme_def:
+        definition["theme"] = theme_def
     if column_groups_def:
         definition["columnGroups"] = column_groups_def
     if footer_def:
@@ -421,16 +479,22 @@ def import_confirm(
             )
 
         try:
-            from app.api.datasources import _parse_excel_bytes, _parse_csv_bytes
-            # Detect format from analyzed_sheet name or try both
-            try:
-                parsed = _parse_excel_bytes(file_bytes)
-            except Exception:
-                parsed = _parse_csv_bytes(file_bytes, payload.analyzed_sheet)
-            sheet_data = parsed.get(payload.analyzed_sheet)
-            if not sheet_data:
-                # Fallback: first sheet
-                sheet_data = next(iter(parsed.values())) if parsed else None
+            from app.services.excel_structure_detector import (
+                extract_csv_import_sheet_data,
+                extract_excel_import_sheet_data,
+            )
+
+            analyzed_name = payload.analyzed_sheet or "Sheet1"
+            if str(analyzed_name).lower().endswith(".csv"):
+                actual_sheet_name, sheet_data = extract_csv_import_sheet_data(file_bytes, filename=analyzed_name)
+            else:
+                try:
+                    actual_sheet_name, sheet_data = extract_excel_import_sheet_data(file_bytes, sheet_name=analyzed_name)
+                except Exception:
+                    actual_sheet_name, sheet_data = extract_csv_import_sheet_data(file_bytes, filename=analyzed_name)
+
+            actual_sheet_name = " ".join(str(actual_sheet_name or analyzed_name or "Sheet1").split()) or "Sheet1"
+
             if not sheet_data:
                 raise ValueError("No data found in the uploaded file.")
 
@@ -438,13 +502,17 @@ def import_confirm(
             from app.schemas.schemas import DataSourceCreate as DSCreate
             from app.services.datasource_crud_service import DataSourceCRUDService
 
-            ds_name = f"[Import] {payload.template_name or payload.report_title or 'Template'}"
+            ds_name = _build_unique_name(
+                db,
+                DataSource,
+                f"[Import] {payload.template_name or payload.report_title or 'Template'}",
+            )
             ds = DataSourceCRUDService.create(
                 db,
                 DSCreate(
                     name=ds_name,
                     type="manual",
-                    config={"sheets": {payload.analyzed_sheet: sheet_data}},
+                    config={"sheets": {actual_sheet_name: sheet_data}},
                 ),
                 owner_id=current_user.id,
             )
@@ -454,7 +522,11 @@ def import_confirm(
             from app.schemas.dataset import DatasetCreate as DSETCreate
             from app.services.dataset_crud import DatasetCRUDService
 
-            dataset_name = payload.template_name or payload.report_title or "Imported Data"
+            dataset_name = _build_unique_name(
+                db,
+                Dataset,
+                payload.template_name or payload.report_title or "Imported Data",
+            )
             dataset = DatasetCRUDService.create_dataset(
                 db,
                 DSETCreate(name=dataset_name),
@@ -470,8 +542,8 @@ def import_confirm(
                 TableCreate(
                     datasource_id=ds.id,
                     source_kind="physical_table",
-                    source_table_name=payload.analyzed_sheet,
-                    display_name=payload.analyzed_sheet,
+                    source_table_name=actual_sheet_name,
+                    display_name=actual_sheet_name,
                 ),
             )
 

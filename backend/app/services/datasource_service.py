@@ -24,6 +24,66 @@ from app.services.google_data_access_service import get_google_credentials_for_u
 logger = get_logger(__name__)
 
 
+def _coerce_sheet_value(value: Any, declared_type: str) -> Any:
+    if value is None:
+        return None
+
+    if declared_type == "number":
+        if isinstance(value, (int, float)):
+            return value
+
+        text = str(value).strip()
+        if text in ("", "-", "—", "–"):
+            return None
+
+        negative = False
+        if text.startswith("(") and text.endswith(")"):
+            negative = True
+            text = text[1:-1]
+
+        is_percentage = text.endswith("%")
+        if is_percentage:
+            text = text[:-1]
+
+        cleaned = text.replace(",", "").replace(" ", "").replace("\xa0", "")
+        if not cleaned:
+            return None
+
+        try:
+            number = float(cleaned)
+        except ValueError:
+            return None
+
+        if negative:
+            number = -number
+        if is_percentage:
+            number = number / 100
+        return number
+
+    if declared_type == "date":
+        text = str(value).strip()
+        return text or None
+
+    text = str(value).strip()
+    return text or None
+
+
+def _build_arrow_table_from_sheet(pa_module, col_defs: List[Dict[str, Any]], rows: List[Dict[str, Any]]):
+    col_names = [c["name"] for c in col_defs]
+    col_types = {c["name"]: c.get("type", "string") for c in col_defs}
+
+    arrays = []
+    for col_name in col_names:
+        declared_type = col_types.get(col_name, "string")
+        values = [_coerce_sheet_value(row.get(col_name), declared_type) for row in rows]
+        if declared_type == "number":
+            arrays.append(pa_module.array(values, type=pa_module.float64()))
+        else:
+            arrays.append(pa_module.array(values, type=pa_module.string()))
+
+    return pa_module.table(dict(zip(col_names, arrays)))
+
+
 def _resolve_gcp_credentials_json(config: Dict[str, Any]) -> str:
     """
     Return the GCP credentials JSON string to use for a connection.
@@ -1375,8 +1435,7 @@ class DataSourceConnectionService:
                     col_names = [c['name'] for c in col_defs]
 
                     if rows:
-                        arrays = [pa.array([r.get(c) for r in rows]) for c in col_names]
-                        table = pa.table(dict(zip(col_names, arrays)))
+                        table = _build_arrow_table_from_sheet(pa, col_defs, rows)
                     else:
                         table = pa.table({c: pa.array([], type=pa.string()) for c in col_names})
 
@@ -1462,11 +1521,7 @@ class DataSourceConnectionService:
                     col_names = [c["name"] for c in col_defs]
 
                     if rows:
-                        # Build columnar arrays from row-oriented data
-                        arrays = []
-                        for c in col_names:
-                            arrays.append(pa.array([r.get(c) for r in rows]))
-                        table = pa.table(dict(zip(col_names, arrays)))
+                        table = _build_arrow_table_from_sheet(pa, col_defs, rows)
                     else:
                         table = pa.table({c: pa.array([], type=pa.string()) for c in col_names})
 
