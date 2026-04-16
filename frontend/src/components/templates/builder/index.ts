@@ -1,5 +1,6 @@
 export { TemplateBuilder } from './TemplateBuilder';
 export { BuilderCanvas } from './BuilderCanvas';
+export { LeftPanel } from './LeftPanel';
 export { TableLayout } from './TableLayout';
 export { CardLayout } from './CardLayout';
 export { CrossTabLayout } from './CrossTabLayout';

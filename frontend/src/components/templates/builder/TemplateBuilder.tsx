@@ -2,7 +2,7 @@
 
 import React, { useState, useCallback, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Database, Loader2, FileDown, Printer } from 'lucide-react';
+import { ArrowLeft, Loader2 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import type {
   TemplateDefinition,
@@ -18,9 +18,8 @@ import type {
 import { useTemplateData } from '@/hooks/use-template-data';
 import { useDataset } from '@/hooks/use-datasets';
 import { BuilderCanvas } from './BuilderCanvas';
-import { ColumnProperties } from './ColumnProperties';
+import { LeftPanel } from './LeftPanel';
 import { DataSourcePicker } from './DataSourcePicker';
-import { Tooltip } from './Tooltip';
 import { exportToExcel } from './export-excel';
 
 interface TemplateBuilderProps {
@@ -51,7 +50,6 @@ export function TemplateBuilder({
   const { data: previewData, isLoading: isLoadingData } = useTemplateData(definition.dataSource);
   const { data: datasetDetail } = useDataset(definition.dataSource?.datasetId ?? null);
 
-  // Extract available columns from columns_cache for the bound table
   const availableColumns = useMemo(() => {
     if (!datasetDetail?.tables || !definition.dataSource?.tableId) return undefined;
     const table = (datasetDetail.tables as any[]).find(
@@ -94,9 +92,9 @@ export function TemplateBuilder({
     const col: TemplateColumn = {
       id,
       key: `col_${idx}`,
-      label: `Column ${idx}`,
+      label: `Cột ${idx}`,
       type: 'raw',
-      width: 100,
+      width: 120,
       align: 'left',
       format: 'text',
       visible: true,
@@ -142,16 +140,16 @@ export function TemplateBuilder({
     [updateDef],
   );
 
-  const handleHeaderChange = useCallback(
-    (title: string, meta?: string) => {
-      updateDef({ header: { ...definition.header, title, meta } });
+  const handleHeaderLinesChange = useCallback(
+    (lines: HeaderLine[]) => {
+      updateDef({ header: { ...definition.header, title: definition.header?.title ?? '', lines } });
     },
     [definition.header, updateDef],
   );
 
-  const handleHeaderLinesChange = useCallback(
-    (lines: HeaderLine[]) => {
-      updateDef({ header: { ...definition.header, title: definition.header?.title ?? '', lines } });
+  const handleHeaderTitleChange = useCallback(
+    (title: string, meta?: string) => {
+      updateDef({ header: { ...definition.header, title, meta } });
     },
     [definition.header, updateDef],
   );
@@ -210,126 +208,94 @@ export function TemplateBuilder({
     setTimeout(() => { printWindow.print(); }, 300);
   }, [template.name]);
 
-  /* ── Row count for status bar ──────────────────────────── */
-
   const rowCount = previewData?.rows?.length ?? 0;
   const totalRows = previewData?.total ?? 0;
 
   return (
     <div className="flex h-full flex-col bg-gray-50">
       {/* ── Top Nav ── */}
-      <div className="flex h-12 shrink-0 items-center border-b border-gray-200 bg-white px-6 gap-4">
+      <div className="flex h-11 shrink-0 items-center border-b border-gray-200 bg-white px-4 gap-3">
         <button
           onClick={() => router.push('/templates')}
-          className="inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700"
+          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
         >
           <ArrowLeft className="h-4 w-4" />
-          Templates
+          <span className="hidden sm:inline">Templates</span>
         </button>
 
-        <span className="text-sm font-medium text-gray-900 truncate max-w-[200px]">
+        <div className="h-4 w-px bg-gray-200" />
+
+        <span className="text-sm font-semibold text-gray-900 truncate max-w-[280px]">
           {template.name}
         </span>
 
-        <div className="flex-1" />
-
-        {definition.dataSource ? (
-          <button
-            onClick={() => setShowDataSourcePicker(true)}
-            className="inline-flex items-center gap-1.5 rounded-md bg-blue-50 border border-blue-200 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 transition-colors"
-          >
-            <Database className="h-3.5 w-3.5" />
-            {definition.dataSource.datasetName ?? 'Dataset'} → {definition.dataSource.tableName ?? 'Table'}
-          </button>
-        ) : (
-          <button
-            onClick={() => setShowDataSourcePicker(true)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-gray-300 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50 transition-colors"
-          >
-            <Database className="h-3.5 w-3.5" />
-            Bind Dataset
-          </button>
+        {hasChanges && (
+          <span className="inline-flex items-center rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-medium text-amber-600">
+            Chưa lưu
+          </span>
         )}
+
+        <div className="flex-1" />
 
         <button
           onClick={onSave}
           disabled={!hasChanges || isSaving || !canEdit}
-          className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : hasChanges ? 'Save' : 'Saved'}
+          {isSaving ? (
+            <>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Đang lưu…
+            </>
+          ) : (
+            'Lưu'
+          )}
         </button>
       </div>
 
-      {/* ── Main 2-column layout ── */}
+      {/* ── Main layout: Left Panel + Canvas ── */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Center canvas */}
+        {/* Left Panel */}
+        <LeftPanel
+          definition={definition}
+          selectedColumn={selectedColumn}
+          availableColumns={availableColumns}
+          previewData={previewData}
+          isLoadingData={isLoadingData}
+          rowCount={rowCount}
+          totalRows={totalRows}
+          canEdit={canEdit}
+          onOpenDataSourcePicker={() => setShowDataSourcePicker(true)}
+          onColumnChange={updateColumn}
+          onRemoveColumn={removeColumn}
+          onSelectColumn={setSelectedColumnId}
+          onAddColumn={addColumn}
+          onReorderColumns={reorderColumns}
+          onGroupByChange={setGroupBy}
+          onHeaderLinesChange={handleHeaderLinesChange}
+          onHeaderTitleChange={handleHeaderTitleChange}
+          onFooterChange={handleFooterChange}
+          onColumnGroupsChange={handleColumnGroupsChange}
+          onExportExcel={handleExportExcel}
+          onExportPDF={handleExportPDF}
+        />
+
+        {/* Canvas */}
         <BuilderCanvas
           definition={definition}
           selectedColumnId={selectedColumnId}
           onSelectColumn={setSelectedColumnId}
           onLayoutChange={setLayout}
-          onGroupByChange={setGroupBy}
-          onHeaderChange={handleHeaderChange}
-          onHeaderLinesChange={handleHeaderLinesChange}
-          onFooterChange={handleFooterChange}
-          onColumnGroupsChange={handleColumnGroupsChange}
           onThemeChange={handleThemeChange}
+          onHeaderLinesChange={handleHeaderLinesChange}
+          onHeaderTitleChange={handleHeaderTitleChange}
+          onFooterChange={handleFooterChange}
           onAddColumn={addColumn}
-          onReorderColumns={reorderColumns}
           previewData={previewData}
           isLoadingData={isLoadingData}
           canEdit={canEdit}
           printRef={printRef}
         />
-
-        {/* Right sidebar */}
-        <ColumnProperties
-          column={selectedColumn}
-          columns={definition.columns}
-          dataSource={definition.dataSource}
-          availableColumns={availableColumns}
-          onColumnChange={updateColumn}
-          onRemoveColumn={removeColumn}
-          onSelectColumn={setSelectedColumnId}
-          onAddColumn={addColumn}
-          canEdit={canEdit}
-        />
-      </div>
-
-      {/* ── Status Bar ── */}
-      <div className="flex h-7 shrink-0 items-center border-t border-gray-200 bg-white px-6 gap-4 text-[11px] text-gray-400">
-        <span className="flex items-center gap-1.5">
-          <span
-            className="inline-block h-1.5 w-1.5 rounded-full"
-            style={{ background: definition.dataSource ? '#22c55e' : '#fbbf24' }}
-          />
-          {definition.dataSource ? 'DB connected' : 'No data source'}
-        </span>
-        {isLoadingData && <span>Loading data…</span>}
-        {!isLoadingData && previewData && (
-          <span>{rowCount}{totalRows > rowCount ? ` / ${totalRows}` : ''} rows</span>
-        )}
-        <span>Layout: {definition.layout}{definition.groupBy ? ` · group by ${definition.groupBy}` : ''}</span>
-        <div className="flex-1" />
-        <Tooltip content="Xuất dữ liệu ra file Excel (.xlsx) theo cấu trúc template hiện tại" position="top">
-          <button
-            onClick={handleExportExcel}
-            disabled={!previewData?.rows?.length}
-            className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <FileDown className="h-3 w-3" />
-            Export Excel
-          </button>
-        </Tooltip>
-        <Tooltip content="In hoặc xuất PDF qua trình duyệt (Ctrl+P)" position="top">
-          <button
-            onClick={handleExportPDF}
-            className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700"
-          >
-            <Printer className="h-3 w-3" />
-            Export PDF
-          </button>
-        </Tooltip>
       </div>
 
       {/* ── Data Source Picker Modal ── */}

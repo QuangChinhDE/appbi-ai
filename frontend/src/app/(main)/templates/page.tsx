@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, FileText, Clock, Hash, Loader2 } from 'lucide-react';
+import { Plus, FileText, Clock, Hash, Loader2, FileSpreadsheet } from 'lucide-react';
 import { toast } from '@/lib/toast';
 
 import { useReportTemplates, useCreateReportTemplate, useDeleteReportTemplate } from '@/hooks/use-report-templates';
@@ -11,6 +11,7 @@ import { PageListLayout } from '@/components/common/PageListLayout';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { TemplateList } from '@/components/templates/TemplateList';
 import { TemplateCardGrid } from '@/components/templates/TemplateCardGrid';
+import { ImportWizard } from '@/components/templates/ImportWizard';
 import { useI18n } from '@/providers/LanguageProvider';
 
 export default function TemplatesPage() {
@@ -19,6 +20,7 @@ export default function TemplatesPage() {
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [deletingId, setDeletingId] = useState<number | undefined>();
+  const [showImportWizard, setShowImportWizard] = useState(false);
 
   const { data: templates, isLoading } = useReportTemplates();
   const { data: permData } = usePermissions();
@@ -62,6 +64,7 @@ export default function TemplatesPage() {
   };
 
   return (
+    <>
     <PageListLayout
       title={t('module.templates.title')}
       description={`${templateItems.length} template${templateItems.length !== 1 ? 's' : ''}`}
@@ -126,13 +129,22 @@ export default function TemplatesPage() {
               </button>
             </form>
           ) : (
-            <button
-              onClick={() => setIsCreating(true)}
-              className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
-            >
-              <Plus className="h-4 w-4" />
-              {t('action.newTemplate')}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowImportWizard(true)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-green-300 bg-green-50 px-4 py-2 text-sm font-medium text-green-700 hover:bg-green-100 transition-colors"
+              >
+                <FileSpreadsheet className="h-4 w-4" />
+                Import from Excel
+              </button>
+              <button
+                onClick={() => setIsCreating(true)}
+                className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              >
+                <Plus className="h-4 w-4" />
+                {t('action.newTemplate')}
+              </button>
+            </div>
           )
         ) : null
       }
@@ -151,5 +163,8 @@ export default function TemplatesPage() {
         );
       }}
     </PageListLayout>
+
+    <ImportWizard open={showImportWizard} onClose={() => setShowImportWizard(false)} />
+    </>
   );
 }

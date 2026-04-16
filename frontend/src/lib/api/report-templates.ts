@@ -7,6 +7,11 @@ import type {
   ReportTemplateCreate,
   ReportTemplateUpdate,
 } from '@/types/template';
+import type {
+  AnalysisResponse,
+  ImportConfirmPayload,
+  ImportConfirmResponse,
+} from '@/types/import-analysis';
 
 export const reportTemplateApi = {
   getAll: async (): Promise<ReportTemplate[]> => {
@@ -65,5 +70,20 @@ export const reportTemplateApi = {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  },
+
+  importAnalyze: async (file: File, sheetName?: string): Promise<AnalysisResponse> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const params = sheetName ? `?sheet_name=${encodeURIComponent(sheetName)}` : '';
+    const response = await apiClient.post(`/report-templates/import-analyze${params}`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
+  importConfirm: async (data: ImportConfirmPayload): Promise<ImportConfirmResponse> => {
+    const response = await apiClient.post('/report-templates/import-confirm', data);
+    return response.data;
   },
 };
