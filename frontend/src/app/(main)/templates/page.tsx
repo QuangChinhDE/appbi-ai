@@ -3,7 +3,7 @@
 import React, { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Plus, FileText, Clock, Hash, Loader2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 import { useReportTemplates, useCreateReportTemplate, useDeleteReportTemplate } from '@/hooks/use-report-templates';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';

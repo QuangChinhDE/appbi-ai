@@ -20,8 +20,10 @@ from app.services.dataset_calendar_service import (
     build_calendar_live_sql,
     build_calendar_role_display_name,
     build_calendar_role_view_name,
+    exclude_calendar_join,
     get_calendar_role_view_display,
     get_calendar_settings,
+    is_calendar_join_excluded,
     is_generated_calendar_table,
     iter_temporal_columns,
 )
@@ -419,6 +421,12 @@ def _build_calendar_role_views(
         for temporal_column in iter_temporal_columns(table):
             column_name = temporal_column["name"]
             column_type = temporal_column["type"]
+            if is_calendar_join_excluded(
+                calendar_settings,
+                view_name=source_view.name,
+                column_name=column_name,
+            ):
+                continue
             role_view_name = build_calendar_role_view_name(source_view.name, column_name)
             role_view_names.add(role_view_name)
 
@@ -980,6 +988,10 @@ def remove_join(
     to_column: str | None = None,
 ) -> dict:
     """Remove a join from one semantic view to another."""
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise ValueError("Dataset not found")
+
     model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
     if not model:
         raise ValueError("No semantic model found for this dataset")
@@ -1006,8 +1018,31 @@ def remove_join(
         return join_from == normalized_from and join_to == normalized_to
 
     matching_joins = [join for join in (explore.joins or []) if should_remove(join)]
-    if any(join.get("managed") or join.get("origin") in {"auto_fk", "auto_calendar"} for join in matching_joins):
+    blocked_joins = [
+        join
+        for join in matching_joins
+        if join.get("origin") != "auto_calendar"
+        and (join.get("managed") or join.get("origin") == "auto_fk")
+    ]
+    if blocked_joins:
         raise ValueError("System-managed relationships cannot be removed manually")
+
+    auto_calendar_joins = [
+        join for join in matching_joins if join.get("origin") == "auto_calendar"
+    ]
+    for join in auto_calendar_joins:
+        parsed_from, _ = _parse_join_columns(join.get("sql_on"))
+        source_field = (
+            _clean_join_identifier(join.get("calendar_source_field"))
+            or _clean_join_identifier(join.get("from_column"))
+            or parsed_from
+        )
+        if source_field:
+            exclude_calendar_join(
+                dataset_obj,
+                view_name=explore.base_view_name,
+                column_name=source_field,
+            )
 
     explore.joins = [j for j in (explore.joins or []) if not should_remove(j)]
     db.commit()

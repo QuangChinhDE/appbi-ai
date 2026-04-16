@@ -14,6 +14,7 @@ import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { useI18n } from '@/providers/LanguageProvider';
+import { toast } from '@/lib/toast';
 import { 
   useDatasets, 
   useCreateDataset, 
@@ -46,10 +47,13 @@ export default function DatasetsPage() {
     try {
       const dataset = await createMutation.mutateAsync(input);
       setIsCreateModalOpen(false);
+      toast.success('Dataset created', {
+        description: input.name,
+      });
       router.push(`/datasets/${dataset.id}`);
     } catch (error) {
       console.error('Failed to create dataset:', error);
-      alert('Failed to create dataset. Please try again.');
+      toast.error('Failed to create dataset. Please try again.');
     }
   };
 
@@ -63,13 +67,16 @@ export default function DatasetsPage() {
     setIsDeletingDataset(true);
     try {
       await deleteMutation.mutateAsync(datasetToDelete.id);
+      toast.success('Dataset deleted', {
+        description: datasetToDelete.name,
+      });
       setDatasetToDelete(null);
     } catch (error: any) {
       const detail = error.response?.data?.detail;
       if (detail?.constraints) {
         setDeleteConstraints(detail.constraints);
       } else {
-        alert(`Failed to delete dataset: ${detail || error.message}`);
+        toast.error(`Failed to delete dataset: ${detail || error.message}`);
         setDatasetToDelete(null);
       }
     } finally {

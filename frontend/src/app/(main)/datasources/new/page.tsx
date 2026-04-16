@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Settings } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import DataSourceForm from '@/components/datasources/DataSourceForm';
 import { useCreateDataSource } from '@/hooks/use-datasources';
 import type { DataSourceCreate } from '@/types/api';

@@ -43,7 +43,7 @@ import { DataModelCanvas } from '@/components/datasets/DataModelCanvas';
 import { ModelViewEditPanel } from '@/components/datasets/ModelViewEditPanel';
 import type { Transformation } from '@/hooks/use-datasets';
 import type { DatasetModelView } from '@/hooks/use-dataset-model';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 // Inline Excel formula evaluator (mirrors AddColumnModal's evalExcelFormula)
 function evalExcelFormulaInPage(
@@ -109,6 +109,7 @@ const DEFAULT_CALENDAR_SETTINGS: CalendarDimensionSettings = {
   week_start_day: 'monday',
   fiscal_year_start_month: 1,
   auto_join_temporal_columns: true,
+  excluded_auto_joins: [],
 };
 
 const LOOKUP_TABLE_IDENTIFIER_PREFIX = 'dataset-table://';
@@ -625,7 +626,7 @@ export default function DatasetDetailPage() {
       if (data?.detail?.constraints) {
         setDeleteConstraints(data.detail.constraints);
       } else {
-        alert(data?.detail?.message ?? data?.detail ?? 'Không thể xóa bảng.');
+        toast.error(data?.detail?.message ?? data?.detail ?? 'Không thể xóa bảng.');
         setTableToDelete(null);
       }
     } finally {

@@ -43,7 +43,7 @@ import {
 } from '@/hooks/use-dataset-model';
 import { RelationshipDialog } from './RelationshipDialog';
 import { DatasetDictionaryPanel } from './DatasetDictionaryPanel';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 // ─── Layout constants ────────────────────────────────────────────────────────
 
@@ -814,6 +814,11 @@ export function DataModelCanvas({
     ? (viewByName[selectedRelationship.presentationViewName]
         ?? allViewsByName[selectedRelationship.presentationViewName])
     : null;
+  const canDeleteSelectedRelationship = Boolean(
+    selectedRelationship
+    && canEdit
+    && (!selectedRelationship.managed || selectedRelationship.origin === 'auto_calendar')
+  );
 
   const handleGenerate = async (force = false) => {
     try {
@@ -831,18 +836,23 @@ export function DataModelCanvas({
 
   const handleDeleteRel = async () => {
     if (!selectedRelationship) return;
+    const relationship = selectedRelationship;
+    const removingDateLink = relationship.origin === 'auto_calendar';
     try {
       await removeJoin.mutateAsync({
         datasetId,
-        fromViewId: selectedRelationship.fromViewId,
-        toViewName: selectedRelationship.toViewName,
-        fromColumn: selectedRelationship.fromCol,
-        toColumn:   selectedRelationship.toCol,
+        fromViewId: relationship.fromViewId,
+        toViewName: relationship.toViewName,
+        fromColumn: relationship.fromCol,
+        toColumn: relationship.toCol,
       });
       setSelectedRelKey(null);
-      toast.success('Relationship removed');
+      toast.success(removingDateLink ? 'Date link removed' : 'Relationship removed');
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || 'Failed to remove relationship');
+      toast.error(
+        e?.response?.data?.detail
+          || (removingDateLink ? 'Failed to remove date link' : 'Failed to remove relationship')
+      );
     }
   };
 
@@ -963,13 +973,17 @@ export function DataModelCanvas({
               {selectedRelationship.relationship?.replace(/_/g, ':') ?? 'N:1'}
               {' · '}
               {selectedRelationship.joinType.toUpperCase()}
-              {selectedRelationship.managed ? ' | Auto-managed' : ''}
+              {selectedRelationship.origin === 'auto_calendar'
+                ? ' | Auto date link'
+                : selectedRelationship.managed
+                  ? ' | Auto-managed'
+                  : ''}
             </span>
           )}
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {selectedRelationship && canEdit && !selectedRelationship.managed && (
+          {canDeleteSelectedRelationship && (
             <button
               onClick={handleDeleteRel}
               disabled={removeJoin.isPending}
@@ -979,7 +993,7 @@ export function DataModelCanvas({
               {removeJoin.isPending
                 ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 : <Trash2 className="w-3.5 h-3.5" />}
-              Delete
+              {selectedRelationship?.origin === 'auto_calendar' ? 'Remove date link' : 'Delete'}
             </button>
           )}
           {/* Dictionary modal button */}

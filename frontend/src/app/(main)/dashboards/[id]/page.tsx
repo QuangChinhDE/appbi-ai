@@ -44,7 +44,7 @@ import {
   getDashboardChartsForPage,
   normalizeDashboardPages,
 } from '@/lib/dashboard-pages';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 // Debounce utility
 function useDebounce<T extends (...args: any[]) => any>(

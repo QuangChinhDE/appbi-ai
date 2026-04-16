@@ -7,6 +7,7 @@ import DataSourceForm from '@/components/datasources/DataSourceForm';
 import { useDataSource, useUpdateDataSource } from '@/hooks/use-datasources';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import type { DataSourceCreate } from '@/types/api';
+import { toast } from '@/lib/toast';
 
 export default function EditDataSourcePage() {
   const router = useRouter();
@@ -29,9 +30,12 @@ export default function EditDataSourcePage() {
           ...(meta.configModified ? { config: data.config } : {}),
         },
       });
+      toast.success('Data source updated', {
+        description: data.name,
+      });
       router.push('/datasources');
     } catch (error: any) {
-      alert(`Failed to update data source: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to update data source: ${error.response?.data?.detail || error.message}`);
     }
   };
 

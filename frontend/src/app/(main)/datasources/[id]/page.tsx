@@ -9,6 +9,7 @@ import DataSourceForm from '@/components/datasources/DataSourceForm';
 import type { DataSourceCreate } from '@/types/api';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
+import { toast } from '@/lib/toast';
 
 type Tab = 'connection';
 
@@ -78,8 +79,11 @@ export default function DataSourceDetailPage() {
           ...(meta.configModified ? { config: data.config } : {}),
         },
       });
+      toast.success('Data source updated', {
+        description: data.name,
+      });
     } catch (error: any) {
-      alert(`Failed to update: ${error.response?.data?.detail || error.message}`);
+      toast.error(`Failed to update: ${error.response?.data?.detail || error.message}`);
     }
   };
 

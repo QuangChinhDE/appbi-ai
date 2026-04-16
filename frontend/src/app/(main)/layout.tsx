@@ -5,7 +5,7 @@ import { Sidebar } from '@/components/layout/Sidebar';
 import { LanguageProvider } from '@/providers/LanguageProvider';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
 
   return (
     <LanguageProvider>

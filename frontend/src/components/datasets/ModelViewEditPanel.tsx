@@ -46,7 +46,7 @@ import {
 import { usePreviewTableDescription, type TableDescriptionPreview } from '@/hooks/useDescription';
 import { AiDescriptionDiffModal } from './AiDescriptionDiffModal';
 import { AppModalShell } from '@/components/common/AppModalShell';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import {
   buildPayload,
   DataTypeBadge,

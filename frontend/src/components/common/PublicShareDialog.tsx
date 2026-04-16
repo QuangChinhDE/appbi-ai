@@ -5,7 +5,7 @@ import { X, Link2, Copy, Check, Trash2, Globe, Filter, ChevronDown, ChevronUp } 
 import { useShareDashboard, useUnshareDashboard } from '@/hooks/use-dashboards';
 import { useFilterDistinctValues } from '@/hooks/use-filter-distinct-values';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { getFilterDisplayLabel, type BaseFilter, type ColumnInfo } from '@/lib/filters';
 
 interface PublicShareDialogProps {

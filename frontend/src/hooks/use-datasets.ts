@@ -28,6 +28,10 @@ export interface CalendarDimensionSettings {
   week_start_day: 'monday' | 'sunday';
   fiscal_year_start_month: number;
   auto_join_temporal_columns: boolean;
+  excluded_auto_joins: Array<{
+    view_name: string;
+    column_name: string;
+  }>;
 }
 
 export interface DatasetSettings {

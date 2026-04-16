@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Plus, Loader2, LayoutDashboard, Clock, Eye, Trash2, Search, Globe, Share2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 import { useDashboards, useCreateDashboard, useDeleteDashboard } from '@/hooks/use-dashboards';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';

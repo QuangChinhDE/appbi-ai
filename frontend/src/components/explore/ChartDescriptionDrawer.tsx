@@ -39,7 +39,7 @@ import {
   useUpdateChartDescription,
 } from '@/hooks/useDescription';
 import type { DescriptionGenerationStatus, ChartDescription } from '@/hooks/useDescription';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

@@ -27,7 +27,7 @@ import {
   type DatasetDictionaryTerm,
   type DatasetTable,
 } from '@/hooks/use-datasets';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import {
   buildPayload,
   normalizeDictionary,

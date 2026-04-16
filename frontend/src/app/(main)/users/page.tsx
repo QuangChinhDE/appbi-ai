@@ -6,7 +6,7 @@ import { Plus, Edit2, UserX, ChevronDown } from 'lucide-react';
 import { usersApi } from '@/lib/api-client';
 import { extractApiError, PASSWORD_REQUIREMENTS_TEXT, validatePasswordStrength } from '@/lib/api-errors';
 import { authConfig, getAuthMethodLabel, type AuthProvider } from '@/lib/auth-config';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 type UserStatus = 'active' | 'deactivated';
 

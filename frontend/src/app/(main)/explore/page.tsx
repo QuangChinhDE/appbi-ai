@@ -13,7 +13,7 @@ import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { useI18n } from '@/providers/LanguageProvider';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import type { Chart } from '@/types/api';

@@ -27,7 +27,7 @@ import {
   type DimensionDefinition,
   type MeasureDefinition,
 } from '@/hooks/use-dataset-model';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 const DIM_TYPES = ['string', 'number', 'date', 'datetime', 'yesno'] as const;
 const MEASURE_TYPES = ['count', 'sum', 'avg', 'min', 'max', 'count_distinct'] as const;

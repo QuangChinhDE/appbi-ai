@@ -120,7 +120,49 @@ def normalize_calendar_dimension_settings(
             maximum=12,
         ),
         "auto_join_temporal_columns": bool(raw.get("auto_join_temporal_columns", True)),
+        "excluded_auto_joins": normalize_calendar_auto_join_exclusions(
+            raw.get("excluded_auto_joins") or raw.get("excluded_date_links")
+        ),
     }
+
+
+def normalize_calendar_auto_join_exclusions(raw_exclusions: Any) -> List[Dict[str, str]]:
+    if not isinstance(raw_exclusions, list):
+        return []
+
+    exclusions: List[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for item in raw_exclusions:
+        view_name = ""
+        column_name = ""
+
+        if isinstance(item, dict):
+            view_name = str(item.get("view_name") or item.get("from_view") or "").strip()
+            column_name = str(
+                item.get("column_name")
+                or item.get("from_column")
+                or item.get("calendar_source_field")
+                or ""
+            ).strip()
+        elif isinstance(item, str):
+            text = item.strip()
+            if "." in text:
+                view_name, column_name = [part.strip() for part in text.split(".", 1)]
+
+        if not view_name or not column_name:
+            continue
+
+        key = (view_name, column_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        exclusions.append({
+            "view_name": view_name,
+            "column_name": column_name,
+        })
+
+    return exclusions
 
 
 def normalize_dataset_settings(
@@ -143,6 +185,61 @@ def get_dataset_settings(dataset: Dataset | Any, *, enabled_default: bool = Fals
 
 def get_calendar_settings(dataset: Dataset | Any, *, enabled_default: bool = False) -> Dict[str, Any]:
     return get_dataset_settings(dataset, enabled_default=enabled_default)["calendar_dimension"]
+
+
+def is_calendar_join_excluded(
+    settings: Dict[str, Any] | None,
+    *,
+    view_name: str,
+    column_name: str,
+) -> bool:
+    normalized_view_name = str(view_name or "").strip()
+    normalized_column_name = str(column_name or "").strip()
+    if not normalized_view_name or not normalized_column_name:
+        return False
+
+    exclusions = normalize_calendar_auto_join_exclusions(
+        (settings or {}).get("excluded_auto_joins")
+    )
+    return any(
+        item["view_name"] == normalized_view_name and item["column_name"] == normalized_column_name
+        for item in exclusions
+    )
+
+
+def exclude_calendar_join(
+    dataset: Dataset | Any,
+    *,
+    view_name: str,
+    column_name: str,
+    enabled_default: bool = False,
+) -> bool:
+    normalized_view_name = str(view_name or "").strip()
+    normalized_column_name = str(column_name or "").strip()
+    if not normalized_view_name or not normalized_column_name:
+        return False
+
+    current_settings = get_dataset_settings(dataset, enabled_default=enabled_default)
+    calendar_settings = dict(current_settings.get("calendar_dimension") or {})
+    exclusions = normalize_calendar_auto_join_exclusions(calendar_settings.get("excluded_auto_joins"))
+    key = {
+        "view_name": normalized_view_name,
+        "column_name": normalized_column_name,
+    }
+
+    if any(
+        item["view_name"] == key["view_name"] and item["column_name"] == key["column_name"]
+        for item in exclusions
+    ):
+        return False
+
+    exclusions.append(key)
+    calendar_settings["excluded_auto_joins"] = exclusions
+    dataset.settings = normalize_dataset_settings(
+        {"calendar_dimension": calendar_settings},
+        enabled_default=bool(calendar_settings.get("enabled", enabled_default)),
+    )
+    return True
 
 
 def is_generated_calendar_table(table: DatasetTable | Any | None) -> bool:

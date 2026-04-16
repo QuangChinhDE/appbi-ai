@@ -8,6 +8,11 @@ from uuid import UUID
 # ===== Dataset Schemas =====
 
 
+class CalendarAutoJoinExclusion(BaseModel):
+    view_name: str = Field(..., min_length=1, max_length=255)
+    column_name: str = Field(..., min_length=1, max_length=255)
+
+
 class CalendarDimensionSettings(BaseModel):
     enabled: bool = True
     start_date: date = Field(default=date(2000, 1, 1))
@@ -16,6 +21,7 @@ class CalendarDimensionSettings(BaseModel):
     week_start_day: str = Field(default="monday", pattern="^(monday|sunday)$")
     fiscal_year_start_month: int = Field(default=1, ge=1, le=12)
     auto_join_temporal_columns: bool = True
+    excluded_auto_joins: List[CalendarAutoJoinExclusion] = Field(default_factory=list)
 
 
 class DatasetSettings(BaseModel):

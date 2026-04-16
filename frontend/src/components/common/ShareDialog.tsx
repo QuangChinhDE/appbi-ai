@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Search, Share2, Users, Trash2, ChevronDown } from 'lucide-react';
 import { usersApi, sharesApi } from '@/lib/api-client';
 import { extractApiError } from '@/lib/api-errors';
+import { toast } from '@/lib/toast';
 
 type Permission = 'view' | 'edit';
 
@@ -56,7 +57,11 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
         setShares(Array.isArray(sharesData) ? sharesData : []);
         setUsers(Array.isArray(usersData) ? usersData : []);
       } catch {
-        setError('Failed to load sharing information.');
+        const message = 'Failed to load sharing information.';
+        setError(message);
+        toast.error(message, {
+          description: resourceName,
+        });
         setShares([]);
         setUsers([]);
       } finally {
@@ -82,32 +87,57 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
       // Refresh shares
       const newShares = await sharesApi.getShares(resourceType, resourceId);
       setShares(newShares);
+      toast.success('Access shared', {
+        description: `${selectedUser.full_name} • ${resourceName}`,
+      });
       setSelectedUser(null);
       setSearch('');
     } catch (err: unknown) {
-      setError(extractApiError(err, 'Failed to share.'));
+      const message = extractApiError(err, 'Failed to share.');
+      setError(message);
+      toast.error(message, {
+        description: resourceName,
+      });
     } finally {
       setLoading(false);
     }
   };
 
   const handleUpdatePermission = async (userId: string, newPermission: Permission) => {
+    const sharedUser = shares.find((share) => share.user_id === userId)?.user;
+    setError('');
     try {
       await sharesApi.updateShare(resourceType, resourceId, userId, { permission: newPermission });
       setShares((prev) =>
         prev.map((s) => (s.user_id === userId ? { ...s, permission: newPermission } : s))
       );
+      toast.success('Permission updated', {
+        description: `${sharedUser?.full_name || sharedUser?.email || userId} • ${resourceName}`,
+      });
     } catch {
-      setError('Failed to update permission.');
+      const message = 'Failed to update permission.';
+      setError(message);
+      toast.error(message, {
+        description: resourceName,
+      });
     }
   };
 
   const handleRevoke = async (userId: string) => {
+    const sharedUser = shares.find((share) => share.user_id === userId)?.user;
+    setError('');
     try {
       await sharesApi.revokeShare(resourceType, resourceId, userId);
       setShares((prev) => prev.filter((s) => s.user_id !== userId));
+      toast.success('Access revoked', {
+        description: `${sharedUser?.full_name || sharedUser?.email || userId} • ${resourceName}`,
+      });
     } catch {
-      setError('Failed to revoke access.');
+      const message = 'Failed to revoke access.';
+      setError(message);
+      toast.error(message, {
+        description: resourceName,
+      });
     }
   };
 
@@ -118,8 +148,15 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
       await sharesApi.shareAllTeam(resourceType, resourceId, { permission });
       const newShares = await sharesApi.getShares(resourceType, resourceId);
       setShares(newShares);
+      toast.success('Shared with team', {
+        description: `${resourceName} • ${permission}`,
+      });
     } catch (err: unknown) {
-      setError(extractApiError(err, 'Failed to share with team.'));
+      const message = extractApiError(err, 'Failed to share with team.');
+      setError(message);
+      toast.error(message, {
+        description: resourceName,
+      });
     } finally {
       setAllTeamLoading(false);
     }

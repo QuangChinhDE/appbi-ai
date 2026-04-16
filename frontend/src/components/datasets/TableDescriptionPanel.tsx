@@ -21,7 +21,7 @@ import {
   useUpdateTableDescription,
 } from '@/hooks/useDescription';
 import type { DescriptionGenerationStatus } from '@/hooks/useDescription';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 interface Props {
   datasetId: number;

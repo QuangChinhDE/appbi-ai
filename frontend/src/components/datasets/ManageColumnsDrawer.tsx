@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { X, Loader2, Trash2, Cpu } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { DatasetTable, Transformation } from '@/hooks/use-datasets';
 
 interface ManageColumnsDrawerProps {

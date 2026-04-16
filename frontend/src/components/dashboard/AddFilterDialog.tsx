@@ -7,6 +7,7 @@
 import React, { useState } from 'react';
 import { Modal } from '@/components/common/Modal';
 import { DashboardFilter } from './FilterPanel';
+import { toast } from '@/lib/toast';
 
 interface AddFilterDialogProps {
   isOpen: boolean;
@@ -39,7 +40,7 @@ export function AddFilterDialog({ isOpen, onClose, onSave, availableFields = [] 
 
   const handleSave = () => {
     if (!formData.name || !formData.field) {
-      alert('Please fill in name and field');
+      toast.error('Please fill in name and field');
       return;
     }
 

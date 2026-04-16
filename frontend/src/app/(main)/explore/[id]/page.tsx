@@ -33,7 +33,7 @@ import {
   normalizeChartStyleConfig,
   normalizeRoleConfig,
 } from '@/components/explore/ExploreChartConfig';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ChartDescriptionDrawer, ChartDescriptionTrigger } from '@/components/explore/ChartDescriptionDrawer';
 import {

@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { BarChart3, Database, Loader2, Palette, Table2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';

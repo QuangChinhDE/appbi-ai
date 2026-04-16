@@ -9,7 +9,7 @@ import { dashboardApi, PublicLink } from '@/lib/api/dashboards';
 import { chartApi } from '@/lib/api/charts';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { useFilterDistinctValues } from '@/hooks/use-filter-distinct-values';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import {
   getFilterDisplayLabel,
   inferColumnTypeFromData,

@@ -3,7 +3,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 
 import { useReportTemplate, useUpdateReportTemplate } from '@/hooks/use-report-templates';
 import type { TemplateDefinition } from '@/types/template';
