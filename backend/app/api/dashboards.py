@@ -295,6 +295,7 @@ def create_public_link(
         name=request.name,
         token=secrets.token_urlsafe(32),
         filters_config=request.filters_config or [],
+        appearance_config=request.appearance_config or {},
         created_by=current_user.id,
         password_hash=_pwd_context.hash(request.password) if request.password else None,
     )
@@ -328,6 +329,8 @@ def update_public_link(
         link.name = request.name
     if request.filters_config is not None:
         link.filters_config = request.filters_config
+    if request.appearance_config is not None:
+        link.appearance_config = request.appearance_config
     if request.is_active is not None:
         link.is_active = request.is_active
     if request.password is not None:

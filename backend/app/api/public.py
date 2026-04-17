@@ -256,9 +256,9 @@ def _get_dashboard_by_token(
     session_token: str | None = None,
     *,
     track_access: bool = True,
-) -> tuple[Dashboard, list[dict]]:
+) -> tuple[Dashboard, list[dict], str | None, dict]:
     """Look up dashboard by token. Checks new multi-link table first, falls back to legacy share_token.
-    Returns (dashboard, filters_config_for_this_link)."""
+    Returns (dashboard, filters_config_for_this_link, link_name, appearance_config)."""
     # Try new multi-link table first
     link = db.query(DashboardPublicLink).filter(
         DashboardPublicLink.token == token,
@@ -289,7 +289,7 @@ def _get_dashboard_by_token(
             link.access_count = (link.access_count or 0) + 1
             link.last_accessed_at = datetime.now(timezone.utc)
             db.commit()
-        return dash, link.filters_config or []
+        return dash, link.filters_config or [], link.name, link.appearance_config or {}
 
     # Fallback to legacy share_token on Dashboard model
     dash = db.query(Dashboard).filter(Dashboard.share_token == token).first()
@@ -298,7 +298,7 @@ def _get_dashboard_by_token(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Shared dashboard not found or link has been revoked.",
         )
-    return dash, dash.public_filters_config or []
+    return dash, dash.public_filters_config or [], dash.name, {}
 
 
 @router.post("/dashboards/{token}/auth")
@@ -339,7 +339,11 @@ def get_public_dashboard(
 ):
     """Return dashboard structure for a public shared link. No auth required.
     Password-protected links require X-Public-Session header from /auth."""
-    dash, public_filters = _get_dashboard_by_token(token, db, session_token=x_public_session)
+    dash, public_filters, link_name, appearance_config = _get_dashboard_by_token(
+        token,
+        db,
+        session_token=x_public_session,
+    )
     # Public viewers get view-level permission (read-only, no edit actions)
     dash.user_permission = "view"
     for dashboard_chart in dash.dashboard_charts or []:
@@ -347,6 +351,8 @@ def get_public_dashboard(
     # Expose the link-specific filters so the frontend can display filter badges
     dash.public_filters_config = public_filters
     dash.available_filter_fields = _build_public_filter_fields(db, dash)
+    dash.public_link_name = link_name
+    dash.public_link_appearance = appearance_config or {}
     return dash
 
 
@@ -361,7 +367,7 @@ def get_public_filter_distinct_values(
     db: Session = Depends(get_db),
     x_public_session: str | None = Header(default=None),
 ):
-    dash, _ = _get_dashboard_by_token(
+    dash, _, _, _ = _get_dashboard_by_token(
         token,
         db,
         session_token=x_public_session,
@@ -409,7 +415,7 @@ def get_public_chart_data(
     cannot be used to access arbitrary charts.
     Password-protected links require X-Public-Session header from /auth.
     """
-    dash, public_filters = _get_dashboard_by_token(
+    dash, public_filters, _, _ = _get_dashboard_by_token(
         token,
         db,
         session_token=x_public_session,

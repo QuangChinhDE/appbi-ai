@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
@@ -30,6 +30,7 @@ import {
 } from '@/lib/dashboard-pages';
 import { getColumnKey, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
 import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
+import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 
@@ -84,15 +85,19 @@ function EmbedPasswordGate({
   const [show, setShow] = useState(false);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50 p-4">
-      <div className="w-full max-w-xs overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg">
-        <div className="bg-gradient-to-br from-blue-600 to-purple-600 px-5 py-4 text-center text-white">
-          <Lock className="mx-auto mb-2 h-5 w-5" />
-          <p className="text-sm font-semibold">
+    <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_100%)] p-4">
+      <div className="w-full max-w-sm overflow-hidden rounded-[24px] border border-white/80 bg-white/92 shadow-[0_32px_90px_-52px_rgba(15,23,42,0.5)]">
+        <div className="relative overflow-hidden border-b border-slate-200/70 bg-[linear-gradient(135deg,rgba(240,249,255,0.95),rgba(236,253,245,0.92))] px-5 py-5 text-center text-slate-900">
+          <div className="absolute inset-x-10 top-0 h-16 rounded-full bg-sky-200/30 blur-3xl" />
+          <div className="relative mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950 text-white shadow-lg shadow-slate-900/10">
+            <Lock className="h-5 w-5" />
+          </div>
+          <p className="relative text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Protected embed</p>
+          <p className="relative mt-2 text-base font-semibold text-slate-950">
             {isReauth ? 'Session expired - re-enter password' : 'Password required'}
           </p>
         </div>
-        <div className="space-y-3 px-5 py-4">
+        <div className="space-y-3 px-5 py-5">
           <div className="relative">
             <input
               type={show ? 'text' : 'password'}
@@ -103,20 +108,20 @@ function EmbedPasswordGate({
                   onSubmit(value);
                 }
               }}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 pr-9 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-400/30"
+              className="w-full rounded-2xl border border-slate-300 px-4 py-3 pr-10 text-sm text-slate-700 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-4 focus:ring-sky-100"
               placeholder="Enter password"
               autoFocus
             />
             <button
               type="button"
               onClick={() => setShow((current) => !current)}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
             >
               {show ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
             </button>
           </div>
           {error && (
-            <p className="flex items-center gap-1 text-xs text-red-600">
+            <p className="flex items-center gap-1 text-xs text-rose-600">
               <AlertTriangle className="h-3 w-3 flex-shrink-0" />
               {error}
             </p>
@@ -124,12 +129,12 @@ function EmbedPasswordGate({
           <button
             onClick={() => value && onSubmit(value)}
             disabled={submitting || !value}
-            className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+            className="flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 py-3 text-sm font-medium text-white transition-colors hover:bg-slate-800 disabled:opacity-50"
           >
             {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Lock className="h-3.5 w-3.5" />}
             {submitting ? 'Verifying...' : isReauth ? 'Continue' : 'Unlock'}
           </button>
-          <p className="text-center text-[10px] text-gray-400">Sessions last 2 hours</p>
+          <p className="text-center text-[10px] text-slate-400">Sessions last 2 hours</p>
         </div>
       </div>
     </div>
@@ -138,19 +143,21 @@ function EmbedPasswordGate({
 
 function SessionExpiredBanner({ onReauth }: { onReauth: () => void }) {
   return (
-    <div className="fixed inset-x-0 bottom-0 z-50 flex items-center justify-between gap-3 border-t border-amber-200 bg-amber-50 px-4 py-3">
-      <div className="flex items-center gap-2">
-        <RefreshCw className="h-4 w-4 flex-shrink-0 text-amber-600" />
-        <p className="text-xs font-medium text-amber-800">
-          Session expired. Re-enter the password to continue viewing.
-        </p>
+    <div className="fixed inset-x-0 bottom-0 z-50 px-3 pb-3">
+      <div className="mx-auto flex max-w-[960px] items-center justify-between gap-3 rounded-[20px] border border-amber-200 bg-amber-50/95 px-4 py-3 shadow-lg shadow-amber-100/50 backdrop-blur">
+        <div className="flex items-center gap-2">
+          <RefreshCw className="h-4 w-4 flex-shrink-0 text-amber-600" />
+          <p className="text-xs font-medium text-amber-800">
+            Session expired. Re-enter the password to continue viewing.
+          </p>
+        </div>
+        <button
+          onClick={onReauth}
+          className="flex-shrink-0 rounded-xl bg-slate-950 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-slate-800"
+        >
+          Re-authenticate
+        </button>
       </div>
-      <button
-        onClick={onReauth}
-        className="flex-shrink-0 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-amber-700"
-      >
-        Re-authenticate
-      </button>
     </div>
   );
 }
@@ -174,6 +181,7 @@ export default function EmbedDashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [chartLoadError, setChartLoadError] = useState<string | null>(null);
   const [currentPageId, setCurrentPageId] = useState<string | null>(null);
+  const [pendingPageId, setPendingPageId] = useState<string | null>(null);
   const [draftViewerFilters, setDraftViewerFilters] = useState<BaseFilter[]>([]);
   const [appliedViewerFilters, setAppliedViewerFilters] = useState<BaseFilter[]>([]);
   const [isApplyingFilters, setIsApplyingFilters] = useState(false);
@@ -187,6 +195,9 @@ export default function EmbedDashboardPage() {
 
   const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chartRequestIdRef = useRef(0);
+  const skipNextPageLoadRef = useRef<string | null>(null);
+  const skipCrossFilterRefreshRef = useRef<string | null>(null);
+  const appliedFilterSignatureRef = useRef(JSON.stringify([] as BaseFilter[]));
 
   const clearTimer = useCallback(() => {
     if (sessionTimerRef.current) {
@@ -258,6 +269,16 @@ export default function EmbedDashboardPage() {
   }, [activePageId, currentPageId]);
 
   useEffect(() => {
+    const nextSignature = JSON.stringify(appliedViewerFilters);
+    if (appliedFilterSignatureRef.current === nextSignature) {
+      return;
+    }
+    appliedFilterSignatureRef.current = nextSignature;
+    setChartData({});
+    setChartErrors({});
+  }, [appliedViewerFilters]);
+
+  useEffect(() => {
     if (!crossFilterState) return;
     const sourceExists = visibleDashboardCharts.some(
       (dashboardChart) => dashboardChart.chart_id === crossFilterState.sourceChartId,
@@ -287,35 +308,32 @@ export default function EmbedDashboardPage() {
     });
   }, []);
 
-  const loadVisibleCharts = useCallback(async (sessionToken?: string) => {
-    if (!dashboard) return;
+  const fetchChartsForPage = useCallback(async (
+    pageId: string,
+    sessionToken?: string,
+    pageCrossFilterState: typeof crossFilterState = crossFilterState,
+  ) => {
+    if (!dashboard) return false;
 
     const requestId = ++chartRequestIdRef.current;
-    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId);
-    const targetChartIds = new Set(targetCharts.map((chart) => chart.chart_id));
+    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId);
 
     setChartsLoading(true);
     setChartLoadError(null);
-    setChartErrors((current) => Object.fromEntries(
-      Object.entries(current).filter(([chartId]) => targetChartIds.has(Number(chartId))),
-    ));
-    setChartData((current) => Object.fromEntries(
-      Object.entries(current).filter(([chartId]) => targetChartIds.has(Number(chartId))),
-    ));
 
     if (!targetCharts.length) {
       setChartsLoading(false);
       setIsApplyingFilters(false);
-      return;
+      return true;
     }
 
     try {
       const entries = await Promise.all(
         targetCharts.map(async (dashboardChart) => {
-          const requestFilters = crossFilterState?.sourceChartId === dashboardChart.chart_id
+          const requestFilters = pageCrossFilterState?.sourceChartId === dashboardChart.chart_id
             ? appliedViewerFilters
-            : crossFilterState
-              ? [...appliedViewerFilters, crossFilterState.filter]
+            : pageCrossFilterState
+              ? [...appliedViewerFilters, pageCrossFilterState.filter]
               : appliedViewerFilters;
           try {
             const data = await publicDashboardApi.getChartData(
@@ -337,48 +355,67 @@ export default function EmbedDashboardPage() {
       );
 
       if (requestId !== chartRequestIdRef.current) {
-        return;
+        return false;
       }
 
       const unauthorized = entries.find((entry) => (entry as any).status === 401);
       if (unauthorized) {
         clearPublicSession(token);
         setPageState('reauth');
-        return;
+        return false;
       }
 
-      const nextData: Record<number, ChartDataResponse> = {};
-      const nextErrors: Record<number, string> = {};
-
-      for (const entry of entries) {
-        if (entry.data) {
-          nextData[entry.chartId] = entry.data;
-        } else if (entry.error) {
-          nextErrors[entry.chartId] = entry.error;
+      setChartData((current) => {
+        const next = { ...current };
+        for (const entry of entries) {
+          if (entry.data) {
+            next[entry.chartId] = entry.data;
+          } else {
+            delete next[entry.chartId];
+          }
         }
-      }
+        return next;
+      });
+      setChartErrors((current) => {
+        const next = { ...current };
+        for (const entry of entries) {
+          if (entry.error) {
+            next[entry.chartId] = entry.error;
+          } else {
+            delete next[entry.chartId];
+          }
+        }
+        return next;
+      });
 
-      setChartData(nextData);
-      setChartErrors(nextErrors);
-      if (Object.keys(nextErrors).length > 0) {
+      if (entries.some((entry) => entry.error)) {
         setChartLoadError('Some embedded charts could not be loaded.');
       }
       if (sessionToken) {
         scheduleExpiry(token);
       }
+      return true;
     } finally {
       if (requestId === chartRequestIdRef.current) {
         setChartsLoading(false);
         setIsApplyingFilters(false);
       }
     }
-  }, [activePageId, appliedViewerFilters, crossFilterState, dashboard, scheduleExpiry, token]);
+  }, [appliedViewerFilters, crossFilterState, dashboard, scheduleExpiry, token]);
 
   useEffect(() => {
     if (!dashboard || pageState !== 'loaded') return;
+    if (skipNextPageLoadRef.current === activePageId) {
+      skipNextPageLoadRef.current = null;
+      return;
+    }
+    if (!crossFilterState && skipCrossFilterRefreshRef.current === activePageId) {
+      skipCrossFilterRefreshRef.current = null;
+      return;
+    }
     const storedSession = getPublicSession(token);
-    loadVisibleCharts(storedSession ?? undefined);
-  }, [dashboard, loadVisibleCharts, pageState, token]);
+    fetchChartsForPage(activePageId, storedSession ?? undefined, crossFilterState);
+  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, pageState, token]);
 
   const handlePasswordSubmit = useCallback(async (password: string) => {
     setAuthSubmitting(true);
@@ -442,6 +479,21 @@ export default function EmbedDashboardPage() {
     () => JSON.stringify(draftViewerFilters) !== JSON.stringify(appliedViewerFilters),
     [appliedViewerFilters, draftViewerFilters],
   );
+  const publicTheme = useMemo(
+    () => buildPublicLinkTheme(dashboard?.public_link_appearance),
+    [dashboard?.public_link_appearance],
+  );
+  const appearance = publicTheme.appearance;
+  const presentationTitle = appearance.headline
+    ?? dashboard?.public_link_name
+    ?? dashboard?.name
+    ?? 'Embedded report';
+  const viewerFiltersEnabled = appearance.allow_viewer_filters;
+  const showPageTabs = appearance.show_page_tabs && dashboardPages.length > 1;
+  const showEmbedHeader = true;
+  const showFilterControls = viewerFiltersEnabled && (availableFilterColumns.length > 0 || draftViewerFilters.length > 0);
+  const showLiveState = Boolean(pendingPageId || crossFilterState || chartLoadError || (chartsLoading && !isApplyingFilters));
+  const showControlSurface = true;
 
   const handleApplyFilters = useCallback(() => {
     setIsApplyingFilters(true);
@@ -452,11 +504,52 @@ export default function EmbedDashboardPage() {
     setDraftViewerFilters(appliedViewerFilters);
   }, [appliedViewerFilters]);
 
+  const hasSettledPageCache = useCallback((pageId: string) => {
+    if (!dashboard) return false;
+    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId);
+    if (targetCharts.length === 0) return true;
+    return targetCharts.every((dashboardChart) => (
+      Boolean(chartData[dashboardChart.chart_id]) || Boolean(chartErrors[dashboardChart.chart_id])
+    ));
+  }, [chartData, chartErrors, dashboard]);
+
+  const handlePageSelect = useCallback(async (pageId: string) => {
+    if (pageId === activePageId || pendingPageId === pageId) {
+      return;
+    }
+
+    if (crossFilterState) {
+      skipCrossFilterRefreshRef.current = pageId;
+    }
+
+    if (hasSettledPageCache(pageId)) {
+      skipNextPageLoadRef.current = pageId;
+      startTransition(() => setCurrentPageId(pageId));
+      return;
+    }
+
+    const storedSession = getPublicSession(token) ?? undefined;
+    setPendingPageId(pageId);
+    const ready = await fetchChartsForPage(pageId, storedSession, null);
+    setPendingPageId((current) => (current === pageId ? null : current));
+    if (!ready) {
+      return;
+    }
+
+    skipNextPageLoadRef.current = pageId;
+    startTransition(() => setCurrentPageId(pageId));
+  }, [activePageId, crossFilterState, fetchChartsForPage, hasSettledPageCache, pendingPageId, token]);
+
   if (!mounted || pageState === 'unknown' || loading) {
     return (
-      <div className="flex min-h-[200px] items-center justify-center bg-white">
-        <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
-        <span className="ml-2 text-xs text-gray-500">Loading...</span>
+      <div className="flex min-h-[240px] items-center justify-center bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_100%)] px-4 py-6">
+        <div className="rounded-[24px] border border-white/80 bg-white/90 px-6 py-8 text-center shadow-[0_28px_80px_-56px_rgba(15,23,42,0.55)]">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950 text-white">
+            <Loader2 className="h-5 w-5 animate-spin" />
+          </div>
+          <p className="mt-3 text-sm font-semibold text-slate-950">Loading embedded dashboard</p>
+          <p className="mt-1 text-xs text-slate-500">Preparing the published report surface.</p>
+        </div>
       </div>
     );
   }
@@ -474,11 +567,11 @@ export default function EmbedDashboardPage() {
 
   if (pageState === 'error' || !dashboard) {
     return (
-      <div className="flex min-h-[200px] items-center justify-center bg-white px-4 text-center">
-        <div>
-          <AlertTriangle className="mx-auto mb-2 h-8 w-8 text-amber-400" />
-          <p className="text-sm font-medium text-gray-700">Dashboard unavailable</p>
-          <p className="mt-1 text-xs text-gray-400">
+      <div className="flex min-h-[240px] items-center justify-center bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_100%)] px-4 py-6 text-center">
+        <div className="rounded-[24px] border border-white/80 bg-white/90 px-6 py-8 shadow-[0_28px_80px_-56px_rgba(15,23,42,0.55)]">
+          <AlertTriangle className="mx-auto mb-3 h-8 w-8 text-amber-400" />
+          <p className="text-sm font-medium text-slate-800">Dashboard unavailable</p>
+          <p className="mt-1 text-xs text-slate-500">
             {error ?? 'This link may have expired or been revoked.'}
           </p>
         </div>
@@ -498,138 +591,163 @@ export default function EmbedDashboardPage() {
   });
 
   return (
-    <div className="bg-white" style={{ minHeight: '200px' }}>
+    <div className="px-3 py-3 text-slate-900 sm:px-4" style={{ ...publicTheme.pageStyle, minHeight: '220px' }}>
       {pageState === 'reauth' && <SessionExpiredBanner onReauth={handleReauth} />}
 
-      {dashboard.name && (
-        <div className="border-b border-gray-100 px-4 py-2.5">
-          <h1 className="truncate text-sm font-semibold text-gray-800">{dashboard.name}</h1>
-          {dashboard.description && (
-            <p className="truncate text-xs text-gray-400">{dashboard.description}</p>
-          )}
-        </div>
-      )}
-
-      {dashboardPages.length > 1 && (
-        <div className="border-b border-gray-100 px-4 py-2">
-          <div className="flex gap-2 overflow-x-auto">
-            {dashboardPages.map((page) => (
-              <button
-                key={page.id}
-                type="button"
-                onClick={() => setCurrentPageId(page.id)}
-                className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
-                  page.id === activePageId
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}
-              >
-                {page.name}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {(availableFilterColumns.length > 0 || draftViewerFilters.length > 0) && (
-        <div className="px-4 pt-3">
-          <DashboardFilterBar
-            columns={availableFilterColumns}
-            columnChartCount={availableFilterChartCount}
-            distinctValues={resolvedDistinctValues}
-            filters={draftViewerFilters}
-            onFiltersChange={setDraftViewerFilters}
-            hasPendingChanges={hasPendingFilterChanges}
-            onApply={handleApplyFilters}
-            onReset={handleResetFilters}
-            isApplying={isApplyingFilters}
-          />
-        </div>
-      )}
-
-      {crossFilterState && (
-        <div className="px-4 pt-3">
-          <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-            <span className="font-medium">
-              Cross-filter from {visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.layout?.custom_title
-                ?? visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.chart?.name
-                ?? `Chart ${crossFilterState.sourceChartId}`}:
-            </span>
-            <span className="truncate">
-              {getFilterDisplayLabel(crossFilterState.filter)} = {formatFilterValue(crossFilterState.filter.value)}
-            </span>
-            <button
-              type="button"
-              onClick={() => setCrossFilterState(null)}
-              className="ml-auto rounded-md border border-amber-300 px-2 py-0.5 text-[11px] font-medium text-amber-800 hover:bg-amber-100"
-            >
-              Clear
-            </button>
-          </div>
-        </div>
-      )}
-
-      {chartLoadError && (
-        <div className="px-4 pt-3">
-          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-            {chartLoadError}
-          </div>
-        </div>
-      )}
-
-      {chartsLoading && !isApplyingFilters && (
-        <div className="px-4 pt-3">
-          <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-500">
-            Refreshing charts...
-          </div>
-        </div>
-      )}
-
-      <div className="px-2 py-3">
-        {visibleDashboardCharts.length === 0 ? (
-          <div className="flex h-48 items-center justify-center rounded-lg border-2 border-dashed border-gray-200 bg-gray-50">
-            <p className="text-xs text-gray-400">No charts on this page yet.</p>
-          </div>
-        ) : (
-          <ResponsiveGridLayout
-            className="layout"
-            layouts={{ lg: layouts }}
-            breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
-            cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
-            rowHeight={80}
-            isDraggable={false}
-            isResizable={false}
-            compactType="vertical"
+      <div className="w-full overflow-visible rounded-[24px] border backdrop-blur" style={publicTheme.shellStyle}>
+        {showControlSurface && (
+          <section
+            className="border-b px-3 py-3 sm:px-4 sm:py-4"
+            style={publicTheme.panelStyle}
           >
-            {visibleDashboardCharts.map((dashboardChart: DashboardChart) => {
-              const chart = dashboardChart.chart;
-              const payload = chartData[dashboardChart.chart_id];
-              const chartError = chartErrors[dashboardChart.chart_id];
-              const title = dashboardChart.layout.custom_title ?? chart?.name ?? '';
+            {(showEmbedHeader || showPageTabs || showFilterControls) && (
+              <div className="flex flex-col gap-3">
+                {showEmbedHeader && (
+                  <h1 className="truncate text-lg font-semibold tracking-tight text-slate-950">{presentationTitle}</h1>
+                )}
 
-              return (
-                <div key={dashboardChart.id.toString()} className="h-full">
-                  <ChartErrorBoundary chartId={dashboardChart.chart_id}>
-                    <ReadonlyChartTile
-                      chart={chart}
-                      chartData={payload}
-                      error={chartError}
-                      title={title}
-                      layout={dashboardChart.layout}
-                      compact
-                      onSelectCrossFilter={(filter) => handleCrossFilterChange(dashboardChart.chart_id, filter)}
-                      isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
-                    />
-                  </ChartErrorBoundary>
+                {showPageTabs && (
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {dashboardPages.map((page) => {
+                      const isActive = page.id === activePageId;
+                      const isPending = page.id === pendingPageId;
+                      return (
+                        <button
+                        key={page.id}
+                        type="button"
+                        onClick={() => {
+                          void handlePageSelect(page.id);
+                        }}
+                        className="inline-flex whitespace-nowrap rounded-full border px-3 py-1.5 text-[11px] font-medium transition"
+                        style={isActive ? publicTheme.pageTabActiveStyle : isPending ? publicTheme.accentPillStyle : publicTheme.pageTabInactiveStyle}
+                        disabled={isPending}
+                      >
+                        {isPending && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
+                        {page.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {showFilterControls && (
+                  <div className="[&>div]:mb-0">
+                    <DashboardFilterBar
+                      columns={availableFilterColumns}
+                      columnChartCount={availableFilterChartCount}
+                      distinctValues={resolvedDistinctValues}
+                    filters={draftViewerFilters}
+                    onFiltersChange={setDraftViewerFilters}
+                    hasPendingChanges={hasPendingFilterChanges}
+                    onApply={handleApplyFilters}
+                    onReset={handleResetFilters}
+                    isApplying={isApplyingFilters}
+                    initialExpanded={false}
+                  />
                 </div>
-              );
-            })}
-          </ResponsiveGridLayout>
-        )}
-      </div>
+              )}
+              </div>
+            )}
 
-      <div className="px-4 pb-3 text-right">
-        <span className="text-[9px] text-gray-300">Powered by AppBI</span>
+            {showLiveState && (
+              <div className={showEmbedHeader || showPageTabs || showFilterControls ? 'mt-4 space-y-3' : 'space-y-3'}>
+                {pendingPageId && (
+                  <div className="rounded-[20px] border px-3 py-2.5 text-xs text-slate-500" style={publicTheme.neutralPillStyle}>
+                    Opening next page...
+                  </div>
+                )}
+
+                {crossFilterState && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-[20px] border px-3 py-2.5 text-xs" style={publicTheme.accentPillStyle}>
+                    <span className="font-medium">
+                      Cross-filter from {visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.layout?.custom_title
+                        ?? visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.chart?.name
+                        ?? `Chart ${crossFilterState.sourceChartId}`}:
+                    </span>
+                    <span className="truncate">
+                      {getFilterDisplayLabel(crossFilterState.filter)} = {formatFilterValue(crossFilterState.filter.value)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setCrossFilterState(null)}
+                      className="ml-auto rounded-full border px-2.5 py-1 text-[11px] font-medium"
+                      style={publicTheme.neutralPillStyle}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
+
+                {chartLoadError && (
+                  <div className="rounded-[20px] border border-amber-200 bg-amber-50/85 px-3 py-2.5 text-xs text-amber-800">
+                    {chartLoadError}
+                  </div>
+                )}
+
+                {chartsLoading && !isApplyingFilters && (
+                  <div className="rounded-[20px] border px-3 py-2.5 text-xs text-slate-500" style={publicTheme.neutralPillStyle}>
+                    Refreshing charts...
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
+        <div className="px-2 py-3 sm:px-3 sm:py-4">
+          <section
+            className={`rounded-[24px] border p-3 transition-opacity duration-200 sm:p-4 ${pendingPageId ? 'opacity-70' : 'opacity-100'}`}
+            style={publicTheme.canvasFrameStyle}
+          >
+            {visibleDashboardCharts.length === 0 ? (
+              <div className="flex h-48 items-center justify-center rounded-[24px] border-2 border-dashed border-slate-200 bg-slate-50/80">
+                <p className="text-xs text-slate-400">No charts on this page yet.</p>
+              </div>
+            ) : (
+              <div
+                className={`rounded-[24px] ${publicTheme.density.canvasPaddingClass}`}
+                style={publicTheme.canvasInnerStyle}
+              >
+                <ResponsiveGridLayout
+                  className="layout"
+                  layouts={{ lg: layouts }}
+                  breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
+                  cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
+                  rowHeight={80}
+                  isDraggable={false}
+                  isResizable={false}
+                  compactType="vertical"
+                >
+                  {visibleDashboardCharts.map((dashboardChart: DashboardChart) => {
+                    const chart = dashboardChart.chart;
+                    const payload = chartData[dashboardChart.chart_id];
+                    const chartError = chartErrors[dashboardChart.chart_id];
+                    const title = dashboardChart.layout.custom_title ?? chart?.name ?? '';
+
+                    return (
+                      <div key={dashboardChart.id.toString()} className="h-full">
+                        <ChartErrorBoundary chartId={dashboardChart.chart_id}>
+                          <ReadonlyChartTile
+                            chart={chart}
+                            chartData={payload}
+                            error={chartError}
+                            title={title}
+                            layout={dashboardChart.layout}
+                            compact
+                            showChartTypeLabel={false}
+                            onSelectCrossFilter={(filter) => handleCrossFilterChange(dashboardChart.chart_id, filter)}
+                            isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
+                          />
+                        </ChartErrorBoundary>
+                      </div>
+                    );
+                  })}
+                </ResponsiveGridLayout>
+              </div>
+            )}
+          </section>
+        </div>
+
       </div>
     </div>
   );

@@ -37,6 +37,7 @@ interface DashboardFilterBarProps {
   onApply?: () => void;
   onReset?: () => void;
   isApplying?: boolean;
+  initialExpanded?: boolean;
 }
 
 export function DashboardFilterBar({
@@ -49,8 +50,9 @@ export function DashboardFilterBar({
   onApply,
   onReset,
   isApplying = false,
+  initialExpanded = true,
 }: DashboardFilterBarProps) {
-  const [isExpanded, setIsExpanded] = useState(true);
+  const [isExpanded, setIsExpanded] = useState(initialExpanded);
   const [addingField, setAddingField] = useState(false);
   const [addFilterSearch, setAddFilterSearch] = useState('');
   const [searchTerms, setSearchTerms] = useState<Record<string, string>>({});
@@ -349,11 +351,11 @@ export function DashboardFilterBar({
 
             {addingField && addableColumns.length > 0 && (
               <>
-                <div className="fixed inset-0 z-10" onClick={() => {
+                <div className="fixed inset-0 z-30" onClick={() => {
                   setAddingField(false);
                   setAddFilterSearch('');
                 }} />
-                <div className="absolute right-0 top-full mt-1 z-20 bg-white border border-gray-200 rounded-lg shadow-lg w-80 max-h-[28rem] overflow-y-auto">
+                <div className="absolute right-0 top-full z-40 mt-1 w-80 max-h-[28rem] overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
                   <div className="p-2 border-b border-gray-100">
                     <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Add a filter</p>
                   </div>

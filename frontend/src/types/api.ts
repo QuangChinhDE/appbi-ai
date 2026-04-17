@@ -361,6 +361,25 @@ export interface DashboardFilterField {
   sharedAcrossDataset?: boolean;
 }
 
+export interface PublicLinkAppearanceConfig {
+  preset?: 'briefing' | 'editorial' | 'minimal';
+  accent_preset?: 'sky' | 'teal' | 'amber' | 'rose' | 'slate';
+  accent_color?: string | null;
+  density?: 'comfortable' | 'compact';
+  canvas_style?: 'soft' | 'grid' | 'plain';
+  embed_header_mode?: 'full' | 'compact' | 'hidden';
+  hero_label?: string | null;
+  headline?: string | null;
+  summary?: string | null;
+  footer_note?: string | null;
+  show_summary?: boolean;
+  show_stats?: boolean;
+  show_page_tabs?: boolean;
+  allow_viewer_filters?: boolean;
+  show_footer?: boolean;
+  show_chart_type_label?: boolean;
+}
+
 // --- Chart Metadata (semantic/business layer) ---
 export interface ChartMetadata {
   id: number;
@@ -424,6 +443,8 @@ export interface Dashboard {
   public_filters_config?: any[];
   pages_config?: DashboardPageConfig[];
   available_filter_fields?: DashboardFilterField[];
+  public_link_name?: string | null;
+  public_link_appearance?: PublicLinkAppearanceConfig | null;
 }
 
 export interface DashboardCreate {

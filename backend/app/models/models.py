@@ -152,6 +152,7 @@ class DashboardPublicLink(Base):
     name = Column(String(255), nullable=False)
     token = Column(String(64), nullable=False, unique=True, index=True)
     filters_config = Column(JSON, nullable=True, default=list)
+    appearance_config = Column(JSON, nullable=True, default=dict)
     is_active = Column(Boolean, nullable=False, default=True)
 
     # Security & governance

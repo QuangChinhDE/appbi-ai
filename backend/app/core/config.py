@@ -115,6 +115,9 @@ class Settings(BaseSettings):
     BQ_PREVIEW_PARTITION_MAX_LOOKBACK_DAYS: int = 365   # fallback when partition metadata is unavailable
     LIVE_QUERY_CACHE_TTL: int = 300                     # 5 minutes
     LIVE_QUERY_CACHE_MAX_SIZE: int = 256                # max entries
+    LIVE_QUERY_SHARED_CACHE_ENABLED: bool = True        # persistent cross-reload/process cache
+    LIVE_QUERY_SHARED_CACHE_DB_PATH: str = ""           # defaults to DATA_DIR/live_query_cache.sqlite3
+    LIVE_QUERY_SHARED_CACHE_MAX_SIZE: int = 4096        # global shared-cache row cap
     ENABLE_DATASOURCE_SYNC: bool = False                # live-query-first mode
 
     @property
@@ -153,6 +156,19 @@ class Settings(BaseSettings):
         if not keys and self.OPENROUTER_API_KEY.strip():
             keys = [self.OPENROUTER_API_KEY.strip()]
         return keys
+
+    @property
+    def live_query_shared_cache_db_path(self) -> pathlib.Path:
+        """Resolved absolute path for the shared live-query cache database."""
+        raw = self.LIVE_QUERY_SHARED_CACHE_DB_PATH.strip()
+        if raw:
+            path = pathlib.Path(raw)
+            if not path.is_absolute():
+                path = _PROJECT_ROOT / path
+        else:
+            path = self.data_dir_path / "live_query_cache.sqlite3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
     
     model_config = SettingsConfigDict(
         env_file=_ROOT_ENV,

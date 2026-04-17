@@ -171,6 +171,28 @@ def _wrap_live_sql_relation(relation: str) -> str:
     return text
 
 
+def _render_live_join_condition(
+    join_def: dict[str, Any],
+    join_alias: str,
+    *,
+    base_alias: str = "_appbi_base",
+) -> str | None:
+    sql_on = str(join_def.get("sql_on") or "").strip()
+    join_view = str(join_def.get("view") or "").strip()
+    if sql_on and join_view:
+        return (
+            sql_on
+            .replace("${TABLE}", base_alias)
+            .replace(f"${{{join_view}}}", join_alias)
+        )
+
+    join_from_column = str(join_def.get("from_column") or "").strip()
+    join_to_column = str(join_def.get("to_column") or "").strip()
+    if join_from_column and join_to_column:
+        return f"{base_alias}.{join_from_column} = {join_alias}.{join_to_column}"
+    return None
+
+
 def _adapt_live_sql_for_semantic_filters(
     db: Session,
     datasource,
@@ -276,14 +298,23 @@ def _adapt_live_sql_for_semantic_filters(
             join_relation = _build_live_relation_for_semantic_view(db, datasource, semantic_view)
             if not join_relation:
                 continue
-            join_from_column = str(join_def.get("from_column"))
-            join_to_column = str(join_def.get("to_column"))
-            if (
-                join_to_column
-                and not _semantic_view_has_field(semantic_view, join_to_column)
-                and _semantic_view_has_field(semantic_view, join_from_column)
-            ):
-                join_to_column = join_from_column
+            join_condition = _render_live_join_condition(join_def, f"_appbi_sem_join_{join_index}")
+            if not join_condition:
+                join_from_column = str(join_def.get("from_column"))
+                join_to_column = str(join_def.get("to_column"))
+                if (
+                    join_to_column
+                    and not _semantic_view_has_field(semantic_view, join_to_column)
+                    and _semantic_view_has_field(semantic_view, join_from_column)
+                ):
+                    join_to_column = join_from_column
+                join_condition = (
+                    f"_appbi_base.{join_from_column} = _appbi_sem_join_{join_index}.{join_to_column}"
+                    if join_from_column and join_to_column
+                    else None
+                )
+            if not join_condition:
+                continue
             join_alias = f"_appbi_sem_join_{join_index}"
             join_index += 1
             join_alias_by_view[semantic_view_name] = join_alias
@@ -292,8 +323,7 @@ def _adapt_live_sql_for_semantic_filters(
                     "view": semantic_view_name,
                     "alias": join_alias,
                     "relation": join_relation,
-                    "from_column": join_from_column,
-                    "to_column": join_to_column,
+                    "condition": join_condition,
                 }
             )
 
@@ -327,7 +357,7 @@ def _adapt_live_sql_for_semantic_filters(
     join_clauses = [
         (
             f'LEFT JOIN {_wrap_live_sql_relation(join_spec["relation"])} AS {join_spec["alias"]} '
-            f'ON _appbi_base.{join_spec["from_column"]} = {join_spec["alias"]}.{join_spec["to_column"]}'
+            f'ON {join_spec["condition"]}'
         )
         for join_spec in join_specs
     ]

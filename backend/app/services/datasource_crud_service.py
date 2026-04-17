@@ -151,6 +151,17 @@ class DataSourceCRUDService:
 
             db.commit()
             db.refresh(db_data_source)
+
+            if config_refreshed:
+                from app.services import query_cache
+
+                cleared = query_cache.invalidate_datasource(db_data_source.id)
+                logger.info(
+                    "Invalidated live query cache for datasource id=%s (%s entries)",
+                    db_data_source.id,
+                    cleared,
+                )
+
             logger.info(f"Updated data source: {db_data_source.name}")
             return db_data_source
         except IntegrityError:

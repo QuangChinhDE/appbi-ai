@@ -245,6 +245,7 @@ class PublicLinkCreate(BaseModel):
     """Schema for creating a named public link."""
     name: str = Field(..., min_length=1, max_length=255)
     filters_config: Optional[List[Dict[str, Any]]] = None
+    appearance_config: Optional[Dict[str, Any]] = None
     password: Optional[str] = Field(None, min_length=1, max_length=128)
 
 
@@ -252,6 +253,7 @@ class PublicLinkUpdate(BaseModel):
     """Schema for updating a public link."""
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     filters_config: Optional[List[Dict[str, Any]]] = None
+    appearance_config: Optional[Dict[str, Any]] = None
     is_active: Optional[bool] = None
     # None = no change; empty string = clear password; non-empty = new password
     password: Optional[str] = Field(None, max_length=128)
@@ -264,6 +266,7 @@ class PublicLinkResponse(BaseModel):
     name: str
     token: str
     filters_config: Optional[List[Dict[str, Any]]] = None
+    appearance_config: Optional[Dict[str, Any]] = None
     is_active: bool
     has_password: bool = False
     access_count: int
@@ -298,6 +301,8 @@ class DashboardResponse(DashboardBase):
     filters_config: Optional[List[Dict[str, Any]]] = None
     public_filters_config: Optional[List[Dict[str, Any]]] = None
     available_filter_fields: Optional[List[Dict[str, Any]]] = None
+    public_link_name: Optional[str] = None
+    public_link_appearance: Optional[Dict[str, Any]] = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -525,11 +525,10 @@ def build_calendar_role_display_name(base_label: str, column_name: str) -> str:
 
 
 def build_calendar_join_sql(from_column: str, column_type: str, role_view_name: str) -> str:
-    normalized = normalize_column_type(column_type)
-    if normalized == "date":
-        lhs = f"${{TABLE}}.{from_column}"
-    else:
-        lhs = f"CAST(${{TABLE}}.{from_column} AS DATE)"
+    # Always normalize temporal joins to DATE. This avoids runtime mismatches
+    # such as BigQuery TIMESTAMP = DATE when upstream metadata or overrides mark
+    # a timestamp-like source column as a plain date.
+    lhs = f"CAST(${{TABLE}}.{from_column} AS DATE)"
     return f"{lhs} = ${{{role_view_name}}}.date"
 
 

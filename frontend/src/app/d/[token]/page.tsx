@@ -1,13 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import {
   AlertTriangle,
-  BarChart3,
   Loader2,
   Lock,
   RefreshCw,
@@ -31,6 +30,7 @@ import {
 } from '@/lib/dashboard-pages';
 import { getColumnKey, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
 import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
+import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 
@@ -67,24 +67,28 @@ function PasswordGate({
   const [show, setShow] = useState(false);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-50/90 backdrop-blur-sm">
-      <div className="mx-4 w-full max-w-sm overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl">
-        <div className="bg-gradient-to-br from-blue-600 to-purple-600 px-6 py-5 text-center text-white">
-          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-white/20">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[radial-gradient(circle_at_top,rgba(14,165,233,0.16),transparent_34%),linear-gradient(180deg,rgba(248,250,252,0.96),rgba(241,245,249,0.98))] px-4 py-8 backdrop-blur-sm">
+      <div className="mx-4 w-full max-w-md overflow-hidden rounded-[28px] border border-white/80 bg-white/92 shadow-[0_40px_110px_-48px_rgba(15,23,42,0.55)]">
+        <div className="relative overflow-hidden border-b border-slate-200/70 bg-[linear-gradient(135deg,rgba(240,249,255,0.95),rgba(236,253,245,0.92))] px-6 py-6 text-center text-slate-900">
+          <div className="absolute inset-x-10 top-0 h-20 rounded-full bg-sky-200/30 blur-3xl" />
+          <div className="relative mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-950 text-white shadow-lg shadow-slate-900/15">
             <Lock className="h-6 w-6" />
           </div>
-          <h1 className="text-base font-semibold">
+          <p className="relative text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+            Protected shared report
+          </p>
+          <h1 className="relative mt-2 text-xl font-semibold tracking-tight text-slate-950">
             {isReauth ? 'Session expired' : 'Password protected'}
           </h1>
-          <p className="mt-1 text-xs text-blue-100">
+          <p className="relative mt-2 text-sm leading-6 text-slate-600">
             {isReauth
               ? 'Your 2-hour session ended. Enter the password again to continue.'
               : 'This shared dashboard requires a password to view.'}
           </p>
         </div>
 
-        <div className="px-6 py-5">
-          <label className="mb-1.5 block text-sm font-medium text-gray-700">Password</label>
+        <div className="px-6 py-6">
+          <label className="mb-1.5 block text-sm font-medium text-slate-700">Password</label>
           <div className="relative">
             <input
               type={show ? 'text' : 'password'}
@@ -95,21 +99,21 @@ function PasswordGate({
                   onSubmit(value);
                 }
               }}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 pr-10 text-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-400/30"
+              className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 pr-11 text-sm text-slate-700 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-4 focus:ring-sky-100"
               placeholder="Enter password"
               autoFocus
             />
             <button
               type="button"
               onClick={() => setShow((current) => !current)}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
             >
               {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
 
           {error && (
-            <p className="mt-2 flex items-center gap-1 text-xs text-red-600">
+            <p className="mt-3 flex items-center gap-1 text-xs text-rose-600">
               <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
               {error}
             </p>
@@ -118,14 +122,14 @@ function PasswordGate({
           <button
             onClick={() => value && onSubmit(value)}
             disabled={submitting || !value}
-            className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+            className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 py-3 text-sm font-medium text-white transition-colors hover:bg-slate-800 disabled:opacity-50"
           >
             {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />}
             {submitting ? 'Verifying...' : isReauth ? 'Continue viewing' : 'Unlock dashboard'}
           </button>
 
-          <p className="mt-3 text-center text-[11px] text-gray-400">
-            Sessions last 2 hours
+          <p className="mt-4 text-center text-[11px] text-slate-400">
+            Sessions last 2 hours and keep the report read-only.
           </p>
         </div>
       </div>
@@ -135,18 +139,19 @@ function PasswordGate({
 
 function SessionExpiredOverlay({ onReauth }: { onReauth: () => void }) {
   return (
-    <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/30 pb-12 backdrop-blur-[2px] sm:items-center sm:pb-0">
-      <div className="mx-4 w-full max-w-sm rounded-2xl border border-gray-200 bg-white px-6 py-6 text-center shadow-2xl">
-        <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-amber-100">
+    <div className="fixed inset-0 z-40 flex items-end justify-center bg-slate-950/18 px-4 pb-8 backdrop-blur-[3px] sm:items-center sm:pb-0">
+      <div className="mx-4 w-full max-w-md rounded-[28px] border border-white/80 bg-white/92 px-6 py-6 text-center shadow-[0_36px_100px_-46px_rgba(15,23,42,0.55)]">
+        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-100">
           <RefreshCw className="h-5 w-5 text-amber-600" />
         </div>
-        <h2 className="text-sm font-semibold text-gray-900">Session expired</h2>
-        <p className="mt-1 text-xs text-gray-500">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Authentication needed</p>
+        <h2 className="mt-2 text-lg font-semibold text-slate-950">Session expired</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-600">
           Your 2-hour viewing session ended. Re-enter the password to continue.
         </p>
         <button
           onClick={onReauth}
-          className="mt-4 w-full rounded-lg bg-blue-600 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+          className="mt-5 w-full rounded-2xl bg-slate-950 py-3 text-sm font-medium text-white transition-colors hover:bg-slate-800"
         >
           Re-enter password
         </button>
@@ -172,6 +177,7 @@ export default function PublicDashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [chartLoadError, setChartLoadError] = useState<string | null>(null);
   const [currentPageId, setCurrentPageId] = useState<string | null>(null);
+  const [pendingPageId, setPendingPageId] = useState<string | null>(null);
   const [draftViewerFilters, setDraftViewerFilters] = useState<BaseFilter[]>([]);
   const [appliedViewerFilters, setAppliedViewerFilters] = useState<BaseFilter[]>([]);
   const [isApplyingFilters, setIsApplyingFilters] = useState(false);
@@ -185,6 +191,9 @@ export default function PublicDashboardPage() {
 
   const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chartRequestIdRef = useRef(0);
+  const skipNextPageLoadRef = useRef<string | null>(null);
+  const skipCrossFilterRefreshRef = useRef<string | null>(null);
+  const appliedFilterSignatureRef = useRef(JSON.stringify([] as BaseFilter[]));
 
   const clearSessionTimer = useCallback(() => {
     if (sessionTimerRef.current) {
@@ -256,6 +265,16 @@ export default function PublicDashboardPage() {
   }, [activePageId, currentPageId]);
 
   useEffect(() => {
+    const nextSignature = JSON.stringify(appliedViewerFilters);
+    if (appliedFilterSignatureRef.current === nextSignature) {
+      return;
+    }
+    appliedFilterSignatureRef.current = nextSignature;
+    setChartData({});
+    setChartErrors({});
+  }, [appliedViewerFilters]);
+
+  useEffect(() => {
     if (!crossFilterState) return;
     const sourceExists = visibleDashboardCharts.some(
       (dashboardChart) => dashboardChart.chart_id === crossFilterState.sourceChartId,
@@ -285,35 +304,32 @@ export default function PublicDashboardPage() {
     });
   }, []);
 
-  const loadVisibleCharts = useCallback(async (sessionToken?: string) => {
-    if (!dashboard) return;
+  const fetchChartsForPage = useCallback(async (
+    pageId: string,
+    sessionToken?: string,
+    pageCrossFilterState: typeof crossFilterState = crossFilterState,
+  ) => {
+    if (!dashboard) return false;
 
     const requestId = ++chartRequestIdRef.current;
-    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId);
-    const targetChartIds = new Set(targetCharts.map((chart) => chart.chart_id));
+    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId);
 
     setChartsLoading(true);
     setChartLoadError(null);
-    setChartErrors((current) => Object.fromEntries(
-      Object.entries(current).filter(([chartId]) => targetChartIds.has(Number(chartId))),
-    ));
-    setChartData((current) => Object.fromEntries(
-      Object.entries(current).filter(([chartId]) => targetChartIds.has(Number(chartId))),
-    ));
 
     if (!targetCharts.length) {
       setChartsLoading(false);
       setIsApplyingFilters(false);
-      return;
+      return true;
     }
 
     try {
       const entries = await Promise.all(
         targetCharts.map(async (dashboardChart) => {
-          const requestFilters = crossFilterState?.sourceChartId === dashboardChart.chart_id
+          const requestFilters = pageCrossFilterState?.sourceChartId === dashboardChart.chart_id
             ? appliedViewerFilters
-            : crossFilterState
-              ? [...appliedViewerFilters, crossFilterState.filter]
+            : pageCrossFilterState
+              ? [...appliedViewerFilters, pageCrossFilterState.filter]
               : appliedViewerFilters;
           try {
             const data = await publicDashboardApi.getChartData(
@@ -335,48 +351,67 @@ export default function PublicDashboardPage() {
       );
 
       if (requestId !== chartRequestIdRef.current) {
-        return;
+        return false;
       }
 
       const unauthorized = entries.find((entry) => (entry as any).status === 401);
       if (unauthorized) {
         clearPublicSession(token);
         setPageState('reauth');
-        return;
+        return false;
       }
 
-      const nextData: Record<number, ChartDataResponse> = {};
-      const nextErrors: Record<number, string> = {};
-
-      for (const entry of entries) {
-        if (entry.data) {
-          nextData[entry.chartId] = entry.data;
-        } else if (entry.error) {
-          nextErrors[entry.chartId] = entry.error;
+      setChartData((current) => {
+        const next = { ...current };
+        for (const entry of entries) {
+          if (entry.data) {
+            next[entry.chartId] = entry.data;
+          } else {
+            delete next[entry.chartId];
+          }
         }
-      }
+        return next;
+      });
+      setChartErrors((current) => {
+        const next = { ...current };
+        for (const entry of entries) {
+          if (entry.error) {
+            next[entry.chartId] = entry.error;
+          } else {
+            delete next[entry.chartId];
+          }
+        }
+        return next;
+      });
 
-      setChartData(nextData);
-      setChartErrors(nextErrors);
-      if (Object.keys(nextErrors).length > 0) {
+      if (entries.some((entry) => entry.error)) {
         setChartLoadError('Some charts could not be loaded in this shared view.');
       }
       if (sessionToken) {
         scheduleSessionExpiry(token);
       }
+      return true;
     } finally {
       if (requestId === chartRequestIdRef.current) {
         setChartsLoading(false);
         setIsApplyingFilters(false);
       }
     }
-  }, [activePageId, appliedViewerFilters, crossFilterState, dashboard, scheduleSessionExpiry, token]);
+  }, [appliedViewerFilters, crossFilterState, dashboard, scheduleSessionExpiry, token]);
 
   useEffect(() => {
     if (!dashboard || pageState !== 'loaded') return;
+    if (skipNextPageLoadRef.current === activePageId) {
+      skipNextPageLoadRef.current = null;
+      return;
+    }
+    if (!crossFilterState && skipCrossFilterRefreshRef.current === activePageId) {
+      skipCrossFilterRefreshRef.current = null;
+      return;
+    }
     const storedSession = getPublicSession(token);
-    loadVisibleCharts(storedSession ?? undefined);
-  }, [dashboard, loadVisibleCharts, pageState, token]);
+    fetchChartsForPage(activePageId, storedSession ?? undefined, crossFilterState);
+  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, pageState, token]);
 
   const handlePasswordSubmit = useCallback(async (password: string) => {
     setAuthSubmitting(true);
@@ -440,6 +475,19 @@ export default function PublicDashboardPage() {
     () => JSON.stringify(draftViewerFilters) !== JSON.stringify(appliedViewerFilters),
     [appliedViewerFilters, draftViewerFilters],
   );
+  const publicTheme = useMemo(
+    () => buildPublicLinkTheme(dashboard?.public_link_appearance),
+    [dashboard?.public_link_appearance],
+  );
+  const appearance = publicTheme.appearance;
+  const presentationTitle = appearance.headline
+    ?? dashboard?.public_link_name
+    ?? dashboard?.name
+    ?? 'Shared dashboard';
+  const viewerFiltersEnabled = appearance.allow_viewer_filters;
+  const showPageTabs = appearance.show_page_tabs && dashboardPages.length > 1;
+  const showFilterControls = viewerFiltersEnabled && (availableFilterColumns.length > 0 || draftViewerFilters.length > 0);
+  const showLiveState = Boolean(pendingPageId || crossFilterState || chartLoadError || (chartsLoading && !isApplyingFilters));
 
   const handleApplyFilters = useCallback(() => {
     setIsApplyingFilters(true);
@@ -450,11 +498,54 @@ export default function PublicDashboardPage() {
     setDraftViewerFilters(appliedViewerFilters);
   }, [appliedViewerFilters]);
 
+  const hasSettledPageCache = useCallback((pageId: string) => {
+    if (!dashboard) return false;
+    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId);
+    if (targetCharts.length === 0) return true;
+    return targetCharts.every((dashboardChart) => (
+      Boolean(chartData[dashboardChart.chart_id]) || Boolean(chartErrors[dashboardChart.chart_id])
+    ));
+  }, [chartData, chartErrors, dashboard]);
+
+  const handlePageSelect = useCallback(async (pageId: string) => {
+    if (pageId === activePageId || pendingPageId === pageId) {
+      return;
+    }
+
+    if (crossFilterState) {
+      skipCrossFilterRefreshRef.current = pageId;
+    }
+
+    if (hasSettledPageCache(pageId)) {
+      skipNextPageLoadRef.current = pageId;
+      startTransition(() => setCurrentPageId(pageId));
+      return;
+    }
+
+    const storedSession = getPublicSession(token) ?? undefined;
+    setPendingPageId(pageId);
+    const ready = await fetchChartsForPage(pageId, storedSession, null);
+    setPendingPageId((current) => (current === pageId ? null : current));
+    if (!ready) {
+      return;
+    }
+
+    skipNextPageLoadRef.current = pageId;
+    startTransition(() => setCurrentPageId(pageId));
+  }, [activePageId, crossFilterState, fetchChartsForPage, hasSettledPageCache, pendingPageId, token]);
+
   if (!mounted || pageState === 'unknown' || loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50">
-        <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
-        <span className="ml-3 text-sm text-gray-600">Loading dashboard...</span>
+      <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_45%,#ffffff_100%)] px-4">
+        <div className="w-full max-w-md rounded-[28px] border border-white/80 bg-white/85 px-6 py-10 text-center shadow-[0_40px_100px_-52px_rgba(15,23,42,0.55)] backdrop-blur">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-950 text-white">
+            <Loader2 className="h-6 w-6 animate-spin" />
+          </div>
+          <h1 className="mt-4 text-lg font-semibold text-slate-950">Preparing shared dashboard</h1>
+          <p className="mt-2 text-sm text-slate-500">
+            Loading charts, pages, and viewer filters for the published report.
+          </p>
+        </div>
       </div>
     );
   }
@@ -472,11 +563,12 @@ export default function PublicDashboardPage() {
 
   if (pageState === 'error' || !dashboard) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
-        <div className="max-w-md text-center">
+      <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_45%,#ffffff_100%)] px-4">
+        <div className="max-w-md rounded-[28px] border border-white/80 bg-white/90 px-8 py-10 text-center shadow-[0_40px_100px_-52px_rgba(15,23,42,0.55)] backdrop-blur">
           <AlertTriangle className="mx-auto mb-4 h-10 w-10 text-amber-500" />
-          <h1 className="text-lg font-semibold text-gray-900">Dashboard not available</h1>
-          <p className="mt-2 text-sm text-gray-500">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Shared link unavailable</p>
+          <h1 className="mt-2 text-xl font-semibold text-slate-950">Dashboard not available</h1>
+          <p className="mt-3 text-sm leading-6 text-slate-500">
             {error ?? 'This shared link may have expired or been revoked.'}
           </p>
         </div>
@@ -496,140 +588,164 @@ export default function PublicDashboardPage() {
   });
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen text-slate-900" style={publicTheme.pageStyle}>
       {pageState === 'reauth' && (
         <SessionExpiredOverlay onReauth={handleReauth} />
       )}
 
-      <header className="border-b border-gray-200 bg-white px-6 py-4">
-        <div className="mx-auto flex max-w-screen-xl items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-600 to-purple-600">
-              <BarChart3 className="h-4 w-4 text-white" />
-            </div>
-            <span className="bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-base font-bold text-transparent">
-              AppBI
-            </span>
-          </div>
-          <div className="min-w-0 text-right">
-            <h1 className="truncate text-sm font-semibold text-gray-900">{dashboard.name}</h1>
-            {dashboard.description && (
-              <p className="truncate text-xs text-gray-500">{dashboard.description}</p>
-            )}
-          </div>
-        </div>
-      </header>
+      <main className={`flex w-full flex-col ${publicTheme.density.listGapClass} px-3 py-4 sm:px-4 lg:px-6 lg:py-5`}>
+        <section
+          className="overflow-visible rounded-[28px] border px-3 py-3 sm:px-4 sm:py-4"
+          style={publicTheme.panelStyle}
+        >
+          <h1 className="text-lg font-semibold tracking-tight text-slate-950 sm:text-xl">
+            {presentationTitle}
+          </h1>
 
-      <main className="mx-auto max-w-screen-xl px-4 py-6">
-        {dashboardPages.length > 1 && (
-          <div className="mb-4 flex gap-2 overflow-x-auto">
-            {dashboardPages.map((page) => (
-              <button
-                key={page.id}
-                type="button"
-                onClick={() => setCurrentPageId(page.id)}
-                className={`rounded-full px-3 py-1.5 text-sm font-medium ${
-                  page.id === activePageId
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                {page.name}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {(availableFilterColumns.length > 0 || draftViewerFilters.length > 0) && (
-          <DashboardFilterBar
-            columns={availableFilterColumns}
-            columnChartCount={availableFilterChartCount}
-            distinctValues={resolvedDistinctValues}
-            filters={draftViewerFilters}
-            onFiltersChange={setDraftViewerFilters}
-            hasPendingChanges={hasPendingFilterChanges}
-            onApply={handleApplyFilters}
-            onReset={handleResetFilters}
-            isApplying={isApplyingFilters}
-          />
-        )}
-
-        {crossFilterState && (
-          <div className="mb-4 flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            <span className="font-medium">
-              Cross-filter from {visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.layout?.custom_title
-                ?? visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.chart?.name
-                ?? `Chart ${crossFilterState.sourceChartId}`}:
-            </span>
-            <span className="truncate">
-              {getFilterDisplayLabel(crossFilterState.filter)} = {formatFilterValue(crossFilterState.filter.value)}
-            </span>
-            <button
-              type="button"
-              onClick={() => setCrossFilterState(null)}
-              className="ml-auto rounded-md border border-amber-300 px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100"
-            >
-              Clear
-            </button>
-          </div>
-        )}
-
-        {chartLoadError && (
-          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            {chartLoadError}
-          </div>
-        )}
-
-        {chartsLoading && !isApplyingFilters && (
-          <div className="mb-4 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-500">
-            Refreshing charts...
-          </div>
-        )}
-
-        {visibleDashboardCharts.length === 0 ? (
-          <div className="flex h-64 items-center justify-center rounded-xl border-2 border-dashed border-gray-300 bg-white">
-            <p className="text-sm text-gray-500">No charts on this page yet.</p>
-          </div>
-        ) : (
-          <ResponsiveGridLayout
-            className="layout"
-            layouts={{ lg: layouts }}
-            breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
-            cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
-            rowHeight={80}
-            isDraggable={false}
-            isResizable={false}
-            compactType="vertical"
-          >
-            {visibleDashboardCharts.map((dashboardChart: DashboardChart) => {
-              const chart = dashboardChart.chart;
-              const payload = chartData[dashboardChart.chart_id];
-              const chartError = chartErrors[dashboardChart.chart_id];
-              const title = dashboardChart.layout.custom_title ?? chart?.name ?? '';
-
-              return (
-                <div key={dashboardChart.id.toString()} className="h-full">
-                  <ChartErrorBoundary chartId={dashboardChart.chart_id}>
-                    <ReadonlyChartTile
-                      chart={chart}
-                      chartData={payload}
-                      error={chartError}
-                      title={title}
-                      layout={dashboardChart.layout}
-                      onSelectCrossFilter={(filter) => handleCrossFilterChange(dashboardChart.chart_id, filter)}
-                      isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
-                    />
-                  </ChartErrorBoundary>
+          {(showPageTabs || showFilterControls || showLiveState) && (
+            <div className="mt-3 space-y-3">
+              {showPageTabs && (
+                <div className="flex flex-wrap gap-2 overflow-x-auto pb-1">
+                  {dashboardPages.map((page) => {
+                    const isActive = page.id === activePageId;
+                    const isPending = page.id === pendingPageId;
+                    return (
+                    <button
+                      key={page.id}
+                      type="button"
+                      onClick={() => {
+                        void handlePageSelect(page.id);
+                      }}
+                      className="inline-flex whitespace-nowrap rounded-full border px-3 py-1.5 text-[11px] font-medium transition"
+                      style={isActive ? publicTheme.pageTabActiveStyle : isPending ? publicTheme.accentPillStyle : publicTheme.pageTabInactiveStyle}
+                      disabled={isPending}
+                    >
+                      {isPending && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
+                      {page.name}
+                    </button>
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </ResponsiveGridLayout>
-        )}
+              )}
+
+              {showFilterControls && (
+                <div className="[&>div]:mb-0">
+                  <DashboardFilterBar
+                    columns={availableFilterColumns}
+                    columnChartCount={availableFilterChartCount}
+                    distinctValues={resolvedDistinctValues}
+                    filters={draftViewerFilters}
+                    onFiltersChange={setDraftViewerFilters}
+                    hasPendingChanges={hasPendingFilterChanges}
+                    onApply={handleApplyFilters}
+                    onReset={handleResetFilters}
+                    isApplying={isApplyingFilters}
+                    initialExpanded={false}
+                  />
+                </div>
+              )}
+
+              {showLiveState && (
+                <div className="flex flex-col gap-3">
+                  {pendingPageId && (
+                    <div className="rounded-[20px] border px-4 py-3 text-sm" style={publicTheme.neutralPillStyle}>
+                      Opening next page...
+                    </div>
+                  )}
+
+                  {crossFilterState && (
+                    <div className="rounded-[20px] border px-4 py-3 text-sm" style={publicTheme.accentPillStyle}>
+                      <p className="font-medium">
+                        Cross-filter from {visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.layout?.custom_title
+                          ?? visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.chart?.name
+                          ?? `Chart ${crossFilterState.sourceChartId}`}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span className="break-words">
+                          {getFilterDisplayLabel(crossFilterState.filter)} = {formatFilterValue(crossFilterState.filter.value)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setCrossFilterState(null)}
+                          className="rounded-full border px-3 py-1 text-xs font-medium"
+                          style={publicTheme.neutralPillStyle}
+                        >
+                          Clear selection
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {chartLoadError && (
+                    <div className="rounded-[20px] border border-amber-200 bg-amber-50/85 px-4 py-3 text-sm text-amber-900">
+                      {chartLoadError}
+                    </div>
+                  )}
+
+                  {chartsLoading && !isApplyingFilters && (
+                    <div className="rounded-[20px] border px-4 py-3 text-sm text-slate-500" style={publicTheme.neutralPillStyle}>
+                      Refreshing charts...
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
+        <section
+          className={`w-full rounded-[28px] border p-3 transition-opacity duration-200 sm:p-4 ${pendingPageId ? 'opacity-70' : 'opacity-100'}`}
+          style={publicTheme.canvasFrameStyle}
+        >
+          {visibleDashboardCharts.length === 0 ? (
+            <div className="flex h-64 items-center justify-center rounded-[28px] border-2 border-dashed border-slate-200 bg-slate-50/80">
+              <p className="text-sm text-slate-500">No charts on this page yet.</p>
+            </div>
+          ) : (
+            <div
+              className={`rounded-[28px] ${publicTheme.density.canvasPaddingClass}`}
+              style={publicTheme.canvasInnerStyle}
+            >
+              <ResponsiveGridLayout
+                className="layout"
+                layouts={{ lg: layouts }}
+                breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
+                cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
+                rowHeight={80}
+                isDraggable={false}
+                isResizable={false}
+                compactType="vertical"
+              >
+                {visibleDashboardCharts.map((dashboardChart: DashboardChart) => {
+                  const chart = dashboardChart.chart;
+                  const payload = chartData[dashboardChart.chart_id];
+                  const chartError = chartErrors[dashboardChart.chart_id];
+                  const title = dashboardChart.layout.custom_title ?? chart?.name ?? '';
+
+                  return (
+                    <div key={dashboardChart.id.toString()} className="h-full">
+                      <ChartErrorBoundary chartId={dashboardChart.chart_id}>
+                        <ReadonlyChartTile
+                          chart={chart}
+                          chartData={payload}
+                          error={chartError}
+                          title={title}
+                          layout={dashboardChart.layout}
+                          compact={publicTheme.density.compact}
+                          showChartTypeLabel={false}
+                          onSelectCrossFilter={(filter) => handleCrossFilterChange(dashboardChart.chart_id, filter)}
+                          isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
+                        />
+                      </ChartErrorBoundary>
+                    </div>
+                  );
+                })}
+              </ResponsiveGridLayout>
+            </div>
+          )}
+        </section>
       </main>
 
-      <footer className="border-t border-gray-200 py-4 text-center text-xs text-gray-400">
-        Powered by AppBI · Read-only shared view
-      </footer>
     </div>
   );
 }
