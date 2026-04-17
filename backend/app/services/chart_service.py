@@ -41,6 +41,35 @@ logger = get_logger(__name__)
 _SIMPLE_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def _semantic_field_is_supported_by_binding(
+    binding: dict[str, Any],
+    semantic_field: str,
+) -> bool:
+    semantic_ref = str(semantic_field or "").strip()
+    if not semantic_ref or "." not in semantic_ref:
+        return True
+
+    supported_fields = {
+        str(value).strip()
+        for value in [
+            *(binding.get("dimensionFields") or []),
+            *(binding.get("measureFields") or []),
+            *((binding.get("fieldMap") or {}).values()),
+            *[
+                mapping.get("semanticField")
+                for mapping in (binding.get("calendarFieldMappings") or [])
+                if isinstance(mapping, dict)
+            ],
+        ]
+        if str(value or "").strip()
+    }
+    if semantic_ref in supported_fields:
+        return True
+
+    base_view_name = str(binding.get("baseViewName") or "").strip()
+    return bool(base_view_name and semantic_ref.startswith(f"{base_view_name}."))
+
+
 def _normalize_runtime_filters_for_chart(
     chart_config: dict | None,
     filters: list | None,
@@ -70,6 +99,9 @@ def _normalize_runtime_filters_for_chart(
             or filt.get("fieldKey")
             or ""
         ).strip()
+        if semantic_field and "." in semantic_field and not _semantic_field_is_supported_by_binding(binding, semantic_field):
+            continue
+
         if not semantic_field or "." not in semantic_field:
             result.append(filt)
             continue

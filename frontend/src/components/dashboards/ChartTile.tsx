@@ -17,6 +17,7 @@ import { getEffectiveDashboardChartStyleConfig } from '@/lib/dashboard-chart-sty
 import {
   DashboardFilter,
   applyFiltersToRows,
+  canDeferFilterToChartSemanticBinding,
   inferColumnTypeFromData,
   resolveCalendarFieldMapping,
   resolveChartFieldForFilter,
@@ -202,17 +203,13 @@ export function ChartTile({
       }
 
       for (const targetFilter of expandLinkedFilterTargets(sourceFilter)) {
-        const resolvedField = resolveChartFieldForFilter(targetFilter, chartSemanticBinding);
         const semanticRef = targetFilter.semanticField ?? targetFilter.fieldKey;
-        const canDeferToSemanticJoin = Boolean(
-          semanticRef
-          && semanticRef.includes('.')
-          && (
-            targetFilter.datasetId == null
-            || chartSemanticBinding?.datasetId == null
-            || targetFilter.datasetId === chartSemanticBinding.datasetId
-          )
-        );
+        const hasSemanticRef = Boolean(semanticRef && semanticRef.includes('.'));
+        const resolvedField = hasSemanticRef && !chartSemanticBinding
+          ? null
+          : resolveChartFieldForFilter(targetFilter, chartSemanticBinding);
+        const canDeferToSemanticJoin = hasSemanticRef
+          && canDeferFilterToChartSemanticBinding(targetFilter, chartSemanticBinding);
         if (!resolvedField && !canDeferToSemanticJoin) continue;
 
         const field = resolvedField ?? targetFilter.field;

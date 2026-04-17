@@ -330,6 +330,41 @@ export function resolveCalendarFieldMapping(
   ) ?? null;
 }
 
+export function canDeferFilterToChartSemanticBinding(
+  filter: Pick<BaseFilter, 'field' | 'fieldKey' | 'semanticField' | 'datasetId'>,
+  binding: ChartSemanticBindingLike | null | undefined,
+): boolean {
+  const candidates = semanticCandidates(filter);
+  if (candidates.length === 0) {
+    return false;
+  }
+
+  if (
+    filter.datasetId != null
+    && binding?.datasetId != null
+    && filter.datasetId !== binding.datasetId
+  ) {
+    return false;
+  }
+
+  if (!binding) {
+    return false;
+  }
+
+  const supportedSemanticFields = new Set<string>([
+    ...(binding.dimensionFields ?? []),
+    ...(binding.measureFields ?? []),
+    ...Object.values(binding.fieldMap ?? {}).filter(
+      (value): value is string => typeof value === 'string' && value.includes('.'),
+    ),
+    ...(binding.calendarFieldMappings ?? [])
+      .map((mapping) => mapping?.semanticField)
+      .filter((value): value is string => typeof value === 'string' && value.includes('.')),
+  ]);
+
+  return candidates.some((candidate) => supportedSemanticFields.has(candidate));
+}
+
 export function resolveChartFieldForFilter(
   filter: Pick<BaseFilter, 'field' | 'fieldKey' | 'semanticField' | 'datasetId'>,
   binding: ChartSemanticBindingLike | null | undefined,
