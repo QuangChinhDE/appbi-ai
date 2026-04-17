@@ -5,6 +5,7 @@ from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_
 
+from app.models import DataSource
 from app.models.dataset import Dataset, DatasetTable
 from app.schemas.dataset import (
     DatasetCreate,
@@ -15,6 +16,7 @@ from app.schemas.dataset import (
 from app.services.dataset_calendar_service import (
     ensure_calendar_table,
     get_calendar_settings,
+    is_generated_calendar_table,
     normalize_dataset_settings,
     remove_calendar_table,
 )
@@ -27,6 +29,9 @@ from app.services.dataset_dictionary_service import normalize_dictionary_payload
 
 
 LOOKUP_TABLE_IDENTIFIER_PREFIX = "dataset-table://"
+CALENDAR_REQUIRES_DATASOURCE_MESSAGE = (
+    "Add at least one source or SQL table backed by a datasource before creating the Standard Date table."
+)
 
 
 def build_lookup_table_identifier(table_id: int) -> str:
@@ -176,6 +181,31 @@ def _migrate_derived_queries_for_alias_changes(
 
 class DatasetCRUDService:
     """Service for Dataset CRUD operations"""
+
+    @staticmethod
+    def dataset_has_datasource_backed_table(
+        db: Session,
+        dataset_id: int,
+        *,
+        exclude_table_id: int | None = None,
+    ) -> bool:
+        query = db.query(DatasetTable).filter(
+            DatasetTable.dataset_id == dataset_id,
+            DatasetTable.datasource_id.isnot(None),
+        )
+        if exclude_table_id is not None:
+            query = query.filter(DatasetTable.id != exclude_table_id)
+
+        for candidate in query.order_by(DatasetTable.id).all():
+            if is_generated_calendar_table(candidate):
+                continue
+            datasource_id = getattr(candidate, "datasource_id", None)
+            if datasource_id is None:
+                continue
+            datasource = db.query(DataSource.id).filter(DataSource.id == datasource_id).first()
+            if datasource is not None:
+                return True
+        return False
     
     # ===== Dataset Methods =====
     
@@ -217,6 +247,8 @@ class DatasetCRUDService:
             dataset_in.settings.model_dump() if getattr(dataset_in, "settings", None) else None,
             enabled_default=False,
         )
+        if (settings.get("calendar_dimension") or {}).get("enabled"):
+            raise ValueError(CALENDAR_REQUIRES_DATASOURCE_MESSAGE)
         db_dataset = Dataset(
             name=dataset_in.name,
             description=dataset_in.description,
@@ -229,9 +261,6 @@ class DatasetCRUDService:
         )
         db.add(db_dataset)
         db.flush()
-
-        if get_calendar_settings(db_dataset, enabled_default=False).get("enabled"):
-            ensure_calendar_table(db, db_dataset)
 
         db.commit()
         db.refresh(db_dataset)
@@ -254,6 +283,7 @@ class DatasetCRUDService:
         # Update only provided fields
         update_data = dataset_in.model_dump(exclude_unset=True)
         incoming_settings = update_data.pop("settings", None)
+        calendar_settings_updated = incoming_settings is not None and "calendar_dimension" in incoming_settings
         incoming_dictionary = update_data.pop("dictionary", None)
         for key, value in update_data.items():
             setattr(db_dataset, key, value)
@@ -280,6 +310,8 @@ class DatasetCRUDService:
             db_dataset.dictionary_updated_at = datetime.utcnow()
 
         if get_calendar_settings(db_dataset, enabled_default=False).get("enabled"):
+            if calendar_settings_updated and not DatasetCRUDService.dataset_has_datasource_backed_table(db, dataset_id):
+                raise ValueError(CALENDAR_REQUIRES_DATASOURCE_MESSAGE)
             ensure_calendar_table(db, db_dataset)
         else:
             remove_calendar_table(db, dataset_id)
@@ -384,6 +416,10 @@ class DatasetCRUDService:
         )
         
         db.add(db_table)
+
+        if table.datasource_id is not None and get_calendar_settings(dataset_obj, enabled_default=False).get("enabled"):
+            ensure_calendar_table(db, dataset_obj)
+
         db.commit()
         db.refresh(db_table)
         return db_table

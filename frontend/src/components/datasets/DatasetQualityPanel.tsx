@@ -126,7 +126,8 @@ const DQ_DIMENSIONS: {
     border: 'border-amber-200',
     dot: 'bg-amber-500',
     ruleTypes: [
-      { value: 'cross_column', label: 'Cross-column SQL Expression', level: 'table', hint: 'Write a SQL boolean expression (TRUE = valid row). Can reference multiple columns.' },
+      { value: 'cross_column', label: 'Same-table SQL Expression', level: 'table', hint: 'Write a SQL boolean expression (TRUE = valid row). Can reference multiple columns in the selected table.' },
+      { value: 'cross_table', label: 'Cross-table Join Expression', level: 'table', hint: 'Join the selected table to another table, then evaluate a SQL boolean expression using aliases src and ref.' },
     ],
   },
   {
@@ -189,6 +190,32 @@ function getColumnOptions(tables: DatasetTable[], tableId: number): string[] {
   const cache = t.columns_cache as Record<string, any>;
   const cols = cache.columns as { name: string }[] | undefined;
   return cols?.map((c) => c.name) ?? [];
+}
+
+type RuleTypeDefinition = (typeof DQ_DIMENSIONS)[number]['ruleTypes'][number];
+
+function getRuleTypeDef(dimension: QualityDimension, ruleType: string): RuleTypeDefinition | undefined {
+  return dimDef(dimension).ruleTypes.find((r) => r.value === ruleType);
+}
+
+function ruleUsesColumn(ruleTypeDef?: RuleTypeDefinition): boolean {
+  return ruleTypeDef?.level !== 'table';
+}
+
+function buildSuggestedRuleName(
+  tables: DatasetTable[],
+  tableId: number,
+  ruleTypeDef: RuleTypeDefinition | undefined,
+  ruleType: string,
+  columnName: string,
+) {
+  const table = tables.find((t) => t.id === tableId);
+  const tableName = table?.display_name ?? table?.source_table_name ?? '';
+  const ruleLabel = ruleTypeDef?.label ?? ruleType;
+  const normalizedColumn = columnName.trim();
+  return normalizedColumn
+    ? `${tableName}: ${normalizedColumn} - ${ruleLabel}`
+    : `${tableName} - ${ruleLabel}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +359,9 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
   tables: DatasetTable[];
 }) {
   const colOptions = getColumnOptions(tables, tableId);
+  const selectedTable = tables.find((table) => table.id === tableId);
+  const secondaryTableId = typeof config.secondary_table_id === 'number' ? config.secondary_table_id : undefined;
+  const secondaryTable = tables.find((table) => table.id === secondaryTableId);
 
   switch (ruleType) {
     case 'completeness_pct':
@@ -435,11 +465,55 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
           <textarea rows={3}
             value={config.expression ?? ''}
             onChange={(e) => onPatch({ expression: e.target.value || undefined })}
-            placeholder={'end_date >= start_date\n-- or cross-table: amount > 0 AND status != \'void\''}
+            placeholder={'end_date >= start_date\namount > 0 AND status != \'void\''}
             className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-blue-400 focus:outline-none resize-none" />
           <p className="mt-1 text-[11px] text-gray-400">
-            Can reference any column in this table. Use standard SQL operators.
+            Can reference any column in the selected table only. Use standard SQL operators.
           </p>
+        </div>
+      );
+
+    case 'cross_table':
+      return (
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-600">Related table</label>
+            <select
+              value={secondaryTableId ?? ''}
+              onChange={(e) => onPatch({ secondary_table_id: e.target.value ? Number(e.target.value) : undefined })}
+              className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+            >
+              <option value="">— select related table —</option>
+              {tables.map((table) => (
+                <option key={table.id} value={table.id}>{table.display_name || table.source_table_name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-600">
+              Join condition <span className="text-gray-400 font-normal">(src = current table, ref = related table)</span>
+            </label>
+            <textarea rows={2}
+              value={config.join_condition ?? ''}
+              onChange={(e) => onPatch({ join_condition: e.target.value || undefined })}
+              placeholder={'src.customer_id = ref.customer_id'}
+              className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-blue-400 focus:outline-none resize-none" />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-600">
+              SQL boolean expression <span className="text-gray-400 font-normal">(TRUE = valid joined row)</span>
+            </label>
+            <textarea rows={3}
+              value={config.expression ?? ''}
+              onChange={(e) => onPatch({ expression: e.target.value || undefined })}
+              placeholder={'ref.customer_id IS NOT NULL\nsrc.order_total <= ref.credit_limit'}
+              className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-blue-400 focus:outline-none resize-none" />
+            <p className="mt-1 text-[11px] text-gray-400">
+              Use a join that preserves the grain you want to validate. Current aliases: src = {selectedTable?.display_name || selectedTable?.source_table_name || 'selected table'}, ref = {secondaryTable?.display_name || secondaryTable?.source_table_name || 'related table'}.
+            </p>
+          </div>
         </div>
       );
 
@@ -547,49 +621,54 @@ function RuleEditorDrawer({
   const updateMutation = useUpdateQualityRule(datasetId);
 
   const dimDef_ = dimDef(dimension);
-  const rtDef   = dimDef_.ruleTypes.find((r) => r.value === ruleType);
-  const colOpts = getColumnOptions(tables, tableId);
+  const rtDef   = getRuleTypeDef(dimension, ruleType);
+  const usesColumn = ruleUsesColumn(rtDef);
+  const suggestedName = useMemo(
+    () => buildSuggestedRuleName(tables, tableId, rtDef, ruleType, columnName),
+    [tables, tableId, rtDef, ruleType, columnName],
+  );
 
-  // Auto-generate name when fields change (create mode only)
+  // Seed the name once; further changes use the explicit "Use suggested" action.
   useEffect(() => {
-    if (nameEdited) return;
-    const tableName = tables.find((t) => t.id === tableId)?.display_name ?? '';
-    const rtLabel = dimDef_.ruleTypes.find((r) => r.value === ruleType)?.label ?? ruleType;
-    const col = columnName.trim();
-    setName(col ? `${tableName}: ${col} — ${rtLabel}` : `${tableName} — ${rtLabel}`);
-  }, [tableId, dimension, ruleType, columnName, nameEdited, tables, dimDef_]);
+    if (nameEdited || name.trim()) return;
+    setName(suggestedName);
+  }, [name, nameEdited, suggestedName]);
 
   function patchConfig(partial: Partial<QualityRuleConfig>) {
     setConfig((prev) => ({ ...prev, ...partial }));
   }
 
   function switchDimension(d: QualityDimension) {
-    setDimension(d);
     const firstType = DQ_DIMENSIONS.find((x) => x.key === d)!.ruleTypes[0].value;
+    const nextRuleDef = getRuleTypeDef(d, firstType);
+    setDimension(d);
     setRuleType(firstType);
     setConfig({});
-    setColumnName('');
+    if (!ruleUsesColumn(nextRuleDef)) setColumnName('');
   }
 
   function switchRuleType(rt: string) {
+    const nextRuleDef = getRuleTypeDef(dimension, rt);
     setRuleType(rt);
     setConfig({});
+    if (!ruleUsesColumn(nextRuleDef)) setColumnName('');
   }
 
   async function handleSave() {
     if (!tables.find((t) => t.id === tableId)) { toast.error('Select a table'); return; }
     if (!name.trim()) { toast.error('Rule name is required'); return; }
+    const nextColumnName = usesColumn ? columnName.trim() || undefined : undefined;
     try {
       let saved: QualityRule;
       if (isEdit) {
         saved = await updateMutation.mutateAsync({
           ruleId: editingRule!.id,
-          body: { column_name: columnName || undefined, dimension, rule_type: ruleType, name: name.trim(), config, severity, enabled },
+          body: { column_name: nextColumnName, dimension, rule_type: ruleType, name: name.trim(), config, severity, enabled },
         });
         toast.success('Rule updated');
       } else {
         saved = await createMutation.mutateAsync({
-          table_id: tableId, column_name: columnName || undefined, dimension, rule_type: ruleType,
+          table_id: tableId, column_name: nextColumnName, dimension, rule_type: ruleType,
           name: name.trim(), config, severity, enabled,
         });
         toast.success('Rule created');
@@ -663,26 +742,43 @@ function RuleEditorDrawer({
           </div>
 
           {/* Column selector — shown for column-level rules */}
-          {rtDef?.level !== 'table' && (
-            <ColumnSelector
-              tableId={tableId} tables={tables}
-              value={columnName}
-              onChange={setColumnName}
-              label={rtDef?.level === 'both' ? 'Column (optional)' : 'Column'}
-              placeholder="column_name"
-            />
-          )}
+          <div className="space-y-3 rounded-xl border border-gray-200 bg-gray-50/70 p-3">
+            {usesColumn && (
+              <ColumnSelector
+                tableId={tableId} tables={tables}
+                value={columnName}
+                onChange={setColumnName}
+                label={rtDef?.level === 'both' ? 'Column (optional)' : 'Column'}
+                placeholder="column_name"
+              />
+            )}
 
-          {/* Dynamic config */}
-          <ConfigFields ruleType={ruleType} config={config} onPatch={patchConfig} tableId={tableId} tables={tables} />
+            {/* Dynamic config */}
+            <ConfigFields ruleType={ruleType} config={config} onPatch={patchConfig} tableId={tableId} tables={tables} />
+          </div>
 
           {/* Rule name */}
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-600">Rule Name</label>
+            <div className="mb-1 flex items-center justify-between gap-3">
+              <label className="block text-xs font-medium text-gray-600">Rule Name</label>
+              {name.trim() !== suggestedName && (
+                <button
+                  type="button"
+                  onClick={() => { setName(suggestedName); setNameEdited(false); }}
+                  className="text-[11px] font-medium text-blue-600 hover:text-blue-700"
+                >
+                  Use suggested
+                </button>
+              )}
+            </div>
             <input type="text" value={name}
               onChange={(e) => { setName(e.target.value); setNameEdited(true); }}
-              onFocus={() => setNameEdited(true)}
               className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none" />
+            {!isEdit && (
+              <p className="mt-1 text-[11px] text-gray-400">
+                The suggested name follows table, column, and rule type until you rename it.
+              </p>
+            )}
           </div>
 
           {/* Severity */}
@@ -768,6 +864,202 @@ interface RuleLogEntry {
   };
 }
 
+function formatMetricCount(value?: number | null): string {
+  if (value == null || Number.isNaN(value)) return '—';
+  return value.toLocaleString();
+}
+
+function formatMetricPercent(value?: number | null, digits = 1): string {
+  if (value == null || Number.isNaN(value)) return '—';
+  return `${value.toFixed(digits)}%`;
+}
+
+function hasComparableRowCounts(ruleType: string): boolean {
+  return [
+    'not_null',
+    'not_blank',
+    'completeness_pct',
+    'accepted_values',
+    'pattern_match',
+    'range_check',
+    'format_check',
+    'unique_column',
+    'cross_column',
+    'cross_table',
+    'statistical_range',
+  ].includes(ruleType);
+}
+
+function failureRate(entry: RuleLogEntry): number | null {
+  if (!hasComparableRowCounts(entry.ruleType)) return null;
+  const checked = entry.result.rows_checked;
+  const failed = entry.result.rows_failed;
+  if (checked == null || failed == null || checked <= 0) return null;
+  return (failed / checked) * 100;
+}
+
+function issueThemeLabel(ruleType: string): string {
+  switch (ruleType) {
+    case 'not_null':
+    case 'not_blank':
+    case 'completeness_pct':
+      return 'missing or incomplete data';
+    case 'accepted_values':
+    case 'pattern_match':
+    case 'range_check':
+    case 'format_check':
+      return 'invalid values';
+    case 'unique_column':
+    case 'unique_combo':
+      return 'duplicate records';
+    case 'cross_column':
+    case 'cross_table':
+      return 'logic inconsistency';
+    case 'freshness_days':
+      return 'stale data';
+    case 'row_count_range':
+      return 'unexpected row volume';
+    case 'statistical_range':
+      return 'unusual distribution';
+    default:
+      return 'quality issue';
+  }
+}
+
+function buildIssueRemark(entry: RuleLogEntry): { summary: string; interpretation: string; followUp: string } {
+  const checked = entry.result.rows_checked ?? null;
+  const failed = entry.result.rows_failed ?? null;
+  const rate = failureRate(entry);
+  const issueLabel = issueThemeLabel(entry.ruleType);
+  const targetLabel = entry.columnName ? `${entry.tableName}.${entry.columnName}` : entry.tableName;
+
+  if (entry.result.skipped) {
+    return {
+      summary: entry.result.detail || 'This rule was skipped in the latest run.',
+      interpretation: 'The system did not produce a data-quality verdict for this rule, so users should not rely on it yet.',
+      followUp: 'Check whether the table source is supported and whether the rule configuration is still valid.',
+    };
+  }
+
+  if (entry.result.error) {
+    const summary = entry.result.detail || 'This rule failed during execution.';
+    const interpretation = entry.ruleType === 'cross_table'
+      ? 'The cross-table validation could not finish, often because the join condition, datasource alignment, timeout, or scan guard blocked the check.'
+      : 'The validation query could not finish, so the issue is currently in rule execution rather than in confirmed data content.';
+    const followUp = entry.ruleType === 'cross_table'
+      ? 'Review the related table, join condition, and expression first. If they are correct, inspect timeout or datasource limits.'
+      : 'Review the rule expression/config and verify the source can execute the check within current limits.';
+    return { summary, interpretation, followUp };
+  }
+
+  if (entry.result.passed) {
+    if (entry.ruleType === 'freshness_days') {
+      return {
+        summary: 'Data freshness is still within the allowed time window.',
+        interpretation: `The latest load for ${targetLabel} is recent enough for this rule.`,
+        followUp: 'Keep monitoring the refresh cadence to make sure the current SLA still holds.',
+      };
+    }
+
+    if (entry.ruleType === 'row_count_range') {
+      return {
+        summary: checked != null
+          ? `Current row volume is within the expected range (${formatMetricCount(checked)} rows).`
+          : 'Current row volume is within the expected range.',
+        interpretation: `The table size for ${targetLabel} looks stable against the configured expectation.`,
+        followUp: 'No immediate action is needed unless the business baseline changes.',
+      };
+    }
+
+    if (entry.ruleType === 'unique_combo') {
+      return {
+        summary: 'No duplicate combinations were found for this rule in the latest run.',
+        interpretation: `The configured key combination is currently behaving as expected in ${targetLabel}.`,
+        followUp: 'Keep monitoring after schema or upstream logic changes.',
+      };
+    }
+
+    return {
+      summary: checked != null
+        ? `No violating rows were found in ${formatMetricCount(checked)} checked rows.`
+        : 'No violation was found in the latest run.',
+      interpretation: `The latest validation suggests ${targetLabel} is currently stable for this rule.`,
+      followUp: 'No immediate action is needed beyond normal monitoring.',
+    };
+  }
+
+  let summary = checked != null && failed != null
+    ? `${formatMetricCount(failed)} of ${formatMetricCount(checked)} checked rows are failing because of ${issueLabel}.`
+    : entry.result.detail || `The rule is failing because of ${issueLabel}.`;
+
+  if (entry.ruleType === 'freshness_days') {
+    summary = 'The latest data is older than the configured freshness window.';
+  } else if (entry.ruleType === 'row_count_range') {
+    summary = checked != null
+      ? `Current row volume (${formatMetricCount(checked)} rows) is outside the configured range.`
+      : 'Current row volume is outside the configured range.';
+  } else if (entry.ruleType === 'unique_combo') {
+    summary = failed != null
+      ? `${formatMetricCount(failed)} duplicate rows were found for the configured column combination.`
+      : 'Duplicate combinations were found for the configured key columns.';
+  }
+
+  let interpretation = `The issue is affecting ${targetLabel}. `;
+  if (rate == null) {
+    if (entry.ruleType === 'freshness_days') {
+      interpretation += 'This is a table-level freshness problem, so users may be reading data that is no longer current enough.';
+    } else if (entry.ruleType === 'row_count_range') {
+      interpretation += 'This is a table-level volume signal, which usually points to an ingestion, filter, or duplication change upstream.';
+    } else if (entry.ruleType === 'unique_combo') {
+      interpretation += 'The latest run confirms duplicate business keys are present, which can inflate counts or create repeated records.';
+    } else {
+      interpretation += 'The exact failure rate is not available, but the latest run confirms the problem is real.';
+    }
+  } else if (rate < 1) {
+    interpretation += 'The impact is still localized, but it can already distort edge cases and manual follow-up.';
+  } else if (rate < 5) {
+    interpretation += 'The impact is noticeable and can skew filtered views or smaller segments.';
+  } else if (rate < 20) {
+    interpretation += 'The issue is broad enough to affect operational reporting and downstream analysis.';
+  } else {
+    interpretation += 'The issue is widespread and can materially reduce trust in this table for reporting.';
+  }
+
+  let followUp = 'Review the failing records and trace them back to the upstream source or transformation that produced them.';
+  switch (entry.ruleType) {
+    case 'not_null':
+    case 'not_blank':
+    case 'completeness_pct':
+      followUp = 'Prioritize why required values are missing, then decide whether the field is optional or the source pipeline is dropping data.';
+      break;
+    case 'accepted_values':
+    case 'pattern_match':
+    case 'range_check':
+    case 'format_check':
+      followUp = 'Compare failing values with the expected business rule and check whether the validation list, format, or source mapping needs correction.';
+      break;
+    case 'unique_column':
+    case 'unique_combo':
+      followUp = 'Inspect duplicate keys first, because duplicates often propagate inflated counts and duplicate business events.';
+      break;
+    case 'cross_column':
+    case 'cross_table':
+      followUp = 'Review the business logic behind the expression and confirm whether the issue comes from bad source data, a wrong join, or an outdated rule.';
+      break;
+    case 'freshness_days':
+      followUp = 'Check the latest successful ingest/load time and confirm whether the expected refresh cadence is still realistic.';
+      break;
+    case 'row_count_range':
+      followUp = 'Check upstream loads, filters, or deduplication logic because unexpected row volume often signals broken ingestion.';
+      break;
+    case 'statistical_range':
+      followUp = 'Inspect whether these are real outliers or whether recent source changes shifted the distribution.';
+      break;
+  }
+
+  return { summary, interpretation, followUp };
+}
+
 function RuleLogModal({
   entries,
   initialExpandedId,
@@ -796,8 +1088,7 @@ function RuleLogModal({
         e.tableName.toLowerCase().includes(q) ||
         (e.columnName || '').toLowerCase().includes(q) ||
         (e.result.detail || '').toLowerCase().includes(q) ||
-        (e.result.sql || '').toLowerCase().includes(q) ||
-        (e.result.log || []).some((l) => l.toLowerCase().includes(q))
+        (e.result.sql || '').toLowerCase().includes(q)
       );
     }
     return list;
@@ -811,6 +1102,13 @@ function RuleLogModal({
     return { pass, fail, error, skip, all: entries.length };
   }, [entries]);
 
+  const totals = useMemo(() => {
+    const checkedRows = entries.reduce((sum, entry) => sum + (entry.result.rows_checked ?? 0), 0);
+    const failedRows = entries.reduce((sum, entry) => sum + (entry.result.rows_failed ?? 0), 0);
+    const rulesNeedingAttention = counts.fail + counts.error;
+    return { checkedRows, failedRows, rulesNeedingAttention };
+  }, [entries, counts.fail, counts.error]);
+
   function statusLabel(r: RuleLogEntry['result']) {
     if (r.skipped) return { text: 'SKIP', cls: 'bg-gray-100 text-gray-500' };
     if (r.error) return { text: 'ERROR', cls: 'bg-red-100 text-red-600' };
@@ -821,16 +1119,16 @@ function RuleLogModal({
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
-      <div className="fixed inset-4 z-50 flex items-center justify-center" onClick={onClose}>
+      <div className="fixed inset-3 z-50 flex items-center justify-center" onClick={onClose}>
         <div
-          className="w-[900px] h-[600px] bg-white rounded-2xl shadow-2xl border border-gray-200 flex flex-col overflow-hidden"
+          className="h-[min(90vh,980px)] w-[min(1500px,calc(100vw-1.5rem))] max-w-none rounded-2xl border border-gray-200 bg-white shadow-2xl flex flex-col overflow-hidden"
           onClick={(e) => e.stopPropagation()}
         >
           {/* ── Header ── */}
           <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-5 py-3.5">
             <div className="flex items-center gap-2">
               <Eye className="h-5 w-5 text-blue-600" />
-              <h2 className="text-base font-semibold text-gray-900">Quality Run Log</h2>
+              <h2 className="text-base font-semibold text-gray-900">Quality Check Review</h2>
               <span className="text-xs text-gray-400">{entries.length} rules</span>
             </div>
             <button onClick={onClose} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600">
@@ -868,13 +1166,44 @@ function RuleLogModal({
                 type="text"
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
-                placeholder="Search logs…"
+                placeholder="Search rule, table, issue, or SQL…"
                 className="w-48 rounded-lg border border-gray-200 bg-white py-1 pl-7 pr-2 text-xs focus:border-blue-400 focus:outline-none"
               />
             </div>
           </div>
 
-          {/* ── Log entries ── */}
+          <div className="flex gap-2 overflow-x-auto border-b border-gray-100 bg-white px-5 py-2.5">
+            <div className="min-w-[132px] rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">Rules Reviewed</p>
+              <p className="mt-1 text-base font-semibold text-gray-900">{formatMetricCount(counts.all)}</p>
+            </div>
+            <div className="min-w-[132px] rounded-lg border border-green-100 bg-green-50 px-3 py-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-green-400">Passed</p>
+              <p className="mt-1 text-base font-semibold text-green-700">{formatMetricCount(counts.pass)}</p>
+            </div>
+            <div className="min-w-[132px] rounded-lg border border-red-100 bg-red-50 px-3 py-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-red-400">Need Attention</p>
+              <p className="mt-1 text-base font-semibold text-red-700">{formatMetricCount(totals.rulesNeedingAttention)}</p>
+            </div>
+            <div className="min-w-[132px] rounded-lg border border-orange-100 bg-orange-50 px-3 py-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-orange-400">Execution Errors</p>
+              <p className="mt-1 text-base font-semibold text-orange-700">{formatMetricCount(counts.error)}</p>
+            </div>
+            <div className="min-w-[132px] rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">Not Evaluated</p>
+              <p className="mt-1 text-base font-semibold text-gray-900">{formatMetricCount(counts.skip)}</p>
+            </div>
+            <div className="min-w-[132px] rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Rows Checked</p>
+              <p className="mt-1 text-base font-semibold text-slate-800">{formatMetricCount(totals.checkedRows)}</p>
+            </div>
+            <div className="min-w-[132px] rounded-lg border border-amber-100 bg-amber-50 px-3 py-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-amber-500">Violations</p>
+              <p className="mt-1 text-base font-semibold text-amber-700">{formatMetricCount(totals.failedRows)}</p>
+            </div>
+          </div>
+
+          {/* ── Review entries ── */}
           <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
             {filtered.length === 0 ? (
               <div className="flex items-center justify-center py-12 text-sm text-gray-400">
@@ -883,10 +1212,11 @@ function RuleLogModal({
             ) : filtered.map((entry) => {
               const st = statusLabel(entry.result);
               const isExpanded = expandedId === entry.ruleId;
-              const logLines = entry.result.log ?? [];
+              const remark = buildIssueRemark(entry);
+              const rate = failureRate(entry);
+
               return (
                 <div key={entry.ruleId}>
-                  {/* Rule summary row */}
                   <button
                     onClick={() => setExpandedId(isExpanded ? null : entry.ruleId)}
                     className="w-full flex items-center gap-3 px-5 py-2.5 text-left hover:bg-gray-50 transition-colors"
@@ -898,69 +1228,91 @@ function RuleLogModal({
                     <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide shrink-0 ${st.cls}`}>
                       {st.text}
                     </span>
-                    <div className="flex-1 min-w-0">
-                      <span className="text-sm font-medium text-gray-800 truncate block">{entry.ruleName}</span>
+                    <div className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-gray-800">{entry.ruleName}</span>
                       <span className="text-xs text-gray-400">
                         {entry.tableName}
                         {entry.columnName ? ` › ${entry.columnName}` : ''}
                         {' · '}
                         <span className="font-mono">{entry.ruleType}</span>
                       </span>
+                      <p className="mt-1 truncate text-xs text-gray-500">{remark.summary}</p>
                     </div>
-                    <div className="flex items-center gap-3 shrink-0 text-xs text-gray-400">
+                    <div className="shrink-0 flex items-center gap-3 text-xs text-gray-400">
                       {entry.result.rows_checked != null && (
                         <span>checked: <strong className="text-gray-600">{entry.result.rows_checked}</strong></span>
                       )}
-                      {entry.result.rows_failed != null && entry.result.rows_failed > 0 && (
+                      {entry.result.rows_failed != null && (
                         <span>failed: <strong className="text-red-600">{entry.result.rows_failed}</strong></span>
                       )}
-                      {entry.result.elapsed_ms != null && (
-                        <span className="tabular-nums">{entry.result.elapsed_ms}ms</span>
+                      {rate != null && (
+                        <span>rate: <strong className="text-gray-600">{formatMetricPercent(rate)}</strong></span>
                       )}
                     </div>
                   </button>
 
-                  {/* Expanded detail */}
                   {isExpanded && (
-                    <div className="bg-gray-50 border-t border-gray-100 px-5 py-3 space-y-3">
-                      {/* Detail message */}
-                      {entry.result.detail && (
-                        <div className="flex items-start gap-2">
-                          <span className="text-[10px] font-bold uppercase text-gray-400 shrink-0 w-12 pt-0.5">Detail</span>
-                          <p className="text-xs text-gray-700">{entry.result.detail}</p>
-                        </div>
-                      )}
-                      {/* SQL */}
-                      {entry.result.sql && (
-                        <div className="flex items-start gap-2">
-                          <span className="text-[10px] font-bold uppercase text-gray-400 shrink-0 w-12 pt-0.5">SQL</span>
-                          <pre className="flex-1 rounded-lg bg-gray-900 text-green-300 text-xs p-3 overflow-x-auto font-mono leading-relaxed whitespace-pre-wrap break-all">
-                            {entry.result.sql}
-                          </pre>
-                        </div>
-                      )}
-                      {/* Execution log */}
-                      {logLines.length > 0 && (
-                        <div className="flex items-start gap-2">
-                          <span className="text-[10px] font-bold uppercase text-gray-400 shrink-0 w-12 pt-0.5">Log</span>
-                          <div className="flex-1 rounded-lg bg-gray-900 text-gray-300 text-xs p-3 overflow-x-auto font-mono leading-relaxed max-h-60 overflow-y-auto">
-                            {logLines.map((line, i) => {
-                              const isErr = /error|fail|exception/i.test(line);
-                              const isPass = /^.+\]\s*PASS/i.test(line);
-                              return (
-                                <div
-                                  key={i}
-                                  className={`whitespace-pre-wrap break-all ${
-                                    isErr ? 'text-red-400' : isPass ? 'text-green-400' : ''
-                                  }`}
-                                >
-                                  {line}
-                                </div>
-                              );
-                            })}
+                    <div className="border-t border-gray-100 bg-gray-50 px-5 py-3">
+                      <div className="grid gap-3 xl:grid-cols-[260px,minmax(0,1fr)]">
+                        <div className="grid content-start grid-cols-2 gap-2">
+                          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                            <p className="text-[10px] uppercase tracking-wide text-gray-400">Status</p>
+                            <p className="mt-1 text-sm font-semibold text-gray-800">{st.text}</p>
+                          </div>
+                          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                            <p className="text-[10px] uppercase tracking-wide text-gray-400">Rows Checked</p>
+                            <p className="mt-1 text-sm font-semibold text-gray-800">{formatMetricCount(entry.result.rows_checked)}</p>
+                          </div>
+                          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                            <p className="text-[10px] uppercase tracking-wide text-gray-400">Rows Failing</p>
+                            <p className="mt-1 text-sm font-semibold text-gray-800">{formatMetricCount(entry.result.rows_failed)}</p>
+                          </div>
+                          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                            <p className="text-[10px] uppercase tracking-wide text-gray-400">Failure Rate</p>
+                            <p className="mt-1 text-sm font-semibold text-gray-800">{formatMetricPercent(rate)}</p>
                           </div>
                         </div>
-                      )}
+
+                        <div className="space-y-2">
+                          <div className="rounded-lg border border-gray-200 bg-white p-3">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Issue Summary</p>
+                              <p className="mt-1 text-sm text-gray-800">{remark.summary}</p>
+                            </div>
+
+                            <div className="mt-3 border-t border-gray-100 pt-3">
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Interpretation</p>
+                              <p className="mt-1 text-sm text-gray-700">{remark.interpretation}</p>
+                            </div>
+
+                            <div className="mt-3 border-t border-gray-100 pt-3">
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Recommended Check</p>
+                              <p className="mt-1 text-sm text-gray-700">{remark.followUp}</p>
+                            </div>
+
+                            {entry.result.detail && entry.result.detail !== remark.summary && (
+                              <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 p-3">
+                                <p className="text-[11px] font-semibold uppercase tracking-wide text-blue-400">System Note</p>
+                                <p className="mt-1 text-sm text-blue-800">{entry.result.detail}</p>
+                              </div>
+                            )}
+                          </div>
+
+                          {entry.result.sql && (
+                            <details className="group rounded-lg border border-gray-200 bg-white" open>
+                              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium text-gray-700">
+                                <span>SQL Query</span>
+                                <span className="text-[11px] text-gray-400">Click to expand/collapse</span>
+                              </summary>
+                              <div className="border-t border-gray-100 px-3 py-3">
+                                <pre className="max-h-56 overflow-auto rounded-lg bg-gray-950 p-3 font-mono text-xs leading-relaxed text-green-300 whitespace-pre-wrap break-all">
+                                  {entry.result.sql}
+                                </pre>
+                              </div>
+                            </details>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1127,8 +1479,8 @@ function DimensionGroup({
                     {result && (
                       <button
                         onClick={() => onViewLog(rule)}
-                        className="rounded p-1 text-gray-300 hover:bg-blue-50 hover:text-blue-600 transition-colors"
-                        title="View execution log"
+                        className="rounded p-1 text-gray-400 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+                        title="View rule summary"
                       >
                         <Eye className="h-3.5 w-3.5" />
                       </button>
@@ -1136,7 +1488,7 @@ function DimensionGroup({
                   </div>
 
                   {/* Actions */}
-                  <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="flex items-center gap-0.5 shrink-0">
                     {canEdit && (
                       <>
                         <InlineToggle checked={rule.enabled} onChange={() => onToggleRule(rule)} disabled={isToggling} />
@@ -1429,6 +1781,10 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
 
   // Open editor for new rule
   function openNewRule(dim?: QualityDimension) {
+    if (tables.length === 0) {
+      toast.error('Add a table before creating quality rules');
+      return;
+    }
     setEditingRule(null);
     setEditorDefaultDim(dim);
     setEditorOpen(true);
@@ -1699,10 +2055,10 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
               <button
                 onClick={handleOpenAllLogs}
                 className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-500 hover:bg-gray-50 hover:border-gray-300 transition-colors shrink-0"
-                title="View execution logs"
+                title="View quality summaries"
               >
                 <Eye className="h-3 w-3" />
-                Logs
+                Review
               </button>
             )}
 

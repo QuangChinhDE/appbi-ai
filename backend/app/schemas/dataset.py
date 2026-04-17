@@ -310,7 +310,8 @@ class QualityRuleConfig(BaseModel):
       format_check        → { format: "email"|"url"|"date"|"datetime"|"phone" }
       unique_column       → {}
       unique_combo        → { columns: list[str] }
-      cross_column_check  → { expression: str }   (SQL boolean expr)
+    cross_column_check  → { expression: str }   (SQL boolean expr)
+    cross_table         → { secondary_table_id: int, join_condition: str, expression: str }
       freshness_days      → { max_days: int, column: str }
       row_count_range     → { min?: int, max?: int }
       statistical_range   → { min_z?: float, max_z?: float }
@@ -326,6 +327,8 @@ class QualityRuleConfig(BaseModel):
     format: Optional[str] = Field(default=None, max_length=50)
     columns: Optional[List[str]] = Field(default=None)
     expression: Optional[str] = Field(default=None, max_length=1000)
+    secondary_table_id: Optional[int] = Field(default=None, ge=1)
+    join_condition: Optional[str] = Field(default=None, max_length=1000)
     column: Optional[str] = Field(default=None, max_length=255)
     max_days: Optional[int] = Field(default=None, ge=0)
     min_z: Optional[float] = Field(default=None)

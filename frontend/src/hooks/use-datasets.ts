@@ -275,6 +275,8 @@ export interface QualityRuleConfig {
   format?: QualityFormat;
   columns?: string[];
   expression?: string;
+  secondary_table_id?: number;
+  join_condition?: string;
   column?: string;
   max_days?: number;
   min_z?: number;

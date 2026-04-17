@@ -112,6 +112,9 @@ const DEFAULT_CALENDAR_SETTINGS: CalendarDimensionSettings = {
   excluded_auto_joins: [],
 };
 
+const CALENDAR_REQUIRES_DATASOURCE_MESSAGE =
+  'Add at least one source or SQL table backed by a datasource before creating the Standard Date table.';
+
 const LOOKUP_TABLE_IDENTIFIER_PREFIX = 'dataset-table://';
 
 function buildLookupTableIdentifier(tableId: number): string {
@@ -708,11 +711,18 @@ export default function DatasetDetailPage() {
   const selectedTable = dataset?.tables?.find((t: any) => t.id === selectedTableId);
   const calendarTable = dataset?.tables?.find((table: any) => isGeneratedCalendarTable(table)) as DatasetTable | undefined;
   const calendarEnabled = Boolean(datasetCalendarSettings.enabled && calendarTable);
+  const canCreateCalendarDimension = Boolean(
+    (dataset?.tables ?? []).some((table: any) => !isGeneratedCalendarTable(table) && table?.datasource_id != null),
+  );
   const selectedTableIsGenerated = isGeneratedCalendarTable(selectedTable as DatasetTable | undefined);
   const selectedTableTitle = getTablePrimaryName(selectedTable);
   const selectedTableSubtitle = getTableSecondaryName(selectedTable);
 
   const openCalendarModal = () => {
+    if (!calendarEnabled && !canCreateCalendarDimension) {
+      toast.error(CALENDAR_REQUIRES_DATASOURCE_MESSAGE);
+      return;
+    }
     setCalendarDraft({
       ...datasetCalendarSettings,
       enabled: true,
@@ -722,6 +732,10 @@ export default function DatasetDetailPage() {
 
   const handleSaveCalendarSettings = async () => {
     if (!datasetId) return;
+    if (!calendarEnabled && !canCreateCalendarDimension) {
+      toast.error(CALENDAR_REQUIRES_DATASOURCE_MESSAGE);
+      return;
+    }
     if (calendarDraft.start_date && calendarDraft.end_date && calendarDraft.start_date > calendarDraft.end_date) {
       toast.error('Start date must be before end date.');
       return;
@@ -1112,7 +1126,9 @@ export default function DatasetDetailPage() {
                               <button
                                 type="button"
                                 onClick={openCalendarModal}
-                                className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-50"
+                                disabled={!calendarEnabled && !canCreateCalendarDimension}
+                                title={!calendarEnabled && !canCreateCalendarDimension ? CALENDAR_REQUIRES_DATASOURCE_MESSAGE : undefined}
+                                className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
                               >
                                 <Plus className="h-3 w-3" />
                                 {calendarEnabled ? 'Edit' : 'Add'}
@@ -1273,7 +1289,7 @@ export default function DatasetDetailPage() {
                     columns={computedPreviewData?.columns || []}
                     rows={computedPreviewData?.rows || []}
                     isLoading={loadingPreview}
-                    error={previewError instanceof Error ? previewError.message : null}
+                    error={previewError ? extractDatasetErrorMessage(previewError, 'Cannot load table preview') : null}
                     onRetry={() => refetchPreview()}
                     onAddColumn={resPerms.canEdit && !selectedTableIsGenerated ? () => setIsAddColumnModalOpen(true) : undefined}
                     onDeleteColumn={resPerms.canEdit && !selectedTableIsGenerated ? handleDeleteColumn : undefined}

@@ -625,7 +625,11 @@ def create_dataset(
     current_user: User = Depends(require_permission("datasets", "edit")),
 ):
     """Create a new dataset"""
-    db_dataset = DatasetCRUDService.create_dataset(db, dataset_in, owner_id=current_user.id)
+    try:
+        db_dataset = DatasetCRUDService.create_dataset(db, dataset_in, owner_id=current_user.id)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     _sync_dataset_model_safely(db, db_dataset.id)
     db.refresh(db_dataset)
     return db_dataset
@@ -661,9 +665,13 @@ def update_dataset(
     if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
     require_edit_access(db, current_user, ds, "datasets")
-    db_dataset = DatasetCRUDService.update_dataset(
-        db, dataset_id, dataset_in
-    )
+    try:
+        db_dataset = DatasetCRUDService.update_dataset(
+            db, dataset_id, dataset_in
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if db_dataset:
         _sync_dataset_model_safely(db, dataset_id)
         db.refresh(db_dataset)
@@ -1428,6 +1436,21 @@ def remove_table_from_dataset(
         success = DatasetCRUDService.delete_table(db, table_id)
         if datasource_id is not None:
             query_cache.invalidate_datasource(datasource_id)
+            if not DatasetCRUDService.dataset_has_datasource_backed_table(db, dataset_id):
+                current_settings = get_calendar_settings(ds, enabled_default=False)
+                if current_settings.get("enabled"):
+                    DatasetCRUDService.update_dataset(
+                        db,
+                        dataset_id,
+                        DatasetUpdate.model_validate({
+                            "settings": {
+                                "calendar_dimension": {
+                                    **current_settings,
+                                    "enabled": False,
+                                }
+                            }
+                        }),
+                    )
     _sync_dataset_model_safely(db, dataset_id)
 
     if not success:
@@ -2267,7 +2290,11 @@ def create_quality_rule(
     if not table:
         raise HTTPException(status_code=404, detail="Table not found in this dataset")
 
-    return DatasetQualityService.create_rule(db, dataset_id, body)
+    try:
+        return DatasetQualityService.create_rule(db, dataset_id, body)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.put("/{dataset_id}/quality/rules/{rule_id}", response_model=QualityRuleResponse)
@@ -2289,7 +2316,11 @@ def update_quality_rule(
     if not rule:
         raise HTTPException(status_code=404, detail="Quality rule not found")
 
-    return DatasetQualityService.update_rule(db, rule, body)
+    try:
+        return DatasetQualityService.update_rule(db, rule, body)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/{dataset_id}/quality/rules/{rule_id}", status_code=204)
@@ -2342,11 +2373,15 @@ def duplicate_quality_rule(
         if not target_table:
             raise HTTPException(status_code=404, detail="Target table not found in this dataset")
 
-    return DatasetQualityService.duplicate_rule(
-        db, rule,
-        target_table_id=body.target_table_id,
-        name_suffix=body.name_suffix,
-    )
+    try:
+        return DatasetQualityService.duplicate_rule(
+            db, rule,
+            target_table_id=body.target_table_id,
+            name_suffix=body.name_suffix,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ── Runs ───────────────────────────────────────────────────────────────────

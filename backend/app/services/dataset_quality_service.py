@@ -35,6 +35,7 @@ Uniqueness:
 
 Consistency:
   cross_column      → user-supplied SQL boolean expression
+    cross_table       → join two dataset tables, then evaluate a SQL boolean expression
 
 Timeliness:
   freshness_days    → MAX(date_col) older than N days
@@ -72,6 +73,22 @@ VALID_DIMENSIONS = {
     "completeness", "validity", "uniqueness", "consistency", "timeliness", "accuracy"
 }
 VALID_SEVERITIES = {"info", "warning", "error"}
+RULE_TYPE_LEVEL: Dict[str, str] = {
+    "not_null": "column",
+    "not_blank": "column",
+    "completeness_pct": "column",
+    "accepted_values": "column",
+    "pattern_match": "column",
+    "range_check": "column",
+    "format_check": "column",
+    "unique_column": "column",
+    "unique_combo": "table",
+    "cross_column": "table",
+    "cross_table": "table",
+    "freshness_days": "table",
+    "row_count_range": "table",
+    "statistical_range": "column",
+}
 
 # rule_type → dimension mapping (for auto-validation)
 RULE_TYPE_DIMENSION: Dict[str, str] = {
@@ -85,6 +102,7 @@ RULE_TYPE_DIMENSION: Dict[str, str] = {
     "unique_column": "uniqueness",
     "unique_combo": "uniqueness",
     "cross_column": "consistency",
+    "cross_table": "consistency",
     "freshness_days": "timeliness",
     "row_count_range": "accuracy",
     "statistical_range": "accuracy",
@@ -132,12 +150,18 @@ def _numeric_cast_expr(expr: str, dialect: str) -> str:
     return f"CAST({expr} AS DOUBLE PRECISION)"
 
 
+def _wrap_table_ref(table_ref: str, alias: str) -> str:
+    """Give every table reference a predictable alias, even when it is already a subquery."""
+    return f"(SELECT * FROM {table_ref}) AS {alias}"
+
+
 def _build_check_sql(
     table_ref: str,
     rule_type: str,
     col: Optional[str],
     config: Dict[str, Any],
     dialect: str = "postgresql",
+    secondary_table_ref: Optional[str] = None,
 ) -> Optional[str]:
     """
     Return a SQL snippet that produces (rows_checked, rows_failed).
@@ -310,6 +334,20 @@ def _build_check_sql(
             f"FROM {table_ref}"
         )
 
+    if rule_type == "cross_table":
+        expr = str(config.get("expression") or "").strip()
+        join_condition = str(config.get("join_condition") or "").strip()
+        if not expr or not join_condition or not secondary_table_ref:
+            return None
+        primary_ref = _wrap_table_ref(table_ref, "src")
+        related_ref = _wrap_table_ref(secondary_table_ref, "ref")
+        return (
+            f"SELECT COUNT(*) AS rows_checked, "
+            f"{filter_expr(f'NOT ({expr})')} AS rows_failed "
+            f"FROM {primary_ref} "
+            f"LEFT JOIN {related_ref} ON {join_condition}"
+        )
+
     # ── Timeliness ─────────────────────────────────────────────────────────
     if rule_type == "freshness_days":
         date_col = config.get("column") or col
@@ -458,6 +496,302 @@ def _resolve_execution_table_and_datasource(
     return db_table, datasource
 
 
+def _clean_optional_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _normalize_string_list(values: Any) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    seen = set()
+    normalized: List[str] = []
+    for raw in values:
+        text = _clean_optional_str(raw)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def _get_table_columns(table: DatasetTable) -> List[str]:
+    cache = getattr(table, "columns_cache", None)
+    if not isinstance(cache, dict):
+        return []
+    cols = cache.get("columns")
+    if not isinstance(cols, list):
+        return []
+
+    normalized: List[str] = []
+    for col in cols:
+        if isinstance(col, dict):
+            name = _clean_optional_str(col.get("name"))
+        else:
+            name = _clean_optional_str(getattr(col, "name", None))
+        if name:
+            normalized.append(name)
+    return normalized
+
+
+def _validate_known_columns(table: DatasetTable, columns: List[str]) -> None:
+    available = set(_get_table_columns(table))
+    if not available:
+        return
+    missing = [col for col in columns if col not in available]
+    if not missing:
+        return
+
+    table_name = table.display_name or table.source_table_name or f"table {table.id}"
+    missing_str = ", ".join(missing)
+    raise ValueError(f"Column(s) {missing_str} not found in {table_name}")
+
+
+def _normalize_numeric_value(value: Any, field_name: str) -> Optional[float | int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a number")
+    if isinstance(value, (int, float)):
+        return int(value) if isinstance(value, float) and value.is_integer() else value
+
+    text = _clean_optional_str(value)
+    if text is None:
+        return None
+    try:
+        number = float(text)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be a number") from exc
+    return int(number) if number.is_integer() else number
+
+
+def _normalize_int_value(value: Any, field_name: str, *, minimum: Optional[int] = None) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be an integer")
+    if isinstance(value, int):
+        number = value
+    else:
+        text = _clean_optional_str(value)
+        if text is None:
+            return None
+        try:
+            number = int(text)
+        except ValueError as exc:
+            raise ValueError(f"{field_name} must be an integer") from exc
+
+    if minimum is not None and number < minimum:
+        raise ValueError(f"{field_name} must be at least {minimum}")
+    return number
+
+
+def _normalize_quality_config(
+    *,
+    table: DatasetTable,
+    rule_type: str,
+    column_name: Optional[str],
+    config: Any,
+) -> Dict[str, Any]:
+    raw = config or {}
+    if hasattr(raw, "model_dump"):
+        raw = raw.model_dump(exclude_none=True)
+    if not isinstance(raw, dict):
+        raw = {}
+
+    if rule_type in {"not_null", "not_blank", "unique_column"}:
+        return {}
+
+    if rule_type == "completeness_pct":
+        threshold = _normalize_numeric_value(raw.get("threshold"), "threshold")
+        if threshold is None:
+            raise ValueError("Completeness threshold is required")
+        if threshold < 0 or threshold > 100:
+            raise ValueError("Completeness threshold must be between 0 and 100")
+        return {"threshold": threshold}
+
+    if rule_type == "accepted_values":
+        values = _normalize_string_list(raw.get("values"))
+        if not values:
+            raise ValueError("Accepted values must include at least one value")
+        return {"values": values}
+
+    if rule_type == "pattern_match":
+        pattern = _clean_optional_str(raw.get("pattern"))
+        if not pattern:
+            raise ValueError("Regex pattern is required")
+        flags = _clean_optional_str(raw.get("flags"))
+        normalized = {"pattern": pattern}
+        if flags:
+            normalized["flags"] = flags
+        return normalized
+
+    if rule_type == "range_check":
+        min_value = _normalize_numeric_value(raw.get("min"), "Min")
+        max_value = _normalize_numeric_value(raw.get("max"), "Max")
+        if min_value is None and max_value is None:
+            raise ValueError("At least one numeric bound is required")
+        if min_value is not None and max_value is not None and min_value > max_value:
+            raise ValueError("Min cannot be greater than max")
+        normalized: Dict[str, Any] = {}
+        if min_value is not None:
+            normalized["min"] = min_value
+        if max_value is not None:
+            normalized["max"] = max_value
+        return normalized
+
+    if rule_type == "format_check":
+        fmt = (_clean_optional_str(raw.get("format")) or "").lower()
+        if fmt not in _FORMAT_PATTERNS:
+            raise ValueError("Format type is invalid")
+        return {"format": fmt}
+
+    if rule_type == "unique_combo":
+        columns = _normalize_string_list(raw.get("columns"))
+        if not columns:
+            raise ValueError("Unique combination requires at least one column")
+        _validate_known_columns(table, columns)
+        return {"columns": columns}
+
+    if rule_type == "cross_column":
+        expression = _clean_optional_str(raw.get("expression"))
+        if not expression:
+            raise ValueError("SQL expression is required")
+        return {"expression": expression}
+
+    if rule_type == "cross_table":
+        secondary_table_id = _normalize_int_value(raw.get("secondary_table_id"), "Secondary table ID", minimum=1)
+        join_condition = _clean_optional_str(raw.get("join_condition"))
+        expression = _clean_optional_str(raw.get("expression"))
+        if secondary_table_id is None:
+            raise ValueError("Cross-table checks require a secondary table")
+        if not join_condition:
+            raise ValueError("Join condition is required")
+        if not expression:
+            raise ValueError("SQL expression is required")
+        return {
+            "secondary_table_id": secondary_table_id,
+            "join_condition": join_condition,
+            "expression": expression,
+        }
+
+    if rule_type == "freshness_days":
+        date_column = _clean_optional_str(raw.get("column"))
+        if not date_column:
+            raise ValueError("Freshness checks require a date column")
+        _validate_known_columns(table, [date_column])
+        max_days = _normalize_int_value(raw.get("max_days"), "Max age (days)", minimum=1)
+        if max_days is None:
+            raise ValueError("Max age (days) is required")
+        return {"column": date_column, "max_days": max_days}
+
+    if rule_type == "row_count_range":
+        min_rows = _normalize_int_value(raw.get("min"), "Min rows", minimum=0)
+        max_rows = _normalize_int_value(raw.get("max"), "Max rows", minimum=0)
+        if min_rows is None and max_rows is None:
+            raise ValueError("At least one row-count bound is required")
+        if min_rows is not None and max_rows is not None and min_rows > max_rows:
+            raise ValueError("Min rows cannot be greater than max rows")
+        normalized: Dict[str, Any] = {}
+        if min_rows is not None:
+            normalized["min"] = min_rows
+        if max_rows is not None:
+            normalized["max"] = max_rows
+        return normalized
+
+    if rule_type == "statistical_range":
+        min_z = _normalize_numeric_value(raw.get("min_z"), "Min Z-score")
+        max_z = _normalize_numeric_value(raw.get("max_z"), "Max Z-score")
+        if min_z is None and max_z is None:
+            raise ValueError("At least one Z-score bound is required")
+        if min_z is not None and max_z is not None and min_z > max_z:
+            raise ValueError("Min Z-score cannot be greater than max Z-score")
+        normalized: Dict[str, Any] = {}
+        if min_z is not None:
+            normalized["min_z"] = min_z
+        if max_z is not None:
+            normalized["max_z"] = max_z
+        return normalized
+
+    raise ValueError(f"Unsupported rule type: {rule_type}")
+
+
+def _normalize_quality_rule_fields(
+    *,
+    table: DatasetTable,
+    dimension: str,
+    rule_type: str,
+    column_name: Optional[str],
+    config: Any,
+    severity: str,
+) -> Dict[str, Any]:
+    normalized_dimension = (_clean_optional_str(dimension) or "").lower()
+    normalized_rule_type = (_clean_optional_str(rule_type) or "").lower()
+    normalized_severity = (_clean_optional_str(severity) or "").lower()
+
+    if normalized_dimension not in VALID_DIMENSIONS:
+        raise ValueError("Quality dimension is invalid")
+    if normalized_rule_type not in RULE_TYPE_DIMENSION:
+        raise ValueError(f"Unsupported rule type: {rule_type}")
+    if normalized_severity not in VALID_SEVERITIES:
+        raise ValueError("Severity is invalid")
+
+    expected_dimension = RULE_TYPE_DIMENSION[normalized_rule_type]
+    if normalized_dimension != expected_dimension:
+        raise ValueError(f"Rule type '{normalized_rule_type}' belongs to '{expected_dimension}', not '{normalized_dimension}'")
+
+    normalized_column_name = _clean_optional_str(column_name)
+    rule_level = RULE_TYPE_LEVEL[normalized_rule_type]
+    if rule_level == "column":
+        if not normalized_column_name:
+            raise ValueError("This rule type requires a column")
+        _validate_known_columns(table, [normalized_column_name])
+    elif normalized_column_name:
+        normalized_column_name = None
+
+    normalized_config = _normalize_quality_config(
+        table=table,
+        rule_type=normalized_rule_type,
+        column_name=normalized_column_name,
+        config=config,
+    )
+
+    return {
+        "dimension": normalized_dimension,
+        "rule_type": normalized_rule_type,
+        "column_name": normalized_column_name,
+        "config": normalized_config,
+        "severity": normalized_severity,
+    }
+
+
+def _validate_cross_table_rule_config(
+    db: Session,
+    dataset_id: int,
+    rule_type: str,
+    config: Dict[str, Any],
+) -> None:
+    if rule_type != "cross_table":
+        return
+
+    secondary_table_id = _normalize_int_value(config.get("secondary_table_id"), "Secondary table ID", minimum=1)
+    if secondary_table_id is None:
+        raise ValueError("Cross-table checks require a secondary table")
+
+    secondary_table = (
+        db.query(DatasetTable)
+        .filter(
+            DatasetTable.id == secondary_table_id,
+            DatasetTable.dataset_id == dataset_id,
+        )
+        .first()
+    )
+    if not secondary_table:
+        raise ValueError("Secondary table not found in this dataset")
+
+
 # ---------------------------------------------------------------------------
 # CRUD operations
 # ---------------------------------------------------------------------------
@@ -491,15 +825,39 @@ class DatasetQualityService:
         dataset_id: int,
         data: QualityRuleCreate,
     ) -> DatasetQualityRule:
+        table = (
+            db.query(DatasetTable)
+            .filter(
+                DatasetTable.id == data.table_id,
+                DatasetTable.dataset_id == dataset_id,
+            )
+            .first()
+        )
+        if not table:
+            raise ValueError("Table not found in this dataset")
+
+        normalized_name = _clean_optional_str(data.name)
+        if not normalized_name:
+            raise ValueError("Rule name is required")
+
+        normalized = _normalize_quality_rule_fields(
+            table=table,
+            dimension=data.dimension,
+            rule_type=data.rule_type,
+            column_name=data.column_name,
+            config=data.config,
+            severity=data.severity,
+        )
+        _validate_cross_table_rule_config(db, dataset_id, normalized["rule_type"], normalized["config"])
         rule = DatasetQualityRule(
             dataset_id=dataset_id,
             table_id=data.table_id,
-            column_name=data.column_name or None,
-            dimension=data.dimension,
-            rule_type=data.rule_type,
-            name=data.name,
-            config=data.config.model_dump(exclude_none=True) if data.config else {},
-            severity=data.severity,
+            column_name=normalized["column_name"],
+            dimension=normalized["dimension"],
+            rule_type=normalized["rule_type"],
+            name=normalized_name,
+            config=normalized["config"],
+            severity=normalized["severity"],
             enabled=data.enabled,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
@@ -515,12 +873,52 @@ class DatasetQualityService:
         rule: DatasetQualityRule,
         data: QualityRuleUpdate,
     ) -> DatasetQualityRule:
-        for field, value in data.model_dump(exclude_unset=True).items():
-            if field == "config" and value is not None:
-                # QualityRuleConfig → dict
-                if hasattr(value, "model_dump"):
-                    value = value.model_dump(exclude_none=True)
+        payload = data.model_dump(exclude_unset=True)
+        if not payload:
+            return rule
+
+        if "name" in payload:
+            normalized_name = _clean_optional_str(payload["name"])
+            if not normalized_name:
+                raise ValueError("Rule name is required")
+            payload["name"] = normalized_name
+
+        if "severity" in payload:
+            normalized_severity = (_clean_optional_str(payload["severity"]) or "").lower()
+            if normalized_severity not in VALID_SEVERITIES:
+                raise ValueError("Severity is invalid")
+            payload["severity"] = normalized_severity
+
+        if {"dimension", "rule_type", "column_name", "config"} & set(payload.keys()):
+            table = (
+                db.query(DatasetTable)
+                .filter(
+                    DatasetTable.id == rule.table_id,
+                    DatasetTable.dataset_id == rule.dataset_id,
+                )
+                .first()
+            )
+            if not table:
+                raise ValueError("Table not found in this dataset")
+
+            normalized = _normalize_quality_rule_fields(
+                table=table,
+                dimension=payload.get("dimension", rule.dimension),
+                rule_type=payload.get("rule_type", rule.rule_type),
+                column_name=payload.get("column_name", rule.column_name),
+                config=payload.get("config", rule.config or {}),
+                severity=payload.get("severity", rule.severity),
+            )
+            _validate_cross_table_rule_config(db, rule.dataset_id, normalized["rule_type"], normalized["config"])
+            payload["dimension"] = normalized["dimension"]
+            payload["rule_type"] = normalized["rule_type"]
+            payload["column_name"] = normalized["column_name"]
+            payload["config"] = normalized["config"]
+            payload["severity"] = normalized["severity"]
+
+        for field, value in payload.items():
             setattr(rule, field, value)
+
         rule.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(rule)
@@ -534,15 +932,41 @@ class DatasetQualityService:
         name_suffix: str = " (copy)",
     ) -> DatasetQualityRule:
         """Duplicate an existing rule, optionally to a different table."""
-        new_rule = DatasetQualityRule(
-            dataset_id=rule.dataset_id,
-            table_id=target_table_id if target_table_id is not None else rule.table_id,
-            column_name=rule.column_name,
+        destination_table_id = target_table_id if target_table_id is not None else rule.table_id
+        table = (
+            db.query(DatasetTable)
+            .filter(
+                DatasetTable.id == destination_table_id,
+                DatasetTable.dataset_id == rule.dataset_id,
+            )
+            .first()
+        )
+        if not table:
+            raise ValueError("Target table not found in this dataset")
+
+        normalized = _normalize_quality_rule_fields(
+            table=table,
             dimension=rule.dimension,
             rule_type=rule.rule_type,
-            name=rule.name + name_suffix,
-            config=dict(rule.config) if rule.config else {},
+            column_name=rule.column_name,
+            config=rule.config or {},
             severity=rule.severity,
+        )
+        _validate_cross_table_rule_config(db, rule.dataset_id, normalized["rule_type"], normalized["config"])
+
+        copied_name = _clean_optional_str(f"{rule.name}{name_suffix}")
+        if not copied_name:
+            raise ValueError("Rule name is required")
+
+        new_rule = DatasetQualityRule(
+            dataset_id=rule.dataset_id,
+            table_id=destination_table_id,
+            column_name=normalized["column_name"],
+            dimension=normalized["dimension"],
+            rule_type=normalized["rule_type"],
+            name=copied_name,
+            config=normalized["config"],
+            severity=normalized["severity"],
             enabled=rule.enabled,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
@@ -627,7 +1051,7 @@ class DatasetQualityService:
             if r.enabled:
                 dim_enabled[r.dimension] = dim_enabled.get(r.dimension, 0) + 1
 
-        # Merge run results into breakdown (exclude skipped/error rules)
+        # Merge run results into breakdown (exclude only intentional skips)
         dim_passed: Dict[str, int] = {}
         dim_failed: Dict[str, int] = {}
         if latest_run and latest_run.results:
@@ -642,8 +1066,8 @@ class DatasetQualityService:
                 dim = rule_id_to_dim.get(rid)
                 if not dim:
                     continue
-                # Skip errored/skipped rules — they don't count toward pass/fail
-                if res.get("skipped") or res.get("error"):
+                # Skipped rules stay out of pass/fail; execution errors count as failed.
+                if res.get("skipped"):
                     continue
                 if res.get("passed"):
                     dim_passed[dim] = dim_passed.get(dim, 0) + 1
@@ -748,7 +1172,7 @@ class DatasetQualityService:
 
         results: Dict[str, Any] = {}
         passed_count = 0
-        scorable_count = 0  # rules thực sự chạy được (không bị error/skip)
+        scorable_count = 0  # only intentional skips stay out of the score
 
         # Ghi tổng số rules ngay từ đầu để FE biết denominator
         run.progress_done = 0
@@ -758,8 +1182,8 @@ class DatasetQualityService:
         for idx, rule in enumerate(enabled_rules, start=1):
             result = DatasetQualityService._execute_single_rule(db, dataset_obj, rule, table_map, ds_map)
             results[str(rule.id)] = result
-            # Chỉ tính score cho rules thực sự chạy được (không bị error/skip)
-            if not result.get("skipped") and not result.get("error"):
+            # Execution errors should reduce confidence; only explicit skips stay out.
+            if not result.get("skipped"):
                 scorable_count += 1
                 if result.get("passed"):
                     passed_count += 1
@@ -859,12 +1283,89 @@ class DatasetQualityService:
         config = rule.config or {}
         _log(f"Rule config: {str(config)[:300]}")
 
+        secondary_table_ref: Optional[str] = None
+        if rule.rule_type == "cross_table":
+            secondary_table_id = _normalize_int_value(config.get("secondary_table_id"), "Secondary table ID", minimum=1)
+            if secondary_table_id is None:
+                _log("ERROR: secondary_table_id is missing or invalid")
+                return _result({
+                    "passed": False, "rows_checked": None, "rows_failed": None,
+                    "detail": "Cross-table rule requires a valid secondary_table_id",
+                    "error": True,
+                })
+
+            secondary_db_table = table_map.get(secondary_table_id)
+            if not secondary_db_table:
+                _log(f"ERROR: Secondary table {secondary_table_id} not found in dataset")
+                return _result({
+                    "passed": False, "rows_checked": None, "rows_failed": None,
+                    "detail": "Secondary table not found in dataset",
+                    "error": True,
+                })
+
+            try:
+                _log("Resolving secondary table and datasource…")
+                secondary_exec_table, secondary_datasource = _resolve_execution_table_and_datasource(
+                    db,
+                    dataset_obj,
+                    secondary_db_table,
+                    ds_map,
+                )
+                _log(
+                    "Resolved secondary: "
+                    f"source={secondary_exec_table.source_table_name or '(query)'}, "
+                    f"ds={'found' if secondary_datasource else 'None'}"
+                )
+            except Exception as exc:
+                _log(f"ERROR resolving secondary execution target: {exc}")
+                _log(_tb.format_exc()[:800])
+                return _result({
+                    "passed": False, "rows_checked": None, "rows_failed": None,
+                    "detail": f"Secondary execution target error: {str(exc)[:500]}", "error": True,
+                })
+
+            if secondary_datasource is None:
+                _log("ERROR: Data source not found for secondary table")
+                return _result({
+                    "passed": False, "rows_checked": None, "rows_failed": None,
+                    "detail": "Data source not found for secondary table",
+                    "error": True,
+                })
+
+            primary_ds_id = getattr(datasource, "id", None)
+            secondary_ds_id = getattr(secondary_datasource, "id", None)
+            if primary_ds_id != secondary_ds_id:
+                _log(
+                    "ERROR: Cross-table rule spans different datasources "
+                    f"(primary={primary_ds_id}, secondary={secondary_ds_id})"
+                )
+                return _result({
+                    "passed": False, "rows_checked": None, "rows_failed": None,
+                    "detail": "Cross-table checks currently require both tables to resolve to the same datasource",
+                    "error": True,
+                })
+
+            secondary_table_ref, _ = _table_ref_for_source(secondary_exec_table, secondary_datasource, dialect)
+            if not secondary_table_ref:
+                _log("ERROR: Cannot build secondary table reference for this source kind")
+                return _result({
+                    "passed": False, "rows_checked": None, "rows_failed": None,
+                    "detail": "Cannot build secondary table reference for this source kind",
+                    "error": True,
+                })
+
+            _log(
+                "Cross-table aliases: src = primary table, ref = secondary table. "
+                f"Secondary ref: {secondary_table_ref[:200]}"
+            )
+
         check_sql = _build_check_sql(
             table_ref=table_ref,
             rule_type=rule.rule_type,
             col=rule.column_name,
             config=config,
             dialect=dialect,
+            secondary_table_ref=secondary_table_ref,
         )
 
         if not check_sql:
@@ -889,7 +1390,7 @@ class DatasetQualityService:
                 ds_type=ds_type,
                 config=datasource.config if datasource else {},
                 sql_query=check_sql,
-                limit=2,
+                limit=None,
                 timeout_seconds=60,
             )
             _log(f"Query executed in {round(exec_ms)}ms — returned {len(rows)} row(s)")
