@@ -484,7 +484,19 @@ def remove_calendar_table(db: Session, dataset_id: int) -> bool:
 
 
 def normalize_column_type(value: Any) -> str:
-    return str(value or "").strip().lower()
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return ""
+
+    if normalized == "date":
+        return "date"
+    if normalized.startswith("date["):
+        return "date"
+    if normalized in {"datetime", "datetime64", "datetime64[ns]"}:
+        return "datetime"
+    if "timestamp" in normalized or normalized.startswith("timestamptz"):
+        return "timestamp"
+    return normalized
 
 
 def iter_temporal_columns(table: DatasetTable | Any) -> List[Dict[str, str]]:

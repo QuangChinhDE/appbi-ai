@@ -47,6 +47,7 @@ _NUMERIC_TYPES = {"integer", "int", "float", "number", "numeric", "decimal", "bi
 
 # FK naming heuristics: columns ending with these suffixes are likely foreign keys
 _FK_SUFFIXES = ("_id", "_pk", "_fk", "_key")
+_AUTO_JOIN_ORIGINS = {"auto_fk", "auto_calendar"}
 
 
 _JOIN_SQL_ON_RE = re.compile(r"\$\{TABLE\}\.([^\s=]+)\s*=\s*\$\{[^}]+\}\.([^\s=]+)")
@@ -254,6 +255,48 @@ def _semantic_fields_for_table(dataset_obj: Dataset, table: DatasetTable) -> tup
     if is_generated_calendar_table(table):
         return [dict(item) for item in CALENDAR_DIMENSIONS], [dict(item) for item in CALENDAR_MEASURES]
     return _classify_columns(table.columns_cache or [])
+
+
+def _field_names_for_view(view: SemanticView) -> set[str]:
+    field_names: set[str] = set()
+    for item in (view.dimensions or []):
+        if isinstance(item, dict) and item.get("name"):
+            field_names.add(str(item.get("name")))
+    for item in (view.measures or []):
+        if isinstance(item, dict) and item.get("name"):
+            field_names.add(str(item.get("name")))
+    return field_names
+
+
+def _sanitize_join_definitions(
+    joins: List[dict],
+    *,
+    base_view_name: str,
+    base_fields: set[str],
+    valid_target_view_names: Set[str],
+) -> List[dict]:
+    sanitized: List[dict] = []
+    seen: Set[tuple[str, str | None, str | None]] = set()
+
+    for join in joins or []:
+        normalized = _normalize_join(join, base_view_name, base_fields)
+        if not normalized:
+            continue
+
+        target_view_name = str(normalized.get("view") or "").strip()
+        if not target_view_name or target_view_name not in valid_target_view_names:
+            continue
+
+        parsed_from, parsed_to = _parse_join_columns(normalized.get("sql_on"))
+        join_from = _clean_join_identifier(normalized.get("from_column")) or parsed_from
+        join_to = _clean_join_identifier(normalized.get("to_column")) or parsed_to
+        key = (target_view_name, join_from, join_to)
+        if key in seen:
+            continue
+        seen.add(key)
+        sanitized.append(normalized)
+
+    return sanitized
 
 
 def _upsert_semantic_view(
@@ -566,7 +609,43 @@ def generate_dataset_model(
     dataset_id: int,
     force: bool = False,
 ) -> dict:
-    """Auto-sync the semantic model for a dataset while preserving manual joins."""
+    """Generate or regenerate a semantic model and refresh auto-detected joins."""
+    result = _sync_dataset_model_structure(
+        db,
+        dataset_id,
+        force=force,
+        create_model=True,
+        refresh_auto_joins=True,
+    )
+    if result is None:
+        raise ValueError("Dataset model could not be generated")
+    return result
+
+
+def sync_dataset_model_structure(
+    db: Session,
+    dataset_id: int,
+    *,
+    create_model: bool = False,
+) -> Optional[dict]:
+    """Sync model views/explores without creating or re-creating auto joins."""
+    return _sync_dataset_model_structure(
+        db,
+        dataset_id,
+        force=False,
+        create_model=create_model,
+        refresh_auto_joins=False,
+    )
+
+
+def _sync_dataset_model_structure(
+    db: Session,
+    dataset_id: int,
+    *,
+    force: bool,
+    create_model: bool,
+    refresh_auto_joins: bool,
+) -> Optional[dict]:
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset_obj:
         raise ValueError(f"Dataset {dataset_id} not found")
@@ -597,6 +676,8 @@ def generate_dataset_model(
 
     model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
     if not model:
+        if not create_model:
+            return None
         model = SemanticModel(
             name=f"model_{dataset_obj.name}",
             dataset_id=dataset_id,
@@ -667,28 +748,38 @@ def generate_dataset_model(
         elif was_updated or force:
             views_updated += 1
 
-    auto_fk_joins = _detect_fk_joins(tables, table_views)
-    auto_calendar_joins, role_views, role_views_created, role_views_updated, role_view_names = _build_calendar_role_views(
-        db,
-        dataset_obj=dataset_obj,
-        tables=tables,
-        table_views=table_views,
-        existing_by_name=existing_by_name,
-        existing_by_dataset_table=existing_by_dataset_table,
-    )
-    views_created += role_views_created
-    views_updated += role_views_updated
+    auto_fk_joins: Dict[str, List[dict]] = {}
+    auto_calendar_joins: Dict[str, List[dict]] = {}
+    if refresh_auto_joins:
+        auto_fk_joins = _detect_fk_joins(tables, table_views)
+        auto_calendar_joins, role_views, role_views_created, role_views_updated, role_view_names = _build_calendar_role_views(
+            db,
+            dataset_obj=dataset_obj,
+            tables=tables,
+            table_views=table_views,
+            existing_by_name=existing_by_name,
+            existing_by_dataset_table=existing_by_dataset_table,
+        )
+        views_created += role_views_created
+        views_updated += role_views_updated
 
-    # Clean up stale calendar role views — only those belonging to THIS dataset.
-    # Role views are named "{dataset_table_{id}}__{column}__date_dim".
-    dataset_view_prefixes = {f"dataset_table_{tid}__" for tid in all_dataset_table_ids}
-    for view in db.query(SemanticView).filter(SemanticView.dataset_table_id.is_(None)).all():
-        if view.name in role_view_names:
-            continue
-        if view.name.endswith("__date_dim") and any(
-            view.name.startswith(pfx) for pfx in dataset_view_prefixes
-        ):
-            db.delete(view)
+        # Clean up stale calendar role views — only those belonging to THIS dataset.
+        # Role views are named "{dataset_table_{id}}__{column}__date_dim".
+        dataset_view_prefixes = {f"dataset_table_{tid}__" for tid in all_dataset_table_ids}
+        for view in db.query(SemanticView).filter(SemanticView.dataset_table_id.is_(None)).all():
+            if view.name in role_view_names:
+                continue
+            if view.name.endswith("__date_dim") and any(
+                view.name.startswith(pfx) for pfx in dataset_view_prefixes
+            ):
+                db.delete(view)
+
+    db.flush()
+    valid_target_view_names = {
+        str(view.name)
+        for view in db.query(SemanticView).all()
+        if str(view.name or "").strip()
+    }
 
     existing_explores = {
         explore.base_view_id: explore
@@ -720,19 +811,33 @@ def generate_dataset_model(
             db.flush()
             explores_created += 1
 
-        manual_joins = [
-            join for join in (explore.joins or [])
-            if join.get("origin") not in {"auto_fk", "auto_calendar"}
-        ]
-        auto_joins = [
-            *auto_fk_joins.get(base_view.name, []),
-            *auto_calendar_joins.get(base_view.name, []),
-        ]
+        base_fields = _field_names_for_view(base_view)
         explore.name = base_view.name
         explore.base_view_name = base_view.name
         explore.base_view_id = base_view.id
         explore.description = f"Explore for {table.display_name or table.source_table_name or base_view.name}"
-        explore.joins = _merge_join_definitions(manual_joins, auto_joins)
+        if refresh_auto_joins:
+            manual_joins = _sanitize_join_definitions(
+                [
+                    join for join in (explore.joins or [])
+                    if join.get("origin") not in _AUTO_JOIN_ORIGINS
+                ],
+                base_view_name=base_view.name,
+                base_fields=base_fields,
+                valid_target_view_names=valid_target_view_names,
+            )
+            auto_joins = [
+                *auto_fk_joins.get(base_view.name, []),
+                *auto_calendar_joins.get(base_view.name, []),
+            ]
+            explore.joins = _merge_join_definitions(manual_joins, auto_joins)
+        else:
+            explore.joins = _sanitize_join_definitions(
+                list(explore.joins or []),
+                base_view_name=base_view.name,
+                base_fields=base_fields,
+                valid_target_view_names=valid_target_view_names,
+            )
 
     db.commit()
 
@@ -1021,8 +1126,7 @@ def remove_join(
     blocked_joins = [
         join
         for join in matching_joins
-        if join.get("origin") != "auto_calendar"
-        and (join.get("managed") or join.get("origin") == "auto_fk")
+        if join.get("managed") and join.get("origin") not in _AUTO_JOIN_ORIGINS
     ]
     if blocked_joins:
         raise ValueError("System-managed relationships cannot be removed manually")

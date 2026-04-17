@@ -814,11 +814,7 @@ export function DataModelCanvas({
     ? (viewByName[selectedRelationship.presentationViewName]
         ?? allViewsByName[selectedRelationship.presentationViewName])
     : null;
-  const canDeleteSelectedRelationship = Boolean(
-    selectedRelationship
-    && canEdit
-    && (!selectedRelationship.managed || selectedRelationship.origin === 'auto_calendar')
-  );
+  const canDeleteSelectedRelationship = Boolean(selectedRelationship && canEdit);
 
   const handleGenerate = async (force = false) => {
     try {
@@ -976,7 +972,7 @@ export function DataModelCanvas({
               {selectedRelationship.origin === 'auto_calendar'
                 ? ' | Auto date link'
                 : selectedRelationship.managed
-                  ? ' | Auto-managed'
+                  ? ' | Auto-generated'
                   : ''}
             </span>
           )}

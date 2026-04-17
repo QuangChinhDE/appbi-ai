@@ -140,7 +140,12 @@ export function DashboardGrid({
     >
       {dashboardCharts.map((dc) => (
         <div key={dc.id.toString()}>
-          <ChartErrorBoundary chartId={dc.chart_id}>
+          <ChartErrorBoundary
+            chartId={dc.chart_id}
+            dashboardChartId={dc.id}
+            onRemove={onRemoveChart}
+            isRemoving={removingChartId === dc.id}
+          >
             <LazyChartSlot>
               <ChartTile
                 chartId={dc.chart_id}

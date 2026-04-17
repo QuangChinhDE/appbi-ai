@@ -3,7 +3,7 @@
 import React, { useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Bot, Sparkles, Trash2 } from 'lucide-react';
+import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Bot, Sparkles, Trash2, LayoutGrid } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import { useQueries } from '@tanstack/react-query';
 import {
@@ -16,6 +16,7 @@ import {
 import { dashboardApi } from '@/lib/api/dashboards';
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { AddChartModal } from '@/components/dashboards/AddChartModal';
+import { DashboardChartManagerModal } from '@/components/dashboards/DashboardChartManagerModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
@@ -106,6 +107,7 @@ export default function DashboardDetailPage() {
   const dashboardId = Number(params.id);
 
   const [isAddChartModalOpen, setIsAddChartModalOpen] = useState(false);
+  const [isChartManagerOpen, setIsChartManagerOpen] = useState(false);
   const [removingChartId, setRemovingChartId] = useState<number | undefined>();
   const [pendingRemoveDashboardChartId, setPendingRemoveDashboardChartId] = useState<number | undefined>();
   const [isEditingName, setIsEditingName] = useState(false);
@@ -322,6 +324,11 @@ export default function DashboardDetailPage() {
     const dashboardChart = dashboard.dashboard_charts?.find((dc) => dc.id === dashboardChartId);
     if (!dashboardChart) return;
     setPendingRemoveDashboardChartId(dashboardChartId);
+  };
+
+  const handleRemoveChartFromManager = (dashboardChartId: number) => {
+    setIsChartManagerOpen(false);
+    handleRemoveChart(dashboardChartId);
   };
 
   const confirmRemoveChart = async () => {
@@ -964,6 +971,15 @@ export default function DashboardDetailPage() {
               )}
               {canEditResource && (
                 <button
+                  onClick={() => setIsChartManagerOpen(true)}
+                  className="inline-flex items-center rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                >
+                  <LayoutGrid className="mr-2 h-4 w-4" />
+                  Manage charts
+                </button>
+              )}
+              {canEditResource && (
+                <button
                   onClick={() => setIsAddChartModalOpen(true)}
                   className="inline-flex items-center rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
                 >
@@ -1121,6 +1137,16 @@ export default function DashboardDetailPage() {
           existingChartIds={existingChartIds}
           isAdding={addChartMutation.isPending}
           currentPageName={currentPage?.name}
+        />
+
+        <DashboardChartManagerModal
+          isOpen={isChartManagerOpen}
+          onClose={() => setIsChartManagerOpen(false)}
+          dashboardCharts={dashboard.dashboard_charts ?? []}
+          pages={dashboardPages}
+          currentPageId={activePageId}
+          removingChartId={removingChartId}
+          onRemoveChart={handleRemoveChartFromManager}
         />
 
         <ConfirmDialog

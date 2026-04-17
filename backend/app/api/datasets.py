@@ -59,7 +59,7 @@ from app.services.dataset_table_sql_service import (
     is_derived_table,
     validate_and_clean_derived_query,
 )
-from app.services.dataset_model_service import generate_dataset_model
+from app.services.dataset_model_service import generate_dataset_model, sync_dataset_model_structure
 from app.services.dataset_dictionary_service import (
     build_dictionary_context,
     build_dictionary_stats,
@@ -463,7 +463,7 @@ def _serialize_dataset_dictionary(dataset_obj: Dataset) -> dict:
 
 def _sync_dataset_model_safely(db: Session, dataset_id: int) -> None:
     try:
-        generate_dataset_model(db, dataset_id, force=False)
+        sync_dataset_model_structure(db, dataset_id, create_model=False)
     except Exception as exc:
         db.rollback()
         logger.warning("Dataset model sync skipped for dataset %s: %s", dataset_id, exc)
@@ -2117,13 +2117,13 @@ def update_dataset_explore(
         if key == "joins" and isinstance(value, list):
             managed_joins = [
                 join for join in (explore.joins or [])
-                if join.get("managed") or join.get("origin") in {"auto_fk", "auto_calendar"}
+                if join.get("managed") and join.get("origin") not in {"auto_fk", "auto_calendar"}
             ]
-            manual_joins = [
+            editable_joins = [
                 join for join in value
-                if not join.get("managed") and join.get("origin") not in {"auto_fk", "auto_calendar"}
+                if not (join.get("managed") and join.get("origin") not in {"auto_fk", "auto_calendar"})
             ]
-            setattr(explore, key, [*managed_joins, *manual_joins])
+            setattr(explore, key, [*managed_joins, *editable_joins])
             continue
         setattr(explore, key, value)
 

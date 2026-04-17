@@ -499,19 +499,44 @@ export function ChartTile({
     return config;
   }, [chart?.config, exploreConfig]);
 
+  const renderStatusCard = (content: React.ReactNode, tone: 'neutral' | 'danger' = 'neutral') => (
+    <div className={`relative h-full rounded-lg border p-6 ${tone === 'danger' ? 'border-red-200 bg-white' : 'border-gray-200 bg-white'}`}>
+      {onRemove && (
+        <button
+          type="button"
+          onMouseDown={e => e.stopPropagation()}
+          onClick={() => onRemove(dashboardChartId)}
+          disabled={isRemoving}
+          className={`absolute right-2 top-2 rounded-md border p-1.5 shadow-sm disabled:cursor-not-allowed disabled:opacity-50 ${tone === 'danger' ? 'border-red-200 bg-white text-red-600 hover:bg-red-50' : 'border-gray-300 bg-white text-red-600 hover:border-red-300 hover:bg-red-50'}`}
+          title="Remove chart"
+        >
+          {isRemoving ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <X className="h-4 w-4" />
+          )}
+        </button>
+      )}
+      <div className="flex h-full items-center justify-center">
+        {content}
+      </div>
+    </div>
+  );
+
   if (isLoadingChart || isLoadingData) {
-    return (
-      <div className="h-full bg-white rounded-lg border border-gray-200 p-6 flex items-center justify-center">
+    return renderStatusCard(
+      <div className="flex items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
       </div>
     );
   }
 
   if (!chart || !chartData) {
-    return (
-      <div className="h-full bg-white rounded-lg border border-gray-200 p-6 flex items-center justify-center">
+    return renderStatusCard(
+      <div className="text-center">
         <p className="text-gray-500">Failed to load chart</p>
-      </div>
+      </div>,
+      'danger'
     );
   }
 

@@ -12,7 +12,7 @@ from app.models.dataset import DatasetTable
 from app.models.semantic import SemanticExplore, SemanticModel, SemanticView
 from app.services.chart_contracts import get_chart_active_role_config
 from app.services.dataset_calendar_service import iter_calendar_binding_fields
-from app.services.dataset_model_service import generate_dataset_model
+from app.services.dataset_model_service import sync_dataset_model_structure
 from app.services.dataset_table_sql_service import (
     DatasetTableSqlError,
     collect_derived_dependency_table_ids,
@@ -157,7 +157,7 @@ def resolve_chart_semantic_binding(
     model = db.query(SemanticModel).filter(SemanticModel.dataset_id == db_table.dataset_id).first()
     if model is None and auto_generate:
         try:
-            generate_dataset_model(db, db_table.dataset_id, force=False)
+            sync_dataset_model_structure(db, db_table.dataset_id, create_model=True)
         except Exception:
             logger.warning("Auto-generate semantic model failed for dataset %s", db_table.dataset_id, exc_info=True)
         model = db.query(SemanticModel).filter(SemanticModel.dataset_id == db_table.dataset_id).first()
@@ -165,7 +165,7 @@ def resolve_chart_semantic_binding(
     view = db.query(SemanticView).filter(SemanticView.dataset_table_id == dataset_table_id).first()
     if view is None and model is not None and auto_generate:
         try:
-            generate_dataset_model(db, db_table.dataset_id, force=False)
+            sync_dataset_model_structure(db, db_table.dataset_id, create_model=True)
         except Exception:
             logger.warning("Auto-generate semantic view failed for dataset_table %s", dataset_table_id, exc_info=True)
         view = db.query(SemanticView).filter(SemanticView.dataset_table_id == dataset_table_id).first()
