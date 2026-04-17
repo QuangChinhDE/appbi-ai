@@ -3,8 +3,9 @@ API router for chart endpoints.
 """
 import json
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
-from typing import Any, Dict, List, Optional
+from sqlalchemy import String, case, cast, func, or_
+from sqlalchemy.orm import Session, joinedload, selectinload
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -19,7 +20,8 @@ from app.core.dependencies import (
     batch_effective_permissions,
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
-from app.models.models import Chart, DashboardChart, Dashboard
+from app.models.models import Chart, ChartMetadata, ChartType, DashboardChart, Dashboard
+from app.models.dataset import Dataset, DatasetTable
 from app.models.resource_share import ResourceType
 from app.models.user import User
 from app.schemas import (
@@ -130,20 +132,108 @@ def _serialize_chart_description(meta) -> dict:
     }
 
 
+def _stamp_chart_catalog_fields(current_user: User, items: list[Chart]) -> None:
+    for item in items:
+        dataset_table = getattr(item, "dataset_table", None)
+        dataset_obj = getattr(dataset_table, "dataset", None) if dataset_table else None
+        is_owned = bool(current_user and item.owner_id == current_user.id)
+        item.dataset_id = getattr(dataset_obj, "id", None)
+        item.dataset_name = getattr(dataset_obj, "name", None)
+        item.dataset_table_name = getattr(dataset_table, "display_name", None)
+        item.is_owned_by_current_user = is_owned
+        item.is_shared = not is_owned
+
+
 @router.get("/", response_model=List[ChartResponse])
 def list_charts(
     skip: int = 0,
-    limit: int = 50,
+    limit: int = Query(100, ge=1, le=500),
+    q: Optional[str] = Query(None, description="Search by chart name, type, dataset, description, or tags"),
+    chart_type: Optional[str] = Query(None, description="Filter by chart type enum, e.g. BAR or LINE"),
+    scope: Literal["all", "mine", "shared"] = Query("all", description="Ownership scope"),
+    sort: Literal["updated_desc", "created_desc", "name_asc", "name_desc", "relevance"] = Query("updated_desc"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """List charts visible to the current user."""
-    items = (
+    query = (
         _owned_or_shared(db, Chart, ResourceType.CHART, current_user)
-        .offset(skip)
-        .limit(limit)
-        .all()
+        .options(
+            joinedload(Chart.chart_meta),
+            selectinload(Chart.parameters),
+            joinedload(Chart.dataset_table).joinedload(DatasetTable.dataset),
+        )
+        .outerjoin(ChartMetadata, Chart.chart_meta)
+        .outerjoin(DatasetTable, Chart.dataset_table)
+        .outerjoin(Dataset, DatasetTable.dataset)
     )
+
+    normalized_query = (q or "").strip()
+    normalized_query_lower = normalized_query.lower()
+
+    if chart_type:
+        chart_type_upper = chart_type.strip().upper()
+        valid_chart_types = {member.value for member in ChartType}
+        if chart_type_upper not in valid_chart_types:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported chart_type '{chart_type}'",
+            )
+        query = query.filter(Chart.chart_type == ChartType(chart_type_upper))
+
+    if scope == "mine":
+        query = query.filter(Chart.owner_id == current_user.id)
+    elif scope == "shared":
+        query = query.filter(or_(Chart.owner_id.is_(None), Chart.owner_id != current_user.id))
+
+    if normalized_query:
+        like_term = f"%{normalized_query}%"
+        query = query.filter(
+            or_(
+                Chart.name.ilike(like_term),
+                Chart.description.ilike(like_term),
+                cast(Chart.chart_type, String).ilike(like_term),
+                Dataset.name.ilike(like_term),
+                DatasetTable.display_name.ilike(like_term),
+                ChartMetadata.domain.ilike(like_term),
+                ChartMetadata.intent.ilike(like_term),
+                ChartMetadata.auto_description.ilike(like_term),
+                cast(ChartMetadata.metrics, String).ilike(like_term),
+                cast(ChartMetadata.dimensions, String).ilike(like_term),
+                cast(ChartMetadata.tags, String).ilike(like_term),
+                cast(ChartMetadata.query_aliases, String).ilike(like_term),
+                cast(ChartMetadata.insight_keywords, String).ilike(like_term),
+                cast(ChartMetadata.common_questions, String).ilike(like_term),
+            )
+        )
+
+    if sort == "relevance" and normalized_query:
+        startswith_term = f"{normalized_query_lower}%"
+        contains_term = f"%{normalized_query_lower}%"
+        relevance_rank = case(
+            (func.lower(Chart.name) == normalized_query_lower, 0),
+            (func.lower(Chart.name).like(startswith_term), 1),
+            (func.lower(DatasetTable.display_name) == normalized_query_lower, 2),
+            (func.lower(Dataset.name) == normalized_query_lower, 3),
+            (func.lower(cast(Chart.chart_type, String)) == normalized_query_lower, 4),
+            (func.lower(Chart.name).like(contains_term), 5),
+            (func.lower(DatasetTable.display_name).like(contains_term), 6),
+            (func.lower(Dataset.name).like(contains_term), 7),
+            (func.lower(func.coalesce(Chart.description, "")).like(contains_term), 8),
+            (func.lower(func.coalesce(ChartMetadata.auto_description, "")).like(contains_term), 9),
+            else_=10,
+        )
+        query = query.order_by(relevance_rank.asc(), Chart.updated_at.desc(), Chart.id.desc())
+    elif sort == "created_desc":
+        query = query.order_by(Chart.created_at.desc(), Chart.id.desc())
+    elif sort == "name_asc":
+        query = query.order_by(func.lower(Chart.name).asc(), Chart.id.asc())
+    elif sort == "name_desc":
+        query = query.order_by(func.lower(Chart.name).desc(), Chart.id.desc())
+    else:
+        query = query.order_by(Chart.updated_at.desc(), Chart.id.desc())
+
+    items = query.offset(skip).limit(limit).all()
     # Batch hydrate: use auto_generate=False to avoid heavy model generation
     # on the list endpoint (semantic models are generated on save/preview instead).
     for item in items:
@@ -153,6 +243,7 @@ def list_charts(
     for item in items:
         item.user_permission = perm_map.get(item.id, "none")
     stamp_owner_emails(db, items)
+    _stamp_chart_catalog_fields(current_user, items)
     return items
 
 
@@ -384,6 +475,8 @@ def get_chart(
             detail=f"Chart with ID {chart_id} not found"
         )
     chart.user_permission = require_view_access(db, current_user, chart, "explore_charts")
+    stamp_owner_emails(db, [chart])
+    _stamp_chart_catalog_fields(current_user, [chart])
     return chart
 
 
@@ -399,6 +492,11 @@ def create_chart(
         dataset_obj, _ = _get_dataset_for_chart_table(db, chart.dataset_table_id)
         require_view_access(db, current_user, dataset_obj, "datasets")
         new_chart = ChartService.create(db, chart, owner_id=current_user.id)
+        new_chart = ChartService.get_by_id(db, new_chart.id)
+        if new_chart:
+            new_chart.user_permission = get_effective_permission(db, current_user, new_chart, "explore_charts")
+            stamp_owner_emails(db, [new_chart])
+            _stamp_chart_catalog_fields(current_user, [new_chart])
         DescriptionPipelineService.enqueue_chart_pipeline(
             background_tasks,
             db,
@@ -428,6 +526,10 @@ def update_chart(
         require_view_access(db, current_user, dataset_obj, "datasets")
     try:
         chart = ChartService.update(db, chart_id, chart_update)
+        if chart:
+            chart.user_permission = get_effective_permission(db, current_user, chart, "explore_charts")
+            stamp_owner_emails(db, [chart])
+            _stamp_chart_catalog_fields(current_user, [chart])
         DescriptionPipelineService.enqueue_chart_pipeline(
             background_tasks,
             db,

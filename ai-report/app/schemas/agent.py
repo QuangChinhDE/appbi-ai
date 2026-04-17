@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 
 class SelectedTableRef(BaseModel):
@@ -38,7 +38,11 @@ class AgentBriefRequest(BaseModel):
     include_action_items: bool = True
     include_data_quality_notes: bool = True
     table_roles_hint: List[str] = Field(default_factory=list)
-    business_glossary: List[str] = Field(default_factory=list)
+    # Accept the old key while the system drains any persisted legacy payloads.
+    business_terms: List[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("business_terms", "business_glossary"),
+    )
     known_data_issues: List[str] = Field(default_factory=list)
     important_dimensions: List[str] = Field(default_factory=list)
     columns_to_avoid: List[str] = Field(default_factory=list)
@@ -52,7 +56,7 @@ class AgentBriefRequest(BaseModel):
         "must_include_sections",
         "alert_focus",
         "table_roles_hint",
-        "business_glossary",
+        "business_terms",
         "known_data_issues",
         "important_dimensions",
         "columns_to_avoid",
@@ -95,7 +99,11 @@ class ParsedBriefArtifact(BaseModel):
     risk_focus: List[str] = Field(default_factory=list)
     important_dimensions: List[str] = Field(default_factory=list)
     columns_to_avoid: List[str] = Field(default_factory=list)
-    glossary_terms: List[str] = Field(default_factory=list)
+    # Accept the old parsed artifact key from historical runs, but expose only business_terms.
+    business_terms: List[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("business_terms", "glossary_terms"),
+    )
     known_data_issues: List[str] = Field(default_factory=list)
     table_role_hints: List[str] = Field(default_factory=list)
     narrative_preferences: Dict[str, Any] = Field(default_factory=dict)

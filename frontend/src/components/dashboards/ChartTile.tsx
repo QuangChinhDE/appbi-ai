@@ -256,7 +256,12 @@ export function ChartTile({
     [debouncedFilterKey],
   );
 
-  const { data: chartData, isLoading: isLoadingData } = useChartData(chartId, debouncedFilters, 'dashboard');
+  const { data: chartData, isLoading: isLoadingData } = useChartData(
+    chartId,
+    debouncedFilters,
+    'dashboard',
+    { enabled: !isLoadingChart && Boolean(chart) },
+  );
 
   // Title editing state
   const [isEditingTitle, setIsEditingTitle] = useState(false);

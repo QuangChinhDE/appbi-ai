@@ -8,16 +8,19 @@ import { chartApi } from '@/lib/api/charts';
 import {
   ChartCreate,
   ChartDataContext,
+  ChartListParams,
   ChartMetadataUpsert,
   ChartParameterCreate,
   ChartPreviewDataRequest,
   ChartUpdate,
 } from '@/types/api';
 
-export const useCharts = () => {
+export const useCharts = (options?: ChartListParams & { enabled?: boolean }) => {
+  const { enabled = true, ...params } = options ?? {};
   return useQuery({
-    queryKey: ['charts'],
-    queryFn: chartApi.getAll,
+    queryKey: ['charts', params],
+    queryFn: () => chartApi.getAll(params),
+    enabled,
   });
 };
 
@@ -33,15 +36,18 @@ export const useChartData = (
   id: number,
   filters?: Record<string, unknown>[],
   context: ChartDataContext = 'default',
+  options?: { enabled?: boolean },
 ) => {
   // Serialize filters to a stable string so identical filter payloads share
   // the same cache entry regardless of object-reference identity.
   const filterKey = filters && filters.length > 0 ? JSON.stringify(filters) : null;
 
+  const enabled = options?.enabled ?? true;
+
   return useQuery({
     queryKey: ['charts', id, 'data', context, filterKey],
     queryFn: () => chartApi.getData(id, filters, context),
-    enabled: !!id,
+    enabled: !!id && enabled,
     staleTime: 5 * 60 * 1000,   // 5 min — avoid refetching unchanged chart data
     gcTime: 30 * 60 * 1000,     // 30 min — keep inactive entries longer
   });

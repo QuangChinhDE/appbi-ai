@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func
 
 from app.models import Chart, ChartType, ChartMetadata, ChartParameter
 from app.schemas import ChartCreate, ChartUpdate
@@ -41,6 +42,33 @@ logger = get_logger(__name__)
 _SIMPLE_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def _normalize_chart_name(name: str | None) -> str:
+    return str(name or "").strip().lower()
+
+
+def _find_chart_name_conflict(
+    db: Session,
+    name: str | None,
+    *,
+    owner_id=None,
+    exclude_chart_id: int | None = None,
+) -> Chart | None:
+    normalized = _normalize_chart_name(name)
+    if not normalized:
+        return None
+
+    query = db.query(Chart).filter(
+        func.lower(func.trim(Chart.name)) == normalized,
+    )
+    if owner_id is None:
+        query = query.filter(Chart.owner_id.is_(None))
+    else:
+        query = query.filter(Chart.owner_id == owner_id)
+    if exclude_chart_id is not None:
+        query = query.filter(Chart.id != exclude_chart_id)
+    return query.first()
+
+
 def _semantic_field_is_supported_by_binding(
     binding: dict[str, Any],
     semantic_field: str,
@@ -68,6 +96,81 @@ def _semantic_field_is_supported_by_binding(
 
     base_view_name = str(binding.get("baseViewName") or "").strip()
     return bool(base_view_name and semantic_ref.startswith(f"{base_view_name}."))
+
+
+def _resolve_legacy_calendar_filter_for_binding(
+    binding: dict[str, Any],
+    field_name: str,
+) -> dict[str, str] | None:
+    target = str(field_name or "").strip()
+    if not target:
+        return None
+
+    source_fields = sorted(
+        {
+            str(mapping.get("sourceField") or "").strip()
+            for mapping in (binding.get("calendarFieldMappings") or [])
+            if isinstance(mapping, dict)
+            and str(mapping.get("calendarField") or "").strip() == target
+            and str(mapping.get("sourceField") or "").strip()
+        }
+    )
+    if len(source_fields) != 1:
+        return None
+
+    source_field = source_fields[0]
+    return {
+        "field": source_field,
+        "calendarField": target,
+        "calendarSourceField": source_field,
+    }
+
+
+def _plain_field_is_supported_by_binding(
+    binding: dict[str, Any],
+    field_name: str,
+) -> bool:
+    target = str(field_name or "").strip()
+    if not target:
+        return False
+
+    base_view_name = str(binding.get("baseViewName") or "").strip()
+    mapped_field_names = {
+        str(key).strip()
+        for key in (binding.get("fieldMap") or {}).keys()
+        if str(key or "").strip()
+    }
+    calendar_source_fields = {
+        str(mapping.get("sourceField") or "").strip()
+        for mapping in (binding.get("calendarFieldMappings") or [])
+        if isinstance(mapping, dict) and str(mapping.get("sourceField") or "").strip()
+    }
+    supported_semantic_fields = {
+        str(value).strip()
+        for value in [
+            *(binding.get("dimensionFields") or []),
+            *(binding.get("measureFields") or []),
+            *((binding.get("fieldMap") or {}).values()),
+            *[
+                mapping.get("semanticField")
+                for mapping in (binding.get("calendarFieldMappings") or [])
+                if isinstance(mapping, dict)
+            ],
+        ]
+        if str(value or "").strip()
+    }
+
+    if target in mapped_field_names or target in calendar_source_fields:
+        return True
+    if base_view_name and f"{base_view_name}.{target}" in supported_semantic_fields:
+        return True
+
+    has_binding_scope = bool(
+        mapped_field_names
+        or calendar_source_fields
+        or supported_semantic_fields
+    )
+    return not has_binding_scope
 
 
 def _normalize_runtime_filters_for_chart(
@@ -103,6 +206,18 @@ def _normalize_runtime_filters_for_chart(
             continue
 
         if not semantic_field or "." not in semantic_field:
+            legacy_calendar_filter = _resolve_legacy_calendar_filter_for_binding(binding, filt.get("field"))
+            if legacy_calendar_filter is not None:
+                result.append(
+                    {
+                        **filt,
+                        **legacy_calendar_filter,
+                    }
+                )
+                continue
+
+            if not _plain_field_is_supported_by_binding(binding, filt.get("field")):
+                continue
             result.append(filt)
             continue
 
@@ -853,7 +968,20 @@ class ChartService:
     @staticmethod
     def get_all(db: Session, skip: int = 0, limit: int = 50) -> List[Chart]:
         """Get all charts with pagination."""
-        charts = db.query(Chart).offset(skip).limit(limit).all()
+        from sqlalchemy.orm import joinedload, selectinload
+        from app.models.dataset import DatasetTable
+
+        charts = (
+            db.query(Chart)
+            .options(
+                joinedload(Chart.chart_meta),
+                selectinload(Chart.parameters),
+                joinedload(Chart.dataset_table).joinedload(DatasetTable.dataset),
+            )
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
         for chart in charts:
             ChartService.hydrate_runtime_config(db, chart)
         return charts
@@ -861,7 +989,19 @@ class ChartService:
     @staticmethod
     def get_by_id(db: Session, chart_id: int) -> Optional[Chart]:
         """Get a chart by ID."""
-        chart = db.query(Chart).filter(Chart.id == chart_id).first()
+        from sqlalchemy.orm import joinedload, selectinload
+        from app.models.dataset import DatasetTable
+
+        chart = (
+            db.query(Chart)
+            .options(
+                joinedload(Chart.chart_meta),
+                selectinload(Chart.parameters),
+                joinedload(Chart.dataset_table).joinedload(DatasetTable.dataset),
+            )
+            .filter(Chart.id == chart_id)
+            .first()
+        )
         return ChartService.hydrate_runtime_config(db, chart)
     
     @staticmethod
@@ -872,6 +1012,10 @@ class ChartService:
     @staticmethod
     def create(db: Session, chart: ChartCreate, owner_id=None) -> Chart:
         """Create a new chart."""
+        chart_name = chart.name.strip()
+        if not chart_name:
+            raise ValueError("Chart name cannot be empty")
+
         if chart.dataset_table_id is not None:
             # Verify dataset table exists
             from app.services.dataset_crud import DatasetCRUDService
@@ -879,9 +1023,12 @@ class ChartService:
             if not table:
                 raise ValueError(f"Dataset table with ID {chart.dataset_table_id} not found")
 
+        if _find_chart_name_conflict(db, chart_name, owner_id=owner_id):
+            raise ValueError(f"You already have a chart named '{chart_name}'")
+
         try:
             db_chart = Chart(
-                name=chart.name,
+                name=chart_name,
                 description=chart.description,
                 dataset_table_id=chart.dataset_table_id,
                 chart_type=ChartType(chart.chart_type.value),
@@ -896,11 +1043,11 @@ class ChartService:
             db.add(db_chart)
             db.commit()
             db.refresh(db_chart)
-            logger.info(f"Created chart: {chart.name}")
+            logger.info(f"Created chart: {chart_name}")
             return db_chart
         except IntegrityError:
             db.rollback()
-            raise ValueError(f"Chart with name '{chart.name}' already exists")
+            raise ValueError(f"You already have a chart named '{chart_name}'")
     
     @staticmethod
     def update(
@@ -912,12 +1059,28 @@ class ChartService:
         db_chart = ChartService.get_by_id(db, chart_id)
         if not db_chart:
             return None
+
+        if chart_update.name is not None:
+            next_name = chart_update.name.strip()
+            if not next_name:
+                raise ValueError("Chart name cannot be empty")
+            if _find_chart_name_conflict(
+                db,
+                next_name,
+                owner_id=db_chart.owner_id,
+                exclude_chart_id=chart_id,
+            ):
+                raise ValueError(f"You already have a chart named '{next_name}'")
         
         try:
             update_data = chart_update.model_dump(exclude_unset=True)
             for field, value in update_data.items():
                 if field == "chart_type" and value:
                     setattr(db_chart, field, ChartType(value.value))
+                elif field == "name":
+                    if value is None:
+                        continue
+                    setattr(db_chart, field, value.strip())
                 else:
                     setattr(db_chart, field, value)
 
@@ -935,7 +1098,8 @@ class ChartService:
             return ChartService.hydrate_runtime_config(db, db_chart)
         except IntegrityError:
             db.rollback()
-            raise ValueError(f"Chart with name '{chart_update.name}' already exists")
+            conflict_name = (chart_update.name or db_chart.name or "").strip()
+            raise ValueError(f"You already have a chart named '{conflict_name}'")
     
     @staticmethod
     def delete(db: Session, chart_id: int) -> bool:

@@ -38,18 +38,6 @@ export interface DatasetSettings {
   calendar_dimension: CalendarDimensionSettings;
 }
 
-export type DatasetDictionaryCategory = 'metric' | 'dimension' | 'entity' | 'rule' | 'other';
-
-export interface DatasetDictionaryTerm {
-  term: string;
-  definition: string;
-  category: DatasetDictionaryCategory;
-  synonyms: string[];
-  related_tables: number[];
-  related_columns: string[];
-  examples: string[];
-}
-
 export type DatasetDictionaryQualitySeverity = 'info' | 'warning' | 'error';
 export type DatasetDictionaryQualityFormatHint =
   | 'email'
@@ -102,12 +90,10 @@ export interface DatasetDictionary {
   ai_context?: string;
   default_filters: string[];
   warnings: string[];
-  glossary: DatasetDictionaryTerm[];
   table_notes: DatasetDictionaryTableNote[];
 }
 
 export interface DatasetDictionaryStats {
-  glossary_terms: number;
   warnings: number;
   default_filters: number;
   table_notes: number;
@@ -680,7 +666,6 @@ export function useUpdateDatasetDictionary(datasetId: number) {
           dictionary: input,
           dictionary_updated_at: current?.dictionary_updated_at ?? new Date().toISOString(),
           stats: current?.stats ?? {
-            glossary_terms: input.glossary?.length ?? 0,
             warnings: input.warnings?.length ?? 0,
             default_filters: input.default_filters?.length ?? 0,
             table_notes: input.table_notes?.length ?? 0,

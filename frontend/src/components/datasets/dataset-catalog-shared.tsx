@@ -44,7 +44,7 @@ export const QUALITY_SEVERITIES: DatasetDictionaryQualitySeverity[] = ['info', '
 
 export const EMPTY_DICTIONARY: DatasetDictionary = {
   overview: '', business_purpose: '', usage_guidelines: '', ai_context: '',
-  default_filters: [], warnings: [], glossary: [], table_notes: [],
+  default_filters: [], warnings: [], table_notes: [],
 };
 
 export const DATA_TYPE_DISPLAY: Record<string, { label: string; color: string }> = {
@@ -130,15 +130,6 @@ export function normalizeDictionary(value?: DatasetDictionary | null): DatasetDi
     ai_context: data.ai_context ?? '',
     default_filters: [...(data.default_filters ?? [])],
     warnings: [...(data.warnings ?? [])],
-    glossary: [...(data.glossary ?? [])].map((item) => ({
-      term: item.term ?? '',
-      definition: item.definition ?? '',
-      category: item.category ?? 'other',
-      synonyms: [...(item.synonyms ?? [])],
-      related_tables: [...(item.related_tables ?? [])],
-      related_columns: [...(item.related_columns ?? [])],
-      examples: [...(item.examples ?? [])],
-    })),
     table_notes: [...(data.table_notes ?? [])].map((item) => ({
       table_id: item.table_id,
       business_role: item.business_role ?? '',
@@ -199,16 +190,6 @@ export function buildPayload(draft: DatasetDictionary): DatasetDictionary {
     ai_context: draft.ai_context?.trim() || undefined,
     default_filters: trimList(draft.default_filters ?? []),
     warnings: trimList(draft.warnings ?? []),
-    glossary: (draft.glossary ?? [])
-      .map((item) => ({
-        ...item,
-        term: item.term.trim(),
-        definition: item.definition.trim(),
-        synonyms: trimList(item.synonyms),
-        related_columns: trimList(item.related_columns),
-        examples: trimList(item.examples),
-      }))
-      .filter((item) => item.term && item.definition),
     table_notes: (draft.table_notes ?? [])
       .map((item) => ({
         ...item,

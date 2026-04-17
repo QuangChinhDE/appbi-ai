@@ -287,6 +287,7 @@ export function ChartDetailModal({
     isOpen ? chartId : 0,
     parameterFilters,
     'dashboard',
+    { enabled: isOpen && !isLoadingChart && Boolean(chart) },
   );
 
   const datasetId = useMemo(() => {

@@ -8,6 +8,7 @@ import {
   ChartUpdate,
   ChartDataContext,
   ChartDataResponse,
+  ChartListParams,
   ChartPreviewDataRequest,
   ChartPreviewDataResponse,
   ChartMetadata,
@@ -17,8 +18,8 @@ import {
 } from '@/types/api';
 
 export const chartApi = {
-  getAll: async (): Promise<Chart[]> => {
-    const response = await apiClient.get('/charts/');
+  getAll: async (params?: ChartListParams): Promise<Chart[]> => {
+    const response = await apiClient.get('/charts/', { params });
     return response.data;
   },
 

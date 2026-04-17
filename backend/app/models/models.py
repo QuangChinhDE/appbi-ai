@@ -79,7 +79,7 @@ class Chart(Base):
     __tablename__ = "charts"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(255), unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=False, index=True)
     description = Column(Text, nullable=True)
     
     # Foreign key to dataset table

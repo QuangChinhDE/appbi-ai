@@ -30,7 +30,6 @@ import {
   Plus,
   Trash2,
   Link2,
-  X,
 } from 'lucide-react';
 import {
   useDatasetModel,
@@ -43,6 +42,7 @@ import {
 } from '@/hooks/use-dataset-model';
 import { RelationshipDialog } from './RelationshipDialog';
 import { DatasetDictionaryPanel } from './DatasetDictionaryPanel';
+import { AppModalShell } from '@/components/common/AppModalShell';
 import { toast } from '@/lib/toast';
 
 // ─── Layout constants ────────────────────────────────────────────────────────
@@ -1124,39 +1124,22 @@ export function DataModelCanvas({
 
       {/* Dataset Dictionary Modal */}
       {dictModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-stretch justify-end">
-          {/* Backdrop */}
-          <div
-            className="absolute inset-0 bg-black/30 backdrop-blur-[2px]"
-            onClick={() => setDictModalOpen(false)}
+        <AppModalShell
+          onClose={() => setDictModalOpen(false)}
+          title={`${datasetName} Dictionary`}
+          description="Review and edit dictionary coverage across all dataset tables from one workspace."
+          icon={<BookOpen className="h-5 w-5" />}
+          maxWidthClass="max-w-6xl"
+          panelClassName="h-[88vh] max-h-[88vh] rounded-[28px]"
+          bodyClassName="p-0"
+        >
+          <DatasetDictionaryPanel
+            datasetId={datasetId}
+            datasetName={datasetName}
+            tables={tables as any}
+            canEdit={canEdit}
           />
-          {/* Panel — slides in from right, wide enough for 2-col layout */}
-          <div className="relative z-10 flex w-full max-w-4xl flex-col bg-white shadow-2xl">
-            {/* Modal header */}
-            <div className="flex shrink-0 items-center gap-3 border-b border-gray-200 px-5 py-3">
-              <BookOpen className="h-4 w-4 text-gray-500" />
-              <div className="flex-1 min-w-0">
-                <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wide">Dataset</p>
-                <h2 className="text-sm font-semibold text-gray-900 truncate">{datasetName} — Dictionary</h2>
-              </div>
-              <button
-                onClick={() => setDictModalOpen(false)}
-                className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            {/* Dictionary panel content */}
-            <div className="flex-1 overflow-hidden">
-              <DatasetDictionaryPanel
-                datasetId={datasetId}
-                datasetName={datasetName}
-                tables={tables as any}
-                canEdit={canEdit}
-              />
-            </div>
-          </div>
-        </div>
+        </AppModalShell>
       )}
     </div>
   );

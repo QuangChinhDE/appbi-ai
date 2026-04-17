@@ -66,7 +66,7 @@ export function normalizePlan(plan: AgentPlanResponse): EditableAgentPlan {
           risk_focus: ensureArray(plan.parsed_brief.risk_focus),
           important_dimensions: ensureArray(plan.parsed_brief.important_dimensions),
           columns_to_avoid: ensureArray(plan.parsed_brief.columns_to_avoid),
-          glossary_terms: ensureArray(plan.parsed_brief.glossary_terms),
+          business_terms: ensureArray(plan.parsed_brief.business_terms),
           known_data_issues: ensureArray(plan.parsed_brief.known_data_issues),
           table_role_hints: ensureArray(plan.parsed_brief.table_role_hints),
           success_criteria: ensureArray(plan.parsed_brief.success_criteria),

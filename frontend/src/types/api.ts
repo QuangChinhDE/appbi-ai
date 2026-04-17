@@ -299,15 +299,37 @@ export interface Chart {
   name: string;
   description?: string;
   dataset_table_id?: number | null;
+  dataset_id?: number | null;
+  dataset_name?: string | null;
+  dataset_table_name?: string | null;
   chart_type: ChartType;
   config: ChartConfig;
   owner_id?: string;
   owner_email?: string;
   user_permission?: 'none' | 'view' | 'edit' | 'full';
+  is_owned_by_current_user?: boolean;
+  is_shared?: boolean;
   created_at: string;
   updated_at: string;
   metadata?: ChartMetadata | null;
   parameters?: ChartParameter[];
+}
+
+export type ChartListScope = 'all' | 'mine' | 'shared';
+export type ChartListSort =
+  | 'updated_desc'
+  | 'created_desc'
+  | 'name_asc'
+  | 'name_desc'
+  | 'relevance';
+
+export interface ChartListParams {
+  skip?: number;
+  limit?: number;
+  q?: string;
+  chart_type?: ChartType | string;
+  scope?: ChartListScope;
+  sort?: ChartListSort;
 }
 
 export interface ChartCreate {

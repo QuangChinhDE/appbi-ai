@@ -101,6 +101,34 @@ function formatFilterValue(value: unknown): string {
   return String(value ?? '');
 }
 
+function normalizeLegacyDateFilter(filter: BaseFilter, dateColumn: ColumnInfo | null): BaseFilter {
+  const dateColumnKey = dateColumn ? getColumnKey(dateColumn) : null;
+  const semanticField = String(filter.semanticField ?? '').trim();
+  const fieldKey = String(filter.fieldKey ?? '').trim();
+  const fieldName = String(filter.field ?? '').trim().toLowerCase();
+  const isLegacyDateFilter = (
+    filter.type === 'date'
+    && fieldName === 'date'
+    && !semanticField.includes('.')
+    && !fieldKey.includes('.')
+    && Boolean(dateColumn && dateColumnKey && dateColumn.semanticField)
+  );
+
+  if (!isLegacyDateFilter || !dateColumn || !dateColumnKey) {
+    return filter;
+  }
+
+  return {
+    ...filter,
+    field: dateColumn.name,
+    fieldKey: dateColumnKey,
+    semanticField: dateColumn.semanticField,
+    datasetId: dateColumn.datasetId,
+    label: filter.label || getColumnDisplayLabel(dateColumn),
+    linkedFields: dateColumn.defaultLinkedFields?.length ? [...dateColumn.defaultLinkedFields] : undefined,
+  };
+}
+
 export default function DashboardDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -722,6 +750,20 @@ export default function DashboardDetailPage() {
     }];
   }, [dashboard?.dashboard_charts]);
 
+  React.useEffect(() => {
+    const dateColumn = calendarDateColumns[0] ?? null;
+    if (!dateColumn) return;
+
+    setDraftGlobalFilters((current) => {
+      const next = current.map((filter) => normalizeLegacyDateFilter(filter, dateColumn));
+      return JSON.stringify(next) === JSON.stringify(current) ? current : next;
+    });
+    setAppliedGlobalFilters((current) => {
+      const next = current.map((filter) => normalizeLegacyDateFilter(filter, dateColumn));
+      return JSON.stringify(next) === JSON.stringify(current) ? current : next;
+    });
+  }, [calendarDateColumns]);
+
   // Auto-seed a default date filter from the dataset calendar/date table when available.
   React.useEffect(() => {
     if (dateFilterAutoSeededRef.current) return;
@@ -849,7 +891,6 @@ export default function DashboardDetailPage() {
     );
   }
 
-  const existingChartIds = visibleDashboardCharts.map((dc) => dc.chart_id);
   const linkedAgentReport = agentReportSpecs.find((spec) => spec.latest_dashboard_id === dashboardId);
   const activeCrossFilter = crossFilterState?.filter ?? null;
   const isRenamingCurrentPage = editingPageId === currentPage?.id;
@@ -1134,7 +1175,10 @@ export default function DashboardDetailPage() {
           isOpen={isAddChartModalOpen}
           onClose={() => setIsAddChartModalOpen(false)}
           onAdd={handleAddChart}
-          existingChartIds={existingChartIds}
+          dashboardCharts={dashboard.dashboard_charts ?? []}
+          dashboardDatasetIds={dashboardDatasetIds}
+          pages={dashboardPages}
+          activePageId={activePageId}
           isAdding={addChartMutation.isPending}
           currentPageName={currentPage?.name}
         />

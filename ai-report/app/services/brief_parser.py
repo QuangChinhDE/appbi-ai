@@ -184,7 +184,7 @@ def parse_brief(brief: AgentBriefRequest) -> ParsedBriefArtifact:
         risk_focus=[],
         important_dimensions=[],
         columns_to_avoid=[],
-        glossary_terms=[],
+        business_terms=list(brief.business_terms or []),
         known_data_issues=[],
         table_role_hints=[],
         narrative_preferences={

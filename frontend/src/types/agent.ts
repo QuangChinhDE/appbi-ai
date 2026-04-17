@@ -66,7 +66,7 @@ export interface ParsedBriefArtifact {
   narrative_preferences: Record<string, any>;
   important_dimensions: string[];
   columns_to_avoid: string[];
-  glossary_terms: string[];
+  business_terms: string[];
   known_data_issues: string[];
   table_role_hints: string[];
   success_criteria: string[];

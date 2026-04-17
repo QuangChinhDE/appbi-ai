@@ -75,7 +75,7 @@ export function makeInitialBriefState(language: AppLanguage) {
     preferredGranularity: '',
     decisionContext: '',
     importantDimensionsText: '',
-    businessGlossaryText: '',
+    businessTermsText: '',
     knownDataIssuesText: '',
     columnsToAvoidText: '',
     tableRolesHintText: '',

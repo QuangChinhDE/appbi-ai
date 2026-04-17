@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List
 
 from app.domains.finance.config import METADATA
-from app.domains.finance.glossary import FINANCE_GLOSSARY, FINANCE_PRIMARY_KPIS, FINANCE_SECTION_ARCHETYPES
+from app.domains.finance.terms import FINANCE_BUSINESS_TERMS, FINANCE_PRIMARY_KPIS, FINANCE_SECTION_ARCHETYPES
 from app.domains.finance.narrative import FINANCE_DOMAIN_LENS_EN, FINANCE_DOMAIN_LENS_VI
 from app.domains.finance.prompts import (
     FINANCE_ENRICHMENT_PROMPT_EN,
@@ -31,7 +31,7 @@ def _find_column_matches(table_descriptions: List[Dict[str, Any]], keywords: Ite
 
 
 def prepare_finance_brief(brief: AgentBriefRequest, parsed_brief: ParsedBriefArtifact) -> ParsedBriefArtifact:
-    glossary_terms = list(dict.fromkeys([*parsed_brief.glossary_terms, *FINANCE_GLOSSARY]))
+    business_terms = list(dict.fromkeys([*parsed_brief.business_terms, *FINANCE_BUSINESS_TERMS]))
     success_criteria = list(parsed_brief.success_criteria)
     success_criteria.append(
         "Explain the top financial signal with a variance, margin, cost, or cash lens when the data allows it."
@@ -45,7 +45,7 @@ def prepare_finance_brief(brief: AgentBriefRequest, parsed_brief: ParsedBriefArt
         update={
             "domain_id": METADATA.id,
             "domain_version": METADATA.version,
-            "glossary_terms": glossary_terms,
+            "business_terms": business_terms,
             "required_sections": required_sections,
             "success_criteria": list(dict.fromkeys(success_criteria)),
             "explicit_assumptions": list(dict.fromkeys(explicit_assumptions)),
@@ -84,7 +84,7 @@ def finance_planner_context(parsed_brief: ParsedBriefArtifact, vi: bool) -> Dict
         "user_context": {
             "selected_domain": "finance",
             "section_archetypes": FINANCE_SECTION_ARCHETYPES,
-            "finance_glossary_terms": FINANCE_GLOSSARY,
+            "finance_business_terms": FINANCE_BUSINESS_TERMS,
             "domain_lens": FINANCE_DOMAIN_LENS_VI if vi else FINANCE_DOMAIN_LENS_EN,
             "parsed_domain_id": parsed_brief.domain_id,
             "parsed_domain_version": parsed_brief.domain_version,

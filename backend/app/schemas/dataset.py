@@ -28,16 +28,6 @@ class DatasetSettings(BaseModel):
     calendar_dimension: CalendarDimensionSettings = Field(default_factory=CalendarDimensionSettings)
 
 
-class DatasetDictionaryTerm(BaseModel):
-    term: str = Field(..., min_length=1, max_length=120)
-    definition: str = Field(..., min_length=1, max_length=1000)
-    category: Literal["metric", "dimension", "entity", "rule", "other"] = "other"
-    synonyms: List[str] = Field(default_factory=list)
-    related_tables: List[int] = Field(default_factory=list)
-    related_columns: List[str] = Field(default_factory=list)
-    examples: List[str] = Field(default_factory=list)
-
-
 class DatasetDictionaryColumnQuality(BaseModel):
     required: Optional[bool] = None
     unique: Optional[bool] = None
@@ -79,12 +69,10 @@ class DatasetDictionary(BaseModel):
     ai_context: Optional[str] = Field(default=None, max_length=4000)
     default_filters: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
-    glossary: List[DatasetDictionaryTerm] = Field(default_factory=list)
     table_notes: List[DatasetDictionaryTableNote] = Field(default_factory=list)
 
 
 class DatasetDictionaryStats(BaseModel):
-    glossary_terms: int = 0
     warnings: int = 0
     default_filters: int = 0
     table_notes: int = 0

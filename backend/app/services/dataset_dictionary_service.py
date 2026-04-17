@@ -19,7 +19,6 @@ def _clean_block_text(value: Any) -> str:
     return "\n".join(lines).strip()
 
 
-VALID_GLOSSARY_CATEGORIES = {"metric", "dimension", "entity", "rule", "other"}
 VALID_QUALITY_SEVERITIES = {"info", "warning", "error"}
 VALID_QUALITY_FORMAT_HINTS = {"email", "phone", "url", "date", "datetime", "currency", "percent", "custom"}
 
@@ -113,51 +112,6 @@ def normalize_dictionary_payload(payload: dict[str, Any] | None) -> dict[str, An
         if values:
             dictionary[key] = values
 
-    glossary = []
-    for item in raw.get("glossary") or []:
-        if not isinstance(item, dict):
-            continue
-        term = _clean_text(item.get("term"))
-        definition = _clean_text(item.get("definition"))
-        if not term or not definition:
-            continue
-        category = _clean_text(item.get("category")) or "other"
-        if category not in VALID_GLOSSARY_CATEGORIES:
-            category = "other"
-        glossary_item: dict[str, Any] = {
-            "term": term,
-            "definition": definition,
-            "category": category,
-        }
-        for list_key in ("synonyms", "related_columns", "examples"):
-            values = []
-            seen: set[str] = set()
-            for raw_value in item.get(list_key) or []:
-                text = _clean_text(raw_value)
-                fingerprint = text.casefold()
-                if not text or fingerprint in seen:
-                    continue
-                seen.add(fingerprint)
-                values.append(text)
-            if values:
-                glossary_item[list_key] = values
-        related_tables = []
-        seen_table_ids: set[int] = set()
-        for raw_id in item.get("related_tables") or []:
-            try:
-                table_id = int(raw_id)
-            except (TypeError, ValueError):
-                continue
-            if table_id in seen_table_ids:
-                continue
-            seen_table_ids.add(table_id)
-            related_tables.append(table_id)
-        if related_tables:
-            glossary_item["related_tables"] = related_tables
-        glossary.append(glossary_item)
-    if glossary:
-        dictionary["glossary"] = glossary
-
     table_notes = []
     for item in raw.get("table_notes") or []:
         if not isinstance(item, dict):
@@ -244,7 +198,6 @@ def build_dictionary_stats(
         if isinstance(note, dict) and int(note.get("table_id") or 0) in table_ids
     }
     return {
-        "glossary_terms": len((dictionary or {}).get("glossary") or []),
         "warnings": len((dictionary or {}).get("warnings") or []),
         "default_filters": len((dictionary or {}).get("default_filters") or []),
         "table_notes": len((dictionary or {}).get("table_notes") or []),
@@ -288,38 +241,6 @@ def build_dictionary_context(
     if warnings:
         lines.append("Warnings / caveats:")
         lines.extend(f"- {item}" for item in warnings)
-
-    glossary = dictionary.get("glossary") or []
-    if glossary:
-        lines.append("Business glossary:")
-        for item in glossary:
-            if not isinstance(item, dict):
-                continue
-            fragments = []
-            term = _clean_text(item.get("term"))
-            definition = _clean_text(item.get("definition"))
-            if term:
-                fragments.append(term)
-            if definition:
-                fragments.append(definition)
-            synonyms = item.get("synonyms") or []
-            if synonyms:
-                fragments.append(f"synonyms: {', '.join(str(value) for value in synonyms)}")
-            related_tables = [
-                table_lookup.get(int(table_id), f"Table {table_id}")
-                for table_id in (item.get("related_tables") or [])
-                if int(table_id) in table_lookup
-            ]
-            if related_tables:
-                fragments.append(f"tables: {', '.join(related_tables)}")
-            related_columns = item.get("related_columns") or []
-            if related_columns:
-                fragments.append(f"columns: {', '.join(str(value) for value in related_columns)}")
-            examples = item.get("examples") or []
-            if examples:
-                fragments.append(f"examples: {', '.join(str(value) for value in examples)}")
-            if fragments:
-                lines.append(f"- {' | '.join(fragments)}")
 
     table_notes = dictionary.get("table_notes") or []
     if table_notes:

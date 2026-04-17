@@ -21,8 +21,11 @@ interface PageListLayoutProps {
   loadingText?: string;
   searchable?: boolean;
   searchPlaceholder?: string;
+  searchValue?: string;
+  onSearchValueChange?: (value: string) => void;
   viewToggle?: boolean;
   defaultView?: ViewMode;
+  toolbarExtra?: ((ctx: ToolbarCtx) => React.ReactNode) | React.ReactNode;
   children: ((ctx: ToolbarCtx) => React.ReactNode) | React.ReactNode;
 }
 
@@ -35,13 +38,19 @@ export function PageListLayout({
   loadingText,
   searchable = true,
   searchPlaceholder,
+  searchValue,
+  onSearchValueChange,
   viewToggle = true,
   defaultView = 'grid',
+  toolbarExtra,
   children,
 }: PageListLayoutProps) {
   const { t } = useI18n();
   const [viewMode, setViewMode] = useState<ViewMode>(defaultView);
-  const [filterText, setFilterText] = useState('');
+  const [internalFilterText, setInternalFilterText] = useState('');
+
+  const filterText = searchValue ?? internalFilterText;
+  const setFilterText = onSearchValueChange ?? setInternalFilterText;
 
   if (isLoading) {
     return (
@@ -54,8 +63,9 @@ export function PageListLayout({
     );
   }
 
-  const showToolbar = searchable || viewToggle;
+  const showToolbar = searchable || viewToggle || Boolean(toolbarExtra);
   const ctx: ToolbarCtx = { viewMode, filterText };
+  const toolbarExtraContent = typeof toolbarExtra === 'function' ? toolbarExtra(ctx) : toolbarExtra;
 
   return (
     <div className="p-8">
@@ -70,9 +80,9 @@ export function PageListLayout({
       {overview && <div className="mb-6">{overview}</div>}
 
       {showToolbar && (
-        <div className="mb-6 flex items-center gap-3">
+        <div className="mb-6 flex flex-wrap items-center gap-3">
           {searchable && (
-            <div className="relative max-w-sm flex-1">
+            <div className="relative min-w-[240px] max-w-lg flex-[1_1_280px]">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
@@ -81,6 +91,11 @@ export function PageListLayout({
                 placeholder={searchPlaceholder ?? t('common.search')}
                 className="w-full rounded-md border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
+            </div>
+          )}
+          {toolbarExtraContent && (
+            <div className="flex flex-wrap items-center gap-3">
+              {toolbarExtraContent}
             </div>
           )}
           {viewToggle && (

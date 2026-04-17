@@ -193,6 +193,11 @@ class ChartResponse(ChartBase):
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    dataset_id: Optional[int] = None
+    dataset_name: Optional[str] = None
+    dataset_table_name: Optional[str] = None
+    is_owned_by_current_user: Optional[bool] = None
+    is_shared: Optional[bool] = None
     created_at: datetime
     updated_at: datetime
     # validation_alias reads from ORM attr 'chart_meta'; serialized as 'metadata' in JSON

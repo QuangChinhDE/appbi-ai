@@ -1,4 +1,4 @@
-FINANCE_GLOSSARY = [
+FINANCE_BUSINESS_TERMS = [
     "revenue",
     "sales revenue",
     "expense",
