@@ -5,7 +5,7 @@
  * ==================================================
  * Layout: toolbar (table dropdown + dimension chips + Run Now + Add Rule)
  *         → dimension groups (collapsible) → rule rows (inline toggle/edit/delete/duplicate)
- *         → slide-in Rule Editor drawer (fixed right)
+ *         → wide Rule Editor modal with inline setup guidance
  *
  * Features:
  *  - Inline enable/disable toggle per rule (1-click)
@@ -41,6 +41,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { HelpTooltip } from '@/components/ui/HelpTooltip';
 
 import {
   type DatasetTable,
@@ -313,18 +314,52 @@ function TagInput({ values, onChange, placeholder, suggestions }: {
 // Column selector (dropdown or text)
 // ---------------------------------------------------------------------------
 
-function ColumnSelector({ tableId, tables, value, onChange, placeholder, label }: {
+function FieldLabel({ label, helpText, action }: {
+  label: string;
+  helpText?: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="mb-1.5 flex items-start justify-between gap-3">
+      <div className="flex min-w-0 items-center text-xs font-medium text-gray-600">
+        <span>{label}</span>
+        {helpText && <HelpTooltip text={helpText} />}
+      </div>
+      {action}
+    </div>
+  );
+}
+
+function EditorSection({ title, description, children, className = '' }: {
+  title: string;
+  description: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={`rounded-2xl border border-gray-200 bg-white p-4 shadow-sm ${className}`.trim()}>
+      <div className="mb-4">
+        <h4 className="text-sm font-semibold text-gray-900">{title}</h4>
+        <p className="mt-1 text-xs leading-5 text-gray-500">{description}</p>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function ColumnSelector({ tableId, tables, value, onChange, placeholder, label, helpText }: {
   tableId: number;
   tables: DatasetTable[];
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   label?: string;
+  helpText?: string;
 }) {
   const options = getColumnOptions(tables, tableId);
   return (
     <div>
-      {label && <label className="mb-1 block text-xs font-medium text-gray-600">{label}</label>}
+      {label && <FieldLabel label={label} helpText={helpText} />}
       {options.length > 0 ? (
         <select
           value={value}
@@ -367,7 +402,10 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
     case 'completeness_pct':
       return (
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">Minimum completeness % (non-null rows)</label>
+          <FieldLabel
+            label="Minimum completeness %"
+            helpText="Set the lowest allowed percentage of non-null rows. The rule fails when completeness drops below this threshold."
+          />
           <div className="flex items-center gap-2">
             <input type="number" min={0} max={100} step={1}
               value={config.threshold ?? ''}
@@ -382,7 +420,11 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
     case 'accepted_values':
       return (
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">Allowed values <span className="text-gray-400 font-normal">(Enter or comma to add)</span></label>
+          <FieldLabel
+            label="Allowed values"
+            helpText="Add every value that is permitted for this column. Any other non-null value fails the check."
+            action={<span className="text-[11px] font-normal text-gray-400">Enter or comma to add</span>}
+          />
           <TagInput values={config.values ?? []} onChange={(values) => onPatch({ values })} placeholder="Add value and press Enter…" />
         </div>
       );
@@ -391,7 +433,10 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
       return (
         <div className="space-y-2">
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-600">Regex pattern</label>
+            <FieldLabel
+              label="Regex pattern"
+              helpText="Use a datasource-compatible regular expression. Every non-null value in the selected column must match it."
+            />
             <input type="text"
               value={config.pattern ?? ''}
               onChange={(e) => onPatch({ pattern: e.target.value || undefined })}
@@ -399,7 +444,11 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
               className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-blue-400 focus:outline-none" />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-600">Flags <span className="text-gray-400 font-normal">(optional, e.g. i for case-insensitive)</span></label>
+            <FieldLabel
+              label="Flags"
+              helpText="Optional regex flags supported by your datasource, such as i for case-insensitive matching."
+              action={<span className="text-[11px] font-normal text-gray-400">Optional</span>}
+            />
             <input type="text"
               value={(config as any).flags ?? ''}
               onChange={(e) => onPatch({ flags: e.target.value || undefined } as any)}
@@ -413,14 +462,20 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
       return (
         <div className="flex gap-2">
           <div className="flex-1">
-            <label className="mb-1 block text-xs font-medium text-gray-600">Min <span className="text-gray-400 font-normal">(inclusive)</span></label>
+            <FieldLabel
+              label="Min"
+              helpText="Inclusive lower bound for valid values. Leave blank if only a maximum matters."
+            />
             <input type="text" value={config.min ?? ''}
               onChange={(e) => onPatch({ min: e.target.value || undefined })}
               placeholder="0"
               className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none" />
           </div>
           <div className="flex-1">
-            <label className="mb-1 block text-xs font-medium text-gray-600">Max <span className="text-gray-400 font-normal">(inclusive)</span></label>
+            <FieldLabel
+              label="Max"
+              helpText="Inclusive upper bound for valid values. Leave blank if only a minimum matters."
+            />
             <input type="text" value={config.max ?? ''}
               onChange={(e) => onPatch({ max: e.target.value || undefined })}
               placeholder="1000"
@@ -432,7 +487,10 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
     case 'format_check':
       return (
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">Format type</label>
+          <FieldLabel
+            label="Format type"
+            helpText="Choose a built-in validator such as email, phone, URL, or date."
+          />
           <select value={config.format ?? ''}
             onChange={(e) => onPatch({ format: (e.target.value || undefined) as QualityFormat | undefined })}
             className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none">
@@ -445,7 +503,10 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
     case 'unique_combo':
       return (
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">Columns to check combination uniqueness</label>
+          <FieldLabel
+            label="Columns for unique combination"
+            helpText="Add the columns whose combined values must be unique across the table."
+          />
           <TagInput
             values={config.columns ?? []}
             onChange={(columns) => onPatch({ columns })}
@@ -459,9 +520,10 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
     case 'cross_column':
       return (
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">
-            SQL boolean expression <span className="text-gray-400 font-normal">(TRUE = valid row)</span>
-          </label>
+          <FieldLabel
+            label="SQL boolean expression"
+            helpText="Write a SQL condition that returns TRUE for valid rows and FALSE for failing rows."
+          />
           <textarea rows={3}
             value={config.expression ?? ''}
             onChange={(e) => onPatch({ expression: e.target.value || undefined })}
@@ -477,7 +539,10 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
       return (
         <div className="space-y-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-600">Related table</label>
+            <FieldLabel
+              label="Related table"
+              helpText="Choose the second table that this rule should compare against."
+            />
             <select
               value={secondaryTableId ?? ''}
               onChange={(e) => onPatch({ secondary_table_id: e.target.value ? Number(e.target.value) : undefined })}
@@ -491,9 +556,10 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-600">
-              Join condition <span className="text-gray-400 font-normal">(src = current table, ref = related table)</span>
-            </label>
+            <FieldLabel
+              label="Join condition"
+              helpText="Join the current table as src to the related table as ref. Write the condition exactly as it should appear in SQL."
+            />
             <textarea rows={2}
               value={config.join_condition ?? ''}
               onChange={(e) => onPatch({ join_condition: e.target.value || undefined })}
@@ -502,9 +568,10 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-600">
-              SQL boolean expression <span className="text-gray-400 font-normal">(TRUE = valid joined row)</span>
-            </label>
+            <FieldLabel
+              label="SQL boolean expression"
+              helpText="Write the validation condition that runs after the join. TRUE means the joined row is valid."
+            />
             <textarea rows={3}
               value={config.expression ?? ''}
               onChange={(e) => onPatch({ expression: e.target.value || undefined })}
@@ -525,10 +592,14 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
             value={config.column ?? ''}
             onChange={(v) => onPatch({ column: v || undefined })}
             label="Date / timestamp column"
+            helpText="Choose the date or timestamp column that represents the latest update time for this table."
             placeholder="updated_at"
           />
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-600">Max age (days)</label>
+            <FieldLabel
+              label="Max age (days)"
+              helpText="Maximum allowed age between the newest value in the selected column and the current time."
+            />
             <input type="number" min={1} step={1}
               value={config.max_days ?? ''}
               onChange={(e) => onPatch({ max_days: e.target.value === '' ? undefined : Number(e.target.value) })}
@@ -542,7 +613,10 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
       return (
         <div className="flex gap-2">
           <div className="flex-1">
-            <label className="mb-1 block text-xs font-medium text-gray-600">Min rows</label>
+            <FieldLabel
+              label="Min rows"
+              helpText="Minimum acceptable number of rows in the table for the run to pass."
+            />
             <input type="number" min={0} step={1}
               value={config.min ?? ''}
               onChange={(e) => onPatch({ min: e.target.value === '' ? undefined : Number(e.target.value) })}
@@ -550,7 +624,10 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
               className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none" />
           </div>
           <div className="flex-1">
-            <label className="mb-1 block text-xs font-medium text-gray-600">Max rows</label>
+            <FieldLabel
+              label="Max rows"
+              helpText="Maximum acceptable row count. Leave blank if the table only needs a minimum volume check."
+            />
             <input type="number" min={0} step={1}
               value={config.max ?? ''}
               onChange={(e) => onPatch({ max: e.target.value === '' ? undefined : Number(e.target.value) })}
@@ -564,7 +641,10 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
       return (
         <div className="flex gap-2">
           <div className="flex-1">
-            <label className="mb-1 block text-xs font-medium text-gray-600">Min Z-score</label>
+            <FieldLabel
+              label="Min Z-score"
+              helpText="Lower expected z-score bound for the selected metric. Values below this threshold fail."
+            />
             <input type="number" step={0.1}
               value={config.min_z ?? ''}
               onChange={(e) => onPatch({ min_z: e.target.value === '' ? undefined : Number(e.target.value) })}
@@ -572,7 +652,10 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
               className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none" />
           </div>
           <div className="flex-1">
-            <label className="mb-1 block text-xs font-medium text-gray-600">Max Z-score</label>
+            <FieldLabel
+              label="Max Z-score"
+              helpText="Upper expected z-score bound for the selected metric. Values above this threshold fail."
+            />
             <input type="number" step={0.1}
               value={config.max_z ?? ''}
               onChange={(e) => onPatch({ max_z: e.target.value === '' ? undefined : Number(e.target.value) })}
@@ -583,12 +666,16 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
       );
 
     default:
-      return null;
+      return (
+        <div className="rounded-xl border border-dashed border-gray-200 bg-white/70 px-3 py-3 text-xs leading-5 text-gray-500">
+          This rule type does not need extra parameters. Review the scope and governance settings, then save it.
+        </div>
+      );
   }
 }
 
 // ---------------------------------------------------------------------------
-// Rule Editor Drawer
+// Rule Editor Modal
 // ---------------------------------------------------------------------------
 
 interface RuleEditorProps {
@@ -680,159 +767,254 @@ function RuleEditorDrawer({
   }
 
   const isPending = createMutation.isPending || updateMutation.isPending;
+  const selectedTable = tables.find((table) => table.id === tableId);
+  const selectedTableLabel = selectedTable?.display_name
+    || selectedTable?.source_table_name
+    || 'No table selected';
+  const severityMeta = SEVERITY_META[severity];
+  const previewCards = [
+    { label: 'Table', value: selectedTableLabel },
+    { label: 'Dimension', value: dimDef_.label },
+    { label: 'Rule type', value: rtDef?.label ?? ruleType },
+    { label: 'Scope', value: usesColumn ? (columnName.trim() ? `Column: ${columnName}` : 'Column-level rule') : 'Table-level rule' },
+  ];
+  const setupTips = [
+    'Hover the info icon next to any field to see what the rule checks and how to configure it.',
+    usesColumn
+      ? 'Pick a column before saving so the rule runs against the correct field in the selected table.'
+      : 'This rule evaluates table-level behavior, so you can leave the column selector empty.',
+    ruleType === 'cross_table'
+      ? 'Use src for the current table and ref for the related table in both the join and validation expressions.'
+      : 'Keep the suggested name until the rule logic is final, then rename it with business language if needed.',
+  ];
 
   return (
     <>
-      {/* Backdrop */}
-      <div className="fixed inset-0 z-30 bg-black/20" onClick={onClose} />
+      <div className="fixed inset-0 z-30 bg-slate-950/35 backdrop-blur-[1px]" onClick={onClose} />
 
-      {/* Drawer */}
-      <div className="fixed right-0 top-0 z-40 flex h-full w-full max-w-sm flex-col bg-white shadow-2xl border-l border-gray-200">
-        {/* Header */}
-        <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-4 py-3">
-          <div>
-            <h3 className="text-sm font-semibold text-gray-900">{isEdit ? 'Edit Rule' : 'New Quality Rule'}</h3>
-            <p className="text-xs text-gray-400 mt-0.5">{isEdit ? `Rule #${editingRule!.id}` : 'Configure a data quality check'}</p>
-          </div>
-          <button onClick={onClose} className="rounded p-1 hover:bg-gray-100 text-gray-400">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
-
-          {/* Table */}
-          <div>
-            <label className="mb-1 block text-xs font-medium text-gray-600">Table</label>
-            <select value={tableId} onChange={(e) => { setTableId(Number(e.target.value)); setColumnName(''); }} disabled={isEdit}
-              className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none disabled:bg-gray-50 disabled:text-gray-400">
-              {tables.map((t) => <option key={t.id} value={t.id}>{t.display_name || t.source_table_name}</option>)}
-            </select>
+      <div className="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-5 lg:p-8">
+        <div className="flex h-full max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-[28px] border border-gray-200 bg-white shadow-2xl">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-gray-200 px-5 py-4 sm:px-6">
+            <div className="min-w-0 space-y-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-600">Quality rule setup</p>
+                <h3 className="mt-1 text-lg font-semibold text-gray-900">{isEdit ? 'Edit Quality Rule' : 'Create Quality Rule'}</h3>
+                <p className="mt-1 text-sm text-gray-500">
+                  {isEdit
+                    ? `Rule #${editingRule!.id} · update the rule without losing its run history.`
+                    : 'Set the scope, logic, and severity for a source-backed data quality check.'}
+                </p>
+              </div>
+              <div className="inline-flex max-w-2xl items-start gap-2 rounded-2xl border border-blue-100 bg-blue-50 px-3 py-2.5 text-sm text-blue-800">
+                <Info className="mt-0.5 h-4 w-4 shrink-0" />
+                <p>Hover the info icon next to any field to see what it checks and how to configure it.</p>
+              </div>
+            </div>
+            <button onClick={onClose} className="rounded-xl p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600">
+              <X className="h-4 w-4" />
+            </button>
           </div>
 
-          {/* Dimension chips */}
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-gray-600">DQ Dimension</label>
-            <div className="grid grid-cols-3 gap-1.5">
-              {DQ_DIMENSIONS.map((d) => (
-                <button key={d.key}
-                  onClick={() => switchDimension(d.key)}
-                  className={`rounded border px-2 py-1.5 text-xs font-medium transition-colors ${
-                    dimension === d.key
-                      ? `${d.bg} ${d.color} ${d.border}`
-                      : 'border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:bg-gray-50'
-                  }`}>
-                  {d.label}
-                </button>
-              ))}
+          <div className="flex-1 overflow-y-auto px-5 py-5 sm:px-6">
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+              <div className="space-y-5">
+                <EditorSection title="Basic setup" description="Choose the table, quality objective, and check style before defining the detailed rule logic.">
+                  <div className="space-y-4">
+                    <div>
+                      <FieldLabel
+                        label="Table"
+                        helpText="Pick the table this rule should validate. In edit mode the table stays locked so previous runs remain consistent."
+                      />
+                      <select value={tableId} onChange={(e) => { setTableId(Number(e.target.value)); setColumnName(''); }} disabled={isEdit}
+                        className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-blue-400 focus:outline-none disabled:bg-gray-50 disabled:text-gray-400">
+                        {tables.map((t) => <option key={t.id} value={t.id}>{t.display_name || t.source_table_name}</option>)}
+                      </select>
+                    </div>
+
+                    <div>
+                      <FieldLabel
+                        label="DQ Dimension"
+                        helpText="Choose the quality area first. It controls which rule types are available and keeps setup focused on the right objective."
+                      />
+                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                        {DQ_DIMENSIONS.map((d) => (
+                          <button key={d.key}
+                            onClick={() => switchDimension(d.key)}
+                            className={`rounded-2xl border px-3 py-3 text-left transition-colors ${
+                              dimension === d.key
+                                ? `${d.bg} ${d.color} ${d.border}`
+                                : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50'
+                            }`}>
+                            <span className="block text-sm font-semibold">{d.label}</span>
+                            <span className="mt-1 block text-[11px] leading-4 opacity-80">{d.description}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <FieldLabel
+                        label="Rule Type"
+                        helpText="Pick the exact validation to run for the selected dimension. The helper text below explains what counts as a failure."
+                      />
+                      <select value={ruleType} onChange={(e) => switchRuleType(e.target.value)}
+                        className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-blue-400 focus:outline-none">
+                        {dimDef_.ruleTypes.map((rt) => <option key={rt.value} value={rt.value}>{rt.label}</option>)}
+                      </select>
+                      {rtDef?.hint && (
+                        <div className="mt-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-xs leading-5 text-gray-600">
+                          {rtDef.hint}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </EditorSection>
+
+                <EditorSection title="Rule logic" description="Define the exact scope and parameters that decide whether rows pass or fail.">
+                  <div className="space-y-4 rounded-2xl border border-gray-200 bg-gray-50/70 p-4">
+                    {usesColumn && (
+                      <ColumnSelector
+                        tableId={tableId} tables={tables}
+                        value={columnName}
+                        onChange={setColumnName}
+                        label={rtDef?.level === 'both' ? 'Column (optional)' : 'Column'}
+                        helpText={rtDef?.level === 'both'
+                          ? 'Choose a column when this rule should narrow the check to one field. Leave it empty if the rule should evaluate the whole table.'
+                          : 'Choose the column this rule validates inside the selected table.'}
+                        placeholder="column_name"
+                      />
+                    )}
+
+                    <ConfigFields ruleType={ruleType} config={config} onPatch={patchConfig} tableId={tableId} tables={tables} />
+                  </div>
+                </EditorSection>
+              </div>
+
+              <div className="space-y-5">
+                <EditorSection title="Governance" description="Set the name, severity, and execution status that users see in summaries and review logs.">
+                  <div className="space-y-4">
+                    <div>
+                      <FieldLabel
+                        label="Rule Name"
+                        helpText="This name appears in the rule list, quality summaries, and run history. Keep it business-readable."
+                        action={name.trim() !== suggestedName ? (
+                          <button
+                            type="button"
+                            onClick={() => { setName(suggestedName); setNameEdited(false); }}
+                            className="text-[11px] font-medium text-blue-600 hover:text-blue-700"
+                          >
+                            Use suggested
+                          </button>
+                        ) : undefined}
+                      />
+                      <input type="text" value={name}
+                        onChange={(e) => { setName(e.target.value); setNameEdited(true); }}
+                        className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
+                      {!isEdit && (
+                        <p className="mt-2 text-[11px] leading-5 text-gray-400">
+                          The suggested name follows table, column, and rule type until you rename it.
+                        </p>
+                      )}
+                    </div>
+
+                    <div>
+                      <FieldLabel
+                        label="Severity"
+                        helpText="Use info for light signals, warning for issues to monitor, and error for problems that should strongly reduce trust."
+                      />
+                      <div className="flex gap-2">
+                        {(['info', 'warning', 'error'] as QualitySeverity[]).map((s) => {
+                          const meta = SEVERITY_META[s];
+                          const Icon = meta.icon;
+                          return (
+                            <button key={s} onClick={() => setSeverity(s)}
+                              className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl border py-2 text-xs font-medium transition-colors ${
+                                severity === s
+                                  ? `${meta.bgColor} ${meta.textColor} border-current`
+                                  : 'border-gray-200 bg-white text-gray-500 hover:border-gray-300'
+                              }`}>
+                              <Icon className="h-3.5 w-3.5" />
+                              {meta.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <label className="flex cursor-pointer items-center justify-between rounded-2xl border border-gray-200 px-4 py-3">
+                      <div>
+                        <div className="flex items-center text-sm font-medium text-gray-700">
+                          <span>Enabled</span>
+                          <HelpTooltip text="Only enabled rules run during dataset quality checks. Disable a rule when you want to keep its setup but skip execution." />
+                        </div>
+                        <p className="mt-1 text-xs text-gray-400">Disabled rules are skipped during quality runs</p>
+                      </div>
+                      <InlineToggle checked={enabled} onChange={setEnabled} />
+                    </label>
+                  </div>
+                </EditorSection>
+
+                <EditorSection title="Quick preview" description="Review the scope before saving so the rule reads clearly in the dataset quality workspace.">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {previewCards.map((card) => (
+                      <div key={card.label} className="rounded-2xl border border-gray-200 bg-gray-50 px-3 py-3">
+                        <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-gray-400">{card.label}</p>
+                        <p className="mt-1 text-sm font-medium text-gray-800">{card.value}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50/80 p-4">
+                    <div className="flex items-center gap-2 text-sm font-semibold text-blue-900">
+                      <Info className="h-4 w-4" />
+                      Setup guidance
+                    </div>
+                    <div className="mt-3 space-y-3">
+                      {setupTips.map((tip, index) => (
+                        <div key={tip} className="flex items-start gap-2 text-sm leading-5 text-blue-900">
+                          <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white text-[11px] font-semibold text-blue-700">{index + 1}</span>
+                          <p>{tip}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-4 rounded-2xl border border-white/80 bg-white/80 px-3 py-3 text-sm text-gray-700">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="font-medium text-gray-800">Selected severity</span>
+                        <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${severityMeta.bgColor} ${severityMeta.textColor}`}>
+                          <severityMeta.icon className="h-3.5 w-3.5" />
+                          {severityMeta.label}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </EditorSection>
+              </div>
             </div>
           </div>
 
-          {/* Rule type */}
-          <div>
-            <label className="mb-1 block text-xs font-medium text-gray-600">Rule Type</label>
-            <select value={ruleType} onChange={(e) => switchRuleType(e.target.value)}
-              className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none">
-              {dimDef_.ruleTypes.map((rt) => <option key={rt.value} value={rt.value}>{rt.label}</option>)}
-            </select>
-            {rtDef?.hint && (
-              <p className="mt-1 text-[11px] text-gray-400">{rtDef.hint}</p>
-            )}
-          </div>
-
-          {/* Column selector — shown for column-level rules */}
-          <div className="space-y-3 rounded-xl border border-gray-200 bg-gray-50/70 p-3">
-            {usesColumn && (
-              <ColumnSelector
-                tableId={tableId} tables={tables}
-                value={columnName}
-                onChange={setColumnName}
-                label={rtDef?.level === 'both' ? 'Column (optional)' : 'Column'}
-                placeholder="column_name"
-              />
-            )}
-
-            {/* Dynamic config */}
-            <ConfigFields ruleType={ruleType} config={config} onPatch={patchConfig} tableId={tableId} tables={tables} />
-          </div>
-
-          {/* Rule name */}
-          <div>
-            <div className="mb-1 flex items-center justify-between gap-3">
-              <label className="block text-xs font-medium text-gray-600">Rule Name</label>
-              {name.trim() !== suggestedName && (
-                <button
-                  type="button"
-                  onClick={() => { setName(suggestedName); setNameEdited(false); }}
-                  className="text-[11px] font-medium text-blue-600 hover:text-blue-700"
-                >
-                  Use suggested
-                </button>
-              )}
-            </div>
-            <input type="text" value={name}
-              onChange={(e) => { setName(e.target.value); setNameEdited(true); }}
-              className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none" />
-            {!isEdit && (
-              <p className="mt-1 text-[11px] text-gray-400">
-                The suggested name follows table, column, and rule type until you rename it.
-              </p>
-            )}
-          </div>
-
-          {/* Severity */}
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-gray-600">Severity</label>
-            <div className="flex gap-2">
-              {(['info', 'warning', 'error'] as QualitySeverity[]).map((s) => {
-                const meta = SEVERITY_META[s];
-                const Icon = meta.icon;
-                return (
-                  <button key={s} onClick={() => setSeverity(s)}
-                    className={`flex flex-1 items-center justify-center gap-1.5 rounded border py-1.5 text-xs font-medium transition-colors ${
-                      severity === s
-                        ? `${meta.bgColor} ${meta.textColor} border-current`
-                        : 'border-gray-200 bg-white text-gray-500 hover:border-gray-300'
-                    }`}>
-                    <Icon className="h-3.5 w-3.5" />
-                    {meta.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Enable toggle */}
-          <label className="flex cursor-pointer items-center justify-between rounded-lg border border-gray-200 px-3 py-2.5">
-            <div>
-              <p className="text-sm font-medium text-gray-700">Enabled</p>
-              <p className="text-xs text-gray-400">Disabled rules are skipped during quality runs</p>
-            </div>
-            <InlineToggle checked={enabled} onChange={setEnabled} />
-          </label>
-        </div>
-
-        {/* Footer */}
-        <div className="shrink-0 border-t border-gray-200 px-4 py-3 flex items-center justify-between gap-2">
+          <div className="shrink-0 border-t border-gray-200 px-5 py-4 sm:px-6">
+            <div className="flex items-center justify-between gap-2">
           {isEdit && onDuplicate && (
             <button
               onClick={() => onDuplicate(editingRule!)}
-              className="inline-flex items-center gap-1.5 rounded border border-gray-200 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-gray-200 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
             >
               <Copy className="h-3.5 w-3.5" /> Duplicate
             </button>
           )}
-          <div className="flex gap-2 ml-auto">
-            <button onClick={onClose}
-              className="rounded border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">
-              Cancel
-            </button>
-            <button onClick={handleSave} disabled={isPending}
-              className="inline-flex items-center gap-1.5 rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
-              {isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              {isEdit ? 'Update Rule' : 'Create Rule'}
-            </button>
+              <div className="ml-auto flex gap-2">
+                <button onClick={onClose}
+                  className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">
+                  Cancel
+                </button>
+                <button onClick={handleSave} disabled={isPending}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+                  {isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  {isEdit ? 'Update Rule' : 'Create Rule'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
