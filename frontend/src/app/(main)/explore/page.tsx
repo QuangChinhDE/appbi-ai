@@ -10,6 +10,7 @@ import { useCharts, useDeleteChart } from '@/hooks/use-charts';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
+import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { Button, IconButton } from '@/components/ui/Button';
@@ -227,14 +228,20 @@ export default function ExplorePage() {
           }
 
           return (
-            <div className="space-y-6">
-              {filteredCharts.length === 0 ? (
-                <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 text-center">
-                  <Search className="mb-2 h-7 w-7 text-text-quaternary" />
-                  <p className="text-caption text-text-tertiary">No charts match the current search or tag filters.</p>
-                </div>
-              ) : viewMode === 'list' ? (
-                <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+            <PaginatedCollection
+              items={filteredCharts}
+              viewMode={viewMode}
+              resetKey={JSON.stringify({ searchText, viewMode, listFilters })}
+            >
+              {({ pageItems, pagination }) => (
+                <div className="space-y-6">
+                  {filteredCharts.length === 0 ? (
+                    <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 text-center">
+                      <Search className="mb-2 h-7 w-7 text-text-quaternary" />
+                      <p className="text-caption text-text-tertiary">No charts match the current search or tag filters.</p>
+                    </div>
+                  ) : viewMode === 'list' ? (
+                    <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
                   <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
                     <thead className="bg-surface-2">
                       <tr>
@@ -256,7 +263,7 @@ export default function ExplorePage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
-                    {filteredCharts.map((chart) => {
+                    {pageItems.map((chart) => {
                       const config = chart.config as any;
                       const activeRoleConfig = getActiveChartRoleConfig(config);
                       const typeLabel = CHART_TYPE_LABELS[chart.chart_type] ?? chart.chart_type;
@@ -360,9 +367,9 @@ export default function ExplorePage() {
                     </tbody>
                   </table>
                 </div>
-              ) : (
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {filteredCharts.map((chart) => {
+                  ) : (
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                      {pageItems.map((chart) => {
                     const config = chart.config as any;
                     const activeRoleConfig = getActiveChartRoleConfig(config);
                     const typeLabel = CHART_TYPE_LABELS[chart.chart_type] ?? chart.chart_type;
@@ -435,10 +442,14 @@ export default function ExplorePage() {
                         </div>
                       </div>
                     );
-                  })}
+                      })}
+                    </div>
+                  )}
+
+                  {pagination}
                 </div>
               )}
-            </div>
+            </PaginatedCollection>
           );
         }}
       </PageListLayout>

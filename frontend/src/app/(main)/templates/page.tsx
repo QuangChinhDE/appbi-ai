@@ -2,11 +2,12 @@
 
 import React, { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, FileText, Loader2, FileSpreadsheet } from 'lucide-react';
+import { Plus, FileText, Loader2, FileSpreadsheet, Search } from 'lucide-react';
 import { toast } from '@/lib/toast';
 
 import { useReportTemplates, useCreateReportTemplate, useDeleteReportTemplate } from '@/hooks/use-report-templates';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
+import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { TemplateList } from '@/components/templates/TemplateList';
@@ -224,16 +225,53 @@ export default function TemplatesPage() {
           );
         });
 
-        return viewMode === 'grid' ? (
-          <TemplateCardGrid templates={filtered} onDelete={canEdit ? handleDelete : undefined} deletingId={deletingId} />
-        ) : (
-          <TemplateList
-            templates={filtered}
-            onDelete={canEdit ? handleDelete : undefined}
-            deletingId={deletingId}
-            activeFilters={listFilters}
-            onFilterClick={(key, value) => toggleListFilter(key as 'layout' | 'binding' | 'owner', value)}
-          />
+        if (templateItems.length === 0) {
+          return viewMode === 'grid' ? (
+            <TemplateCardGrid templates={[]} onDelete={canEdit ? handleDelete : undefined} deletingId={deletingId} />
+          ) : (
+            <TemplateList
+              templates={[]}
+              onDelete={canEdit ? handleDelete : undefined}
+              deletingId={deletingId}
+              activeFilters={listFilters}
+              onFilterClick={(key, value) => toggleListFilter(key as 'layout' | 'binding' | 'owner', value)}
+            />
+          );
+        }
+
+        return (
+          <PaginatedCollection
+            items={filtered}
+            viewMode={viewMode}
+            resetKey={JSON.stringify({ filterText, viewMode, listFilters })}
+          >
+            {({ pageItems, pagination }) => (
+              filtered.length === 0 ? (
+                <div className="flex h-48 flex-col items-center justify-center text-center">
+                  <Search className="mb-2 h-7 w-7 text-text-quaternary" />
+                  <p className="text-caption text-text-tertiary">
+                    No templates matching &ldquo;<strong className="text-text-primary">{filterText}</strong>&rdquo;
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {viewMode === 'grid' ? (
+                    <TemplateCardGrid templates={pageItems} onDelete={canEdit ? handleDelete : undefined} deletingId={deletingId} />
+                  ) : (
+                    <TemplateList
+                      templates={pageItems}
+                      onDelete={canEdit ? handleDelete : undefined}
+                      deletingId={deletingId}
+                      activeFilters={listFilters}
+                      onFilterClick={(key, value) => toggleListFilter(key as 'layout' | 'binding' | 'owner', value)}
+                    />
+                  )}
+
+                  {pagination}
+                </div>
+              )
+            )}
+          </PaginatedCollection>
         );
       }}
     </PageListLayout>

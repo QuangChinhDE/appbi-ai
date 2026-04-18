@@ -12,6 +12,7 @@ import { DashboardList } from '@/components/dashboards/DashboardList';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
+import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { GettingStartedGuide } from '@/components/common/GettingStartedGuide';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
@@ -106,24 +107,24 @@ export default function DashboardsPage() {
 
   return (
     <>
-      <div className="px-8 pt-6">
-        <GettingStartedGuide locale={locale} />
-      </div>
       <PageListLayout
         title={t('module.dashboards.title')}
         description={`${dashboards?.length ?? 0} dashboard${dashboards?.length !== 1 ? 's' : ''}`}
         overview={(
-          <ModuleOverview
-            icon={LayoutDashboard}
-            title={t('overview.dashboards.title')}
-            description={t('overview.dashboards.description')}
-            badges={[t('overview.dashboards.badge1'), t('overview.dashboards.badge2'), t('overview.dashboards.badge3')]}
-            stats={[
-              { label: t('overview.dashboards.saved'), value: dashboardItems.length, helper: t('overview.dashboards.savedHelper') },
-              { label: t('overview.dashboards.charts'), value: totalChartLinks, helper: t('overview.dashboards.chartsHelper') },
-              { label: t('overview.dashboards.updated'), value: dashboardsUpdatedThisWeek, helper: t('overview.dashboards.updatedHelper') },
-            ]}
-          />
+          <div className="space-y-4">
+            <GettingStartedGuide locale={locale} />
+            <ModuleOverview
+              icon={LayoutDashboard}
+              title={t('overview.dashboards.title')}
+              description={t('overview.dashboards.description')}
+              badges={[t('overview.dashboards.badge1'), t('overview.dashboards.badge2'), t('overview.dashboards.badge3')]}
+              stats={[
+                { label: t('overview.dashboards.saved'), value: dashboardItems.length, helper: t('overview.dashboards.savedHelper') },
+                { label: t('overview.dashboards.charts'), value: totalChartLinks, helper: t('overview.dashboards.chartsHelper') },
+                { label: t('overview.dashboards.updated'), value: dashboardsUpdatedThisWeek, helper: t('overview.dashboards.updatedHelper') },
+              ]}
+            />
+          </div>
         )}
         action={canEdit ? (
           <div className="flex items-center gap-2">
@@ -202,19 +203,25 @@ export default function DashboardsPage() {
           });
 
           return (
-            <div className="space-y-6">
-              {(!dashboards || dashboards.length === 0) ? (
-                <DashboardList dashboards={[]} onDelete={handleDelete} />
-              ) : filtered.length === 0 ? (
-                <div className="flex h-48 flex-col items-center justify-center text-center">
-                  <Search className="mb-2 h-7 w-7 text-text-quaternary" />
-                  <p className="text-caption text-text-tertiary">
-                    No dashboards matching &ldquo;<strong className="text-text-primary">{filterText}</strong>&rdquo;
-                  </p>
-                </div>
-              ) : viewMode === 'grid' ? (
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-                  {filtered.map((dashboard) => {
+            <PaginatedCollection
+              items={filtered}
+              viewMode={viewMode}
+              resetKey={JSON.stringify({ filterText, viewMode, listFilters })}
+            >
+              {({ pageItems, pagination }) => (
+                <div className="space-y-6">
+                  {(!dashboards || dashboards.length === 0) ? (
+                    <DashboardList dashboards={[]} onDelete={handleDelete} />
+                  ) : filtered.length === 0 ? (
+                    <div className="flex h-48 flex-col items-center justify-center text-center">
+                      <Search className="mb-2 h-7 w-7 text-text-quaternary" />
+                      <p className="text-caption text-text-tertiary">
+                        No dashboards matching &ldquo;<strong className="text-text-primary">{filterText}</strong>&rdquo;
+                      </p>
+                    </div>
+                  ) : viewMode === 'grid' ? (
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+                      {pageItems.map((dashboard) => {
                     const chartCount = dashboard.dashboard_charts?.length || 0;
                     const createdAt = new Date(dashboard.created_at).toLocaleDateString(locale, {
                       day: '2-digit',
@@ -290,19 +297,23 @@ export default function DashboardsPage() {
                         </div>
                       </div>
                     );
-                  })}
+                      })}
+                    </div>
+                  ) : (
+                    <DashboardList
+                      dashboards={pageItems}
+                      onDelete={canEdit ? handleDelete : undefined}
+                      onShare={(dashboard) => setShareDash(dashboard)}
+                      deletingId={isDeletingDashboard ? dashboardToDelete?.id : undefined}
+                      activeFilters={listFilters}
+                      onFilterClick={(key, value) => toggleListFilter(key as 'state' | 'access' | 'owner', value)}
+                    />
+                  )}
+
+                  {pagination}
                 </div>
-              ) : (
-                <DashboardList
-                  dashboards={filtered}
-                  onDelete={canEdit ? handleDelete : undefined}
-                  onShare={(dashboard) => setShareDash(dashboard)}
-                  deletingId={isDeletingDashboard ? dashboardToDelete?.id : undefined}
-                  activeFilters={listFilters}
-                  onFilterClick={(key, value) => toggleListFilter(key as 'state' | 'access' | 'owner', value)}
-                />
               )}
-            </div>
+            </PaginatedCollection>
           );
         }}
       </PageListLayout>

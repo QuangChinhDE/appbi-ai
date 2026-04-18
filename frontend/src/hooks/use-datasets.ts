@@ -3,6 +3,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient as api } from '@/lib/api-client';
+import { sortByUpdatedAtDesc } from '@/lib/sort';
 
 // ===== Types =====
 
@@ -394,6 +395,7 @@ export function useDatasets(skip = 0, limit = 100) {
       );
       return response.data;
     },
+    select: (datasets) => sortByUpdatedAtDesc(datasets),
   });
 }
 

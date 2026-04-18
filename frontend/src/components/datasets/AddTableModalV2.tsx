@@ -222,6 +222,10 @@ export function AddTableModal({
     : effectiveCreateMode === 'calculated'
       ? <Sigma className="h-4 w-4" />
       : <Database className="h-4 w-4" />;
+  const modalMaxWidthClass = isEditMode ? 'max-w-5xl' : 'max-w-6xl';
+  const modalPanelClassName = isEditMode
+    ? 'max-h-[90vh]'
+    : 'h-[94vh] max-h-[94vh] rounded-[28px]';
 
   return (
     <AppModalShell
@@ -230,11 +234,11 @@ export function AddTableModal({
       title={modalTitle}
       description={modalDescription}
       icon={modalIcon}
-      maxWidthClass="max-w-5xl"
-      panelClassName="max-h-[90vh]"
+      maxWidthClass={modalMaxWidthClass}
+      panelClassName={modalPanelClassName}
       bodyClassName="flex min-h-0 flex-1 flex-col p-0"
     >
-        <div className="flex border-b border-[rgb(var(--border-line))] bg-surface-1 px-6">
+        <div className="flex shrink-0 border-b border-[rgb(var(--border-line))] bg-surface-1 px-6">
           {isEditMode ? (
             <div className="flex items-center gap-2 border-b-2 border-brand px-4 py-3 text-brand">
               {editHeader.icon}

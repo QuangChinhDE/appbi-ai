@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 
 import { ModuleOverview } from '@/components/common/ModuleOverview';
+import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { useAgentReportSpecs, useDeleteAgentReportSpec } from '@/hooks/use-agent-report-specs';
 import { hasPermission, usePermissions } from '@/hooks/use-permissions';
@@ -186,33 +187,39 @@ export default function AIReportsPage() {
           });
 
           return (
-            <div className="space-y-6">
-              {savedReports.length === 0 ? (
-                <EmptyState
-                  icon={<FileText />}
-                  title={t('aiReports.noReportsTitle')}
-                  description={t('aiReports.noReportsDescription')}
-                  action={canEditAgent ? (
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      leadingIcon={<Bot className="h-3.5 w-3.5" />}
-                      onClick={() => router.push('/ai-reports/new')}
-                    >
-                      {t('aiReports.new')}
-                    </Button>
-                  ) : undefined}
-                />
-              ) : filtered.length === 0 ? (
-                <div className="flex h-48 flex-col items-center justify-center text-center">
-                  <Search className="mb-2 h-7 w-7 text-text-quaternary" />
-                  <p className="text-caption text-text-tertiary">
-                    No AI reports matching &ldquo;<strong className="text-text-primary">{filterText}</strong>&rdquo;
-                  </p>
-                </div>
-              ) : viewMode === 'grid' ? (
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  {filtered.map((spec) => (
+            <PaginatedCollection
+              items={filtered}
+              viewMode={viewMode}
+              resetKey={JSON.stringify({ filterText, viewMode, listFilters })}
+            >
+              {({ pageItems, pagination }) => (
+                <div className="space-y-6">
+                  {savedReports.length === 0 ? (
+                    <EmptyState
+                      icon={<FileText />}
+                      title={t('aiReports.noReportsTitle')}
+                      description={t('aiReports.noReportsDescription')}
+                      action={canEditAgent ? (
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          leadingIcon={<Bot className="h-3.5 w-3.5" />}
+                          onClick={() => router.push('/ai-reports/new')}
+                        >
+                          {t('aiReports.new')}
+                        </Button>
+                      ) : undefined}
+                    />
+                  ) : filtered.length === 0 ? (
+                    <div className="flex h-48 flex-col items-center justify-center text-center">
+                      <Search className="mb-2 h-7 w-7 text-text-quaternary" />
+                      <p className="text-caption text-text-tertiary">
+                        No AI reports matching &ldquo;<strong className="text-text-primary">{filterText}</strong>&rdquo;
+                      </p>
+                    </div>
+                  ) : viewMode === 'grid' ? (
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                      {pageItems.map((spec) => (
                     <div key={spec.id} className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
                       <div className="flex items-start justify-between gap-3">
                         <div>
@@ -303,10 +310,10 @@ export default function AIReportsPage() {
                         </div>
                       </div>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
                   <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
                     <thead className="bg-surface-2">
                       <tr>
@@ -331,7 +338,7 @@ export default function AIReportsPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
-                      {filtered.map((spec) => {
+                      {pageItems.map((spec) => {
                         const linkage = spec.latest_dashboard_id ? 'linked' : 'draft';
 
                         return (
@@ -428,9 +435,13 @@ export default function AIReportsPage() {
                       })}
                     </tbody>
                   </table>
+                    </div>
+                  )}
+
+                  {pagination}
                 </div>
               )}
-            </div>
+            </PaginatedCollection>
           );
         }}
       </PageListLayout>

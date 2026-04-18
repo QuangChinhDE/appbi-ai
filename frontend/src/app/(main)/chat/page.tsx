@@ -6,6 +6,7 @@ import { Loader2, MessageSquareText, Plus, Search } from 'lucide-react';
 import { toast } from '@/lib/toast';
 
 import { ModuleOverview } from '@/components/common/ModuleOverview';
+import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { CreateScopedChatModal } from '@/components/ai-chat/CreateScopedChatModal';
@@ -16,6 +17,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { FilterTag } from '@/components/ui/FilterTag';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getAiChatHttpUrl } from '@/lib/ai-services';
+import { sortByDateDesc } from '@/lib/sort';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { SessionSummary } from '@/components/ai-chat/ChatSessionList';
 
@@ -62,7 +64,8 @@ export default function ChatListPage() {
     try {
       const response = await fetch(`${getAiChatHttpUrl()}/chat/sessions`, { headers: authHeaders() });
       if (response.ok) {
-        setSessions(await response.json());
+        const sessionItems = (await response.json()) as SessionSummary[];
+        setSessions(sortByDateDesc(sessionItems, (session) => session.last_active));
         setChatServiceAvailable(true);
       } else {
         setChatServiceAvailable(false);
@@ -238,25 +241,34 @@ export default function ChatListPage() {
           }
 
           return (
-            <div className="space-y-3">
-              <ServiceWarning />
-              <ChatSessionList
-                sessions={filtered}
-                viewMode={viewMode}
-                onDelete={handleDelete}
-                onShare={canShare ? (session) => setShareSession(session) : undefined}
-                deletingId={deletingId}
-                activeFilters={listFilters}
-                onFilterClick={(key, value) => {
-                  if (key === 'dataset') {
-                    setListFilters((current) => ({
-                      ...current,
-                      dataset: current.dataset === value ? undefined : value,
-                    }));
-                  }
-                }}
-              />
-            </div>
+            <PaginatedCollection
+              items={filtered}
+              viewMode={viewMode}
+              resetKey={JSON.stringify({ filterText, viewMode, listFilters })}
+            >
+              {({ pageItems, pagination }) => (
+                <div className="space-y-3">
+                  <ServiceWarning />
+                  <ChatSessionList
+                    sessions={pageItems}
+                    viewMode={viewMode}
+                    onDelete={handleDelete}
+                    onShare={canShare ? (session) => setShareSession(session) : undefined}
+                    deletingId={deletingId}
+                    activeFilters={listFilters}
+                    onFilterClick={(key, value) => {
+                      if (key === 'dataset') {
+                        setListFilters((current) => ({
+                          ...current,
+                          dataset: current.dataset === value ? undefined : value,
+                        }));
+                      }
+                    }}
+                  />
+                  {pagination}
+                </div>
+              )}
+            </PaginatedCollection>
           );
         }}
       </PageListLayout>

@@ -5,6 +5,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { dataSourceApi } from '@/lib/api/datasources';
+import { sortByUpdatedAtDesc } from '@/lib/sort';
 import {
   DataSourceCreate,
   DataSourceUpdate,
@@ -15,6 +16,7 @@ export const useDataSources = () => {
   return useQuery({
     queryKey: ['datasources'],
     queryFn: dataSourceApi.getAll,
+    select: (dataSources) => sortByUpdatedAtDesc(dataSources),
   });
 };
 

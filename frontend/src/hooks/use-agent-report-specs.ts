@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { agentReportSpecsApi } from '@/lib/api/agent-report-specs';
+import { sortByUpdatedAtDesc } from '@/lib/sort';
 import { AgentReportRunCreate, AgentReportSpecCreate, AgentReportSpecUpdate } from '@/types/agent';
 
 export const agentReportSpecKeys = {
@@ -17,6 +18,7 @@ export function useAgentReportSpecs(enabled = true) {
     queryKey: agentReportSpecKeys.lists(),
     queryFn: agentReportSpecsApi.getAll,
     enabled,
+    select: (specs) => sortByUpdatedAtDesc(specs),
   });
 }
 

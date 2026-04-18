@@ -5,6 +5,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { reportTemplateApi } from '@/lib/api/report-templates';
+import { sortByUpdatedAtDesc } from '@/lib/sort';
 import type { ReportTemplateCreate, ReportTemplateUpdate } from '@/types/template';
 
 export const templateKeys = {
@@ -16,6 +17,7 @@ export const useReportTemplates = () => {
   return useQuery({
     queryKey: templateKeys.all,
     queryFn: reportTemplateApi.getAll,
+    select: (templates) => sortByUpdatedAtDesc(templates),
   });
 };
 

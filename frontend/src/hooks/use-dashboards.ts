@@ -5,6 +5,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { dashboardApi } from '@/lib/api/dashboards';
+import { sortByUpdatedAtDesc } from '@/lib/sort';
 import { Dashboard, DashboardCreate, DashboardUpdate, DashboardChartLayout } from '@/types/api';
 import type {
   DashboardHtmlImportAnalyzeInput,
@@ -15,6 +16,7 @@ export const useDashboards = () => {
   return useQuery({
     queryKey: ['dashboards'],
     queryFn: dashboardApi.getAll,
+    select: (dashboards) => sortByUpdatedAtDesc(dashboards),
   });
 };
 

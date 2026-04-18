@@ -21,6 +21,7 @@ import { Modal } from '@/components/common/Modal';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
+import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -248,10 +249,17 @@ export default function DatasetsPage() {
             );
           }
 
-          if (viewMode === 'grid') {
-            return (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                {filtered.map((dataset: any) => (
+          return (
+            <PaginatedCollection
+              items={filtered}
+              viewMode={viewMode}
+              resetKey={JSON.stringify({ filterText, viewMode, listFilters })}
+            >
+              {({ pageItems, pagination }) => (
+                <div className="space-y-6">
+                  {viewMode === 'grid' ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {pageItems.map((dataset: any) => (
                   <div
                     key={dataset.id}
                     className="group rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 transition-[box-shadow,border-color] hover:border-[rgb(var(--border-strong))] hover:shadow-linear"
@@ -315,36 +323,32 @@ export default function DatasetsPage() {
                       )}
                     </div>
                   </div>
-                ))}
-              </div>
-            );
-          }
-
-          // List view
-          return (
-            <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
-              <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
-                <thead className="bg-surface-2">
-                  <tr>
-                    <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
-                      Dataset
-                    </th>
-                    <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
-                      Tags
-                    </th>
-                    <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
-                      Owner
-                    </th>
-                    <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
-                      Updated
-                    </th>
-                    <th className="px-5 py-3 text-right text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
-                  {filtered.map((dataset: any) => {
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+                      <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
+                        <thead className="bg-surface-2">
+                          <tr>
+                            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                              Dataset
+                            </th>
+                            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                              Tags
+                            </th>
+                            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                              Owner
+                            </th>
+                            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                              Updated
+                            </th>
+                            <th className="px-5 py-3 text-right text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                              Actions
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
+                          {pageItems.map((dataset: any) => {
                     const docState = dataset.description?.trim() ? 'documented' : 'undocumented';
                     const accessState = dataset.user_permission ?? 'none';
 
@@ -439,10 +443,16 @@ export default function DatasetsPage() {
                         </td>
                       </tr>
                     );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {pagination}
+                </div>
+              )}
+            </PaginatedCollection>
           );
         }}
       </PageListLayout>

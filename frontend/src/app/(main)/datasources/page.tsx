@@ -8,6 +8,7 @@ import { useRouter } from 'next/navigation';
 import { ArrowLeft, Plus, Database, Edit, TestTube, Trash2, Clock, Search, Share2 } from 'lucide-react';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
+import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
@@ -277,92 +278,101 @@ export default function DataSourcesPage() {
             );
           }
 
-          if (viewMode === 'list') {
-            return (
-              <DataSourceList
-                dataSources={filtered}
-                onEdit={canEdit ? handleEdit : undefined}
-                onDelete={canEdit ? handleDelete : undefined}
-                onTest={handleTest}
-                onShare={canShare ? (ds) => setShareSource(ds) : undefined}
-                isDeleting={deleteMutation.isPending ? deleteMutation.variables : null}
-                activeFilters={listFilters}
-                onFilterClick={(key, value) => toggleListFilter(key as 'type' | 'access' | 'owner', value)}
-              />
-            );
-          }
-
-          // Grid view
           return (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {filtered.map(ds => {
-                const typeLabel = DS_TYPE_LABEL[ds.type] ?? ds.type;
-                const createdAt = new Date(ds.created_at).toLocaleDateString('vi-VN', {
-                  day: '2-digit', month: '2-digit', year: 'numeric',
-                });
-                const itemPerms = getResourcePermissions(ds.user_permission);
-                return (
-                  <div
-                    key={ds.id}
-                    className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 hover:shadow-linear transition-all"
-                  >
-                    <div className="flex items-start gap-3 mb-3">
-                      <div className="w-10 h-10 rounded-lg bg-brand/10 text-brand flex items-center justify-center flex-shrink-0">
-                        <Database className="w-5 h-5" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <h3 className="font-strong text-text-primary text-caption truncate">{ds.name}</h3>
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          <OwnerBadge email={ds.owner_email} />
-                          <Badge variant="neutral" size="sm">{typeLabel}</Badge>
-                        </div>
-                      </div>
+            <PaginatedCollection
+              items={filtered}
+              viewMode={viewMode}
+              resetKey={JSON.stringify({ filterText, viewMode, listFilters, currentView })}
+            >
+              {({ pageItems, pagination }) => (
+                <div className="space-y-6">
+                  {viewMode === 'list' ? (
+                    <DataSourceList
+                      dataSources={pageItems}
+                      onEdit={canEdit ? handleEdit : undefined}
+                      onDelete={canEdit ? handleDelete : undefined}
+                      onTest={handleTest}
+                      onShare={canShare ? (ds) => setShareSource(ds) : undefined}
+                      isDeleting={deleteMutation.isPending ? deleteMutation.variables : null}
+                      activeFilters={listFilters}
+                      onFilterClick={(key, value) => toggleListFilter(key as 'type' | 'access' | 'owner', value)}
+                    />
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {pageItems.map(ds => {
+                        const typeLabel = DS_TYPE_LABEL[ds.type] ?? ds.type;
+                        const createdAt = new Date(ds.created_at).toLocaleDateString('vi-VN', {
+                          day: '2-digit', month: '2-digit', year: 'numeric',
+                        });
+                        const itemPerms = getResourcePermissions(ds.user_permission);
+                        return (
+                          <div
+                            key={ds.id}
+                            className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 hover:shadow-linear transition-all"
+                          >
+                            <div className="flex items-start gap-3 mb-3">
+                              <div className="w-10 h-10 rounded-lg bg-brand/10 text-brand flex items-center justify-center flex-shrink-0">
+                                <Database className="w-5 h-5" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <h3 className="font-strong text-text-primary text-caption truncate">{ds.name}</h3>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  <OwnerBadge email={ds.owner_email} />
+                                  <Badge variant="neutral" size="sm">{typeLabel}</Badge>
+                                </div>
+                              </div>
+                            </div>
+                            {ds.description && (
+                              <p className="text-tiny text-text-tertiary mb-3 line-clamp-2">{ds.description}</p>
+                            )}
+                            <div className="text-tiny text-text-quaternary mb-4 flex items-center gap-1">
+                              <Clock className="w-3 h-3" />
+                              {createdAt}
+                            </div>
+                            <div className="flex items-center gap-1 pt-3 border-t border-[rgb(var(--border-line))]">
+                              {itemPerms.canEdit && (
+                                <button
+                                  onClick={() => handleEdit(ds)}
+                                  className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 text-tiny text-text-secondary hover:text-brand hover:bg-brand/10 rounded-md transition-colors"
+                                >
+                                  <Edit className="w-3.5 h-3.5" /> Edit
+                                </button>
+                              )}
+                              <button
+                                onClick={() => handleTest(ds)}
+                                disabled={testMutation.isPending}
+                                className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 text-tiny text-text-secondary hover:text-success hover:bg-success/10 rounded-md transition-colors disabled:opacity-50"
+                              >
+                                <TestTube className="w-3.5 h-3.5" /> Test
+                              </button>
+                              {itemPerms.canShare && (
+                                <button
+                                  onClick={() => setShareSource(ds)}
+                                  className="inline-flex items-center justify-center p-1.5 text-text-quaternary hover:text-brand hover:bg-brand/10 rounded-md transition-colors"
+                                  title="Share"
+                                >
+                                  <Share2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              {itemPerms.canDelete && (
+                                <button
+                                  onClick={() => handleDelete(ds.id)}
+                                  className="inline-flex items-center justify-center p-1.5 text-text-quaternary hover:text-danger hover:bg-danger/10 rounded-md transition-colors"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                    {ds.description && (
-                      <p className="text-tiny text-text-tertiary mb-3 line-clamp-2">{ds.description}</p>
-                    )}
-                    <div className="text-tiny text-text-quaternary mb-4 flex items-center gap-1">
-                      <Clock className="w-3 h-3" />
-                      {createdAt}
-                    </div>
-                    <div className="flex items-center gap-1 pt-3 border-t border-[rgb(var(--border-line))]">
-                      {itemPerms.canEdit && (
-                        <button
-                          onClick={() => handleEdit(ds)}
-                          className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 text-tiny text-text-secondary hover:text-brand hover:bg-brand/10 rounded-md transition-colors"
-                        >
-                          <Edit className="w-3.5 h-3.5" /> Edit
-                        </button>
-                      )}
-                      <button
-                        onClick={() => handleTest(ds)}
-                        disabled={testMutation.isPending}
-                        className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 text-tiny text-text-secondary hover:text-success hover:bg-success/10 rounded-md transition-colors disabled:opacity-50"
-                      >
-                        <TestTube className="w-3.5 h-3.5" /> Test
-                      </button>
-                      {itemPerms.canShare && (
-                        <button
-                          onClick={() => setShareSource(ds)}
-                          className="inline-flex items-center justify-center p-1.5 text-text-quaternary hover:text-brand hover:bg-brand/10 rounded-md transition-colors"
-                          title="Share"
-                        >
-                          <Share2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                      {itemPerms.canDelete && (
-                        <button
-                          onClick={() => handleDelete(ds.id)}
-                          className="inline-flex items-center justify-center p-1.5 text-text-quaternary hover:text-danger hover:bg-danger/10 rounded-md transition-colors"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  )}
+
+                  {pagination}
+                </div>
+              )}
+            </PaginatedCollection>
           );
         }}
       </PageListLayout>
