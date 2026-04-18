@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Script from 'next/script';
 import { BarChart3 } from 'lucide-react';
@@ -18,6 +18,14 @@ function extractDetail(detail: unknown, fallback: string): string {
 }
 
 export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const searchParams = useSearchParams();
   const googleButtonRef = useRef<HTMLDivElement | null>(null);
   const [email, setEmail] = useState('');
