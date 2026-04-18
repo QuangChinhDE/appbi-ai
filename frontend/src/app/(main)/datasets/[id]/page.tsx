@@ -139,6 +139,7 @@ function isCalculatedTable(table: Pick<DatasetTable, 'source_kind'> | null | und
 }
 
 type TableGroupKey = 'calendar' | 'source' | 'calculated';
+type DatasetDetailTab = 'tables' | 'quality' | 'model';
 
 function getTableGroupKey(table: Pick<DatasetTable, 'source_kind'> | null | undefined): TableGroupKey {
   if (isGeneratedCalendarTable(table)) return 'calendar';
@@ -163,6 +164,12 @@ function getTableBadgeLabel(table: Pick<DatasetTable, 'source_kind'> | null | un
   if (group === 'calendar') return 'Date';
   if (group === 'calculated') return 'Calculated';
   return 'Source';
+}
+
+function resolveDatasetDetailTab(tab: string | null): DatasetDetailTab {
+  if (tab === 'quality' || tab === 'catalog') return 'quality';
+  if (tab === 'model') return 'model';
+  return 'tables';
 }
 
 function getTableIcon(table: Pick<DatasetTable, 'source_kind'> | null | undefined): React.ReactNode {
@@ -411,6 +418,7 @@ export default function DatasetDetailPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const datasetId = params?.id ? Number(params.id) : null;
+  const paramTab = searchParams.get('tab');
 
   const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
   const [previewLimit, setPreviewLimit] = useState(100);
@@ -431,22 +439,28 @@ export default function DatasetDetailPage() {
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingTable, setIsDeletingTable] = useState(false);
   const [selectedView, setSelectedView] = useState<DatasetModelView | null>(null);
+  const [activeTab, setActiveTabState] = useState<DatasetDetailTab>(() => resolveDatasetDetailTab(paramTab));
 
   // Tab routing via searchParam — ?tab=tables|quality|model
   // backward compat: ?tab=catalog → quality
-  const activeTab = useMemo((): 'tables' | 'quality' | 'model' => {
-    const t = searchParams.get('tab');
-    if (t === 'quality' || t === 'catalog') return 'quality';
-    if (t === 'model') return 'model';
-    return 'tables';
-  }, [searchParams]);
+  React.useEffect(() => {
+    const nextTab = resolveDatasetDetailTab(paramTab);
+    setActiveTabState((current) => (current === nextTab ? current : nextTab));
+  }, [paramTab]);
 
-  const setActiveTab = useCallback((tab: 'tables' | 'quality' | 'model') => {
+  const syncTabInUrl = useCallback((tab: DatasetDetailTab) => {
+    if (typeof window === 'undefined') return;
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set('tab', tab);
+    window.history.replaceState(window.history.state, '', nextUrl.toString());
+  }, []);
+
+  const setActiveTab = useCallback((tab: DatasetDetailTab) => {
+    if (tab === activeTab) return;
     if (tab !== 'model') setSelectedView(null);
-    const next = new URLSearchParams(searchParams.toString());
-    next.set('tab', tab);
-    router.replace(`?${next.toString()}`);
-  }, [router, searchParams]);
+    startTransition(() => setActiveTabState(tab));
+    syncTabInUrl(tab);
+  }, [activeTab, syncTabInUrl]);
   const [calendarDraft, setCalendarDraft] = useState<CalendarDimensionSettings>(DEFAULT_CALENDAR_SETTINGS);
   const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
 
@@ -583,12 +597,13 @@ export default function DatasetDetailPage() {
     setIsAddTableModalOpen(true);
   }, []);
 
-  // Handle table addition success — select and surface the new table in the URL
-  const handleTableAddSuccess = (created?: { id: number }) => {
+  // Handle table addition success — select and surface the latest new table in the URL
+  const handleTableAddSuccess = (created?: { id: number } | { id: number }[]) => {
     refetchDataset();
-    if (created?.id) {
-      startTransition(() => setSelectedTableId(created.id));
-      replaceTableInUrl(created.id);
+    const latestCreated = Array.isArray(created) ? created[created.length - 1] : created;
+    if (latestCreated?.id) {
+      startTransition(() => setSelectedTableId(latestCreated.id));
+      replaceTableInUrl(latestCreated.id);
     }
   };
 

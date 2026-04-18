@@ -7,12 +7,14 @@ const inter = Inter({
   display: 'swap',
   variable: '--font-inter',
   axes: ['opsz'],
+  preload: false,
 });
 
 const jetbrainsMono = JetBrains_Mono({
   subsets: ['latin'],
   display: 'swap',
   variable: '--font-mono',
+  preload: false,
 });
 
 export default function RootLayout({

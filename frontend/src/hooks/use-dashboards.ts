@@ -6,6 +6,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { DashboardCreate, DashboardUpdate, DashboardChartLayout } from '@/types/api';
+import type {
+  DashboardHtmlImportAnalyzeInput,
+  DashboardHtmlImportBuildInput,
+} from '@/types/dashboard-html-import';
 
 export const useDashboards = () => {
   return useQuery({
@@ -118,6 +122,30 @@ export const useShareDashboard = () => {
       queryClient.invalidateQueries({ queryKey: ['dashboards'] });
       queryClient.invalidateQueries({ queryKey: ['dashboards', variables.dashboardId] });
     },
+  });
+};
+
+export const useAnalyzeDashboardHtmlImport = () => {
+  return useMutation({
+    mutationFn: (input: DashboardHtmlImportAnalyzeInput) => dashboardApi.analyzeHtmlImport(input),
+  });
+};
+
+export const useBuildDashboardHtmlImport = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: DashboardHtmlImportBuildInput) => dashboardApi.buildHtmlImport(input),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['dashboards'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboards', result.dashboard_id] });
+    },
+  });
+};
+
+export const usePreviewDashboardHtmlImportSource = () => {
+  return useMutation({
+    mutationFn: (file: File) => dashboardApi.previewHtmlImportSource(file),
   });
 };
 

@@ -16,7 +16,7 @@ interface AddTableModalProps {
   datasetId: number;
   isOpen: boolean;
   onClose: () => void;
-  onSuccess?: (created?: DatasetTable) => void;
+  onSuccess?: (created?: DatasetTable | DatasetTable[]) => void;
   existingTable?: DatasetTable | null;
   createMode?: 'source' | 'calculated';
   availableTables?: DatasetTable[];
@@ -122,11 +122,12 @@ export function AddTableModal({
 }: AddTableModalProps) {
   const [activeSourceTab, setActiveSourceTab] = useState<SourceTab>('physical');
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const addTableMutation = useAddTableToDataset();
   const updateTableMutation = useUpdateTable();
   const isEditMode = Boolean(existingTable);
-  const isPending = addTableMutation.isPending || updateTableMutation.isPending;
+  const isPending = isSubmitting || addTableMutation.isPending || updateTableMutation.isPending;
 
   const { data: datasources } = useDataSources();
   const datasourceName = existingTable
@@ -148,24 +149,45 @@ export function AddTableModal({
     if (!isOpen) {
       setActiveSourceTab('physical');
       setSaveError(null);
+      setIsSubmitting(false);
     }
   }, [isOpen]);
 
-  const handleAddTable = async (input: AddTableInput) => {
+  const getErrorMessage = (error: any, fallback: string) => {
+    const message = error?.response?.data?.detail ?? error?.message ?? fallback;
+    return typeof message === 'string' ? message : JSON.stringify(message);
+  };
+
+  const handleAddTable = async (input: AddTableInput | AddTableInput[]) => {
     setSaveError(null);
+    setIsSubmitting(true);
+    const inputs = Array.isArray(input) ? input : [input];
+    const createdTables: DatasetTable[] = [];
+
     try {
-      const created = await addTableMutation.mutateAsync({ datasetId, input });
-      onSuccess?.(created);
+      for (const nextInput of inputs) {
+        const created = await addTableMutation.mutateAsync({ datasetId, input: nextInput });
+        createdTables.push(created);
+      }
+
+      onSuccess?.(Array.isArray(input) ? createdTables : createdTables[0]);
       onClose();
     } catch (error: any) {
-      const message = error?.response?.data?.detail ?? error?.message ?? 'Could not create table.';
-      setSaveError(typeof message === 'string' ? message : JSON.stringify(message));
+      const message = getErrorMessage(error, 'Could not create table.');
+      if (createdTables.length > 0) {
+        setSaveError(`Added ${createdTables.length}/${inputs.length} tables. ${message}`);
+      } else {
+        setSaveError(message);
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const handleEditSave = async (displayName: string, sourceQuery?: string) => {
     if (!existingTable) return;
     setSaveError(null);
+    setIsSubmitting(true);
     try {
       await updateTableMutation.mutateAsync({
         datasetId,
@@ -178,8 +200,9 @@ export function AddTableModal({
       onSuccess?.();
       onClose();
     } catch (error: any) {
-      const message = error?.response?.data?.detail ?? error?.message ?? 'Could not save changes.';
-      setSaveError(typeof message === 'string' ? message : JSON.stringify(message));
+      setSaveError(getErrorMessage(error, 'Could not save changes.'));
+    } finally {
+      setIsSubmitting(false);
     }
   };
 

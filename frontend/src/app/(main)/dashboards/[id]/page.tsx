@@ -17,6 +17,7 @@ import { dashboardApi } from '@/lib/api/dashboards';
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { AddChartModal } from '@/components/dashboards/AddChartModal';
 import { DashboardChartManagerModal } from '@/components/dashboards/DashboardChartManagerModal';
+import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
@@ -135,6 +136,7 @@ export default function DashboardDetailPage() {
   const dashboardId = Number(params.id);
 
   const [isAddChartModalOpen, setIsAddChartModalOpen] = useState(false);
+  const [isHtmlImportOpen, setIsHtmlImportOpen] = useState(false);
   const [isChartManagerOpen, setIsChartManagerOpen] = useState(false);
   const [removingChartId, setRemovingChartId] = useState<number | undefined>();
   const [pendingRemoveDashboardChartId, setPendingRemoveDashboardChartId] = useState<number | undefined>();
@@ -1012,6 +1014,15 @@ export default function DashboardDetailPage() {
               )}
               {canEditResource && (
                 <button
+                  onClick={() => setIsHtmlImportOpen(true)}
+                  className="inline-flex items-center rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm text-text-secondary hover:bg-surface-2"
+                >
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  Import HTML
+                </button>
+              )}
+              {canEditResource && (
+                <button
                   onClick={() => setIsChartManagerOpen(true)}
                   className="inline-flex items-center rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm text-text-secondary hover:bg-surface-2"
                 >
@@ -1181,6 +1192,17 @@ export default function DashboardDetailPage() {
           activePageId={activePageId}
           isAdding={addChartMutation.isPending}
           currentPageName={currentPage?.name}
+        />
+
+        <DashboardHtmlImportModal
+          isOpen={isHtmlImportOpen}
+          onClose={() => setIsHtmlImportOpen(false)}
+          targetMode="append_to_dashboard"
+          targetDashboardId={dashboardId}
+          targetDashboardName={dashboard.name}
+          onBuilt={(result) => {
+            setCurrentPageId(result.page_id);
+          }}
         />
 
         <DashboardChartManagerModal

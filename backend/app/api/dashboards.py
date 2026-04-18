@@ -1,11 +1,12 @@
 """
 API router for dashboard endpoints.
 """
+import json
 import secrets
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
-from typing import List
+from typing import Any, List, Optional
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -32,6 +33,8 @@ from app.schemas import (
     PublicLinkCreate,
     PublicLinkUpdate,
     PublicLinkResponse,
+    DashboardHtmlImportAnalyzeResponse,
+    DashboardHtmlImportBuildResponse,
 )
 # Commented out - using hybrid approach with filters_config JSON field instead
 # from app.schemas.dashboard_filter import (
@@ -41,10 +44,19 @@ from app.schemas import (
 # )
 # from app.models.dashboard_filter import DashboardFilter
 from app.services import DashboardService
+from app.services.dashboard_html_import_service import (
+    _load_existing_source_profile,
+    _load_uploaded_excel_source_profile,
+    analyze_dashboard_html_import,
+    build_dashboard_from_import as build_dashboard_from_html_import_service,
+    parse_uploaded_source_sheets,
+)
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/dashboards", tags=["dashboards"])
+MAX_HTML_IMPORT_SIZE = 2 * 1024 * 1024
+MAX_SOURCE_UPLOAD_SIZE = 10 * 1024 * 1024
 
 
 def _require_chart_visibility(db: Session, current_user: User, chart_id: int) -> Chart:
@@ -54,6 +66,29 @@ def _require_chart_visibility(db: Session, current_user: User, chart_id: int) ->
         raise HTTPException(status_code=404, detail=f"Chart with ID {chart_id} not found")
     require_view_access(db, current_user, chart, "explore_charts")
     return chart
+
+
+def _parse_optional_json_form_field(raw_value: Optional[str], field_name: str) -> Any:
+    if raw_value is None or not str(raw_value).strip():
+        return None
+    try:
+        return json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be valid JSON.") from exc
+
+
+def _normalize_import_source_mode(raw_value: str) -> str:
+    normalized = str(raw_value or "").strip().lower()
+    if normalized not in {"existing_dataset", "upload_excel"}:
+        raise HTTPException(status_code=400, detail="source_mode must be existing_dataset or upload_excel.")
+    return normalized
+
+
+def _normalize_import_target_mode(raw_value: str) -> str:
+    normalized = str(raw_value or "").strip().lower()
+    if normalized not in {"new_dashboard", "append_to_dashboard"}:
+        raise HTTPException(status_code=400, detail="target_mode must be new_dashboard or append_to_dashboard.")
+    return normalized
 
 
 @router.get("/", response_model=List[DashboardResponse])
@@ -74,6 +109,164 @@ def list_dashboards(
         item.user_permission = get_effective_permission(db, current_user, item, "dashboards")
     stamp_owner_emails(db, items)
     return items
+
+
+@router.post("/import-html/analyze", response_model=DashboardHtmlImportAnalyzeResponse)
+async def analyze_html_dashboard_import(
+    html_content: str = Form(...),
+    html_summary_json: Optional[str] = Form(None),
+    source_mode: str = Form(...),
+    dataset_table_id: Optional[int] = Form(None),
+    selected_sheet_name: Optional[str] = Form(None),
+    excel_file: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("dashboards", "edit")),
+):
+    """Analyze imported HTML and map it into native chart plans."""
+    normalized_html = str(html_content or "").strip()
+    if not normalized_html:
+        raise HTTPException(status_code=400, detail="html_content is required.")
+    if len(normalized_html.encode("utf-8")) > MAX_HTML_IMPORT_SIZE:
+        raise HTTPException(status_code=400, detail="HTML content is too large (max 2 MB).")
+
+    parsed_summary = _parse_optional_json_form_field(html_summary_json, "html_summary_json")
+    if parsed_summary is not None and not isinstance(parsed_summary, dict):
+        raise HTTPException(status_code=400, detail="html_summary_json must decode to an object.")
+
+    normalized_source_mode = _normalize_import_source_mode(source_mode)
+
+    try:
+        if normalized_source_mode == "existing_dataset":
+            if dataset_table_id is None:
+                raise HTTPException(status_code=400, detail="dataset_table_id is required for existing_dataset.")
+            source_profile = _load_existing_source_profile(
+                db,
+                current_user=current_user,
+                dataset_table_id=dataset_table_id,
+            )
+        else:
+            if excel_file is None:
+                raise HTTPException(status_code=400, detail="excel_file is required for upload_excel.")
+            file_bytes = await excel_file.read()
+            if len(file_bytes) == 0:
+                raise HTTPException(status_code=400, detail="Uploaded source file is empty.")
+            if len(file_bytes) > MAX_SOURCE_UPLOAD_SIZE:
+                raise HTTPException(status_code=400, detail="Source file is too large (max 10 MB).")
+            source_profile = _load_uploaded_excel_source_profile(
+                file_bytes=file_bytes,
+                filename=excel_file.filename,
+                sheet_name=selected_sheet_name,
+            )
+
+        return analyze_dashboard_html_import(
+            html_text=normalized_html,
+            html_summary=parsed_summary,
+            source_profile=source_profile,
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to analyze HTML dashboard import")
+        raise HTTPException(status_code=500, detail=f"Failed to analyze HTML import: {exc}") from exc
+
+
+@router.post(
+    "/import-html/build",
+    response_model=DashboardHtmlImportBuildResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def build_html_dashboard_import(
+    analysis_json: str = Form(...),
+    source_mode: str = Form(...),
+    target_mode: str = Form(...),
+    dashboard_name: Optional[str] = Form(None),
+    dataset_table_id: Optional[int] = Form(None),
+    selected_sheet_name: Optional[str] = Form(None),
+    target_dashboard_id: Optional[int] = Form(None),
+    included_block_ids_json: Optional[str] = Form(None),
+    excel_file: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("dashboards", "edit")),
+):
+    """Materialize analyzed chart plans into a native dashboard."""
+    analysis = _parse_optional_json_form_field(analysis_json, "analysis_json")
+    if not isinstance(analysis, dict):
+        raise HTTPException(status_code=400, detail="analysis_json must decode to an object.")
+
+    included_block_ids = _parse_optional_json_form_field(included_block_ids_json, "included_block_ids_json")
+    if included_block_ids is None:
+        included_block_ids = []
+    if not isinstance(included_block_ids, list) or any(not isinstance(item, str) for item in included_block_ids):
+        raise HTTPException(status_code=400, detail="included_block_ids_json must decode to a string array.")
+
+    normalized_source_mode = _normalize_import_source_mode(source_mode)
+    normalized_target_mode = _normalize_import_target_mode(target_mode)
+
+    source_bytes: bytes | None = None
+    source_filename: str | None = None
+    if normalized_source_mode == "upload_excel":
+        if excel_file is None:
+            raise HTTPException(status_code=400, detail="excel_file is required for upload_excel.")
+        source_bytes = await excel_file.read()
+        source_filename = excel_file.filename
+        if len(source_bytes) == 0:
+            raise HTTPException(status_code=400, detail="Uploaded source file is empty.")
+        if len(source_bytes) > MAX_SOURCE_UPLOAD_SIZE:
+            raise HTTPException(status_code=400, detail="Source file is too large (max 10 MB).")
+
+    try:
+        return build_dashboard_from_html_import_service(
+            db,
+            current_user=current_user,
+            analysis=analysis,
+            source_mode=normalized_source_mode,
+            dataset_table_id=dataset_table_id,
+            source_bytes=source_bytes,
+            source_filename=source_filename,
+            selected_sheet_name=selected_sheet_name,
+            dashboard_name=dashboard_name,
+            target_mode=normalized_target_mode,
+            target_dashboard_id=target_dashboard_id,
+            included_block_ids=included_block_ids,
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to build HTML dashboard import")
+        raise HTTPException(status_code=500, detail=f"Failed to build dashboard import: {exc}") from exc
+
+
+@router.post("/import-html/source-preview")
+async def preview_html_dashboard_import_source(
+    excel_file: UploadFile = File(...),
+    _current_user: User = Depends(require_permission("dashboards", "edit")),
+):
+    """Preview uploaded CSV/XLSX sheets before analyze/build."""
+    file_bytes = await excel_file.read()
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded source file is empty.")
+    if len(file_bytes) > MAX_SOURCE_UPLOAD_SIZE:
+        raise HTTPException(status_code=400, detail="Source file is too large (max 10 MB).")
+
+    try:
+        sheets = parse_uploaded_source_sheets(file_bytes=file_bytes, filename=excel_file.filename)
+        if not sheets:
+            raise ValueError("Uploaded file does not contain any previewable sheets.")
+        default_sheet_name = next(iter(sheets.keys()))
+        return {
+            "filename": excel_file.filename,
+            "default_sheet_name": default_sheet_name,
+            "sheets": sheets,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to preview HTML dashboard import source")
+        raise HTTPException(status_code=500, detail=f"Failed to preview source file: {exc}") from exc
 
 
 @router.get("/{dashboard_id}", response_model=DashboardResponse)

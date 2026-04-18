@@ -4,21 +4,26 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
-import { Search, Database, CheckSquare, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
+import { Search, Database, CheckSquare, Loader2, ChevronDown, ChevronRight, Square } from 'lucide-react';
 import { useDataSources } from '@/hooks/use-datasources';
 import { useDatasourceTables } from '@/hooks/use-datasets';
 import type { DatasourceTable, AddTableInput } from '@/hooks/use-datasets';
 
 interface PhysicalTableTabProps {
-  onAddTable: (input: AddTableInput) => Promise<void>;
+  onAddTable: (input: AddTableInput | AddTableInput[]) => Promise<void>;
   isLoading: boolean;
+}
+
+function buildDefaultDisplayName(tableName: string): string {
+  const shortName = tableName.split('.').pop() || tableName;
+  return shortName.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProps) {
   const [selectedDatasourceId, setSelectedDatasourceId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedTable, setSelectedTable] = useState<string | null>(null);
-  const [displayName, setDisplayName] = useState('');
+  const [selectedTables, setSelectedTables] = useState<string[]>([]);
+  const [displayNames, setDisplayNames] = useState<Record<string, string>>({});
 
   const { data: datasources, isLoading: loadingDatasources } = useDataSources();
   const { data: tables, isLoading: loadingTables } = useDatasourceTables(
@@ -61,26 +66,82 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
       return next;
     });
 
-  const handleSelectTable = (tableName: string) => {
-    setSelectedTable(tableName);
-    if (!displayName) {
-      const shortName = tableName.split('.').pop() || tableName;
-      setDisplayName(shortName.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()));
-    }
-  };
+  const selectedTableSet = useMemo(() => new Set(selectedTables), [selectedTables]);
 
-  const handleAdd = async () => {
-    if (!selectedDatasourceId || !selectedTable || !displayName.trim()) return;
-    await onAddTable({
-      datasource_id: selectedDatasourceId,
-      source_kind: 'physical_table',
-      source_table_name: selectedTable,
-      display_name: displayName.trim(),
-      enabled: true,
+  const updateTableSelection = (tableName: string, selected: boolean) => {
+    setSelectedTables((current) => {
+      if (selected) {
+        if (current.includes(tableName)) return current;
+        return [...current, tableName];
+      }
+      return current.filter((name) => name !== tableName);
+    });
+
+    setDisplayNames((current) => {
+      if (selected) {
+        if (current[tableName]) return current;
+        return {
+          ...current,
+          [tableName]: buildDefaultDisplayName(tableName),
+        };
+      }
+
+      const next = { ...current };
+      delete next[tableName];
+      return next;
     });
   };
 
-  const canAdd = selectedDatasourceId && selectedTable && displayName.trim() && !isLoading;
+  const handleToggleTable = (tableName: string) => {
+    updateTableSelection(tableName, !selectedTableSet.has(tableName));
+  };
+
+  const handleSelectAllFiltered = () => {
+    if (filteredTables.length === 0) return;
+
+    setSelectedTables((current) => {
+      const next = new Set(current);
+      filteredTables.forEach((table) => next.add(table.name));
+      return Array.from(next);
+    });
+
+    setDisplayNames((current) => {
+      const next = { ...current };
+      filteredTables.forEach((table) => {
+        if (!next[table.name]) {
+          next[table.name] = buildDefaultDisplayName(table.name);
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleClearSelection = () => {
+    setSelectedTables([]);
+    setDisplayNames({});
+  };
+
+  const handleAdd = async () => {
+    if (!selectedDatasourceId || selectedTables.length === 0) return;
+
+    const payload = selectedTables.map((tableName) => ({
+      datasource_id: selectedDatasourceId,
+      source_kind: 'physical_table' as const,
+      source_table_name: tableName,
+      display_name: (displayNames[tableName] || buildDefaultDisplayName(tableName)).trim(),
+      enabled: true,
+    }));
+
+    await onAddTable(payload.length === 1 ? payload[0] : payload);
+  };
+
+  const allVisibleSelected = filteredTables.length > 0 && filteredTables.every((table) => selectedTableSet.has(table.name));
+  const canAdd = Boolean(
+    selectedDatasourceId
+      && selectedTables.length > 0
+      && selectedTables.every((tableName) => (displayNames[tableName] || '').trim())
+      && !isLoading
+  );
 
   return (
     <div className="p-6 space-y-6">
@@ -91,8 +152,9 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
           value={selectedDatasourceId || ''}
           onChange={(e) => {
             setSelectedDatasourceId(Number(e.target.value) || null);
-            setSelectedTable(null);
-            setDisplayName('');
+            setSelectedTables([]);
+            setDisplayNames({});
+            setSearchQuery('');
           }}
           className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
           disabled={loadingDatasources || isLoading}
@@ -109,7 +171,30 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
       {/* Table search and list */}
       {selectedDatasourceId && (
         <div>
-          <label className="block text-sm font-medium text-text-secondary mb-2">Select Table *</label>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div>
+              <label className="block text-sm font-medium text-text-secondary">Select Tables *</label>
+              <p className="mt-1 text-xs text-text-tertiary">Choose one or multiple tables from the datasource.</p>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={handleSelectAllFiltered}
+                disabled={isLoading || loadingTables || filteredTables.length === 0 || allVisibleSelected}
+                className="rounded-md border border-[rgb(var(--border-line))] px-2.5 py-1.5 text-text-secondary transition-colors hover:border-brand/40 hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Select all visible
+              </button>
+              <button
+                type="button"
+                onClick={handleClearSelection}
+                disabled={isLoading || selectedTables.length === 0}
+                className="rounded-md border border-[rgb(var(--border-line))] px-2.5 py-1.5 text-text-secondary transition-colors hover:border-brand/40 hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
 
           <div className="relative mb-3">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-text-quaternary w-4 h-4" />
@@ -140,6 +225,7 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
                   {filteredTables.length} table{filteredTables.length !== 1 ? 's' : ''}
                   {groupedTables.length > 1 ? ` in ${groupedTables.length} schemas` : ''}
                   {searchQuery && ` matching "${searchQuery}"`}
+                  {selectedTables.length > 0 && ` • ${selectedTables.length} selected`}
                 </div>
                 {groupedTables.map(({ schema, tables: schemaTables }) => {
                   const isCollapsed = collapsedSchemas.has(schema);
@@ -165,21 +251,24 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
                             return (
                               <button
                                 key={table.name}
-                                onClick={() => handleSelectTable(table.name)}
+                                type="button"
+                                onClick={() => handleToggleTable(table.name)}
                                 className={`w-full px-4 py-2.5 text-left hover:bg-brand/15 transition-colors flex items-center gap-2 ${
-                                  selectedTable === table.name ? 'bg-brand/10 border-l-2 border-brand' : ''
+                                  selectedTableSet.has(table.name) ? 'bg-brand/10 border-l-2 border-brand' : ''
                                 }`}
                                 disabled={isLoading}
                               >
+                                {selectedTableSet.has(table.name) ? (
+                                  <CheckSquare className="w-4 h-4 text-brand flex-shrink-0" />
+                                ) : (
+                                  <Square className="w-4 h-4 text-text-quaternary flex-shrink-0" />
+                                )}
                                 <div className="flex-1 min-w-0">
                                   <div className="text-sm font-medium text-text-primary truncate">{shortName}</div>
                                   {groupedTables.length <= 1 && table.schema && (
                                     <div className="text-xs text-text-quaternary">{table.schema}</div>
                                   )}
                                 </div>
-                                {selectedTable === table.name && (
-                                  <CheckSquare className="w-4 h-4 text-brand flex-shrink-0" />
-                                )}
                               </button>
                             );
                           })}
@@ -194,31 +283,68 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
         </div>
       )}
 
-      {/* Display name */}
-      {selectedTable && (
+      {/* Display names */}
+      {selectedTables.length > 0 && (
         <div>
-          <label className="block text-sm font-medium text-text-secondary mb-2">Display Name *</label>
-          <input
-            type="text"
-            value={displayName}
-            onChange={(e) => setDisplayName(e.target.value)}
-            placeholder="e.g., Orders"
-            className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
-            disabled={isLoading}
-          />
-          <p className="text-xs text-text-tertiary mt-1">This name will be shown in the dataset</p>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <label className="block text-sm font-medium text-text-secondary">
+              Display Names *
+            </label>
+            <span className="text-xs text-text-tertiary">
+              {selectedTables.length} table{selectedTables.length !== 1 ? 's' : ''} selected
+            </span>
+          </div>
+          <div className="max-h-72 space-y-3 overflow-y-auto rounded-md border border-[rgb(var(--border-strong))] p-3">
+            {selectedTables.map((tableName) => {
+              const shortName = tableName.split('.').pop() || tableName;
+              return (
+                <div key={tableName} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-text-primary">{shortName}</div>
+                      <div className="mt-1 truncate text-xs text-text-tertiary">{tableName}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleTable(tableName)}
+                      disabled={isLoading}
+                      className="rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-xs text-text-secondary transition-colors hover:border-brand/40 hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  <div className="mt-3">
+                    <label className="mb-1 block text-xs font-medium text-text-secondary">Display name</label>
+                    <input
+                      type="text"
+                      value={displayNames[tableName] || ''}
+                      onChange={(e) => setDisplayNames((current) => ({
+                        ...current,
+                        [tableName]: e.target.value,
+                      }))}
+                      placeholder="e.g., Orders"
+                      className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
+                      disabled={isLoading}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-xs text-text-tertiary mt-1">These names will be shown inside the dataset.</p>
         </div>
       )}
 
       {/* Action button */}
       <div className="flex justify-end pt-4 border-t">
         <button
+          type="button"
           onClick={handleAdd}
           disabled={!canAdd}
           className="px-4 py-2 bg-brand text-white rounded-md hover:bg-brand-hover disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
         >
           {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-          Add Table
+          {selectedTables.length > 1 ? `Add ${selectedTables.length} Tables` : 'Add Table'}
         </button>
       </div>
     </div>

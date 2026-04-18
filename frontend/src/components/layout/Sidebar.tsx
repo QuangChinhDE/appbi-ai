@@ -129,6 +129,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
         {!isCollapsed ? (
           <Link
             href="/"
+            prefetch={false}
             className="flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-surface-2"
           >
             <div className="flex h-6 w-6 items-center justify-center rounded-md bg-brand text-text-inverse">
@@ -141,6 +142,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
         ) : (
           <Link
             href="/"
+            prefetch={false}
             className="mx-auto flex h-8 w-8 items-center justify-center rounded-md bg-brand text-text-inverse"
           >
             <BarChart3 className="h-4 w-4" />
@@ -158,6 +160,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
               <li key={item.href}>
                 <Link
                   href={item.href}
+                  prefetch={false}
                   className={cn(
                     'group flex items-center rounded-md transition-colors',
                     isCollapsed ? 'h-8 w-8 mx-auto justify-center' : 'h-8 px-2.5 gap-2',

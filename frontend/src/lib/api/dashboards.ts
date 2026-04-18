@@ -9,6 +9,13 @@ import {
   DashboardChartLayout,
   PublicLinkAppearanceConfig,
 } from '@/types/api';
+import type {
+  DashboardHtmlImportAnalyzeInput,
+  DashboardHtmlImportAnalyzeResponse,
+  DashboardHtmlImportBuildInput,
+  DashboardHtmlImportBuildResponse,
+  DashboardHtmlImportSourcePreviewResponse,
+} from '@/types/dashboard-html-import';
 
 export const dashboardApi = {
   getAll: async (): Promise<Dashboard[]> => {
@@ -60,6 +67,70 @@ export const dashboardApi = {
   ): Promise<Dashboard> => {
     const response = await apiClient.put(`/dashboards/${dashboardId}/layout`, {
       chart_layouts: chartLayouts,
+    });
+    return response.data;
+  },
+
+  analyzeHtmlImport: async (input: DashboardHtmlImportAnalyzeInput): Promise<DashboardHtmlImportAnalyzeResponse> => {
+    const formData = new FormData();
+    formData.append('html_content', input.htmlContent);
+    formData.append('html_summary_json', JSON.stringify(input.htmlSummary ?? {}));
+    formData.append('source_mode', input.sourceMode);
+    if (input.datasetTableId != null) {
+      formData.append('dataset_table_id', String(input.datasetTableId));
+    }
+    if (input.selectedSheetName?.trim()) {
+      formData.append('selected_sheet_name', input.selectedSheetName.trim());
+    }
+    if (input.excelFile) {
+      formData.append('excel_file', input.excelFile);
+    }
+
+    const response = await apiClient.post('/dashboards/import-html/analyze', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  },
+
+  buildHtmlImport: async (input: DashboardHtmlImportBuildInput): Promise<DashboardHtmlImportBuildResponse> => {
+    const formData = new FormData();
+    formData.append('analysis_json', JSON.stringify(input.analysis));
+    formData.append('source_mode', input.sourceMode);
+    formData.append('target_mode', input.targetMode);
+    formData.append('included_block_ids_json', JSON.stringify(input.includedBlockIds ?? []));
+    if (input.dashboardName?.trim()) {
+      formData.append('dashboard_name', input.dashboardName.trim());
+    }
+    if (input.datasetTableId != null) {
+      formData.append('dataset_table_id', String(input.datasetTableId));
+    }
+    if (input.selectedSheetName?.trim()) {
+      formData.append('selected_sheet_name', input.selectedSheetName.trim());
+    }
+    if (input.targetDashboardId != null) {
+      formData.append('target_dashboard_id', String(input.targetDashboardId));
+    }
+    if (input.excelFile) {
+      formData.append('excel_file', input.excelFile);
+    }
+
+    const response = await apiClient.post('/dashboards/import-html/build', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  },
+
+  previewHtmlImportSource: async (file: File): Promise<DashboardHtmlImportSourcePreviewResponse> => {
+    const formData = new FormData();
+    formData.append('excel_file', file);
+    const response = await apiClient.post('/dashboards/import-html/source-preview', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
     });
     return response.data;
   },

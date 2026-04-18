@@ -17,6 +17,7 @@ import { GettingStartedGuide } from '@/components/common/GettingStartedGuide';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { Modal } from '@/components/common/Modal';
+import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
 import { Button, IconButton } from '@/components/ui/Button';
 import { FilterTag } from '@/components/ui/FilterTag';
 import { Input, Textarea, FieldGroup } from '@/components/ui/Input';
@@ -35,6 +36,7 @@ export default function DashboardsPage() {
   const [isDeletingDashboard, setIsDeletingDashboard] = useState(false);
   const [publicShareDash, setPublicShareDash] = useState<Dashboard | null>(null);
   const [shareDash, setShareDash] = useState<Dashboard | null>(null);
+  const [isHtmlImportOpen, setIsHtmlImportOpen] = useState(false);
 
   const { data: dashboards, isLoading } = useDashboards();
   const { data: permData } = usePermissions();
@@ -124,14 +126,24 @@ export default function DashboardsPage() {
           />
         )}
         action={canEdit ? (
-          <Button
-            variant="primary"
-            size="sm"
-            leadingIcon={<Plus className="h-3.5 w-3.5" />}
-            onClick={() => setIsCreating(true)}
-          >
-            {t('action.newDashboard')}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              leadingIcon={<LayoutDashboard className="h-3.5 w-3.5" />}
+              onClick={() => setIsHtmlImportOpen(true)}
+            >
+              Import HTML
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              leadingIcon={<Plus className="h-3.5 w-3.5" />}
+              onClick={() => setIsCreating(true)}
+            >
+              {t('action.newDashboard')}
+            </Button>
+          </div>
         ) : undefined}
         isLoading={isLoading}
         loadingText={t('common.loading')}
@@ -379,6 +391,12 @@ export default function DashboardsPage() {
           onClose={() => setShareDash(null)}
         />
       )}
+
+      <DashboardHtmlImportModal
+        isOpen={isHtmlImportOpen}
+        onClose={() => setIsHtmlImportOpen(false)}
+        targetMode="new_dashboard"
+      />
     </>
   );
 }

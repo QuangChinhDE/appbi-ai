@@ -88,6 +88,11 @@ from app.schemas.agent_report import (
     AgentReportRunUpdate,
     AgentReportRunResponse,
 )
+from app.schemas.dashboard_html_import import (
+    DashboardHtmlImportAnalyzeResponse,
+    DashboardHtmlImportBuildResponse,
+    DashboardHtmlImportTypeChange,
+)
 
 __all__ = [
     # Data Source
@@ -163,6 +168,11 @@ __all__ = [
     "QualityRunResponse",
     "QualityDimensionSummary",
     "QualitySummaryResponse",
+
+    # Dashboard HTML import
+    "DashboardHtmlImportAnalyzeResponse",
+    "DashboardHtmlImportBuildResponse",
+    "DashboardHtmlImportTypeChange",
 
     # AI Agent saved reports
     "AgentReportSpecCreate",
