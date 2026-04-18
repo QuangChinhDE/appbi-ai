@@ -295,7 +295,7 @@ export function ChartPreview({
   }, [chartOutputData, sortRules, dataLimit, dataLimitDir]);
 
   const ChartTitleEl = chartTitle ? (
-    <div className="text-center text-sm font-semibold text-gray-700 mb-1">{chartTitle}</div>
+    <div className="text-center text-sm font-semibold text-text-secondary mb-1">{chartTitle}</div>
   ) : null;
 
   const yDomain: [number | 'auto', number | 'auto'] = [
@@ -358,8 +358,8 @@ export function ChartPreview({
 
   if (!data || data.length === 0) {
     return (
-      <div className="flex items-center justify-center h-64 bg-gray-50 border border-gray-200 rounded-lg">
-        <p className="text-gray-500">No data to display</p>
+      <div className="flex items-center justify-center h-64 bg-surface-2 border border-[rgb(var(--border-line))] rounded-lg">
+        <p className="text-text-tertiary">No data to display</p>
       </div>
     );
   }
@@ -806,8 +806,8 @@ export function ChartPreview({
   }
 
   return (
-    <div className="flex items-center justify-center h-64 bg-gray-50 border border-gray-200 rounded-lg">
-      <p className="text-gray-500">Invalid chart configuration</p>
+    <div className="flex items-center justify-center h-64 bg-surface-2 border border-[rgb(var(--border-line))] rounded-lg">
+      <p className="text-text-tertiary">Invalid chart configuration</p>
     </div>
   );
 }

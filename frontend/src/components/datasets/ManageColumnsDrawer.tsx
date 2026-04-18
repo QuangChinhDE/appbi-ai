@@ -147,23 +147,23 @@ export function ManageColumnsDrawer({
     <>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-black bg-opacity-30 z-40"
+        className="fixed inset-0 z-40 bg-overlay/84 backdrop-blur-[2px]"
         onClick={onClose}
       />
 
       {/* Drawer */}
-      <div className="fixed right-0 top-0 bottom-0 w-96 bg-white shadow-xl z-50 flex flex-col">
+      <div className="fixed right-0 top-0 bottom-0 z-50 flex w-96 flex-col border-l border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b">
+        <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] bg-surface-1 px-6 py-4">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Manage Columns</h2>
-            <p className="text-sm text-gray-500 mt-1">
+            <h2 className="text-lg font-semibold text-text-primary">Manage Columns</h2>
+            <p className="text-sm text-text-tertiary mt-1">
               {selectedColumns.size} of {fullSourceColumns.length} columns selected
             </p>
           </div>
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 transition-colors"
+            className="text-text-quaternary hover:text-text-secondary transition-colors"
             disabled={isSaving}
           >
             <X className="w-5 h-5" />
@@ -171,31 +171,31 @@ export function ManageColumnsDrawer({
         </div>
 
         {/* Quick actions */}
-        <div className="px-6 py-3 border-b bg-gray-50 flex gap-2">
+        <div className="flex gap-2 border-b border-[rgb(var(--border-line))] bg-surface-2 px-6 py-3">
           <button
             onClick={handleSelectAll}
-            className="text-sm text-blue-600 hover:text-blue-700"
+            className="text-sm text-brand hover:text-brand"
             disabled={isSaving}
           >
             Select All
           </button>
-          <span className="text-gray-300">|</span>
+          <span className="text-text-quaternary">|</span>
           <button
             onClick={handleDeselectAll}
-            className="text-sm text-blue-600 hover:text-blue-700"
+            className="text-sm text-brand hover:text-brand"
             disabled={isSaving}
           >
             Deselect All
           </button>
         </div>
         {deletedComputed.size > 0 && (
-          <div className="px-6 py-2 bg-red-50 border-b text-xs text-red-700">
+          <div className="border-b border-danger/20 bg-danger/10 px-6 py-2 text-xs text-danger">
             ⚠️ {deletedComputed.size} cột công thức sẽ bị xóa khi lưu
           </div>
         )}
 
         {/* Column list */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
+        <div className="flex-1 overflow-y-auto bg-surface-0 px-6 py-4">
           <div className="space-y-2">
             {/* Render ALL source columns (including hidden ones) so users can toggle them */}
             {fullSourceColumns.map((column) => {
@@ -204,16 +204,16 @@ export function ManageColumnsDrawer({
                 // Source column — hide/show only
                 <label
                   key={column}
-                  className="flex items-center gap-3 p-2 rounded hover:bg-gray-50 cursor-pointer"
+                  className="flex cursor-pointer items-center gap-3 rounded-lg border border-transparent bg-surface-1 p-2 transition-colors hover:border-[rgb(var(--border-line))] hover:bg-surface-2"
                 >
                   <input
                     type="checkbox"
                     checked={selectedColumns.has(column)}
                     onChange={() => handleToggle(column)}
                     disabled={isSaving || isPendingDelete}
-                    className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                    className="w-4 h-4 text-brand border-[rgb(var(--border-strong))] rounded focus:ring-brand"
                   />
-                  <span className="text-sm text-gray-900 font-mono">{column}</span>
+                  <span className="text-sm text-text-primary font-mono">{column}</span>
                 </label>
               );
             })}
@@ -223,22 +223,22 @@ export function ManageColumnsDrawer({
               return (
                 <div
                   key={column}
-                  className={`flex items-center gap-3 p-2 rounded ${
-                    isPendingDelete ? 'bg-red-50 opacity-60' : 'bg-purple-50'
+                  className={`flex items-center gap-3 rounded-lg p-2 ${
+                    isPendingDelete ? 'border border-danger/20 bg-danger/10 opacity-60' : 'border border-brand/20 bg-brand/10'
                   }`}
                 >
-                  <Cpu className="w-4 h-4 text-purple-400 shrink-0" />
+                  <Cpu className="w-4 h-4 text-brand shrink-0" />
                   <span className={`text-sm font-mono flex-1 ${
-                    isPendingDelete ? 'line-through text-gray-400' : 'text-purple-900'
+                    isPendingDelete ? 'line-through text-text-quaternary' : 'text-brand'
                   }`}>
                     {column}
                   </span>
-                  <span className="text-[10px] text-purple-400 font-medium shrink-0">công thức</span>
+                  <span className="text-[10px] text-brand font-medium shrink-0">công thức</span>
                   {isPendingDelete ? (
                     <button
                       onClick={() => handleUndoDelete(column)}
                       disabled={isSaving}
-                      className="text-xs text-gray-500 hover:text-gray-800 underline shrink-0"
+                      className="text-xs text-text-tertiary hover:text-text-primary underline shrink-0"
                       title="Hoàn tác xóa"
                     >
                       Hoàn tác
@@ -247,7 +247,7 @@ export function ManageColumnsDrawer({
                     <button
                       onClick={() => handleDeleteComputed(column)}
                       disabled={isSaving}
-                      className="p-1 text-red-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors shrink-0"
+                      className="p-1 text-danger hover:text-danger hover:bg-danger/10 rounded transition-colors shrink-0"
                       title="Xóa cột công thức"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -260,18 +260,18 @@ export function ManageColumnsDrawer({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t bg-gray-50 flex justify-end gap-3">
+        <div className="flex justify-end gap-3 border-t border-[rgb(var(--border-line))] bg-surface-2 px-6 py-4">
           <button
             onClick={onClose}
             disabled={isSaving}
-            className="px-4 py-2 text-sm text-gray-700 hover:text-gray-900 transition-colors"
+            className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
             disabled={isSaving || selectedColumns.size === 0}
-            className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            className="px-4 py-2 bg-brand text-white text-sm rounded-md hover:bg-brand-hover disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
           >
             {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
             Apply

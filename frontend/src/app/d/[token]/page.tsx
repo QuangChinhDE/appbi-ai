@@ -16,6 +16,8 @@ import {
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
+import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
 import {
   clearPublicSession,
   getPublicSession,
@@ -67,20 +69,19 @@ function PasswordGate({
   const [show, setShow] = useState(false);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[radial-gradient(circle_at_top,rgba(14,165,233,0.16),transparent_34%),linear-gradient(180deg,rgba(248,250,252,0.96),rgba(241,245,249,0.98))] px-4 py-8 backdrop-blur-sm">
-      <div className="mx-4 w-full max-w-md overflow-hidden rounded-[28px] border border-white/80 bg-white/92 shadow-[0_40px_110px_-48px_rgba(15,23,42,0.55)]">
-        <div className="relative overflow-hidden border-b border-slate-200/70 bg-[linear-gradient(135deg,rgba(240,249,255,0.95),rgba(236,253,245,0.92))] px-6 py-6 text-center text-slate-900">
-          <div className="absolute inset-x-10 top-0 h-20 rounded-full bg-sky-200/30 blur-3xl" />
-          <div className="relative mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-950 text-white shadow-lg shadow-slate-900/15">
-            <Lock className="h-6 w-6" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-0 px-4 py-8">
+      <div className="w-full max-w-md overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
+        <div className="border-b border-[rgb(var(--border-line))] px-6 py-6 text-center">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-brand/10 text-brand">
+            <Lock className="h-5 w-5" />
           </div>
-          <p className="relative text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+          <p className="text-tiny font-emphasis uppercase tracking-[0.18em] text-text-quaternary">
             Protected shared report
           </p>
-          <h1 className="relative mt-2 text-xl font-semibold tracking-tight text-slate-950">
+          <h1 className="mt-2 text-h3 font-emphasis text-text-primary">
             {isReauth ? 'Session expired' : 'Password protected'}
           </h1>
-          <p className="relative mt-2 text-sm leading-6 text-slate-600">
+          <p className="mt-2 text-caption text-text-tertiary">
             {isReauth
               ? 'Your 2-hour session ended. Enter the password again to continue.'
               : 'This shared dashboard requires a password to view.'}
@@ -88,47 +89,48 @@ function PasswordGate({
         </div>
 
         <div className="px-6 py-6">
-          <label className="mb-1.5 block text-sm font-medium text-slate-700">Password</label>
-          <div className="relative">
-            <input
-              type={show ? 'text' : 'password'}
-              value={value}
-              onChange={(event) => setValue(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && value) {
-                  onSubmit(value);
-                }
-              }}
-              className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 pr-11 text-sm text-slate-700 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-4 focus:ring-sky-100"
-              placeholder="Enter password"
-              autoFocus
-            />
-            <button
-              type="button"
-              onClick={() => setShow((current) => !current)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-            >
-              {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-            </button>
-          </div>
+          <label className="mb-1.5 block text-caption font-emphasis text-text-secondary">Password</label>
+          <Input
+            type={show ? 'text' : 'password'}
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && value) {
+                onSubmit(value);
+              }
+            }}
+            placeholder="Enter password"
+            autoFocus
+            trailingIcon={
+              <button
+                type="button"
+                onClick={() => setShow((current) => !current)}
+                className="pointer-events-auto text-text-tertiary hover:text-text-primary"
+              >
+                {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            }
+          />
 
           {error && (
-            <p className="mt-3 flex items-center gap-1 text-xs text-rose-600">
+            <p className="mt-3 flex items-center gap-1 text-tiny text-danger">
               <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
               {error}
             </p>
           )}
 
-          <button
+          <Button
+            variant="primary"
+            fullWidth
+            className="mt-5"
             onClick={() => value && onSubmit(value)}
             disabled={submitting || !value}
-            className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 py-3 text-sm font-medium text-white transition-colors hover:bg-slate-800 disabled:opacity-50"
+            leadingIcon={submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />}
           >
-            {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />}
             {submitting ? 'Verifying...' : isReauth ? 'Continue viewing' : 'Unlock dashboard'}
-          </button>
+          </Button>
 
-          <p className="mt-4 text-center text-[11px] text-slate-400">
+          <p className="mt-4 text-center text-tiny text-text-quaternary">
             Sessions last 2 hours and keep the report read-only.
           </p>
         </div>
@@ -139,22 +141,21 @@ function PasswordGate({
 
 function SessionExpiredOverlay({ onReauth }: { onReauth: () => void }) {
   return (
-    <div className="fixed inset-0 z-40 flex items-end justify-center bg-slate-950/18 px-4 pb-8 backdrop-blur-[3px] sm:items-center sm:pb-0">
-      <div className="mx-4 w-full max-w-md rounded-[28px] border border-white/80 bg-white/92 px-6 py-6 text-center shadow-[0_36px_100px_-46px_rgba(15,23,42,0.55)]">
-        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-100">
-          <RefreshCw className="h-5 w-5 text-amber-600" />
+    <div className="fixed inset-0 z-40 flex items-end justify-center bg-text-primary/20 px-4 pb-8 sm:items-center sm:pb-0">
+      <div className="w-full max-w-md rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-6 py-6 text-center shadow-linear-lg">
+        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-warning/10 text-warning">
+          <RefreshCw className="h-5 w-5" />
         </div>
-        <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Authentication needed</p>
-        <h2 className="mt-2 text-lg font-semibold text-slate-950">Session expired</h2>
-        <p className="mt-2 text-sm leading-6 text-slate-600">
+        <p className="text-tiny font-emphasis uppercase tracking-[0.18em] text-text-quaternary">
+          Authentication needed
+        </p>
+        <h2 className="mt-2 text-h3 font-emphasis text-text-primary">Session expired</h2>
+        <p className="mt-2 text-caption text-text-tertiary">
           Your 2-hour viewing session ended. Re-enter the password to continue.
         </p>
-        <button
-          onClick={onReauth}
-          className="mt-5 w-full rounded-2xl bg-slate-950 py-3 text-sm font-medium text-white transition-colors hover:bg-slate-800"
-        >
+        <Button variant="primary" fullWidth className="mt-5" onClick={onReauth}>
           Re-enter password
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -536,13 +537,13 @@ export default function PublicDashboardPage() {
 
   if (!mounted || pageState === 'unknown' || loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_45%,#ffffff_100%)] px-4">
-        <div className="w-full max-w-md rounded-[28px] border border-white/80 bg-white/85 px-6 py-10 text-center shadow-[0_40px_100px_-52px_rgba(15,23,42,0.55)] backdrop-blur">
-          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-950 text-white">
-            <Loader2 className="h-6 w-6 animate-spin" />
+      <div className="flex min-h-screen items-center justify-center bg-surface-0 px-4">
+        <div className="w-full max-w-md rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-6 py-10 text-center shadow-linear">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-lg bg-brand/10 text-brand">
+            <Loader2 className="h-5 w-5 animate-spin" />
           </div>
-          <h1 className="mt-4 text-lg font-semibold text-slate-950">Preparing shared dashboard</h1>
-          <p className="mt-2 text-sm text-slate-500">
+          <h1 className="mt-4 text-small font-strong text-text-primary">Preparing shared dashboard</h1>
+          <p className="mt-2 text-caption text-text-tertiary">
             Loading charts, pages, and viewer filters for the published report.
           </p>
         </div>
@@ -563,12 +564,16 @@ export default function PublicDashboardPage() {
 
   if (pageState === 'error' || !dashboard) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_45%,#ffffff_100%)] px-4">
-        <div className="max-w-md rounded-[28px] border border-white/80 bg-white/90 px-8 py-10 text-center shadow-[0_40px_100px_-52px_rgba(15,23,42,0.55)] backdrop-blur">
-          <AlertTriangle className="mx-auto mb-4 h-10 w-10 text-amber-500" />
-          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Shared link unavailable</p>
-          <h1 className="mt-2 text-xl font-semibold text-slate-950">Dashboard not available</h1>
-          <p className="mt-3 text-sm leading-6 text-slate-500">
+      <div className="flex min-h-screen items-center justify-center bg-surface-0 px-4">
+        <div className="max-w-md rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-8 py-10 text-center shadow-linear">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-warning/10 text-warning">
+            <AlertTriangle className="h-5 w-5" />
+          </div>
+          <p className="text-tiny font-emphasis uppercase tracking-[0.18em] text-text-quaternary">
+            Shared link unavailable
+          </p>
+          <h1 className="mt-2 text-h3 font-emphasis text-text-primary">Dashboard not available</h1>
+          <p className="mt-3 text-caption text-text-tertiary">
             {error ?? 'This shared link may have expired or been revoked.'}
           </p>
         </div>
@@ -588,17 +593,17 @@ export default function PublicDashboardPage() {
   });
 
   return (
-    <div className="min-h-screen text-slate-900" style={publicTheme.pageStyle}>
+    <div className="min-h-screen bg-surface-0 text-text-primary" style={publicTheme.pageStyle}>
       {pageState === 'reauth' && (
         <SessionExpiredOverlay onReauth={handleReauth} />
       )}
 
       <main className={`flex w-full flex-col ${publicTheme.density.listGapClass} px-3 py-4 sm:px-4 lg:px-6 lg:py-5`}>
         <section
-          className="overflow-visible rounded-[28px] border px-3 py-3 sm:px-4 sm:py-4"
+          className="overflow-visible rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-4 sm:px-5 sm:py-5"
           style={publicTheme.panelStyle}
         >
-          <h1 className="text-lg font-semibold tracking-tight text-slate-950 sm:text-xl">
+          <h1 className="text-h2 font-emphasis tracking-[-0.022em] text-text-primary">
             {presentationTitle}
           </h1>
 
@@ -610,19 +615,25 @@ export default function PublicDashboardPage() {
                     const isActive = page.id === activePageId;
                     const isPending = page.id === pendingPageId;
                     return (
-                    <button
-                      key={page.id}
-                      type="button"
-                      onClick={() => {
-                        void handlePageSelect(page.id);
-                      }}
-                      className="inline-flex whitespace-nowrap rounded-full border px-3 py-1.5 text-[11px] font-medium transition"
-                      style={isActive ? publicTheme.pageTabActiveStyle : isPending ? publicTheme.accentPillStyle : publicTheme.pageTabInactiveStyle}
-                      disabled={isPending}
-                    >
-                      {isPending && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
-                      {page.name}
-                    </button>
+                      <button
+                        key={page.id}
+                        type="button"
+                        onClick={() => {
+                          void handlePageSelect(page.id);
+                        }}
+                        className={`inline-flex items-center whitespace-nowrap rounded-full border px-3 py-1.5 text-tiny font-emphasis transition-colors ${
+                          isActive
+                            ? 'border-transparent bg-text-primary text-text-inverse'
+                            : isPending
+                              ? 'border-brand/20 bg-brand/10 text-brand'
+                              : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+                        }`}
+                        style={isActive ? publicTheme.pageTabActiveStyle : isPending ? publicTheme.accentPillStyle : publicTheme.pageTabInactiveStyle}
+                        disabled={isPending}
+                      >
+                        {isPending && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
+                        {page.name}
+                      </button>
                     );
                   })}
                 </div>
@@ -648,42 +659,51 @@ export default function PublicDashboardPage() {
               {showLiveState && (
                 <div className="flex flex-col gap-3">
                   {pendingPageId && (
-                    <div className="rounded-[20px] border px-4 py-3 text-sm" style={publicTheme.neutralPillStyle}>
+                    <div
+                      className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3 text-caption text-text-tertiary"
+                      style={publicTheme.neutralPillStyle}
+                    >
                       Opening next page...
                     </div>
                   )}
 
                   {crossFilterState && (
-                    <div className="rounded-[20px] border px-4 py-3 text-sm" style={publicTheme.accentPillStyle}>
-                      <p className="font-medium">
+                    <div
+                      className="rounded-lg border border-brand/20 bg-brand/10 px-4 py-3 text-caption text-brand"
+                      style={publicTheme.accentPillStyle}
+                    >
+                      <p className="font-emphasis">
                         Cross-filter from {visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.layout?.custom_title
                           ?? visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.chart?.name
                           ?? `Chart ${crossFilterState.sourceChartId}`}
                       </p>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <span className="break-words">
+                        <span className="break-words text-text-secondary">
                           {getFilterDisplayLabel(crossFilterState.filter)} = {formatFilterValue(crossFilterState.filter.value)}
                         </span>
-                        <button
-                          type="button"
+                        <Button
+                          variant="secondary"
+                          size="xs"
                           onClick={() => setCrossFilterState(null)}
-                          className="rounded-full border px-3 py-1 text-xs font-medium"
                           style={publicTheme.neutralPillStyle}
                         >
                           Clear selection
-                        </button>
+                        </Button>
                       </div>
                     </div>
                   )}
 
                   {chartLoadError && (
-                    <div className="rounded-[20px] border border-amber-200 bg-amber-50/85 px-4 py-3 text-sm text-amber-900">
+                    <div className="rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-caption text-warning">
                       {chartLoadError}
                     </div>
                   )}
 
                   {chartsLoading && !isApplyingFilters && (
-                    <div className="rounded-[20px] border px-4 py-3 text-sm text-slate-500" style={publicTheme.neutralPillStyle}>
+                    <div
+                      className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3 text-caption text-text-tertiary"
+                      style={publicTheme.neutralPillStyle}
+                    >
                       Refreshing charts...
                     </div>
                   )}
@@ -694,16 +714,16 @@ export default function PublicDashboardPage() {
         </section>
 
         <section
-          className={`w-full rounded-[28px] border p-3 transition-opacity duration-200 sm:p-4 ${pendingPageId ? 'opacity-70' : 'opacity-100'}`}
+          className={`w-full rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3 transition-opacity duration-200 sm:p-4 ${pendingPageId ? 'opacity-70' : 'opacity-100'}`}
           style={publicTheme.canvasFrameStyle}
         >
           {visibleDashboardCharts.length === 0 ? (
-            <div className="flex h-64 items-center justify-center rounded-[28px] border-2 border-dashed border-slate-200 bg-slate-50/80">
-              <p className="text-sm text-slate-500">No charts on this page yet.</p>
+            <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
+              <p className="text-caption text-text-tertiary">No charts on this page yet.</p>
             </div>
           ) : (
             <div
-              className={`rounded-[28px] ${publicTheme.density.canvasPaddingClass}`}
+              className={`rounded-lg ${publicTheme.density.canvasPaddingClass}`}
               style={publicTheme.canvasInnerStyle}
             >
               <ResponsiveGridLayout

@@ -467,7 +467,7 @@ export function ChartDetailModal({
               type="button"
               onClick={() => setDraftStyleConfig(baseStyleConfig)}
               disabled={isSavingAppearance || JSON.stringify(normalizeChartStyleConfig(draftStyleConfig)) === JSON.stringify(normalizeChartStyleConfig(baseStyleConfig))}
-              className="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-md border border-[rgb(var(--border-strong))] px-4 py-2 text-sm text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Reset to chart default
             </button>
@@ -476,7 +476,7 @@ export function ChartDetailModal({
             type="button"
             onClick={onClose}
             disabled={isSavingAppearance}
-            className="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-md border border-[rgb(var(--border-strong))] px-4 py-2 text-sm text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Close
           </button>
@@ -485,7 +485,7 @@ export function ChartDetailModal({
               type="button"
               onClick={handleSaveAppearance}
               disabled={!chart || !hasAppearanceChanges || isSavingAppearance}
-              className="inline-flex items-center rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isSavingAppearance && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Save appearance
@@ -497,23 +497,23 @@ export function ChartDetailModal({
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="shrink-0 space-y-4 px-6 pb-4 pt-6">
           <div className="grid gap-3 md:grid-cols-4">
-            <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Chart type</p>
-              <p className="mt-2 text-sm font-medium text-gray-900">{chart?.chart_type ?? 'Unknown'}</p>
+            <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Chart type</p>
+              <p className="mt-2 text-sm font-medium text-text-primary">{chart?.chart_type ?? 'Unknown'}</p>
             </div>
-            <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Query mode</p>
-              <p className="mt-2 text-sm font-medium capitalize text-gray-900">{queryMode}</p>
+            <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Query mode</p>
+              <p className="mt-2 text-sm font-medium capitalize text-text-primary">{queryMode}</p>
             </div>
-            <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Source table</p>
-              <p className="mt-2 text-sm font-medium text-gray-900">
+            <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Source table</p>
+              <p className="mt-2 text-sm font-medium text-text-primary">
                 {datasetTable?.display_name || datasetTable?.source_table_name || (chart?.dataset_table_id ? `Table #${chart.dataset_table_id}` : 'Not linked')}
               </p>
             </div>
-            <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">Instance params</p>
-              <p className="mt-2 text-sm font-medium text-gray-900">
+            <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Instance params</p>
+              <p className="mt-2 text-sm font-medium text-text-primary">
                 {instanceParameters && Object.keys(instanceParameters).length > 0
                   ? `${Object.keys(instanceParameters).length} override(s)`
                   : 'None'}
@@ -522,11 +522,11 @@ export function ChartDetailModal({
           </div>
 
           {instanceParameters && Object.keys(instanceParameters).length > 0 && (
-            <div className="flex flex-wrap gap-2 rounded-xl border border-purple-200 bg-purple-50 px-4 py-3">
+            <div className="flex flex-wrap gap-2 rounded-xl border border-brand/30 bg-brand/10 px-4 py-3">
               {Object.entries(instanceParameters).map(([key, value]) => (
                 <span
                   key={key}
-                  className="inline-flex items-center rounded-full border border-purple-200 bg-white px-2.5 py-1 text-xs text-purple-700"
+                  className="inline-flex items-center rounded-full border border-brand/30 bg-surface-1 px-2.5 py-1 text-xs text-brand"
                 >
                   <span className="mr-1 font-semibold">{key}:</span>
                   {String(value)}
@@ -538,30 +538,30 @@ export function ChartDetailModal({
 
         <div className="min-h-0 flex-1 px-6 pb-6">
           <div className="grid h-full min-h-0 gap-6 xl:grid-cols-[0.95fr_1.05fr]">
-        <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
-          <div className="border-b border-gray-200 px-5 py-4">
-            <div className="flex items-center gap-2 text-gray-900">
-              <BarChart3 className="h-4 w-4 text-blue-600" />
+        <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
+          <div className="border-b border-[rgb(var(--border-line))] px-5 py-4">
+            <div className="flex items-center gap-2 text-text-primary">
+              <BarChart3 className="h-4 w-4 text-brand" />
               <h3 className="text-sm font-semibold">Chart preview</h3>
             </div>
-            <p className="mt-1 text-xs text-gray-500">
+            <p className="mt-1 text-xs text-text-tertiary">
               Saved visualization rendered from the current chart configuration.
             </p>
           </div>
           <div className="min-h-0 flex-1 overflow-auto p-5">
             {isLoadingPreview ? (
               <div className="flex h-full items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-blue-500" />
+                <Loader2 className="h-6 w-6 animate-spin text-brand" />
               </div>
             ) : runtimeError ? (
               <div className="flex h-full items-center justify-center text-center">
                 <div>
-                  <p className="text-sm font-medium text-gray-900">Failed to load chart preview</p>
-                  <p className="mt-1 text-xs text-gray-500">{getErrorMessage(runtimeError, 'Could not load chart preview.')}</p>
+                  <p className="text-sm font-medium text-text-primary">Failed to load chart preview</p>
+                  <p className="mt-1 text-xs text-text-tertiary">{getErrorMessage(runtimeError, 'Could not load chart preview.')}</p>
                 </div>
               </div>
             ) : !chartRuntime ? (
-              <div className="flex h-full items-center justify-center text-sm text-gray-500">
+              <div className="flex h-full items-center justify-center text-sm text-text-tertiary">
                 No chart preview available.
               </div>
             ) : activeRoleConfig && normalizedRoleConfig ? (
@@ -582,35 +582,35 @@ export function ChartDetailModal({
                 onStyleConfigChange={setDraftStyleConfig}
               />
             ) : (
-              <div className="flex h-full items-center justify-center text-sm text-gray-500">
+              <div className="flex h-full items-center justify-center text-sm text-text-tertiary">
                 No chart preview available.
               </div>
             )}
           </div>
         </section>
 
-        <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
-          <div className="border-b border-gray-200 px-5 py-4">
+        <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
+          <div className="border-b border-[rgb(var(--border-line))] px-5 py-4">
             <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 text-gray-900">
+              <div className="flex items-center gap-2 text-text-primary">
                 {activeTab === 'appearance' ? (
-                  <Palette className="h-4 w-4 text-blue-600" />
+                  <Palette className="h-4 w-4 text-brand" />
                 ) : (
-                  <Table2 className="h-4 w-4 text-blue-600" />
+                  <Table2 className="h-4 w-4 text-brand" />
                 )}
                 <h3 className="text-sm font-semibold">
                   {activeTab === 'appearance' ? 'Appearance controls' : dataPreviewTitle}
                 </h3>
               </div>
               {canEditAppearance && (
-                <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1">
+                <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-1">
                   <button
                     type="button"
                     onClick={() => setActiveTab('appearance')}
                     className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                       activeTab === 'appearance'
-                        ? 'bg-white text-blue-700 shadow-sm'
-                        : 'text-gray-500 hover:text-gray-700'
+                        ? 'bg-surface-1 text-brand shadow-linear-sm'
+                        : 'text-text-tertiary hover:text-text-secondary'
                     }`}
                   >
                     Appearance
@@ -620,8 +620,8 @@ export function ChartDetailModal({
                     onClick={() => setActiveTab('data')}
                     className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                       activeTab === 'data'
-                        ? 'bg-white text-blue-700 shadow-sm'
-                        : 'text-gray-500 hover:text-gray-700'
+                        ? 'bg-surface-1 text-brand shadow-linear-sm'
+                        : 'text-text-tertiary hover:text-text-secondary'
                     }`}
                   >
                     Data
@@ -629,7 +629,7 @@ export function ChartDetailModal({
                 </div>
               )}
             </div>
-            <p className="mt-1 text-xs text-gray-500">
+            <p className="mt-1 text-xs text-text-tertiary">
               {activeTab === 'appearance'
                 ? 'Only presentation settings can change here. The original chart type, source, dimensions, and metrics remain locked.'
                 : dataPreviewDescription}
@@ -637,13 +637,13 @@ export function ChartDetailModal({
           </div>
 
           {activeTab === 'appearance' ? (
-            <div className="min-h-0 flex-1 overflow-y-auto bg-gray-50/50">
-              <div className="border-b border-blue-100 bg-blue-50 px-5 py-3 text-[11px] text-blue-700">
+            <div className="min-h-0 flex-1 overflow-y-auto bg-surface-2/50">
+              <div className="border-b border-brand/20 bg-brand/10 px-5 py-3 text-[11px] text-brand">
                 Appearance edits are saved only on this dashboard tile, so the owner&apos;s original chart stays unchanged everywhere else.
               </div>
               {!chart ? (
                 <div className="flex h-full items-center justify-center p-6">
-                  <Loader2 className="h-6 w-6 animate-spin text-blue-500" />
+                  <Loader2 className="h-6 w-6 animate-spin text-brand" />
                 </div>
               ) : (
                 <ExploreChartConfig
@@ -664,12 +664,12 @@ export function ChartDetailModal({
           ) : (
             <>
               {queryMode === 'custom' && customSourceRows.length > 0 && (
-                <div className="border-b border-amber-100 bg-amber-50 px-5 py-2 text-[11px] text-amber-700">
+                <div className="border-b border-warning/20 bg-warning/10 px-5 py-2 text-[11px] text-warning">
                   This follows the Explore setup view: the table below is the sampled SQL output, while the chart preview on the left shows the saved visualization.
                 </div>
               )}
               {datasetTable && (
-                <div className="border-b border-gray-100 bg-gray-50 px-5 py-3 text-xs text-gray-500">
+                <div className="border-b border-[rgb(var(--border-line))] bg-surface-2 px-5 py-3 text-xs text-text-tertiary">
                   <span className="inline-flex items-center gap-1.5">
                     <Database className="h-3.5 w-3.5" />
                     {dataset?.name ? `${dataset.name} / ` : ''}
@@ -680,20 +680,20 @@ export function ChartDetailModal({
               <div className="min-h-0 flex-1 overflow-hidden">
                 {isLoadingPreview ? (
                   <div className="flex h-full items-center justify-center">
-                    <Loader2 className="h-6 w-6 animate-spin text-blue-500" />
+                    <Loader2 className="h-6 w-6 animate-spin text-brand" />
                   </div>
                 ) : dataPreviewError ? (
                   <div className="flex h-full items-center justify-center px-6 text-center">
                     <div>
-                      <p className="text-sm font-medium text-gray-900">Failed to load data preview</p>
-                      <p className="mt-1 text-xs text-gray-500">{dataPreviewError}</p>
+                      <p className="text-sm font-medium text-text-primary">Failed to load data preview</p>
+                      <p className="mt-1 text-xs text-text-tertiary">{dataPreviewError}</p>
                     </div>
                   </div>
                 ) : dataPreviewRows.length === 0 ? (
                   <div className="flex h-full items-center justify-center px-6 text-center">
                     <div>
-                      <p className="text-sm font-medium text-gray-900">No preview rows available</p>
-                      <p className="mt-1 text-xs text-gray-500">This chart currently has no sample rows to display.</p>
+                      <p className="text-sm font-medium text-text-primary">No preview rows available</p>
+                      <p className="mt-1 text-xs text-text-tertiary">This chart currently has no sample rows to display.</p>
                     </div>
                   </div>
                 ) : (

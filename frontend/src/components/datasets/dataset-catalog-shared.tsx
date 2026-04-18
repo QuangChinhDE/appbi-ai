@@ -48,18 +48,18 @@ export const EMPTY_DICTIONARY: DatasetDictionary = {
 };
 
 export const DATA_TYPE_DISPLAY: Record<string, { label: string; color: string }> = {
-  string:    { label: 'text',     color: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
-  varchar:   { label: 'text',     color: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
-  text:      { label: 'text',     color: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
-  int:       { label: 'int',      color: 'text-blue-700 bg-blue-50 border-blue-200' },
-  integer:   { label: 'int',      color: 'text-blue-700 bg-blue-50 border-blue-200' },
-  bigint:    { label: 'int',      color: 'text-blue-700 bg-blue-50 border-blue-200' },
-  float:     { label: 'float',    color: 'text-violet-700 bg-violet-50 border-violet-200' },
-  double:    { label: 'float',    color: 'text-violet-700 bg-violet-50 border-violet-200' },
-  decimal:   { label: 'decimal',  color: 'text-violet-700 bg-violet-50 border-violet-200' },
-  numeric:   { label: 'decimal',  color: 'text-violet-700 bg-violet-50 border-violet-200' },
-  boolean:   { label: 'bool',     color: 'text-amber-700 bg-amber-50 border-amber-200' },
-  bool:      { label: 'bool',     color: 'text-amber-700 bg-amber-50 border-amber-200' },
+  string:    { label: 'text',     color: 'text-success bg-success/10 border-success/30' },
+  varchar:   { label: 'text',     color: 'text-success bg-success/10 border-success/30' },
+  text:      { label: 'text',     color: 'text-success bg-success/10 border-success/30' },
+  int:       { label: 'int',      color: 'text-brand bg-brand/10 border-brand/30' },
+  integer:   { label: 'int',      color: 'text-brand bg-brand/10 border-brand/30' },
+  bigint:    { label: 'int',      color: 'text-brand bg-brand/10 border-brand/30' },
+  float:     { label: 'float',    color: 'text-brand bg-brand/10 border-brand/30' },
+  double:    { label: 'float',    color: 'text-brand bg-brand/10 border-brand/30' },
+  decimal:   { label: 'decimal',  color: 'text-brand bg-brand/10 border-brand/30' },
+  numeric:   { label: 'decimal',  color: 'text-brand bg-brand/10 border-brand/30' },
+  boolean:   { label: 'bool',     color: 'text-warning bg-warning/10 border-warning/30' },
+  bool:      { label: 'bool',     color: 'text-warning bg-warning/10 border-warning/30' },
   date:      { label: 'date',     color: 'text-sky-700 bg-sky-50 border-sky-200' },
   datetime:  { label: 'datetime', color: 'text-sky-700 bg-sky-50 border-sky-200' },
   timestamp: { label: 'datetime', color: 'text-sky-700 bg-sky-50 border-sky-200' },
@@ -245,11 +245,11 @@ export function Badge({
   children: React.ReactNode;
 }) {
   const cls = {
-    gray:  'border-gray-200 bg-gray-50 text-gray-600',
-    blue:  'border-blue-200 bg-blue-50 text-blue-700',
-    green: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-    amber: 'border-amber-200 bg-amber-50 text-amber-700',
-    red:   'border-red-200 bg-red-50 text-red-700',
+    gray:  'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary',
+    blue:  'border-brand/30 bg-brand/10 text-brand',
+    green: 'border-success/30 bg-success/10 text-success',
+    amber: 'border-warning/30 bg-warning/10 text-warning',
+    red:   'border-danger/30 bg-danger/10 text-danger',
   };
   return (
     <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${cls[tone]}`}>
@@ -263,7 +263,7 @@ export function DataTypeBadge({ type }: { type?: string }) {
   const key = type.toLowerCase().split('(')[0].trim();
   const meta = DATA_TYPE_DISPLAY[key];
   const label = meta?.label ?? type.toLowerCase();
-  const color = meta?.color ?? 'text-gray-600 bg-gray-50 border-gray-200';
+  const color = meta?.color ?? 'text-text-secondary bg-surface-2 border-[rgb(var(--border-line))]';
   return (
     <span className={`inline-flex items-center rounded border px-1.5 py-0 font-mono text-[10px] font-medium leading-5 ${color}`}>
       {label}
@@ -295,12 +295,12 @@ export function TokenEditor({
         {values.map((value) => (
           <span
             key={value}
-            className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-xs text-gray-700"
+            className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-xs text-text-secondary"
           >
             {value}
             {!disabled && (
               <button type="button" onClick={() => onChange(values.filter((v) => v !== value))}>
-                <X className="h-3 w-3 text-gray-400 hover:text-red-500" />
+                <X className="h-3 w-3 text-text-quaternary hover:text-danger" />
               </button>
             )}
           </span>
@@ -313,12 +313,12 @@ export function TokenEditor({
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
             placeholder={placeholder}
-            className="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="flex-1 rounded-md border border-[rgb(var(--border-strong))] px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
           />
           <button
             type="button"
             onClick={add}
-            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            className="rounded-md border border-[rgb(var(--border-strong))] px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-surface-2"
           >
             Add
           </button>
@@ -372,7 +372,7 @@ export function ColumnModal({
             <button
               type="button"
               onClick={onRemove}
-              className="mr-auto inline-flex items-center gap-1.5 rounded-md border border-red-200 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
+              className="mr-auto inline-flex items-center gap-1.5 rounded-md border border-danger/30 px-3 py-2 text-sm font-medium text-danger hover:bg-danger/10"
             >
               <Trash2 className="h-3.5 w-3.5" />
               Remove from catalog
@@ -381,7 +381,7 @@ export function ColumnModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-2"
           >
             Done
           </button>
@@ -389,20 +389,20 @@ export function ColumnModal({
       }
     >
       {/* Tab nav */}
-      <div className="border-b border-gray-200 px-6 py-3">
-        <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1">
+      <div className="border-b border-[rgb(var(--border-line))] px-6 py-3">
+        <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-1">
           {(['meaning', 'quality'] as ColumnModalTab[]).map((t) => (
             <button
               key={t}
               type="button"
               onClick={() => setTab(t)}
               className={`rounded-md px-4 py-1.5 text-sm font-medium capitalize transition-colors ${
-                tab === t ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                tab === t ? 'bg-surface-1 text-text-primary shadow-linear-sm' : 'text-text-tertiary hover:text-text-secondary'
               }`}
             >
               {t}
               {t === 'quality' && hasQuality(note.quality) && (
-                <span className="ml-1.5 inline-flex h-4 w-4 items-center justify-center rounded-full bg-blue-100 text-[10px] font-semibold text-blue-700">
+                <span className="ml-1.5 inline-flex h-4 w-4 items-center justify-center rounded-full bg-brand/15 text-[10px] font-semibold text-brand">
                   {qualityRuleCount(note.quality)}
                 </span>
               )}
@@ -416,28 +416,28 @@ export function ColumnModal({
         {tab === 'meaning' ? (
           <>
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">Business name</label>
+              <label className="mb-1.5 block text-sm font-medium text-text-secondary">Business name</label>
               <input
                 value={note.business_name ?? ''}
                 onChange={(e) => onChange((cur) => ({ ...cur, business_name: e.target.value }))}
                 disabled={!canEdit}
                 placeholder="Optional friendly name for business users"
-                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500"
+                className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2 disabled:text-text-tertiary"
               />
             </div>
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">Description</label>
+              <label className="mb-1.5 block text-sm font-medium text-text-secondary">Description</label>
               <textarea
                 rows={5}
                 value={note.description ?? ''}
                 onChange={(e) => onChange((cur) => ({ ...cur, description: e.target.value }))}
                 disabled={!canEdit}
                 placeholder="Explain what this column means, how it should be interpreted, and any caveats."
-                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500"
+                className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2 disabled:text-text-tertiary"
               />
             </div>
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">Examples</label>
+              <label className="mb-1.5 block text-sm font-medium text-text-secondary">Examples</label>
               <TokenEditor
                 values={note.examples ?? []}
                 onChange={(values) => onChange((cur) => ({ ...cur, examples: values }))}
@@ -450,7 +450,7 @@ export function ColumnModal({
           <>
             {/* Boolean flags */}
             <div className="grid gap-3 md:grid-cols-2">
-              <label className="flex items-start gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 hover:border-gray-300">
+              <label className="flex items-start gap-3 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3 hover:border-[rgb(var(--border-strong))]">
                 <input
                   type="checkbox"
                   checked={note.quality?.required === true}
@@ -459,14 +459,14 @@ export function ColumnModal({
                     quality: { ...emptyQuality(), ...(cur.quality ?? {}), required: e.target.checked },
                   }))}
                   disabled={!canEdit}
-                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  className="mt-0.5 h-4 w-4 rounded border-[rgb(var(--border-strong))] text-brand focus:ring-brand"
                 />
                 <div>
-                  <div className="text-sm font-medium text-gray-900">Required</div>
-                  <p className="mt-0.5 text-xs text-gray-500">Flag null or blank values as an issue.</p>
+                  <div className="text-sm font-medium text-text-primary">Required</div>
+                  <p className="mt-0.5 text-xs text-text-tertiary">Flag null or blank values as an issue.</p>
                 </div>
               </label>
-              <label className="flex items-start gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 hover:border-gray-300">
+              <label className="flex items-start gap-3 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3 hover:border-[rgb(var(--border-strong))]">
                 <input
                   type="checkbox"
                   checked={note.quality?.unique === true}
@@ -475,11 +475,11 @@ export function ColumnModal({
                     quality: { ...emptyQuality(), ...(cur.quality ?? {}), unique: e.target.checked },
                   }))}
                   disabled={!canEdit}
-                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  className="mt-0.5 h-4 w-4 rounded border-[rgb(var(--border-strong))] text-brand focus:ring-brand"
                 />
                 <div>
-                  <div className="text-sm font-medium text-gray-900">Unique</div>
-                  <p className="mt-0.5 text-xs text-gray-500">Expected to have no duplicates.</p>
+                  <div className="text-sm font-medium text-text-primary">Unique</div>
+                  <p className="mt-0.5 text-xs text-text-tertiary">Expected to have no duplicates.</p>
                 </div>
               </label>
             </div>
@@ -491,7 +491,7 @@ export function ColumnModal({
                 { key: 'max_value', label: 'Maximum value', placeholder: 'e.g. 100' },
               ].map(({ key, label, placeholder }) => (
                 <div key={key}>
-                  <label className="mb-1.5 block text-sm font-medium text-gray-700">{label}</label>
+                  <label className="mb-1.5 block text-sm font-medium text-text-secondary">{label}</label>
                   <input
                     value={(note.quality as any)?.[key] ?? ''}
                     onChange={(e) => onChange((cur) => ({
@@ -500,12 +500,12 @@ export function ColumnModal({
                     }))}
                     disabled={!canEdit}
                     placeholder={placeholder}
-                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                    className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
                   />
                 </div>
               ))}
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-gray-700">Null threshold %</label>
+                <label className="mb-1.5 block text-sm font-medium text-text-secondary">Null threshold %</label>
                 <input
                   type="number" min={0} max={100} step={0.1}
                   value={note.quality?.null_threshold_percent ?? ''}
@@ -515,11 +515,11 @@ export function ColumnModal({
                   }))}
                   disabled={!canEdit}
                   placeholder="e.g. 5"
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                  className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
                 />
               </div>
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-gray-700">Distinct threshold</label>
+                <label className="mb-1.5 block text-sm font-medium text-text-secondary">Distinct threshold</label>
                 <input
                   type="number" min={0} step={1}
                   value={note.quality?.distinct_threshold ?? ''}
@@ -529,7 +529,7 @@ export function ColumnModal({
                   }))}
                   disabled={!canEdit}
                   placeholder="e.g. 50"
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                  className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
                 />
               </div>
             </div>
@@ -537,7 +537,7 @@ export function ColumnModal({
             {/* Format + Severity */}
             <div className="grid gap-4 md:grid-cols-2">
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-gray-700">Format hint</label>
+                <label className="mb-1.5 block text-sm font-medium text-text-secondary">Format hint</label>
                 <select
                   value={note.quality?.format_hint ?? ''}
                   onChange={(e) => onChange((cur) => ({
@@ -545,14 +545,14 @@ export function ColumnModal({
                     quality: { ...emptyQuality(), ...(cur.quality ?? {}), format_hint: (e.target.value || undefined) as DatasetDictionaryQualityFormatHint | undefined },
                   }))}
                   disabled={!canEdit}
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                  className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
                 >
                   <option value="">None</option>
                   {FORMAT_HINTS.map((v) => <option key={v} value={v}>{v}</option>)}
                 </select>
               </div>
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-gray-700">Severity</label>
+                <label className="mb-1.5 block text-sm font-medium text-text-secondary">Severity</label>
                 <select
                   value={note.quality?.severity ?? ''}
                   onChange={(e) => onChange((cur) => ({
@@ -560,7 +560,7 @@ export function ColumnModal({
                     quality: { ...emptyQuality(), ...(cur.quality ?? {}), severity: (e.target.value || undefined) as DatasetDictionaryQualitySeverity | undefined },
                   }))}
                   disabled={!canEdit}
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                  className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
                 >
                   <option value="">None</option>
                   {QUALITY_SEVERITIES.map((v) => <option key={v} value={v}>{v}</option>)}
@@ -570,7 +570,7 @@ export function ColumnModal({
 
             {/* Accepted values */}
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">Accepted values</label>
+              <label className="mb-1.5 block text-sm font-medium text-text-secondary">Accepted values</label>
               <TokenEditor
                 values={note.quality?.accepted_values ?? []}
                 onChange={(values) => onChange((cur) => ({
@@ -584,7 +584,7 @@ export function ColumnModal({
 
             {/* Pattern */}
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">Pattern / regex</label>
+              <label className="mb-1.5 block text-sm font-medium text-text-secondary">Pattern / regex</label>
               <input
                 value={note.quality?.pattern ?? ''}
                 onChange={(e) => onChange((cur) => ({
@@ -593,13 +593,13 @@ export function ColumnModal({
                 }))}
                 disabled={!canEdit}
                 placeholder="Optional regex or format pattern"
-                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
               />
             </div>
 
             {/* Quality notes */}
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-gray-700">Quality notes</label>
+              <label className="mb-1.5 block text-sm font-medium text-text-secondary">Quality notes</label>
               <textarea
                 rows={3}
                 value={note.quality?.notes ?? ''}
@@ -609,7 +609,7 @@ export function ColumnModal({
                 }))}
                 disabled={!canEdit}
                 placeholder="Describe how this column should be monitored or what issue patterns matter."
-                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
               />
             </div>
           </>
@@ -646,22 +646,22 @@ export function TableNotesBar({
     onPatchNote((note) => ({ ...note, [field]: value }));
 
   return (
-    <div className="shrink-0 border-b border-gray-200 bg-white">
+    <div className="shrink-0 border-b border-[rgb(var(--border-line))] bg-surface-1">
       {/* Always-visible pill row */}
       <div className="flex flex-wrap items-center gap-2 px-5 py-2.5">
         {tableNote.business_role ? (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs text-gray-700">
-            <span className="font-medium text-gray-400">Purpose</span>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1 text-xs text-text-secondary">
+            <span className="font-medium text-text-quaternary">Purpose</span>
             {tableNote.business_role}
           </span>
         ) : (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-dashed border-gray-200 px-3 py-1 text-xs text-gray-400">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-dashed border-[rgb(var(--border-line))] px-3 py-1 text-xs text-text-quaternary">
             No purpose set
           </span>
         )}
         {tableNote.grain && (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs text-gray-700">
-            <span className="font-medium text-gray-400">Grain</span>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1 text-xs text-text-secondary">
+            <span className="font-medium text-text-quaternary">Grain</span>
             {tableNote.grain}
           </span>
         )}
@@ -672,12 +672,12 @@ export function TableNotesBar({
           </span>
         )}
         {tableNote.owner_note && (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-700">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-3 py-1 text-xs text-warning">
             Note
           </span>
         )}
         {tableNote.join_hint && (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs text-violet-700">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-brand/30 bg-brand/10 px-3 py-1 text-xs text-brand">
             Join hint
           </span>
         )}
@@ -687,7 +687,7 @@ export function TableNotesBar({
             type="button"
             onClick={onGenerateAi}
             disabled={isGeneratingAi}
-            className="inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/10 px-2.5 py-1 text-xs font-medium text-brand hover:bg-brand/15 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Sparkles className={`h-3 w-3 ${isGeneratingAi ? 'animate-spin' : ''}`} />
             {isGeneratingAi ? 'Generating…' : 'AI'}
@@ -697,7 +697,7 @@ export function TableNotesBar({
           type="button"
           onClick={() => setExpanded((v) => !v)}
           className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
-            expanded ? 'border-gray-300 bg-gray-100 text-gray-700' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+            expanded ? 'border-[rgb(var(--border-strong))] bg-surface-2 text-text-secondary' : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2'
           }`}
         >
           {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
@@ -707,7 +707,7 @@ export function TableNotesBar({
           <button
             type="button"
             onClick={() => { onRemove(); setExpanded(false); }}
-            className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2.5 py-1 text-xs font-medium text-red-500 hover:border-red-200 hover:bg-red-50"
+            className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2.5 py-1 text-xs font-medium text-danger hover:border-danger/30 hover:bg-danger/10"
             title="Remove this table from catalog"
           >
             <Trash2 className="h-3 w-3" />
@@ -717,7 +717,7 @@ export function TableNotesBar({
 
       {/* Expandable form */}
       {expanded && (
-        <div className="border-t border-gray-100 bg-gray-50/60 px-5 pb-4 pt-3">
+        <div className="border-t border-[rgb(var(--border-line))] bg-surface-2/60 px-5 pb-4 pt-3">
           <div className="grid gap-3 md:grid-cols-3">
             {[
               { field: 'business_role' as const, label: 'Table purpose', placeholder: 'e.g. Order-level fact table' },
@@ -725,13 +725,13 @@ export function TableNotesBar({
               { field: 'freshness_expectation' as const, label: 'Freshness expectation', placeholder: 'e.g. Daily by 8 AM' },
             ].map(({ field, label, placeholder }) => (
               <div key={field}>
-                <label className="mb-1 block text-xs font-medium text-gray-500">{label}</label>
+                <label className="mb-1 block text-xs font-medium text-text-tertiary">{label}</label>
                 <input
                   value={(tableNote as any)[field] ?? ''}
                   onChange={(e) => patchField(field, e.target.value)}
                   disabled={!canEdit || isSaving}
                   placeholder={placeholder}
-                  className="w-full rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                  className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
                 />
               </div>
             ))}
@@ -742,14 +742,14 @@ export function TableNotesBar({
               { field: 'join_hint' as const, label: 'Join / usage hint', placeholder: 'Preferred joins, common filters, or caveats.' },
             ].map(({ field, label, placeholder }) => (
               <div key={field}>
-                <label className="mb-1 block text-xs font-medium text-gray-500">{label}</label>
+                <label className="mb-1 block text-xs font-medium text-text-tertiary">{label}</label>
                 <textarea
                   rows={2}
                   value={(tableNote as any)[field] ?? ''}
                   onChange={(e) => patchField(field, e.target.value)}
                   disabled={!canEdit || isSaving}
                   placeholder={placeholder}
-                  className="w-full rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                  className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
                 />
               </div>
             ))}
@@ -828,23 +828,23 @@ export function ColumnGrid({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Toolbar */}
-      <div className="flex shrink-0 items-center gap-3 border-b border-gray-200 bg-white px-5 py-3">
-        <span className="text-sm font-semibold text-gray-900">
+      <div className="flex shrink-0 items-center gap-3 border-b border-[rgb(var(--border-line))] bg-surface-1 px-5 py-3">
+        <span className="text-sm font-semibold text-text-primary">
           Columns
           {columnsMeta.length > 0 && (
-            <span className="ml-1.5 text-sm font-normal text-gray-400">({columnsMeta.length})</span>
+            <span className="ml-1.5 text-sm font-normal text-text-quaternary">({columnsMeta.length})</span>
           )}
         </span>
         <div className="relative min-w-0 flex-1 max-w-xs">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-quaternary" />
           <input
             value={columnSearch}
             onChange={(e) => setColumnSearch(e.target.value)}
             placeholder="Search columns…"
-            className="w-full rounded-md border border-gray-200 py-1.5 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full rounded-md border border-[rgb(var(--border-line))] py-1.5 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
           />
         </div>
-        <div className="inline-flex overflow-hidden rounded-md border border-gray-200 bg-white">
+        <div className="inline-flex overflow-hidden rounded-md border border-[rgb(var(--border-line))] bg-surface-1">
           {(['all', 'documented', 'quality'] as ColumnFilterMode[]).map((value, i, arr) => (
             <button
               key={value}
@@ -853,7 +853,7 @@ export function ColumnGrid({
               className={`px-3 py-1.5 text-xs font-medium transition-colors capitalize ${
                 i === 0 ? 'rounded-l-[5px]' : ''
               } ${i === arr.length - 1 ? 'rounded-r-[5px]' : ''} ${
-                columnFilter === value ? 'bg-gray-800 text-white' : 'text-gray-600 hover:bg-gray-50'
+                columnFilter === value ? 'bg-surface-inverse/80 text-white' : 'text-text-secondary hover:bg-surface-2'
               }`}
             >
               {value === 'quality' ? 'Has rules' : value.charAt(0).toUpperCase() + value.slice(1)}
@@ -865,24 +865,24 @@ export function ColumnGrid({
       {/* Table */}
       <div className="min-h-0 flex-1 overflow-y-auto">
         {columnsMeta.length === 0 ? (
-          <div className="flex h-full items-center justify-center p-8 text-sm text-gray-400">
+          <div className="flex h-full items-center justify-center p-8 text-sm text-text-quaternary">
             Column metadata is not available for this table yet.
           </div>
         ) : visibleColumnsMeta.length === 0 ? (
-          <div className="flex h-full items-center justify-center p-8 text-sm text-gray-400">
+          <div className="flex h-full items-center justify-center p-8 text-sm text-text-quaternary">
             No columns match this filter.
           </div>
         ) : (
           <table className="min-w-full">
-            <thead className="sticky top-0 z-10 border-b border-gray-200 bg-gray-50">
+            <thead className="sticky top-0 z-10 border-b border-[rgb(var(--border-line))] bg-surface-2">
               <tr>
-                <th className="w-10 px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-gray-400" />
-                <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Column</th>
-                <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Description</th>
-                <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Quality rules</th>
+                <th className="w-10 px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-text-quaternary" />
+                <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-text-tertiary">Column</th>
+                <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-text-tertiary">Description</th>
+                <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-text-tertiary">Quality rules</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100 bg-white">
+            <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
               {visibleColumnsMeta.map(({ name: column, type: colType }) => {
                 const note = tableNote.column_notes.find((item) => item.column_name === column);
                 const documented = !!note;
@@ -892,7 +892,7 @@ export function ColumnGrid({
                 const hasBizName = !!(note?.business_name?.trim());
 
                 return (
-                  <tr key={column} className="group transition-colors hover:bg-blue-50/40">
+                  <tr key={column} className="group transition-colors hover:bg-brand/15/40">
                     {/* Checkbox */}
                     <td className="px-4 py-3">
                       <input
@@ -916,7 +916,7 @@ export function ColumnGrid({
                           }));
                           if (!checked && activeColumn === column) setActiveColumn(null);
                         }}
-                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        className="h-4 w-4 rounded border-[rgb(var(--border-strong))] text-brand focus:ring-brand"
                         title={documented ? 'Remove from catalog' : 'Add to catalog'}
                       />
                     </td>
@@ -925,13 +925,13 @@ export function ColumnGrid({
                     <td className="px-4 py-3 min-w-[180px]">
                       <button type="button" onClick={() => openColumnModal(column, 'meaning')} className="text-left w-full">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-sm font-medium text-gray-900 group-hover:text-blue-700 truncate">{column}</span>
+                          <span className="font-mono text-sm font-medium text-text-primary group-hover:text-brand truncate">{column}</span>
                           <DataTypeBadge type={colType} />
                         </div>
                         {hasBizName ? (
-                          <div className="mt-0.5 text-xs text-gray-500 truncate">{note!.business_name}</div>
+                          <div className="mt-0.5 text-xs text-text-tertiary truncate">{note!.business_name}</div>
                         ) : documented ? (
-                          <div className="mt-0.5 text-xs text-gray-400 italic">+ add business name</div>
+                          <div className="mt-0.5 text-xs text-text-quaternary italic">+ add business name</div>
                         ) : null}
                       </button>
                     </td>
@@ -941,13 +941,13 @@ export function ColumnGrid({
                       {documented ? (
                         <button type="button" onClick={() => openColumnModal(column, 'meaning')} className="text-left w-full">
                           {hasDesc ? (
-                            <p className="line-clamp-2 text-xs text-gray-600 leading-relaxed">{note!.description}</p>
+                            <p className="line-clamp-2 text-xs text-text-secondary leading-relaxed">{note!.description}</p>
                           ) : (
-                            <span className="text-xs text-amber-600 italic">No description yet</span>
+                            <span className="text-xs text-warning italic">No description yet</span>
                           )}
                         </button>
                       ) : (
-                        <span className="text-xs text-gray-300">—</span>
+                        <span className="text-xs text-text-quaternary">—</span>
                       )}
                     </td>
 
@@ -965,11 +965,11 @@ export function ColumnGrid({
                           )}
                         </button>
                       ) : documented ? (
-                        <button type="button" onClick={() => openColumnModal(column, 'quality')} className="text-xs text-gray-400 hover:text-blue-600">
+                        <button type="button" onClick={() => openColumnModal(column, 'quality')} className="text-xs text-text-quaternary hover:text-brand">
                           + Add rules
                         </button>
                       ) : (
-                        <span className="text-xs text-gray-300">—</span>
+                        <span className="text-xs text-text-quaternary">—</span>
                       )}
                     </td>
                   </tr>

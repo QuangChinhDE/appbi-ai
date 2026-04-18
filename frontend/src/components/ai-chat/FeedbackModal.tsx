@@ -5,8 +5,13 @@
  * Submits to POST /api/v1/ai/feedback which triggers the knowledge loop.
  */
 import React, { useState } from 'react';
-import { X, Search } from 'lucide-react';
+import { Check, Search } from 'lucide-react';
+
+import { AppModalShell } from '@/components/common/AppModalShell';
+import { Button } from '@/components/ui/Button';
+import { FieldGroup, Input, Textarea } from '@/components/ui/Input';
 import apiClient from '@/lib/api-client';
+import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 
 interface Props {
@@ -19,11 +24,29 @@ interface Props {
 }
 
 const FEEDBACK_TYPES = [
-  { value: 'wrong_table', label: 'Used wrong table' },
-  { value: 'wrong_chart', label: 'Used wrong chart' },
-  { value: 'unclear', label: 'Answer was unclear' },
-  { value: 'other', label: 'Other' },
-];
+  {
+    value: 'wrong_table',
+    label: 'Used wrong table',
+    hint: 'The answer referenced the wrong dataset table.',
+  },
+  {
+    value: 'wrong_chart',
+    label: 'Used wrong chart',
+    hint: 'The answer should have grounded itself on another chart.',
+  },
+  {
+    value: 'unclear',
+    label: 'Answer was unclear',
+    hint: 'The response was vague or not actionable enough.',
+  },
+  {
+    value: 'other',
+    label: 'Other',
+    hint: 'Use notes to explain the issue in your own words.',
+  },
+] as const;
+
+type FeedbackType = (typeof FEEDBACK_TYPES)[number]['value'];
 
 interface ResourceOption {
   id: number;
@@ -39,13 +62,15 @@ export function FeedbackModal({
   aiMatchedResourceId,
   onClose,
 }: Props) {
-  const [feedbackType, setFeedbackType] = useState('wrong_table');
+  const [feedbackType, setFeedbackType] = useState<FeedbackType>('wrong_table');
   const [search, setSearch] = useState('');
   const [searchResults, setSearchResults] = useState<ResourceOption[]>([]);
   const [selectedResource, setSelectedResource] = useState<ResourceOption | null>(null);
   const [notes, setNotes] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const needsReplacement = feedbackType === 'wrong_table' || feedbackType === 'wrong_chart';
+  const replacementLabel = feedbackType === 'wrong_chart' ? 'chart' : 'table';
 
   const handleSearch = async () => {
     if (!search.trim()) return;
@@ -105,126 +130,147 @@ export function FeedbackModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div
-        className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6 space-y-4"
-        onClick={(e) => e.stopPropagation()}
+    <AppModalShell
+      onClose={onClose}
+      title="Correct AI response"
+      description="Point the assistant to the right resource so the next answer stays in the correct scope."
+      maxWidthClass="max-w-2xl"
+      bodyClassName="space-y-5 p-5"
+      footer={(
+        <>
+          <Button variant="secondary" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" size="sm" onClick={handleSubmit} loading={isSubmitting}>
+            Submit feedback
+          </Button>
+        </>
+      )}
+    >
+      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3">
+        <p className="text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+          Your question
+        </p>
+        <p className="mt-2 text-small text-text-secondary">{userQuery}</p>
+      </div>
+
+      <FieldGroup
+        label="What was wrong?"
+        description="Choose the mismatch type first, then optionally attach the right resource."
       >
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <h3 className="font-semibold text-gray-900">Correct AI response</h3>
-          <button onClick={onClose} className="p-1 rounded hover:bg-gray-100 text-gray-400">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* User query reminder */}
-        <div className="bg-gray-50 rounded-lg px-3 py-2 text-sm text-gray-600 border">
-          <span className="text-xs font-medium text-gray-400 block mb-0.5">Your question</span>
-          {userQuery}
-        </div>
-
-        {/* Feedback type */}
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-2">What was wrong?</label>
-          <div className="space-y-1">
-            {FEEDBACK_TYPES.map((t) => (
-              <label key={t.value} className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="feedback_type"
-                  value={t.value}
-                  checked={feedbackType === t.value}
-                  onChange={() => {
-                    setFeedbackType(t.value);
-                    setSearchResults([]);
-                    setSelectedResource(null);
-                  }}
-                  className="text-blue-600"
-                />
-                <span className="text-sm text-gray-700">{t.label}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-
-        {/* Resource search (only for wrong_table / wrong_chart) */}
-        {(feedbackType === 'wrong_table' || feedbackType === 'wrong_chart') && (
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">
-              Select the correct {feedbackType === 'wrong_chart' ? 'chart' : 'table'}
-            </label>
-            <div className="flex gap-2 mb-2">
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                placeholder={`Search ${feedbackType === 'wrong_chart' ? 'charts' : 'tables'}...`}
-                className="flex-1 border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
-              />
+        <div className="grid gap-2 sm:grid-cols-2">
+          {FEEDBACK_TYPES.map((option) => {
+            const selected = feedbackType === option.value;
+            return (
               <button
-                onClick={handleSearch}
-                disabled={isSearching}
-                className="px-3 py-1.5 bg-gray-100 border rounded text-sm hover:bg-gray-200 disabled:opacity-40"
+                key={option.value}
+                type="button"
+                onClick={() => {
+                  setFeedbackType(option.value);
+                  setSearchResults([]);
+                  setSelectedResource(null);
+                }}
+                className={cn(
+                  'rounded-xl border px-4 py-3 text-left transition-colors',
+                  selected
+                    ? 'border-brand/40 bg-brand/10 text-text-primary shadow-linear-sm'
+                    : 'border-[rgb(var(--border-strong))] bg-surface-1 text-text-secondary hover:bg-surface-2',
+                )}
               >
-                <Search className="w-4 h-4" />
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-caption font-emphasis text-current">{option.label}</p>
+                    <p className="mt-1 text-tiny leading-5 text-text-tertiary">{option.hint}</p>
+                  </div>
+                  {selected && <Check className="mt-0.5 h-4 w-4 text-brand" />}
+                </div>
               </button>
+            );
+          })}
+        </div>
+      </FieldGroup>
+
+      {needsReplacement && (
+        <div className="rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 p-4 shadow-linear-sm">
+          <FieldGroup
+            label={`Select the correct ${replacementLabel}`}
+            description={`Search the ${replacementLabel} that should have been used in this answer.`}
+          >
+            <div className="flex gap-2">
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                onKeyDown={(event) => event.key === 'Enter' && handleSearch()}
+                placeholder={`Search ${replacementLabel}s...`}
+                leadingIcon={<Search />}
+              />
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleSearch}
+                disabled={isSearching || !search.trim()}
+                loading={isSearching}
+              >
+                Search
+              </Button>
             </div>
-            {searchResults.length > 0 && (
-              <div className="border rounded max-h-40 overflow-y-auto">
-                {searchResults.map((r) => (
-                  <button
-                    key={`${r.type}:${r.id}`}
-                    onClick={() => setSelectedResource(r)}
-                    className={`w-full text-left px-3 py-2 text-sm hover:bg-blue-50 transition-colors ${
-                      selectedResource?.id === r.id && selectedResource?.type === r.type
-                        ? 'bg-blue-50 text-blue-700 font-medium'
-                        : 'text-gray-700'
-                    }`}
-                  >
-                    {r.label}
-                  </button>
-                ))}
+          </FieldGroup>
+
+          <div className="mt-3 space-y-2">
+            {searchResults.length > 0 ? (
+              <div className="max-h-48 overflow-y-auto rounded-xl border border-[rgb(var(--border-line))] bg-surface-0/60 p-1.5">
+                {searchResults.map((resource) => {
+                  const selected = selectedResource?.id === resource.id && selectedResource?.type === resource.type;
+                  return (
+                    <button
+                      key={`${resource.type}:${resource.id}`}
+                      type="button"
+                      onClick={() => setSelectedResource(resource)}
+                      className={cn(
+                        'flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-caption transition-colors',
+                        selected
+                          ? 'bg-brand/10 text-brand'
+                          : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary',
+                      )}
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate font-emphasis text-current">{resource.label}</p>
+                        <p className="mt-0.5 text-tiny uppercase tracking-[0.14em] text-text-quaternary">
+                          {resource.type === 'chart' ? 'Chart' : 'Dataset table'}
+                        </p>
+                      </div>
+                      {selected && <Check className="h-4 w-4 flex-shrink-0 text-brand" />}
+                    </button>
+                  );
+                })}
               </div>
-            )}
+            ) : search.trim() && !isSearching ? (
+              <p className="text-caption text-text-tertiary">
+                No matching {replacementLabel} found for the current search.
+              </p>
+            ) : null}
+
             {selectedResource && (
-              <p className="text-xs text-green-600 mt-1">
-                Selected: <strong>{selectedResource.label}</strong>
+              <p className="text-caption text-success">
+                Selected resource:{' '}
+                <span className="font-emphasis text-success">{selectedResource.label}</span>
               </p>
             )}
           </div>
-        )}
-
-        {/* Notes */}
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Notes (optional)</label>
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="Any additional context..."
-            rows={2}
-            className="w-full border rounded px-3 py-1.5 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-blue-400"
-          />
         </div>
+      )}
 
-        {/* Actions */}
-        <div className="flex gap-2 justify-end">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 border rounded text-sm hover:bg-gray-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSubmit}
-            disabled={isSubmitting}
-            className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-40"
-          >
-            {isSubmitting ? 'Submitting...' : 'Submit feedback'}
-          </button>
-        </div>
-      </div>
-    </div>
+      <FieldGroup
+        label="Notes"
+        description="Optional context that can help the assistant understand why this answer missed the mark."
+      >
+        <Textarea
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
+          placeholder="Add the correction in your own words..."
+          rows={3}
+        />
+      </FieldGroup>
+    </AppModalShell>
   );
 }

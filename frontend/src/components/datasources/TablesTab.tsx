@@ -38,7 +38,7 @@ function formatRows(n: number | null): string {
 
 function PkBadge() {
   return (
-    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-300 ml-1">
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-warning/15 text-warning border border-warning/40 ml-1">
       PK
     </span>
   );
@@ -46,7 +46,7 @@ function PkBadge() {
 
 function FkBadge() {
   return (
-    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-100 text-blue-700 border border-blue-300 ml-1">
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-brand/15 text-brand border border-brand/40 ml-1">
       FK
     </span>
   );
@@ -54,7 +54,7 @@ function FkBadge() {
 
 function IdxBadge() {
   return (
-    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-100 text-purple-700 border border-purple-300 ml-1">
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-brand/15 text-brand border border-brand/30 ml-1">
       IDX
     </span>
   );
@@ -76,7 +76,7 @@ function SchemaNode({ entry, selected, onSelect }: SchemaNodeProps) {
       {/* Schema header */}
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center w-full px-2 py-1.5 text-sm font-semibold text-gray-600 hover:bg-gray-50 rounded"
+        className="flex items-center w-full px-2 py-1.5 text-sm font-semibold text-text-secondary hover:bg-surface-2 rounded"
       >
         {open ? (
           <ChevronDown className="w-3.5 h-3.5 mr-1 flex-shrink-0" />
@@ -84,14 +84,14 @@ function SchemaNode({ entry, selected, onSelect }: SchemaNodeProps) {
           <ChevronRight className="w-3.5 h-3.5 mr-1 flex-shrink-0" />
         )}
         <span className="truncate">{entry.schema}</span>
-        <span className="ml-auto text-xs text-gray-400 font-normal">
+        <span className="ml-auto text-xs text-text-quaternary font-normal">
           {entry.tables.length} tables
         </span>
       </button>
 
       {/* Tables list */}
       {open && (
-        <div className="ml-3 border-l border-gray-100 pl-2 my-0.5">
+        <div className="ml-3 border-l border-[rgb(var(--border-line))] pl-2 my-0.5">
           {entry.tables.map((t) => {
             const isSelected =
               selected?.schema === entry.schema && selected?.table === t.name;
@@ -101,27 +101,27 @@ function SchemaNode({ entry, selected, onSelect }: SchemaNodeProps) {
                 onClick={() => onSelect(entry.schema, t.name)}
                 className={`flex items-center w-full px-2 py-1 text-sm rounded group ${
                   isSelected
-                    ? 'bg-blue-50 text-blue-700'
-                    : 'text-gray-700 hover:bg-gray-50'
+                    ? 'bg-brand/10 text-brand'
+                    : 'text-text-secondary hover:bg-surface-2'
                 }`}
               >
                 {t.type === 'view' || t.type === 'materialized_view' ? (
                   <LayoutList
                     className={`w-3.5 h-3.5 mr-1.5 flex-shrink-0 ${
-                      isSelected ? 'text-blue-500' : 'text-gray-400'
+                      isSelected ? 'text-brand' : 'text-text-quaternary'
                     }`}
                   />
                 ) : (
                   <Table2
                     className={`w-3.5 h-3.5 mr-1.5 flex-shrink-0 ${
-                      isSelected ? 'text-blue-500' : 'text-gray-400'
+                      isSelected ? 'text-brand' : 'text-text-quaternary'
                     }`}
                   />
                 )}
                 <span className="truncate flex-1 text-left">{t.name}</span>
-                <span className="ml-1 text-xs text-gray-400 flex-shrink-0">
+                <span className="ml-1 text-xs text-text-quaternary flex-shrink-0">
                   {t.type !== 'table' ? (
-                    <span className="px-1 py-0.5 bg-gray-100 rounded text-[10px]">view</span>
+                    <span className="px-1 py-0.5 bg-surface-2 rounded text-[10px]">view</span>
                   ) : (
                     formatRows(t.row_count)
                   )}
@@ -164,7 +164,7 @@ function TableDetailPanel({
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-40 text-gray-400">
+      <div className="flex items-center justify-center h-40 text-text-quaternary">
         <Loader2 className="w-5 h-5 animate-spin mr-2" />
         Loading table details…
       </div>
@@ -173,7 +173,7 @@ function TableDetailPanel({
 
   if (error || !detail) {
     return (
-      <div className="flex items-center gap-2 text-red-500 p-4">
+      <div className="flex items-center gap-2 text-danger p-4">
         <AlertCircle className="w-4 h-4" />
         <span className="text-sm">Failed to load table details.</span>
       </div>
@@ -186,18 +186,18 @@ function TableDetailPanel({
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 flex-shrink-0">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[rgb(var(--border-line))] flex-shrink-0">
         <div>
           <div className="flex items-center gap-2">
-            <h3 className="font-semibold text-gray-800">{tableName}</h3>
-            <span className="text-xs text-gray-400">{schemaName} schema</span>
+            <h3 className="font-semibold text-text-primary">{tableName}</h3>
+            <span className="text-xs text-text-quaternary">{schemaName} schema</span>
             {detail.type !== 'table' && (
-              <span className="px-1.5 py-0.5 text-[10px] bg-gray-100 text-gray-500 rounded border">
+              <span className="px-1.5 py-0.5 text-[10px] bg-surface-2 text-text-tertiary rounded border">
                 {detail.type.replace('_', ' ')}
               </span>
             )}
           </div>
-          <div className="text-xs text-gray-400 mt-0.5">
+          <div className="text-xs text-text-quaternary mt-0.5">
             {detail.row_count !== null && (
               <span>{formatRows(detail.row_count)} rows</span>
             )}
@@ -209,7 +209,7 @@ function TableDetailPanel({
         <div className="flex items-center gap-1">
           <button
             onClick={() => { refetch(); refetchFull(); }}
-            className="p-1.5 hover:bg-gray-100 rounded text-gray-500 hover:text-gray-700"
+            className="p-1.5 hover:bg-surface-2 rounded text-text-tertiary hover:text-text-secondary"
             title="Refresh"
           >
             <RefreshCw className="w-3.5 h-3.5" />
@@ -220,34 +220,34 @@ function TableDetailPanel({
       {/* Columns */}
       <div className="flex-1 overflow-auto">
         <table className="w-full text-sm">
-          <thead className="sticky top-0 bg-gray-50 z-10">
+          <thead className="sticky top-0 bg-surface-2 z-10">
             <tr>
-              <th className="text-left px-4 py-2 font-medium text-gray-500 text-xs uppercase tracking-wide">
+              <th className="text-left px-4 py-2 font-medium text-text-tertiary text-xs uppercase tracking-wide">
                 Column
               </th>
-              <th className="text-left px-4 py-2 font-medium text-gray-500 text-xs uppercase tracking-wide">
+              <th className="text-left px-4 py-2 font-medium text-text-tertiary text-xs uppercase tracking-wide">
                 Type
               </th>
-              <th className="text-left px-4 py-2 font-medium text-gray-500 text-xs uppercase tracking-wide">
+              <th className="text-left px-4 py-2 font-medium text-text-tertiary text-xs uppercase tracking-wide">
                 Nullable
               </th>
-              <th className="text-left px-4 py-2 font-medium text-gray-500 text-xs uppercase tracking-wide">
+              <th className="text-left px-4 py-2 font-medium text-text-tertiary text-xs uppercase tracking-wide">
                 Key
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-50">
+          <tbody className="divide-y divide-[rgb(var(--border-line))]">
             {detail.columns.map((col: TableColumn) => (
-              <tr key={col.name} className="hover:bg-gray-50">
-                <td className="px-4 py-2 font-mono text-sm text-gray-800">
+              <tr key={col.name} className="hover:bg-surface-2">
+                <td className="px-4 py-2 font-mono text-sm text-text-primary">
                   {col.name}
                 </td>
-                <td className="px-4 py-2 text-gray-500 text-xs">{col.type}</td>
-                <td className="px-4 py-2 text-xs text-gray-400">
+                <td className="px-4 py-2 text-text-tertiary text-xs">{col.type}</td>
+                <td className="px-4 py-2 text-xs text-text-quaternary">
                   {col.nullable ? (
                     <span>nullable</span>
                   ) : (
-                    <span className="font-medium text-gray-600">NOT NULL</span>
+                    <span className="font-medium text-text-secondary">NOT NULL</span>
                   )}
                 </td>
                 <td className="px-4 py-2">
@@ -262,36 +262,36 @@ function TableDetailPanel({
 
         {/* Preview */}
         <div className="mt-4 px-4 pb-2">
-          <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+          <h4 className="text-xs font-semibold text-text-tertiary uppercase tracking-wide mb-2">
             Preview — first {previewData.length} rows
           </h4>
           {previewData.length === 0 ? (
-            <p className="text-xs text-gray-400 italic">No data</p>
+            <p className="text-xs text-text-quaternary italic">No data</p>
           ) : (
-            <div className="overflow-x-auto rounded border border-gray-100">
+            <div className="overflow-x-auto rounded border border-[rgb(var(--border-line))]">
               <table className="text-xs w-full">
-                <thead className="bg-gray-50">
+                <thead className="bg-surface-2">
                   <tr>
                     {previewCols.map((c) => (
                       <th
                         key={c}
-                        className="px-2.5 py-1.5 text-left font-medium text-gray-500 whitespace-nowrap"
+                        className="px-2.5 py-1.5 text-left font-medium text-text-tertiary whitespace-nowrap"
                       >
                         {c}
                       </th>
                     ))}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-50">
+                <tbody className="divide-y divide-[rgb(var(--border-line))]">
                   {previewData.map((row, i) => (
-                    <tr key={i} className="hover:bg-gray-50">
+                    <tr key={i} className="hover:bg-surface-2">
                       {previewCols.map((c) => (
                         <td
                           key={c}
-                          className="px-2.5 py-1 text-gray-700 whitespace-nowrap max-w-[200px] truncate"
+                          className="px-2.5 py-1 text-text-secondary whitespace-nowrap max-w-[200px] truncate"
                         >
                           {row[c] === null || row[c] === undefined
-                            ? <span className="text-gray-300 italic">null</span>
+                            ? <span className="text-text-quaternary italic">null</span>
                             : String(row[c])}
                         </td>
                       ))}
@@ -305,10 +305,10 @@ function TableDetailPanel({
       </div>
 
       {/* Actions */}
-      <div className="flex items-center gap-2 px-4 py-3 border-t border-gray-100 flex-shrink-0 bg-white">
+      <div className="flex flex-shrink-0 items-center gap-2 border-t border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3">
         <button
           onClick={onRefreshSchema}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50 text-gray-600"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-[rgb(var(--border-line))] rounded-md hover:bg-surface-2 text-text-secondary"
         >
           <RefreshCw className="w-3.5 h-3.5" />
           Refresh schema
@@ -319,7 +319,7 @@ function TableDetailPanel({
             refetchFull();
           }}
           disabled={fullLoading}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50 text-gray-600 disabled:opacity-50"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-[rgb(var(--border-line))] rounded-md hover:bg-surface-2 text-text-secondary disabled:opacity-50"
         >
           {fullLoading ? (
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -344,7 +344,7 @@ export default function TablesTab({ datasourceId }: Props) {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-64 text-gray-400">
+      <div className="flex items-center justify-center h-64 text-text-quaternary">
         <Loader2 className="w-5 h-5 animate-spin mr-2" />
         Loading schema…
       </div>
@@ -353,12 +353,12 @@ export default function TablesTab({ datasourceId }: Props) {
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 gap-3 text-gray-500">
-        <AlertCircle className="w-8 h-8 text-red-400" />
+      <div className="flex flex-col items-center justify-center h-64 gap-3 text-text-tertiary">
+        <AlertCircle className="w-8 h-8 text-danger" />
         <p className="text-sm">Failed to load schema. Check connection settings.</p>
         <button
           onClick={() => refetch()}
-          className="text-sm text-blue-600 hover:underline"
+          className="text-sm text-brand hover:underline"
         >
           Retry
         </button>
@@ -371,14 +371,14 @@ export default function TablesTab({ datasourceId }: Props) {
   return (
     <div className="flex h-full overflow-hidden">
       {/* Left panel: Schema browser */}
-      <div className="w-64 flex-shrink-0 border-r border-gray-100 bg-gray-50 flex flex-col">
-        <div className="flex items-center justify-between px-3 py-2.5 border-b border-gray-100">
-          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+      <div className="w-64 flex-shrink-0 border-r border-[rgb(var(--border-line))] bg-surface-2 flex flex-col">
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-[rgb(var(--border-line))]">
+          <span className="text-xs font-semibold text-text-tertiary uppercase tracking-wide">
             Schema browser
           </span>
           <button
             onClick={handleRefreshSchema}
-            className="p-1 hover:bg-gray-200 rounded text-gray-400 hover:text-gray-600"
+            className="p-1 hover:bg-surface-3 rounded text-text-quaternary hover:text-text-secondary"
             title="Refresh schema"
           >
             <RefreshCw className="w-3 h-3" />
@@ -386,7 +386,7 @@ export default function TablesTab({ datasourceId }: Props) {
         </div>
         <div className="flex-1 overflow-auto py-1">
           {schemas.length === 0 ? (
-            <p className="text-xs text-gray-400 text-center mt-8 px-4">
+            <p className="text-xs text-text-quaternary text-center mt-8 px-4">
               No tables found
             </p>
           ) : (
@@ -412,8 +412,8 @@ export default function TablesTab({ datasourceId }: Props) {
             onRefreshSchema={handleRefreshSchema}
           />
         ) : (
-          <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-2">
-            <Table2 className="w-10 h-10 text-gray-200" />
+          <div className="flex flex-col items-center justify-center h-full text-text-quaternary gap-2">
+            <Table2 className="w-10 h-10 text-text-secondary" />
             <p className="text-sm">Select a table to view details</p>
           </div>
         )}

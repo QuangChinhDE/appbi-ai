@@ -8,6 +8,7 @@ import {
   normalizePublicLinkAppearance,
 } from '@/lib/public-link-appearance';
 import type { PublicLinkAppearanceConfig } from '@/types/api';
+import { Input } from '@/components/ui/Input';
 
 interface PublicLinkAppearanceEditorProps {
   value: PublicLinkAppearanceConfig;
@@ -28,14 +29,14 @@ function ChoiceCard({ active, label, description, onClick }: ChoiceCardProps) {
       type="button"
       onClick={onClick}
       className={cn(
-        'rounded-[20px] border px-4 py-3 text-left transition-colors',
+        'rounded-lg border px-4 py-3 text-left transition-colors',
         active
-          ? 'border-blue-600 bg-blue-600 text-white shadow-lg shadow-blue-600/15'
-          : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50',
+          ? 'border-brand bg-brand text-text-inverse shadow-linear-sm'
+          : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2',
       )}
     >
-      <p className="text-sm font-semibold">{label}</p>
-      <p className={cn('mt-1 text-xs leading-5', active ? 'text-slate-300' : 'text-slate-500')}>
+      <p className="text-caption font-strong">{label}</p>
+      <p className={cn('mt-1 text-tiny leading-5', active ? 'text-text-inverse/80' : 'text-text-tertiary')}>
         {description}
       </p>
     </button>
@@ -55,28 +56,28 @@ function ToggleCard({ checked, label, description, onToggle }: ToggleCardProps) 
       type="button"
       onClick={onToggle}
       className={cn(
-        'flex items-start justify-between gap-3 rounded-[18px] border px-3 py-3 text-left transition-colors',
+        'flex items-start justify-between gap-3 rounded-lg border px-3 py-3 text-left transition-colors',
         checked
-          ? 'border-blue-600 bg-blue-600 text-white shadow-lg shadow-blue-600/15'
-          : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50',
+          ? 'border-brand bg-brand text-text-inverse shadow-linear-sm'
+          : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2',
       )}
     >
       <div>
-        <p className="text-sm font-medium">{label}</p>
-        <p className={cn('mt-1 text-xs leading-5', checked ? 'text-slate-300' : 'text-slate-500')}>
+        <p className="text-caption font-emphasis">{label}</p>
+        <p className={cn('mt-1 text-tiny leading-5', checked ? 'text-text-inverse/80' : 'text-text-tertiary')}>
           {description}
         </p>
       </div>
       <span
         className={cn(
           'mt-0.5 inline-flex h-6 w-11 rounded-full border p-0.5 transition',
-          checked ? 'border-white/15 bg-white/10' : 'border-slate-300 bg-slate-100',
+          checked ? 'border-white/15 bg-white/10' : 'border-[rgb(var(--border-strong))] bg-surface-2',
         )}
       >
         <span
           className={cn(
             'h-5 w-5 rounded-full transition',
-            checked ? 'translate-x-5 bg-white' : 'translate-x-0 bg-slate-500',
+            checked ? 'translate-x-5 bg-surface-1' : 'translate-x-0 bg-text-quaternary',
           )}
         />
       </span>
@@ -95,11 +96,11 @@ function SectionKicker({
 }) {
   return (
     <div className="mb-3">
-      <div className="flex items-center gap-2 text-slate-900">
-        <Icon className="h-4 w-4 text-sky-600" />
-        <h3 className="text-sm font-semibold">{label}</h3>
+      <div className="flex items-center gap-2 text-text-primary">
+        <Icon className="h-4 w-4 text-brand" />
+        <h3 className="text-small font-strong">{label}</h3>
       </div>
-      <p className="mt-1 text-sm leading-6 text-slate-500">{description}</p>
+      <p className="mt-1 text-caption leading-6 text-text-tertiary">{description}</p>
     </div>
   );
 }
@@ -151,19 +152,19 @@ export function PublicLinkAppearanceEditor({
   };
 
   return (
-    <div className="space-y-5">
-      <div className="rounded-[28px] border border-slate-200/80 bg-white/90 p-5 shadow-[0_20px_60px_-48px_rgba(15,23,42,0.45)]">
+    <div className="space-y-4">
+      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
         <SectionKicker
           icon={Sparkles}
           label="Viewer layout"
           description="Public page and embed now use one compact report rail by default. Here you only set the visual tone, report title, and whether viewers can use tabs or filters."
         />
-        <div className="rounded-[22px] border border-sky-100 bg-sky-50/70 px-4 py-3 text-sm leading-6 text-slate-600">
+        <div className="rounded-md border border-brand/20 bg-brand/10 px-4 py-3 text-caption leading-6 text-text-secondary">
           Footer, summary, extra badges, and wide header variants are removed so the shared report stays focused on charts.
         </div>
       </div>
 
-      <div className="rounded-[28px] border border-slate-200/80 bg-white/90 p-5 shadow-[0_20px_60px_-48px_rgba(15,23,42,0.45)]">
+      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
         <SectionKicker
           icon={Palette}
           label="Visual direction"
@@ -172,7 +173,7 @@ export function PublicLinkAppearanceEditor({
 
         <div className="space-y-5">
           <div>
-            <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+            <div className="mb-2 flex items-center gap-2 text-tiny font-strong uppercase tracking-[0.14em] text-text-quaternary">
               <Sparkles className="h-3.5 w-3.5" />
               Preset
             </div>
@@ -191,7 +192,7 @@ export function PublicLinkAppearanceEditor({
 
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr),220px]">
             <div>
-              <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+              <div className="mb-2 flex items-center gap-2 text-tiny font-strong uppercase tracking-[0.14em] text-text-quaternary">
                 <Palette className="h-3.5 w-3.5" />
                 Accent
               </div>
@@ -202,10 +203,10 @@ export function PublicLinkAppearanceEditor({
                     type="button"
                     onClick={() => selectAccentPreset(option.value)}
                     className={cn(
-                      'inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm transition-colors',
+                      'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-caption transition-colors',
                       appearance.accent_preset === option.value && !appearance.accent_color
-                        ? 'border-blue-600 bg-blue-600 text-white'
-                        : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50',
+                        ? 'border-brand bg-brand text-text-inverse'
+                        : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2',
                     )}
                   >
                     <span
@@ -219,25 +220,25 @@ export function PublicLinkAppearanceEditor({
             </div>
 
             <div>
-              <label className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+              <label className="mb-2 flex items-center gap-2 text-tiny font-strong uppercase tracking-[0.14em] text-text-quaternary">
                 <Palette className="h-3.5 w-3.5" />
                 Custom color
               </label>
-              <div className="flex items-center gap-3 rounded-[18px] border border-slate-200 bg-slate-50 px-3 py-2.5">
+              <div className="flex items-center gap-3 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
                 <input
                   type="color"
                   value={appearance.accent_color ?? '#0EA5E9'}
                   onChange={(event) => updateField('accent_color', event.target.value)}
-                  className="h-9 w-11 cursor-pointer rounded-lg border border-slate-200 bg-transparent"
+                  className="h-9 w-11 cursor-pointer rounded-md border border-[rgb(var(--border-line))] bg-transparent"
                 />
                 <div className="min-w-0">
-                  <p className="text-sm font-medium text-slate-700">
+                  <p className="text-caption font-emphasis text-text-secondary">
                     {appearance.accent_color ? appearance.accent_color.toUpperCase() : 'Using preset tone'}
                   </p>
                   <button
                     type="button"
                     onClick={() => updateField('accent_color', null)}
-                    className="text-xs text-slate-500 hover:text-slate-700"
+                    className="text-tiny text-text-tertiary hover:text-text-secondary"
                   >
                     Reset custom color
                   </button>
@@ -248,27 +249,26 @@ export function PublicLinkAppearanceEditor({
         </div>
       </div>
 
-      <div className="rounded-[28px] border border-slate-200/80 bg-white/90 p-5 shadow-[0_20px_60px_-48px_rgba(15,23,42,0.45)]">
+      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
         <SectionKicker
           icon={Type}
           label="Report title"
           description="This is the one main text viewers should see. Leave it blank to reuse the link name."
         />
 
-        <label className="mb-1.5 flex items-center gap-2 text-sm font-medium text-slate-700">
-          <Type className="h-4 w-4 text-slate-400" />
+        <label className="mb-1.5 flex items-center gap-2 text-label font-emphasis text-text-secondary">
+          <Type className="h-4 w-4 text-text-quaternary" />
           Headline
         </label>
-        <input
+        <Input
           type="text"
           value={appearance.headline ?? ''}
           onChange={(event) => updateHeadline(event.target.value)}
           placeholder={dashboardName}
-          className="w-full rounded-2xl border border-slate-300 px-3 py-2.5 text-sm text-slate-700 outline-none transition focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
         />
       </div>
 
-      <div className="rounded-[28px] border border-slate-200/80 bg-white/90 p-5 shadow-[0_20px_60px_-48px_rgba(15,23,42,0.45)]">
+      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
         <SectionKicker
           icon={Eye}
           label="Viewer controls"

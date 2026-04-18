@@ -1,12 +1,15 @@
 'use client';
 
 import React from 'react';
+
+import { Badge } from '@/components/ui/Badge';
+import { cn } from '@/lib/utils';
 import type { ReportTemplate } from '@/types/template';
 
-const BADGE_STYLES: Record<string, { bg: string; color: string }> = {
-  table: { bg: '#e8f5ed', color: '#1a4d2e' },
-  card: { bg: '#eeedf8', color: '#4a3f8f' },
-  'cross-tab': { bg: '#fef3e2', color: '#92540a' },
+const BADGE_STYLES: Record<string, { label: string; variant: 'success' | 'brand' | 'warning' }> = {
+  table: { label: 'table', variant: 'success' },
+  card: { label: 'card', variant: 'brand' },
+  'cross-tab': { label: 'cross-tab', variant: 'warning' },
 };
 
 function getLayoutFromBlocks(blocks: any): string {
@@ -22,14 +25,8 @@ interface BuilderSidebarProps {
 
 export function BuilderSidebar({ templates, currentTemplateId, onNavigate }: BuilderSidebarProps) {
   return (
-    <div
-      className="flex w-[220px] shrink-0 flex-col overflow-hidden border-r"
-      style={{ background: '#fff', borderColor: '#e2dfd8' }}
-    >
-      <div
-        className="px-3 pt-[10px] pb-[6px] text-[10px] font-semibold uppercase tracking-wider"
-        style={{ color: '#a09b95' }}
-      >
+    <aside className="flex w-[232px] shrink-0 flex-col overflow-hidden border-r border-[rgb(var(--border-line))] bg-surface-1">
+      <div className="px-3 pb-2 pt-3 text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
         Templates
       </div>
       <div className="flex-1 overflow-y-auto">
@@ -39,48 +36,40 @@ export function BuilderSidebar({ templates, currentTemplateId, onNavigate }: Bui
           const badge = BADGE_STYLES[layout] ?? BADGE_STYLES.table;
 
           return (
-            <div
+            <button
               key={tpl.id}
               onClick={() => onNavigate(tpl.id)}
-              className="cursor-pointer border-b px-3 py-2"
-              style={{
-                borderColor: '#e2dfd8',
-                background: isActive ? '#e8f5ed' : undefined,
-                borderLeft: isActive ? '3px solid #1a4d2e' : '3px solid transparent',
-              }}
+              type="button"
+              className={cn(
+                'w-full border-b border-[rgb(var(--border-line))] px-3 py-2.5 text-left transition-colors',
+                isActive
+                  ? 'border-l-[3px] border-l-brand bg-brand/10'
+                  : 'border-l-[3px] border-l-transparent hover:bg-surface-2',
+              )}
             >
-              <div
-                className="text-xs leading-tight"
-                style={{
-                  fontWeight: isActive ? 500 : 400,
-                  color: isActive ? '#1a4d2e' : '#18171a',
-                }}
-              >
+              <div className={cn(
+                'text-caption leading-tight text-text-primary',
+                isActive ? 'font-strong text-brand' : 'font-emphasis',
+              )}>
                 {tpl.name}
               </div>
-              <div
-                className="mt-0.5 text-[10px]"
-                style={{ fontFamily: "'DM Mono', monospace", color: '#a09b95' }}
-              >
+              <div className="mt-0.5 truncate text-[10px] font-mono text-text-quaternary">
                 {tpl.description || 'template'}
               </div>
-              <span
-                className="mt-1 inline-block rounded px-[5px] py-px text-[9px] font-medium"
-                style={{ background: badge.bg, color: badge.color }}
-              >
-                {layout}
-              </span>
-            </div>
+              <Badge variant={badge.variant} size="xs" pill={false} className="mt-2 rounded px-1.5 py-0">
+                {badge.label}
+              </Badge>
+            </button>
           );
         })}
       </div>
       <button
-        className="mx-3 my-2 rounded-md border border-dashed py-1.5 text-center text-[11px]"
-        style={{ borderColor: '#c9c5bc', color: '#a09b95', background: 'none' }}
+        type="button"
+        className="mx-3 my-2 rounded-lg border border-dashed border-[rgb(var(--border-strong))] bg-transparent py-2 text-center text-label text-text-tertiary transition-colors hover:bg-surface-2"
         onClick={() => {/* handled by parent */}}
       >
         + Template mới
       </button>
-    </div>
+    </aside>
   );
 }

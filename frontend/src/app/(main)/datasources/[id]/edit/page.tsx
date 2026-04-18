@@ -41,17 +41,17 @@ export default function EditDataSourcePage() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-50">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+      <div className="flex items-center justify-center min-h-screen bg-surface-2">
+        <Loader2 className="w-8 h-8 animate-spin text-brand" />
       </div>
     );
   }
 
   if (!dataSource) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50 gap-4">
-        <p className="text-gray-500">Data source not found.</p>
-        <Link href="/datasources" className="text-blue-600 hover:underline">
+      <div className="flex flex-col items-center justify-center min-h-screen bg-surface-2 gap-4">
+        <p className="text-text-tertiary">Data source not found.</p>
+        <Link href="/datasources" className="text-brand hover:underline">
           Back to Data Sources
         </Link>
       </div>
@@ -60,10 +60,10 @@ export default function EditDataSourcePage() {
 
   if (!resPerms.canEdit) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50 gap-4">
-        <ShieldAlert className="w-12 h-12 text-orange-500" />
-        <p className="text-gray-700 font-medium">You don&apos;t have permission to edit this data source.</p>
-        <Link href="/datasources" className="text-blue-600 hover:underline">
+      <div className="flex flex-col items-center justify-center min-h-screen bg-surface-2 gap-4">
+        <ShieldAlert className="w-12 h-12 text-warning" />
+        <p className="text-text-secondary font-medium">You don&apos;t have permission to edit this data source.</p>
+        <Link href="/datasources" className="text-brand hover:underline">
           Back to Data Sources
         </Link>
       </div>
@@ -71,15 +71,15 @@ export default function EditDataSourcePage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-surface-2">
       <div className="w-full px-8 py-6">
         <div className="mb-6">
-          <Link href="/datasources" className="inline-flex items-center text-blue-600 hover:text-blue-700">
+          <Link href="/datasources" className="inline-flex items-center text-brand hover:text-brand">
             <ArrowLeft className="w-4 h-4 mr-2" />
             Back to Data Sources
           </Link>
         </div>
-        <div className="bg-white rounded-lg shadow p-6">
+        <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-6 shadow-linear-sm">
           <h2 className="text-2xl font-bold mb-6">Edit Data Source</h2>
           <DataSourceForm
             initialData={dataSource}

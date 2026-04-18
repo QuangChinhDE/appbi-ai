@@ -861,10 +861,10 @@ export default function DashboardDetailPage() {
 
   if (isLoadingDashboard) {
     return (
-      <div className="min-h-screen bg-gray-50">
+      <div className="min-h-screen bg-surface-2">
         <div className="w-full px-8 py-6">
           <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+            <Loader2 className="h-8 w-8 animate-spin text-brand" />
             <span className="ml-2">Loading dashboard...</span>
           </div>
         </div>
@@ -874,13 +874,13 @@ export default function DashboardDetailPage() {
 
   if (!dashboard) {
     return (
-      <div className="min-h-screen bg-gray-50">
+      <div className="min-h-screen bg-surface-2">
         <div className="w-full px-8 py-6">
-          <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
-            <p className="text-gray-500">Dashboard not found</p>
+          <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-12 text-center shadow-linear-sm">
+            <p className="text-text-tertiary">Dashboard not found</p>
             <Link
               href="/dashboards"
-              className="inline-flex items-center text-blue-600 hover:text-blue-700 mt-4"
+              className="inline-flex items-center text-brand hover:text-brand mt-4"
             >
               <ArrowLeft className="w-4 h-4 mr-2" />
               Back to Dashboards
@@ -907,18 +907,18 @@ export default function DashboardDetailPage() {
     : null;
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-surface-2">
       <div className="w-full px-4 py-4 sm:px-6 lg:px-8">
-        <div className="mb-4 rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-sm">
+        <div className="mb-4 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-4 shadow-linear-sm">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-3 text-sm">
-                <Link href="/dashboards" className="inline-flex items-center text-blue-600 hover:text-blue-700">
+                <Link href="/dashboards" className="inline-flex items-center text-brand hover:text-brand">
                   <ArrowLeft className="mr-2 h-4 w-4" />
                   Back to Dashboards
                 </Link>
                 {hasUnsavedChanges && (
-                  <span className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-xs text-gray-500">
+                  <span className="inline-flex items-center rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-xs text-text-tertiary">
                     <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
                     Saving layout
                   </span>
@@ -932,20 +932,20 @@ export default function DashboardDetailPage() {
                       type="text"
                       value={editedName}
                       onChange={(e) => setEditedName(e.target.value)}
-                      className="min-w-[260px] flex-1 rounded-lg border border-gray-300 px-3 py-2 text-xl font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="min-w-[260px] flex-1 rounded-lg border border-[rgb(var(--border-strong))] px-3 py-2 text-xl font-semibold focus:outline-none focus:ring-2 focus:ring-brand"
                       autoFocus
                     />
                     <button
                       onClick={handleSaveName}
                       disabled={updateDashboardMutation.isPending}
-                      className="rounded-md p-2 text-green-600 hover:bg-green-50"
+                      className="rounded-md p-2 text-success hover:bg-success/10"
                       title="Save"
                     >
                       <Check className="h-5 w-5" />
                     </button>
                     <button
                       onClick={handleCancelEditName}
-                      className="rounded-md p-2 text-gray-600 hover:bg-gray-50"
+                      className="rounded-md p-2 text-text-secondary hover:bg-surface-2"
                       title="Cancel"
                     >
                       <X className="h-5 w-5" />
@@ -953,11 +953,11 @@ export default function DashboardDetailPage() {
                   </div>
                 ) : (
                   <div className="flex flex-wrap items-center gap-3">
-                    <h1 className="truncate text-2xl font-bold text-gray-900">{dashboard.name}</h1>
+                    <h1 className="truncate text-2xl font-bold text-text-primary">{dashboard.name}</h1>
                     {canEditResource && (
                       <button
                         onClick={handleStartEditName}
-                        className="rounded-md p-1 text-gray-400 hover:text-gray-600"
+                        className="rounded-md p-1 text-text-quaternary hover:text-text-secondary"
                         title="Edit name"
                       >
                         <Edit2 className="h-4 w-4" />
@@ -967,11 +967,11 @@ export default function DashboardDetailPage() {
                 )}
 
                 {dashboard.description && (
-                  <p className="mt-1 text-sm text-gray-500">{dashboard.description}</p>
+                  <p className="mt-1 text-sm text-text-tertiary">{dashboard.description}</p>
                 )}
 
                 {linkedAgentReport && (
-                  <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                  <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-brand/20 bg-brand/10 px-3 py-2 text-sm text-brand">
                     <div className="flex items-center gap-2">
                       <Bot className="h-4 w-4" />
                       <span>
@@ -981,7 +981,7 @@ export default function DashboardDetailPage() {
                     <button
                       type="button"
                       onClick={() => router.push(`/ai-reports/${linkedAgentReport.id}`)}
-                      className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100/40"
+                      className="inline-flex items-center gap-2 rounded-md border border-brand/30 bg-surface-1 px-3 py-1.5 text-xs font-medium text-brand hover:bg-brand/15/40"
                     >
                       <Sparkles className="h-3.5 w-3.5" />
                       Open AI report
@@ -995,7 +995,7 @@ export default function DashboardDetailPage() {
               {canEditResource && (
                 <button
                   onClick={() => setIsPublicShareOpen(true)}
-                  className="inline-flex items-center rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                  className="inline-flex items-center rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm text-text-secondary hover:bg-surface-2"
                 >
                   <Globe className="mr-2 h-4 w-4" />
                   Public links
@@ -1004,7 +1004,7 @@ export default function DashboardDetailPage() {
               {canShare && (
                 <button
                   onClick={() => setIsShareDialogOpen(true)}
-                  className="inline-flex items-center rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                  className="inline-flex items-center rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm text-text-secondary hover:bg-surface-2"
                 >
                   <Share2 className="mr-2 h-4 w-4" />
                   Share
@@ -1013,7 +1013,7 @@ export default function DashboardDetailPage() {
               {canEditResource && (
                 <button
                   onClick={() => setIsChartManagerOpen(true)}
-                  className="inline-flex items-center rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                  className="inline-flex items-center rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm text-text-secondary hover:bg-surface-2"
                 >
                   <LayoutGrid className="mr-2 h-4 w-4" />
                   Manage charts
@@ -1022,7 +1022,7 @@ export default function DashboardDetailPage() {
               {canEditResource && (
                 <button
                   onClick={() => setIsAddChartModalOpen(true)}
-                  className="inline-flex items-center rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                  className="inline-flex items-center rounded-md bg-brand px-3 py-2 text-sm font-medium text-white hover:bg-brand-hover"
                 >
                   <Plus className="mr-2 h-4 w-4" />
                   Add Chart
@@ -1032,7 +1032,7 @@ export default function DashboardDetailPage() {
           </div>
         </div>
 
-        <div className="mb-4 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+        <div className="mb-4 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3 shadow-linear-sm">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex gap-2 overflow-x-auto pb-1">
               {dashboardPages.map((page) => {
@@ -1044,8 +1044,8 @@ export default function DashboardDetailPage() {
                     onClick={() => setCurrentPageId(page.id)}
                     className={`rounded-full px-3 py-1.5 text-sm font-medium transition-colors ${
                       isActive
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        ? 'bg-brand text-white'
+                        : 'bg-surface-2 text-text-secondary hover:bg-surface-3'
                     }`}
                   >
                     {page.name}
@@ -1066,13 +1066,13 @@ export default function DashboardDetailPage() {
                         if (e.key === 'Enter') handleSavePageName();
                         if (e.key === 'Escape') handleCancelRenamePage();
                       }}
-                      className="min-w-[180px] rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="min-w-[180px] rounded-md border border-[rgb(var(--border-strong))] px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
                       autoFocus
                     />
                     <button
                       type="button"
                       onClick={handleSavePageName}
-                      className="rounded-md p-2 text-green-600 hover:bg-green-50"
+                      className="rounded-md p-2 text-success hover:bg-success/10"
                       title="Save page name"
                     >
                       <Check className="h-4 w-4" />
@@ -1080,7 +1080,7 @@ export default function DashboardDetailPage() {
                     <button
                       type="button"
                       onClick={handleCancelRenamePage}
-                      className="rounded-md p-2 text-gray-500 hover:bg-gray-100"
+                      className="rounded-md p-2 text-text-tertiary hover:bg-surface-2"
                       title="Cancel"
                     >
                       <X className="h-4 w-4" />
@@ -1090,7 +1090,7 @@ export default function DashboardDetailPage() {
                   <button
                     type="button"
                     onClick={handleStartRenamePage}
-                    className="inline-flex items-center rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
+                    className="inline-flex items-center rounded-md border border-[rgb(var(--border-strong))] px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-2"
                   >
                     <Edit2 className="mr-2 h-4 w-4" />
                     Rename page
@@ -1101,7 +1101,7 @@ export default function DashboardDetailPage() {
                   type="button"
                   onClick={() => setPendingDeletePageId(activePageId)}
                   disabled={dashboardPages.length <= 1}
-                  className="inline-flex items-center rounded-md border border-red-200 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="inline-flex items-center rounded-md border border-danger/30 px-3 py-1.5 text-sm text-danger hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Trash2 className="mr-2 h-4 w-4" />
                   Delete page
@@ -1110,7 +1110,7 @@ export default function DashboardDetailPage() {
                 <button
                   type="button"
                   onClick={handleAddPage}
-                  className="inline-flex items-center rounded-md border border-blue-200 px-3 py-1.5 text-sm text-blue-700 hover:bg-blue-50"
+                  className="inline-flex items-center rounded-md border border-brand/30 px-3 py-1.5 text-sm text-brand hover:bg-brand/15"
                 >
                   <Plus className="mr-2 h-4 w-4" />
                   Add page
@@ -1134,7 +1134,7 @@ export default function DashboardDetailPage() {
         />
 
         {activeCrossFilter && (
-          <div className="mb-4 flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <div className="mb-4 flex items-center gap-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
             <span className="font-medium">
               Cross-filter from {activeCrossFilterSourceTitle}:
             </span>
@@ -1144,7 +1144,7 @@ export default function DashboardDetailPage() {
             <button
               type="button"
               onClick={() => setCrossFilterState(null)}
-              className="ml-auto rounded-md border border-amber-300 px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100"
+              className="ml-auto rounded-md border border-warning/40 px-2.5 py-1 text-xs font-medium text-warning hover:bg-warning/15"
             >
               Clear
             </button>

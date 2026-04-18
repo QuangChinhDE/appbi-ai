@@ -49,7 +49,7 @@ export function FilterPanel({
               type="text"
               value={filter.value || ''}
               onChange={(e) => handleValueChange(filter, e.target.value)}
-              className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="flex-1 px-2 py-1 text-sm border border-[rgb(var(--border-strong))] rounded focus:outline-none focus:ring-1 focus:ring-brand"
               placeholder="Enter value..."
             />
           )}
@@ -58,7 +58,7 @@ export function FilterPanel({
               type="number"
               value={filter.value || ''}
               onChange={(e) => handleValueChange(filter, parseFloat(e.target.value))}
-              className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="flex-1 px-2 py-1 text-sm border border-[rgb(var(--border-strong))] rounded focus:outline-none focus:ring-1 focus:ring-brand"
               placeholder="Enter number..."
             />
           )}
@@ -67,12 +67,12 @@ export function FilterPanel({
               type="date"
               value={filter.value || ''}
               onChange={(e) => handleValueChange(filter, e.target.value)}
-              className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="flex-1 px-2 py-1 text-sm border border-[rgb(var(--border-strong))] rounded focus:outline-none focus:ring-1 focus:ring-brand"
             />
           )}
           <button
             onClick={() => setEditingId(null)}
-            className="p-1 text-green-600 hover:bg-green-50 rounded"
+            className="p-1 text-success hover:bg-success/10 rounded"
           >
             <Check className="w-4 h-4" />
           </button>
@@ -82,12 +82,12 @@ export function FilterPanel({
 
     return (
       <div className="flex items-center justify-between flex-1">
-        <span className="text-sm text-gray-700">
+        <span className="text-sm text-text-secondary">
           {Array.isArray(filter.value) ? filter.value.join(', ') : String(filter.value || 'Not set')}
         </span>
         <button
           onClick={() => setEditingId(filter.id || null)}
-          className="p-1 text-gray-400 hover:text-blue-600"
+          className="p-1 text-text-quaternary hover:text-brand"
         >
           <Edit2 className="w-3 h-3" />
         </button>
@@ -96,19 +96,19 @@ export function FilterPanel({
   };
 
   return (
-    <div className="bg-white border-l border-gray-200 w-80 flex flex-col h-full">
+    <div className="flex h-full w-80 flex-col border-l border-[rgb(var(--border-line))] bg-surface-1">
       {/* Header */}
       <div 
-        className="flex items-center justify-between p-4 border-b border-gray-200 cursor-pointer hover:bg-gray-50"
+        className="flex items-center justify-between p-4 border-b border-[rgb(var(--border-line))] cursor-pointer hover:bg-surface-2"
         onClick={() => setIsExpanded(!isExpanded)}
       >
         <div className="flex items-center gap-2">
           {isExpanded ? (
-            <ChevronDown className="w-4 h-4 text-gray-500" />
+            <ChevronDown className="w-4 h-4 text-text-tertiary" />
           ) : (
-            <ChevronRight className="w-4 h-4 text-gray-500" />
+            <ChevronRight className="w-4 h-4 text-text-tertiary" />
           )}
-          <h3 className="text-sm font-semibold text-gray-900">
+          <h3 className="text-sm font-semibold text-text-primary">
             Filters {filters.length > 0 && `(${filters.length})`}
           </h3>
         </div>
@@ -117,7 +117,7 @@ export function FilterPanel({
             e.stopPropagation();
             onAddFilter();
           }}
-          className="p-1 text-blue-600 hover:bg-blue-50 rounded"
+          className="p-1 text-brand hover:bg-brand/15 rounded"
           title="Add filter"
         >
           <Plus className="w-4 h-4" />
@@ -129,10 +129,10 @@ export function FilterPanel({
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           {filters.length === 0 ? (
             <div className="text-center py-8">
-              <p className="text-sm text-gray-500 mb-3">No filters applied</p>
+              <p className="text-sm text-text-tertiary mb-3">No filters applied</p>
               <button
                 onClick={onAddFilter}
-                className="px-3 py-1.5 text-sm font-medium text-blue-600 hover:bg-blue-50 rounded border border-blue-200"
+                className="px-3 py-1.5 text-sm font-medium text-brand hover:bg-brand/15 rounded border border-brand/30"
               >
                 Add First Filter
               </button>
@@ -141,20 +141,20 @@ export function FilterPanel({
             filters.map((filter) => (
               <div
                 key={filter.id}
-                className="border border-gray-200 rounded-lg p-3 bg-gray-50 hover:bg-gray-100 transition-colors"
+                className="border border-[rgb(var(--border-line))] rounded-lg p-3 bg-surface-2 hover:bg-surface-2 transition-colors"
               >
                 <div className="flex items-start justify-between mb-2">
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-gray-900 truncate">
+                    <div className="text-sm font-medium text-text-primary truncate">
                       {filter.name}
                     </div>
-                    <div className="text-xs text-gray-500 truncate">
+                    <div className="text-xs text-text-tertiary truncate">
                       {filter.field}
                     </div>
                   </div>
                   <button
                     onClick={() => filter.id && onDeleteFilter(filter.id)}
-                    className="p-1 text-gray-400 hover:text-red-600 ml-2"
+                    className="p-1 text-text-quaternary hover:text-danger ml-2"
                     title="Delete filter"
                   >
                     <X className="w-4 h-4" />
@@ -163,14 +163,14 @@ export function FilterPanel({
 
                 <div className="space-y-2">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-600 w-16">Operator:</span>
+                    <span className="text-xs text-text-secondary w-16">Operator:</span>
                     <select
                       value={filter.operator}
                       onChange={(e) => onEditFilter({ 
                         ...filter, 
                         operator: e.target.value as any 
                       })}
-                      className="flex-1 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      className="flex-1 px-2 py-1 text-xs border border-[rgb(var(--border-strong))] rounded focus:outline-none focus:ring-1 focus:ring-brand"
                     >
                       <option value="eq">Equals</option>
                       <option value="ne">Not Equals</option>
@@ -186,7 +186,7 @@ export function FilterPanel({
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-600 w-16">Value:</span>
+                    <span className="text-xs text-text-secondary w-16">Value:</span>
                     {renderFilterValue(filter)}
                   </div>
                 </div>
@@ -198,10 +198,10 @@ export function FilterPanel({
 
       {/* Reset All Button */}
       {isExpanded && filters.length > 0 && (
-        <div className="p-4 border-t border-gray-200">
+        <div className="p-4 border-t border-[rgb(var(--border-line))]">
           <button
             onClick={() => onFiltersChange([])}
-            className="w-full px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 rounded border border-red-200"
+            className="w-full px-3 py-2 text-sm font-medium text-danger hover:bg-danger/10 rounded border border-danger/30"
           >
             Clear All Filters
           </button>

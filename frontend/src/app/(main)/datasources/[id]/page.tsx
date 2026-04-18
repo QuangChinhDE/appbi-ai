@@ -26,11 +26,11 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 const TYPE_COLORS: Record<string, string> = {
-  postgresql: 'bg-blue-100 text-blue-700',
-  mysql: 'bg-orange-100 text-orange-700',
-  bigquery: 'bg-green-100 text-green-700',
-  google_sheets: 'bg-emerald-100 text-emerald-700',
-  manual: 'bg-gray-100 text-gray-600',
+  postgresql: 'bg-brand/15 text-brand',
+  mysql: 'bg-warning/15 text-warning',
+  bigquery: 'bg-success/15 text-success',
+  google_sheets: 'bg-success/15 text-success',
+  manual: 'bg-surface-2 text-text-secondary',
 };
 
 export default function DataSourceDetailPage() {
@@ -89,17 +89,17 @@ export default function DataSourceDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-50">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+      <div className="flex items-center justify-center min-h-screen bg-surface-2">
+        <Loader2 className="w-8 h-8 animate-spin text-brand" />
       </div>
     );
   }
 
   if (!dataSource) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50 gap-4">
-        <p className="text-gray-500">Data source not found.</p>
-        <Link href="/datasources" className="text-blue-600 hover:underline">
+      <div className="flex flex-col items-center justify-center min-h-screen bg-surface-2 gap-4">
+        <p className="text-text-tertiary">Data source not found.</p>
+        <Link href="/datasources" className="text-brand hover:underline">
           Back to Data Sources
         </Link>
       </div>
@@ -107,7 +107,7 @@ export default function DataSourceDetailPage() {
   }
 
   const typeLabel = TYPE_LABELS[dataSource.type] ?? dataSource.type;
-  const typeColor = TYPE_COLORS[dataSource.type] ?? 'bg-gray-100 text-gray-600';
+  const typeColor = TYPE_COLORS[dataSource.type] ?? 'bg-surface-2 text-text-secondary';
   const createdAt = new Date(dataSource.created_at).toLocaleDateString('vi-VN', {
     day: '2-digit',
     month: '2-digit',
@@ -129,7 +129,7 @@ export default function DataSourceDetailPage() {
         <div className="mb-3">
           <Link
             href="/datasources"
-            className="inline-flex items-center text-sm text-blue-600 hover:text-blue-700"
+            className="inline-flex items-center text-sm text-brand hover:text-brand"
           >
             <ArrowLeft className="w-4 h-4 mr-1" />
             Back to Data Sources
@@ -138,19 +138,19 @@ export default function DataSourceDetailPage() {
         <div className="flex items-center justify-between mb-4">
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-gray-900">{dataSource.name}</h1>
+              <h1 className="text-2xl font-bold text-text-primary">{dataSource.name}</h1>
               <span className={`px-2.5 py-1 text-xs font-semibold rounded-full ${typeColor}`}>
                 {typeLabel}
               </span>
               {dataSource.description && (
-                <span className="text-sm text-gray-400">{dataSource.description}</span>
+                <span className="text-sm text-text-quaternary">{dataSource.description}</span>
               )}
             </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-500">
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-text-tertiary">
               <span>Created {createdAt}</span>
               {dataSource.owner_email && (
                 <>
-                  <span className="text-gray-300">•</span>
+                  <span className="text-text-quaternary">•</span>
                   <span>Created by</span>
                   <OwnerBadge email={dataSource.owner_email} />
                 </>
@@ -160,7 +160,7 @@ export default function DataSourceDetailPage() {
           {resPerms.canEdit && (
           <Link
             href={`/datasources/${datasourceId}/edit`}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50 text-gray-600 bg-white"
+            className="flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-2"
           >
             <Pencil className="w-3.5 h-3.5" />
             Edit
@@ -170,17 +170,17 @@ export default function DataSourceDetailPage() {
       </div>
 
       {/* Tabs card — stretches to fill remaining viewport height */}
-      <div className="flex-1 flex flex-col mx-8 mb-6 bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden min-h-0">
+      <div className="mx-8 mb-6 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
         {/* Tab nav */}
-        <div className="flex border-b border-gray-100 flex-shrink-0">
+        <div className="flex border-b border-[rgb(var(--border-line))] flex-shrink-0">
           {tabs.map((tab) => (
             <button
               key={tab.id}
               onClick={() => switchTab(tab.id)}
               className={`flex items-center gap-2 px-5 py-3 text-sm font-medium border-b-2 transition-colors ${
                 activeTab === tab.id
-                  ? 'border-blue-600 text-blue-700 bg-blue-50/40'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                  ? 'border-brand text-brand bg-brand/10/40'
+                  : 'border-transparent text-text-tertiary hover:text-text-secondary hover:bg-surface-2'
               }`}
             >
               {tab.icon}

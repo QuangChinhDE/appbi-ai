@@ -144,11 +144,11 @@ function getViewLabel(view: Pick<DatasetModelView, 'name' | 'table_display_name'
 
 function DimIcon({ type }: { type: string }) {
   switch (type) {
-    case 'number':   return <Hash className="w-3 h-3 text-blue-500 shrink-0" />;
+    case 'number':   return <Hash className="w-3 h-3 text-brand shrink-0" />;
     case 'date':
-    case 'datetime': return <Calendar className="w-3 h-3 text-green-600 shrink-0" />;
-    case 'yesno':    return <ToggleLeft className="w-3 h-3 text-purple-500 shrink-0" />;
-    default:         return <Type className="w-3 h-3 text-gray-400 shrink-0" />;
+    case 'datetime': return <Calendar className="w-3 h-3 text-success shrink-0" />;
+    case 'yesno':    return <ToggleLeft className="w-3 h-3 text-brand shrink-0" />;
+    default:         return <Type className="w-3 h-3 text-text-quaternary shrink-0" />;
   }
 }
 
@@ -178,8 +178,8 @@ function ViewCard({ view, onEdit, isSelected, relationshipCols, calendarCols }: 
 
   return (
     <div
-      className={`bg-white rounded-lg border shadow-sm select-none transition-all ${
-        isSelected ? 'border-blue-400 shadow-blue-100 shadow-md ring-2 ring-blue-300/50' : 'border-gray-200'
+      className={`select-none rounded-lg border bg-surface-1 shadow-linear-sm transition-all ${
+        isSelected ? 'border-brand/50 ring-2 ring-brand/50 shadow-linear' : 'border-[rgb(var(--border-line))]'
       }`}
       style={{ width: CARD_WIDTH }}
     >
@@ -188,8 +188,8 @@ function ViewCard({ view, onEdit, isSelected, relationshipCols, calendarCols }: 
         isSelected ? 'from-blue-100 to-indigo-100' : 'from-blue-50 to-indigo-50'
       }`}>
         <div className="flex items-center gap-2 min-w-0">
-          <div className={`w-2 h-2 rounded-full shrink-0 ${isSelected ? 'bg-blue-600' : 'bg-blue-500'}`} />
-          <span className="font-semibold text-sm text-gray-800 truncate">
+          <div className={`w-2 h-2 rounded-full shrink-0 ${isSelected ? 'bg-brand' : 'bg-brand'}`} />
+          <span className="font-semibold text-sm text-text-primary truncate">
             {getViewLabel(view)}
           </span>
         </div>
@@ -198,8 +198,8 @@ function ViewCard({ view, onEdit, isSelected, relationshipCols, calendarCols }: 
             onClick={onEdit}
             className={`p-1 rounded transition-colors shrink-0 ${
               isSelected
-                ? 'bg-blue-500 text-white hover:bg-blue-600'
-                : 'hover:bg-white/60 text-gray-400 hover:text-gray-600'
+                ? 'bg-brand text-white hover:bg-brand'
+                : 'hover:bg-surface-1 text-text-quaternary hover:text-text-secondary'
             }`}
             title={isSelected ? 'Editing this view' : 'Edit this view'}
           >
@@ -213,7 +213,7 @@ function ViewCard({ view, onEdit, isSelected, relationshipCols, calendarCols }: 
         <button
           onClick={() => setDimsOpen(!dimsOpen)}
           className="w-full px-3 py-1.5 flex items-center justify-between text-[10px] font-semibold
-            text-gray-400 uppercase tracking-wider hover:bg-gray-50"
+            text-text-quaternary uppercase tracking-wider hover:bg-surface-2"
         >
           <span>Dimensions ({vis.length})</span>
           {dimsOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
@@ -229,31 +229,31 @@ function ViewCard({ view, onEdit, isSelected, relationshipCols, calendarCols }: 
                   data-col-name={d.name}
                   className={`flex items-center gap-1.5 px-2 py-1 rounded text-[11px]${
                     isRelationship
-                      ? ' bg-indigo-50 border-l-2 border-indigo-400 pl-1.5 font-medium'
+                      ? ' bg-brand/10 border-l-2 border-brand/30 pl-1.5 font-medium'
                       : isCalendarJoin
-                        ? ' bg-emerald-50 border-l-2 border-emerald-400 pl-1.5'
-                      : ' hover:bg-gray-50'
+                        ? ' bg-success/10 border-l-2 border-success/60 pl-1.5'
+                      : ' hover:bg-surface-2'
                   }`}
                   title={d.sql || d.name}
                 >
                   <DimIcon type={d.type} />
                   <span className={`truncate ${
                     isRelationship
-                      ? 'text-indigo-700'
+                      ? 'text-brand'
                       : isCalendarJoin
-                        ? 'text-emerald-700'
-                        : 'text-gray-700'
+                        ? 'text-success'
+                        : 'text-text-secondary'
                   }`}>
                     {d.label || d.name}
                   </span>
                   {d.hidden && !isRelationship && !isCalendarJoin && (
-                    <span className="ml-auto text-[9px] uppercase tracking-wide text-amber-600">hidden</span>
+                    <span className="ml-auto text-[9px] uppercase tracking-wide text-warning">hidden</span>
                   )}
                   {isRelationship && (
-                    <Link2 className="w-2.5 h-2.5 text-indigo-400 ml-auto shrink-0" />
+                    <Link2 className="w-2.5 h-2.5 text-brand ml-auto shrink-0" />
                   )}
                   {!isRelationship && isCalendarJoin && (
-                    <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-700">
+                    <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-success/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-success">
                       <Calendar className="h-2.5 w-2.5" />
                       Date
                     </span>
@@ -262,7 +262,7 @@ function ViewCard({ view, onEdit, isSelected, relationshipCols, calendarCols }: 
               );
             })}
             {hid.length > 0 && (
-              <div className="px-2 py-0.5 text-[11px] text-gray-400 flex items-center gap-1">
+              <div className="px-2 py-0.5 text-[11px] text-text-quaternary flex items-center gap-1">
                 <EyeOff className="w-2.5 h-2.5" />
                 {hid.length} hidden
               </div>
@@ -276,7 +276,7 @@ function ViewCard({ view, onEdit, isSelected, relationshipCols, calendarCols }: 
         <button
           onClick={() => setMsrOpen(!msrOpen)}
           className="w-full px-3 py-1.5 flex items-center justify-between text-[10px] font-semibold
-            text-gray-400 uppercase tracking-wider hover:bg-gray-50"
+            text-text-quaternary uppercase tracking-wider hover:bg-surface-2"
         >
           <span>Measures ({visM.length})</span>
           {msrOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
@@ -286,11 +286,11 @@ function ViewCard({ view, onEdit, isSelected, relationshipCols, calendarCols }: 
             {visM.map((m) => (
               <div
                 key={m.name}
-                className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] hover:bg-orange-50"
+                className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] hover:bg-warning/10"
               >
-                <Sigma className="w-3 h-3 text-orange-500 shrink-0" />
-                <span className="text-gray-700 truncate">{m.label || m.name}</span>
-                <span className="text-gray-400 ml-auto text-[9px] uppercase">{m.type}</span>
+                <Sigma className="w-3 h-3 text-warning shrink-0" />
+                <span className="text-text-secondary truncate">{m.label || m.name}</span>
+                <span className="text-text-quaternary ml-auto text-[9px] uppercase">{m.type}</span>
               </div>
             ))}
           </div>
@@ -540,18 +540,18 @@ function CalendarLayerBanner({
   const bindingCount = bindings.length;
 
   return (
-    <div className="border-b border-emerald-100 bg-gradient-to-r from-emerald-50 via-white to-teal-50 px-4 py-3">
+    <div className="border-b border-success/20 bg-gradient-to-r from-emerald-50 via-white to-teal-50 px-4 py-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-3">
-            <div className="mt-0.5 rounded-lg bg-emerald-100 p-2 text-emerald-700">
+            <div className="mt-0.5 rounded-lg bg-success/15 p-2 text-success">
               <Calendar className="h-4 w-4" />
             </div>
             <div className="min-w-0">
-              <div className="text-sm font-medium text-emerald-950">
+              <div className="text-sm font-medium text-success">
                 {getViewLabel(calendarView)} layer {showCalendarLayer ? 'is visible on the canvas' : 'is hidden from the canvas'}
               </div>
-              <p className="mt-0.5 text-xs leading-5 text-emerald-900/90">
+              <p className="mt-0.5 text-xs leading-5 text-success/90">
                 {bindingCount > 0
                   ? `${bindingCount} temporal column${bindingCount !== 1 ? 's are' : ' is'} auto-linked across ${tableCount} table${tableCount !== 1 ? 's' : ''}. The semantic joins still work behind the scenes; the canvas stays cleaner by default.`
                   : 'The standard date dimension is ready and can be shown on the canvas when you need to inspect it.'}
@@ -561,13 +561,13 @@ function CalendarLayerBanner({
                   {previewChips.map((chip) => (
                     <span
                       key={chip}
-                      className="rounded-full border border-emerald-200 bg-white/80 px-2 py-0.5 text-[11px] font-medium text-emerald-800"
+                      className="rounded-full border border-success/30 bg-surface-1 px-2 py-0.5 text-[11px] font-medium text-success"
                     >
                       {chip}
                     </span>
                   ))}
                   {bindingCount > previewChips.length && (
-                    <span className="rounded-full border border-emerald-200 bg-white/80 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                    <span className="rounded-full border border-success/30 bg-surface-1 px-2 py-0.5 text-[11px] font-medium text-success">
                       +{bindingCount - previewChips.length} more
                     </span>
                   )}
@@ -582,7 +582,7 @@ function CalendarLayerBanner({
             <button
               type="button"
               onClick={() => setExpanded((value) => !value)}
-              className="rounded-md border border-emerald-200 bg-white px-3 py-1.5 text-xs font-medium text-emerald-800 transition-colors hover:bg-emerald-50"
+              className="rounded-md border border-success/30 bg-surface-1 px-3 py-1.5 text-xs font-medium text-success transition-colors hover:bg-success/10"
             >
               {expanded ? 'Hide mappings' : 'View mappings'}
             </button>
@@ -590,7 +590,7 @@ function CalendarLayerBanner({
           <button
             type="button"
             onClick={onToggleCalendarLayer}
-            className="rounded-md border border-emerald-300 bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-700"
+            className="rounded-md border border-success/40 bg-success px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-success/90"
           >
             {showCalendarLayer ? 'Hide date layer' : 'Show date layer'}
           </button>
@@ -602,14 +602,14 @@ function CalendarLayerBanner({
           {groupedBindings.map((group) => (
             <div
               key={`${group.id}-${group.label}`}
-              className="rounded-lg border border-emerald-200/80 bg-white/90 px-3 py-2"
+              className="rounded-lg border border-success/30/80 bg-surface-1 px-3 py-2"
             >
-              <div className="text-xs font-semibold text-gray-800">{group.label}</div>
+              <div className="text-xs font-semibold text-text-primary">{group.label}</div>
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {group.fields.map((field) => (
                   <span
                     key={`${group.label}-${field}`}
-                    className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-800"
+                    className="rounded-full bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success"
                   >
                     {field}
                   </span>
@@ -899,16 +899,16 @@ export function DataModelCanvas({
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+        <Loader2 className="w-6 h-6 animate-spin text-brand" />
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 gap-3 text-red-600">
+      <div className="flex flex-col items-center justify-center h-64 gap-3 text-danger">
         <span>Failed to load model</span>
-        <button onClick={() => refetch()} className="text-sm underline text-blue-600">Retry</button>
+        <button onClick={() => refetch()} className="text-sm underline text-brand">Retry</button>
       </div>
     );
   }
@@ -917,8 +917,8 @@ export function DataModelCanvas({
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-4">
         <div className="text-center">
-          <h3 className="text-lg font-medium text-gray-900 mb-1">No Data Model</h3>
-          <p className="text-sm text-gray-500 max-w-md">
+          <h3 className="text-lg font-medium text-text-primary mb-1">No Data Model</h3>
+          <p className="text-sm text-text-tertiary max-w-md">
             Auto-generate a semantic model from your dataset tables. This creates dimensions,
             measures, and auto-detects relationships between tables.
           </p>
@@ -927,8 +927,8 @@ export function DataModelCanvas({
           <button
             onClick={() => handleGenerate(false)}
             disabled={generateModel.isPending}
-            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md
-              hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 transition-colors"
+            className="px-4 py-2 bg-brand text-white text-sm font-medium rounded-md
+              hover:bg-brand-hover disabled:opacity-50 flex items-center gap-2 transition-colors"
           >
             {generateModel.isPending
               ? <Loader2 className="w-4 h-4 animate-spin" />
@@ -948,22 +948,22 @@ export function DataModelCanvas({
   return (
     <div className="h-full flex flex-col">
       {/* Toolbar */}
-      <div className="px-4 py-2.5 border-b bg-white flex items-center justify-between shrink-0 gap-3">
+      <div className="flex items-center justify-between gap-3 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2.5 shrink-0">
         <div className="flex items-center gap-3 min-w-0">
-          <h3 className="text-sm font-medium text-gray-900 shrink-0">Data Model</h3>
-          <span className="text-xs text-gray-400 shrink-0">
+          <h3 className="text-sm font-medium text-text-primary shrink-0">Data Model</h3>
+          <span className="text-xs text-text-quaternary shrink-0">
             {visibleViews.length} table{visibleViews.length !== 1 ? 's' : ''} |{' '}
             {totalRels} relationship{totalRels !== 1 ? 's' : ''}
             {totalCalendarRels > 0 ? ` | ${totalCalendarRels} date link${totalCalendarRels !== 1 ? 's' : ''}` : ''}
           </span>
           {selectedRelationship && (
-            <span className="text-xs text-indigo-600 truncate">
+            <span className="text-xs text-brand truncate">
               <span className="font-medium">{getViewLabel(selectedFromView)}</span>
-              <span className="text-indigo-300">.</span>
+              <span className="text-brand">.</span>
               <span className="font-semibold">{selectedRelationship.fromCol ?? '?'}</span>
               {' → '}
               <span className="font-medium">{getViewLabel(selectedToView)}</span>
-              <span className="text-indigo-300">.</span>
+              <span className="text-brand">.</span>
               <span className="font-semibold">{selectedRelationship.toCol ?? '?'}</span>
               {' · '}
               {selectedRelationship.relationship?.replace(/_/g, ':') ?? 'N:1'}
@@ -983,8 +983,8 @@ export function DataModelCanvas({
             <button
               onClick={handleDeleteRel}
               disabled={removeJoin.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-600
-                border border-red-300 rounded-md hover:bg-red-50 disabled:opacity-50 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-danger
+                border border-danger/40 rounded-md hover:bg-danger/10 disabled:opacity-50 transition-colors"
             >
               {removeJoin.isPending
                 ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -995,8 +995,8 @@ export function DataModelCanvas({
           {/* Dictionary modal button */}
           <button
             onClick={() => setDictModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600
-              border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-secondary
+              border border-[rgb(var(--border-strong))] rounded-md hover:bg-surface-2 transition-colors"
             title="View & edit dataset dictionary"
           >
             <BookOpen className="w-3.5 h-3.5" />
@@ -1005,8 +1005,8 @@ export function DataModelCanvas({
           {canEdit && (
             <button
               onClick={() => { setSelectedRelKey(null); setDialogOpen(true); }}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700
-                border border-blue-300 bg-blue-50 rounded-md hover:bg-blue-100 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-brand
+                border border-brand/40 bg-brand/10 rounded-md hover:bg-brand/15 transition-colors"
             >
               <Plus className="w-3.5 h-3.5" />
               Add Relationship
@@ -1016,8 +1016,8 @@ export function DataModelCanvas({
             <button
               onClick={() => handleGenerate(true)}
               disabled={generateModel.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600
-                border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-secondary
+                border border-[rgb(var(--border-strong))] rounded-md hover:bg-surface-2 disabled:opacity-50 transition-colors"
               title="Regenerate model (overwrite)"
             >
               {generateModel.isPending

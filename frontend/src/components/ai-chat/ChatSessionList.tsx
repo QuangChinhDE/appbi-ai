@@ -2,9 +2,11 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
-import { MessageSquareText, Trash2, Clock, Loader2, ExternalLink, Share2 } from 'lucide-react';
+import { MessageSquareText, Trash2, Clock, Loader2, Share2 } from 'lucide-react';
 import type { ViewMode } from '@/components/common/PageListLayout';
+import { FilterTag } from '@/components/ui/FilterTag';
 import type { ChatSessionContext } from './types';
+import { IconButton } from '@/components/ui/Button';
 
 export interface SessionSummary {
   session_id: string;
@@ -22,6 +24,8 @@ interface ChatSessionListProps {
   onDelete: (id: string) => void;
   onShare?: (session: SessionSummary) => void;
   deletingId: string | null;
+  activeFilters?: Record<string, string | undefined>;
+  onFilterClick?: (key: string, value: string) => void;
 }
 
 function timeAgo(iso: string) {
@@ -39,15 +43,23 @@ function getDatasetLabel(context?: ChatSessionContext | null) {
   return context.dataset_name?.trim() || `Dataset #${context.dataset_id}`;
 }
 
-export function ChatSessionList({ sessions, viewMode, onDelete, onShare, deletingId }: ChatSessionListProps) {
+export function ChatSessionList({
+  sessions,
+  viewMode,
+  onDelete,
+  onShare,
+  deletingId,
+  activeFilters,
+  onFilterClick,
+}: ChatSessionListProps) {
   const router = useRouter();
 
   if (sessions.length === 0) {
     return (
-      <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
-        <MessageSquareText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-        <h3 className="text-lg font-medium text-gray-900 mb-2">Chưa có cuộc hội thoại nào</h3>
-        <p className="text-gray-500">Nhấn &ldquo;Cuộc hội thoại mới&rdquo; để bắt đầu.</p>
+      <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-12 text-center">
+        <MessageSquareText className="h-12 w-12 text-text-quaternary mx-auto mb-4" />
+        <h3 className="text-lg font-medium text-text-primary mb-2">Chưa có cuộc hội thoại nào</h3>
+        <p className="text-text-tertiary">Nhấn &ldquo;Cuộc hội thoại mới&rdquo; để bắt đầu.</p>
       </div>
     );
   }
@@ -55,82 +67,95 @@ export function ChatSessionList({ sessions, viewMode, onDelete, onShare, deletin
   /* ── List (table) view ─────────────────────────────────────── */
   if (viewMode === 'list') {
     return (
-      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
+      <div className="overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
+        <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
+          <thead className="bg-surface-2">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
                 Tiêu đề
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
                 Tin nhắn cuối
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
                 Tin nhắn
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
                 Hoạt động
               </th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-right text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
                 Thao tác
               </th>
             </tr>
           </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
+          <tbody className="bg-surface-1 divide-y divide-[rgb(var(--border-line))]">
             {sessions.map((s) => (
-              <tr key={s.session_id} className="hover:bg-gray-50">
+              <tr key={s.session_id} className="hover:bg-surface-2">
                 <td className="px-6 py-4">
-                  <div className="max-w-xs">
-                    <div className="text-sm font-medium text-gray-900 truncate">{s.title}</div>
+                  <button
+                    type="button"
+                    onClick={() => router.push(`/chat/${s.session_id}`)}
+                    className="max-w-xs text-left"
+                  >
+                    <div className="truncate text-caption font-emphasis text-text-primary transition-colors hover:text-brand">{s.title}</div>
                     {getDatasetLabel(s.context) && (
-                      <span className="mt-1 inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+                      <FilterTag
+                        className="mt-1"
+                        tone="brand"
+                        active={activeFilters?.dataset === String(s.context?.dataset_id ?? '')}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (s.context?.dataset_id) {
+                            onFilterClick?.('dataset', String(s.context.dataset_id));
+                          }
+                        }}
+                      >
                         {getDatasetLabel(s.context)}
-                      </span>
+                      </FilterTag>
                     )}
-                  </div>
+                  </button>
                 </td>
                 <td className="px-6 py-4">
-                  <div className="text-sm text-gray-500 max-w-sm truncate">
-                    {s.last_message ?? <span className="italic text-gray-400">—</span>}
+                  <div className="max-w-sm truncate text-caption text-text-tertiary">
+                    {s.last_message ?? <span className="italic text-text-quaternary">—</span>}
                   </div>
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                <td className="px-6 py-4 whitespace-nowrap text-caption text-text-tertiary">
                   {s.message_count}
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                <td className="px-6 py-4 whitespace-nowrap text-caption text-text-tertiary">
                   <span className="flex items-center gap-1">
                     <Clock className="h-3.5 w-3.5" />
                     {timeAgo(s.last_active)}
                   </span>
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                  <div className="flex justify-end gap-2">
-                    <button
-                      onClick={() => router.push(`/chat/${s.session_id}`)}
-                      className="text-blue-600 hover:text-blue-900"
-                      title="Mở cuộc hội thoại"
-                    >
-                      <ExternalLink className="h-5 w-5" />
-                    </button>
+                <td className="px-6 py-4 whitespace-nowrap text-right text-caption">
+                  <div className="flex justify-end gap-1">
                     {onShare && (
-                      <button
+                      <IconButton
+                        aria-label="Share chat session"
+                        variant="ghost"
+                        size="xs"
                         onClick={() => onShare(s)}
-                        className="text-blue-600 hover:text-blue-900"
+                        className="text-brand hover:bg-brand/10"
                         title="Chia sẻ"
                       >
-                        <Share2 className="h-5 w-5" />
-                      </button>
+                        <Share2 className="h-3.5 w-3.5" />
+                      </IconButton>
                     )}
-                    <button
+                    <IconButton
+                      aria-label="Delete chat session"
+                      variant="ghost"
+                      size="xs"
                       onClick={() => onDelete(s.session_id)}
                       disabled={deletingId === s.session_id}
-                      className="text-red-600 hover:text-red-900 disabled:opacity-50"
+                      className="text-danger hover:bg-danger/10"
                       title="Xóa"
                     >
                       {deletingId === s.session_id
-                        ? <Loader2 className="h-5 w-5 animate-spin" />
-                        : <Trash2 className="h-5 w-5" />}
-                    </button>
+                        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        : <Trash2 className="h-3.5 w-3.5" />}
+                    </IconButton>
                   </div>
                 </td>
               </tr>
@@ -148,21 +173,31 @@ export function ChatSessionList({ sessions, viewMode, onDelete, onShare, deletin
         <div
           key={s.session_id}
           onClick={() => router.push(`/chat/${s.session_id}`)}
-          className="group bg-white rounded-lg border border-gray-200 p-5 hover:border-blue-400 hover:shadow-md cursor-pointer transition-all flex flex-col gap-3"
+          className="group flex cursor-pointer flex-col gap-3 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-5 transition-all hover:border-brand/50 hover:shadow-linear"
         >
           {/* Icon + title row */}
           <div className="flex items-start gap-3">
-            <div className="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
-              <MessageSquareText className="h-4 w-4 text-blue-500" />
+            <div className="w-9 h-9 rounded-lg bg-brand/10 flex items-center justify-center flex-shrink-0">
+              <MessageSquareText className="h-4 w-4 text-brand" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-gray-900 truncate leading-snug">{s.title}</p>
+              <p className="text-sm font-semibold text-text-primary truncate leading-snug">{s.title}</p>
               {getDatasetLabel(s.context) && (
-                <span className="mt-1 inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+                <FilterTag
+                  className="mt-1"
+                  tone="brand"
+                  active={activeFilters?.dataset === String(s.context?.dataset_id ?? '')}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (s.context?.dataset_id) {
+                      onFilterClick?.('dataset', String(s.context.dataset_id));
+                    }
+                  }}
+                >
                   {getDatasetLabel(s.context)}
-                </span>
+                </FilterTag>
               )}
-              <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1">
+              <p className="text-xs text-text-quaternary mt-0.5 flex items-center gap-1">
                 <Clock className="h-3 w-3" /> {timeAgo(s.last_active)}
               </p>
             </div>
@@ -170,19 +205,19 @@ export function ChatSessionList({ sessions, viewMode, onDelete, onShare, deletin
 
           {/* Last message preview */}
           {s.last_message ? (
-            <p className="text-xs text-gray-500 line-clamp-2 flex-1">{s.last_message}</p>
+            <p className="text-xs text-text-tertiary line-clamp-2 flex-1">{s.last_message}</p>
           ) : (
-            <p className="text-xs italic text-gray-400 flex-1">Chưa có tin nhắn</p>
+            <p className="text-xs italic text-text-quaternary flex-1">Chưa có tin nhắn</p>
           )}
 
           {/* Footer */}
-          <div className="flex items-center justify-between pt-2 border-t border-gray-100">
-            <span className="text-xs text-gray-400">{s.message_count} tin nhắn</span>
+          <div className="flex items-center justify-between pt-2 border-t border-[rgb(var(--border-line))]">
+            <span className="text-xs text-text-quaternary">{s.message_count} tin nhắn</span>
             <div className="flex items-center gap-1">
               {onShare && (
                 <button
                   onClick={(e) => { e.stopPropagation(); onShare(s); }}
-                  className="p-1 rounded text-gray-400 hover:text-blue-500 hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition-all"
+                  className="p-1 rounded text-text-quaternary hover:text-brand hover:bg-brand/15 opacity-0 group-hover:opacity-100 transition-all"
                   title="Chia sẻ"
                 >
                   <Share2 className="h-4 w-4" />
@@ -191,7 +226,7 @@ export function ChatSessionList({ sessions, viewMode, onDelete, onShare, deletin
               <button
                 onClick={(e) => { e.stopPropagation(); onDelete(s.session_id); }}
                 disabled={deletingId === s.session_id}
-                className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50"
+                className="p-1 rounded text-text-quaternary hover:text-danger hover:bg-danger/10 opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50"
                 title="Xóa"
               >
               {deletingId === s.session_id

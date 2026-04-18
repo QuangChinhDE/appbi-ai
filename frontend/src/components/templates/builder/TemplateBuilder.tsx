@@ -212,25 +212,25 @@ export function TemplateBuilder({
   const totalRows = previewData?.total ?? 0;
 
   return (
-    <div className="flex h-full flex-col bg-gray-50">
+    <div className="flex h-full flex-col bg-surface-2">
       {/* ── Top Nav ── */}
-      <div className="flex h-11 shrink-0 items-center border-b border-gray-200 bg-white px-4 gap-3">
+      <div className="flex h-11 shrink-0 items-center border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 gap-3">
         <button
           onClick={() => router.push('/templates')}
-          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-text-tertiary hover:bg-surface-2 hover:text-text-secondary transition-colors"
         >
           <ArrowLeft className="h-4 w-4" />
           <span className="hidden sm:inline">Templates</span>
         </button>
 
-        <div className="h-4 w-px bg-gray-200" />
+        <div className="h-4 w-px bg-surface-3" />
 
-        <span className="text-sm font-semibold text-gray-900 truncate max-w-[280px]">
+        <span className="text-sm font-semibold text-text-primary truncate max-w-[280px]">
           {template.name}
         </span>
 
         {hasChanges && (
-          <span className="inline-flex items-center rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-medium text-amber-600">
+          <span className="inline-flex items-center rounded-full bg-warning/10 border border-warning/30 px-2 py-0.5 text-[10px] font-medium text-warning">
             Chưa lưu
           </span>
         )}
@@ -240,7 +240,7 @@ export function TemplateBuilder({
         <button
           onClick={onSave}
           disabled={!hasChanges || isSaving || !canEdit}
-          className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="inline-flex items-center gap-1.5 rounded-md bg-brand px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {isSaving ? (
             <>

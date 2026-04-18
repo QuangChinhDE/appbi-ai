@@ -6,7 +6,8 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { X, ArrowRight, Link2 } from 'lucide-react';
+import { ArrowRight, Link2 } from 'lucide-react';
+import { AppModalShell } from '@/components/common/AppModalShell';
 import type { DatasetModelView, AddJoinParams } from '@/hooks/use-dataset-model';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -77,9 +78,9 @@ function Select({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className={`w-full px-3 py-2 text-sm border border-gray-300 rounded-md bg-white
-        focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent
-        disabled:bg-gray-50 disabled:text-gray-400 ${className}`}
+      className={`w-full px-3 py-2 text-sm border border-[rgb(var(--border-strong))] rounded-md bg-surface-1
+        focus:outline-none focus:ring-2 focus:ring-brand focus:border-transparent
+        disabled:bg-surface-2 disabled:text-text-quaternary ${className}`}
     >
       {placeholder && (
         <option value="" disabled>
@@ -201,34 +202,47 @@ export function RelationshipDialog({
   const relOpt = RELATIONSHIP_OPTIONS.find((r) => r.value === relationship)!;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div className="bg-white rounded-xl shadow-2xl w-[560px] max-w-[96vw] mx-4">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b">
-          <div className="flex items-center gap-2">
-            <Link2 className="w-4 h-4 text-blue-600" />
-            <h2 className="text-base font-semibold text-gray-900">
-              {initialValue?.fromViewId ? 'Edit Relationship' : 'Add Relationship'}
-            </h2>
-          </div>
+    <AppModalShell
+      onClose={onClose}
+      title={initialValue?.fromViewId ? 'Edit Relationship' : 'Add Relationship'}
+      description="Define how two semantic views join and how their cardinality should be interpreted."
+      icon={<Link2 className="h-5 w-5" />}
+      maxWidthClass="max-w-[96vw]"
+      panelClassName="w-[560px]"
+      bodyClassName="px-6 py-5"
+      closeDisabled={isSaving}
+      footer={(
+        <>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-md hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+            disabled={isSaving}
+            className="rounded-md border border-[rgb(var(--border-strong))] px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-50"
           >
-            <X className="w-4 h-4" />
+            Cancel
           </button>
-        </div>
-
-        {/* Body */}
-        <div className="px-6 py-5 space-y-5">
+          <button
+            onClick={handleSave}
+            disabled={isSaving || !fromViewId || !toViewId || !fromColumn || !toColumn}
+            className="flex items-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover transition-colors disabled:opacity-50"
+          >
+            {isSaving ? (
+              <>
+                <span className="h-3.5 w-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                Saving…
+              </>
+            ) : (
+              'Save Relationship'
+            )}
+          </button>
+        </>
+      )}
+    >
+      <div className="space-y-5">
           {/* Table selectors row */}
           <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
             {/* From table */}
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-gray-600 uppercase tracking-wide">
+              <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
                 From Table
               </label>
               <Select
@@ -241,7 +255,7 @@ export function RelationshipDialog({
 
             {/* Arrow icon */}
             <div className="flex items-center justify-center pb-0.5">
-              <div className="flex items-center gap-1 text-xs font-semibold text-blue-600 bg-blue-50 px-2 py-1 rounded-full whitespace-nowrap">
+              <div className="flex items-center gap-1 text-xs font-semibold text-brand bg-brand/10 px-2 py-1 rounded-full whitespace-nowrap">
                 <span>{relOpt.from}</span>
                 <ArrowRight className="w-3.5 h-3.5" />
                 <span>{relOpt.to}</span>
@@ -250,7 +264,7 @@ export function RelationshipDialog({
 
             {/* To table */}
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-gray-600 uppercase tracking-wide">
+              <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
                 To Table
               </label>
               <Select
@@ -266,7 +280,7 @@ export function RelationshipDialog({
           <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
             {/* From column */}
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-gray-600 uppercase tracking-wide">
+              <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
                 Join Column
               </label>
               {fromColumns.length > 0 ? (
@@ -282,20 +296,20 @@ export function RelationshipDialog({
                   value={fromColumn}
                   onChange={(e) => setFromColumn(e.target.value)}
                   placeholder="e.g. user_id"
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md
-                    focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 text-sm border border-[rgb(var(--border-strong))] rounded-md bg-surface-1
+                    focus:outline-none focus:ring-2 focus:ring-brand"
                 />
               )}
             </div>
 
             {/* = sign */}
             <div className="flex items-center justify-center pb-0.5">
-              <span className="text-gray-400 font-mono text-sm">=</span>
+              <span className="text-text-quaternary font-mono text-sm">=</span>
             </div>
 
             {/* To column */}
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-gray-600 uppercase tracking-wide">
+              <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
                 Join Column
               </label>
               {toColumns.length > 0 ? (
@@ -311,8 +325,8 @@ export function RelationshipDialog({
                   value={toColumn}
                   onChange={(e) => setToColumn(e.target.value)}
                   placeholder="e.g. id"
-                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md
-                    focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 text-sm border border-[rgb(var(--border-strong))] rounded-md bg-surface-1
+                    focus:outline-none focus:ring-2 focus:ring-brand"
                 />
               )}
             </div>
@@ -321,7 +335,7 @@ export function RelationshipDialog({
           {/* Relationship type + Join type */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-gray-600 uppercase tracking-wide">
+              <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
                 Relationship Type
               </label>
               <Select
@@ -334,7 +348,7 @@ export function RelationshipDialog({
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-gray-600 uppercase tracking-wide">
+              <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
                 Join Type
               </label>
               <Select
@@ -347,14 +361,14 @@ export function RelationshipDialog({
 
           {/* SQL preview */}
           {fromView && toView && fromColumn && toColumn && (
-            <div className="rounded-md bg-gray-50 px-3 py-2 text-xs font-mono text-gray-500 border border-gray-200">
-              <span className="text-blue-600 font-semibold uppercase">{joinType} JOIN</span>{' '}
-              <span className="text-gray-700">{toView.table_display_name || toView.name}</span>{' '}
-              <span className="text-gray-500">ON</span>{' '}
-              <span className="text-gray-700">
+            <div className="rounded-md bg-surface-2 px-3 py-2 text-xs font-mono text-text-tertiary border border-[rgb(var(--border-line))]">
+              <span className="text-brand font-semibold uppercase">{joinType} JOIN</span>{' '}
+              <span className="text-text-secondary">{toView.table_display_name || toView.name}</span>{' '}
+              <span className="text-text-tertiary">ON</span>{' '}
+              <span className="text-text-secondary">
                 {fromView.table_display_name || fromView.name}.{fromColumn}
               </span>{' '}
-              = <span className="text-gray-700">
+              = <span className="text-text-secondary">
                 {toView.table_display_name || toView.name}.{toColumn}
               </span>
             </div>
@@ -362,39 +376,11 @@ export function RelationshipDialog({
 
           {/* Error */}
           {error && (
-            <p className="text-sm text-red-600 bg-red-50 rounded-md px-3 py-2">
+            <p className="text-sm text-danger bg-danger/10 rounded-md px-3 py-2">
               {error}
             </p>
           )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t bg-gray-50 rounded-b-xl">
-          <button
-            onClick={onClose}
-            disabled={isSaving}
-            className="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300
-              rounded-md hover:bg-gray-100 transition-colors disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={isSaving || !fromViewId || !toViewId || !fromColumn || !toColumn}
-            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md
-              hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
-          >
-            {isSaving ? (
-              <>
-                <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                Saving…
-              </>
-            ) : (
-              'Save Relationship'
-            )}
-          </button>
-        </div>
       </div>
-    </div>
+    </AppModalShell>
   );
 }

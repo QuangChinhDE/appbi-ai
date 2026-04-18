@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Code, Database, Loader2, Sigma, X } from 'lucide-react';
+import { AlertCircle, Code, Database, Loader2, Sigma } from 'lucide-react';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
 
+import { AppModalShell } from '@/components/common/AppModalShell';
 import { useDataSources } from '@/hooks/use-datasources';
 import { useAddTableToDataset, useUpdateTable } from '@/hooks/use-datasets';
 import type { AddTableInput, DatasetTable } from '@/hooks/use-datasets';
@@ -45,25 +46,25 @@ function EditPhysicalForm({
   return (
     <div className="space-y-6 p-6">
       <div>
-        <label className="mb-2 block text-sm font-medium text-gray-700">Datasource</label>
+        <label className="mb-2 block text-sm font-medium text-text-secondary">Datasource</label>
         <input
           type="text"
           value={datasourceName}
           readOnly
-          className="w-full cursor-not-allowed rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500"
+          className="w-full cursor-not-allowed rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-sm text-text-tertiary"
         />
       </div>
 
       <div>
-        <label className="mb-2 block text-sm font-medium text-gray-700">Selected table</label>
-        <div className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-4 py-3">
-          <Database className="h-4 w-4 flex-shrink-0 text-blue-500" />
-          <span className="font-medium text-gray-700">{existingTable.source_table_name}</span>
+        <label className="mb-2 block text-sm font-medium text-text-secondary">Selected table</label>
+        <div className="flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3">
+          <Database className="h-4 w-4 flex-shrink-0 text-brand" />
+          <span className="font-medium text-text-secondary">{existingTable.source_table_name}</span>
         </div>
       </div>
 
       <div>
-        <label className="mb-2 flex items-center text-sm font-medium text-gray-700">
+        <label className="mb-2 flex items-center text-sm font-medium text-text-secondary">
           Display name *
           <HelpTooltip text="This is the name shown inside the dataset." />
         </label>
@@ -72,14 +73,14 @@ function EditPhysicalForm({
           value={displayName}
           onChange={(event) => setDisplayName(event.target.value)}
           placeholder="e.g. Orders"
-          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
           disabled={isLoading}
           autoFocus
         />
       </div>
 
       {saveError && (
-        <div className="flex items-start gap-2 text-sm text-red-600">
+        <div className="flex items-start gap-2 text-sm text-danger">
           <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
           <span>{saveError}</span>
         </div>
@@ -90,7 +91,7 @@ function EditPhysicalForm({
           type="button"
           onClick={() => onSave(displayName)}
           disabled={isLoading || !displayName.trim()}
-          className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex items-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-medium text-text-inverse transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
         >
           {isLoading && <Loader2 className="h-4 w-4 animate-spin" />}
           Save changes
@@ -193,30 +194,26 @@ export function AddTableModal({
     : effectiveCreateMode === 'calculated'
       ? 'Create a calculated table from SQL that references other tables in this dataset.'
       : 'Add a source table from a datasource table or a datasource SQL query.';
+  const modalIcon = isEditMode
+    ? editHeader.icon
+    : effectiveCreateMode === 'calculated'
+      ? <Sigma className="h-4 w-4" />
+      : <Database className="h-4 w-4" />;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b px-6 py-4">
-          <div className="flex items-center gap-2">
-            <h2 className="text-xl font-semibold text-gray-900">{modalTitle}</h2>
-            {isEditMode
-              ? <span className="text-sm text-gray-400">{modalDescription}</span>
-              : <HelpTooltip text={modalDescription} />}
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
-            disabled={isPending}
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        <div className="flex border-b px-6">
+    <AppModalShell
+      onClose={onClose}
+      closeDisabled={isPending}
+      title={modalTitle}
+      description={modalDescription}
+      icon={modalIcon}
+      maxWidthClass="max-w-5xl"
+      panelClassName="max-h-[90vh]"
+      bodyClassName="flex min-h-0 flex-1 flex-col p-0"
+    >
+        <div className="flex border-b border-[rgb(var(--border-line))] bg-surface-1 px-6">
           {isEditMode ? (
-            <div className="flex items-center gap-2 border-b-2 border-blue-500 px-4 py-3 text-blue-600">
+            <div className="flex items-center gap-2 border-b-2 border-brand px-4 py-3 text-brand">
               {editHeader.icon}
               <span className="font-medium">{editHeader.label}</span>
             </div>
@@ -227,8 +224,8 @@ export function AddTableModal({
                 onClick={() => setActiveSourceTab('physical')}
                 className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
                   activeSourceTab === 'physical'
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'border-brand text-brand'
+                    : 'border-transparent text-text-tertiary hover:text-text-secondary'
                 }`}
                 disabled={isPending}
               >
@@ -240,8 +237,8 @@ export function AddTableModal({
                 onClick={() => setActiveSourceTab('query')}
                 className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
                   activeSourceTab === 'query'
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'border-brand text-brand'
+                    : 'border-transparent text-text-tertiary hover:text-text-secondary'
                 }`}
                 disabled={isPending}
               >
@@ -250,14 +247,14 @@ export function AddTableModal({
               </button>
             </>
           ) : (
-            <div className="flex items-center gap-2 border-b-2 border-blue-500 px-4 py-3 text-blue-600">
+            <div className="flex items-center gap-2 border-b-2 border-brand px-4 py-3 text-brand">
               <Sigma className="h-4 w-4" />
               <span className="font-medium">Calculated Table</span>
             </div>
           )}
         </div>
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto">
           {isEditMode && existingTable ? (
             existingTable.source_kind === 'sql_query' ? (
               <QueryTableTab
@@ -302,7 +299,6 @@ export function AddTableModal({
             <QueryTableTab onAddTable={handleAddTable} isLoading={isPending} saveError={saveError} />
           )}
         </div>
-      </div>
-    </div>
+    </AppModalShell>
   );
 }

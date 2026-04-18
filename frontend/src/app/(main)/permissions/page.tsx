@@ -2,11 +2,16 @@
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Edit2, UserX, ChevronDown } from 'lucide-react';
+import { Plus, Edit2, UserX } from 'lucide-react';
 import { permissionsApi, usersApi } from '@/lib/api-client';
 import { extractApiError, PASSWORD_REQUIREMENTS_TEXT, validatePasswordStrength } from '@/lib/api-errors';
 import { authConfig, getAuthMethodLabel, type AuthProvider } from '@/lib/auth-config';
 import { toast } from '@/lib/toast';
+import { Button, IconButton } from '@/components/ui/Button';
+import { Input, Select, FieldGroup } from '@/components/ui/Input';
+import { Badge } from '@/components/ui/Badge';
+import { Modal } from '@/components/common/Modal';
+import { cn } from '@/lib/utils';
 
 /* ───────────── types ───────────── */
 
@@ -49,11 +54,11 @@ const MODULE_LABELS: Record<string, string> = {
   settings:          'Settings',
 };
 
-const LEVEL_STYLES: Record<string, { bg: string; text: string; ring: string }> = {
-  none: { bg: 'bg-red-50',    text: 'text-red-700',    ring: 'ring-red-200' },
-  view: { bg: 'bg-blue-50',   text: 'text-blue-700',   ring: 'ring-blue-200' },
-  edit: { bg: 'bg-green-50',  text: 'text-green-700',  ring: 'ring-green-200' },
-  full: { bg: 'bg-purple-50', text: 'text-purple-700', ring: 'ring-purple-200' },
+const LEVEL_CLASSES: Record<string, string> = {
+  none: 'bg-danger/10 text-danger',
+  view: 'bg-brand/10 text-brand',
+  edit: 'bg-success/10 text-success',
+  full: 'bg-info/10 text-info',
 };
 
 const LEVEL_LABELS: Record<string, string> = {
@@ -63,20 +68,9 @@ const LEVEL_LABELS: Record<string, string> = {
   full: 'Full',
 };
 
-const PRESET_COLORS: Record<string, string> = {
-  admin:   'bg-purple-100 text-purple-800 border-purple-300',
-  editor:  'bg-blue-100 text-blue-800 border-blue-300',
-  viewer:  'bg-green-100 text-green-800 border-green-300',
-  minimal: 'bg-orange-100 text-orange-800 border-orange-300',
-};
-
 const PRESETS = ['admin', 'editor', 'viewer', 'minimal'] as const;
 const PRESET_LABELS: Record<string, string> = {
   admin: 'Admin (full)', editor: 'Editor', viewer: 'Viewer', minimal: 'Minimal',
-};
-const STATUS_COLORS: Record<string, string> = {
-  active: 'bg-green-100 text-green-700',
-  deactivated: 'bg-red-100 text-red-700',
 };
 
 type Tab = 'matrix' | 'users' | 'presets';
@@ -90,15 +84,15 @@ export default function PermissionsPage() {
     <div className="w-full px-8 py-6 max-w-[1400px]">
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Permissions</h1>
-        <p className="text-gray-500 text-sm mt-1">
+        <h1 className="text-h1 text-text-primary font-emphasis">Permissions</h1>
+        <p className="text-caption text-text-tertiary mt-1">
           Set per-module access level for each user
         </p>
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-gray-200 mb-6">
-        <nav className="flex space-x-6">
+      <div className="border-b border-[rgb(var(--border-line))] mb-6">
+        <nav className="flex gap-6">
           {([
             { key: 'matrix', label: 'Permission matrix' },
             { key: 'users',  label: 'Users' },
@@ -107,11 +101,12 @@ export default function PermissionsPage() {
             <button
               key={t.key}
               onClick={() => setActiveTab(t.key)}
-              className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
+              className={cn(
+                'pb-3 text-caption font-emphasis border-b-2 transition-colors',
                 activeTab === t.key
-                  ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
+                  ? 'border-brand text-brand'
+                  : 'border-transparent text-text-tertiary hover:text-text-secondary',
+              )}
             >
               {t.label}
             </button>
@@ -184,7 +179,7 @@ function MatrixTab() {
 
   const hasPending = Object.keys(pendingChanges).length > 0;
 
-  if (isLoading) return <div className="animate-pulse h-64 bg-gray-100 rounded-lg" />;
+  if (isLoading) return <div className="animate-pulse h-64 bg-surface-2 rounded-lg" />;
 
   const modules = matrix?.modules || [];
   const users = matrix?.users || [];
@@ -193,42 +188,43 @@ function MatrixTab() {
   return (
     <>
       {/* Preset bar */}
-      <div className="flex items-center gap-3 mb-5 flex-wrap">
-        <span className="text-sm text-gray-500 mr-1">Apply preset:</span>
+      <div className="flex items-center gap-2 mb-5 flex-wrap">
+        <span className="text-caption text-text-tertiary mr-1">Apply preset:</span>
         {PRESETS.map((p) => (
-          <button
+          <Button
             key={p}
+            size="sm"
+            variant="secondary"
             onClick={() => {
               if (!selectedUser) { toast.info('Select a user first, then click preset'); return; }
               presetMutation.mutate({ userId: selectedUser, preset: p });
             }}
             disabled={presetMutation.isPending}
-            className={`px-4 py-1.5 rounded-full text-sm font-medium border transition-all hover:shadow-sm disabled:opacity-50 ${PRESET_COLORS[p]}`}
           >
             {PRESET_LABELS[p]}
-          </button>
+          </Button>
         ))}
         {!selectedUser && (
-          <span className="text-xs text-gray-400 italic">Select a user first, then click preset</span>
+          <span className="text-tiny text-text-quaternary italic">Select a user first, then click preset</span>
         )}
       </div>
 
       {/* Matrix table */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto shadow-sm">
-        <table className="w-full text-sm">
+      <div className="bg-surface-1 rounded-xl border border-[rgb(var(--border-line))] overflow-x-auto shadow-linear-sm">
+        <table className="w-full text-caption">
           <thead>
-            <tr className="border-b border-gray-200 bg-gray-50/80">
-              <th className="text-left px-5 py-3.5 font-medium text-gray-600 sticky left-0 bg-gray-50/80 min-w-[200px]">
+            <tr className="border-b border-[rgb(var(--border-line))] bg-surface-2">
+              <th className="text-left px-5 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary sticky left-0 bg-surface-2 min-w-[200px]">
                 User
               </th>
               {modules.map((m) => (
-                <th key={m} className="text-center px-3 py-3.5 font-medium text-gray-600 min-w-[110px]">
+                <th key={m} className="text-center px-3 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary min-w-[110px]">
                   {MODULE_LABELS[m] || m}
                 </th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-100">
+          <tbody>
             {users.map((user) => {
               const isSelected = selectedUser === user.user_id;
               const rowPending = !!pendingChanges[user.user_id];
@@ -237,26 +233,29 @@ function MatrixTab() {
                 <tr
                   key={user.user_id}
                   onClick={() => setSelectedUser(isSelected ? null : user.user_id)}
-                  className={`transition-colors cursor-pointer ${
-                    isSelected ? 'bg-blue-50/60 ring-1 ring-inset ring-blue-200' :
-                    rowPending ? 'bg-yellow-50/60' : 'hover:bg-gray-50'
-                  }`}
+                  className={cn(
+                    'transition-colors cursor-pointer border-b border-[rgb(var(--border-line))] last:border-0',
+                    isSelected && 'bg-brand/10',
+                    !isSelected && rowPending && 'bg-warning/10',
+                    !isSelected && !rowPending && 'hover:bg-surface-2',
+                  )}
                 >
-                  <td className="px-5 py-3.5 sticky left-0 bg-inherit">
-                    <div className="flex items-center space-x-3">
-                      <div className={`w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 ${
-                        isSelected ? 'bg-blue-600' : 'bg-gradient-to-br from-blue-500 to-purple-500'
-                      }`}>
+                  <td className={cn(
+                    'px-5 py-3 sticky left-0',
+                    isSelected ? 'bg-brand/10' : rowPending ? 'bg-warning/10' : 'bg-surface-1',
+                  )}>
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-full flex items-center justify-center bg-brand text-text-inverse text-tiny font-strong flex-shrink-0">
                         {(user.full_name || user.email).slice(0, 2).toUpperCase()}
                       </div>
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <p className="font-medium text-gray-900 truncate">{user.full_name}</p>
+                          <p className="font-emphasis text-text-primary truncate">{user.full_name}</p>
                           {isOwner && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-600 font-medium">Owner</span>
+                            <Badge variant="neutral" size="xs">Owner</Badge>
                           )}
                         </div>
-                        <p className="text-xs text-gray-400 truncate">{user.email}</p>
+                        <p className="text-tiny text-text-quaternary truncate">{user.email}</p>
                       </div>
                     </div>
                   </td>
@@ -264,16 +263,17 @@ function MatrixTab() {
                     const val = getEffective(user, m);
                     const changed = pendingChanges[user.user_id]?.[m] !== undefined;
                     const allowed = moduleLevels[m] || ['none', 'view', 'edit', 'full'];
-                    const s = LEVEL_STYLES[val] || LEVEL_STYLES.none;
+                    const cls = LEVEL_CLASSES[val] || LEVEL_CLASSES.none;
                     return (
-                      <td key={m} className="px-3 py-3.5 text-center">
+                      <td key={m} className="px-3 py-3 text-center">
                         <select
                           value={val}
                           onClick={(e) => e.stopPropagation()}
                           onChange={(e) => setLevel(user.user_id, m, e.target.value)}
-                          className={`appearance-none cursor-pointer text-center min-w-[80px] px-3 py-1.5 rounded-lg text-xs font-semibold ring-1 ring-inset transition-all hover:shadow-sm ${
-                            changed ? 'ring-yellow-400 bg-yellow-50 text-yellow-800 shadow-sm' : `${s.bg} ${s.text} ${s.ring}`
-                          }`}
+                          className={cn(
+                            'appearance-none cursor-pointer text-center min-w-[80px] px-3 py-1.5 rounded-md text-tiny font-strong transition-all hover:shadow-linear-sm focus-visible:outline-none focus-visible:shadow-focus-brand',
+                            changed ? 'bg-warning/10 text-warning' : cls,
+                          )}
                         >
                           {allowed.map((lvl) => (
                             <option key={lvl} value={lvl}>
@@ -292,12 +292,12 @@ function MatrixTab() {
       </div>
 
       {/* Legend */}
-      <div className="flex flex-wrap items-center gap-4 mt-4 text-xs text-gray-500">
+      <div className="flex flex-wrap items-center gap-4 mt-4 text-tiny text-text-tertiary">
         {Object.entries(LEVEL_LABELS).map(([val, label]) => {
-          const s = LEVEL_STYLES[val] || LEVEL_STYLES.none;
+          const cls = LEVEL_CLASSES[val] || LEVEL_CLASSES.none;
           return (
             <div key={val} className="flex items-center gap-1.5">
-              <span className={`inline-flex items-center px-2 py-0.5 rounded-md ring-1 ring-inset font-medium ${s.bg} ${s.text} ${s.ring}`}>
+              <span className={cn('inline-flex items-center px-2 py-0.5 rounded-md font-emphasis', cls)}>
                 {label}
               </span>
               <span>
@@ -312,21 +312,24 @@ function MatrixTab() {
       </div>
 
       {/* Action buttons */}
-      <div className="flex items-center justify-center gap-4 mt-6">
-        <button
+      <div className="flex items-center justify-center gap-3 mt-6">
+        <Button
+          variant="secondary"
+          size="md"
           onClick={handleResetAll}
           disabled={!hasPending}
-          className="px-6 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           Reset to defaults
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="primary"
+          size="md"
           onClick={handleSaveAll}
           disabled={!hasPending || saveMutation.isPending}
-          className="px-6 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          loading={saveMutation.isPending}
         >
           {saveMutation.isPending ? 'Saving…' : 'Save changes'}
-        </button>
+        </Button>
       </div>
     </>
   );
@@ -353,57 +356,75 @@ function UsersTab() {
   return (
     <>
       <div className="flex items-center justify-between mb-4">
-        <p className="text-sm text-gray-500">{users.length} users</p>
-        <button
+        <p className="text-caption text-text-tertiary">{users.length} users</p>
+        <Button
+          variant="primary"
+          size="md"
+          leadingIcon={<Plus className="h-4 w-4" />}
           onClick={() => setShowInviteModal(true)}
-          className="flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700"
         >
-          <Plus className="h-4 w-4 mr-2" />
           Add user
-        </button>
+        </Button>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+      <div className="bg-surface-1 rounded-xl border border-[rgb(var(--border-line))] overflow-hidden shadow-linear-sm">
         {isLoading ? (
-          <div className="p-12 text-center text-gray-400">Loading…</div>
+          <div className="p-12 text-center text-text-quaternary">Loading…</div>
+        ) : users.length === 0 ? (
+          <div className="p-12 text-center text-text-quaternary">No users found.</div>
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full text-caption">
             <thead>
-              <tr className="border-b border-gray-200 bg-gray-50/80">
-                <th className="text-left px-6 py-3 font-medium text-gray-600">Name</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600">Email</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600">Login method</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600">Status</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600">Last login</th>
+              <tr className="border-b border-[rgb(var(--border-line))] bg-surface-2">
+                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">Name</th>
+                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">Email</th>
+                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">Login method</th>
+                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">Status</th>
+                <th className="text-left px-6 py-3 text-tiny uppercase tracking-[0.14em] text-text-quaternary">Last login</th>
                 <th className="px-6 py-3" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody>
               {users.map((u) => (
-                <tr key={u.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-6 py-3 font-medium text-gray-900">{u.full_name}</td>
-                  <td className="px-6 py-3 text-gray-600">{u.email}</td>
-                  <td className="px-6 py-3 text-gray-600">
-                    <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-700">
+                <tr key={u.id} className="border-b border-[rgb(var(--border-line))] last:border-0 hover:bg-surface-2 transition-colors">
+                  <td className="px-6 py-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center bg-brand text-text-inverse text-tiny font-strong flex-shrink-0">
+                        {(u.full_name || u.email).slice(0, 2).toUpperCase()}
+                      </div>
+                      <span className="font-emphasis text-text-primary">{u.full_name}</span>
+                    </div>
+                  </td>
+                  <td className="px-6 py-3 text-text-secondary">{u.email}</td>
+                  <td className="px-6 py-3">
+                    <Badge variant="neutral" size="sm">
                       {getAuthMethodLabel(u.auth_provider, u.google_connected)}
-                    </span>
+                    </Badge>
                   </td>
                   <td className="px-6 py-3">
-                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[u.status]}`}>{u.status}</span>
+                    <Badge variant={u.status === 'active' ? 'success' : 'danger'} size="sm">
+                      {u.status}
+                    </Badge>
                   </td>
-                  <td className="px-6 py-3 text-gray-500">
+                  <td className="px-6 py-3 text-text-tertiary">
                     {u.last_login_at ? new Date(u.last_login_at).toLocaleDateString() : 'Never'}
                   </td>
                   <td className="px-6 py-3">
-                    <div className="flex items-center justify-end space-x-2">
-                      <button onClick={() => setEditingUser(u)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded" title="Edit">
+                    <div className="flex items-center justify-end gap-1">
+                      <IconButton aria-label="Edit user" variant="ghost" size="sm" onClick={() => setEditingUser(u)}>
                         <Edit2 className="h-4 w-4" />
-                      </button>
+                      </IconButton>
                       {u.status === 'active' && (
-                        <button onClick={() => deactivateMutation.mutate(u.id)} disabled={deactivateMutation.isPending}
-                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded disabled:opacity-50" title="Deactivate">
+                        <IconButton
+                          aria-label="Deactivate user"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => deactivateMutation.mutate(u.id)}
+                          disabled={deactivateMutation.isPending}
+                          className="hover:text-danger"
+                        >
                           <UserX className="h-4 w-4" />
-                        </button>
+                        </IconButton>
                       )}
                     </div>
                   </td>
@@ -432,24 +453,22 @@ function PresetsTab() {
 
   return (
     <div className="space-y-6">
-      <p className="text-sm text-gray-500">
+      <p className="text-caption text-text-tertiary">
         Presets are pre-defined permission sets that can be applied quickly from the Permission matrix tab.
       </p>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {Object.entries(allPresets).map(([name, perms]) => (
-          <div key={name} className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+          <div key={name} className="bg-surface-1 rounded-xl border border-[rgb(var(--border-line))] p-5 shadow-linear-sm">
             <div className="flex items-center gap-2 mb-3">
-              <span className={`px-3 py-1 rounded-full text-sm font-semibold border capitalize ${PRESET_COLORS[name] || 'bg-gray-100 text-gray-700 border-gray-300'}`}>
-                {PRESET_LABELS[name] || name}
-              </span>
+              <Badge variant="brand" size="md">{PRESET_LABELS[name] || name}</Badge>
             </div>
             <div className="flex flex-wrap gap-2">
               {Object.entries(perms).map(([mod, level]) => {
-                const s = LEVEL_STYLES[level] || LEVEL_STYLES.none;
+                const cls = LEVEL_CLASSES[level] || LEVEL_CLASSES.none;
                 return (
-                  <div key={mod} className="flex items-center gap-1 text-xs">
-                    <span className="text-gray-500">{MODULE_LABELS[mod] || mod}:</span>
-                    <span className={`px-1.5 py-0.5 rounded font-medium ${s.bg} ${s.text}`}>
+                  <div key={mod} className="flex items-center gap-1 text-tiny">
+                    <span className="text-text-tertiary">{MODULE_LABELS[mod] || mod}:</span>
+                    <span className={cn('px-1.5 py-0.5 rounded font-emphasis', cls)}>
                       {LEVEL_LABELS[level] || level}
                     </span>
                   </div>
@@ -501,55 +520,56 @@ function InviteModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-sm mx-4 p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">Add user</h2>
-        <form onSubmit={handleSubmit} className="space-y-3">
-          {error && <p className="text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Full name</label>
-            <input type="text" required value={fullName} onChange={(e) => setFullName(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+    <Modal
+      isOpen
+      onClose={onClose}
+      title="Add user"
+      size="sm"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" type="submit" form="invite-user-form" disabled={loading} loading={loading}>
+            {loading ? 'Creating…' : 'Create'}
+          </Button>
+        </>
+      }
+    >
+      <form id="invite-user-form" onSubmit={handleSubmit} className="space-y-3">
+        {error && (
+          <p className="text-caption text-danger bg-danger/10 border border-danger/20 rounded-md px-3 py-2">{error}</p>
+        )}
+        <FieldGroup label="Full name" required>
+          <Input type="text" required value={fullName} onChange={(e) => setFullName(e.target.value)} />
+        </FieldGroup>
+        <FieldGroup label="Email" required>
+          <Input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+        </FieldGroup>
+        {(authConfig.googleEnabled || authConfig.passwordEnabled) && (
+          <FieldGroup label="Login method">
+            <Select value={authProvider} onChange={(e) => setAuthProvider(e.target.value as AuthProvider)}>
+              {authConfig.googleEnabled && <option value="google">Google</option>}
+              {authConfig.passwordEnabled && <option value="password">Password</option>}
+            </Select>
+          </FieldGroup>
+        )}
+        {authProvider === 'password' ? (
+          <FieldGroup label="Password" required description={PASSWORD_REQUIREMENTS_TEXT}>
+            <Input
+              type="password"
+              required
+              minLength={8}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Min 8 characters"
+            />
+          </FieldGroup>
+        ) : (
+          <div className="rounded-md border border-brand/20 bg-brand/10 px-3 py-2 text-caption text-brand">
+            The user will sign in with Google using this email. No password is required.
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-            <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </div>
-          {(authConfig.googleEnabled || authConfig.passwordEnabled) && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Login method</label>
-              <div className="relative">
-                <select value={authProvider} onChange={(e) => setAuthProvider(e.target.value as AuthProvider)}
-                  className="w-full appearance-none px-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
-                  {authConfig.googleEnabled && <option value="google">Google</option>}
-                  {authConfig.passwordEnabled && <option value="password">Password</option>}
-                </select>
-                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-              </div>
-            </div>
-          )}
-          {authProvider === 'password' ? (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-              <input type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Min 8 characters" />
-              <p className="mt-1 text-xs text-gray-500">{PASSWORD_REQUIREMENTS_TEXT}</p>
-            </div>
-          ) : (
-            <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-              The user will sign in with Google using this email. No password is required.
-            </div>
-          )}
-          <div className="flex justify-end space-x-2 pt-2">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded-lg border border-gray-200">Cancel</button>
-            <button type="submit" disabled={loading} className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-60">
-              {loading ? 'Creating…' : 'Create'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        )}
+      </form>
+    </Modal>
   );
 }
 
@@ -570,31 +590,32 @@ function EditUserModal({ user, onClose, onSuccess }: { user: UserRecord; onClose
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-sm mx-4 p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-1">Edit user</h2>
-        <p className="text-sm text-gray-500 mb-4">{user.email}</p>
-        <form onSubmit={handleSubmit} className="space-y-3">
-          {error && <p className="text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-            <div className="relative">
-              <select value={userStatus} onChange={(e) => setUserStatus(e.target.value as UserStatus)}
-                className="w-full appearance-none px-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
-                <option value="active">Active</option>
-                <option value="deactivated">Deactivated</option>
-              </select>
-              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-            </div>
-          </div>
-          <div className="flex justify-end space-x-2 pt-2">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded-lg border border-gray-200">Cancel</button>
-            <button type="submit" disabled={loading} className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-60">
-              {loading ? 'Saving…' : 'Save'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <Modal
+      isOpen
+      onClose={onClose}
+      title="Edit user"
+      size="sm"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" type="submit" form="edit-user-form" disabled={loading} loading={loading}>
+            {loading ? 'Saving…' : 'Save'}
+          </Button>
+        </>
+      }
+    >
+      <p className="text-caption text-text-tertiary mb-4">{user.email}</p>
+      <form id="edit-user-form" onSubmit={handleSubmit} className="space-y-3">
+        {error && (
+          <p className="text-caption text-danger bg-danger/10 border border-danger/20 rounded-md px-3 py-2">{error}</p>
+        )}
+        <FieldGroup label="Status">
+          <Select value={userStatus} onChange={(e) => setUserStatus(e.target.value as UserStatus)}>
+            <option value="active">Active</option>
+            <option value="deactivated">Deactivated</option>
+          </Select>
+        </FieldGroup>
+      </form>
+    </Modal>
   );
 }

@@ -1128,37 +1128,37 @@ export function ExploreEditor({
   // Show loading skeleton while fetching existing chart
   if (!isNew && isChartLoading) {
     return (
-      <div className="h-screen flex items-center justify-center bg-gray-50">
+      <div className="h-screen flex items-center justify-center bg-surface-2">
         <div className="text-center">
-          <div className="inline-block w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-3" />
-          <p className="text-sm text-gray-600">Loading chart...</p>
+          <div className="inline-block w-8 h-8 border-4 border-brand border-t-transparent rounded-full animate-spin mb-3" />
+          <p className="text-sm text-text-secondary">Loading chart...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className={`flex flex-col bg-slate-100 ${embedded ? 'h-full min-h-0' : 'h-screen'}`}>
+    <div className={`flex flex-col bg-surface-2 ${embedded ? 'h-full min-h-0' : 'h-screen'}`}>
       {!isNew && !resPerms.canEdit && resPerms.canView && (
-        <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-2">
-          <div className="flex items-center gap-2 text-xs text-amber-700">
+        <div className="shrink-0 border-b border-warning/30 bg-warning/10 px-4 py-2">
+          <div className="flex items-center gap-2 text-xs text-warning">
             <Eye className="h-3.5 w-3.5 shrink-0" />
             <span className="font-medium">View only</span>
-            <span className="text-amber-600">— You can preview this chart but cannot modify its configuration.</span>
+            <span className="text-warning">— You can preview this chart but cannot modify its configuration.</span>
           </div>
         </div>
       )}
-      <div className="shrink-0 border-b border-slate-200 bg-white px-4 py-3">
+      <div className="shrink-0 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-2 min-w-0">
             <button
               onClick={handleExit}
-              className="flex shrink-0 items-center gap-1 text-xs text-slate-400 hover:text-slate-700"
+              className="flex shrink-0 items-center gap-1 text-xs text-text-quaternary hover:text-text-secondary"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
               {resolvedBackLabel}
             </button>
-            <span className="text-slate-200">/</span>
+            <span className="text-text-secondary">/</span>
             {isEditingName ? (
               <div className="flex items-center gap-1.5">
                 <input
@@ -1177,20 +1177,20 @@ export function ExploreEditor({
                     if (e.key === 'Escape') { setChartNameInput(chart?.name ?? ''); setIsEditingName(false); }
                   }}
                   placeholder="Chart name..."
-                  className="min-w-[10rem] border-b border-blue-400 bg-transparent px-0.5 text-sm font-semibold text-slate-900 outline-none"
+                  className="min-w-[10rem] border-b border-brand/50 bg-transparent px-0.5 text-sm font-semibold text-text-primary outline-none"
                 />
-                <Check className="h-3.5 w-3.5 text-blue-500" />
+                <Check className="h-3.5 w-3.5 text-brand" />
               </div>
             ) : (
               <div className="flex items-center gap-1.5 group/name">
-                <span className="max-w-xs truncate text-sm font-semibold text-slate-900">
+                <span className="max-w-xs truncate text-sm font-semibold text-text-primary">
                   {chartNameInput || (chartId ? 'Chart' : 'New Chart')}
                 </span>
                 {resPerms.canEdit && (
                   <button
                     type="button"
                     onClick={() => setIsEditingName(true)}
-                    className="rounded-md p-1 text-slate-400 opacity-0 transition-opacity hover:bg-slate-100 hover:text-slate-600 group-hover/name:opacity-100"
+                    className="rounded-md p-1 text-text-quaternary opacity-0 transition-opacity hover:bg-surface-2 hover:text-text-secondary group-hover/name:opacity-100"
                   >
                     <Pencil className="h-3 w-3" />
                   </button>
@@ -1198,7 +1198,7 @@ export function ExploreEditor({
               </div>
             )}
             {selectedTable && (
-              <span className="shrink-0 truncate text-xs text-slate-400">
+              <span className="shrink-0 truncate text-xs text-text-quaternary">
                 - {dataset?.name} / {(selectedTable as any).display_name || 'Table'}
               </span>
             )}
@@ -1220,24 +1220,24 @@ export function ExploreEditor({
                   if (e.key === 'Escape') { setChartDescInput(chart?.description ?? ''); setIsEditingDesc(false); }
                 }}
                 placeholder="Add note..."
-                className="w-52 border-b border-blue-400 bg-transparent px-0.5 text-xs text-slate-600 outline-none"
+                className="w-52 border-b border-brand/50 bg-transparent px-0.5 text-xs text-text-secondary outline-none"
               />
             ) : resPerms.canEdit ? (
               <div
                 onClick={() => setIsEditingDesc(true)}
-                className="group/desc mr-1 flex cursor-text items-center gap-1 rounded-md px-2 py-1 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                className="group/desc mr-1 flex cursor-text items-center gap-1 rounded-md px-2 py-1 text-xs text-text-quaternary hover:bg-surface-2 hover:text-text-secondary"
               >
                 {chartDescInput || <span className="italic">Add note...</span>}
                 <Pencil className="h-3 w-3 opacity-0 transition-opacity group-hover/desc:opacity-100" />
               </div>
             ) : chartDescInput ? (
-              <span className="text-xs text-slate-400">{chartDescInput}</span>
+              <span className="text-xs text-text-quaternary">{chartDescInput}</span>
             ) : null}
             {resPerms.canEdit && (
               <button
                 onClick={handleSaveLook}
                 disabled={!selectedTableId}
-                className="flex items-center gap-1.5 rounded-md border border-blue-600 bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-md border border-brand bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Save className="h-3.5 w-3.5" />
                 {saveButtonLabel ?? (chartId ? 'Update' : 'Save Chart')}
@@ -1247,19 +1247,19 @@ export function ExploreEditor({
         </div>
       </div>
 
-      <div className="shrink-0 border-b border-slate-200 bg-white px-4 py-1.5">
+      <div className="shrink-0 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-1.5">
         <div className="flex items-center justify-between gap-3">
           {/* Left: Mode toggle + description */}
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Mode</span>
-            <div className="inline-flex rounded-xl border border-slate-200 bg-slate-100 p-0.5">
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Mode</span>
+            <div className="inline-flex rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
               <button
                 onClick={handleUseGeneratedQuery}
                 disabled={!resPerms.canEdit}
                 className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                   isConfigBuilderMode
-                    ? 'bg-white text-blue-700 shadow-sm'
-                    : 'text-slate-600 hover:bg-white/70'
+                    ? 'bg-surface-1 text-brand shadow-linear-sm'
+                    : 'text-text-secondary hover:bg-surface-1'
                 }`}
               >
                 <Database className="h-3 w-3" />
@@ -1268,18 +1268,18 @@ export function ExploreEditor({
               <span className="group/csql relative inline-flex">
                 <button
                   disabled
-                  className="inline-flex cursor-not-allowed items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-400 opacity-50"
+                  className="inline-flex cursor-not-allowed items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-text-quaternary opacity-50"
                 >
                   <Code2 className="h-3 w-3" />
                   Custom SQL
                 </button>
-                <span className="pointer-events-none absolute left-0 top-full z-50 mt-1.5 hidden w-52 rounded-md bg-slate-900 px-2.5 py-2 text-[11px] text-white shadow-lg group-hover/csql:block">
+                <span className="pointer-events-none absolute left-0 top-full z-50 mt-1.5 hidden w-52 rounded-md bg-surface-inverse px-2.5 py-2 text-[11px] text-white shadow-lg group-hover/csql:block">
                   Temporarily unavailable — will be re-enabled in a future update.
                 </span>
               </span>
             </div>
             <div className="min-w-0 hidden sm:flex items-center gap-1">
-              <span className="truncate text-xs text-slate-500">
+              <span className="truncate text-xs text-text-tertiary">
                 {isConfigBuilderMode ? 'Build from a table' : 'Shape the source with SQL'}
               </span>
               <HelpTooltip text={modeDescription} />
@@ -1296,28 +1296,28 @@ export function ExploreEditor({
               />
             )}
             {isQueryDirty && (
-              <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">
+              <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
                 Run to refresh
               </span>
             )}
             {activeQueryState && (
-              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-500">
+              <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-xs text-text-tertiary">
                 {activeQueryState.rows.length} row{activeQueryState.rows.length === 1 ? '' : 's'}
                 {activeQueryState.executionTimeMs != null ? ` · ${activeQueryState.executionTimeMs}ms` : ''}
               </span>
             )}
             {effectiveQueryLimit > 1000 && (
-              <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs text-amber-700">
+              <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs text-warning">
                 Large
               </span>
             )}
-            <label className="flex items-center gap-1 text-xs text-slate-500">
+            <label className="flex items-center gap-1 text-xs text-text-tertiary">
               Limit
               <select
                 value={effectiveQueryLimit}
                 onChange={(e) => setQueryLimit(Number(e.target.value))}
                 disabled={!resPerms.canEdit}
-                className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
+                className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-0.5 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {queryLimitOptions.map((value) => <option key={value} value={value}>{value}</option>)}
               </select>
@@ -1325,7 +1325,7 @@ export function ExploreEditor({
             <button
               onClick={() => void handleRunQuery()}
               disabled={isRunningQuery || (isConfigBuilderMode && isPreviewLoading)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1 text-xs font-medium text-white hover:bg-brand-hover disabled:opacity-50"
             >
               {isRunningQuery
                 ? <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
@@ -1338,12 +1338,12 @@ export function ExploreEditor({
 
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="flex h-full min-w-[1320px] gap-4 p-4">
-          <div className={`flex shrink-0 flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm ${
+          <div className={`flex shrink-0 flex-col overflow-hidden rounded-[24px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm ${
             isConfigBuilderMode ? 'w-72' : 'w-[25rem]'
           }`}>
-            <div className="border-b border-slate-200 px-4 py-4">
+            <div className="border-b border-[rgb(var(--border-line))] px-4 py-4">
               <div className="flex items-center gap-1">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">
                   {isConfigBuilderMode ? 'Source' : 'SQL / Output'}
                 </p>
                 <HelpTooltip text={isConfigBuilderMode
@@ -1367,84 +1367,84 @@ export function ExploreEditor({
                 {!selectedTableId ? (
                   <div className="flex h-full items-center justify-center px-2 text-center">
                     <div>
-                      <Search className="mx-auto mb-3 h-10 w-10 text-slate-300" />
-                      <p className="text-sm font-medium text-slate-700">Choose a table to load its schema</p>
-                      <p className="mt-1 text-xs text-slate-400">Chart Setup on the right will use this source as the only field universe.</p>
+                      <Search className="mx-auto mb-3 h-10 w-10 text-text-quaternary" />
+                      <p className="text-sm font-medium text-text-secondary">Choose a table to load its schema</p>
+                      <p className="mt-1 text-xs text-text-quaternary">Chart Setup on the right will use this source as the only field universe.</p>
                     </div>
                   </div>
                 ) : isPreviewLoading ? (
                   <div className="flex h-full items-center justify-center">
                     <div className="text-center">
-                      <div className="mx-auto mb-3 inline-block h-7 w-7 animate-spin rounded-full border-4 border-blue-600 border-t-transparent" />
-                      <p className="text-sm text-slate-500">Loading source schema...</p>
+                      <div className="mx-auto mb-3 inline-block h-7 w-7 animate-spin rounded-full border-4 border-brand border-t-transparent" />
+                      <p className="text-sm text-text-tertiary">Loading source schema...</p>
                     </div>
                   </div>
                 ) : previewError ? (
                   <div className="flex h-full items-center justify-center px-6">
                     <div className="max-w-xs text-center">
-                      <p className="text-sm font-medium text-red-600">Could not load source schema</p>
-                      <p className="mt-1 text-xs text-red-500/90">{previewErrorMessage}</p>
+                      <p className="text-sm font-medium text-danger">Could not load source schema</p>
+                      <p className="mt-1 text-xs text-danger/90">{previewErrorMessage}</p>
                     </div>
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2 p-4">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="text-sm font-medium text-slate-800">
+                          <p className="text-sm font-medium text-text-primary">
                             {(selectedTable as any)?.display_name || 'Selected table'}
                           </p>
-                          <p className="mt-1 text-xs text-slate-500">
+                          <p className="mt-1 text-xs text-text-tertiary">
                             {dataset?.name ? `${dataset.name} dataset` : 'Source table'}
                           </p>
                         </div>
                         {hasActiveTransforms && (
-                          <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                          <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[10px] font-medium text-warning">
                             transforms on
                           </span>
                         )}
                       </div>
 
                       <div className="mt-4 grid grid-cols-2 gap-2">
-                        <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                          <p className="text-[11px] uppercase tracking-wide text-slate-400">Columns</p>
-                          <p className="mt-1 text-sm font-semibold text-slate-800">{previewColumns.length}</p>
+                        <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+                          <p className="text-[11px] uppercase tracking-wide text-text-quaternary">Columns</p>
+                          <p className="mt-1 text-sm font-semibold text-text-primary">{previewColumns.length}</p>
                         </div>
-                        <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                          <p className="text-[11px] uppercase tracking-wide text-slate-400">Measures</p>
-                          <p className="mt-1 text-sm font-semibold text-slate-800">{configBuilderSourceStats.measureColumns.length}</p>
+                        <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+                          <p className="text-[11px] uppercase tracking-wide text-text-quaternary">Measures</p>
+                          <p className="mt-1 text-sm font-semibold text-text-primary">{configBuilderSourceStats.measureColumns.length}</p>
                         </div>
-                        <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                          <p className="text-[11px] uppercase tracking-wide text-slate-400">Dimensions</p>
-                          <p className="mt-1 text-sm font-semibold text-slate-800">{configBuilderSourceStats.dimensionColumns.length}</p>
+                        <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+                          <p className="text-[11px] uppercase tracking-wide text-text-quaternary">Dimensions</p>
+                          <p className="mt-1 text-sm font-semibold text-text-primary">{configBuilderSourceStats.dimensionColumns.length}</p>
                         </div>
-                        <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                          <p className="text-[11px] uppercase tracking-wide text-slate-400">Time Fields</p>
-                          <p className="mt-1 text-sm font-semibold text-slate-800">{configBuilderSourceStats.timeColumns.length}</p>
+                        <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+                          <p className="text-[11px] uppercase tracking-wide text-text-quaternary">Time Fields</p>
+                          <p className="mt-1 text-sm font-semibold text-text-primary">{configBuilderSourceStats.timeColumns.length}</p>
                         </div>
                       </div>
                     </div>
 
-                    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                    <div className="overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1">
                       <button
                         type="button"
                         onClick={() => setIsSchemaSnapshotOpen((open) => !open)}
-                        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-50"
+                        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-2"
                       >
                         <div>
-                          <p className="text-sm font-medium text-slate-800">Schema Snapshot</p>
-                          <p className="mt-1 text-xs text-slate-500">
+                          <p className="text-sm font-medium text-text-primary">Schema Snapshot</p>
+                          <p className="mt-1 text-xs text-text-tertiary">
                             Open only when you want to confirm column types before binding fields in Chart Setup.
                           </p>
                         </div>
                         {isSchemaSnapshotOpen
-                          ? <ChevronDown className="h-4 w-4 text-slate-400" />
-                          : <ChevronRight className="h-4 w-4 text-slate-400" />}
+                          ? <ChevronDown className="h-4 w-4 text-text-quaternary" />
+                          : <ChevronRight className="h-4 w-4 text-text-quaternary" />}
                       </button>
 
                       {isSchemaSnapshotOpen && (
                         <>
-                          <div className="max-h-72 overflow-y-auto border-t border-slate-100">
+                          <div className="max-h-72 overflow-y-auto border-t border-[rgb(var(--border-line))]">
                             {previewColumns.slice(0, 14).map((column) => {
                               const kind = isSourceTimeColumn(column)
                                 ? 'time'
@@ -1454,18 +1454,18 @@ export function ExploreEditor({
                               return (
                                 <div
                                   key={column.name}
-                                  className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 last:border-b-0"
+                                  className="flex items-center justify-between gap-3 border-b border-[rgb(var(--border-line))] px-4 py-3 last:border-b-0"
                                 >
                                   <div className="min-w-0">
-                                    <p className="truncate text-sm font-medium text-slate-700">{column.name}</p>
-                                    <p className="text-xs text-slate-400">{column.type}</p>
+                                    <p className="truncate text-sm font-medium text-text-secondary">{column.name}</p>
+                                    <p className="text-xs text-text-quaternary">{column.type}</p>
                                   </div>
                                   <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
                                     kind === 'time'
-                                      ? 'bg-emerald-50 text-emerald-700'
+                                      ? 'bg-success/10 text-success'
                                       : kind === 'measure'
-                                        ? 'bg-blue-50 text-blue-700'
-                                        : 'bg-slate-100 text-slate-600'
+                                        ? 'bg-brand/10 text-brand'
+                                        : 'bg-surface-2 text-text-secondary'
                                   }`}>
                                     {kind}
                                   </span>
@@ -1474,7 +1474,7 @@ export function ExploreEditor({
                             })}
                           </div>
                           {previewColumns.length > 14 && (
-                            <div className="border-t border-slate-100 bg-slate-50 px-4 py-2 text-xs text-slate-500">
+                            <div className="border-t border-[rgb(var(--border-line))] bg-surface-2 px-4 py-2 text-xs text-text-tertiary">
                               + {previewColumns.length - 14} more columns available in this source
                             </div>
                           )}
@@ -1486,15 +1486,15 @@ export function ExploreEditor({
               </div>
             ) : (
               <div className="flex min-h-0 flex-1 flex-col">
-                <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+                <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-4 py-3">
                   <div className="flex items-center gap-1.5">
-                    <p className="text-sm font-medium text-slate-700">Custom SQL</p>
+                    <p className="text-sm font-medium text-text-secondary">Custom SQL</p>
                     <HelpTooltip text="Run SQL to refresh the output columns used by Chart Setup." />
                   </div>
                   {resPerms.canEdit && (
                     <button
                       onClick={handleResetCustomSqlDraft}
-                      className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                      className="inline-flex items-center gap-1 rounded-lg border border-[rgb(var(--border-line))] px-2 py-1 text-xs text-text-secondary hover:bg-surface-2"
                     >
                       <RotateCcw className="h-3 w-3" />
                       Reset
@@ -1502,40 +1502,40 @@ export function ExploreEditor({
                   )}
                 </div>
 
-                <div className="border-b border-slate-200 p-4">
+                <div className="border-b border-[rgb(var(--border-line))] p-4">
                   <textarea
                     value={customSqlDraft}
                     onChange={(e) => setCustomSqlDraft(e.target.value)}
                     readOnly={!resPerms.canEdit}
                     spellCheck={false}
-                    className={`h-64 w-full resize-none rounded-2xl border border-slate-200 bg-slate-950 px-3 py-3 font-mono text-xs text-slate-100 outline-none transition focus:border-amber-300 focus:ring-2 focus:ring-amber-100${!resPerms.canEdit ? ' opacity-60 cursor-not-allowed' : ''}`}
+                    className={`h-64 w-full resize-none rounded-2xl border border-[rgb(var(--border-line))] bg-surface-inverse px-3 py-3 font-mono text-xs text-text-secondary outline-none transition focus:border-warning/40 focus:ring-2 focus:ring-warning${!resPerms.canEdit ? ' opacity-60 cursor-not-allowed' : ''}`}
                   />
                 </div>
 
                 <div className="min-h-0 flex-1 overflow-hidden">
-                  <div className="border-b border-slate-200 px-4 py-3">
-                    <p className="text-sm font-medium text-slate-700">Output Columns</p>
+                  <div className="border-b border-[rgb(var(--border-line))] px-4 py-3">
+                    <p className="text-sm font-medium text-text-secondary">Output Columns</p>
                   </div>
                   <div className="min-h-0 space-y-2 overflow-y-auto px-4 py-4">
                     {customQueryState?.columns?.length ? (
                       customQueryState.columns.map((column) => (
                         <div
                           key={column.name}
-                          className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2"
+                          className="flex items-center justify-between rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2"
                         >
                           <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-slate-700">{column.name}</p>
-                            <p className="text-xs text-slate-400">{column.type}</p>
+                            <p className="truncate text-sm font-medium text-text-secondary">{column.name}</p>
+                            <p className="text-xs text-text-quaternary">{column.type}</p>
                           </div>
-                          <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                          <span className="rounded-full bg-surface-1 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-tertiary">
                             SQL
                           </span>
                         </div>
                       ))
                     ) : (
-                      <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center">
-                        <Code2 className="mx-auto mb-3 h-8 w-8 text-amber-300" />
-                        <p className="text-sm font-medium text-slate-700">Run SQL to load output columns</p>
+                      <div className="rounded-2xl border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-4 py-6 text-center">
+                        <Code2 className="mx-auto mb-3 h-8 w-8 text-warning" />
+                        <p className="text-sm font-medium text-text-secondary">Run SQL to load output columns</p>
                       </div>
                     )}
                   </div>
@@ -1546,18 +1546,18 @@ export function ExploreEditor({
 
           <div className="flex min-w-0 flex-1 flex-col gap-4">
 
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-200 px-5 py-4">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[24px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
+            <div className="border-b border-[rgb(var(--border-line))] px-5 py-4">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Chart Preview</p>
-                  <h2 className="mt-1 truncate text-lg font-semibold text-slate-900">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Chart Preview</p>
+                  <h2 className="mt-1 truncate text-lg font-semibold text-text-primary">
                     {chartNameInput || 'Untitled chart'}
                   </h2>
                 </div>
                 <div className="flex flex-wrap justify-end gap-2">
                   <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
-                    isConfigBuilderMode ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'
+                    isConfigBuilderMode ? 'bg-brand/10 text-brand' : 'bg-warning/10 text-warning'
                   }`}>
                     {isConfigBuilderMode ? 'Config Builder' : 'Custom SQL'}
                   </span>
@@ -1566,7 +1566,7 @@ export function ExploreEditor({
             </div>
 
             {queryError && (
-              <div className="border-b border-red-100 bg-red-50 px-5 py-2 text-xs text-red-600">
+              <div className="border-b border-danger/30 bg-danger/10 px-5 py-2 text-xs text-danger">
                 {queryError}
               </div>
             )}
@@ -1575,19 +1575,19 @@ export function ExploreEditor({
               {!selectedTableId ? (
                 <div className="flex h-full items-center justify-center">
                   <div className="max-w-sm text-center">
-                    <Search className="mx-auto mb-3 h-12 w-12 text-slate-300" />
-                    <p className="text-sm font-medium text-slate-700">Choose a dataset table to start</p>
-                    <p className="mt-1 text-xs text-slate-400">The source selector on the left defines what this chart can use.</p>
+                    <Search className="mx-auto mb-3 h-12 w-12 text-text-quaternary" />
+                    <p className="text-sm font-medium text-text-secondary">Choose a dataset table to start</p>
+                    <p className="mt-1 text-xs text-text-quaternary">The source selector on the left defines what this chart can use.</p>
                   </div>
                 </div>
               ) : !displayedQueryState ? (
                 <div className="flex h-full items-center justify-center">
                   <div className="max-w-sm text-center">
                     {isConfigBuilderMode
-                      ? <Database className="mx-auto mb-3 h-10 w-10 text-slate-300" />
-                      : <Code2 className="mx-auto mb-3 h-10 w-10 text-amber-300" />}
-                    <p className="text-sm font-medium text-slate-700">Run the query to preview the chart</p>
-                    <p className="mt-1 text-xs text-slate-400">
+                      ? <Database className="mx-auto mb-3 h-10 w-10 text-text-quaternary" />
+                      : <Code2 className="mx-auto mb-3 h-10 w-10 text-warning" />}
+                    <p className="text-sm font-medium text-text-secondary">Run the query to preview the chart</p>
+                    <p className="mt-1 text-xs text-text-quaternary">
                       {isConfigBuilderMode
                         ? 'Choose fields in Chart Setup, then run once to populate the preview.'
                         : 'Run the SQL on the left so the chart can bind to the returned columns.'}
@@ -1597,9 +1597,9 @@ export function ExploreEditor({
               ) : customRunMessage ? (
                 <div className="flex h-full items-center justify-center">
                   <div className="max-w-sm text-center">
-                    <Settings2 className="mx-auto mb-3 h-10 w-10 text-amber-300" />
-                    <p className="text-sm font-medium text-slate-700">Finish the chart roles in Chart Setup</p>
-                    <p className="mt-1 text-xs text-slate-400">{customRunMessage}</p>
+                    <Settings2 className="mx-auto mb-3 h-10 w-10 text-warning" />
+                    <p className="text-sm font-medium text-text-secondary">Finish the chart roles in Chart Setup</p>
+                    <p className="mt-1 text-xs text-text-quaternary">{customRunMessage}</p>
                   </div>
                 </div>
               ) : (
@@ -1615,21 +1615,21 @@ export function ExploreEditor({
             </div>
           </div>
 
-            <div className="flex h-[22rem] shrink-0 flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-              <div className="border-b border-slate-200 px-5 py-3">
+            <div className="flex h-[22rem] shrink-0 flex-col overflow-hidden rounded-[24px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
+              <div className="border-b border-[rgb(var(--border-line))] px-5 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">
                       {isConfigBuilderMode ? 'SQL + Data Preview' : 'SQL Output Sample'}
                     </p>
-                    <p className="mt-1 text-xs text-slate-500">
+                    <p className="mt-1 text-xs text-text-tertiary">
                       {isConfigBuilderMode
                         ? 'Keep the generated SQL and result rows in view while you tweak the chart.'
                         : 'These sample rows come from the latest SQL run and feed the chart setup on the right.'}
                     </p>
                   </div>
                   {displayedQueryState && (
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-500">
+                    <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-xs text-text-tertiary">
                       {displayedQueryState.rows.length} row{displayedQueryState.rows.length === 1 ? '' : 's'}
                     </span>
                   )}
@@ -1637,13 +1637,13 @@ export function ExploreEditor({
               </div>
 
               {isConfigBuilderMode && (
-                <div className="border-b border-slate-200 bg-slate-50 px-5 py-3">
+                <div className="border-b border-[rgb(var(--border-line))] bg-surface-2 px-5 py-3">
                   <div className="mb-1 flex items-center justify-between">
-                    <span className="text-xs font-medium text-slate-600">
+                    <span className="text-xs font-medium text-text-secondary">
                       SQL Preview{hasActiveTransforms && ' (transforms applied server-side)'}
                     </span>
                   </div>
-                  <pre className="max-h-24 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-slate-600">
+                  <pre className="max-h-24 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-text-secondary">
                     {generatedSql}
                   </pre>
                 </div>
@@ -1652,7 +1652,7 @@ export function ExploreEditor({
               {displayedQueryState ? (
                 <>
                   {!isConfigBuilderMode && (
-                    <div className="border-b border-amber-100 bg-amber-50 px-5 py-2 text-[10px] text-amber-700">
+                    <div className="border-b border-warning/20 bg-warning/10 px-5 py-2 text-[10px] text-warning">
                       The rows below are sampled from the SQL output. The chart preview above uses these output columns together with your chart mapping and filters.
                     </div>
                   )}
@@ -1664,12 +1664,12 @@ export function ExploreEditor({
                 <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center">
                   <div className="max-w-sm">
                     {isConfigBuilderMode
-                      ? <Database className="mx-auto mb-3 h-8 w-8 text-slate-300" />
-                      : <Code2 className="mx-auto mb-3 h-8 w-8 text-amber-300" />}
-                    <p className="text-sm font-medium text-slate-700">
+                      ? <Database className="mx-auto mb-3 h-8 w-8 text-text-quaternary" />
+                      : <Code2 className="mx-auto mb-3 h-8 w-8 text-warning" />}
+                    <p className="text-sm font-medium text-text-secondary">
                       {isConfigBuilderMode ? 'Run to inspect result rows' : 'Run SQL to inspect sampled rows'}
                     </p>
-                    <p className="mt-1 text-xs text-slate-400">
+                    <p className="mt-1 text-xs text-text-quaternary">
                       {isConfigBuilderMode
                         ? 'The generated SQL stays visible here so you can compare structure and output without leaving the editor.'
                         : 'After a successful run, this panel will show the SQL output columns and sample data on the same screen.'}
@@ -1682,20 +1682,20 @@ export function ExploreEditor({
 
         {/* RIGHT PANEL: Chart Config + Metadata + Parameters */}
         {selectedTableId && (
-          <div className="flex w-[25rem] shrink-0 flex-col overflow-y-auto rounded-[24px] border border-slate-200 bg-white shadow-sm">
-            <div className={`border-b border-slate-200 px-5 py-4 ${
-              sqlMode === 'custom' ? 'bg-amber-50/70' : 'bg-slate-50'
+          <div className="flex w-[25rem] shrink-0 flex-col overflow-y-auto rounded-[24px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
+            <div className={`border-b border-[rgb(var(--border-line))] px-5 py-4 ${
+              sqlMode === 'custom' ? 'bg-warning/10/70' : 'bg-surface-2'
             }`}>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">
                 Chart Setup
               </p>
               <p className={`mt-2 text-sm font-medium ${
-                sqlMode === 'custom' ? 'text-amber-800' : 'text-slate-700'
+                sqlMode === 'custom' ? 'text-warning' : 'text-text-secondary'
               }`}>
                 {sqlMode === 'custom' ? 'Map directly from SQL output columns' : 'Keep mapping and styling in one place'}
               </p>
               {sqlMode === 'custom' && (
-                <p className="mt-1 text-[11px] text-amber-700">
+                <p className="mt-1 text-[11px] text-warning">
                   Save uses the latest SQL you ran together with the chart options below.
                 </p>
               )}
@@ -1704,9 +1704,9 @@ export function ExploreEditor({
                   {mappingSummary.map((item) => (
                     <span
                       key={`setup-${item.label}-${item.value}`}
-                      className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] text-slate-600"
+                      className="rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-[11px] text-text-secondary"
                     >
-                      <span className="font-semibold text-slate-700">{item.label}:</span> {item.value}
+                      <span className="font-semibold text-text-secondary">{item.label}:</span> {item.value}
                     </span>
                   ))}
                 </div>
@@ -1732,33 +1732,33 @@ export function ExploreEditor({
             <div className="border-t">
               <button
                 onClick={() => setIsFiltersOpen((open) => !open)}
-                className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 transition-colors"
+                className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-surface-2 transition-colors"
               >
                 <div className="flex items-center gap-2">
-                  <Settings2 className="w-3.5 h-3.5 text-gray-400" />
-                  <span className="text-xs font-semibold text-gray-700">Chart Filters</span>
+                  <Settings2 className="w-3.5 h-3.5 text-text-quaternary" />
+                  <span className="text-xs font-semibold text-text-secondary">Chart Filters</span>
                   {filters.length > 0 && (
-                    <span className="px-1.5 py-0.5 text-[10px] bg-orange-100 text-orange-700 rounded-full font-medium">
+                    <span className="px-1.5 py-0.5 text-[10px] bg-warning/15 text-warning rounded-full font-medium">
                       {filters.length}
                     </span>
                   )}
                 </div>
                 {isFiltersOpen
-                  ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
-                  : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}
+                  ? <ChevronDown className="w-3.5 h-3.5 text-text-quaternary" />
+                  : <ChevronRight className="w-3.5 h-3.5 text-text-quaternary" />}
               </button>
               {isFiltersOpen && (
                 <div className="px-4 pb-4">
-                  <p className="mb-2 text-[11px] text-gray-500">
+                  <p className="mb-2 text-[11px] text-text-tertiary">
                     Saved with this chart and still applied after you add the chart to a dashboard.
                   </p>
-                  <p className="mb-3 text-[10px] text-gray-400">
+                  <p className="mb-3 text-[10px] text-text-quaternary">
                     {sqlMode === 'custom'
                       ? 'These filters run against the columns returned by the custom SQL output.'
                       : 'These filters run before dashboard-level filters.'}
                   </p>
                   {sqlMode === 'custom' && filterColumns.length === 0 ? (
-                    <p className="text-xs text-gray-400">
+                    <p className="text-xs text-text-quaternary">
                       Run the custom SQL once to load output columns for chart filters.
                     </p>
                   ) : (

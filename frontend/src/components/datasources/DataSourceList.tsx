@@ -6,9 +6,11 @@
 
 import Link from 'next/link';
 import { DataSource } from '@/types/api';
-import { Database, Settings, Trash2, TestTube, Share2 } from 'lucide-react';
+import { Database, Loader2, Trash2, TestTube, Share2 } from 'lucide-react';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
+import { FilterTag, type FilterTagTone } from '@/components/ui/FilterTag';
+import { IconButton } from '@/components/ui/Button';
 
 interface DataSourceListProps {
   dataSources: DataSource[];
@@ -17,6 +19,8 @@ interface DataSourceListProps {
   onTest: (dataSource: DataSource) => void;
   onShare?: (dataSource: DataSource) => void;
   isDeleting?: number | null;
+  activeFilters?: Record<string, string | undefined>;
+  onFilterClick?: (key: string, value: string) => void;
 }
 
 export default function DataSourceList({
@@ -26,153 +30,191 @@ export default function DataSourceList({
   onTest,
   onShare,
   isDeleting,
+  activeFilters,
+  onFilterClick,
 }: DataSourceListProps) {
   if (dataSources.length === 0) {
     return (
       <div className="text-center py-12">
-        <Database className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-        <p className="text-gray-500 text-lg mb-2">No data sources yet</p>
-        <p className="text-gray-400 text-sm">Create your first data source to get started</p>
+        <Database className="w-16 h-16 text-text-quaternary mx-auto mb-4" />
+        <p className="text-text-tertiary text-lg mb-2">No data sources yet</p>
+        <p className="text-text-quaternary text-sm">Create your first data source to get started</p>
       </div>
     );
   }
 
-  const getTypeColor = (type: string) => {
+  const getTypeMeta = (type: string): { label: string; tone: FilterTagTone } => {
     switch (type) {
       case 'postgresql':
-        return 'bg-blue-100 text-blue-800';
+        return { label: 'PostgreSQL', tone: 'brand' };
       case 'mysql':
-        return 'bg-orange-100 text-orange-800';
+        return { label: 'MySQL', tone: 'warning' };
       case 'bigquery':
-        return 'bg-green-100 text-green-800';
+        return { label: 'BigQuery', tone: 'success' };
       case 'google_sheets':
-        return 'bg-emerald-100 text-emerald-800';
+        return { label: 'Google Sheets', tone: 'success' };
       case 'manual':
-        return 'bg-purple-100 text-purple-800';
+        return { label: 'Manual Table', tone: 'info' };
       default:
-        return 'bg-gray-100 text-gray-800';
+        return { label: type, tone: 'neutral' };
     }
   };
 
-  const getTypeLabel = (type: string) => {
-    switch (type) {
-      case 'postgresql':
-        return 'PostgreSQL';
-      case 'mysql':
-        return 'MySQL';
-      case 'bigquery':
-        return 'BigQuery';
-      case 'google_sheets':
-        return 'Google Sheets';
-      case 'manual':
-        return 'Manual Table';
+  const getAccessMeta = (permission?: string): { label: string; tone: FilterTagTone; value: string } => {
+    switch (permission) {
+      case 'full':
+        return { label: 'Full access', tone: 'brand', value: 'full' };
+      case 'edit':
+        return { label: 'Editable', tone: 'info', value: 'edit' };
+      case 'view':
+        return { label: 'View only', tone: 'neutral', value: 'view' };
       default:
-        return type;
+        return { label: 'Restricted', tone: 'neutral', value: 'none' };
     }
   };
 
   return (
-    <div className="overflow-x-auto">
-      <table className="min-w-full divide-y divide-gray-200">
-        <thead className="bg-gray-50">
+    <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+      <div className="overflow-x-auto">
+      <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
+        <thead className="bg-surface-2">
           <tr>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Name
+            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+              Source
             </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Type
+            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+              Tags
             </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Description
+            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+              Owner
             </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+              Updated
+            </th>
+            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
               Created
             </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Created by
-            </th>
-            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+            <th className="px-5 py-3 text-right text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
               Actions
             </th>
           </tr>
         </thead>
-        <tbody className="bg-white divide-y divide-gray-200">
-          {dataSources.map((ds) => (
-            <tr key={ds.id} className="hover:bg-gray-50">
-              <td className="px-6 py-4 whitespace-nowrap">
-                <div className="flex items-center">
-                  <Database className="w-5 h-5 text-gray-400 mr-3" />
-                  <Link
-                    href={`/datasources/${ds.id}`}
-                    className="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
-                  >
-                    {ds.name}
-                  </Link>
-                </div>
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap">
-                <span
-                  className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getTypeColor(
-                    ds.type
-                  )}`}
-                >
-                  {getTypeLabel(ds.type)}
-                </span>
-              </td>
-              <td className="px-6 py-4">
-                <div className="text-sm text-gray-500 max-w-xs truncate">
-                  {ds.description || '—'}
-                </div>
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {new Date(ds.created_at).toLocaleDateString()}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {ds.owner_email ? <OwnerBadge email={ds.owner_email} /> : '—'}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                <div className="flex items-center justify-end gap-2">
-                  <button
-                    onClick={() => onTest(ds)}
-                    className="text-green-600 hover:text-green-900 p-1 rounded hover:bg-green-50"
-                    title="Test connection"
-                  >
-                    <TestTube className="w-4 h-4" />
-                  </button>
-                  {onShare && getResourcePermissions(ds.user_permission).canShare && (
-                    <button
-                      onClick={() => onShare(ds)}
-                      className="text-purple-600 hover:text-purple-900 p-1 rounded hover:bg-purple-50"
-                      title="Share"
+        <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
+          {dataSources.map((ds) => {
+            const typeMeta = getTypeMeta(ds.type);
+            const accessMeta = getAccessMeta(ds.user_permission);
+            const perms = getResourcePermissions(ds.user_permission);
+
+            return (
+              <tr key={ds.id} className="hover:bg-surface-2">
+                <td className="px-5 py-3.5">
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">
+                      <Database className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <Link
+                        href={`/datasources/${ds.id}`}
+                        className="text-caption font-emphasis text-text-primary hover:text-brand"
+                      >
+                        {ds.name}
+                      </Link>
+                      <p className="mt-0.5 max-w-md truncate text-tiny text-text-tertiary">
+                        {ds.description || 'No description yet'}
+                      </p>
+                    </div>
+                  </div>
+                </td>
+                <td className="px-5 py-3.5">
+                  <div className="flex flex-wrap gap-1.5">
+                    <FilterTag
+                      tone={typeMeta.tone}
+                      active={activeFilters?.type === ds.type}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onFilterClick?.('type', ds.type);
+                      }}
                     >
-                      <Share2 className="w-4 h-4" />
-                    </button>
+                      {typeMeta.label}
+                    </FilterTag>
+                    <FilterTag
+                      tone={accessMeta.tone}
+                      active={activeFilters?.access === accessMeta.value}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onFilterClick?.('access', accessMeta.value);
+                      }}
+                    >
+                      {accessMeta.label}
+                    </FilterTag>
+                  </div>
+                </td>
+                <td className="px-5 py-3.5 whitespace-nowrap">
+                  {ds.owner_email ? (
+                    <OwnerBadge
+                      email={ds.owner_email}
+                      active={activeFilters?.owner === ds.owner_email}
+                      onClick={() => onFilterClick?.('owner', ds.owner_email!)}
+                    />
+                  ) : (
+                    <span className="text-tiny text-text-quaternary">—</span>
                   )}
-                  {getResourcePermissions(ds.user_permission).canEdit && (
-                  <Link
-                    href={`/datasources/${ds.id}`}
-                    className="text-blue-600 hover:text-blue-900 p-1 rounded hover:bg-blue-50 inline-flex"
-                    title="View / Edit"
-                  >
-                    <Settings className="w-4 h-4" />
-                  </Link>
-                  )}
-                  {onDelete && getResourcePermissions(ds.user_permission).canDelete && (
-                  <button
-                    onClick={() => onDelete(ds.id)}
-                    disabled={isDeleting === ds.id}
-                    className="text-red-600 hover:text-red-900 p-1 rounded hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Delete"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                  )}
-                </div>
-              </td>
-            </tr>
-          ))}
+                </td>
+                <td className="px-5 py-3.5 whitespace-nowrap text-caption text-text-tertiary">
+                  {new Date(ds.updated_at).toLocaleDateString()}
+                </td>
+                <td className="px-5 py-3.5 whitespace-nowrap text-caption text-text-tertiary">
+                  {new Date(ds.created_at).toLocaleDateString()}
+                </td>
+                <td className="px-5 py-3.5 whitespace-nowrap text-right text-caption">
+                  <div className="flex items-center justify-end gap-1">
+                    <IconButton
+                      aria-label="Test connection"
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => onTest(ds)}
+                      className="text-success hover:bg-success/10"
+                      title="Test connection"
+                    >
+                      <TestTube className="h-3.5 w-3.5" />
+                    </IconButton>
+                    {onShare && perms.canShare && (
+                      <IconButton
+                        aria-label="Share data source"
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => onShare(ds)}
+                        className="text-brand hover:bg-brand/10"
+                        title="Share"
+                      >
+                        <Share2 className="h-3.5 w-3.5" />
+                      </IconButton>
+                    )}
+                    {onDelete && perms.canDelete && (
+                      <IconButton
+                        aria-label="Delete data source"
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => onDelete(ds.id)}
+                        disabled={isDeleting === ds.id}
+                        className="text-danger hover:bg-danger/10"
+                        title="Delete"
+                      >
+                        {isDeleting === ds.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" />
+                        )}
+                      </IconButton>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

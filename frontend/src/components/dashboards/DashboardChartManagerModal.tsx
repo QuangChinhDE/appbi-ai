@@ -3,6 +3,8 @@
 import React, { useMemo } from 'react';
 import { LayoutGrid, Loader2, Trash2 } from 'lucide-react';
 import { Modal } from '@/components/common/Modal';
+import { Button } from '@/components/ui/Button';
+import { Badge } from '@/components/ui/Badge';
 import { getDashboardChartPageId } from '@/lib/dashboard-pages';
 import type { DashboardChart, DashboardPageConfig } from '@/types/api';
 
@@ -60,12 +62,12 @@ export function DashboardChartManagerModal({
       size="lg"
     >
       <div className="space-y-4">
-        <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600">
+        <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3 text-caption text-text-secondary">
           Remove broken tiles here without relying on the chart tile itself to render successfully.
         </div>
 
         {chartItems.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-center text-sm text-gray-500">
+          <div className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 px-4 py-8 text-center text-caption text-text-tertiary">
             This dashboard does not contain any charts.
           </div>
         ) : (
@@ -80,44 +82,46 @@ export function DashboardChartManagerModal({
               return (
                 <div
                   key={dashboardChart.id}
-                  className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
+                  className="flex flex-col gap-3 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-4 transition-shadow hover:shadow-linear sm:flex-row sm:items-center sm:justify-between"
                 >
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-gray-900">
-                      <LayoutGrid className="h-4 w-4 text-gray-400" />
+                    <div className="flex items-center gap-2 text-caption font-strong text-text-primary">
+                      <LayoutGrid className="h-4 w-4 text-text-quaternary" />
                       <span className="truncate">{chartName}</span>
                     </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-                      <span className="rounded-full bg-gray-100 px-2 py-1 font-medium text-gray-600">
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <Badge variant="neutral" size="xs">
                         Dashboard tile #{dashboardChart.id}
-                      </span>
-                      <span className="rounded-full bg-blue-50 px-2 py-1 font-medium text-blue-700">
+                      </Badge>
+                      <Badge variant="brand" size="xs">
                         Page: {pageName}
-                      </span>
-                      <span className="rounded-full bg-gray-100 px-2 py-1 font-medium text-gray-600">
+                      </Badge>
+                      <Badge variant="neutral" size="xs">
                         Chart #{dashboardChart.chart_id}
-                      </span>
+                      </Badge>
                       {chartType && (
-                        <span className="rounded-full bg-gray-100 px-2 py-1 font-medium uppercase tracking-wide text-gray-600">
+                        <Badge variant="neutral" size="xs" className="uppercase">
                           {chartType}
-                        </span>
+                        </Badge>
                       )}
                     </div>
                   </div>
 
-                  <button
+                  <Button
                     type="button"
+                    variant="secondary"
+                    size="sm"
                     onClick={() => onRemoveChart(dashboardChart.id)}
                     disabled={isRemoving}
-                    className="inline-flex items-center justify-center rounded-md border border-red-200 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    leadingIcon={
+                      isRemoving
+                        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        : <Trash2 className="h-3.5 w-3.5" />
+                    }
+                    className="border-danger/30 text-danger hover:bg-danger/10"
                   >
-                    {isRemoving ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <Trash2 className="mr-2 h-4 w-4" />
-                    )}
                     Remove from dashboard
-                  </button>
+                  </Button>
                 </div>
               );
             })}

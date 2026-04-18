@@ -16,6 +16,9 @@ import {
 import { useDataSources } from '@/hooks/use-datasources';
 import { useDatasets } from '@/hooks/use-datasets';
 import { useAgentReportSpecs } from '@/hooks/use-agent-report-specs';
+import { Modal } from '@/components/common/Modal';
+import { Button } from '@/components/ui/Button';
+import { cn } from '@/lib/utils';
 
 const DISMISS_KEY = 'appbi:getting-started-dismissed';
 
@@ -33,6 +36,204 @@ interface Step {
   btnLabelVi: string;
   done: boolean;
 }
+
+/* ──────────────── shared detail renderer ──────────────── */
+
+function GuideContent({
+  steps,
+  activeStep,
+  setActiveStep,
+  vi,
+  onCtaNavigate,
+}: {
+  steps: Step[];
+  activeStep: number;
+  setActiveStep: (i: number) => void;
+  vi: boolean;
+  onCtaNavigate: (href: string) => void;
+}) {
+  const current = steps[activeStep];
+
+  return (
+    <div className="flex min-h-0 flex-1 -mx-5 -my-4">
+      {/* Left: step list */}
+      <div className="w-56 shrink-0 space-y-1 overflow-y-auto border-r border-[rgb(var(--border-line))] bg-surface-2 p-3">
+        {steps.map((step, idx) => {
+          const Icon = step.icon;
+          const isActive = activeStep === idx;
+          return (
+            <button
+              key={step.key}
+              onClick={() => setActiveStep(idx)}
+              className={cn(
+                'flex w-full items-center gap-2.5 rounded-md px-3 py-2.5 text-left transition-colors',
+                isActive
+                  ? 'bg-surface-1 shadow-linear-sm border border-[rgb(var(--border-line))]'
+                  : 'hover:bg-surface-1/60 border border-transparent',
+              )}
+            >
+              <div
+                className={cn(
+                  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md',
+                  step.done
+                    ? 'bg-success/10 text-success'
+                    : isActive
+                      ? 'bg-brand/10 text-brand'
+                      : 'bg-surface-3 text-text-quaternary',
+                )}
+              >
+                {step.done ? (
+                  <CheckCircle2 className="h-4 w-4" />
+                ) : (
+                  <Icon className="h-4 w-4" />
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p
+                  className={cn(
+                    'truncate text-caption font-emphasis',
+                    step.done
+                      ? 'text-success'
+                      : isActive
+                        ? 'text-text-primary'
+                        : 'text-text-secondary',
+                  )}
+                >
+                  {vi ? step.titleVi : step.title}
+                </p>
+                {step.done && (
+                  <p className="text-tiny text-success">
+                    {vi ? 'Hoàn thành' : 'Done'}
+                  </p>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Right: step detail */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-6">
+        {current && (
+          <>
+            {/* Step header */}
+            <div className="mb-5 flex items-start gap-3">
+              <div
+                className={cn(
+                  'flex h-10 w-10 shrink-0 items-center justify-center rounded-lg',
+                  current.done ? 'bg-success/10 text-success' : 'bg-brand/10 text-brand',
+                )}
+              >
+                {current.done ? (
+                  <CheckCircle2 className="h-5 w-5" />
+                ) : (
+                  <current.icon className="h-5 w-5" />
+                )}
+              </div>
+              <div>
+                <h3 className="text-small font-strong text-text-primary">
+                  {vi ? current.titleVi : current.title}
+                </h3>
+                <p className="mt-1 text-caption leading-relaxed text-text-secondary">
+                  {vi ? current.descVi : current.desc}
+                </p>
+              </div>
+            </div>
+
+            {/* Status badge */}
+            {current.done && (
+              <div className="mb-4 flex items-center gap-2 rounded-md border border-success/20 bg-success/10 px-4 py-2.5">
+                <CheckCircle2 className="h-4 w-4 text-success" />
+                <span className="text-caption font-emphasis text-success">
+                  {vi
+                    ? 'Bước này đã hoàn thành! Bạn có thể chuyển sang bước tiếp theo.'
+                    : 'This step is complete! You can move to the next step.'}
+                </span>
+              </div>
+            )}
+
+            {/* Instruction list */}
+            <div className="mb-6 space-y-3">
+              <p className="text-tiny font-strong uppercase tracking-[0.14em] text-text-quaternary">
+                {vi ? 'Cách thực hiện' : 'How to do it'}
+              </p>
+              <ol className="space-y-2.5">
+                {(vi ? current.detailsVi : current.details).map((detail, i) => (
+                  <li key={i} className="flex gap-3">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand/10 text-tiny font-strong text-brand">
+                      {i + 1}
+                    </span>
+                    <span className="text-caption leading-relaxed text-text-secondary">
+                      {detail}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+
+            {/* Flow diagram */}
+            <div className="mb-6 flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3">
+              {steps.map((s, idx) => {
+                const Icon = s.icon;
+                return (
+                  <div key={s.key} className="flex items-center gap-2">
+                    <div
+                      className={cn(
+                        'flex h-8 w-8 items-center justify-center rounded-md',
+                        s.done
+                          ? 'bg-success/10 text-success'
+                          : activeStep === idx
+                            ? 'bg-brand/10 text-brand ring-2 ring-brand/30'
+                            : 'bg-surface-1 text-text-quaternary',
+                      )}
+                    >
+                      {s.done ? (
+                        <CheckCircle2 className="h-4 w-4" />
+                      ) : (
+                        <Icon className="h-4 w-4" />
+                      )}
+                    </div>
+                    {idx < steps.length - 1 && (
+                      <ArrowRight className="h-3.5 w-3.5 text-text-quaternary" />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Action buttons */}
+            <div className="mt-auto flex items-center justify-between border-t border-[rgb(var(--border-line))] pt-4">
+              <Button
+                variant="ghost"
+                onClick={() => setActiveStep(Math.max(0, activeStep - 1))}
+                disabled={activeStep === 0}
+                className={activeStep === 0 ? 'invisible' : ''}
+              >
+                {vi ? 'Quay lại' : 'Back'}
+              </Button>
+              <div className="flex items-center gap-2">
+                {activeStep < steps.length - 1 && (
+                  <Button variant="ghost" onClick={() => setActiveStep(activeStep + 1)}>
+                    {vi ? 'Bước tiếp' : 'Next step'}
+                  </Button>
+                )}
+                <Button
+                  variant="primary"
+                  onClick={() => onCtaNavigate(current.href)}
+                  trailingIcon={<ArrowRight className="h-4 w-4" />}
+                >
+                  {vi ? current.btnLabelVi : current.btnLabel}
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════ GettingStartedGuide ══════════════ */
 
 export function GettingStartedGuide({ locale = 'en' }: { locale?: string }) {
   const router = useRouter();
@@ -180,30 +381,29 @@ export function GettingStartedGuide({ locale = 'en' }: { locale?: string }) {
     setDismissed(true);
   };
 
-  const current = steps[activeStep];
-
   return (
     <>
       {/* Banner trigger */}
-      <div className="relative mb-6 overflow-hidden rounded-xl border border-blue-200 bg-gradient-to-r from-blue-50 via-white to-indigo-50 shadow-sm">
+      <div className="relative mb-6 overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
         <button
           onClick={handleDismiss}
-          className="absolute right-3 top-3 z-10 rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+          className="absolute right-2 top-2 z-10 rounded-md p-1 text-text-quaternary hover:bg-surface-2 hover:text-text-secondary"
+          aria-label="Dismiss"
         >
           <X className="h-4 w-4" />
         </button>
         <button
           onClick={() => setModalOpen(true)}
-          className="flex w-full items-center gap-4 p-5 text-left transition-colors hover:bg-blue-50/40"
+          className="flex w-full items-center gap-4 p-5 text-left transition-colors hover:bg-surface-2"
         >
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-blue-100">
-            <Sparkles className="h-6 w-6 text-blue-600" />
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-brand/10 text-brand">
+            <Sparkles className="h-6 w-6" />
           </div>
           <div className="min-w-0 flex-1">
-            <h3 className="text-base font-semibold text-gray-900">
+            <h3 className="text-small font-strong text-text-primary">
               {vi ? 'Hướng dẫn bắt đầu' : 'Getting started guide'}
             </h3>
-            <p className="mt-0.5 text-sm text-gray-500">
+            <p className="mt-0.5 text-caption text-text-tertiary">
               {vi
                 ? `${completedCount}/${steps.length} bước hoàn thành — Nhấn để xem hướng dẫn chi tiết từng bước`
                 : `${completedCount}/${steps.length} completed — Click for step-by-step instructions`}
@@ -215,237 +415,39 @@ export function GettingStartedGuide({ locale = 'en' }: { locale?: string }) {
               {steps.map((s) => (
                 <div
                   key={s.key}
-                  className={`h-2.5 w-2.5 rounded-full ${
-                    s.done ? 'bg-green-500' : 'bg-gray-300'
-                  }`}
+                  className={cn(
+                    'h-2.5 w-2.5 rounded-full',
+                    s.done ? 'bg-success' : 'bg-surface-3',
+                  )}
                 />
               ))}
             </div>
-            <ChevronRight className="h-5 w-5 text-gray-400" />
+            <ChevronRight className="h-4 w-4 text-text-quaternary" />
           </div>
         </button>
       </div>
 
       {/* Modal */}
       {modalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-          onClick={() => setModalOpen(false)}
+        <Modal
+          isOpen
+          onClose={() => setModalOpen(false)}
+          title={vi ? 'Hướng dẫn sử dụng AppBI' : 'How to use AppBI'}
+          size="xl"
+          bodyClassName="p-0 overflow-hidden"
+          contentClassName="h-[85vh] max-h-[680px]"
         >
-          <div
-            className="mx-4 flex h-[85vh] max-h-[680px] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Modal header */}
-            <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-100">
-                  <Sparkles className="h-5 w-5 text-blue-600" />
-                </div>
-                <div>
-                  <h2 className="text-lg font-semibold text-gray-900">
-                    {vi ? 'Hướng dẫn sử dụng AppBI' : 'How to use AppBI'}
-                  </h2>
-                  <p className="text-xs text-gray-500">
-                    {vi
-                      ? 'Làm theo 4 bước để tạo dashboard AI đầu tiên'
-                      : 'Follow 4 steps to create your first AI dashboard'}
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setModalOpen(false)}
-                className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="flex min-h-0 flex-1">
-              {/* Left: step list */}
-              <div className="w-56 shrink-0 space-y-1 overflow-y-auto border-r border-gray-100 bg-gray-50/70 p-3">
-                {steps.map((step, idx) => {
-                  const Icon = step.icon;
-                  const isActive = activeStep === idx;
-                  return (
-                    <button
-                      key={step.key}
-                      onClick={() => setActiveStep(idx)}
-                      className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left transition-all ${
-                        isActive
-                          ? 'bg-white shadow-sm ring-1 ring-blue-200'
-                          : 'hover:bg-white/60'
-                      }`}
-                    >
-                      <div
-                        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${
-                          step.done
-                            ? 'bg-green-100'
-                            : isActive
-                              ? 'bg-blue-100'
-                              : 'bg-gray-200/70'
-                        }`}
-                      >
-                        {step.done ? (
-                          <CheckCircle2 className="h-4 w-4 text-green-600" />
-                        ) : (
-                          <Icon
-                            className={`h-4 w-4 ${isActive ? 'text-blue-600' : 'text-gray-400'}`}
-                          />
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p
-                          className={`truncate text-xs font-medium ${
-                            step.done
-                              ? 'text-green-700'
-                              : isActive
-                                ? 'text-gray-900'
-                                : 'text-gray-600'
-                          }`}
-                        >
-                          {vi ? step.titleVi : step.title}
-                        </p>
-                        {step.done && (
-                          <p className="text-[10px] text-green-600">
-                            {vi ? 'Hoàn thành' : 'Done'}
-                          </p>
-                        )}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Right: step detail */}
-              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-6">
-                {current && (
-                  <>
-                    {/* Step header */}
-                    <div className="mb-5 flex items-start gap-3">
-                      <div
-                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
-                          current.done ? 'bg-green-100' : 'bg-blue-100'
-                        }`}
-                      >
-                        {current.done ? (
-                          <CheckCircle2 className="h-5 w-5 text-green-600" />
-                        ) : (
-                          <current.icon className="h-5 w-5 text-blue-600" />
-                        )}
-                      </div>
-                      <div>
-                        <h3 className="text-base font-semibold text-gray-900">
-                          {vi ? current.titleVi : current.title}
-                        </h3>
-                        <p className="mt-1 text-sm leading-relaxed text-gray-600">
-                          {vi ? current.descVi : current.desc}
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Status badge */}
-                    {current.done && (
-                      <div className="mb-4 flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5">
-                        <CheckCircle2 className="h-4 w-4 text-green-600" />
-                        <span className="text-sm font-medium text-green-700">
-                          {vi
-                            ? 'Bước này đã hoàn thành! Bạn có thể chuyển sang bước tiếp theo.'
-                            : 'This step is complete! You can move to the next step.'}
-                        </span>
-                      </div>
-                    )}
-
-                    {/* Instruction list */}
-                    <div className="mb-6 space-y-3">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">
-                        {vi ? 'Cách thực hiện' : 'How to do it'}
-                      </p>
-                      <ol className="space-y-2.5">
-                        {(vi ? current.detailsVi : current.details).map(
-                          (detail, i) => (
-                            <li key={i} className="flex gap-3">
-                              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-50 text-xs font-bold text-blue-600">
-                                {i + 1}
-                              </span>
-                              <span className="text-sm leading-relaxed text-gray-700">
-                                {detail}
-                              </span>
-                            </li>
-                          ),
-                        )}
-                      </ol>
-                    </div>
-
-                    {/* Flow diagram */}
-                    <div className="mb-6 flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
-                      {steps.map((s, idx) => {
-                        const Icon = s.icon;
-                        return (
-                          <div key={s.key} className="flex items-center gap-2">
-                            <div
-                              className={`flex h-8 w-8 items-center justify-center rounded-lg ${
-                                s.done
-                                  ? 'bg-green-100'
-                                  : activeStep === idx
-                                    ? 'bg-blue-100 ring-2 ring-blue-300'
-                                    : 'bg-white'
-                              }`}
-                            >
-                              {s.done ? (
-                                <CheckCircle2 className="h-4 w-4 text-green-500" />
-                              ) : (
-                                <Icon
-                                  className={`h-4 w-4 ${
-                                    activeStep === idx ? 'text-blue-600' : 'text-gray-400'
-                                  }`}
-                                />
-                              )}
-                            </div>
-                            {idx < steps.length - 1 && (
-                              <ArrowRight className="h-3.5 w-3.5 text-gray-300" />
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    {/* Action buttons */}
-                    <div className="mt-auto flex items-center justify-between border-t border-gray-100 pt-4">
-                      <button
-                        onClick={() => setActiveStep(Math.max(0, activeStep - 1))}
-                        disabled={activeStep === 0}
-                        className="rounded-lg px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 disabled:invisible"
-                      >
-                        {vi ? 'Quay lại' : 'Back'}
-                      </button>
-                      <div className="flex items-center gap-3">
-                        {activeStep < steps.length - 1 && (
-                          <button
-                            onClick={() => setActiveStep(activeStep + 1)}
-                            className="rounded-lg px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100"
-                          >
-                            {vi ? 'Bước tiếp' : 'Next step'}
-                          </button>
-                        )}
-                        <button
-                          onClick={() => {
-                            setModalOpen(false);
-                            router.push(current.href);
-                          }}
-                          className="flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-blue-700"
-                        >
-                          {vi ? current.btnLabelVi : current.btnLabel}
-                          <ArrowRight className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
+          <GuideContent
+            steps={steps}
+            activeStep={activeStep}
+            setActiveStep={setActiveStep}
+            vi={vi}
+            onCtaNavigate={(href) => {
+              setModalOpen(false);
+              router.push(href);
+            }}
+          />
+        </Modal>
       )}
     </>
   );
@@ -520,116 +522,25 @@ export function GettingStartedModal({
 
   if (!open) return null;
 
-  const current = steps[activeStep];
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div className="mx-4 flex h-[85vh] max-h-[680px] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-100">
-              <Sparkles className="h-5 w-5 text-blue-600" />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold text-gray-900">{vi ? 'Hướng dẫn sử dụng AppBI' : 'How to use AppBI'}</h2>
-              <p className="text-xs text-gray-500">{vi ? 'Làm theo 4 bước để tạo dashboard AI đầu tiên' : 'Follow 4 steps to create your first AI dashboard'}</p>
-            </div>
-          </div>
-          <button onClick={onClose} className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600"><X className="h-5 w-5" /></button>
-        </div>
-
-        <div className="flex min-h-0 flex-1">
-          {/* Left nav */}
-          <div className="w-56 shrink-0 space-y-1 overflow-y-auto border-r border-gray-100 bg-gray-50/70 p-3">
-            {steps.map((step, idx) => {
-              const Icon = step.icon;
-              const isActive = activeStep === idx;
-              return (
-                <button key={step.key} onClick={() => setActiveStep(idx)}
-                  className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left transition-all ${isActive ? 'bg-white shadow-sm ring-1 ring-blue-200' : 'hover:bg-white/60'}`}>
-                  <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${step.done ? 'bg-green-100' : isActive ? 'bg-blue-100' : 'bg-gray-200/70'}`}>
-                    {step.done ? <CheckCircle2 className="h-4 w-4 text-green-600" /> : <Icon className={`h-4 w-4 ${isActive ? 'text-blue-600' : 'text-gray-400'}`} />}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className={`truncate text-xs font-medium ${step.done ? 'text-green-700' : isActive ? 'text-gray-900' : 'text-gray-600'}`}>{vi ? step.titleVi : step.title}</p>
-                    {step.done && <p className="text-[10px] text-green-600">{vi ? 'Hoàn thành' : 'Done'}</p>}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Right detail */}
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-6">
-            {current && (
-              <>
-                <div className="mb-5 flex items-start gap-3">
-                  <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${current.done ? 'bg-green-100' : 'bg-blue-100'}`}>
-                    {current.done ? <CheckCircle2 className="h-5 w-5 text-green-600" /> : <current.icon className="h-5 w-5 text-blue-600" />}
-                  </div>
-                  <div>
-                    <h3 className="text-base font-semibold text-gray-900">{vi ? current.titleVi : current.title}</h3>
-                    <p className="mt-1 text-sm leading-relaxed text-gray-600">{vi ? current.descVi : current.desc}</p>
-                  </div>
-                </div>
-
-                {current.done && (
-                  <div className="mb-4 flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5">
-                    <CheckCircle2 className="h-4 w-4 text-green-600" />
-                    <span className="text-sm font-medium text-green-700">{vi ? 'Bước này đã hoàn thành!' : 'This step is complete!'}</span>
-                  </div>
-                )}
-
-                <div className="mb-6 space-y-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">{vi ? 'Cách thực hiện' : 'How to do it'}</p>
-                  <ol className="space-y-2.5">
-                    {(vi ? current.detailsVi : current.details).map((detail, i) => (
-                      <li key={i} className="flex gap-3">
-                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-50 text-xs font-bold text-blue-600">{i + 1}</span>
-                        <span className="text-sm leading-relaxed text-gray-700">{detail}</span>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-
-                <div className="mb-6 flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
-                  {steps.map((s, idx) => {
-                    const Icon = s.icon;
-                    return (
-                      <div key={s.key} className="flex items-center gap-2">
-                        <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${s.done ? 'bg-green-100' : activeStep === idx ? 'bg-blue-100 ring-2 ring-blue-300' : 'bg-white'}`}>
-                          {s.done ? <CheckCircle2 className="h-4 w-4 text-green-500" /> : <Icon className={`h-4 w-4 ${activeStep === idx ? 'text-blue-600' : 'text-gray-400'}`} />}
-                        </div>
-                        {idx < steps.length - 1 && <ArrowRight className="h-3.5 w-3.5 text-gray-300" />}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <div className="mt-auto flex items-center justify-between border-t border-gray-100 pt-4">
-                  <button onClick={() => setActiveStep(Math.max(0, activeStep - 1))} disabled={activeStep === 0}
-                    className="rounded-lg px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 disabled:invisible">
-                    {vi ? 'Quay lại' : 'Back'}
-                  </button>
-                  <div className="flex items-center gap-3">
-                    {activeStep < steps.length - 1 && (
-                      <button onClick={() => setActiveStep(activeStep + 1)} className="rounded-lg px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100">
-                        {vi ? 'Bước tiếp' : 'Next step'}
-                      </button>
-                    )}
-                    <button onClick={() => { onClose(); router.push(current.href); }}
-                      className="flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-blue-700">
-                      {vi ? current.btnLabelVi : current.btnLabel}
-                      <ArrowRight className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
+    <Modal
+      isOpen={open}
+      onClose={onClose}
+      title={vi ? 'Hướng dẫn sử dụng AppBI' : 'How to use AppBI'}
+      size="xl"
+      bodyClassName="p-0 overflow-hidden"
+      contentClassName="h-[85vh] max-h-[680px]"
+    >
+      <GuideContent
+        steps={steps}
+        activeStep={activeStep}
+        setActiveStep={setActiveStep}
+        vi={vi}
+        onCtaNavigate={(href) => {
+          onClose();
+          router.push(href);
+        }}
+      />
+    </Modal>
   );
 }

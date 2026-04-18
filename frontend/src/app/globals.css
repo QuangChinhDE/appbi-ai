@@ -2,50 +2,114 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * ── Design System: Linear-inspired (Light Mode) ─────────────────────
+ * Hệ màu light-mode phỏng theo Linear. Dark-mode sẽ bật ở phase sau
+ * bằng class "dark" trên <html>.
+ */
+
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    /* — Surface luminance steps (light) — */
+    --surface-0: 247 248 248;        /* #f7f8f8 — page background */
+    --surface-1: 255 255 255;        /* #ffffff — panels, cards */
+    --surface-2: 243 244 245;        /* #f3f4f5 — hover / subtle fill */
+    --surface-3: 233 235 238;        /* #e9ebee — stronger fill */
+    --surface-inverse: 8 9 10;       /* #08090a — dark pill / invert */
+    --overlay: 0 0 0;                /* modal/dialog backdrop — theme-independent */
+
+    /* — Text hierarchy (light) — */
+    --text-primary: 8 9 10;          /* #08090a */
+    --text-secondary: 60 65 73;      /* #3c4149 */
+    --text-tertiary: 107 111 118;    /* #6b6f76 */
+    --text-quaternary: 138 143 152;  /* #8a8f98 */
+    --text-on-brand: 255 255 255;
+
+    /* — Brand & accent (unchanged across themes) — */
+    --brand: 94 106 210;             /* #5e6ad2 */
+    --brand-hover: 113 112 255;      /* #7170ff */
+    --brand-active: 130 143 255;     /* #828fff */
+    --brand-soft: 238 239 252;       /* tinted indigo wash */
+
+    /* — Status — */
+    --success: 39 166 68;            /* #27a644 */
+    --success-soft: 16 185 129;      /* #10b981 */
+    --warning: 217 119 6;            /* amber-600 */
+    --danger: 220 38 38;             /* red-600 */
+    --info: 37 99 235;               /* blue-600 */
+
+    /* — Borders (light: black at low alpha) — */
+    --border-subtle: 8 9 10;         /* use with /5  alpha */
+    --border-standard: 8 9 10;       /* use with /10 alpha */
+    --border-strong: 208 214 224;    /* #d0d6e0 solid */
+    --border-line: 230 230 230;      /* #e6e6e6 solid */
+
+    /* — shadcn/radix compat (mapped to our surfaces) — */
+    --background: 0 0% 97%;
+    --foreground: 220 9% 4%;
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 220 9% 4%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
-    --radius: 0.5rem;
+    --popover-foreground: 220 9% 4%;
+    --primary: 232 57% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 11% 95%;
+    --secondary-foreground: 220 9% 14%;
+    --muted: 210 11% 95%;
+    --muted-foreground: 216 6% 44%;
+    --accent: 232 57% 60%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 213 15% 89%;
+    --input: 213 15% 89%;
+    --ring: 232 57% 60%;
+    --radius: 0.375rem;
   }
 
+  /*
+   * Dark mode (reserved — activated in a later phase).
+   * Token values here correspond directly to Linear's dark palette
+   * from the design doc (section 2).
+   */
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
+    --surface-0: 8 9 10;             /* #08090a */
+    --surface-1: 15 16 17;           /* #0f1011 */
+    --surface-2: 25 26 27;            /* #191a1b */
+    --surface-3: 40 40 44;            /* #28282c */
+    --surface-inverse: 247 248 248;
+    --overlay: 0 0 0;
+
+    --text-primary: 247 248 248;     /* #f7f8f8 */
+    --text-secondary: 208 214 224;   /* #d0d6e0 */
+    --text-tertiary: 138 143 152;    /* #8a8f98 */
+    --text-quaternary: 98 102 109;   /* #62666d */
+    --text-on-brand: 255 255 255;
+
+    --border-subtle: 255 255 255;
+    --border-standard: 255 255 255;
+    --border-strong: 35 37 42;       /* #23252a */
+    --border-line: 20 21 22;         /* #141516 */
+
+    --background: 220 9% 4%;
+    --foreground: 210 10% 97%;
+    --card: 220 7% 5%;
+    --card-foreground: 210 10% 97%;
+    --popover: 220 6% 10%;
+    --popover-foreground: 210 10% 97%;
+    --primary: 234 100% 72%;
+    --primary-foreground: 220 9% 4%;
+    --secondary: 220 5% 15%;
+    --secondary-foreground: 210 10% 97%;
+    --muted: 220 5% 15%;
+    --muted-foreground: 220 5% 57%;
+    --accent: 234 100% 72%;
+    --accent-foreground: 220 9% 4%;
+    --destructive: 0 62% 45%;
+    --destructive-foreground: 210 10% 97%;
+    --border: 220 5% 15%;
+    --input: 220 5% 15%;
+    --ring: 234 100% 72%;
   }
 }
 
@@ -53,23 +117,150 @@
   * {
     @apply border-border;
   }
+
+  html {
+    font-family: var(--font-inter), 'SF Pro Display', -apple-system, system-ui,
+      'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+    /*
+     * Linear's signature OpenType features — cv01 gives a single-story 'a',
+     * ss03 refines letterforms. Without these it's generic Inter.
+     */
+    font-feature-settings: 'cv01', 'ss03';
+    font-variant-ligatures: common-ligatures;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
   body {
-    @apply bg-background text-foreground;
+    background-color: rgb(var(--surface-0));
+    color: rgb(var(--text-primary));
+    font-weight: 400;
+    letter-spacing: -0.003em;
+  }
+
+  code, kbd, samp, pre {
+    font-family: var(--font-mono), ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+
+  /* Display / heading letter-spacing per spec — compress at large sizes */
+  h1 { letter-spacing: -0.022em; }
+  h2 { letter-spacing: -0.012em; }
+  h3 { letter-spacing: -0.012em; }
+
+  /* Focus ring — reserved for keyboard users */
+  :focus-visible {
+    outline: 2px solid rgb(var(--brand));
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* Nicer native selection */
+  ::selection {
+    background-color: rgb(var(--brand) / 0.18);
+    color: rgb(var(--text-primary));
+  }
+
+  /* Subtle scrollbars that fit the cool neutral palette */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: rgb(var(--text-quaternary) / 0.35);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(var(--text-quaternary) / 0.6);
   }
 }
 
-/* ── Template Print Styles ─────────────────────────────────── */
+/* ── Utility layer — Linear semantic helpers ─────────────────────────
+ * These utilities encode the design system's intent so module code
+ * doesn't reach for raw hex values. Prefer these over ad-hoc classes.
+ */
+@layer utilities {
+  .surface-0 { background-color: rgb(var(--surface-0)); }
+  .surface-1 { background-color: rgb(var(--surface-1)); }
+  .surface-2 { background-color: rgb(var(--surface-2)); }
+  .surface-3 { background-color: rgb(var(--surface-3)); }
+
+  .text-primary   { color: rgb(var(--text-primary)); }
+  .text-secondary { color: rgb(var(--text-secondary)); }
+  .text-tertiary  { color: rgb(var(--text-tertiary)); }
+  .text-quaternary{ color: rgb(var(--text-quaternary)); }
+
+  .border-subtle   { border-color: rgb(var(--border-subtle) / 0.05); }
+  .border-standard { border-color: rgb(var(--border-subtle) / 0.1); }
+  .border-strong   { border-color: rgb(var(--border-strong)); }
+  .border-line     { border-color: rgb(var(--border-line)); }
+
+  .divide-linear > * + * {
+    border-top: 1px solid rgb(var(--border-subtle) / 0.08);
+  }
+
+  /* Linear signature weight (510 — between regular and medium) */
+  .font-emphasis { font-weight: 510; }
+  .font-strong   { font-weight: 590; }
+
+  /* Display-size typography helpers */
+  .text-display-xl {
+    font-size: 4.5rem;
+    line-height: 1;
+    letter-spacing: -0.022em;
+    font-weight: 510;
+  }
+  .text-display-lg {
+    font-size: 4rem;
+    line-height: 1;
+    letter-spacing: -0.022em;
+    font-weight: 510;
+  }
+  .text-display {
+    font-size: 3rem;
+    line-height: 1;
+    letter-spacing: -0.022em;
+    font-weight: 510;
+  }
+
+  /* Multi-layer shadow stacks (Linear elevation model) */
+  .shadow-linear-sm {
+    box-shadow: 0 1px 2px rgb(8 9 10 / 0.04), 0 1px 1px rgb(8 9 10 / 0.03);
+  }
+  .shadow-linear {
+    box-shadow: 0 2px 4px rgb(8 9 10 / 0.04), 0 1px 2px rgb(8 9 10 / 0.03),
+                0 0 0 1px rgb(8 9 10 / 0.04);
+  }
+  .shadow-linear-lg {
+    box-shadow: 0 8px 24px rgb(8 9 10 / 0.08), 0 2px 6px rgb(8 9 10 / 0.04),
+                0 0 0 1px rgb(8 9 10 / 0.06);
+  }
+  .shadow-linear-popover {
+    box-shadow:
+      0 0 0 1px rgb(8 9 10 / 0.06),
+      0 2px 4px rgb(8 9 10 / 0.04),
+      0 8px 24px rgb(8 9 10 / 0.10);
+  }
+  .shadow-focus-brand {
+    box-shadow: 0 0 0 3px rgb(var(--brand) / 0.18);
+  }
+}
+
+/* ── Template Print Styles ─────────────────────────────── */
 
 @media print {
-  /* Page setup */
   @page {
     size: A4;
     margin: 10mm;
   }
 
-  /* Hide all app chrome: header, sidebar, navigation, buttons */
   body > *:not(.template-print-host) {
-    /* fallback; main hiding is via print:hidden utility on elements */
+    /* fallback; main hiding is via print:hidden utility */
   }
 
   .template-print-root {
@@ -84,22 +275,10 @@
     padding: 0 !important;
   }
 
-  /* Table headers repeat on every printed page */
-  thead {
-    display: table-header-group;
-  }
+  thead { display: table-header-group; }
+  tr { break-inside: avoid; }
+  .template-print-table-block { break-inside: auto; }
 
-  /* Avoid breaking inside table rows */
-  tr {
-    break-inside: avoid;
-  }
-
-  /* Avoid breaking inside blocks */
-  .template-print-table-block {
-    break-inside: auto; /* allow tables to span pages */
-  }
-
-  /* Preserve background colors */
   * {
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;

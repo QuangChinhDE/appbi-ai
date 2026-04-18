@@ -22,35 +22,35 @@ export function CollapsibleGuideCard({
 }) {
   const toneClass =
     tone === 'blue'
-      ? 'border-blue-200 bg-blue-50'
-      : 'border-gray-200 bg-white';
+      ? 'border-brand/20 bg-brand/10'
+      : 'border-[rgb(var(--border-line))] bg-surface-1';
   const buttonToneClass =
     tone === 'blue'
-      ? 'text-blue-900 hover:bg-white/70'
-      : 'text-gray-900 hover:bg-gray-50';
+      ? 'text-text-primary hover:bg-surface-1/70'
+      : 'text-text-primary hover:bg-surface-2';
 
   return (
-    <div className={`rounded-xl border p-5 shadow-sm ${toneClass}`}>
+    <div className={`rounded-xl border p-5 shadow-linear-sm ${toneClass}`}>
       <button
         type="button"
         onClick={onToggle}
-        className={`flex w-full items-start justify-between gap-4 rounded-lg px-1 py-1 text-left transition ${buttonToneClass}`}
+        className={`flex w-full items-start justify-between gap-4 rounded-md px-1 py-1 text-left transition ${buttonToneClass}`}
       >
         <div className="flex min-w-0 items-start gap-3">
-          <div className="mt-0.5 text-blue-600">{icon}</div>
+          <div className="mt-0.5 text-brand">{icon}</div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h4 className="text-base font-semibold">{title}</h4>
+              <h4 className="text-small font-strong">{title}</h4>
               {badge && (
-                <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-600">
+                <span className="rounded-full bg-surface-1 px-2.5 py-0.5 text-tiny font-emphasis uppercase tracking-[0.16em] text-text-tertiary">
                   {badge}
                 </span>
               )}
             </div>
-            <p className="mt-1 text-sm text-gray-600">{description}</p>
+            <p className="mt-1 text-caption text-text-secondary">{description}</p>
           </div>
         </div>
-        <div className="mt-0.5 text-gray-400">
+        <div className="mt-0.5 text-text-quaternary">
           {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         </div>
       </button>

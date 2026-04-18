@@ -51,13 +51,13 @@ export default function QueryRunner({
       <div className="space-y-3">
         <div className="flex gap-3">
           <div className="flex-1">
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-text-secondary mb-1">
               Data Source
             </label>
             <select
               value={selectedDataSourceId || ''}
               onChange={(e) => setSelectedDataSourceId(Number(e.target.value))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
               disabled={dataSources.length === 0}
             >
               <option value="">Select a data source...</option>
@@ -69,27 +69,27 @@ export default function QueryRunner({
             </select>
           </div>
           <div className="w-32">
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-text-secondary mb-1">
               Limit
             </label>
             <input
               type="number"
               value={limit}
               onChange={(e) => setLimit(Number(e.target.value))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
               min={1}
               max={10000}
             />
           </div>
           <div className="w-32">
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-text-secondary mb-1">
               Timeout (s)
             </label>
             <input
               type="number"
               value={timeout}
               onChange={(e) => setTimeout(Number(e.target.value))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
               min={1}
               max={300}
             />
@@ -97,17 +97,17 @@ export default function QueryRunner({
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="block text-sm font-medium text-text-secondary mb-1">
             SQL Query
           </label>
           <textarea
             value={sqlQuery}
             onChange={(e) => setSqlQuery(e.target.value)}
-            className="w-full min-h-[200px] px-3 py-2 bg-gray-50 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+            className="w-full min-h-[200px] px-3 py-2 bg-surface-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand font-mono text-sm"
             rows={6}
             placeholder="SELECT * FROM table_name WHERE condition"
           />
-          <p className="text-xs text-gray-500 mt-1">
+          <p className="text-xs text-text-tertiary mt-1">
             💡 Only SELECT queries are supported
           </p>
         </div>
@@ -115,7 +115,7 @@ export default function QueryRunner({
         <button
           onClick={handleExecute}
           disabled={!selectedDataSourceId || !sqlQuery.trim() || isExecuting}
-          className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          className="px-4 py-2 bg-success text-white rounded-md hover:bg-success/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
         >
           {isExecuting ? (
             <>
@@ -133,16 +133,16 @@ export default function QueryRunner({
 
       {/* Error Display */}
       {error && (
-        <div className="p-4 bg-red-50 border border-red-200 rounded-md">
-          <p className="text-sm text-red-800 font-medium mb-1">Query Error</p>
-          <p className="text-sm text-red-700">{error}</p>
+        <div className="p-4 bg-danger/10 border border-danger/30 rounded-md">
+          <p className="text-sm text-danger font-medium mb-1">Query Error</p>
+          <p className="text-sm text-danger">{error}</p>
         </div>
       )}
 
       {/* Results Display */}
       {result && (
         <div className="space-y-3">
-          <div className="flex items-center gap-4 text-sm text-gray-600">
+          <div className="flex items-center gap-4 text-sm text-text-secondary">
             <div className="flex items-center gap-1">
               <Hash className="w-4 h-4" />
               <span>{result.row_count} rows</span>
@@ -153,40 +153,40 @@ export default function QueryRunner({
             </div>
           </div>
 
-          <div className="border border-gray-200 rounded-md overflow-hidden">
+          <div className="border border-[rgb(var(--border-line))] rounded-md overflow-hidden">
             <div className="overflow-x-auto max-h-96">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50 sticky top-0">
+              <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
+                <thead className="bg-surface-2 sticky top-0">
                   <tr>
                     {result.columns.map((col) => (
                       <th
                         key={col}
-                        className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                        className="px-4 py-2 text-left text-xs font-medium text-text-tertiary uppercase tracking-wider"
                       >
                         {col}
                       </th>
                     ))}
                   </tr>
                 </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
+                <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
                   {result.data.length === 0 ? (
                     <tr>
                       <td
                         colSpan={result.columns.length}
-                        className="px-4 py-8 text-center text-gray-500"
+                        className="px-4 py-8 text-center text-text-tertiary"
                       >
                         No results found
                       </td>
                     </tr>
                   ) : (
                     result.data.map((row, idx) => (
-                      <tr key={idx} className="hover:bg-gray-50">
+                      <tr key={idx} className="hover:bg-surface-2">
                         {result.columns.map((col) => (
-                          <td key={col} className="px-4 py-2 text-sm text-gray-900 whitespace-nowrap">
+                          <td key={col} className="px-4 py-2 text-sm text-text-primary whitespace-nowrap">
                             {row[col] === null ? (
-                              <span className="text-gray-400 italic">null</span>
+                              <span className="text-text-quaternary italic">null</span>
                             ) : typeof row[col] === 'object' ? (
-                              <span className="text-gray-600 font-mono text-xs">
+                              <span className="text-text-secondary font-mono text-xs">
                                 {JSON.stringify(row[col])}
                               </span>
                             ) : (

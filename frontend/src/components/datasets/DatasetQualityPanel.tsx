@@ -80,10 +80,10 @@ const DQ_DIMENSIONS: {
     key: 'completeness',
     label: 'Completeness',
     description: 'Data exists and is not missing',
-    color: 'text-blue-700',
-    bg: 'bg-blue-50',
-    border: 'border-blue-200',
-    dot: 'bg-blue-500',
+    color: 'text-brand',
+    bg: 'bg-brand/10',
+    border: 'border-brand/30',
+    dot: 'bg-brand',
     ruleTypes: [
       { value: 'not_null', label: 'Not Null', level: 'column', hint: 'Fails if any value in this column is NULL' },
       { value: 'not_blank', label: 'Not Blank', level: 'column', hint: 'Fails if any value is an empty string after trimming' },
@@ -94,10 +94,10 @@ const DQ_DIMENSIONS: {
     key: 'validity',
     label: 'Validity',
     description: 'Values conform to defined formats and ranges',
-    color: 'text-violet-700',
-    bg: 'bg-violet-50',
-    border: 'border-violet-200',
-    dot: 'bg-violet-500',
+    color: 'text-brand',
+    bg: 'bg-brand/10',
+    border: 'border-brand/30',
+    dot: 'bg-brand',
     ruleTypes: [
       { value: 'accepted_values', label: 'Accepted Values', level: 'column', hint: 'Fails if any non-null value is not in the allowed list' },
       { value: 'pattern_match', label: 'Pattern Match (regex)', level: 'column', hint: 'Fails if any non-null value does not match the regex' },
@@ -109,10 +109,10 @@ const DQ_DIMENSIONS: {
     key: 'uniqueness',
     label: 'Uniqueness',
     description: 'No duplicate values or combinations',
-    color: 'text-green-700',
-    bg: 'bg-green-50',
-    border: 'border-green-200',
-    dot: 'bg-green-500',
+    color: 'text-success',
+    bg: 'bg-success/10',
+    border: 'border-success/30',
+    dot: 'bg-success',
     ruleTypes: [
       { value: 'unique_column', label: 'Unique Column', level: 'column', hint: 'Fails if any duplicate values exist in this column' },
       { value: 'unique_combo', label: 'Unique Combination', level: 'table', hint: 'Fails if any combination of the specified columns is duplicated' },
@@ -122,10 +122,10 @@ const DQ_DIMENSIONS: {
     key: 'consistency',
     label: 'Consistency',
     description: 'Values are logically consistent across columns',
-    color: 'text-amber-700',
-    bg: 'bg-amber-50',
-    border: 'border-amber-200',
-    dot: 'bg-amber-500',
+    color: 'text-warning',
+    bg: 'bg-warning/10',
+    border: 'border-warning/30',
+    dot: 'bg-warning',
     ruleTypes: [
       { value: 'cross_column', label: 'Same-table SQL Expression', level: 'table', hint: 'Write a SQL boolean expression (TRUE = valid row). Can reference multiple columns in the selected table.' },
       { value: 'cross_table', label: 'Cross-table Join Expression', level: 'table', hint: 'Join the selected table to another table, then evaluate a SQL boolean expression using aliases src and ref.' },
@@ -135,10 +135,10 @@ const DQ_DIMENSIONS: {
     key: 'timeliness',
     label: 'Timeliness',
     description: 'Data is up-to-date within expected freshness window',
-    color: 'text-orange-700',
-    bg: 'bg-orange-50',
-    border: 'border-orange-200',
-    dot: 'bg-orange-500',
+    color: 'text-warning',
+    bg: 'bg-warning/10',
+    border: 'border-warning/30',
+    dot: 'bg-warning',
     ruleTypes: [
       { value: 'freshness_days', label: 'Freshness (max age in days)', level: 'table', hint: 'Fails if MAX(date_col) is older than the specified number of days' },
     ],
@@ -147,10 +147,10 @@ const DQ_DIMENSIONS: {
     key: 'accuracy',
     label: 'Accuracy',
     description: 'Data reflects expected volume and statistical distribution',
-    color: 'text-red-700',
-    bg: 'bg-red-50',
-    border: 'border-red-200',
-    dot: 'bg-red-500',
+    color: 'text-danger',
+    bg: 'bg-danger/10',
+    border: 'border-danger/30',
+    dot: 'bg-danger',
     ruleTypes: [
       { value: 'row_count_range', label: 'Row Count Range [min, max]', level: 'table', hint: 'Fails if total row count is outside the specified range' },
       { value: 'statistical_range', label: 'Statistical Z-score Range', level: 'column', hint: 'Fails if values are outside mean ± z·stddev (outlier detection)' },
@@ -159,9 +159,9 @@ const DQ_DIMENSIONS: {
 ];
 
 const SEVERITY_META: Record<QualitySeverity, { label: string; textColor: string; bgColor: string; icon: React.ElementType }> = {
-  info:    { label: 'Info',    textColor: 'text-blue-600',  bgColor: 'bg-blue-50',  icon: Info },
-  warning: { label: 'Warning', textColor: 'text-amber-600', bgColor: 'bg-amber-50', icon: AlertTriangle },
-  error:   { label: 'Error',   textColor: 'text-red-600',   bgColor: 'bg-red-50',   icon: XCircle },
+  info:    { label: 'Info',    textColor: 'text-brand',  bgColor: 'bg-brand/10',  icon: Info },
+  warning: { label: 'Warning', textColor: 'text-warning', bgColor: 'bg-warning/10', icon: AlertTriangle },
+  error:   { label: 'Error',   textColor: 'text-danger',   bgColor: 'bg-danger/10',   icon: XCircle },
 };
 
 const FORMAT_OPTIONS: { value: QualityFormat; label: string }[] = [
@@ -228,13 +228,13 @@ function RuleResultPill({ result }: {
 }) {
   if (!result) return null;
   if (result.skipped)
-    return <span title={result.detail ?? undefined} className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-500 cursor-help">skipped</span>;
+    return <span title={result.detail ?? undefined} className="inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-tertiary cursor-help">skipped</span>;
   if (result.error)
-    return <span title={result.detail ?? 'Execution error'} className="inline-flex items-center gap-0.5 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-600 cursor-help"><XCircle className="h-3 w-3" />error</span>;
+    return <span title={result.detail ?? 'Execution error'} className="inline-flex items-center gap-0.5 rounded-full bg-danger/10 px-2 py-0.5 text-[11px] font-medium text-danger cursor-help"><XCircle className="h-3 w-3" />error</span>;
   if (result.passed)
-    return <span title={result.detail ?? 'All rows passed'} className="inline-flex items-center gap-0.5 rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-medium text-green-700 cursor-help"><CheckCircle2 className="h-3 w-3" />pass</span>;
+    return <span title={result.detail ?? 'All rows passed'} className="inline-flex items-center gap-0.5 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success cursor-help"><CheckCircle2 className="h-3 w-3" />pass</span>;
   const detail = result.rows_failed != null ? `${result.rows_failed} fail` : 'fail';
-  return <span title={result.detail ?? undefined} className="inline-flex items-center gap-0.5 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700 cursor-help"><XCircle className="h-3 w-3" />{detail}</span>;
+  return <span title={result.detail ?? undefined} className="inline-flex items-center gap-0.5 rounded-full bg-danger/10 px-2 py-0.5 text-[11px] font-medium text-danger cursor-help"><XCircle className="h-3 w-3" />{detail}</span>;
 }
 
 function InlineToggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
@@ -243,7 +243,7 @@ function InlineToggle({ checked, onChange, disabled }: { checked: boolean; onCha
       type="button"
       onClick={() => !disabled && onChange(!checked)}
       disabled={disabled}
-      className={`flex items-center transition-colors disabled:opacity-40 ${checked ? 'text-blue-600' : 'text-gray-300'}`}
+      className={`flex items-center transition-colors disabled:opacity-40 ${checked ? 'text-brand' : 'text-text-quaternary'}`}
       title={checked ? 'Enabled — click to disable' : 'Disabled — click to enable'}
     >
       {checked ? <ToggleRight className="h-5 w-5" /> : <ToggleLeft className="h-5 w-5" />}
@@ -277,11 +277,11 @@ function TagInput({ values, onChange, placeholder, suggestions }: {
 
   return (
     <div className="relative">
-      <div className="flex flex-wrap gap-1 rounded border border-gray-200 p-1.5 focus-within:border-blue-400">
+      <div className="flex flex-wrap gap-1 rounded border border-[rgb(var(--border-line))] p-1.5 focus-within:border-brand/50">
         {values.map((v) => (
-          <span key={v} className="inline-flex items-center gap-0.5 rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700">
+          <span key={v} className="inline-flex items-center gap-0.5 rounded bg-brand/10 px-2 py-0.5 text-xs text-brand">
             {v}
-            <button onClick={() => onChange(values.filter((x) => x !== v))} className="hover:text-blue-900"><X className="h-2.5 w-2.5" /></button>
+            <button onClick={() => onChange(values.filter((x) => x !== v))} className="hover:text-brand"><X className="h-2.5 w-2.5" /></button>
           </span>
         ))}
         <input
@@ -294,13 +294,13 @@ function TagInput({ values, onChange, placeholder, suggestions }: {
           onFocus={() => setShowSug(true)}
           onBlur={() => setTimeout(() => setShowSug(false), 150)}
           placeholder={values.length === 0 ? placeholder : ''}
-          className="min-w-[120px] flex-1 bg-transparent text-sm outline-none placeholder:text-gray-400"
+          className="min-w-[120px] flex-1 bg-transparent text-sm outline-none placeholder:text-text-quaternary"
         />
       </div>
       {showSug && filtered.length > 0 && (
-        <div className="absolute z-20 mt-1 w-full rounded border border-gray-200 bg-white shadow-lg max-h-40 overflow-y-auto">
+        <div className="absolute z-20 mt-1 max-h-40 w-full overflow-y-auto rounded border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
           {filtered.map((s) => (
-            <button key={s} onMouseDown={() => add(s)} className="flex w-full items-center px-3 py-1.5 text-xs hover:bg-blue-50 text-gray-700">
+            <button key={s} onMouseDown={() => add(s)} className="flex w-full items-center px-3 py-1.5 text-xs hover:bg-brand/15 text-text-secondary">
               {s}
             </button>
           ))}
@@ -321,7 +321,7 @@ function FieldLabel({ label, helpText, action }: {
 }) {
   return (
     <div className="mb-1.5 flex items-start justify-between gap-3">
-      <div className="flex min-w-0 items-center text-xs font-medium text-gray-600">
+      <div className="flex min-w-0 items-center text-xs font-medium text-text-secondary">
         <span>{label}</span>
         {helpText && <HelpTooltip text={helpText} />}
       </div>
@@ -337,10 +337,10 @@ function EditorSection({ title, description, children, className = '' }: {
   className?: string;
 }) {
   return (
-    <section className={`rounded-2xl border border-gray-200 bg-white p-4 shadow-sm ${className}`.trim()}>
+    <section className={`rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 p-4 shadow-linear-sm ${className}`.trim()}>
       <div className="mb-4">
-        <h4 className="text-sm font-semibold text-gray-900">{title}</h4>
-        <p className="mt-1 text-xs leading-5 text-gray-500">{description}</p>
+        <h4 className="text-sm font-semibold text-text-primary">{title}</h4>
+        <p className="mt-1 text-xs leading-5 text-text-tertiary">{description}</p>
       </div>
       {children}
     </section>
@@ -364,7 +364,7 @@ function ColumnSelector({ tableId, tables, value, onChange, placeholder, label, 
         <select
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+          className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none"
         >
           <option value="">— select column —</option>
           {options.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -375,7 +375,7 @@ function ColumnSelector({ tableId, tables, value, onChange, placeholder, label, 
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder ?? 'column_name'}
-          className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+          className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none"
         />
       )}
     </div>
@@ -411,8 +411,8 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
               value={config.threshold ?? ''}
               onChange={(e) => onPatch({ threshold: e.target.value === '' ? undefined : Number(e.target.value) })}
               placeholder="95"
-              className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none" />
-            <span className="text-sm text-gray-500 shrink-0">%</span>
+              className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none" />
+            <span className="text-sm text-text-tertiary shrink-0">%</span>
           </div>
         </div>
       );
@@ -423,7 +423,7 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
           <FieldLabel
             label="Allowed values"
             helpText="Add every value that is permitted for this column. Any other non-null value fails the check."
-            action={<span className="text-[11px] font-normal text-gray-400">Enter or comma to add</span>}
+            action={<span className="text-[11px] font-normal text-text-quaternary">Enter or comma to add</span>}
           />
           <TagInput values={config.values ?? []} onChange={(values) => onPatch({ values })} placeholder="Add value and press Enter…" />
         </div>
@@ -441,19 +441,19 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
               value={config.pattern ?? ''}
               onChange={(e) => onPatch({ pattern: e.target.value || undefined })}
               placeholder="^[A-Z]{2}[0-9]+$"
-              className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-blue-400 focus:outline-none" />
+              className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 font-mono text-sm focus:border-brand/50 focus:outline-none" />
           </div>
           <div>
             <FieldLabel
               label="Flags"
               helpText="Optional regex flags supported by your datasource, such as i for case-insensitive matching."
-              action={<span className="text-[11px] font-normal text-gray-400">Optional</span>}
+              action={<span className="text-[11px] font-normal text-text-quaternary">Optional</span>}
             />
             <input type="text"
               value={(config as any).flags ?? ''}
               onChange={(e) => onPatch({ flags: e.target.value || undefined } as any)}
               placeholder="i"
-              className="w-24 rounded border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-blue-400 focus:outline-none" />
+              className="w-24 rounded border border-[rgb(var(--border-line))] px-2 py-1.5 font-mono text-sm focus:border-brand/50 focus:outline-none" />
           </div>
         </div>
       );
@@ -469,7 +469,7 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
             <input type="text" value={config.min ?? ''}
               onChange={(e) => onPatch({ min: e.target.value || undefined })}
               placeholder="0"
-              className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none" />
+              className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none" />
           </div>
           <div className="flex-1">
             <FieldLabel
@@ -479,7 +479,7 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
             <input type="text" value={config.max ?? ''}
               onChange={(e) => onPatch({ max: e.target.value || undefined })}
               placeholder="1000"
-              className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none" />
+              className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none" />
           </div>
         </div>
       );
@@ -493,7 +493,7 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
           />
           <select value={config.format ?? ''}
             onChange={(e) => onPatch({ format: (e.target.value || undefined) as QualityFormat | undefined })}
-            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none">
+            className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none">
             <option value="">— select format —</option>
             {FORMAT_OPTIONS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
           </select>
@@ -513,7 +513,7 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
             placeholder="Add column and press Enter…"
             suggestions={colOptions}
           />
-          <p className="mt-1 text-[11px] text-gray-400">Fails if any combination of these columns is duplicated.</p>
+          <p className="mt-1 text-[11px] text-text-quaternary">Fails if any combination of these columns is duplicated.</p>
         </div>
       );
 
@@ -528,8 +528,8 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
             value={config.expression ?? ''}
             onChange={(e) => onPatch({ expression: e.target.value || undefined })}
             placeholder={'end_date >= start_date\namount > 0 AND status != \'void\''}
-            className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-blue-400 focus:outline-none resize-none" />
-          <p className="mt-1 text-[11px] text-gray-400">
+            className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 font-mono text-xs focus:border-brand/50 focus:outline-none resize-none" />
+          <p className="mt-1 text-[11px] text-text-quaternary">
             Can reference any column in the selected table only. Use standard SQL operators.
           </p>
         </div>
@@ -546,7 +546,7 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
             <select
               value={secondaryTableId ?? ''}
               onChange={(e) => onPatch({ secondary_table_id: e.target.value ? Number(e.target.value) : undefined })}
-              className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+              className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none"
             >
               <option value="">— select related table —</option>
               {tables.map((table) => (
@@ -564,7 +564,7 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
               value={config.join_condition ?? ''}
               onChange={(e) => onPatch({ join_condition: e.target.value || undefined })}
               placeholder={'src.customer_id = ref.customer_id'}
-              className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-blue-400 focus:outline-none resize-none" />
+              className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 font-mono text-xs focus:border-brand/50 focus:outline-none resize-none" />
           </div>
 
           <div>
@@ -576,8 +576,8 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
               value={config.expression ?? ''}
               onChange={(e) => onPatch({ expression: e.target.value || undefined })}
               placeholder={'ref.customer_id IS NOT NULL\nsrc.order_total <= ref.credit_limit'}
-              className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-blue-400 focus:outline-none resize-none" />
-            <p className="mt-1 text-[11px] text-gray-400">
+              className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 font-mono text-xs focus:border-brand/50 focus:outline-none resize-none" />
+            <p className="mt-1 text-[11px] text-text-quaternary">
               Use a join that preserves the grain you want to validate. Current aliases: src = {selectedTable?.display_name || selectedTable?.source_table_name || 'selected table'}, ref = {secondaryTable?.display_name || secondaryTable?.source_table_name || 'related table'}.
             </p>
           </div>
@@ -604,7 +604,7 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
               value={config.max_days ?? ''}
               onChange={(e) => onPatch({ max_days: e.target.value === '' ? undefined : Number(e.target.value) })}
               placeholder="1"
-              className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none" />
+              className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none" />
           </div>
         </div>
       );
@@ -621,7 +621,7 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
               value={config.min ?? ''}
               onChange={(e) => onPatch({ min: e.target.value === '' ? undefined : Number(e.target.value) })}
               placeholder="1"
-              className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none" />
+              className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none" />
           </div>
           <div className="flex-1">
             <FieldLabel
@@ -632,7 +632,7 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
               value={config.max ?? ''}
               onChange={(e) => onPatch({ max: e.target.value === '' ? undefined : Number(e.target.value) })}
               placeholder="10000000"
-              className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none" />
+              className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none" />
           </div>
         </div>
       );
@@ -649,7 +649,7 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
               value={config.min_z ?? ''}
               onChange={(e) => onPatch({ min_z: e.target.value === '' ? undefined : Number(e.target.value) })}
               placeholder="-3"
-              className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none" />
+              className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none" />
           </div>
           <div className="flex-1">
             <FieldLabel
@@ -660,14 +660,14 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
               value={config.max_z ?? ''}
               onChange={(e) => onPatch({ max_z: e.target.value === '' ? undefined : Number(e.target.value) })}
               placeholder="3"
-              className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none" />
+              className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none" />
           </div>
         </div>
       );
 
     default:
       return (
-        <div className="rounded-xl border border-dashed border-gray-200 bg-white/70 px-3 py-3 text-xs leading-5 text-gray-500">
+        <div className="rounded-xl border border-dashed border-[rgb(var(--border-line))] bg-surface-1 px-3 py-3 text-xs leading-5 text-text-tertiary">
           This rule type does not need extra parameters. Review the scope and governance settings, then save it.
         </div>
       );
@@ -790,27 +790,27 @@ function RuleEditorDrawer({
 
   return (
     <>
-      <div className="fixed inset-0 z-30 bg-slate-950/35 backdrop-blur-[1px]" onClick={onClose} />
+      <div className="fixed inset-0 z-30 bg-overlay/84 backdrop-blur-[2px]" onClick={onClose} />
 
       <div className="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-5 lg:p-8">
-        <div className="flex h-full max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-[28px] border border-gray-200 bg-white shadow-2xl">
-          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-gray-200 px-5 py-4 sm:px-6">
+        <div className="flex h-full max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-[28px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-[rgb(var(--border-line))] px-5 py-4 sm:px-6">
             <div className="min-w-0 space-y-3">
               <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-600">Quality rule setup</p>
-                <h3 className="mt-1 text-lg font-semibold text-gray-900">{isEdit ? 'Edit Quality Rule' : 'Create Quality Rule'}</h3>
-                <p className="mt-1 text-sm text-gray-500">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-brand">Quality rule setup</p>
+                <h3 className="mt-1 text-lg font-semibold text-text-primary">{isEdit ? 'Edit Quality Rule' : 'Create Quality Rule'}</h3>
+                <p className="mt-1 text-sm text-text-tertiary">
                   {isEdit
                     ? `Rule #${editingRule!.id} · update the rule without losing its run history.`
                     : 'Set the scope, logic, and severity for a source-backed data quality check.'}
                 </p>
               </div>
-              <div className="inline-flex max-w-2xl items-start gap-2 rounded-2xl border border-blue-100 bg-blue-50 px-3 py-2.5 text-sm text-blue-800">
+              <div className="inline-flex max-w-2xl items-start gap-2 rounded-2xl border border-brand/20 bg-brand/10 px-3 py-2.5 text-sm text-brand">
                 <Info className="mt-0.5 h-4 w-4 shrink-0" />
                 <p>Hover the info icon next to any field to see what it checks and how to configure it.</p>
               </div>
             </div>
-            <button onClick={onClose} className="rounded-xl p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600">
+            <button onClick={onClose} className="rounded-xl p-2 text-text-quaternary transition-colors hover:bg-surface-2 hover:text-text-secondary">
               <X className="h-4 w-4" />
             </button>
           </div>
@@ -826,7 +826,7 @@ function RuleEditorDrawer({
                         helpText="Pick the table this rule should validate. In edit mode the table stays locked so previous runs remain consistent."
                       />
                       <select value={tableId} onChange={(e) => { setTableId(Number(e.target.value)); setColumnName(''); }} disabled={isEdit}
-                        className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-blue-400 focus:outline-none disabled:bg-gray-50 disabled:text-gray-400">
+                        className="w-full rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-sm focus:border-brand/50 focus:outline-none disabled:bg-surface-2 disabled:text-text-quaternary">
                         {tables.map((t) => <option key={t.id} value={t.id}>{t.display_name || t.source_table_name}</option>)}
                       </select>
                     </div>
@@ -843,7 +843,7 @@ function RuleEditorDrawer({
                             className={`rounded-2xl border px-3 py-3 text-left transition-colors ${
                               dimension === d.key
                                 ? `${d.bg} ${d.color} ${d.border}`
-                                : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50'
+                                : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
                             }`}>
                             <span className="block text-sm font-semibold">{d.label}</span>
                             <span className="mt-1 block text-[11px] leading-4 opacity-80">{d.description}</span>
@@ -858,11 +858,11 @@ function RuleEditorDrawer({
                         helpText="Pick the exact validation to run for the selected dimension. The helper text below explains what counts as a failure."
                       />
                       <select value={ruleType} onChange={(e) => switchRuleType(e.target.value)}
-                        className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-blue-400 focus:outline-none">
+                        className="w-full rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-sm focus:border-brand/50 focus:outline-none">
                         {dimDef_.ruleTypes.map((rt) => <option key={rt.value} value={rt.value}>{rt.label}</option>)}
                       </select>
                       {rtDef?.hint && (
-                        <div className="mt-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-xs leading-5 text-gray-600">
+                        <div className="mt-2 rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-xs leading-5 text-text-secondary">
                           {rtDef.hint}
                         </div>
                       )}
@@ -871,7 +871,7 @@ function RuleEditorDrawer({
                 </EditorSection>
 
                 <EditorSection title="Rule logic" description="Define the exact scope and parameters that decide whether rows pass or fail.">
-                  <div className="space-y-4 rounded-2xl border border-gray-200 bg-gray-50/70 p-4">
+                  <div className="space-y-4 rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2/70 p-4">
                     {usesColumn && (
                       <ColumnSelector
                         tableId={tableId} tables={tables}
@@ -901,7 +901,7 @@ function RuleEditorDrawer({
                           <button
                             type="button"
                             onClick={() => { setName(suggestedName); setNameEdited(false); }}
-                            className="text-[11px] font-medium text-blue-600 hover:text-blue-700"
+                            className="text-[11px] font-medium text-brand hover:text-brand"
                           >
                             Use suggested
                           </button>
@@ -909,9 +909,9 @@ function RuleEditorDrawer({
                       />
                       <input type="text" value={name}
                         onChange={(e) => { setName(e.target.value); setNameEdited(true); }}
-                        className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none" />
+                        className="w-full rounded-xl border border-[rgb(var(--border-line))] px-3 py-2 text-sm focus:border-brand/50 focus:outline-none" />
                       {!isEdit && (
-                        <p className="mt-2 text-[11px] leading-5 text-gray-400">
+                        <p className="mt-2 text-[11px] leading-5 text-text-quaternary">
                           The suggested name follows table, column, and rule type until you rename it.
                         </p>
                       )}
@@ -931,7 +931,7 @@ function RuleEditorDrawer({
                               className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl border py-2 text-xs font-medium transition-colors ${
                                 severity === s
                                   ? `${meta.bgColor} ${meta.textColor} border-current`
-                                  : 'border-gray-200 bg-white text-gray-500 hover:border-gray-300'
+                                  : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:border-[rgb(var(--border-strong))]'
                               }`}>
                               <Icon className="h-3.5 w-3.5" />
                               {meta.label}
@@ -941,13 +941,13 @@ function RuleEditorDrawer({
                       </div>
                     </div>
 
-                    <label className="flex cursor-pointer items-center justify-between rounded-2xl border border-gray-200 px-4 py-3">
+                    <label className="flex cursor-pointer items-center justify-between rounded-2xl border border-[rgb(var(--border-line))] px-4 py-3">
                       <div>
-                        <div className="flex items-center text-sm font-medium text-gray-700">
+                        <div className="flex items-center text-sm font-medium text-text-secondary">
                           <span>Enabled</span>
                           <HelpTooltip text="Only enabled rules run during dataset quality checks. Disable a rule when you want to keep its setup but skip execution." />
                         </div>
-                        <p className="mt-1 text-xs text-gray-400">Disabled rules are skipped during quality runs</p>
+                        <p className="mt-1 text-xs text-text-quaternary">Disabled rules are skipped during quality runs</p>
                       </div>
                       <InlineToggle checked={enabled} onChange={setEnabled} />
                     </label>
@@ -957,30 +957,30 @@ function RuleEditorDrawer({
                 <EditorSection title="Quick preview" description="Review the scope before saving so the rule reads clearly in the dataset quality workspace.">
                   <div className="grid gap-3 sm:grid-cols-2">
                     {previewCards.map((card) => (
-                      <div key={card.label} className="rounded-2xl border border-gray-200 bg-gray-50 px-3 py-3">
-                        <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-gray-400">{card.label}</p>
-                        <p className="mt-1 text-sm font-medium text-gray-800">{card.value}</p>
+                      <div key={card.label} className="rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-3">
+                        <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-text-quaternary">{card.label}</p>
+                        <p className="mt-1 text-sm font-medium text-text-primary">{card.value}</p>
                       </div>
                     ))}
                   </div>
 
-                  <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50/80 p-4">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-blue-900">
+                  <div className="mt-4 rounded-2xl border border-brand/20 bg-brand/10/80 p-4">
+                    <div className="flex items-center gap-2 text-sm font-semibold text-brand">
                       <Info className="h-4 w-4" />
                       Setup guidance
                     </div>
                     <div className="mt-3 space-y-3">
                       {setupTips.map((tip, index) => (
-                        <div key={tip} className="flex items-start gap-2 text-sm leading-5 text-blue-900">
-                          <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white text-[11px] font-semibold text-blue-700">{index + 1}</span>
+                        <div key={tip} className="flex items-start gap-2 text-sm leading-5 text-brand">
+                          <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-surface-1 text-[11px] font-semibold text-brand">{index + 1}</span>
                           <p>{tip}</p>
                         </div>
                       ))}
                     </div>
 
-                    <div className="mt-4 rounded-2xl border border-white/80 bg-white/80 px-3 py-3 text-sm text-gray-700">
+                    <div className="mt-4 rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-3 text-sm text-text-secondary">
                       <div className="flex items-center justify-between gap-3">
-                        <span className="font-medium text-gray-800">Selected severity</span>
+                        <span className="font-medium text-text-primary">Selected severity</span>
                         <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${severityMeta.bgColor} ${severityMeta.textColor}`}>
                           <severityMeta.icon className="h-3.5 w-3.5" />
                           {severityMeta.label}
@@ -993,23 +993,23 @@ function RuleEditorDrawer({
             </div>
           </div>
 
-          <div className="shrink-0 border-t border-gray-200 px-5 py-4 sm:px-6">
+          <div className="shrink-0 border-t border-[rgb(var(--border-line))] px-5 py-4 sm:px-6">
             <div className="flex items-center justify-between gap-2">
           {isEdit && onDuplicate && (
             <button
               onClick={() => onDuplicate(editingRule!)}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-gray-200 px-3 py-2 text-xs text-gray-600 hover:bg-gray-50"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[rgb(var(--border-line))] px-3 py-2 text-xs text-text-secondary hover:bg-surface-2"
             >
               <Copy className="h-3.5 w-3.5" /> Duplicate
             </button>
           )}
               <div className="ml-auto flex gap-2">
                 <button onClick={onClose}
-                  className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">
+                  className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2 text-sm text-text-secondary hover:bg-surface-2">
                   Cancel
                 </button>
                 <button onClick={handleSave} disabled={isPending}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-50">
                   {isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                   {isEdit ? 'Update Rule' : 'Create Rule'}
                 </button>
@@ -1292,49 +1292,49 @@ function RuleLogModal({
   }, [entries, counts.fail, counts.error]);
 
   function statusLabel(r: RuleLogEntry['result']) {
-    if (r.skipped) return { text: 'SKIP', cls: 'bg-gray-100 text-gray-500' };
-    if (r.error) return { text: 'ERROR', cls: 'bg-red-100 text-red-600' };
-    if (r.passed) return { text: 'PASS', cls: 'bg-green-100 text-green-700' };
-    return { text: 'FAIL', cls: 'bg-red-100 text-red-700' };
+    if (r.skipped) return { text: 'SKIP', cls: 'bg-surface-2 text-text-tertiary' };
+    if (r.error) return { text: 'ERROR', cls: 'bg-danger/15 text-danger' };
+    if (r.passed) return { text: 'PASS', cls: 'bg-success/15 text-success' };
+    return { text: 'FAIL', cls: 'bg-danger/15 text-danger' };
   }
 
   return (
     <>
-      <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
+      <div className="fixed inset-0 z-40 bg-overlay/84 backdrop-blur-[2px]" onClick={onClose} />
       <div className="fixed inset-3 z-50 flex items-center justify-center" onClick={onClose}>
         <div
-          className="h-[min(90vh,980px)] w-[min(1500px,calc(100vw-1.5rem))] max-w-none rounded-2xl border border-gray-200 bg-white shadow-2xl flex flex-col overflow-hidden"
+          className="flex h-[min(90vh,980px)] w-[min(1500px,calc(100vw-1.5rem))] max-w-none flex-col overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg"
           onClick={(e) => e.stopPropagation()}
         >
           {/* ── Header ── */}
-          <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-5 py-3.5">
+          <div className="flex items-center justify-between gap-3 border-b border-[rgb(var(--border-line))] px-5 py-3.5">
             <div className="flex items-center gap-2">
-              <Eye className="h-5 w-5 text-blue-600" />
-              <h2 className="text-base font-semibold text-gray-900">Quality Check Review</h2>
-              <span className="text-xs text-gray-400">{entries.length} rules</span>
+              <Eye className="h-5 w-5 text-brand" />
+              <h2 className="text-base font-semibold text-text-primary">Quality Check Review</h2>
+              <span className="text-xs text-text-quaternary">{entries.length} rules</span>
             </div>
-            <button onClick={onClose} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600">
+            <button onClick={onClose} className="rounded-lg p-1 text-text-quaternary hover:bg-surface-2 hover:text-text-secondary">
               <X className="h-5 w-5" />
             </button>
           </div>
 
           {/* ── Filter bar ── */}
-          <div className="flex items-center gap-2 border-b border-gray-100 px-5 py-2.5 bg-gray-50 flex-wrap">
+          <div className="flex items-center gap-2 border-b border-[rgb(var(--border-line))] px-5 py-2.5 bg-surface-2 flex-wrap">
             {/* Status filters */}
             {([
               ['all', `All (${counts.all})`, ''],
-              ['pass', `Pass (${counts.pass})`, 'text-green-700'],
-              ['fail', `Fail (${counts.fail})`, 'text-red-700'],
-              ['error', `Error (${counts.error})`, 'text-orange-600'],
-              ['skip', `Skip (${counts.skip})`, 'text-gray-500'],
+              ['pass', `Pass (${counts.pass})`, 'text-success'],
+              ['fail', `Fail (${counts.fail})`, 'text-danger'],
+              ['error', `Error (${counts.error})`, 'text-warning'],
+              ['skip', `Skip (${counts.skip})`, 'text-text-tertiary'],
             ] as [typeof filter, string, string][]).map(([key, label, clr]) => (
               <button
                 key={key}
                 onClick={() => setFilter(key)}
                 className={`rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors ${
                   filter === key
-                    ? 'border-blue-500 bg-blue-50 text-blue-700'
-                    : `border-gray-200 ${clr || 'text-gray-500'} hover:border-gray-300 hover:bg-white`
+                    ? 'border-brand bg-brand/10 text-brand'
+                    : `border-[rgb(var(--border-line))] ${clr || 'text-text-tertiary'} hover:border-[rgb(var(--border-strong))] hover:bg-surface-1`
                 }`}
               >
                 {label}
@@ -1343,52 +1343,52 @@ function RuleLogModal({
             <div className="flex-1" />
             {/* Search */}
             <div className="relative">
-              <Filter className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-gray-400" />
+              <Filter className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-text-quaternary" />
               <input
                 type="text"
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
                 placeholder="Search rule, table, issue, or SQL…"
-                className="w-48 rounded-lg border border-gray-200 bg-white py-1 pl-7 pr-2 text-xs focus:border-blue-400 focus:outline-none"
+                className="w-48 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 py-1 pl-7 pr-2 text-xs focus:border-brand/50 focus:outline-none"
               />
             </div>
           </div>
 
-          <div className="flex gap-2 overflow-x-auto border-b border-gray-100 bg-white px-5 py-2.5">
-            <div className="min-w-[132px] rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">Rules Reviewed</p>
-              <p className="mt-1 text-base font-semibold text-gray-900">{formatMetricCount(counts.all)}</p>
+          <div className="flex gap-2 overflow-x-auto border-b border-[rgb(var(--border-line))] bg-surface-1 px-5 py-2.5">
+            <div className="min-w-[132px] rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-text-quaternary">Rules Reviewed</p>
+              <p className="mt-1 text-base font-semibold text-text-primary">{formatMetricCount(counts.all)}</p>
             </div>
-            <div className="min-w-[132px] rounded-lg border border-green-100 bg-green-50 px-3 py-2">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-green-400">Passed</p>
-              <p className="mt-1 text-base font-semibold text-green-700">{formatMetricCount(counts.pass)}</p>
+            <div className="min-w-[132px] rounded-lg border border-success/20 bg-success/10 px-3 py-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-success">Passed</p>
+              <p className="mt-1 text-base font-semibold text-success">{formatMetricCount(counts.pass)}</p>
             </div>
-            <div className="min-w-[132px] rounded-lg border border-red-100 bg-red-50 px-3 py-2">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-red-400">Need Attention</p>
-              <p className="mt-1 text-base font-semibold text-red-700">{formatMetricCount(totals.rulesNeedingAttention)}</p>
+            <div className="min-w-[132px] rounded-lg border border-danger/30 bg-danger/10 px-3 py-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-danger">Need Attention</p>
+              <p className="mt-1 text-base font-semibold text-danger">{formatMetricCount(totals.rulesNeedingAttention)}</p>
             </div>
-            <div className="min-w-[132px] rounded-lg border border-orange-100 bg-orange-50 px-3 py-2">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-orange-400">Execution Errors</p>
-              <p className="mt-1 text-base font-semibold text-orange-700">{formatMetricCount(counts.error)}</p>
+            <div className="min-w-[132px] rounded-lg border border-warning/30 bg-warning/10 px-3 py-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-warning">Execution Errors</p>
+              <p className="mt-1 text-base font-semibold text-warning">{formatMetricCount(counts.error)}</p>
             </div>
-            <div className="min-w-[132px] rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">Not Evaluated</p>
-              <p className="mt-1 text-base font-semibold text-gray-900">{formatMetricCount(counts.skip)}</p>
+            <div className="min-w-[132px] rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-text-quaternary">Not Evaluated</p>
+              <p className="mt-1 text-base font-semibold text-text-primary">{formatMetricCount(counts.skip)}</p>
             </div>
-            <div className="min-w-[132px] rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Rows Checked</p>
-              <p className="mt-1 text-base font-semibold text-slate-800">{formatMetricCount(totals.checkedRows)}</p>
+            <div className="min-w-[132px] rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-text-quaternary">Rows Checked</p>
+              <p className="mt-1 text-base font-semibold text-text-primary">{formatMetricCount(totals.checkedRows)}</p>
             </div>
-            <div className="min-w-[132px] rounded-lg border border-amber-100 bg-amber-50 px-3 py-2">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-amber-500">Violations</p>
-              <p className="mt-1 text-base font-semibold text-amber-700">{formatMetricCount(totals.failedRows)}</p>
+            <div className="min-w-[132px] rounded-lg border border-warning/20 bg-warning/10 px-3 py-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-warning">Violations</p>
+              <p className="mt-1 text-base font-semibold text-warning">{formatMetricCount(totals.failedRows)}</p>
             </div>
           </div>
 
           {/* ── Review entries ── */}
-          <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
+          <div className="flex-1 overflow-y-auto divide-y divide-[rgb(var(--border-line))]">
             {filtered.length === 0 ? (
-              <div className="flex items-center justify-center py-12 text-sm text-gray-400">
+              <div className="flex items-center justify-center py-12 text-sm text-text-quaternary">
                 No matching rules
               </div>
             ) : filtered.map((entry) => {
@@ -1401,93 +1401,93 @@ function RuleLogModal({
                 <div key={entry.ruleId}>
                   <button
                     onClick={() => setExpandedId(isExpanded ? null : entry.ruleId)}
-                    className="w-full flex items-center gap-3 px-5 py-2.5 text-left hover:bg-gray-50 transition-colors"
+                    className="w-full flex items-center gap-3 px-5 py-2.5 text-left hover:bg-surface-2 transition-colors"
                   >
                     {isExpanded
-                      ? <ChevronDown className="h-3.5 w-3.5 text-gray-400 shrink-0" />
-                      : <ChevronRight className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                      ? <ChevronDown className="h-3.5 w-3.5 text-text-quaternary shrink-0" />
+                      : <ChevronRight className="h-3.5 w-3.5 text-text-quaternary shrink-0" />
                     }
                     <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide shrink-0 ${st.cls}`}>
                       {st.text}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium text-gray-800">{entry.ruleName}</span>
-                      <span className="text-xs text-gray-400">
+                      <span className="block truncate text-sm font-medium text-text-primary">{entry.ruleName}</span>
+                      <span className="text-xs text-text-quaternary">
                         {entry.tableName}
                         {entry.columnName ? ` › ${entry.columnName}` : ''}
                         {' · '}
                         <span className="font-mono">{entry.ruleType}</span>
                       </span>
-                      <p className="mt-1 truncate text-xs text-gray-500">{remark.summary}</p>
+                      <p className="mt-1 truncate text-xs text-text-tertiary">{remark.summary}</p>
                     </div>
-                    <div className="shrink-0 flex items-center gap-3 text-xs text-gray-400">
+                    <div className="shrink-0 flex items-center gap-3 text-xs text-text-quaternary">
                       {entry.result.rows_checked != null && (
-                        <span>checked: <strong className="text-gray-600">{entry.result.rows_checked}</strong></span>
+                        <span>checked: <strong className="text-text-secondary">{entry.result.rows_checked}</strong></span>
                       )}
                       {entry.result.rows_failed != null && (
-                        <span>failed: <strong className="text-red-600">{entry.result.rows_failed}</strong></span>
+                        <span>failed: <strong className="text-danger">{entry.result.rows_failed}</strong></span>
                       )}
                       {rate != null && (
-                        <span>rate: <strong className="text-gray-600">{formatMetricPercent(rate)}</strong></span>
+                        <span>rate: <strong className="text-text-secondary">{formatMetricPercent(rate)}</strong></span>
                       )}
                     </div>
                   </button>
 
                   {isExpanded && (
-                    <div className="border-t border-gray-100 bg-gray-50 px-5 py-3">
+                    <div className="border-t border-[rgb(var(--border-line))] bg-surface-2 px-5 py-3">
                       <div className="grid gap-3 xl:grid-cols-[260px,minmax(0,1fr)]">
                         <div className="grid content-start grid-cols-2 gap-2">
-                          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
-                            <p className="text-[10px] uppercase tracking-wide text-gray-400">Status</p>
-                            <p className="mt-1 text-sm font-semibold text-gray-800">{st.text}</p>
+                          <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+                            <p className="text-[10px] uppercase tracking-wide text-text-quaternary">Status</p>
+                            <p className="mt-1 text-sm font-semibold text-text-primary">{st.text}</p>
                           </div>
-                          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
-                            <p className="text-[10px] uppercase tracking-wide text-gray-400">Rows Checked</p>
-                            <p className="mt-1 text-sm font-semibold text-gray-800">{formatMetricCount(entry.result.rows_checked)}</p>
+                          <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+                            <p className="text-[10px] uppercase tracking-wide text-text-quaternary">Rows Checked</p>
+                            <p className="mt-1 text-sm font-semibold text-text-primary">{formatMetricCount(entry.result.rows_checked)}</p>
                           </div>
-                          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
-                            <p className="text-[10px] uppercase tracking-wide text-gray-400">Rows Failing</p>
-                            <p className="mt-1 text-sm font-semibold text-gray-800">{formatMetricCount(entry.result.rows_failed)}</p>
+                          <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+                            <p className="text-[10px] uppercase tracking-wide text-text-quaternary">Rows Failing</p>
+                            <p className="mt-1 text-sm font-semibold text-text-primary">{formatMetricCount(entry.result.rows_failed)}</p>
                           </div>
-                          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
-                            <p className="text-[10px] uppercase tracking-wide text-gray-400">Failure Rate</p>
-                            <p className="mt-1 text-sm font-semibold text-gray-800">{formatMetricPercent(rate)}</p>
+                          <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+                            <p className="text-[10px] uppercase tracking-wide text-text-quaternary">Failure Rate</p>
+                            <p className="mt-1 text-sm font-semibold text-text-primary">{formatMetricPercent(rate)}</p>
                           </div>
                         </div>
 
                         <div className="space-y-2">
-                          <div className="rounded-lg border border-gray-200 bg-white p-3">
+                          <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
                             <div>
-                              <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Issue Summary</p>
-                              <p className="mt-1 text-sm text-gray-800">{remark.summary}</p>
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">Issue Summary</p>
+                              <p className="mt-1 text-sm text-text-primary">{remark.summary}</p>
                             </div>
 
-                            <div className="mt-3 border-t border-gray-100 pt-3">
-                              <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Interpretation</p>
-                              <p className="mt-1 text-sm text-gray-700">{remark.interpretation}</p>
+                            <div className="mt-3 border-t border-[rgb(var(--border-line))] pt-3">
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">Interpretation</p>
+                              <p className="mt-1 text-sm text-text-secondary">{remark.interpretation}</p>
                             </div>
 
-                            <div className="mt-3 border-t border-gray-100 pt-3">
-                              <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Recommended Check</p>
-                              <p className="mt-1 text-sm text-gray-700">{remark.followUp}</p>
+                            <div className="mt-3 border-t border-[rgb(var(--border-line))] pt-3">
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">Recommended Check</p>
+                              <p className="mt-1 text-sm text-text-secondary">{remark.followUp}</p>
                             </div>
 
                             {entry.result.detail && entry.result.detail !== remark.summary && (
-                              <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 p-3">
-                                <p className="text-[11px] font-semibold uppercase tracking-wide text-blue-400">System Note</p>
-                                <p className="mt-1 text-sm text-blue-800">{entry.result.detail}</p>
+                              <div className="mt-3 rounded-lg border border-brand/20 bg-brand/10 p-3">
+                                <p className="text-[11px] font-semibold uppercase tracking-wide text-brand">System Note</p>
+                                <p className="mt-1 text-sm text-brand">{entry.result.detail}</p>
                               </div>
                             )}
                           </div>
 
                           {entry.result.sql && (
-                            <details className="group rounded-lg border border-gray-200 bg-white" open>
-                              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium text-gray-700">
+                            <details className="group rounded-lg border border-[rgb(var(--border-line))] bg-surface-1" open>
+                              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium text-text-secondary">
                                 <span>SQL Query</span>
-                                <span className="text-[11px] text-gray-400">Click to expand/collapse</span>
+                                <span className="text-[11px] text-text-quaternary">Click to expand/collapse</span>
                               </summary>
-                              <div className="border-t border-gray-100 px-3 py-3">
-                                <pre className="max-h-56 overflow-auto rounded-lg bg-gray-950 p-3 font-mono text-xs leading-relaxed text-green-300 whitespace-pre-wrap break-all">
+                              <div className="border-t border-[rgb(var(--border-line))] px-3 py-3">
+                                <pre className="max-h-56 overflow-auto rounded-lg bg-surface-inverse p-3 font-mono text-xs leading-relaxed text-success whitespace-pre-wrap break-all">
                                   {entry.result.sql}
                                 </pre>
                               </div>
@@ -1562,12 +1562,12 @@ function DimensionGroup({
         {hasResults && (
           <div className="flex items-center gap-1.5 shrink-0">
             {passCount > 0 && (
-              <span className="inline-flex items-center gap-0.5 rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-medium text-green-700">
+              <span className="inline-flex items-center gap-0.5 rounded-full bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
                 <CheckCircle2 className="h-3 w-3" />{passCount} pass
               </span>
             )}
             {failCount > 0 && (
-              <span className="inline-flex items-center gap-0.5 rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-medium text-red-700">
+              <span className="inline-flex items-center gap-0.5 rounded-full bg-danger/15 px-2 py-0.5 text-[11px] font-medium text-danger">
                 <XCircle className="h-3 w-3" />{failCount} fail
               </span>
             )}
@@ -1602,14 +1602,14 @@ function DimensionGroup({
 
       {/* Rules list */}
       {!collapsed && (
-        <div className="divide-y divide-gray-100 bg-white">
+        <div className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
           {rules.length === 0 ? (
             <div className="flex items-center gap-3 px-4 py-5 text-center justify-center">
-              <ShieldCheck className="h-6 w-6 text-gray-200" />
+              <ShieldCheck className="h-6 w-6 text-text-secondary" />
               <div>
-                <p className="text-sm text-gray-400">No {def.label} rules yet</p>
+                <p className="text-sm text-text-quaternary">No {def.label} rules yet</p>
                 {canEdit && (
-                  <button onClick={() => onAddRule(dimKey)} className="mt-1 text-xs text-blue-600 hover:underline">
+                  <button onClick={() => onAddRule(dimKey)} className="mt-1 text-xs text-brand hover:underline">
                     + Add first rule
                   </button>
                 )}
@@ -1626,7 +1626,7 @@ function DimensionGroup({
               return (
                 <div
                   key={rule.id}
-                  className={`group flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors ${!rule.enabled ? 'opacity-50' : ''}`}
+                  className={`group flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2 transition-colors ${!rule.enabled ? 'opacity-50' : ''}`}
                 >
                   {/* Severity icon */}
                   <SevIcon className={`h-3.5 w-3.5 shrink-0 ${sev.textColor}`} title={sev.label} />
@@ -1634,22 +1634,22 @@ function DimensionGroup({
                   {/* Rule info */}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <p className="text-sm text-gray-800 font-medium truncate">{rule.name}</p>
+                      <p className="text-sm text-text-primary font-medium truncate">{rule.name}</p>
                       {!rule.enabled && (
-                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-400">disabled</span>
+                        <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-text-quaternary">disabled</span>
                       )}
                     </div>
-                    <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-gray-400">
+                    <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-text-quaternary">
                       <span className="flex items-center gap-1">
                         <Database className="h-3 w-3" />{tableName}
                       </span>
                       {rule.column_name && (
                         <>
                           <ChevronRight className="h-3 w-3" />
-                          <code className="font-mono text-gray-500">{rule.column_name}</code>
+                          <code className="font-mono text-text-tertiary">{rule.column_name}</code>
                         </>
                       )}
-                      <span className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[11px]">
+                      <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[11px]">
                         {getRuleTypeLabel(rule.dimension, rule.rule_type)}
                       </span>
                     </div>
@@ -1661,7 +1661,7 @@ function DimensionGroup({
                     {result && (
                       <button
                         onClick={() => onViewLog(rule)}
-                        className="rounded p-1 text-gray-400 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+                        className="rounded p-1 text-text-quaternary hover:bg-brand/15 hover:text-brand transition-colors"
                         title="View rule summary"
                       >
                         <Eye className="h-3.5 w-3.5" />
@@ -1676,21 +1676,21 @@ function DimensionGroup({
                         <InlineToggle checked={rule.enabled} onChange={() => onToggleRule(rule)} disabled={isToggling} />
                         <button
                           onClick={() => onDuplicateRule(rule)}
-                          className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+                          className="rounded p-1 text-text-quaternary hover:bg-surface-3 hover:text-text-secondary"
                           title="Duplicate rule"
                         >
                           <Copy className="h-3.5 w-3.5" />
                         </button>
                         <button
                           onClick={() => onEditRule(rule)}
-                          className="rounded p-1 text-gray-400 hover:bg-blue-100 hover:text-blue-600"
+                          className="rounded p-1 text-text-quaternary hover:bg-brand/15 hover:text-brand"
                           title="Edit rule"
                         >
                           <Pencil className="h-3.5 w-3.5" />
                         </button>
                         <button
                           onClick={() => onDeleteRule(rule)}
-                          className="rounded p-1 text-gray-400 hover:bg-red-100 hover:text-red-600"
+                          className="rounded p-1 text-text-quaternary hover:bg-danger/15 hover:text-danger"
                           title="Delete rule"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -1734,21 +1734,21 @@ function DuplicateDialog({ rule, tables, datasetId, onClose, onDone }: {
 
   return (
     <>
-      <div className="fixed inset-0 z-40 bg-black/30" onClick={onClose} />
-      <div className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl bg-white p-5 shadow-2xl border border-gray-200">
-        <h3 className="text-sm font-semibold text-gray-900 mb-1">Duplicate Rule</h3>
-        <p className="text-xs text-gray-500 mb-4">Copy <strong>"{rule.name}"</strong> to which table?</p>
+      <div className="fixed inset-0 z-40 bg-overlay/84 backdrop-blur-[2px]" onClick={onClose} />
+      <div className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 p-5 shadow-linear-lg">
+        <h3 className="text-sm font-semibold text-text-primary mb-1">Duplicate Rule</h3>
+        <p className="text-xs text-text-tertiary mb-4">Copy <strong>"{rule.name}"</strong> to which table?</p>
         <div className="mb-4">
-          <label className="mb-1 block text-xs font-medium text-gray-600">Target table</label>
+          <label className="mb-1 block text-xs font-medium text-text-secondary">Target table</label>
           <select value={targetTableId} onChange={(e) => setTargetTableId(Number(e.target.value))}
-            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none">
+            className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none">
             {tables.map((t) => <option key={t.id} value={t.id}>{t.display_name || t.source_table_name}</option>)}
           </select>
         </div>
         <div className="flex justify-end gap-2">
-          <button onClick={onClose} className="rounded border border-gray-200 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
+          <button onClick={onClose} className="rounded border border-[rgb(var(--border-line))] px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-2">Cancel</button>
           <button onClick={handleDuplicate} disabled={dupMutation.isPending}
-            className="inline-flex items-center gap-1.5 rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+            className="inline-flex items-center gap-1.5 rounded bg-brand px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-50">
             {dupMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             Duplicate
           </button>
@@ -1770,19 +1770,19 @@ function DeleteConfirmDialog({ rule, onConfirm, onCancel, isPending }: {
 }) {
   return (
     <>
-      <div className="fixed inset-0 z-40 bg-black/30" onClick={onCancel} />
-      <div className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl bg-white p-5 shadow-2xl border border-gray-200">
+      <div className="fixed inset-0 z-40 bg-overlay/84 backdrop-blur-[2px]" onClick={onCancel} />
+      <div className="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 p-5 shadow-linear-lg">
         <div className="flex items-start gap-3 mb-4">
-          <Trash2 className="h-5 w-5 text-red-500 shrink-0 mt-0.5" />
+          <Trash2 className="h-5 w-5 text-danger shrink-0 mt-0.5" />
           <div>
-            <h3 className="text-sm font-semibold text-gray-900">Delete Rule?</h3>
-            <p className="text-xs text-gray-500 mt-1">Are you sure you want to delete <strong>"{rule.name}"</strong>? This cannot be undone.</p>
+            <h3 className="text-sm font-semibold text-text-primary">Delete Rule?</h3>
+            <p className="text-xs text-text-tertiary mt-1">Are you sure you want to delete <strong>"{rule.name}"</strong>? This cannot be undone.</p>
           </div>
         </div>
         <div className="flex justify-end gap-2">
-          <button onClick={onCancel} disabled={isPending} className="rounded border border-gray-200 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50">Cancel</button>
+          <button onClick={onCancel} disabled={isPending} className="rounded border border-[rgb(var(--border-line))] px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-2 disabled:opacity-50">Cancel</button>
           <button onClick={onConfirm} disabled={isPending}
-            className="inline-flex items-center gap-1.5 rounded bg-red-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50">
+            className="inline-flex items-center gap-1.5 rounded bg-danger px-4 py-1.5 text-sm font-medium text-white hover:bg-danger/90 disabled:opacity-50">
             {isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             Delete
           </button>
@@ -2001,16 +2001,16 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
   const dimBreakdown = summary?.dimension_breakdown ?? [];
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-gray-50">
+    <div className="flex flex-col h-full overflow-hidden bg-surface-2">
       {/* ── Toolbar ── */}
-      <div className="shrink-0 border-b border-gray-200 bg-white px-4 py-2 flex items-center gap-3 flex-wrap">
+      <div className="flex items-center gap-3 shrink-0 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2 flex-wrap">
         {/* Table filter */}
         <div className="flex items-center gap-2">
-          <Database className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+          <Database className="h-3.5 w-3.5 text-text-quaternary shrink-0" />
           <select
             value={tableFilter === 'all' ? 'all' : String(tableFilter)}
             onChange={(e) => setTableFilter(e.target.value === 'all' ? 'all' : Number(e.target.value))}
-            className="rounded border border-gray-200 bg-white px-2 py-1 text-xs focus:border-blue-400 focus:outline-none"
+            className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs focus:border-brand/50 focus:outline-none"
           >
             <option value="all">All tables ({allRules.length} rules)</option>
             {tables.map((t) => {
@@ -2028,8 +2028,8 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
             onClick={() => setDimFilter('all')}
             className={`rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors ${
               dimFilter === 'all'
-                ? 'border-gray-700 bg-gray-700 text-white'
-                : 'border-gray-200 text-gray-500 hover:border-gray-400'
+                ? 'border-[rgb(var(--border-strong))] bg-surface-inverse/70 text-white'
+                : 'border-[rgb(var(--border-line))] text-text-tertiary hover:border-[rgb(var(--border-strong))]'
             }`}
           >
             All
@@ -2044,7 +2044,7 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
                 className={`rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors ${
                   active
                     ? `${d.bg} ${d.color} ${d.border}`
-                    : 'border-gray-200 text-gray-500 hover:border-gray-300 hover:bg-gray-50'
+                    : 'border-[rgb(var(--border-line))] text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
                 }`}
               >
                 {d.label}{cnt > 0 ? ` (${cnt})` : ''}
@@ -2057,7 +2057,7 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
         <div className="flex-1" />
 
         {/* Stats */}
-        <span className="text-xs text-gray-400 shrink-0">
+        <span className="text-xs text-text-quaternary shrink-0">
           {enabledRules}/{totalRules} enabled
         </span>
 
@@ -2066,7 +2066,7 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
           <button
             onClick={handleRunNow}
             disabled={isRunning || triggerRun.isPending}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 shrink-0"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:opacity-50 shrink-0"
           >
             {isRunning
               ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Running…</>
@@ -2079,7 +2079,7 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
         {canEdit && (
           <button
             onClick={() => openNewRule()}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-blue-600 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 shrink-0"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-brand px-3 py-1.5 text-xs font-medium text-brand hover:bg-brand/15 shrink-0"
           >
             <Plus className="h-3.5 w-3.5" /> Add Rule
           </button>
@@ -2088,19 +2088,19 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
 
       {/* ── Progress bar (chỉ hiện khi đang chạy) ── */}
       {isRunning && (
-        <div className="shrink-0 border-b border-blue-100 bg-white px-4 py-2.5">
+        <div className="shrink-0 border-b border-brand/20 bg-surface-1 px-4 py-2.5">
           <div className="flex items-center justify-between mb-1.5">
-            <span className="text-xs font-medium text-blue-700 flex items-center gap-1.5">
+            <span className="text-xs font-medium text-brand flex items-center gap-1.5">
               <Loader2 className="h-3 w-3 animate-spin" />
               {pollingRun?.status === 'queued'
                 ? 'Preparing run…'
                 : `Checking rules… ${progressDone}/${progressTotal}`}
             </span>
-            <span className="text-xs font-semibold text-blue-700">{progressPct}%</span>
+            <span className="text-xs font-semibold text-brand">{progressPct}%</span>
           </div>
-          <div className="h-1.5 w-full rounded-full bg-blue-100 overflow-hidden">
+          <div className="h-1.5 w-full rounded-full bg-brand/15 overflow-hidden">
             <div
-              className="h-full rounded-full bg-blue-500 transition-all duration-500 ease-out"
+              className="h-full rounded-full bg-brand transition-all duration-500 ease-out"
               style={{ width: `${progressPct}%` }}
             />
           </div>
@@ -2111,11 +2111,11 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
       {!isRunning && lastRunResult && (
         <div className={`shrink-0 border-b px-4 py-2 flex items-center justify-between ${
           lastRunResult.status === 'completed'
-            ? 'bg-green-50 border-green-200'
-            : 'bg-red-50 border-red-200'
+            ? 'bg-success/10 border-success/30'
+            : 'bg-danger/10 border-danger/30'
         }`}>
           <span className={`text-xs font-medium flex items-center gap-1.5 ${
-            lastRunResult.status === 'completed' ? 'text-green-700' : 'text-red-700'
+            lastRunResult.status === 'completed' ? 'text-success' : 'text-danger'
           }`}>
             {lastRunResult.status === 'completed'
               ? <><CheckCircle2 className="h-3.5 w-3.5" />
@@ -2125,7 +2125,7 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
           </span>
           <button
             onClick={() => setLastRunResult(null)}
-            className="text-gray-400 hover:text-gray-600"
+            className="text-text-quaternary hover:text-text-secondary"
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -2134,7 +2134,7 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
 
       {/* ── Summary Bar ── */}
       {(overallScore !== null || runStats || dimBreakdown.length > 0 || allRules.length > 0) && (
-        <div className="shrink-0 border-b border-gray-100 bg-gray-50/80 px-4 py-2">
+        <div className="shrink-0 border-b border-[rgb(var(--border-line))] bg-surface-2/80 px-4 py-2">
           <div className="flex items-center gap-3">
 
             {/* ── Score ── */}
@@ -2143,7 +2143,7 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
                 <div className="relative h-8 w-8 shrink-0">
                   <svg viewBox="0 0 36 36" className="h-8 w-8 -rotate-90">
                     <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor"
-                      className={overallScore >= 90 ? 'text-green-100' : overallScore >= 70 ? 'text-yellow-100' : 'text-red-100'}
+                      className={overallScore >= 90 ? 'text-success' : overallScore >= 70 ? 'text-warning' : 'text-danger'}
                       strokeWidth="3.5" />
                     <circle cx="18" cy="18" r="15" fill="none"
                       stroke={overallScore >= 90 ? '#16a34a' : overallScore >= 70 ? '#ca8a04' : '#dc2626'}
@@ -2153,51 +2153,51 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
                   </svg>
                 </div>
                 <span className={`text-sm font-bold ${
-                  overallScore >= 90 ? 'text-green-700' : overallScore >= 70 ? 'text-yellow-700' : 'text-red-700'
+                  overallScore >= 90 ? 'text-success' : overallScore >= 70 ? 'text-warning' : 'text-danger'
                 }`}>{overallScore.toFixed(0)}%</span>
               </div>
             ) : (
               <div className="flex items-center gap-2 shrink-0">
-                <ShieldCheck className="h-4 w-4 text-gray-300" />
-                <span className="text-xs text-gray-400">No run</span>
+                <ShieldCheck className="h-4 w-4 text-text-quaternary" />
+                <span className="text-xs text-text-quaternary">No run</span>
               </div>
             )}
 
             {/* ── Divider ── */}
-            {runStats && <div className="h-4 w-px bg-gray-200 shrink-0" />}
+            {runStats && <div className="h-4 w-px bg-surface-3 shrink-0" />}
 
             {/* ── Stat counts (inline text) ── */}
             {runStats && (
               <div className="flex items-center gap-2.5 text-xs shrink-0">
                 <span className="flex items-center gap-1">
-                  <CheckCircle2 className="h-3 w-3 text-green-500" />
-                  <span className="font-semibold text-green-700">{runStats.pass}</span>
-                  <span className="text-gray-400">pass</span>
+                  <CheckCircle2 className="h-3 w-3 text-success" />
+                  <span className="font-semibold text-success">{runStats.pass}</span>
+                  <span className="text-text-quaternary">pass</span>
                 </span>
                 <span className="flex items-center gap-1">
-                  <XCircle className="h-3 w-3 text-red-400" />
-                  <span className="font-semibold text-red-600">{runStats.fail}</span>
-                  <span className="text-gray-400">fail</span>
+                  <XCircle className="h-3 w-3 text-danger" />
+                  <span className="font-semibold text-danger">{runStats.fail}</span>
+                  <span className="text-text-quaternary">fail</span>
                 </span>
                 {runStats.error > 0 && (
                   <span className="flex items-center gap-1">
-                    <AlertTriangle className="h-3 w-3 text-orange-400" />
-                    <span className="font-semibold text-orange-600">{runStats.error}</span>
-                    <span className="text-gray-400">error</span>
+                    <AlertTriangle className="h-3 w-3 text-warning" />
+                    <span className="font-semibold text-warning">{runStats.error}</span>
+                    <span className="text-text-quaternary">error</span>
                   </span>
                 )}
                 {runStats.skipped > 0 && (
                   <span className="flex items-center gap-1">
-                    <Info className="h-3 w-3 text-gray-300" />
-                    <span className="font-semibold text-gray-500">{runStats.skipped}</span>
-                    <span className="text-gray-400">skip</span>
+                    <Info className="h-3 w-3 text-text-quaternary" />
+                    <span className="font-semibold text-text-tertiary">{runStats.skipped}</span>
+                    <span className="text-text-quaternary">skip</span>
                   </span>
                 )}
               </div>
             )}
 
             {/* ── Divider ── */}
-            {dimBreakdown.length > 0 && <div className="h-4 w-px bg-gray-200 shrink-0" />}
+            {dimBreakdown.length > 0 && <div className="h-4 w-px bg-surface-3 shrink-0" />}
 
             {/* ── Dimension chips (horizontal) ── */}
             {dimBreakdown.length > 0 && (
@@ -2217,15 +2217,15 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
                       title={`${meta?.label ?? dim.dimension}: ${passed}/${total} passed`}
                       className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors ${
                         active
-                          ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-300'
+                          ? 'bg-brand/10 text-brand ring-1 ring-brand'
                           : healthy
-                          ? 'text-green-700 bg-green-50/60 hover:bg-green-50'
-                          : 'text-red-600 bg-red-50/60 hover:bg-red-50'
+                          ? 'text-success bg-success/10/60 hover:bg-success/10'
+                          : 'text-danger bg-danger/10/60 hover:bg-danger/10'
                       }`}
                     >
-                      <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${active ? 'bg-blue-500' : healthy ? 'bg-green-500' : 'bg-red-400'}`} />
+                      <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${active ? 'bg-brand' : healthy ? 'bg-success' : 'bg-danger/60'}`} />
                       <span className="truncate">{meta?.label ?? dim.dimension}</span>
-                      <span className={`tabular-nums ${active ? 'text-blue-500' : healthy ? 'text-green-500' : 'text-red-400'}`}>{pct}%</span>
+                      <span className={`tabular-nums ${active ? 'text-brand' : healthy ? 'text-success' : 'text-danger'}`}>{pct}%</span>
                     </button>
                   );
                 })}
@@ -2236,7 +2236,7 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
             {logEntries.length > 0 && (
               <button
                 onClick={handleOpenAllLogs}
-                className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-500 hover:bg-gray-50 hover:border-gray-300 transition-colors shrink-0"
+                className="inline-flex items-center gap-1 rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-[11px] font-medium text-text-tertiary hover:bg-surface-2 hover:border-[rgb(var(--border-strong))] transition-colors shrink-0"
                 title="View quality summaries"
               >
                 <Eye className="h-3 w-3" />
@@ -2246,7 +2246,7 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
 
             {/* No-run hint */}
             {overallScore === null && !runStats && dimBreakdown.length === 0 && allRules.length > 0 && (
-              <div className="flex items-center gap-1.5 text-xs text-gray-400">
+              <div className="flex items-center gap-1.5 text-xs text-text-quaternary">
                 <Info className="h-3.5 w-3.5" />
                 Run checks to see scores
               </div>
@@ -2258,32 +2258,32 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
       {/* ── Content ── */}
       <div className="flex-1 overflow-y-auto px-4 py-4">
         {rulesError ? (
-          <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 flex items-start gap-2">
+          <div className="rounded-xl border border-danger/30 bg-danger/10 p-4 text-sm text-danger flex items-start gap-2">
             <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
             <div>
               <p className="font-medium">Could not load quality rules</p>
-              <p className="mt-1 text-red-600">{(rulesError as Error).message}</p>
-              <button onClick={() => refetchRules()} className="mt-2 text-xs text-red-700 underline underline-offset-2">Retry</button>
+              <p className="mt-1 text-danger">{(rulesError as Error).message}</p>
+              <button onClick={() => refetchRules()} className="mt-2 text-xs text-danger underline underline-offset-2">Retry</button>
             </div>
           </div>
         ) : loadingRules && !allRules.length ? (
           <div className="flex flex-col items-center justify-center gap-3 py-16">
-            <Loader2 className="h-8 w-8 animate-spin text-gray-300" />
-            <p className="text-sm text-gray-400">Loading rules…</p>
+            <Loader2 className="h-8 w-8 animate-spin text-text-quaternary" />
+            <p className="text-sm text-text-quaternary">Loading rules…</p>
           </div>
         ) : allRules.length === 0 ? (
           /* Empty state */
           <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
-            <div className="rounded-2xl border-2 border-dashed border-gray-200 p-6">
-              <ShieldCheck className="h-12 w-12 text-gray-200 mx-auto mb-3" />
-              <p className="text-base font-semibold text-gray-700 mb-1">No quality rules yet</p>
-              <p className="text-sm text-gray-400 max-w-xs">
+            <div className="rounded-2xl border-2 border-dashed border-[rgb(var(--border-line))] p-6">
+              <ShieldCheck className="h-12 w-12 text-text-secondary mx-auto mb-3" />
+              <p className="text-base font-semibold text-text-secondary mb-1">No quality rules yet</p>
+              <p className="text-sm text-text-quaternary max-w-xs">
                 Add rules to monitor data completeness, validity, uniqueness, consistency, timeliness, and accuracy across your tables.
               </p>
               {canEdit && (
                 <button
                   onClick={() => openNewRule()}
-                  className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                  className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover"
                 >
                   <Plus className="h-4 w-4" /> Add first rule
                 </button>
@@ -2299,7 +2299,7 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
                     className={`rounded-lg border ${d.border} ${d.bg} px-3 py-2 text-left hover:opacity-90 transition-opacity`}
                   >
                     <p className={`text-xs font-semibold ${d.color}`}>{d.label}</p>
-                    <p className="text-[11px] text-gray-500 mt-0.5">{d.description}</p>
+                    <p className="text-[11px] text-text-tertiary mt-0.5">{d.description}</p>
                   </button>
                 ))}
               </div>

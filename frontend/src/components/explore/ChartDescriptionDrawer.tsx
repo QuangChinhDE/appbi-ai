@@ -78,18 +78,18 @@ function DiffPreviewModal({ oldData, newData, onApply, onClose }: DiffPreviewPro
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 px-4">
-      <div className="flex w-full max-w-2xl flex-col rounded-2xl bg-white shadow-2xl max-h-[90vh]">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-overlay/84 px-4 backdrop-blur-sm">
+      <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-2xl border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg">
         {/* Header */}
         <div className="flex items-center justify-between border-b px-5 py-4">
           <div className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-blue-500" />
-            <h2 className="text-sm font-semibold text-slate-800">AI Description Preview</h2>
-            <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-600">
+            <Sparkles className="h-4 w-4 text-brand" />
+            <h2 className="text-sm font-semibold text-text-primary">AI Description Preview</h2>
+            <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[10px] font-medium text-brand">
               Review &amp; edit before applying
             </span>
           </div>
-          <button onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600">
+          <button onClick={onClose} className="rounded p-1 text-text-quaternary hover:bg-surface-2 hover:text-text-secondary">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -100,14 +100,14 @@ function DiffPreviewModal({ oldData, newData, onApply, onClose }: DiffPreviewPro
           {/* Description */}
           <div>
             <div className="mb-2 flex items-center gap-2">
-              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Description</label>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">Description</label>
               {(oldData.auto_description ?? '') !== desc && (
-                <span className="text-[10px] text-amber-600 font-medium">edited</span>
+                <span className="text-[10px] text-warning font-medium">edited</span>
               )}
             </div>
             {/* Old value */}
             {oldData.auto_description && (
-              <div className="mb-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-500 line-through decoration-red-300">
+              <div className="mb-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-xs text-text-tertiary line-through decoration-red-300">
                 {oldData.auto_description}
               </div>
             )}
@@ -116,27 +116,27 @@ function DiffPreviewModal({ oldData, newData, onApply, onClose }: DiffPreviewPro
               rows={4}
               value={desc}
               onChange={(e) => setDesc(e.target.value)}
-              className="w-full resize-none rounded-lg border border-blue-200 bg-blue-50/30 px-3 py-2 text-xs leading-relaxed text-slate-700 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+              className="w-full resize-none rounded-lg border border-brand/30 bg-brand/10/30 px-3 py-2 text-xs leading-relaxed text-text-secondary focus:border-brand/50 focus:outline-none focus:ring-1 focus:ring-brand"
               placeholder="AI-generated description…"
             />
           </div>
 
           {/* Keywords */}
           <div>
-            <label className="mb-2 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+            <label className="mb-2 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
               <Tag className="h-3 w-3" />
               Search Keywords
             </label>
             <div className="mb-2 flex flex-wrap gap-1.5 min-h-[28px]">
               {keywords.map((kw, i) => (
-                <span key={`${kw}-${i}`} className="inline-flex items-center gap-0.5 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+                <span key={`${kw}-${i}`} className="inline-flex items-center gap-0.5 rounded-full border border-brand/30 bg-brand/10 px-2 py-0.5 text-[11px] font-medium text-brand">
                   {kw}
-                  <button onClick={() => setKeywords((p) => p.filter((_, j) => j !== i))} className="ml-0.5 text-blue-300 hover:text-blue-700">
+                  <button onClick={() => setKeywords((p) => p.filter((_, j) => j !== i))} className="ml-0.5 text-brand hover:text-brand">
                     <X className="h-2.5 w-2.5" />
                   </button>
                 </span>
               ))}
-              {keywords.length === 0 && <span className="text-[10px] italic text-slate-300">None</span>}
+              {keywords.length === 0 && <span className="text-[10px] italic text-text-quaternary">None</span>}
             </div>
             <div className="flex gap-1.5">
               <input
@@ -144,33 +144,33 @@ function DiffPreviewModal({ oldData, newData, onApply, onClose }: DiffPreviewPro
                 onChange={(e) => setKwInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addKeyword())}
                 placeholder="Add keyword, Enter…"
-                className="flex-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] focus:border-blue-400 focus:outline-none"
+                className="flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-[11px] focus:border-brand/50 focus:outline-none"
               />
-              <button onClick={addKeyword} className="rounded-md bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-700">Add</button>
+              <button onClick={addKeyword} className="rounded-md bg-brand px-2 py-1 text-[11px] font-medium text-white hover:bg-brand-hover">Add</button>
             </div>
           </div>
 
           {/* Suggested Questions */}
           <div>
-            <label className="mb-2 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+            <label className="mb-2 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
               <HelpCircle className="h-3 w-3" />
               Suggested Questions
             </label>
             <div className="mb-2 space-y-1.5">
               {questions.map((q, i) => (
-                <div key={i} className="flex items-start gap-2 rounded-md border border-slate-100 bg-slate-50 px-2 py-1.5">
-                  <span className="mt-0.5 shrink-0 text-[10px] font-bold text-slate-300">{i + 1}.</span>
+                <div key={i} className="flex items-start gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5">
+                  <span className="mt-0.5 shrink-0 text-[10px] font-bold text-text-quaternary">{i + 1}.</span>
                   <input
                     value={q}
                     onChange={(e) => setQuestions((p) => p.map((v, j) => j === i ? e.target.value : v))}
-                    className="flex-1 bg-transparent text-[11px] leading-snug text-slate-700 focus:outline-none"
+                    className="flex-1 bg-transparent text-[11px] leading-snug text-text-secondary focus:outline-none"
                   />
-                  <button onClick={() => setQuestions((p) => p.filter((_, j) => j !== i))} className="shrink-0 text-slate-300 hover:text-red-400">
+                  <button onClick={() => setQuestions((p) => p.filter((_, j) => j !== i))} className="shrink-0 text-text-quaternary hover:text-danger">
                     <X className="h-3 w-3" />
                   </button>
                 </div>
               ))}
-              {questions.length === 0 && <p className="text-[10px] italic text-slate-300 px-1">None</p>}
+              {questions.length === 0 && <p className="text-[10px] italic text-text-quaternary px-1">None</p>}
             </div>
             <div className="flex gap-1.5">
               <input
@@ -178,21 +178,21 @@ function DiffPreviewModal({ oldData, newData, onApply, onClose }: DiffPreviewPro
                 onChange={(e) => setQInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addQuestion())}
                 placeholder="Add question, Enter…"
-                className="flex-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] focus:border-blue-400 focus:outline-none"
+                className="flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-[11px] focus:border-brand/50 focus:outline-none"
               />
-              <button onClick={addQuestion} className="rounded-md bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-700">Add</button>
+              <button onClick={addQuestion} className="rounded-md bg-brand px-2 py-1 text-[11px] font-medium text-white hover:bg-brand-hover">Add</button>
             </div>
           </div>
         </div>
 
         {/* Footer */}
         <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
-          <button onClick={onClose} className="rounded-lg border border-slate-200 px-4 py-1.5 text-xs text-slate-600 hover:bg-slate-50">
+          <button onClick={onClose} className="rounded-lg border border-[rgb(var(--border-line))] px-4 py-1.5 text-xs text-text-secondary hover:bg-surface-2">
             Discard
           </button>
           <button
             onClick={() => onApply(desc, keywords, questions)}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-4 py-1.5 text-xs font-medium text-white hover:bg-brand-hover"
           >
             <Check className="h-3.5 w-3.5" />
             Apply to editor
@@ -208,11 +208,11 @@ function DiffPreviewModal({ oldData, newData, onApply, onClose }: DiffPreviewPro
 function SourceBadge({ source }: { source: string | null }) {
   if (!source) return null;
   const cfg: Record<string, { label: string; icon: React.ReactNode; cls: string }> = {
-    auto:     { label: 'AI',     icon: <Bot className="h-2.5 w-2.5" />,           cls: 'bg-blue-50 text-blue-600 border-blue-200' },
-    user:     { label: 'Edited', icon: <User className="h-2.5 w-2.5" />,          cls: 'bg-emerald-50 text-emerald-600 border-emerald-200' },
-    feedback: { label: 'Tuned',  icon: <MessageSquare className="h-2.5 w-2.5" />, cls: 'bg-gray-100 text-gray-500 border-gray-200' },
+    auto:     { label: 'AI',     icon: <Bot className="h-2.5 w-2.5" />,           cls: 'bg-brand/10 text-brand border-brand/30' },
+    user:     { label: 'Edited', icon: <User className="h-2.5 w-2.5" />,          cls: 'bg-success/10 text-success border-success/30' },
+    feedback: { label: 'Tuned',  icon: <MessageSquare className="h-2.5 w-2.5" />, cls: 'bg-surface-2 text-text-tertiary border-[rgb(var(--border-line))]' },
   };
-  const item = cfg[source] ?? { label: source, icon: null, cls: 'bg-gray-100 text-gray-500 border-gray-200' };
+  const item = cfg[source] ?? { label: source, icon: null, cls: 'bg-surface-2 text-text-tertiary border-[rgb(var(--border-line))]' };
   return (
     <span className={`inline-flex items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${item.cls}`}>
       {item.icon}{item.label}
@@ -223,12 +223,12 @@ function SourceBadge({ source }: { source: string | null }) {
 // ─── Status dot map ───────────────────────────────────────────────────────────
 
 const STATUS_DOT: Record<DescriptionGenerationStatus, string> = {
-  idle:       'bg-slate-300',
-  queued:     'bg-amber-400 animate-pulse',
-  processing: 'bg-blue-500 animate-pulse',
-  succeeded:  'bg-emerald-400',
-  failed:     'bg-red-400',
-  stale:      'bg-amber-400',
+  idle:       'bg-surface-3',
+  queued:     'bg-warning/60 animate-pulse',
+  processing: 'bg-brand animate-pulse',
+  succeeded:  'bg-success/60',
+  failed:     'bg-danger/60',
+  stale:      'bg-warning/60',
 };
 
 // ─── Trigger button (rendered in MODE bar) ───────────────────────────────────
@@ -251,11 +251,11 @@ export function ChartDescriptionTrigger({
   return (
     <button
       onClick={onClick}
-      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 transition-colors"
+      className="inline-flex items-center gap-1.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-xs font-medium text-text-secondary hover:border-brand/40 hover:bg-brand/15 hover:text-brand transition-colors"
       title="AI Description"
     >
       {isGenerating
-        ? <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+        ? <Loader2 className="h-3 w-3 animate-spin text-brand" />
         : <Bot className="h-3 w-3" />
       }
       <span>AI Description</span>
@@ -263,7 +263,7 @@ export function ChartDescriptionTrigger({
       {data?.description_source && !isGenerating && (
         <SourceBadge source={data.description_source} />
       )}
-      <ChevronRight className="h-3 w-3 text-slate-400" />
+      <ChevronRight className="h-3 w-3 text-text-quaternary" />
     </button>
   );
 }
@@ -401,50 +401,50 @@ export function ChartDescriptionDrawer({ chartId, canEdit, open, onClose }: Prop
     <>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 z-40 bg-black/20"
+        className="fixed inset-0 z-40 bg-overlay/84 backdrop-blur-[2px]"
         onClick={onClose}
       />
 
       {/* Slide-over panel */}
-      <div className="fixed right-0 top-0 z-50 flex h-full w-[420px] flex-col bg-white shadow-2xl">
+      <div className="fixed right-0 top-0 z-50 flex h-full w-[420px] flex-col border-l border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg">
         {/* Header */}
         <div className="flex items-center justify-between border-b px-5 py-4">
           <div className="flex items-center gap-2">
-            <Bot className="h-4 w-4 text-blue-500" />
-            <h2 className="text-sm font-semibold text-slate-800">AI Description</h2>
+            <Bot className="h-4 w-4 text-brand" />
+            <h2 className="text-sm font-semibold text-text-primary">AI Description</h2>
             <span className={`h-2 w-2 rounded-full ${dotCls}`} title={status} />
             {data?.description_source && !isGenerating && (
               <SourceBadge source={data.description_source} />
             )}
-            {isGenerating && <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />}
+            {isGenerating && <Loader2 className="h-3.5 w-3.5 animate-spin text-brand" />}
           </div>
-          <button onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600">
+          <button onClick={onClose} className="rounded p-1 text-text-quaternary hover:bg-surface-2 hover:text-text-secondary">
             <X className="h-4 w-4" />
           </button>
         </div>
 
         {/* Generate bar */}
         {canEdit && (
-          <div className="border-b bg-slate-50 px-5 py-3">
+          <div className="border-b bg-surface-2 px-5 py-3">
             {isGenerating ? (
-              <div className="flex items-center gap-2 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700">
+              <div className="flex items-center gap-2 rounded-lg bg-brand/10 px-3 py-2 text-xs text-brand">
                 <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
                 <span>
                   {status === 'queued' ? 'Queued — waiting for AI...' : 'AI is analysing this chart...'}
-                  <span className="ml-1 text-blue-400">Preview will open when ready.</span>
+                  <span className="ml-1 text-brand">Preview will open when ready.</span>
                 </span>
               </div>
             ) : (
               <div className="flex items-center justify-between gap-3">
-                <p className="text-[11px] text-slate-500">
+                <p className="text-[11px] text-text-tertiary">
                   Let AI write a description from chart structure &amp; data context.
                   <br />
-                  <span className="text-slate-400">You can review &amp; edit before applying.</span>
+                  <span className="text-text-quaternary">You can review &amp; edit before applying.</span>
                 </p>
                 <button
                   onClick={handleRegen}
                   disabled={regenMut.isPending}
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:opacity-50"
                 >
                   <Sparkles className="h-3.5 w-3.5" />
                   {hasContent ? 'Regenerate' : 'Generate with AI'}
@@ -456,14 +456,14 @@ export function ChartDescriptionDrawer({ chartId, canEdit, open, onClose }: Prop
 
         {/* Error / stale banners */}
         {status === 'failed' && !isGenerating && (
-          <div className="border-b border-red-100 bg-red-50 px-5 py-2 text-xs text-red-700">
+          <div className="border-b border-danger/30 bg-danger/10 px-5 py-2 text-xs text-danger">
             <span className="font-medium">Generation failed — </span>
             {data?.generation_error || 'Unknown error.'}
           </div>
         )}
         {status === 'stale' && !isGenerating && (
-          <div className="flex items-center gap-1.5 border-b border-amber-100 bg-amber-50 px-5 py-2 text-xs text-amber-800">
-            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+          <div className="flex items-center gap-1.5 border-b border-warning/20 bg-warning/10 px-5 py-2 text-xs text-warning">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warning" />
             {data?.stale_reason || 'Chart changed since last AI description.'}
           </div>
         )}
@@ -472,19 +472,19 @@ export function ChartDescriptionDrawer({ chartId, canEdit, open, onClose }: Prop
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 space-y-5">
           {isLoading ? (
             <div className="space-y-3 animate-pulse">
-              <div className="h-3 w-1/3 rounded bg-slate-100" />
-              <div className="h-20 rounded bg-slate-100" />
-              <div className="h-3 w-1/4 rounded bg-slate-100" />
-              <div className="h-8 rounded bg-slate-100" />
+              <div className="h-3 w-1/3 rounded bg-surface-2" />
+              <div className="h-20 rounded bg-surface-2" />
+              <div className="h-3 w-1/4 rounded bg-surface-2" />
+              <div className="h-8 rounded bg-surface-2" />
             </div>
           ) : (
             <>
               {/* Description */}
               <div>
-                <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   <Bot className="h-3 w-3" />
                   Description
-                  <span className="ml-1 font-normal normal-case text-slate-300">— AI Chat search · tooltip</span>
+                  <span className="ml-1 font-normal normal-case text-text-quaternary">— AI Chat search · tooltip</span>
                 </label>
                 <textarea
                   rows={5}
@@ -492,29 +492,29 @@ export function ChartDescriptionDrawer({ chartId, canEdit, open, onClose }: Prop
                   onChange={(e) => { setDescDraft(e.target.value); setIsDirty(true); }}
                   disabled={!canEdit}
                   placeholder={canEdit ? 'Describe what this chart shows and why it matters...' : 'No description yet.'}
-                  className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-700 placeholder-slate-300 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="w-full resize-none rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-xs leading-relaxed text-text-secondary placeholder-slate-300 focus:border-brand/50 focus:outline-none focus:ring-1 focus:ring-brand disabled:cursor-not-allowed disabled:opacity-60"
                 />
               </div>
 
               {/* Keywords */}
               <div>
-                <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   <Tag className="h-3 w-3" />
                   Search Keywords
-                  <span className="ml-1 font-normal normal-case text-slate-300">— vector index enrichment</span>
+                  <span className="ml-1 font-normal normal-case text-text-quaternary">— vector index enrichment</span>
                 </label>
                 <div className="mb-2 flex min-h-[28px] flex-wrap gap-1">
                   {keywords.map((kw, i) => (
-                    <span key={`${kw}-${i}`} className="inline-flex items-center gap-0.5 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+                    <span key={`${kw}-${i}`} className="inline-flex items-center gap-0.5 rounded-full border border-brand/30 bg-brand/10 px-2 py-0.5 text-[11px] font-medium text-brand">
                       {kw}
                       {canEdit && (
-                        <button onClick={() => { setKeywords((p) => p.filter((_, j) => j !== i)); setIsDirty(true); }} className="ml-0.5 text-blue-300 hover:text-blue-700">
+                        <button onClick={() => { setKeywords((p) => p.filter((_, j) => j !== i)); setIsDirty(true); }} className="ml-0.5 text-brand hover:text-brand">
                           <X className="h-2.5 w-2.5" />
                         </button>
                       )}
                     </span>
                   ))}
-                  {keywords.length === 0 && <span className="text-[10px] italic text-slate-300">None yet.</span>}
+                  {keywords.length === 0 && <span className="text-[10px] italic text-text-quaternary">None yet.</span>}
                 </div>
                 {canEdit && (
                   <div className="flex gap-1.5">
@@ -523,24 +523,24 @@ export function ChartDescriptionDrawer({ chartId, canEdit, open, onClose }: Prop
                       onChange={(e) => setKwInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addKeyword())}
                       placeholder="Add keyword, press Enter…"
-                      className="flex-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] focus:border-blue-400 focus:outline-none"
+                      className="flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-[11px] focus:border-brand/50 focus:outline-none"
                     />
-                    <button onClick={addKeyword} className="rounded-md bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-700">Add</button>
+                    <button onClick={addKeyword} className="rounded-md bg-brand px-2 py-1 text-[11px] font-medium text-white hover:bg-brand-hover">Add</button>
                   </div>
                 )}
               </div>
 
               {/* Suggested Questions */}
               <div>
-                <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   <HelpCircle className="h-3 w-3" />
                   Suggested Questions
-                  <span className="ml-1 font-normal normal-case text-slate-300">— AI Chat suggestions</span>
+                  <span className="ml-1 font-normal normal-case text-text-quaternary">— AI Chat suggestions</span>
                 </label>
                 <div className="mb-2 space-y-1.5">
                   {questions.map((q, i) => (
-                    <div key={i} className="flex items-start gap-1.5 rounded-md border border-slate-100 bg-slate-50 px-2 py-1.5">
-                      <span className="mt-0.5 shrink-0 text-[10px] font-bold text-slate-300">{i + 1}.</span>
+                    <div key={i} className="flex items-start gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5">
+                      <span className="mt-0.5 shrink-0 text-[10px] font-bold text-text-quaternary">{i + 1}.</span>
                       {canEdit ? (
                         <input
                           value={q}
@@ -549,19 +549,19 @@ export function ChartDescriptionDrawer({ chartId, canEdit, open, onClose }: Prop
                             setQuestions((p) => p.map((item, j) => j === i ? v : item));
                             setIsDirty(true);
                           }}
-                          className="flex-1 bg-transparent text-[11px] leading-snug text-slate-700 focus:outline-none"
+                          className="flex-1 bg-transparent text-[11px] leading-snug text-text-secondary focus:outline-none"
                         />
                       ) : (
-                        <span className="flex-1 text-[11px] leading-snug text-slate-700">{q}</span>
+                        <span className="flex-1 text-[11px] leading-snug text-text-secondary">{q}</span>
                       )}
                       {canEdit && (
-                        <button onClick={() => { setQuestions((p) => p.filter((_, j) => j !== i)); setIsDirty(true); }} className="shrink-0 text-slate-300 hover:text-red-400">
+                        <button onClick={() => { setQuestions((p) => p.filter((_, j) => j !== i)); setIsDirty(true); }} className="shrink-0 text-text-quaternary hover:text-danger">
                           <X className="h-3 w-3" />
                         </button>
                       )}
                     </div>
                   ))}
-                  {questions.length === 0 && <p className="text-[10px] italic text-slate-300 px-1">None yet.</p>}
+                  {questions.length === 0 && <p className="text-[10px] italic text-text-quaternary px-1">None yet.</p>}
                 </div>
                 {canEdit && (
                   <div className="flex gap-1.5">
@@ -570,9 +570,9 @@ export function ChartDescriptionDrawer({ chartId, canEdit, open, onClose }: Prop
                       onChange={(e) => setQInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addQuestion())}
                       placeholder="Add question, press Enter…"
-                      className="flex-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] focus:border-blue-400 focus:outline-none"
+                      className="flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-[11px] focus:border-brand/50 focus:outline-none"
                     />
-                    <button onClick={addQuestion} className="rounded-md bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-700">Add</button>
+                    <button onClick={addQuestion} className="rounded-md bg-brand px-2 py-1 text-[11px] font-medium text-white hover:bg-brand-hover">Add</button>
                   </div>
                 )}
               </div>
@@ -582,11 +582,11 @@ export function ChartDescriptionDrawer({ chartId, canEdit, open, onClose }: Prop
 
         {/* Footer save bar */}
         {canEdit && (
-          <div className="flex items-center justify-between gap-2 border-t bg-white px-5 py-3">
+          <div className="flex items-center justify-between gap-2 border-t bg-surface-1 px-5 py-3">
             {isDirty ? (
-              <span className="text-[10px] font-medium text-amber-600">Unsaved changes</span>
+              <span className="text-[10px] font-medium text-warning">Unsaved changes</span>
             ) : (
-              <span className="text-[10px] text-slate-400">All changes saved</span>
+              <span className="text-[10px] text-text-quaternary">All changes saved</span>
             )}
             <div className="flex gap-2">
               {isDirty && (
@@ -597,7 +597,7 @@ export function ChartDescriptionDrawer({ chartId, canEdit, open, onClose }: Prop
                     setQuestions(data?.common_questions ?? []);
                     setIsDirty(false);
                   }}
-                  className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-500 hover:bg-slate-50"
+                  className="rounded-lg border border-[rgb(var(--border-line))] px-3 py-1.5 text-xs text-text-tertiary hover:bg-surface-2"
                 >
                   Discard
                 </button>
@@ -605,7 +605,7 @@ export function ChartDescriptionDrawer({ chartId, canEdit, open, onClose }: Prop
               <button
                 onClick={handleSave}
                 disabled={updateMut.isPending || !isDirty}
-                className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex items-center gap-1 rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Check className="h-3 w-3" />
                 {updateMut.isPending ? 'Saving…' : 'Save'}

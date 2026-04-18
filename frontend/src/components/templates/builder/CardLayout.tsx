@@ -44,8 +44,8 @@ export function CardLayout({ definition, previewData, isLoading }: CardLayoutPro
   return (
     <div>
       {/* Card header bar */}
-      <div className="flex items-center justify-between border-b border-gray-700 bg-gray-900 px-4 py-3">
-        <span className="text-xs font-mono text-gray-400">
+      <div className="flex items-center justify-between border-b border-[rgb(var(--border-strong))] bg-surface-inverse px-4 py-3">
+        <span className="text-xs font-mono text-text-quaternary">
           {cardsPerRow} cards / row · {rows.length} records
         </span>
       </div>
@@ -59,13 +59,13 @@ export function CardLayout({ definition, previewData, isLoading }: CardLayoutPro
         }}
       >
         {isLoading && (
-          <div className="col-span-full py-8 text-center text-xs text-gray-500">
+          <div className="col-span-full py-8 text-center text-xs text-text-tertiary">
             Loading data…
           </div>
         )}
 
         {!isLoading && rows.length === 0 && (
-          <div className="col-span-full py-8 text-center text-xs italic text-gray-400">
+          <div className="col-span-full py-8 text-center text-xs italic text-text-quaternary">
             No data. Bind a dataset and configure card columns.
           </div>
         )}
@@ -77,12 +77,12 @@ export function CardLayout({ definition, previewData, isLoading }: CardLayoutPro
           return (
             <div
               key={ri}
-              className="overflow-hidden rounded-lg border border-gray-200 hover:shadow-md transition-all"
+              className="overflow-hidden rounded-lg border border-[rgb(var(--border-line))] hover:shadow-md transition-all"
             >
               {/* Card header */}
-              <div className="flex items-center justify-between bg-gray-900 px-3 py-1.5">
+              <div className="flex items-center justify-between bg-surface-inverse px-3 py-1.5">
                 <strong className="text-xs text-white">{title}</strong>
-                <span className="text-[10px] font-mono text-gray-400">{subtitle}</span>
+                <span className="text-[10px] font-mono text-text-quaternary">{subtitle}</span>
               </div>
 
               {/* Card body */}
@@ -94,10 +94,10 @@ export function CardLayout({ definition, previewData, isLoading }: CardLayoutPro
                   return (
                     <div
                       key={col.id}
-                      className="flex items-center justify-between border-b border-gray-100 py-1 last:border-b-0 text-xs"
+                      className="flex items-center justify-between border-b border-[rgb(var(--border-line))] py-1 last:border-b-0 text-xs"
                     >
-                      <span className="text-gray-700">{col.label}</span>
-                      <span className={`font-mono ${isDeduction ? 'text-red-600' : 'text-gray-900'}`}>
+                      <span className="text-text-secondary">{col.label}</span>
+                      <span className={`font-mono ${isDeduction ? 'text-danger' : 'text-text-primary'}`}>
                         {isDeduction && !val.startsWith('-') ? `−${val}` : val}
                       </span>
                     </div>
@@ -107,9 +107,9 @@ export function CardLayout({ definition, previewData, isLoading }: CardLayoutPro
 
               {/* Card total */}
               {cardConfig?.totalLabel && (
-                <div className="flex items-center justify-between border-t border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold">
-                  <span className="text-blue-900">{cardConfig.totalLabel}</span>
-                  <span className="font-mono text-blue-700">
+                <div className="flex items-center justify-between border-t border-brand/30 bg-brand/10 px-3 py-1.5 text-xs font-semibold">
+                  <span className="text-brand">{cardConfig.totalLabel}</span>
+                  <span className="font-mono text-brand">
                     {columns
                       .filter((c) => c.type === 'subtotal')
                       .map((c) => resolveCell(c, row))

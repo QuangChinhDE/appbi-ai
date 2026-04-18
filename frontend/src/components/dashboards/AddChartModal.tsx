@@ -343,7 +343,7 @@ export function AddChartModal({
         <button
           type="button"
           onClick={handleClose}
-          className="rounded-md border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50"
+          className="rounded-md border border-[rgb(var(--border-strong))] px-4 py-2 text-sm hover:bg-surface-2"
           disabled={isAdding}
         >
           Cancel
@@ -352,7 +352,7 @@ export function AddChartModal({
           type="button"
           onClick={() => void handleAddExisting()}
           disabled={!selectedChartId || isAdding}
-          className="inline-flex items-center rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Plus className="mr-2 h-4 w-4" />
           {isAdding ? 'Adding...' : 'Add Chart'}
@@ -363,7 +363,7 @@ export function AddChartModal({
       <button
         type="button"
         onClick={handleClose}
-        className="rounded-md border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50"
+        className="rounded-md border border-[rgb(var(--border-strong))] px-4 py-2 text-sm hover:bg-surface-2"
       >
         Close
       </button>
@@ -380,16 +380,16 @@ export function AddChartModal({
       contentClassName="max-w-[90vw] xl:max-w-[82rem] h-[90vh] max-h-[90vh]"
     >
       <div className="flex h-full min-h-0 flex-col">
-        <div className="border-b border-gray-200 bg-gray-50/90 px-5 py-3">
+        <div className="border-b border-[rgb(var(--border-line))] bg-surface-2/90 px-5 py-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+            <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-0.5 shadow-linear-sm">
               <button
                 type="button"
                 onClick={() => setMode('existing')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
                   mode === 'existing'
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'text-gray-600 hover:bg-gray-50'
+                    ? 'bg-brand text-white shadow-sm'
+                    : 'text-text-secondary hover:bg-surface-2'
                 }`}
               >
                 <BarChart3 className="h-3.5 w-3.5" />
@@ -400,8 +400,8 @@ export function AddChartModal({
                 onClick={() => setMode('create')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
                   mode === 'create'
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'text-gray-600 hover:bg-gray-50'
+                    ? 'bg-brand text-white shadow-sm'
+                    : 'text-text-secondary hover:bg-surface-2'
                 }`}
               >
                 <Sparkles className="h-3.5 w-3.5" />
@@ -409,41 +409,41 @@ export function AddChartModal({
               </button>
             </div>
 
-            <div className="inline-flex flex-wrap items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 shadow-sm">
+            <div className="inline-flex flex-wrap items-center gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 shadow-linear-sm">
               <div className="flex items-center gap-2">
-                <label className="text-[11px] font-medium uppercase tracking-wide text-gray-500">W</label>
+                <label className="text-[11px] font-medium uppercase tracking-wide text-text-tertiary">W</label>
                 <input
                   type="number"
                   value={width}
                   onChange={(event) => setWidth(clampGridValue(Number(event.target.value), 2, 12, 4))}
                   min={2}
                   max={12}
-                  className="h-8 w-14 rounded-md border border-gray-300 px-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="h-8 w-14 rounded-md border border-[rgb(var(--border-strong))] px-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
                   disabled={isAdding}
                 />
               </div>
               <div className="flex items-center gap-2">
-                <label className="text-[11px] font-medium uppercase tracking-wide text-gray-500">H</label>
+                <label className="text-[11px] font-medium uppercase tracking-wide text-text-tertiary">H</label>
                 <input
                   type="number"
                   value={height}
                   onChange={(event) => setHeight(clampGridValue(Number(event.target.value), 2, 10, 4))}
                   min={2}
                   max={10}
-                  className="h-8 w-14 rounded-md border border-gray-300 px-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="h-8 w-14 rounded-md border border-[rgb(var(--border-strong))] px-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
                   disabled={isAdding}
                 />
               </div>
             </div>
           </div>
 
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text-tertiary">
             <span className="truncate">
               {mode === 'existing'
                 ? 'Search saved charts, review the preview on the right, then add to the current page.'
                 : 'Build a new chart without leaving the dashboard. Saving will also add it to this page.'}
             </span>
-            <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+            <span className="rounded-full bg-brand/15 px-2 py-0.5 text-[11px] font-medium text-brand">
               Placement: {width}w x {height}h
             </span>
           </div>
@@ -451,33 +451,33 @@ export function AddChartModal({
 
         {mode === 'existing' ? (
           <div className="flex h-full min-h-0 gap-3 px-5 py-4">
-            <div className="min-w-0 flex-[1.45] overflow-hidden rounded-xl border border-gray-200 bg-gray-50">
-              <div className="border-b border-gray-200 px-4 py-3">
+            <div className="min-w-0 flex-[1.45] overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-2">
+              <div className="border-b border-[rgb(var(--border-line))] px-4 py-3">
                 <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_170px_150px]">
                   <label className="block">
-                    <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-text-tertiary">
                       Search charts
                     </span>
                     <div className="relative">
-                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-quaternary" />
                       <input
                         type="text"
                         value={searchText}
                         onChange={(event) => setSearchText(event.target.value)}
                         placeholder="Search by name, dataset, metric, tag..."
-                        className="w-full rounded-md border border-gray-300 py-2 pl-9 pr-3 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="w-full rounded-md border border-[rgb(var(--border-strong))] py-2 pl-9 pr-3 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
                       />
                     </div>
                   </label>
 
                   <label className="block">
-                    <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-text-tertiary">
                       Chart type
                     </span>
                     <select
                       value={typeFilter}
                       onChange={(event) => setTypeFilter(event.target.value as ChartTypeFilter)}
-                      className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
                     >
                       {CHART_TYPE_OPTIONS.map((option) => (
                         <option key={option.value} value={option.value}>
@@ -488,13 +488,13 @@ export function AddChartModal({
                   </label>
 
                   <label className="block">
-                    <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
+                    <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-text-tertiary">
                       Ownership
                     </span>
                     <select
                       value={scopeFilter}
                       onChange={(event) => setScopeFilter(event.target.value as ChartListScope)}
-                      className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
                     >
                       <option value="all">All accessible</option>
                       <option value="mine">Mine only</option>
@@ -504,12 +504,12 @@ export function AddChartModal({
                 </div>
 
                 {currentPageName && currentPageChartIds.size > 0 && (
-                  <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  <div className="mt-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
                     Charts already added to <span className="font-semibold">{currentPageName}</span> are hidden from this picker.
                   </div>
                 )}
 
-                <div className="mt-2 text-sm text-gray-600">
+                <div className="mt-2 text-sm text-text-secondary">
                   {isLoading
                     ? 'Loading chart catalog...'
                     : `${availableCharts.length} chart${availableCharts.length !== 1 ? 's' : ''} available for this page`}
@@ -518,7 +518,7 @@ export function AddChartModal({
 
               <div className="h-full min-h-0 overflow-y-auto px-4 py-3">
                 {!isLoading && availableCharts.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-gray-300 bg-white px-4 py-10 text-center text-sm text-gray-500">
+                  <div className="rounded-lg border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center text-sm text-text-tertiary">
                     No charts match the current search or filters.
                   </div>
                 ) : (
@@ -526,8 +526,8 @@ export function AddChartModal({
                     {sectionedCharts.map((section) => (
                       <div key={section.key}>
                         <div className="mb-2">
-                          <h3 className="text-sm font-semibold text-gray-900">{section.title}</h3>
-                          <p className="text-xs text-gray-500">{section.helper}</p>
+                          <h3 className="text-sm font-semibold text-text-primary">{section.title}</h3>
+                          <p className="text-xs text-text-tertiary">{section.helper}</p>
                         </div>
 
                         <div className="space-y-2">
@@ -545,16 +545,16 @@ export function AddChartModal({
                                 onClick={() => handleChartChange(chart.id)}
                                 className={`w-full rounded-xl border px-4 py-3 text-left transition-colors ${
                                   isSelected
-                                    ? 'border-blue-500 bg-blue-50 shadow-sm'
-                                    : 'border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50/40'
+                                    ? 'border-brand bg-brand/10 shadow-sm'
+                                    : 'border-[rgb(var(--border-line))] bg-surface-1 hover:border-brand/40 hover:bg-brand/15/40'
                                 }`}
                               >
                                 <div className="flex flex-wrap items-start justify-between gap-3">
                                   <div className="min-w-0 flex-1">
                                     <div className="flex flex-wrap items-center gap-2">
-                                      <p className="truncate text-sm font-semibold text-gray-900">{chart.name}</p>
+                                      <p className="truncate text-sm font-semibold text-text-primary">{chart.name}</p>
                                       {chart.is_shared && (
-                                        <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700">
+                                        <span className="rounded-full bg-brand/15 px-2 py-0.5 text-[11px] font-medium text-brand">
                                           Shared
                                         </span>
                                       )}
@@ -562,30 +562,30 @@ export function AddChartModal({
                                     </div>
 
                                     {sourceLabel && (
-                                      <p className="mt-1 truncate text-xs font-medium text-gray-600">{sourceLabel}</p>
+                                      <p className="mt-1 truncate text-xs font-medium text-text-secondary">{sourceLabel}</p>
                                     )}
 
                                     {chart.description && (
-                                      <p className="mt-1 line-clamp-2 text-xs text-gray-500">{chart.description}</p>
+                                      <p className="mt-1 line-clamp-2 text-xs text-text-tertiary">{chart.description}</p>
                                     )}
 
-                                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-gray-500">
-                                      <span className="rounded-full bg-blue-50 px-2 py-1 font-medium text-blue-700">
+                                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-text-tertiary">
+                                      <span className="rounded-full bg-brand/10 px-2 py-1 font-medium text-brand">
                                         {buildChartTypeLabel(chart.chart_type)}
                                       </span>
                                       {pageLabels.length > 0 && (
-                                        <span className="rounded-full bg-gray-100 px-2 py-1 font-medium text-gray-700">
+                                        <span className="rounded-full bg-surface-2 px-2 py-1 font-medium text-text-secondary">
                                           Used on {pageLabels.join(', ')}
                                         </span>
                                       )}
-                                      <span className="rounded-full bg-gray-100 px-2 py-1 font-medium text-gray-700">
+                                      <span className="rounded-full bg-surface-2 px-2 py-1 font-medium text-text-secondary">
                                         Updated {new Date(chart.updated_at).toLocaleDateString()}
                                       </span>
                                     </div>
                                   </div>
 
                                   <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                                    isSelected ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'
+                                    isSelected ? 'bg-brand text-white' : 'bg-surface-2 text-text-secondary'
                                   }`}>
                                     {isSelected ? 'Selected' : 'Select'}
                                   </span>
@@ -602,37 +602,37 @@ export function AddChartModal({
             </div>
 
             <div className="flex min-w-[340px] max-w-[360px] flex-1 flex-col gap-3 overflow-y-auto">
-              <div className="rounded-xl border border-gray-200 bg-white p-3.5">
-                <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Selected chart</p>
+              <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3.5">
+                <p className="text-xs font-medium uppercase tracking-wide text-text-tertiary">Selected chart</p>
                 {selectedChart ? (
                   <div className="mt-2.5 space-y-2.5">
                     <div>
-                      <h3 className="text-sm font-semibold text-gray-900">{selectedChart.name}</h3>
+                      <h3 className="text-sm font-semibold text-text-primary">{selectedChart.name}</h3>
                       <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700">
+                        <span className="rounded-full bg-brand/10 px-2 py-0.5 text-xs font-medium text-brand">
                           {buildChartTypeLabel(selectedChart.chart_type)}
                         </span>
                         <OwnerBadge email={selectedChart.owner_email} />
                       </div>
                     </div>
                     {buildChartSourceLabel(selectedChart) && (
-                      <p className="text-sm text-gray-600">{buildChartSourceLabel(selectedChart)}</p>
+                      <p className="text-sm text-text-secondary">{buildChartSourceLabel(selectedChart)}</p>
                     )}
                     {selectedChart.description && (
-                      <p className="text-sm text-gray-500">{selectedChart.description}</p>
+                      <p className="text-sm text-text-tertiary">{selectedChart.description}</p>
                     )}
                   </div>
                 ) : (
-                  <p className="mt-3 text-sm text-gray-500">
+                  <p className="mt-3 text-sm text-text-tertiary">
                     Pick a chart from the catalog to review its details and add it to this page.
                   </p>
                 )}
               </div>
 
-              <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
-                <div className="border-b border-gray-200 px-4 py-2.5">
-                  <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Preview</p>
-                  <p className="mt-1 text-xs text-gray-500">Saved chart preview using its current defaults.</p>
+              <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+                <div className="border-b border-[rgb(var(--border-line))] px-4 py-2.5">
+                  <p className="text-xs font-medium uppercase tracking-wide text-text-tertiary">Preview</p>
+                  <p className="mt-1 text-xs text-text-tertiary">Saved chart preview using its current defaults.</p>
                 </div>
                 <div className="h-[280px] p-3.5">
                   {selectedChart ? (
@@ -645,10 +645,10 @@ export function AddChartModal({
                       showChartTypeLabel={false}
                     />
                   ) : (
-                    <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 text-center">
+                    <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 text-center">
                       <div>
-                        <BarChart3 className="mx-auto mb-2 h-8 w-8 text-gray-300" />
-                        <p className="text-sm text-gray-500">Select a chart to preview it here.</p>
+                        <BarChart3 className="mx-auto mb-2 h-8 w-8 text-text-quaternary" />
+                        <p className="text-sm text-text-tertiary">Select a chart to preview it here.</p>
                       </div>
                     </div>
                   )}
@@ -656,12 +656,12 @@ export function AddChartModal({
               </div>
 
               {chartParams.length > 0 && (
-                <div className="overflow-hidden rounded-xl border border-violet-200 bg-white">
-                  <div className="border-b border-violet-100 bg-violet-50 px-4 py-2.5">
-                    <p className="text-xs font-medium uppercase tracking-wide text-violet-700">
+                <div className="overflow-hidden rounded-xl border border-brand/30 bg-surface-1">
+                  <div className="border-b border-brand/30 bg-brand/10 px-4 py-2.5">
+                    <p className="text-xs font-medium uppercase tracking-wide text-brand">
                       Instance parameters
                     </p>
-                    <p className="mt-1 text-xs text-violet-500">Leave blank to keep the chart default values.</p>
+                    <p className="mt-1 text-xs text-brand">Leave blank to keep the chart default values.</p>
                   </div>
                   <div className="space-y-3 p-3.5">
                     {chartParams.map((param) => {
@@ -676,11 +676,11 @@ export function AddChartModal({
 
                       return (
                         <div key={param.parameter_name}>
-                          <label className="mb-1 block text-xs font-medium text-gray-700">
+                          <label className="mb-1 block text-xs font-medium text-text-secondary">
                             {param.parameter_name}
-                            <span className="ml-1 font-normal text-gray-400">({param.parameter_type})</span>
+                            <span className="ml-1 font-normal text-text-quaternary">({param.parameter_type})</span>
                             {param.description && (
-                              <span className="ml-1 font-normal text-gray-400">- {param.description}</span>
+                              <span className="ml-1 font-normal text-text-quaternary">- {param.description}</span>
                             )}
                           </label>
                           <input
@@ -692,11 +692,11 @@ export function AddChartModal({
                             }))}
                             placeholder={placeholder}
                             inputMode={inputKind === 'number' ? 'decimal' : undefined}
-                            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-violet-400"
+                            className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
                             disabled={isAdding}
                           />
                           {inputKind === 'date_range' && (
-                            <p className="mt-1 text-[11px] text-gray-500">Use `start..end` or `start,end`.</p>
+                            <p className="mt-1 text-[11px] text-text-tertiary">Use `start..end` or `start,end`.</p>
                           )}
                         </div>
                       );
@@ -705,23 +705,23 @@ export function AddChartModal({
                 </div>
               )}
 
-              <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+              <div className="rounded-xl border border-brand/30 bg-brand/10 px-4 py-3 text-sm text-brand">
                 The chart will be added at the top{currentPageName ? ` of ${currentPageName}` : ''}. You can drag or resize it after adding.
               </div>
             </div>
           </div>
         ) : (
           <div className="flex h-full min-h-0 flex-col overflow-hidden">
-            <div className="border-b border-gray-200 bg-white px-5 py-3">
+            <div className="border-b border-[rgb(var(--border-line))] bg-surface-1 px-5 py-3">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div>
-                  <p className="text-sm font-medium text-gray-900">Create a new chart</p>
-                  <p className="mt-1 text-xs text-gray-500">
+                  <p className="text-sm font-medium text-text-primary">Create a new chart</p>
+                  <p className="mt-1 text-xs text-text-tertiary">
                     Save from the builder to create the chart and add it to this dashboard in one step.
                   </p>
                 </div>
                 {preferredDatasetId && (
-                  <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+                  <span className="rounded-full bg-brand/10 px-3 py-1 text-xs font-medium text-brand">
                     Prefilled from current dashboard dataset
                   </span>
                 )}

@@ -167,18 +167,18 @@ function getTableBadgeLabel(table: Pick<DatasetTable, 'source_kind'> | null | un
 
 function getTableIcon(table: Pick<DatasetTable, 'source_kind'> | null | undefined): React.ReactNode {
   if (isGeneratedCalendarTable(table)) {
-    return <Calendar className="h-4 w-4 flex-shrink-0 text-blue-500" />;
+    return <Calendar className="h-4 w-4 flex-shrink-0 text-brand" />;
   }
   if (isCalculatedTable(table)) {
-    return <Sigma className="h-4 w-4 flex-shrink-0 text-violet-500" />;
+    return <Sigma className="h-4 w-4 flex-shrink-0 text-brand" />;
   }
-  return <Database className="h-4 w-4 flex-shrink-0 text-gray-400" />;
+  return <Database className="h-4 w-4 flex-shrink-0 text-text-quaternary" />;
 }
 
 function getTableGroupIcon(group: TableGroupKey): React.ReactNode {
-  if (group === 'calendar') return <Calendar className="h-4 w-4 text-blue-500" />;
-  if (group === 'calculated') return <Sigma className="h-4 w-4 text-violet-500" />;
-  return <Database className="h-4 w-4 text-gray-500" />;
+  if (group === 'calendar') return <Calendar className="h-4 w-4 text-brand" />;
+  if (group === 'calculated') return <Sigma className="h-4 w-4 text-brand" />;
+  return <Database className="h-4 w-4 text-text-tertiary" />;
 }
 
 function getTablePrimaryName(table: Partial<DatasetTable> | null | undefined): string {
@@ -203,7 +203,7 @@ function getDeleteConstraintMeta(constraint: any): {
   if (constraint?.type === 'chart' || constraint?.type === 'chart_filter') {
     return {
       badge: 'Chart',
-      className: 'text-red-500 bg-red-100',
+      className: 'text-danger bg-danger/15',
       title: constraint?.object_label || (constraint?.name ? `Chart "${constraint.name}"` : 'Chart dependency'),
       description: constraint?.detail || 'This chart still depends on the table you are trying to delete.',
     };
@@ -211,7 +211,7 @@ function getDeleteConstraintMeta(constraint: any): {
   if (constraint?.type === 'dashboard_filter') {
     return {
       badge: 'Filter',
-      className: 'text-blue-600 bg-blue-100',
+      className: 'text-brand bg-brand/15',
       title: constraint?.object_label || (constraint?.name ? `Dashboard "${constraint.name}"` : 'Dashboard filter'),
       description: constraint?.detail || (
         constraint?.field
@@ -223,7 +223,7 @@ function getDeleteConstraintMeta(constraint: any): {
   if (constraint?.type === 'public_link_filter') {
     return {
       badge: 'Public',
-      className: 'text-indigo-600 bg-indigo-100',
+      className: 'text-brand bg-brand/15',
       title: constraint?.object_label || (constraint?.name ? `Public link "${constraint.name}"` : 'Public link'),
       description: constraint?.detail || (
         constraint?.field
@@ -235,7 +235,7 @@ function getDeleteConstraintMeta(constraint: any): {
   if (constraint?.type === 'calculated_table') {
     return {
       badge: 'Calculated',
-      className: 'text-violet-600 bg-violet-100',
+      className: 'text-brand bg-brand/15',
       title: constraint?.object_label || (
         constraint?.table_name ? `Calculated table "${constraint.table_name}"` : 'Calculated table dependency'
       ),
@@ -244,7 +244,7 @@ function getDeleteConstraintMeta(constraint: any): {
   }
   return {
     badge: 'Lookup',
-    className: 'text-amber-600 bg-amber-100',
+    className: 'text-warning bg-warning/15',
     title: constraint?.object_label || (
       constraint?.table_name
         ? `Table "${constraint.table_name}"`
@@ -284,13 +284,13 @@ function CalendarDimensionModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
-      <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay/84 p-4 backdrop-blur-[2px]">
+      <div className="w-full max-w-lg rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg">
         <div className="border-b px-6 py-4">
-          <h2 className="text-xl font-semibold text-gray-900">
+          <h2 className="text-xl font-semibold text-text-primary">
             {isExisting ? 'Calendar Dimension' : 'Add Calendar Dimension'}
           </h2>
-          <p className="mt-1 text-sm text-gray-500">
+          <p className="mt-1 text-sm text-text-tertiary">
             {isExisting
               ? 'Update the standard Date table for this dataset.'
               : 'Create a standard Date table and auto-connect temporal columns when needed.'}
@@ -300,7 +300,7 @@ function CalendarDimensionModal({
         <div className="space-y-4 px-6 py-5">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="mb-2 block text-sm font-medium text-gray-700">Start date</label>
+              <label className="mb-2 block text-sm font-medium text-text-secondary">Start date</label>
               <input
                 type="date"
                 value={draft.start_date}
@@ -309,12 +309,12 @@ function CalendarDimensionModal({
                   enabled: true,
                   start_date: e.target.value,
                 }))}
-                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
                 disabled={!canEdit || isSaving}
               />
             </div>
             <div>
-              <label className="mb-2 block text-sm font-medium text-gray-700">End date</label>
+              <label className="mb-2 block text-sm font-medium text-text-secondary">End date</label>
               <input
                 type="date"
                 value={draft.end_date}
@@ -323,14 +323,14 @@ function CalendarDimensionModal({
                   enabled: true,
                   end_date: e.target.value,
                 }))}
-                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
                 disabled={!canEdit || isSaving}
               />
             </div>
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-medium text-gray-700">Week starts on</label>
+            <label className="mb-2 block text-sm font-medium text-text-secondary">Week starts on</label>
             <select
               value={draft.week_start_day}
               onChange={(e) => onDraftChange((current) => ({
@@ -338,7 +338,7 @@ function CalendarDimensionModal({
                 enabled: true,
                 week_start_day: e.target.value as CalendarDimensionSettings['week_start_day'],
               }))}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
               disabled={!canEdit || isSaving}
             >
               <option value="monday">Monday</option>
@@ -346,7 +346,7 @@ function CalendarDimensionModal({
             </select>
           </div>
 
-          <label className="flex items-start gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+          <label className="flex items-start gap-3 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3">
             <input
               type="checkbox"
               checked={draft.auto_join_temporal_columns}
@@ -355,26 +355,26 @@ function CalendarDimensionModal({
                 enabled: true,
                 auto_join_temporal_columns: e.target.checked,
               }))}
-              className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              className="mt-1 h-4 w-4 rounded border-[rgb(var(--border-strong))] text-brand focus:ring-brand"
               disabled={!canEdit || isSaving}
             />
             <div>
-              <div className="text-sm font-medium text-gray-900">Auto-connect time columns</div>
-              <p className="mt-1 text-xs text-gray-500">
+              <div className="text-sm font-medium text-text-primary">Auto-connect time columns</div>
+              <p className="mt-1 text-xs text-text-tertiary">
                 Automatically link date, datetime, and timestamp columns to this Date table.
               </p>
             </div>
           </label>
         </div>
 
-        <div className="flex items-center justify-between gap-3 border-t bg-gray-50 px-6 py-4">
+        <div className="flex items-center justify-between gap-3 border-t bg-surface-2 px-6 py-4">
           <div>
             {isExisting && canEdit && (
               <button
                 type="button"
                 onClick={onRemove}
                 disabled={isSaving}
-                className="rounded-md px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-md px-3 py-2 text-sm font-medium text-danger hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Remove calendar
               </button>
@@ -384,7 +384,7 @@ function CalendarDimensionModal({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-2"
               disabled={isSaving}
             >
               Cancel
@@ -392,7 +392,7 @@ function CalendarDimensionModal({
             <button
               type="button"
               onClick={onSave}
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
               disabled={!canEdit || isSaving}
             >
               {isSaving
@@ -930,8 +930,8 @@ export default function DatasetDetailPage() {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-600 mx-auto mb-3" />
-          <p className="text-gray-600">Loading dataset...</p>
+          <Loader2 className="w-8 h-8 animate-spin text-brand mx-auto mb-3" />
+          <p className="text-text-secondary">Loading dataset...</p>
         </div>
       </div>
     );
@@ -942,18 +942,18 @@ export default function DatasetDetailPage() {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center max-w-md">
-          <div className="text-red-600 mb-3">
+          <div className="text-danger mb-3">
             <svg className="w-12 h-12 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <h2 className="text-xl font-semibold text-gray-900 mb-2">Dataset not found</h2>
-          <p className="text-gray-600 mb-4">
+          <h2 className="text-xl font-semibold text-text-primary mb-2">Dataset not found</h2>
+          <p className="text-text-secondary mb-4">
             {datasetError instanceof Error ? datasetError.message : 'Could not load dataset'}
           </p>
           <button
             onClick={() => router.push('/datasets')}
-            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+            className="px-4 py-2 bg-brand text-white rounded-md hover:bg-brand-hover transition-colors"
           >
             Back to Datasets
           </button>
@@ -965,29 +965,29 @@ export default function DatasetDetailPage() {
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* ── Single top header: 1 dòng, compact ── */}
-      <div className="shrink-0 flex items-center gap-3 border-b border-slate-200 bg-white px-4 h-11">
+      <div className="flex h-11 shrink-0 items-center gap-3 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
         {/* Breadcrumb */}
         <button
           onClick={() => router.push('/datasets')}
-          className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800 transition-colors"
+          className="flex items-center gap-1 text-sm text-text-tertiary hover:text-text-primary transition-colors"
         >
           <ChevronLeft className="w-4 h-4" />
           Datasets
         </button>
-        <span className="text-gray-300">/</span>
-        <span className="text-sm font-medium text-gray-900 truncate max-w-[200px]">{dataset.name}</span>
+        <span className="text-text-quaternary">/</span>
+        <span className="text-sm font-medium text-text-primary truncate max-w-[200px]">{dataset.name}</span>
 
         {/* Divider */}
-        <div className="w-px h-5 bg-gray-200 mx-1" />
+        <div className="w-px h-5 bg-surface-3 mx-1" />
 
         {/* Tab navigation */}
-        <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5">
+        <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
           <button
             onClick={() => setActiveTab('tables')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
               activeTab === 'tables'
-                ? 'bg-white text-blue-700 shadow-sm'
-                : 'text-slate-500 hover:bg-white/60'
+                ? 'bg-surface-1 text-brand shadow-linear-sm'
+                : 'text-text-tertiary hover:bg-surface-1'
             }`}
           >
             <Database className="h-3.5 w-3.5" />
@@ -997,8 +997,8 @@ export default function DatasetDetailPage() {
             onClick={() => setActiveTab('quality')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
               activeTab === 'quality'
-                ? 'bg-white text-blue-700 shadow-sm'
-                : 'text-slate-500 hover:bg-white/60'
+                ? 'bg-surface-1 text-brand shadow-linear-sm'
+                : 'text-text-tertiary hover:bg-surface-1'
             }`}
           >
             <ShieldCheck className="h-3.5 w-3.5" />
@@ -1008,8 +1008,8 @@ export default function DatasetDetailPage() {
             onClick={() => setActiveTab('model')}
             className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
               activeTab === 'model'
-                ? 'bg-white text-blue-700 shadow-sm'
-                : 'text-slate-500 hover:bg-white/60'
+                ? 'bg-surface-1 text-brand shadow-linear-sm'
+                : 'text-text-tertiary hover:bg-surface-1'
             }`}
           >
             <Sigma className="h-3.5 w-3.5" />
@@ -1026,7 +1026,7 @@ export default function DatasetDetailPage() {
             {resPerms.canEdit && (
               <button
                 onClick={() => setIsManageColumnsOpen(true)}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded transition-colors"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2 rounded transition-colors"
               >
                 <Columns className="w-3.5 h-3.5" />
                 Columns
@@ -1035,19 +1035,19 @@ export default function DatasetDetailPage() {
             {resPerms.canEdit && (
               <button
                 onClick={() => setIsAddColumnModalOpen(true)}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-white bg-brand hover:bg-brand-hover rounded transition-colors"
               >
                 <Plus className="w-3.5 h-3.5" />
                 Add Column
               </button>
             )}
-            <div className="w-px h-4 bg-gray-200 mx-1" />
-            <label className="flex items-center gap-1.5 text-xs text-gray-500">
+            <div className="w-px h-4 bg-surface-3 mx-1" />
+            <label className="flex items-center gap-1.5 text-xs text-text-tertiary">
               Rows:
               <select
                 value={previewLimit}
                 onChange={(e) => { setPreviewLimit(Number(e.target.value)); setPage(1); }}
-                className="px-1.5 py-0.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="px-1.5 py-0.5 border border-[rgb(var(--border-strong))] rounded text-xs focus:outline-none focus:ring-1 focus:ring-brand"
               >
                 <option value={10}>10</option>
                 <option value={50}>50</option>
@@ -1060,7 +1060,7 @@ export default function DatasetDetailPage() {
             <button
               onClick={() => refetchPreview()}
               disabled={loadingPreview}
-              className="p-1 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors disabled:opacity-40"
+              className="p-1 text-text-quaternary hover:text-text-secondary hover:bg-surface-2 rounded transition-colors disabled:opacity-40"
               title="Refresh preview"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loadingPreview ? 'animate-spin' : ''}`} />
@@ -1073,17 +1073,17 @@ export default function DatasetDetailPage() {
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar — chỉ render khi tab Tables */}
         {activeTab === 'tables' && (
-          <div className="w-72 shrink-0 border-r bg-white flex flex-col overflow-hidden">
+          <div className="flex w-72 shrink-0 flex-col overflow-hidden border-r bg-surface-1">
             {/* Search */}
             <div className="px-3 py-2 border-b">
               <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-quaternary" />
                 <input
                   type="text"
                   placeholder="Search tables..."
                   value={tableSearchQuery}
                   onChange={(e) => setTableSearchQuery(e.target.value)}
-                  className="w-full pl-8 pr-3 py-1.5 text-xs border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full pl-8 pr-3 py-1.5 text-xs border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand"
                 />
               </div>
             </div>
@@ -1091,7 +1091,7 @@ export default function DatasetDetailPage() {
             {/* Table Groups */}
             <div className="flex-1 overflow-y-auto p-2">
               {tableSearchQuery && filteredTables.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-gray-200 px-4 py-6 text-center text-xs text-gray-500">
+                <div className="rounded-lg border border-dashed border-[rgb(var(--border-line))] px-4 py-6 text-center text-xs text-text-tertiary">
                   No tables match your search
                 </div>
               ) : (
@@ -1104,19 +1104,19 @@ export default function DatasetDetailPage() {
                     if (!shouldRenderGroup) return null;
 
                     return (
-                      <div key={group} className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-                        <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-2.5 py-2">
+                      <div key={group} className="overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
+                        <div className="flex items-center justify-between gap-2 border-b border-[rgb(var(--border-line))] px-2.5 py-2">
                           <button
                             type="button"
                             onClick={() => toggleGroup(group)}
                             className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
                           >
-                            <span className="text-gray-400">
+                            <span className="text-text-quaternary">
                               {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                             </span>
                             {getTableGroupIcon(group)}
-                            <span className="text-xs font-semibold text-gray-800">{getTableGroupLabel(group)}</span>
-                            <span className="text-xs text-gray-400">
+                            <span className="text-xs font-semibold text-text-primary">{getTableGroupLabel(group)}</span>
+                            <span className="text-xs text-text-quaternary">
                               {tableSearchQuery ? `${tablesInGroup.length}` : `${totalCount}`}
                             </span>
                           </button>
@@ -1128,7 +1128,7 @@ export default function DatasetDetailPage() {
                                 onClick={openCalendarModal}
                                 disabled={!calendarEnabled && !canCreateCalendarDimension}
                                 title={!calendarEnabled && !canCreateCalendarDimension ? CALENDAR_REQUIRES_DATASOURCE_MESSAGE : undefined}
-                                className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
                               >
                                 <Plus className="h-3 w-3" />
                                 {calendarEnabled ? 'Edit' : 'Add'}
@@ -1137,7 +1137,7 @@ export default function DatasetDetailPage() {
                               <button
                                 type="button"
                                 onClick={group === 'source' ? openSourceTableModal : openCalculatedTableModal}
-                                className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-50"
+                                className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-surface-2"
                               >
                                 <Plus className="h-3 w-3" />
                                 Add
@@ -1149,7 +1149,7 @@ export default function DatasetDetailPage() {
                         {!isCollapsed && (
                           <div className="p-1.5">
                             {tablesInGroup.length === 0 ? (
-                              <div className="rounded border border-dashed border-gray-200 px-3 py-4 text-center text-[11px] text-gray-400">
+                              <div className="rounded border border-dashed border-[rgb(var(--border-line))] px-3 py-4 text-center text-[11px] text-text-quaternary">
                                 {getTableGroupEmptyMessage(group)}
                               </div>
                             ) : (
@@ -1159,8 +1159,8 @@ export default function DatasetDetailPage() {
                                     key={table.id}
                                     className={`group relative flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors cursor-pointer ${
                                       selectedTableId === table.id
-                                        ? 'bg-blue-50 text-blue-900'
-                                        : 'text-gray-800 hover:bg-gray-50'
+                                        ? 'bg-brand/10 text-brand'
+                                        : 'text-text-primary hover:bg-surface-2'
                                     }`}
                                     onClick={() => {
                                       startTransition(() => setSelectedTableId(table.id));
@@ -1173,7 +1173,7 @@ export default function DatasetDetailPage() {
                                         {getTablePrimaryName(table)}
                                       </div>
                                       {getTableSecondaryName(table) && (
-                                        <div className="truncate text-[11px] text-gray-400 leading-tight">
+                                        <div className="truncate text-[11px] text-text-quaternary leading-tight">
                                           {getTableSecondaryName(table)}
                                         </div>
                                       )}
@@ -1181,7 +1181,7 @@ export default function DatasetDetailPage() {
                                     {resPerms.canEdit && !isGeneratedCalendarTable(table) && (
                                       <button
                                         onClick={(e) => { e.stopPropagation(); openEditTableModal(table); }}
-                                        className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-gray-400 hover:bg-blue-100 hover:text-blue-600 transition-opacity"
+                                        className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-text-quaternary hover:bg-brand/15 hover:text-brand transition-opacity"
                                         title="Edit table"
                                       >
                                         <Pencil className="h-3 w-3" />
@@ -1197,7 +1197,7 @@ export default function DatasetDetailPage() {
                                             name: table.display_name || table.source_table_name || `Table ${table.id}`,
                                           });
                                         }}
-                                        className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-gray-400 hover:bg-red-100 hover:text-red-600 transition-opacity"
+                                        className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-text-quaternary hover:bg-danger/15 hover:text-danger transition-opacity"
                                         title="Delete table"
                                       >
                                         <Trash2 className="h-3 w-3" />
@@ -1219,7 +1219,7 @@ export default function DatasetDetailPage() {
         )}
 
         {/* ── Main Content ── */}
-        <div className="flex-1 flex flex-col bg-gray-50 overflow-hidden">
+        <div className="flex-1 flex flex-col bg-surface-2 overflow-hidden">
           {activeTab === 'model' ? (
             <div className="flex-1 overflow-hidden flex flex-row">
               {/* ERD canvas — takes remaining width */}
@@ -1254,11 +1254,11 @@ export default function DatasetDetailPage() {
           ) : dataset.tables.length === 0 ? (
             <div className="flex-1 flex items-center justify-center">
               <div className="text-center max-w-md px-4">
-                <div className="text-gray-300 mb-4">
+                <div className="text-text-quaternary mb-4">
                   <Database className="w-14 h-14 mx-auto" />
                 </div>
-                <h2 className="text-lg font-semibold text-gray-900 mb-2">No tables yet</h2>
-                <p className="text-sm text-gray-500 mb-6">
+                <h2 className="text-lg font-semibold text-text-primary mb-2">No tables yet</h2>
+                <p className="text-sm text-text-tertiary mb-6">
                   Use the add actions in the sidebar to create a source table, a calculated table, or a Date table.
                 </p>
               </div>
@@ -1270,14 +1270,14 @@ export default function DatasetDetailPage() {
                 {previewError && (previewError as any)?.response?.status === 422 ? (
                   <div className="flex items-center justify-center h-full">
                     <div className="text-center max-w-sm">
-                      <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto mb-3" />
-                      <h3 className="text-base font-semibold text-gray-900 mb-1">Chưa sync</h3>
-                      <p className="text-sm text-gray-600 mb-4">
+                      <AlertTriangle className="w-10 h-10 text-warning mx-auto mb-3" />
+                      <h3 className="text-base font-semibold text-text-primary mb-1">Chưa sync</h3>
+                      <p className="text-sm text-text-secondary mb-4">
                         Bảng này chưa được đồng bộ vào DuckDB. Nếu bạn vừa chạy Sync, hãy đợi vài giây — trang sẽ tự động cập nhật khi sync xong.
                       </p>
                       <button
                         onClick={() => refetchPreview()}
-                        className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700"
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-brand text-white text-sm font-medium rounded-lg hover:bg-brand-hover"
                       >
                         <RefreshCw className="w-4 h-4" />
                         Thử lại ngay
@@ -1304,7 +1304,7 @@ export default function DatasetDetailPage() {
 
               {/* Pagination Bar */}
               {!loadingPreview && previewData && !((previewError as any)?.response?.status === 422) && (
-                <div className="bg-white border-t px-4 py-2 flex items-center justify-between text-xs text-gray-500 flex-shrink-0">
+                <div className="flex flex-shrink-0 items-center justify-between border-t bg-surface-1 px-4 py-2 text-xs text-text-tertiary">
                   <span>
                     {previewData.rows.length === 0
                       ? 'Không có dữ liệu'
@@ -1314,7 +1314,7 @@ export default function DatasetDetailPage() {
                     <button
                       onClick={() => setPage((p) => Math.max(1, p - 1))}
                       disabled={page === 1}
-                      className="p-1 border rounded disabled:opacity-40 hover:bg-gray-50 transition-colors"
+                      className="p-1 border rounded disabled:opacity-40 hover:bg-surface-2 transition-colors"
                       title="Trang trước"
                     >
                       <ChevronLeftPag className="w-3.5 h-3.5" />
@@ -1323,7 +1323,7 @@ export default function DatasetDetailPage() {
                     <button
                       onClick={() => setPage((p) => p + 1)}
                       disabled={!previewData.has_more}
-                      className="p-1 border rounded disabled:opacity-40 hover:bg-gray-50 transition-colors"
+                      className="p-1 border rounded disabled:opacity-40 hover:bg-surface-2 transition-colors"
                       title="Trang tiếp"
                     >
                       <ChevronRight className="w-3.5 h-3.5" />
@@ -1389,40 +1389,40 @@ export default function DatasetDetailPage() {
 
       {/* Delete Table Modal */}
       {tableToDelete && (
-        <div className="fixed inset-0 bg-black bg-opacity-40 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay/84 p-4 backdrop-blur-[2px]">
+          <div className="w-full max-w-md rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 p-6 shadow-linear-lg">
             {deleteConstraints ? (
               // ---- Constraint error view ----
               <>
                 <div className="flex items-start gap-3 mb-4">
-                  <AlertTriangle className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
+                  <AlertTriangle className="w-6 h-6 text-danger flex-shrink-0 mt-0.5" />
                   <div>
-                    <h2 className="text-lg font-semibold text-gray-900">Không thể xóa bảng</h2>
-                    <p className="text-sm text-gray-600 mt-1">
+                    <h2 className="text-lg font-semibold text-text-primary">Không thể xóa bảng</h2>
+                    <p className="text-sm text-text-secondary mt-1">
                       Bảng <span className="font-medium">&ldquo;{tableToDelete.name}&rdquo;</span> đang được sử dụng bởi:
                     </p>
                   </div>
                 </div>
                 <ul className="mb-6 space-y-2">
                   {deleteConstraints.map((c: any, i: number) => (
-                    <li key={i} className="flex items-start gap-3 rounded-lg bg-red-50 px-3 py-3 text-sm">
+                    <li key={i} className="flex items-start gap-3 rounded-lg bg-danger/10 px-3 py-3 text-sm">
                       <span className={`mt-0.5 text-xs font-semibold uppercase rounded px-1.5 py-0.5 ${getDeleteConstraintMeta(c).className}`}>
                         {getDeleteConstraintMeta(c).badge}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <div className="font-medium text-gray-900">{getDeleteConstraintMeta(c).title}</div>
-                        <div className="mt-0.5 text-gray-700">{getDeleteConstraintMeta(c).description}</div>
+                        <div className="font-medium text-text-primary">{getDeleteConstraintMeta(c).title}</div>
+                        <div className="mt-0.5 text-text-secondary">{getDeleteConstraintMeta(c).description}</div>
                       </div>
                     </li>
                   ))}
                 </ul>
-                <p className="text-xs text-gray-500 mb-4">
+                <p className="text-xs text-text-tertiary mb-4">
                   Hãy xóa hoặc cập nhật các ràng buộc trên trước khi xóa bảng này.
                 </p>
                 <div className="flex justify-end">
                   <button
                     onClick={() => { setTableToDelete(null); setDeleteConstraints(null); }}
-                    className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium"
+                    className="px-4 py-2 bg-surface-2 hover:bg-surface-3 text-text-secondary rounded-lg text-sm font-medium"
                   >
                     Đóng
                   </button>
@@ -1432,10 +1432,10 @@ export default function DatasetDetailPage() {
               // ---- Confirmation view ----
               <>
                 <div className="flex items-start gap-3 mb-4">
-                  <Trash2 className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
+                  <Trash2 className="w-6 h-6 text-danger flex-shrink-0 mt-0.5" />
                   <div>
-                    <h2 className="text-lg font-semibold text-gray-900">Xóa bảng?</h2>
-                    <p className="text-sm text-gray-600 mt-1">
+                    <h2 className="text-lg font-semibold text-text-primary">Xóa bảng?</h2>
+                    <p className="text-sm text-text-secondary mt-1">
                       Bạn có chắc muốn xóa bảng <span className="font-medium">&ldquo;{tableToDelete.name}&rdquo;</span>? Hành động này không thể hoàn tác.
                     </p>
                   </div>
@@ -1444,14 +1444,14 @@ export default function DatasetDetailPage() {
                   <button
                     onClick={() => setTableToDelete(null)}
                     disabled={isDeletingTable}
-                    className="px-4 py-2 text-sm text-gray-700 hover:text-gray-900 disabled:opacity-50"
+                    className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary disabled:opacity-50"
                   >
                     Hủy
                   </button>
                   <button
                     onClick={handleDeleteTable}
                     disabled={isDeletingTable}
-                    className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 flex items-center gap-2"
+                    className="px-4 py-2 bg-danger hover:bg-danger/90 text-white text-sm font-medium rounded-lg disabled:opacity-50 flex items-center gap-2"
                   >
                     {isDeletingTable && <Loader2 className="w-4 h-4 animate-spin" />}
                     Xóa bảng

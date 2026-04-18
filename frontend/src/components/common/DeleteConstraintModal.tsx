@@ -2,6 +2,8 @@
 
 import React from 'react';
 import { AlertTriangle, Trash2, Loader2 } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/Button';
 
 export interface DeleteConstraint {
   type: string;
@@ -12,11 +14,8 @@ export interface DeleteConstraint {
 }
 
 interface DeleteConstraintModalProps {
-  /** Name of the item being deleted — shown in confirmation and constraint messages */
   itemName: string;
-  /** Vietnamese label for the item type, e.g. "dataset", "data source", "biểu đồ" */
   itemTypeLabel: string;
-  /** When non-null, shows the constraint error view instead of confirmation */
   constraints: DeleteConstraint[] | null;
   isDeleting: boolean;
   onConfirm: () => void;
@@ -24,16 +23,19 @@ interface DeleteConstraintModalProps {
 }
 
 const TYPE_LABELS: Record<string, { label: string; cls: string }> = {
-  chart:     { label: 'Biểu đồ',   cls: 'bg-blue-100 text-blue-700' },
-  dashboard: { label: 'Dashboard', cls: 'bg-purple-100 text-purple-700' },
-  dataset: { label: 'Dataset', cls: 'bg-orange-100 text-orange-700' },
-  lookup:    { label: 'LOOKUP',    cls: 'bg-amber-100 text-amber-700' },
+  chart: { label: 'Biểu đồ', cls: 'bg-info/12 text-info' },
+  dashboard: { label: 'Dashboard', cls: 'bg-brand/12 text-brand' },
+  dataset: { label: 'Dataset', cls: 'bg-warning/12 text-warning' },
+  lookup: { label: 'LOOKUP', cls: 'bg-warning/12 text-warning' },
 };
 
 function ConstraintBadge({ type }: { type: string }) {
-  const meta = TYPE_LABELS[type.toLowerCase()] ?? { label: type.toUpperCase(), cls: 'bg-gray-100 text-gray-700' };
+  const meta = TYPE_LABELS[type.toLowerCase()] ?? {
+    label: type.toUpperCase(),
+    cls: 'bg-surface-2 text-text-tertiary',
+  };
   return (
-    <span className={`text-xs font-semibold uppercase rounded px-1.5 py-0.5 ${meta.cls}`}>
+    <span className={cn('text-tiny font-strong uppercase rounded px-1.5 py-0.5', meta.cls)}>
       {meta.label}
     </span>
   );
@@ -48,86 +50,86 @@ export function DeleteConstraintModal({
   onClose,
 }: DeleteConstraintModalProps) {
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-40 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay/84 backdrop-blur-[3px] p-4 animate-fade-in">
+      <div className="w-full max-w-md rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg animate-slide-up">
         {constraints ? (
-          /* ── Constraint error view ── */
-          <>
+          <div className="p-5">
             <div className="flex items-start gap-3 mb-4">
-              <AlertTriangle className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
+              <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-danger/10 text-danger">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
               <div>
-                <h2 className="text-lg font-semibold text-gray-900">
+                <h2 className="text-small font-strong text-text-primary">
                   Không thể xóa {itemTypeLabel}
                 </h2>
-                <p className="text-sm text-gray-600 mt-1">
-                  <span className="font-medium">&ldquo;{itemName}&rdquo;</span> đang được sử dụng bởi:
+                <p className="text-caption text-text-secondary mt-0.5">
+                  <span className="font-emphasis text-text-primary">&ldquo;{itemName}&rdquo;</span>{' '}
+                  đang được sử dụng bởi:
                 </p>
               </div>
             </div>
 
-            <ul className="mb-6 space-y-2">
+            <ul className="mb-5 space-y-1.5">
               {constraints.map((c, i) => (
-                <li key={i} className="flex items-center gap-2 text-sm bg-red-50 rounded-lg px-3 py-2">
+                <li
+                  key={i}
+                  className="flex items-center gap-2 text-caption bg-danger/6 border border-danger/15 rounded-md px-3 py-2"
+                >
                   <ConstraintBadge type={c.type} />
                   {c.type === 'lookup' ? (
-                    <span className="text-gray-800">
+                    <span className="text-text-primary">
                       Bảng <strong>{c.table_name}</strong>, cột <strong>{c.column}</strong>
                     </span>
                   ) : (
-                    <span className="text-gray-800">{c.name}</span>
+                    <span className="text-text-primary">{c.name}</span>
                   )}
                 </li>
               ))}
             </ul>
 
-            <p className="text-xs text-gray-500 mb-4">
+            <p className="text-tiny text-text-tertiary mb-4">
               Hãy xóa hoặc cập nhật các ràng buộc trên trước khi xóa {itemTypeLabel} này.
             </p>
 
             <div className="flex justify-end">
-              <button
-                onClick={onClose}
-                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium"
-              >
+              <Button variant="secondary" size="sm" onClick={onClose}>
                 Đóng
-              </button>
+              </Button>
             </div>
-          </>
+          </div>
         ) : (
-          /* ── Confirmation view ── */
-          <>
+          <div className="p-5">
             <div className="flex items-start gap-3 mb-4">
-              <Trash2 className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
+              <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-danger/10 text-danger">
+                <Trash2 className="w-4 h-4" />
+              </div>
               <div>
-                <h2 className="text-lg font-semibold text-gray-900">
+                <h2 className="text-small font-strong text-text-primary">
                   Xóa {itemTypeLabel}?
                 </h2>
-                <p className="text-sm text-gray-600 mt-1">
+                <p className="text-caption text-text-secondary mt-0.5">
                   Bạn có chắc muốn xóa{' '}
-                  <span className="font-medium">&ldquo;{itemName}&rdquo;</span>?{' '}
+                  <span className="font-emphasis text-text-primary">&ldquo;{itemName}&rdquo;</span>?{' '}
                   Hành động này không thể hoàn tác.
                 </p>
               </div>
             </div>
 
-            <div className="flex justify-end gap-3">
-              <button
-                onClick={onClose}
-                disabled={isDeleting}
-                className="px-4 py-2 text-sm text-gray-700 hover:text-gray-900 disabled:opacity-50"
-              >
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={onClose} disabled={isDeleting}>
                 Hủy
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
                 onClick={onConfirm}
                 disabled={isDeleting}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 flex items-center gap-2"
+                leadingIcon={isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : undefined}
               >
-                {isDeleting && <Loader2 className="w-4 h-4 animate-spin" />}
                 Xóa {itemTypeLabel}
-              </button>
+              </Button>
             </div>
-          </>
+          </div>
         )}
       </div>
     </div>

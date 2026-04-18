@@ -24,20 +24,20 @@ export function EmbeddedChart({ chartId, chartName, chartType, data, roleConfig 
   const safeRoleConfig: ChartRoleConfig = roleConfig ?? deriveRoleConfig(data, chartType);
 
   return (
-    <div className="mt-3 mb-2 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+    <div className="mb-2 mt-3 overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100 bg-gray-50">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-[rgb(var(--border-line))] bg-surface-2">
         <div className="flex items-center gap-2 min-w-0">
-          <BarChart3 className="h-4 w-4 text-blue-500 flex-shrink-0" />
-          <span className="text-sm font-medium text-gray-700 truncate">{chartName}</span>
-          <span className="text-xs text-gray-400 flex-shrink-0">
+          <BarChart3 className="h-4 w-4 text-brand flex-shrink-0" />
+          <span className="text-sm font-medium text-text-secondary truncate">{chartName}</span>
+          <span className="text-xs text-text-quaternary flex-shrink-0">
             {chartType.toLowerCase().replace('_', ' ')} · {data.length} rows
           </span>
         </div>
         <Link
           href={`/explore/${chartId}`}
           target="_blank"
-          className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 transition-colors flex-shrink-0 ml-2"
+          className="flex items-center gap-1 text-xs text-brand hover:text-brand transition-colors flex-shrink-0 ml-2"
         >
           Explore <ExternalLink className="h-3 w-3" />
         </Link>
@@ -46,7 +46,7 @@ export function EmbeddedChart({ chartId, chartName, chartType, data, roleConfig 
       {/* Chart body */}
       <div className="p-3">
         {data.length === 0 ? (
-          <div className="flex items-center justify-center h-32 text-gray-400 text-sm">No data</div>
+          <div className="flex items-center justify-center h-32 text-text-quaternary text-sm">No data</div>
         ) : (
           <div className="h-64">
             <ExploreChart

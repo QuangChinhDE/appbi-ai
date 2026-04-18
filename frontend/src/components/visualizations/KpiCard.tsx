@@ -127,21 +127,21 @@ function getLegacyComparisonTone(comparison: number) {
   if (comparison > 0) {
     return {
       icon: TrendingUp,
-      surfaceClass: 'bg-emerald-50',
-      textClass: 'text-emerald-700',
+      surfaceClass: 'bg-success/10',
+      textClass: 'text-success',
     };
   }
   if (comparison < 0) {
     return {
       icon: TrendingDown,
-      surfaceClass: 'bg-rose-50',
-      textClass: 'text-rose-700',
+      surfaceClass: 'bg-danger/10',
+      textClass: 'text-danger',
     };
   }
   return {
     icon: Minus,
-    surfaceClass: 'bg-slate-100',
-    textClass: 'text-slate-600',
+    surfaceClass: 'bg-surface-2',
+    textClass: 'text-text-secondary',
   };
 }
 
@@ -149,8 +149,8 @@ function getDeltaAppearance(delta: number, goalDirection: KpiGoalDirection) {
   if (delta === 0) {
     return {
       icon: Minus,
-      surfaceClass: 'bg-slate-100',
-      textClass: 'text-slate-600',
+      surfaceClass: 'bg-surface-2',
+      textClass: 'text-text-secondary',
       directionLabel: 'On target',
     };
   }
@@ -160,8 +160,8 @@ function getDeltaAppearance(delta: number, goalDirection: KpiGoalDirection) {
 
   return {
     icon: positiveMovement ? TrendingUp : TrendingDown,
-    surfaceClass: isGood ? 'bg-emerald-50' : 'bg-rose-50',
-    textClass: isGood ? 'text-emerald-700' : 'text-rose-700',
+    surfaceClass: isGood ? 'bg-success/10' : 'bg-danger/10',
+    textClass: isGood ? 'text-success' : 'text-danger',
     directionLabel: isGood ? 'Performing well' : 'Needs attention',
   };
 }
@@ -219,7 +219,7 @@ export function KpiCard({
   const ComparisonIcon = legacyComparisonTone?.icon;
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <div className="overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
       <div
         className="h-1.5 w-full"
         style={{
@@ -231,41 +231,41 @@ export function KpiCard({
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             {label && (
-              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-text-tertiary">
                 {label}
               </div>
             )}
 
             <div
-              className="mt-3 break-words text-4xl font-semibold tracking-tight text-slate-900 tabular-nums sm:text-5xl"
+              className="mt-3 break-words text-4xl font-semibold tracking-tight text-text-primary tabular-nums sm:text-5xl"
               style={{ color: valueColor || FALLBACK_VALUE_COLOR }}
             >
               {formattedValue}
             </div>
 
             {contextText && (
-              <div className="mt-3 whitespace-pre-line text-sm leading-6 text-slate-600">
+              <div className="mt-3 whitespace-pre-line text-sm leading-6 text-text-secondary">
                 {contextText}
               </div>
             )}
           </div>
 
           {statusLabel && (
-            <span className="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+            <span className="shrink-0 rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
               {statusLabel}
             </span>
           )}
         </div>
 
         {(showBenchmarkPanel || hasDelta || legacyComparison !== null) && (
-          <div className="mt-5 grid gap-3 border-t border-slate-100 pt-4 sm:grid-cols-2">
+          <div className="mt-5 grid gap-3 border-t border-[rgb(var(--border-line))] pt-4 sm:grid-cols-2">
             {showBenchmarkPanel && (
-              <div className="rounded-xl bg-slate-50 px-4 py-3">
-                <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <div className="rounded-xl bg-surface-2 px-4 py-3">
+                <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
                   <Target className="h-3.5 w-3.5" />
                   <span>{benchmarkLabel?.trim() || 'Benchmark'}</span>
                 </div>
-                <div className="mt-1 text-sm font-semibold text-slate-800 tabular-nums">
+                <div className="mt-1 text-sm font-semibold text-text-primary tabular-nums">
                   {formattedBenchmark}
                 </div>
               </div>

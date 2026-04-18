@@ -3,6 +3,7 @@
 import React from 'react';
 import { ChartType } from '@/types/api';
 import { BarChart3, LineChart, PieChart, TrendingUp, Table, AreaChart, BarChart4, BarChart2, ScatterChart, Activity } from 'lucide-react';
+import { Button } from '@/components/ui/Button';
 
 type ChartTypeOption = {
   type: ChartType;
@@ -34,22 +35,17 @@ export function ChartTypeSelector({ chartType, onChange }: ChartTypeSelectorProp
       {chartTypeOptions.map((option) => {
         const Icon = option.icon;
         const isSelected = chartType === option.type;
-        
+
         return (
-          <button
+          <Button
             key={option.type}
+            size="sm"
+            variant={isSelected ? 'primary' : 'secondary'}
             onClick={() => onChange(option.type)}
-            className={`
-              flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors
-              ${isSelected
-                ? 'bg-blue-600 text-white'
-                : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-              }
-            `}
+            leadingIcon={<Icon className="h-3.5 w-3.5" />}
           >
-            <Icon className="w-4 h-4" />
-            <span>{option.label}</span>
-          </button>
+            {option.label}
+          </Button>
         );
       })}
     </div>

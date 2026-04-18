@@ -86,7 +86,7 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
     <div className="p-6 space-y-6">
       {/* Datasource selector */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">Select Datasource *</label>
+        <label className="block text-sm font-medium text-text-secondary mb-2">Select Datasource *</label>
         <select
           value={selectedDatasourceId || ''}
           onChange={(e) => {
@@ -94,7 +94,7 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
             setSelectedTable(null);
             setDisplayName('');
           }}
-          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
           disabled={loadingDatasources || isLoading}
         >
           <option value="">Choose a datasource...</option>
@@ -109,34 +109,34 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
       {/* Table search and list */}
       {selectedDatasourceId && (
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">Select Table *</label>
+          <label className="block text-sm font-medium text-text-secondary mb-2">Select Table *</label>
 
           <div className="relative mb-3">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-text-quaternary w-4 h-4" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search tables..."
-              className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full pl-10 pr-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
               disabled={isLoading}
             />
           </div>
 
-          <div className="border border-gray-300 rounded-md max-h-80 overflow-y-auto">
+          <div className="border border-[rgb(var(--border-strong))] rounded-md max-h-80 overflow-y-auto">
             {loadingTables ? (
               <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+                <Loader2 className="w-5 h-5 animate-spin text-text-quaternary" />
               </div>
             ) : filteredTables.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-8 text-gray-500">
-                <Database className="w-8 h-8 mb-2 text-gray-400" />
+              <div className="flex flex-col items-center justify-center py-8 text-text-tertiary">
+                <Database className="w-8 h-8 mb-2 text-text-quaternary" />
                 <p>No tables found</p>
               </div>
             ) : (
               <div>
                 {/* Table count badge */}
-                <div className="sticky top-0 bg-gray-50 border-b border-gray-200 px-3 py-1.5 text-xs text-gray-500 font-medium z-10">
+                <div className="sticky top-0 bg-surface-2 border-b border-[rgb(var(--border-line))] px-3 py-1.5 text-xs text-text-tertiary font-medium z-10">
                   {filteredTables.length} table{filteredTables.length !== 1 ? 's' : ''}
                   {groupedTables.length > 1 ? ` in ${groupedTables.length} schemas` : ''}
                   {searchQuery && ` matching "${searchQuery}"`}
@@ -150,35 +150,35 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
                         <button
                           type="button"
                           onClick={() => toggleSchema(schema)}
-                          className="w-full flex items-center gap-1.5 px-3 py-1.5 bg-gray-50 border-b border-gray-100 text-xs font-semibold text-gray-600 hover:bg-gray-100 transition-colors sticky top-7 z-[5]"
+                          className="w-full flex items-center gap-1.5 px-3 py-1.5 bg-surface-2 border-b border-[rgb(var(--border-line))] text-xs font-semibold text-text-secondary hover:bg-surface-2 transition-colors sticky top-7 z-[5]"
                         >
                           {isCollapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                          <Database className="w-3 h-3 text-gray-400" />
+                          <Database className="w-3 h-3 text-text-quaternary" />
                           {schema}
-                          <span className="ml-auto text-gray-400 font-normal">{schemaTables.length}</span>
+                          <span className="ml-auto text-text-quaternary font-normal">{schemaTables.length}</span>
                         </button>
                       )}
                       {!isCollapsed && (
-                        <div className="divide-y divide-gray-100">
+                        <div className="divide-y divide-[rgb(var(--border-line))]">
                           {schemaTables.map((table) => {
                             const shortName = table.name.includes('.') ? table.name.split('.').pop()! : table.name;
                             return (
                               <button
                                 key={table.name}
                                 onClick={() => handleSelectTable(table.name)}
-                                className={`w-full px-4 py-2.5 text-left hover:bg-blue-50 transition-colors flex items-center gap-2 ${
-                                  selectedTable === table.name ? 'bg-blue-50 border-l-2 border-blue-500' : ''
+                                className={`w-full px-4 py-2.5 text-left hover:bg-brand/15 transition-colors flex items-center gap-2 ${
+                                  selectedTable === table.name ? 'bg-brand/10 border-l-2 border-brand' : ''
                                 }`}
                                 disabled={isLoading}
                               >
                                 <div className="flex-1 min-w-0">
-                                  <div className="text-sm font-medium text-gray-900 truncate">{shortName}</div>
+                                  <div className="text-sm font-medium text-text-primary truncate">{shortName}</div>
                                   {groupedTables.length <= 1 && table.schema && (
-                                    <div className="text-xs text-gray-400">{table.schema}</div>
+                                    <div className="text-xs text-text-quaternary">{table.schema}</div>
                                   )}
                                 </div>
                                 {selectedTable === table.name && (
-                                  <CheckSquare className="w-4 h-4 text-blue-600 flex-shrink-0" />
+                                  <CheckSquare className="w-4 h-4 text-brand flex-shrink-0" />
                                 )}
                               </button>
                             );
@@ -197,16 +197,16 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
       {/* Display name */}
       {selectedTable && (
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">Display Name *</label>
+          <label className="block text-sm font-medium text-text-secondary mb-2">Display Name *</label>
           <input
             type="text"
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
             placeholder="e.g., Orders"
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
             disabled={isLoading}
           />
-          <p className="text-xs text-gray-500 mt-1">This name will be shown in the dataset</p>
+          <p className="text-xs text-text-tertiary mt-1">This name will be shown in the dataset</p>
         </div>
       )}
 
@@ -215,7 +215,7 @@ export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProp
         <button
           onClick={handleAdd}
           disabled={!canAdd}
-          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          className="px-4 py-2 bg-brand text-white rounded-md hover:bg-brand-hover disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
         >
           {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
           Add Table

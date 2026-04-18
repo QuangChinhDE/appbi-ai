@@ -136,16 +136,16 @@ export function ImportWizard({ open, onClose }: ImportWizardProps) {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-      <div className="flex w-full max-w-4xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl" style={{ maxHeight: '88vh' }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay/84 backdrop-blur-sm">
+      <div className="flex w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg" style={{ maxHeight: '88vh' }}>
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-gray-200 px-5 py-3">
+        <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-5 py-3">
           <div className="flex items-center gap-3">
-            <FileSpreadsheet className="h-5 w-5 text-green-600" />
-            <span className="text-sm font-semibold text-gray-900">Import from Excel</span>
+            <FileSpreadsheet className="h-5 w-5 text-success" />
+            <span className="text-sm font-semibold text-text-primary">Import from Excel</span>
             <StepIndicator current={step} />
           </div>
-          <button onClick={onClose} className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors">
+          <button onClick={onClose} className="rounded-lg p-1.5 text-text-quaternary hover:bg-surface-2 hover:text-text-secondary transition-colors">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -189,12 +189,12 @@ export function ImportWizard({ open, onClose }: ImportWizardProps) {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between border-t border-gray-200 bg-gray-50 px-5 py-3">
+        <div className="flex items-center justify-between border-t border-[rgb(var(--border-line))] bg-surface-2 px-5 py-3">
           <div>
             {step > 1 && (
               <button
                 onClick={() => setStep((step - 1) as 1 | 2 | 3)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 transition-colors"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[rgb(var(--border-strong))] px-4 py-2 text-sm text-text-secondary hover:bg-surface-2 transition-colors"
               >
                 <ChevronLeft className="h-3.5 w-3.5" />
                 Quay lai
@@ -203,7 +203,7 @@ export function ImportWizard({ open, onClose }: ImportWizardProps) {
             {step === 1 && (
               <button
                 onClick={onClose}
-                className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 transition-colors"
+                className="rounded-lg border border-[rgb(var(--border-strong))] px-4 py-2 text-sm text-text-secondary hover:bg-surface-2 transition-colors"
               >
                 Dong
               </button>
@@ -213,7 +213,7 @@ export function ImportWizard({ open, onClose }: ImportWizardProps) {
             {step === 2 && (
               <button
                 onClick={() => setStep(3)}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover transition-colors"
               >
                 Tiep theo
                 <ChevronRight className="h-3.5 w-3.5" />
@@ -223,7 +223,7 @@ export function ImportWizard({ open, onClose }: ImportWizardProps) {
               <button
                 onClick={handleConfirm}
                 disabled={confirmMutation.isPending}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-green-600 px-5 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-success px-5 py-2 text-sm font-medium text-white hover:bg-success/90 disabled:opacity-50 transition-colors"
               >
                 {confirmMutation.isPending ? (
                   <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Dang tao...</>
@@ -251,14 +251,14 @@ function StepIndicator({ current }: { current: number }) {
         const done = num < current;
         return (
           <React.Fragment key={num}>
-            {i > 0 && <div className="h-px w-4 bg-gray-300" />}
+            {i > 0 && <div className="h-px w-4 bg-surface-3" />}
             <span
               className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
                 active
-                  ? 'bg-blue-100 text-blue-700'
+                  ? 'bg-brand/15 text-brand'
                   : done
-                    ? 'bg-green-100 text-green-700'
-                    : 'bg-gray-100 text-gray-400'
+                    ? 'bg-success/15 text-success'
+                    : 'bg-surface-2 text-text-quaternary'
               }`}
             >
               {done ? <CheckCircle2 className="h-3 w-3" /> : num}
@@ -299,16 +299,16 @@ function Step1Upload({
   if (isAnalyzing) {
     return (
       <div className="flex flex-col items-center justify-center py-20">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-600 mb-4" />
-        <p className="text-sm font-medium text-gray-700">
+        <Loader2 className="h-8 w-8 animate-spin text-brand mb-4" />
+        <p className="text-sm font-medium text-text-secondary">
           {useAiAssist ? 'Dang phan tich bang code va de Gemini refine template...' : 'Dang phan tich cau truc file...'}
         </p>
         {useAiAssist && (
-          <p className="mt-1 max-w-md text-center text-xs text-gray-500">
+          <p className="mt-1 max-w-md text-center text-xs text-text-tertiary">
             Code dang tach bang va du lieu truoc, sau do AI chi mapping tieu de, header, footer va merge groups vao module Template.
           </p>
         )}
-        <p className="text-xs text-gray-400 mt-1">{file?.name}</p>
+        <p className="text-xs text-text-quaternary mt-1">{file?.name}</p>
       </div>
     );
   }
@@ -319,13 +319,13 @@ function Step1Upload({
         onDrop={handleDrop}
         onDragOver={(e) => e.preventDefault()}
         onClick={() => fileInputRef.current?.click()}
-        className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 py-16 cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-colors"
+        className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-[rgb(var(--border-strong))] bg-surface-2 py-16 cursor-pointer hover:border-brand/50 hover:bg-brand/15 transition-colors"
       >
-        <Upload className="h-10 w-10 text-gray-400 mb-4" />
-        <p className="text-sm font-semibold text-gray-700 mb-1">
+        <Upload className="h-10 w-10 text-text-quaternary mb-4" />
+        <p className="text-sm font-semibold text-text-secondary mb-1">
           Keo tha file Excel vao day
         </p>
-        <p className="text-xs text-gray-400">
+        <p className="text-xs text-text-quaternary">
           Hoac click de chon file (.xlsx, .csv)
         </p>
         <input
@@ -340,28 +340,28 @@ function Step1Upload({
         />
       </div>
       <label className={`mt-4 flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition-colors ${
-        useAiAssist ? 'border-amber-300 bg-amber-50' : 'border-gray-200 bg-white hover:bg-gray-50'
+        useAiAssist ? 'border-warning/40 bg-warning/10' : 'border-[rgb(var(--border-line))] bg-surface-1 hover:bg-surface-2'
       }`}>
         <input
           type="checkbox"
           checked={useAiAssist}
           onChange={(e) => onUseAiAssistChange(e.target.checked)}
-          className="mt-0.5 h-4 w-4 rounded border-gray-300 text-amber-600"
+          className="mt-0.5 h-4 w-4 rounded border-[rgb(var(--border-strong))] text-warning"
         />
         <div>
-          <div className="flex items-center gap-2 text-sm font-medium text-gray-900">
-            <Sparkles className="h-4 w-4 text-amber-500" />
+          <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+            <Sparkles className="h-4 w-4 text-warning" />
             Cho phep AI refine giao dien template
           </div>
-          <p className="mt-1 text-xs leading-relaxed text-gray-500">
+          <p className="mt-1 text-xs leading-relaxed text-text-tertiary">
             He thong van xu ly bang va data bang code truoc. Sau do Gemini chi refine cach map tieu de, thong tin dau trang, footer va merge cot vao cac truong cua module Template.
           </p>
-          <p className="mt-1 text-[11px] text-gray-400">
+          <p className="mt-1 text-[11px] text-text-quaternary">
             Hop hon voi file Excel co nhieu header merge, bao gia va bieu mau trinh bay phuc tap.
           </p>
         </div>
       </label>
-      <p className="mt-4 text-center text-xs text-gray-400">
+      <p className="mt-4 text-center text-xs text-text-quaternary">
         He thong se tu dong nhan dang: tieu de, cot du lieu, nhom cot, ghi chu, o ky ten
       </p>
     </div>
@@ -394,15 +394,15 @@ function Step2Preview({
   isReanalyzing: boolean;
 }) {
   const confidenceColor =
-    analysis.confidence > 0.7 ? 'text-green-600 bg-green-50 border-green-200' :
-    analysis.confidence > 0.4 ? 'text-amber-600 bg-amber-50 border-amber-200' :
-    'text-red-600 bg-red-50 border-red-200';
+    analysis.confidence > 0.7 ? 'text-success bg-success/10 border-success/30' :
+    analysis.confidence > 0.4 ? 'text-warning bg-warning/10 border-warning/30' :
+    'text-danger bg-danger/10 border-danger/30';
   const aiAssist = analysis.ai_assist;
   const aiStatusTone =
     aiAssist?.status === 'applied'
-      ? 'border-amber-200 bg-amber-50 text-amber-800'
+      ? 'border-warning/30 bg-warning/10 text-warning'
       : aiAssist?.requested
-        ? 'border-gray-200 bg-gray-50 text-gray-700'
+        ? 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary'
         : '';
 
   const aiProviderLabel = aiAssist?.provider === 'gemini'
@@ -436,18 +436,18 @@ function Step2Preview({
         </div>
         {analysis.sheet_names.length > 1 && (
           <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500">Sheet:</span>
+            <span className="text-xs text-text-tertiary">Sheet:</span>
             <select
               value={analysis.analyzed_sheet}
               onChange={(e) => onSheetChange(e.target.value)}
               disabled={isReanalyzing}
-              className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+              className="rounded-md border border-[rgb(var(--border-strong))] px-2 py-1 text-xs"
             >
               {analysis.sheet_names.map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}
             </select>
-            {isReanalyzing && <Loader2 className="h-3 w-3 animate-spin text-blue-600" />}
+            {isReanalyzing && <Loader2 className="h-3 w-3 animate-spin text-brand" />}
           </div>
         )}
       </div>
@@ -473,19 +473,19 @@ function Step2Preview({
       {(editedHeaderLines.length > 0 || editedTitle) && (
         <Section title="Tieu de bao cao">
           {editedHeaderLines.map((hl, i) => (
-            <p key={i} className={`text-xs ${hl.bold ? 'font-bold' : ''} text-gray-700`}>
+            <p key={i} className={`text-xs ${hl.bold ? 'font-bold' : ''} text-text-secondary`}>
               {hl.text}
-              {hl.right_text && <span className="float-right text-gray-500">{hl.right_text}</span>}
+              {hl.right_text && <span className="float-right text-text-tertiary">{hl.right_text}</span>}
             </p>
           ))}
           <input
-            className={`mt-1 w-full rounded border border-gray-200 bg-gray-50 px-2 py-1.5 outline-none focus:ring-2 focus:ring-blue-400 ${titleAlignClass} ${titleWeightClass} ${titleSizeClass}`}
+            className={`mt-1 w-full rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5 outline-none focus:ring-2 focus:ring-brand ${titleAlignClass} ${titleWeightClass} ${titleSizeClass}`}
             value={editedTitle}
             onChange={(e) => onTitleChange(e.target.value)}
             placeholder="Ten bao cao chinh"
           />
           {analysis.report_meta && (
-            <p className="mt-0.5 text-[10px] text-gray-400 font-mono">{analysis.report_meta}</p>
+            <p className="mt-0.5 text-[10px] text-text-quaternary font-mono">{analysis.report_meta}</p>
           )}
         </Section>
       )}
@@ -495,7 +495,7 @@ function Step2Preview({
         <Section title={`Nhom cot (${editedGroups.length} nhom)`}>
           <div className="flex flex-wrap gap-1.5">
             {editedGroups.map((g, i) => (
-              <span key={i} className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-0.5 text-xs text-blue-700">
+              <span key={i} className="rounded-full border border-brand/30 bg-brand/10 px-2.5 py-0.5 text-xs text-brand">
                 {g.label} ({g.span} cot)
               </span>
             ))}
@@ -505,36 +505,36 @@ function Step2Preview({
 
       {/* Columns table */}
       <Section title={`Cot du lieu (${editedColumns.length} cot)`}>
-        <div className="max-h-52 overflow-auto rounded-md border border-gray-200">
+        <div className="max-h-52 overflow-auto rounded-md border border-[rgb(var(--border-line))]">
           <table className="w-full text-xs">
-            <thead className="bg-gray-50 sticky top-0">
+            <thead className="bg-surface-2 sticky top-0">
               <tr>
-                <th className="px-2 py-1.5 text-left font-medium text-gray-500">#</th>
-                <th className="px-2 py-1.5 text-left font-medium text-gray-500">Ten cot</th>
-                <th className="px-2 py-1.5 text-left font-medium text-gray-500">Key</th>
-                <th className="px-2 py-1.5 text-left font-medium text-gray-500">Dinh dang</th>
-                <th className="px-2 py-1.5 text-left font-medium text-gray-500">Can le</th>
-                <th className="px-2 py-1.5 text-left font-medium text-gray-500">Don vi</th>
+                <th className="px-2 py-1.5 text-left font-medium text-text-tertiary">#</th>
+                <th className="px-2 py-1.5 text-left font-medium text-text-tertiary">Ten cot</th>
+                <th className="px-2 py-1.5 text-left font-medium text-text-tertiary">Key</th>
+                <th className="px-2 py-1.5 text-left font-medium text-text-tertiary">Dinh dang</th>
+                <th className="px-2 py-1.5 text-left font-medium text-text-tertiary">Can le</th>
+                <th className="px-2 py-1.5 text-left font-medium text-text-tertiary">Don vi</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-[rgb(var(--border-line))]">
               {editedColumns.map((col, i) => (
-                <tr key={i} className="hover:bg-gray-50">
-                  <td className="px-2 py-1 text-gray-400">{i + 1}</td>
-                  <td className="px-2 py-1 font-medium text-gray-900">{col.label}</td>
-                  <td className="px-2 py-1 font-mono text-gray-500">{col.key}</td>
+                <tr key={i} className="hover:bg-surface-2">
+                  <td className="px-2 py-1 text-text-quaternary">{i + 1}</td>
+                  <td className="px-2 py-1 font-medium text-text-primary">{col.label}</td>
+                  <td className="px-2 py-1 font-mono text-text-tertiary">{col.key}</td>
                   <td className="px-2 py-1">
                     <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                      col.format === 'integer' ? 'bg-blue-50 text-blue-700' :
-                      col.format === 'decimal' ? 'bg-indigo-50 text-indigo-700' :
-                      col.format === 'percentage' ? 'bg-purple-50 text-purple-700' :
-                      'bg-gray-50 text-gray-600'
+                      col.format === 'integer' ? 'bg-brand/10 text-brand' :
+                      col.format === 'decimal' ? 'bg-brand/10 text-brand' :
+                      col.format === 'percentage' ? 'bg-brand/10 text-brand' :
+                      'bg-surface-2 text-text-secondary'
                     }`}>
                       {col.format}
                     </span>
                   </td>
-                  <td className="px-2 py-1 text-gray-500">{col.align}</td>
-                  <td className="px-2 py-1 text-gray-500 font-mono">{col.suffix || '-'}</td>
+                  <td className="px-2 py-1 text-text-tertiary">{col.align}</td>
+                  <td className="px-2 py-1 text-text-tertiary font-mono">{col.suffix || '-'}</td>
                 </tr>
               ))}
             </tbody>
@@ -545,25 +545,25 @@ function Step2Preview({
       {/* Data preview */}
       {analysis.data_preview.length > 0 && (
         <Section title={`Du lieu mau (${analysis.total_data_rows} dong tong)`}>
-          <div className="max-h-44 overflow-auto rounded-md border border-gray-200">
+          <div className="max-h-44 overflow-auto rounded-md border border-[rgb(var(--border-line))]">
             <table className="w-full text-[10px]">
-              <thead className="bg-gray-50 sticky top-0">
+              <thead className="bg-surface-2 sticky top-0">
                 <tr>
                   {editedColumns.slice(0, 10).map((col) => (
-                    <th key={col.key} className="px-2 py-1 text-left font-medium text-gray-500 whitespace-nowrap">
+                    <th key={col.key} className="px-2 py-1 text-left font-medium text-text-tertiary whitespace-nowrap">
                       {col.label}
                     </th>
                   ))}
                   {editedColumns.length > 10 && (
-                    <th className="px-2 py-1 text-gray-400">+{editedColumns.length - 10}</th>
+                    <th className="px-2 py-1 text-text-quaternary">+{editedColumns.length - 10}</th>
                   )}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
+              <tbody className="divide-y divide-[rgb(var(--border-line))]">
                 {analysis.data_preview.slice(0, 5).map((row, ri) => (
                   <tr key={ri}>
                     {editedColumns.slice(0, 10).map((col) => (
-                      <td key={col.key} className="px-2 py-1 whitespace-nowrap text-gray-700">
+                      <td key={col.key} className="px-2 py-1 whitespace-nowrap text-text-secondary">
                         {row[col.key] ?? ''}
                       </td>
                     ))}
@@ -585,7 +585,7 @@ function Step2Preview({
             return (
               <p
                 key={i}
-                className={`text-xs text-gray-600 ${footerLine.bold ? 'font-semibold' : ''} ${
+                className={`text-xs text-text-secondary ${footerLine.bold ? 'font-semibold' : ''} ${
                   footerLine.align === 'center'
                     ? 'text-center'
                     : footerLine.align === 'right'
@@ -594,16 +594,16 @@ function Step2Preview({
                 }`}
               >
                 {footerLine.text}
-                {footerLine.right_text && <span className="float-right text-gray-500">{footerLine.right_text}</span>}
+                {footerLine.right_text && <span className="float-right text-text-tertiary">{footerLine.right_text}</span>}
               </p>
             );
           })}
           {analysis.signature_count > 0 && (
             <div className="mt-1 flex gap-2">
               {analysis.signature_labels.map((label, i) => (
-                <div key={i} className="flex-1 rounded border border-gray-200 p-2 text-center">
-                  <div className="h-8 border-b border-dashed border-gray-300 mb-1" />
-                  <span className="text-[10px] text-gray-500">{label}</span>
+                <div key={i} className="flex-1 rounded border border-[rgb(var(--border-line))] p-2 text-center">
+                  <div className="h-8 border-b border-dashed border-[rgb(var(--border-strong))] mb-1" />
+                  <span className="text-[10px] text-text-tertiary">{label}</span>
                 </div>
               ))}
             </div>
@@ -614,8 +614,8 @@ function Step2Preview({
       {/* Grouping */}
       {analysis.group_by_column && (
         <Section title="Nhom du lieu">
-          <p className="text-xs text-gray-600">
-            Nhom theo: <span className="font-mono font-medium text-blue-600">{analysis.group_by_column}</span>
+          <p className="text-xs text-text-secondary">
+            Nhom theo: <span className="font-mono font-medium text-brand">{analysis.group_by_column}</span>
             {analysis.show_subtotals && ' (co dong tong phu)'}
           </p>
         </Section>
@@ -623,7 +623,7 @@ function Step2Preview({
 
       {/* Recommended schema */}
       <Section title="Schema goi y cho dataset">
-        <p className="text-[10px] text-gray-400 mb-1.5">
+        <p className="text-[10px] text-text-quaternary mb-1.5">
           Khi ket noi du lieu dong, dataset can co cac cot sau:
         </p>
         <div className="flex flex-wrap gap-1">
@@ -632,8 +632,8 @@ function Step2Preview({
               key={col.name}
               className={`rounded border px-2 py-0.5 text-[10px] font-mono ${
                 col.type === 'number'
-                  ? 'border-blue-200 bg-blue-50 text-blue-700'
-                  : 'border-gray-200 bg-gray-50 text-gray-600'
+                  ? 'border-brand/30 bg-brand/10 text-brand'
+                  : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary'
               }`}
             >
               {col.name}
@@ -666,11 +666,11 @@ function Step3Confirm({
   return (
     <div className="px-8 py-6 space-y-5">
       <div>
-        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
+        <label className="block text-xs font-semibold text-text-tertiary uppercase tracking-wider mb-1.5">
           Ten template
         </label>
         <input
-          className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full rounded-lg border border-[rgb(var(--border-strong))] px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-brand"
           value={templateName}
           onChange={(e) => onTemplateNameChange(e.target.value)}
           placeholder="Nhap ten template..."
@@ -678,24 +678,24 @@ function Step3Confirm({
       </div>
 
       <div>
-        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+        <label className="block text-xs font-semibold text-text-tertiary uppercase tracking-wider mb-2">
           Xu ly du lieu
         </label>
         <div className="space-y-2">
           <label
             className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
-              includeData ? 'border-blue-300 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'
+              includeData ? 'border-brand/40 bg-brand/10' : 'border-[rgb(var(--border-line))] hover:bg-surface-2'
             }`}
           >
             <input
               type="radio"
               checked={includeData}
               onChange={() => onIncludeDataChange(true)}
-              className="mt-0.5 h-4 w-4 text-blue-600"
+              className="mt-0.5 h-4 w-4 text-brand"
             />
             <div>
-              <p className="text-sm font-medium text-gray-900">Dung du lieu tu file nay</p>
-              <p className="text-xs text-gray-500 mt-0.5">
+              <p className="text-sm font-medium text-text-primary">Dung du lieu tu file nay</p>
+              <p className="text-xs text-text-tertiary mt-0.5">
                 Tu dong tao datasource va dataset voi {analysis.total_data_rows} dong du lieu.
                 Template se hien thi du lieu ngay lap tuc.
               </p>
@@ -703,18 +703,18 @@ function Step3Confirm({
           </label>
           <label
             className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
-              !includeData ? 'border-blue-300 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'
+              !includeData ? 'border-brand/40 bg-brand/10' : 'border-[rgb(var(--border-line))] hover:bg-surface-2'
             }`}
           >
             <input
               type="radio"
               checked={!includeData}
               onChange={() => onIncludeDataChange(false)}
-              className="mt-0.5 h-4 w-4 text-blue-600"
+              className="mt-0.5 h-4 w-4 text-brand"
             />
             <div>
-              <p className="text-sm font-medium text-gray-900">Ket noi du lieu sau</p>
-              <p className="text-xs text-gray-500 mt-0.5">
+              <p className="text-sm font-medium text-text-primary">Ket noi du lieu sau</p>
+              <p className="text-xs text-text-tertiary mt-0.5">
                 Chi tao template (format). Ban se ket noi datasource
                 (PostgreSQL, Google Sheets...) sau trong builder.
               </p>
@@ -724,21 +724,21 @@ function Step3Confirm({
       </div>
 
       {/* Summary */}
-      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Tom tat</p>
+      <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-4">
+        <p className="text-xs font-semibold text-text-tertiary uppercase tracking-wider mb-2">Tom tat</p>
         <div className="grid grid-cols-2 gap-2 text-xs">
-          <div className="text-gray-500">Cot du lieu:</div>
-          <div className="font-medium text-gray-900">{editedColumns.length} cot</div>
-          <div className="text-gray-500">Nhom cot:</div>
-          <div className="font-medium text-gray-900">{analysis.column_groups.length || 'Khong co'}</div>
-          <div className="text-gray-500">Nhom theo:</div>
-          <div className="font-medium text-gray-900">{analysis.group_by_column || 'Khong co'}</div>
-          <div className="text-gray-500">O ky ten:</div>
-          <div className="font-medium text-gray-900">{analysis.signature_count || 'Khong co'}</div>
+          <div className="text-text-tertiary">Cot du lieu:</div>
+          <div className="font-medium text-text-primary">{editedColumns.length} cot</div>
+          <div className="text-text-tertiary">Nhom cot:</div>
+          <div className="font-medium text-text-primary">{analysis.column_groups.length || 'Khong co'}</div>
+          <div className="text-text-tertiary">Nhom theo:</div>
+          <div className="font-medium text-text-primary">{analysis.group_by_column || 'Khong co'}</div>
+          <div className="text-text-tertiary">O ky ten:</div>
+          <div className="font-medium text-text-primary">{analysis.signature_count || 'Khong co'}</div>
           {includeData && (
             <>
-              <div className="text-gray-500">Du lieu:</div>
-              <div className="font-medium text-green-700">{analysis.total_data_rows} dong</div>
+              <div className="text-text-tertiary">Du lieu:</div>
+              <div className="font-medium text-success">{analysis.total_data_rows} dong</div>
             </>
           )}
         </div>
@@ -752,7 +752,7 @@ function Step3Confirm({
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 mb-1.5">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-quaternary mb-1.5">
         {title}
       </p>
       {children}

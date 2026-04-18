@@ -52,16 +52,16 @@ export function ColumnProperties({
   // Collapsed: thin strip with toggle
   if (collapsed) {
     return (
-      <div className="flex w-10 shrink-0 flex-col items-center border-l border-gray-200 bg-white pt-2">
+      <div className="flex w-10 shrink-0 flex-col items-center border-l border-[rgb(var(--border-line))] bg-surface-1 pt-2">
         <Tooltip content="Mở thanh cấu hình cột">
           <button
             onClick={() => setCollapsed(false)}
-            className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+            className="rounded p-1.5 text-text-quaternary hover:bg-surface-2 hover:text-text-secondary transition-colors"
           >
             <ChevronLeft className="h-4 w-4" />
           </button>
         </Tooltip>
-        <div className="mt-4 -rotate-90 whitespace-nowrap text-[10px] font-medium tracking-wider text-gray-400 uppercase">
+        <div className="mt-4 -rotate-90 whitespace-nowrap text-[10px] font-medium tracking-wider text-text-quaternary uppercase">
           Properties
         </div>
       </div>
@@ -69,23 +69,23 @@ export function ColumnProperties({
   }
 
   return (
-    <div className="flex w-[340px] shrink-0 flex-col overflow-hidden border-l border-gray-200 bg-white">
+    <div className="flex w-[340px] shrink-0 flex-col overflow-hidden border-l border-[rgb(var(--border-line))] bg-surface-1">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2">
-        <div className="text-xs font-medium text-gray-900 truncate">
+      <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-3 py-2">
+        <div className="text-xs font-medium text-text-primary truncate">
           {column ? (
             <>
               Column:{' '}
-              <span className="font-mono text-blue-600">{column.label}</span>
+              <span className="font-mono text-brand">{column.label}</span>
             </>
           ) : (
-            <span className="text-gray-400">Chọn 1 cột để cấu hình</span>
+            <span className="text-text-quaternary">Chọn 1 cột để cấu hình</span>
           )}
         </div>
         <Tooltip content="Thu nhỏ thanh cấu hình">
           <button
             onClick={() => setCollapsed(true)}
-            className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+            className="rounded p-1 text-text-quaternary hover:bg-surface-2 hover:text-text-secondary transition-colors"
           >
             <ChevronRight className="h-3.5 w-3.5" />
           </button>
@@ -109,8 +109,8 @@ export function ColumnProperties({
                   onClick={() => update({ type: t })}
                   className={`flex-1 rounded-md px-1.5 py-1.5 text-[11px] capitalize border transition-colors ${
                     column.type === t
-                      ? 'border-blue-600 bg-blue-600 text-white'
-                      : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+                      ? 'border-brand bg-brand text-white'
+                      : 'border-[rgb(var(--border-strong))] text-text-secondary hover:bg-surface-2'
                   }`}
                 >
                   {t === 'raw' ? 'Raw' : t === 'input' ? 'Input' : t === 'formula' ? 'Formula' : 'Subtotal'}
@@ -141,19 +141,19 @@ export function ColumnProperties({
                 </SectionLabel>
                 {availableColumns && availableColumns.length > 0 ? (
                   <div className="px-3 py-1.5">
-                    <label className="text-[10px] font-medium text-gray-500 mb-1 block">Cột nguồn</label>
+                    <label className="text-[10px] font-medium text-text-tertiary mb-1 block">Cột nguồn</label>
                     {/* Search filter for columns */}
-                    <div className="flex items-center gap-1.5 border border-gray-300 rounded-md px-2 py-1 mb-1.5 focus-within:ring-2 focus-within:ring-blue-500">
-                      <Search className="h-3 w-3 text-gray-400 shrink-0" />
+                    <div className="flex items-center gap-1.5 border border-[rgb(var(--border-strong))] rounded-md px-2 py-1 mb-1.5 focus-within:ring-2 focus-within:ring-brand">
+                      <Search className="h-3 w-3 text-text-quaternary shrink-0" />
                       <input
-                        className="flex-1 bg-transparent text-xs outline-none placeholder:text-gray-400 font-mono"
+                        className="flex-1 bg-transparent text-xs outline-none placeholder:text-text-quaternary font-mono"
                         value={colSearch}
                         onChange={(e) => setColSearch(e.target.value)}
                         placeholder="Tìm cột..."
                       />
                     </div>
                     {/* Column list */}
-                    <div className="max-h-[180px] overflow-y-auto rounded-md border border-gray-200 bg-gray-50">
+                    <div className="max-h-[180px] overflow-y-auto rounded-md border border-[rgb(var(--border-line))] bg-surface-2">
                       {filteredAvailCols.map((ac) => {
                         const isBound = column.sourceColumn === ac.name;
                         const isUsed = !isBound && columns.some((c) => c.sourceColumn === ac.name && c.id !== column.id);
@@ -165,27 +165,27 @@ export function ColumnProperties({
                               update({ sourceColumn: ac.name });
                               setColSearch('');
                             }}
-                            className={`flex w-full items-center justify-between px-2 py-1.5 text-left text-xs font-mono border-b border-gray-100 last:border-0 transition-colors ${
+                            className={`flex w-full items-center justify-between px-2 py-1.5 text-left text-xs font-mono border-b border-[rgb(var(--border-line))] last:border-0 transition-colors ${
                               isBound
-                                ? 'bg-blue-50 text-blue-700 font-medium'
+                                ? 'bg-brand/10 text-brand font-medium'
                                 : isUsed
-                                  ? 'text-gray-400 hover:bg-gray-100'
-                                  : 'text-gray-700 hover:bg-blue-50'
+                                  ? 'text-text-quaternary hover:bg-surface-2'
+                                  : 'text-text-secondary hover:bg-brand/15'
                             }`}
                           >
                             <span className="truncate">{ac.name}</span>
-                            <span className="ml-2 shrink-0 text-[9px] text-gray-400">{ac.type}</span>
+                            <span className="ml-2 shrink-0 text-[9px] text-text-quaternary">{ac.type}</span>
                           </button>
                         );
                       })}
                       {filteredAvailCols.length === 0 && (
-                        <div className="px-2 py-3 text-center text-[10px] text-gray-400">
+                        <div className="px-2 py-3 text-center text-[10px] text-text-quaternary">
                           Không tìm thấy cột
                         </div>
                       )}
                     </div>
-                    <div className="mt-1 text-[9px] text-gray-400">
-                      Đang liên kết: <span className="font-mono text-blue-600">{column.sourceColumn || '—'}</span>
+                    <div className="mt-1 text-[9px] text-text-quaternary">
+                      Đang liên kết: <span className="font-mono text-brand">{column.sourceColumn || '—'}</span>
                     </div>
                   </div>
                 ) : (
@@ -229,7 +229,7 @@ export function ColumnProperties({
                 value={column.format ?? 'text'}
                 onChange={(e) => update({ format: e.target.value as NumberFormat })}
                 disabled={!canEdit}
-                className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-brand"
               >
                 <option value="text">Text</option>
                 <option value="integer">Integer (phân cách nghìn)</option>
@@ -251,7 +251,7 @@ export function ColumnProperties({
             <SectionLabel>Hiển thị</SectionLabel>
             <div className="flex gap-2 px-3 py-1.5">
               <div className="flex-1">
-                <label className="text-[10px] font-medium text-gray-500 block mb-0.5">Rộng (px)</label>
+                <label className="text-[10px] font-medium text-text-tertiary block mb-0.5">Rộng (px)</label>
                 <PropInput
                   value={String(column.width ?? '')}
                   onChange={(v) => update({ width: v ? parseInt(v) || undefined : undefined })}
@@ -260,7 +260,7 @@ export function ColumnProperties({
                 />
               </div>
               <div className="flex-1">
-                <label className="text-[10px] font-medium text-gray-500 block mb-0.5">Căn lề</label>
+                <label className="text-[10px] font-medium text-text-tertiary block mb-0.5">Căn lề</label>
                 <div className="flex gap-0.5">
                   {(['left', 'center', 'right'] as const).map((a) => (
                     <button
@@ -269,8 +269,8 @@ export function ColumnProperties({
                       onClick={() => update({ align: a })}
                       className={`flex-1 rounded-md px-1 py-1.5 text-[10px] capitalize border transition-colors ${
                         column.align === a
-                          ? 'border-blue-600 bg-blue-600 text-white'
-                          : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+                          ? 'border-brand bg-brand text-white'
+                          : 'border-[rgb(var(--border-strong))] text-text-secondary hover:bg-surface-2'
                       }`}
                     >
                       {a === 'left' ? '◂' : a === 'center' ? '≡' : '▸'}
@@ -281,23 +281,23 @@ export function ColumnProperties({
             </div>
             <PropRow label="">
               <div className="flex gap-2">
-                <label className="flex items-center gap-1.5 text-[10px] text-gray-600 cursor-pointer">
+                <label className="flex items-center gap-1.5 text-[10px] text-text-secondary cursor-pointer">
                   <input
                     type="checkbox"
                     checked={column.bold ?? false}
                     onChange={(e) => update({ bold: e.target.checked })}
                     disabled={!canEdit}
-                    className="rounded border-gray-300 text-blue-600 h-3.5 w-3.5"
+                    className="rounded border-[rgb(var(--border-strong))] text-brand h-3.5 w-3.5"
                   />
                   In đậm
                 </label>
-                <label className="flex items-center gap-1.5 text-[10px] text-gray-600 cursor-pointer">
+                <label className="flex items-center gap-1.5 text-[10px] text-text-secondary cursor-pointer">
                   <input
                     type="checkbox"
                     checked={column.highlightNegative ?? false}
                     onChange={(e) => update({ highlightNegative: e.target.checked })}
                     disabled={!canEdit}
-                    className="rounded border-gray-300 text-blue-600 h-3.5 w-3.5"
+                    className="rounded border-[rgb(var(--border-strong))] text-brand h-3.5 w-3.5"
                   />
                   Đánh dấu số âm
                 </label>
@@ -309,7 +309,7 @@ export function ColumnProperties({
               <div className="px-3 pt-3">
                 <button
                   onClick={() => onRemoveColumn(column.id)}
-                  className="flex w-full items-center justify-center gap-1.5 rounded-md border border-red-200 bg-red-50 py-1.5 text-xs text-red-600 hover:bg-red-100 transition-colors"
+                  className="flex w-full items-center justify-center gap-1.5 rounded-md border border-danger/30 bg-danger/10 py-1.5 text-xs text-danger hover:bg-danger/15 transition-colors"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                   Xoá cột
@@ -328,12 +328,12 @@ export function ColumnProperties({
             const isInput = col.type === 'input';
 
             const chipClasses = isFormula
-              ? 'border-amber-300 bg-amber-50 text-amber-700'
+              ? 'border-warning/40 bg-warning/10 text-warning'
               : isActive
-                ? 'border-blue-300 bg-blue-50 text-blue-700'
-                : 'border-gray-200 bg-gray-50 text-gray-600';
+                ? 'border-brand/40 bg-brand/10 text-brand'
+                : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary';
 
-            const dotColor = isFormula ? 'bg-amber-500' : isInput ? 'bg-blue-500' : 'bg-gray-400';
+            const dotColor = isFormula ? 'bg-warning' : isInput ? 'bg-brand' : 'bg-surface-3';
 
             return (
               <button
@@ -349,7 +349,7 @@ export function ColumnProperties({
           {canEdit && (
             <button
               onClick={onAddColumn}
-              className="rounded-full border border-dashed border-gray-300 px-2 py-0.5 text-[10px] text-gray-400 hover:text-gray-600 hover:border-gray-400 cursor-pointer transition-colors"
+              className="rounded-full border border-dashed border-[rgb(var(--border-strong))] px-2 py-0.5 text-[10px] text-text-quaternary hover:text-text-secondary hover:border-[rgb(var(--border-strong))] cursor-pointer transition-colors"
             >
               + thêm
             </button>
@@ -364,7 +364,7 @@ export function ColumnProperties({
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+    <div className="px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
       {children}
     </div>
   );
@@ -373,7 +373,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 function PropRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1 px-3 py-1">
-      {label && <label className="text-[10px] font-medium text-gray-500">{label}</label>}
+      {label && <label className="text-[10px] font-medium text-text-tertiary">{label}</label>}
       {children}
     </div>
   );
@@ -394,9 +394,9 @@ function PropInput({
 }) {
   return (
     <input
-      className={`w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500 ${
+      className={`w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-brand ${
         mono ? 'font-mono' : ''
-      } ${disabled ? 'bg-gray-50 cursor-not-allowed text-gray-400' : 'text-gray-900'}`}
+      } ${disabled ? 'bg-surface-2 cursor-not-allowed text-text-quaternary' : 'text-text-primary'}`}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       disabled={disabled}

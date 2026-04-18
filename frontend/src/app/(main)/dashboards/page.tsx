@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Loader2, LayoutDashboard, Clock, Eye, Trash2, Search, Globe, Share2 } from 'lucide-react';
+import { Plus, LayoutDashboard, Clock, Eye, Trash2, Search, Globe, Share2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 
 import { useDashboards, useCreateDashboard, useDeleteDashboard } from '@/hooks/use-dashboards';
@@ -16,6 +16,10 @@ import { PageListLayout } from '@/components/common/PageListLayout';
 import { GettingStartedGuide } from '@/components/common/GettingStartedGuide';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
+import { Modal } from '@/components/common/Modal';
+import { Button, IconButton } from '@/components/ui/Button';
+import { FilterTag } from '@/components/ui/FilterTag';
+import { Input, Textarea, FieldGroup } from '@/components/ui/Input';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { Dashboard } from '@/types/api';
 
@@ -23,6 +27,7 @@ export default function DashboardsPage() {
   const router = useRouter();
   const { t, locale } = useI18n();
   const [isCreating, setIsCreating] = useState(false);
+  const [listFilters, setListFilters] = useState<{ state?: string; access?: string; owner?: string }>({});
   const [newDashboardName, setNewDashboardName] = useState('');
   const [newDashboardDescription, setNewDashboardDescription] = useState('');
   const [dashboardToDelete, setDashboardToDelete] = useState<{ id: number; name: string } | null>(null);
@@ -41,10 +46,20 @@ export default function DashboardsPage() {
     (sum, dashboard) => sum + (dashboard.dashboard_charts?.length || 0),
     0,
   );
+  const activeListFilterCount = Object.values(listFilters).filter(Boolean).length;
   const dashboardsUpdatedThisWeek = dashboardItems.filter((dashboard) => {
     const updatedAt = new Date(dashboard.updated_at).getTime();
     return Number.isFinite(updatedAt) && Date.now() - updatedAt <= 7 * 24 * 60 * 60 * 1000;
   }).length;
+
+  const toggleListFilter = (key: 'state' | 'access' | 'owner', value: string) => {
+    setListFilters((current) => ({
+      ...current,
+      [key]: current[key] === value ? undefined : value,
+    }));
+  };
+
+  const clearListFilters = () => setListFilters({});
 
   const handleCreate = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -102,43 +117,77 @@ export default function DashboardsPage() {
             description={t('overview.dashboards.description')}
             badges={[t('overview.dashboards.badge1'), t('overview.dashboards.badge2'), t('overview.dashboards.badge3')]}
             stats={[
-              {
-                label: t('overview.dashboards.saved'),
-                value: dashboardItems.length,
-                helper: t('overview.dashboards.savedHelper'),
-              },
-              {
-                label: t('overview.dashboards.charts'),
-                value: totalChartLinks,
-                helper: t('overview.dashboards.chartsHelper'),
-              },
-              {
-                label: t('overview.dashboards.updated'),
-                value: dashboardsUpdatedThisWeek,
-                helper: t('overview.dashboards.updatedHelper'),
-              },
+              { label: t('overview.dashboards.saved'), value: dashboardItems.length, helper: t('overview.dashboards.savedHelper') },
+              { label: t('overview.dashboards.charts'), value: totalChartLinks, helper: t('overview.dashboards.chartsHelper') },
+              { label: t('overview.dashboards.updated'), value: dashboardsUpdatedThisWeek, helper: t('overview.dashboards.updatedHelper') },
             ]}
           />
         )}
         action={canEdit ? (
-          <button
+          <Button
+            variant="primary"
+            size="sm"
+            leadingIcon={<Plus className="h-3.5 w-3.5" />}
             onClick={() => setIsCreating(true)}
-            className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700"
           >
-            <Plus className="h-4 w-4" />
             {t('action.newDashboard')}
-          </button>
+          </Button>
         ) : undefined}
         isLoading={isLoading}
         loadingText={t('common.loading')}
         searchPlaceholder={t('common.search')}
         defaultView="list"
+        activeFilters={activeListFilterCount > 0 ? (
+          <>
+            {listFilters.state && (
+              <FilterTag
+                tone={listFilters.state === 'linked' ? 'success' : 'warning'}
+                active
+                onClick={() => toggleListFilter('state', listFilters.state!)}
+              >
+                {listFilters.state === 'linked' ? 'Linked' : 'Empty'}
+              </FilterTag>
+            )}
+            {listFilters.access && (
+              <FilterTag tone="info" active onClick={() => toggleListFilter('access', listFilters.access!)}>
+                {listFilters.access === 'full'
+                  ? 'Full access'
+                  : listFilters.access === 'edit'
+                    ? 'Editable'
+                    : listFilters.access === 'view'
+                      ? 'View only'
+                      : 'Restricted'}
+              </FilterTag>
+            )}
+            {listFilters.owner && (
+              <FilterTag active onClick={() => toggleListFilter('owner', listFilters.owner!)}>
+                Owner: {listFilters.owner.split('@')[0]}
+              </FilterTag>
+            )}
+            <Button variant="ghost" size="xs" onClick={clearListFilters}>
+              Clear filters
+            </Button>
+          </>
+        ) : null}
       >
         {({ viewMode, filterText }) => {
-          const filtered = (dashboards ?? []).filter((dashboard) =>
-            dashboard.name.toLowerCase().includes(filterText.toLowerCase()) ||
-            dashboard.description?.toLowerCase().includes(filterText.toLowerCase()),
-          );
+          const needle = filterText.trim().toLowerCase();
+          const filtered = (dashboards ?? []).filter((dashboard) => {
+            const chartState = (dashboard.dashboard_charts?.length || 0) > 0 ? 'linked' : 'empty';
+            const accessState = dashboard.user_permission ?? 'none';
+            const matchesSearch =
+              needle.length === 0 ||
+              dashboard.name.toLowerCase().includes(needle) ||
+              dashboard.description?.toLowerCase().includes(needle) ||
+              (dashboard.owner_email ?? '').toLowerCase().includes(needle);
+
+            return (
+              matchesSearch &&
+              (!listFilters.state || chartState === listFilters.state) &&
+              (!listFilters.access || accessState === listFilters.access) &&
+              (!listFilters.owner || dashboard.owner_email === listFilters.owner)
+            );
+          });
 
           return (
             <div className="space-y-6">
@@ -146,13 +195,13 @@ export default function DashboardsPage() {
                 <DashboardList dashboards={[]} onDelete={handleDelete} />
               ) : filtered.length === 0 ? (
                 <div className="flex h-48 flex-col items-center justify-center text-center">
-                  <Search className="mb-2 h-8 w-8 text-gray-300" />
-                  <p className="text-sm text-gray-500">
-                    No dashboards matching "<strong>{filterText}</strong>"
+                  <Search className="mb-2 h-7 w-7 text-text-quaternary" />
+                  <p className="text-caption text-text-tertiary">
+                    No dashboards matching &ldquo;<strong className="text-text-primary">{filterText}</strong>&rdquo;
                   </p>
                 </div>
               ) : viewMode === 'grid' ? (
-                <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
                   {filtered.map((dashboard) => {
                     const chartCount = dashboard.dashboard_charts?.length || 0;
                     const createdAt = new Date(dashboard.created_at).toLocaleDateString(locale, {
@@ -164,28 +213,31 @@ export default function DashboardsPage() {
                     return (
                       <div
                         key={dashboard.id}
-                        className="group flex flex-col rounded-lg border border-gray-200 bg-white transition-all hover:shadow-md"
+                        className="group flex flex-col rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 transition-all hover:border-[rgb(var(--border-strong))] hover:shadow-linear"
                       >
-                        <div className="flex-1 p-5">
+                        <div className="flex-1 p-4">
                           <div className="mb-3 flex items-start justify-between">
-                            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-blue-50">
-                              <LayoutDashboard className="h-5 w-5 text-blue-600" />
+                            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
+                              <LayoutDashboard className="h-4 w-4" />
                             </div>
                             {getResourcePermissions(dashboard.user_permission).canDelete && (
-                              <button
+                              <IconButton
+                                aria-label="Delete"
+                                variant="ghost"
+                                size="xs"
                                 onClick={() => handleDelete(dashboard.id)}
-                                className="rounded p-1 text-gray-400 opacity-0 transition-all hover:text-red-600 group-hover:opacity-100"
+                                className="opacity-0 transition-opacity group-hover:opacity-100 text-text-tertiary hover:text-danger"
                               >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </IconButton>
                             )}
                           </div>
-                          <h3 className="mb-1 truncate text-sm font-semibold text-gray-900">{dashboard.name}</h3>
+                          <h3 className="mb-1 truncate text-caption font-strong text-text-primary">{dashboard.name}</h3>
                           <OwnerBadge email={dashboard.owner_email} />
                           {dashboard.description && (
-                            <p className="mb-2 line-clamp-2 text-xs text-gray-500">{dashboard.description}</p>
+                            <p className="mt-1.5 line-clamp-2 text-caption text-text-tertiary">{dashboard.description}</p>
                           )}
-                          <div className="mt-2 flex items-center justify-between text-xs text-gray-400">
+                          <div className="mt-3 flex items-center justify-between text-tiny text-text-quaternary">
                             <span>{chartCount} chart{chartCount !== 1 ? 's' : ''}</span>
                             <span className="flex items-center gap-1">
                               <Clock className="h-3 w-3" />
@@ -193,34 +245,34 @@ export default function DashboardsPage() {
                             </span>
                           </div>
                         </div>
-                        <div className="flex items-center justify-between rounded-b-lg border-t bg-gray-50 px-5 py-3">
+                        <div className="flex items-center justify-between border-t border-[rgb(var(--border-line))] bg-surface-2 px-4 py-2.5 rounded-b-xl">
                           <div className="flex items-center gap-3">
                             {getResourcePermissions(dashboard.user_permission).canShare && (
                               <button
                                 onClick={() => setShareDash(dashboard)}
-                                className="flex items-center gap-1 text-xs text-gray-400 transition-colors hover:text-blue-600"
+                                className="flex items-center gap-1 text-tiny text-text-tertiary transition-colors hover:text-brand"
                                 title="Share"
                               >
-                                <Share2 className="h-3.5 w-3.5" />
+                                <Share2 className="h-3 w-3" />
                                 Share
                               </button>
                             )}
                             {getResourcePermissions(dashboard.user_permission).canEdit && (
                               <button
                                 onClick={() => setPublicShareDash(dashboard)}
-                                className="flex items-center gap-1 text-xs text-gray-400 transition-colors hover:text-purple-600"
+                                className="flex items-center gap-1 text-tiny text-text-tertiary transition-colors hover:text-brand"
                                 title="Public links"
                               >
-                                <Globe className="h-3.5 w-3.5" />
+                                <Globe className="h-3 w-3" />
                                 Public links
                               </button>
                             )}
                           </div>
                           <button
                             onClick={() => router.push(`/dashboards/${dashboard.id}`)}
-                            className="ml-auto flex items-center gap-1.5 text-xs font-medium text-blue-600 transition-colors hover:text-blue-800"
+                            className="ml-auto flex items-center gap-1 text-tiny font-emphasis text-brand transition-colors hover:text-brand-hover"
                           >
-                            <Eye className="h-3.5 w-3.5" />
+                            <Eye className="h-3 w-3" />
                             Open
                           </button>
                         </div>
@@ -234,6 +286,8 @@ export default function DashboardsPage() {
                   onDelete={canEdit ? handleDelete : undefined}
                   onShare={(dashboard) => setShareDash(dashboard)}
                   deletingId={isDeletingDashboard ? dashboardToDelete?.id : undefined}
+                  activeFilters={listFilters}
+                  onFilterClick={(key, value) => toggleListFilter(key as 'state' | 'access' | 'owner', value)}
                 />
               )}
             </div>
@@ -241,61 +295,59 @@ export default function DashboardsPage() {
         }}
       </PageListLayout>
 
-      {isCreating && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="mx-4 w-full max-w-md rounded-lg bg-white shadow-xl">
-            <form onSubmit={handleCreate}>
-              <div className="border-b border-gray-200 p-6">
-                <h2 className="text-xl font-semibold">Create New Dashboard</h2>
-              </div>
-              <div className="space-y-4 p-6">
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-gray-700">Dashboard Name *</label>
-                  <input
-                    type="text"
-                    value={newDashboardName}
-                    onChange={(event) => setNewDashboardName(event.target.value)}
-                    className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    required
-                    autoFocus
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-gray-700">Description</label>
-                  <textarea
-                    value={newDashboardDescription}
-                    onChange={(event) => setNewDashboardDescription(event.target.value)}
-                    className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    rows={3}
-                  />
-                </div>
-              </div>
-              <div className="flex justify-end gap-3 border-t border-gray-200 p-6">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsCreating(false);
-                    setNewDashboardName('');
-                    setNewDashboardDescription('');
-                  }}
-                  className="rounded-md border border-gray-300 px-4 py-2 transition-colors hover:bg-gray-50"
-                  disabled={createMutation.isPending}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={createMutation.isPending || !newDashboardName}
-                  className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {createMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-                  Create
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <Modal
+        isOpen={isCreating}
+        onClose={() => {
+          setIsCreating(false);
+          setNewDashboardName('');
+          setNewDashboardDescription('');
+        }}
+        title="Create New Dashboard"
+        size="md"
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setIsCreating(false);
+                setNewDashboardName('');
+                setNewDashboardDescription('');
+              }}
+              disabled={createMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleCreate}
+              disabled={createMutation.isPending || !newDashboardName}
+              loading={createMutation.isPending}
+            >
+              Create
+            </Button>
+          </>
+        }
+      >
+        <form onSubmit={handleCreate} className="space-y-3">
+          <FieldGroup label="Dashboard Name" required>
+            <Input
+              value={newDashboardName}
+              onChange={(event) => setNewDashboardName(event.target.value)}
+              required
+              autoFocus
+            />
+          </FieldGroup>
+          <FieldGroup label="Description">
+            <Textarea
+              value={newDashboardDescription}
+              onChange={(event) => setNewDashboardDescription(event.target.value)}
+              rows={3}
+            />
+          </FieldGroup>
+        </form>
+      </Modal>
 
       {dashboardToDelete && (
         <DeleteConstraintModal

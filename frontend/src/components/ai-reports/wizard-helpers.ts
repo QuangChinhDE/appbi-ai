@@ -233,22 +233,22 @@ export function sectionActiveCount(section: AgentSectionPlan, charts: EditableAg
 
 export function getBuildEventBadgeClass(event: BuildEvent): string {
   if (event.type === 'error') {
-    return 'bg-rose-50 text-rose-700 border border-rose-200';
+    return 'bg-danger/10 text-danger border border-danger/30';
   }
   if (event.type === 'done') {
-    return 'bg-emerald-50 text-emerald-700 border border-emerald-200';
+    return 'bg-success/10 text-success border border-success/30';
   }
-  return 'bg-blue-50 text-blue-700 border border-blue-200';
+  return 'bg-brand/10 text-brand border border-brand/30';
 }
 
 export function getPlanEventBadgeClass(event: AgentPlanEvent): string {
   if (event.type === 'error') {
-    return 'bg-rose-50 text-rose-700 border border-rose-200';
+    return 'bg-danger/10 text-danger border border-danger/30';
   }
   if (event.type === 'done') {
-    return 'bg-emerald-50 text-emerald-700 border border-emerald-200';
+    return 'bg-success/10 text-success border border-success/30';
   }
-  return 'bg-blue-50 text-blue-700 border border-blue-200';
+  return 'bg-brand/10 text-brand border border-brand/30';
 }
 
 export function briefToMultiline(value: unknown): string {

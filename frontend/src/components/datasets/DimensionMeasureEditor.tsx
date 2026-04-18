@@ -46,27 +46,27 @@ function DimensionRow({
   const [isExpanded, setIsExpanded] = useState(false);
 
   return (
-    <div className="border rounded-md bg-white">
+    <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1">
       <div className="flex items-center gap-2 px-3 py-2">
         <button
           onClick={() => setIsExpanded(!isExpanded)}
-          className="text-gray-400 hover:text-gray-600"
+          className="text-text-quaternary hover:text-text-secondary"
         >
           {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
         </button>
-        <Type className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-        <span className="text-sm text-gray-800 truncate flex-1">
+        <Type className="w-3.5 h-3.5 text-brand shrink-0" />
+        <span className="text-sm text-text-primary truncate flex-1">
           {dim.label || dim.name}
         </span>
-        <span className="text-[10px] text-gray-400 uppercase">{dim.type}</span>
+        <span className="text-[10px] text-text-quaternary uppercase">{dim.type}</span>
         <button
           onClick={() => onChange({ ...dim, hidden: !dim.hidden })}
-          className="p-0.5 hover:bg-gray-100 rounded"
+          className="p-0.5 hover:bg-surface-2 rounded"
           title={dim.hidden ? 'Show' : 'Hide'}
         >
-          {dim.hidden ? <EyeOff className="w-3.5 h-3.5 text-gray-300" /> : <Eye className="w-3.5 h-3.5 text-gray-500" />}
+          {dim.hidden ? <EyeOff className="w-3.5 h-3.5 text-text-quaternary" /> : <Eye className="w-3.5 h-3.5 text-text-tertiary" />}
         </button>
-        <button onClick={onRemove} className="p-0.5 hover:bg-red-50 rounded text-gray-300 hover:text-red-500">
+        <button onClick={onRemove} className="p-0.5 hover:bg-danger/10 rounded text-text-quaternary hover:text-danger">
           <Trash2 className="w-3.5 h-3.5" />
         </button>
       </div>
@@ -74,7 +74,7 @@ function DimensionRow({
         <div className="px-3 pb-3 pt-1 border-t space-y-2">
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[10px] text-gray-500 uppercase">Name</label>
+              <label className="text-[10px] text-text-tertiary uppercase">Name</label>
               <input
                 value={dim.name}
                 onChange={(e) => onChange({ ...dim, name: e.target.value })}
@@ -82,11 +82,11 @@ function DimensionRow({
               />
             </div>
             <div>
-              <label className="text-[10px] text-gray-500 uppercase">Type</label>
+              <label className="text-[10px] text-text-tertiary uppercase">Type</label>
               <select
                 value={dim.type}
                 onChange={(e) => onChange({ ...dim, type: e.target.value as any })}
-                className="w-full text-xs px-2 py-1 border rounded bg-white"
+                className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs"
               >
                 {DIM_TYPES.map((t) => (
                   <option key={t} value={t}>{t}</option>
@@ -95,7 +95,7 @@ function DimensionRow({
             </div>
           </div>
           <div>
-            <label className="text-[10px] text-gray-500 uppercase">Label</label>
+            <label className="text-[10px] text-text-tertiary uppercase">Label</label>
             <input
               value={dim.label || ''}
               onChange={(e) => onChange({ ...dim, label: e.target.value || undefined })}
@@ -104,7 +104,7 @@ function DimensionRow({
             />
           </div>
           <div>
-            <label className="text-[10px] text-gray-500 uppercase">SQL</label>
+            <label className="text-[10px] text-text-tertiary uppercase">SQL</label>
             <input
               value={dim.sql || ''}
               onChange={(e) => onChange({ ...dim, sql: e.target.value || undefined })}
@@ -132,27 +132,27 @@ function MeasureRow({
   const [isExpanded, setIsExpanded] = useState(false);
 
   return (
-    <div className="border rounded-md bg-white">
+    <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1">
       <div className="flex items-center gap-2 px-3 py-2">
         <button
           onClick={() => setIsExpanded(!isExpanded)}
-          className="text-gray-400 hover:text-gray-600"
+          className="text-text-quaternary hover:text-text-secondary"
         >
           {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
         </button>
-        <Sigma className="w-3.5 h-3.5 text-orange-500 shrink-0" />
-        <span className="text-sm text-gray-800 truncate flex-1">
+        <Sigma className="w-3.5 h-3.5 text-warning shrink-0" />
+        <span className="text-sm text-text-primary truncate flex-1">
           {measure.label || measure.name}
         </span>
-        <span className="text-[10px] text-gray-400 uppercase">{measure.type}</span>
+        <span className="text-[10px] text-text-quaternary uppercase">{measure.type}</span>
         <button
           onClick={() => onChange({ ...measure, hidden: !measure.hidden })}
-          className="p-0.5 hover:bg-gray-100 rounded"
+          className="p-0.5 hover:bg-surface-2 rounded"
           title={measure.hidden ? 'Show' : 'Hide'}
         >
-          {measure.hidden ? <EyeOff className="w-3.5 h-3.5 text-gray-300" /> : <Eye className="w-3.5 h-3.5 text-gray-500" />}
+          {measure.hidden ? <EyeOff className="w-3.5 h-3.5 text-text-quaternary" /> : <Eye className="w-3.5 h-3.5 text-text-tertiary" />}
         </button>
-        <button onClick={onRemove} className="p-0.5 hover:bg-red-50 rounded text-gray-300 hover:text-red-500">
+        <button onClick={onRemove} className="p-0.5 hover:bg-danger/10 rounded text-text-quaternary hover:text-danger">
           <Trash2 className="w-3.5 h-3.5" />
         </button>
       </div>
@@ -160,7 +160,7 @@ function MeasureRow({
         <div className="px-3 pb-3 pt-1 border-t space-y-2">
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[10px] text-gray-500 uppercase">Name</label>
+              <label className="text-[10px] text-text-tertiary uppercase">Name</label>
               <input
                 value={measure.name}
                 onChange={(e) => onChange({ ...measure, name: e.target.value })}
@@ -168,11 +168,11 @@ function MeasureRow({
               />
             </div>
             <div>
-              <label className="text-[10px] text-gray-500 uppercase">Aggregation</label>
+              <label className="text-[10px] text-text-tertiary uppercase">Aggregation</label>
               <select
                 value={measure.type}
                 onChange={(e) => onChange({ ...measure, type: e.target.value as any })}
-                className="w-full text-xs px-2 py-1 border rounded bg-white"
+                className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs"
               >
                 {MEASURE_TYPES.map((t) => (
                   <option key={t} value={t}>{t.toUpperCase()}</option>
@@ -181,7 +181,7 @@ function MeasureRow({
             </div>
           </div>
           <div>
-            <label className="text-[10px] text-gray-500 uppercase">Label</label>
+            <label className="text-[10px] text-text-tertiary uppercase">Label</label>
             <input
               value={measure.label || ''}
               onChange={(e) => onChange({ ...measure, label: e.target.value || undefined })}
@@ -190,7 +190,7 @@ function MeasureRow({
             />
           </div>
           <div>
-            <label className="text-[10px] text-gray-500 uppercase">SQL</label>
+            <label className="text-[10px] text-text-tertiary uppercase">SQL</label>
             <input
               value={measure.sql || ''}
               onChange={(e) => onChange({ ...measure, sql: e.target.value || undefined })}
@@ -274,22 +274,22 @@ export function DimensionMeasureEditor({ datasetId, view, onClose }: DimensionMe
     description !== (view.description || '');
 
   return (
-    <div className="fixed inset-y-0 right-0 w-96 bg-white border-l shadow-xl z-50 flex flex-col">
+    <div className="fixed inset-y-0 right-0 z-50 flex w-96 flex-col border-l border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg">
       {/* Header */}
       <div className="px-4 py-3 border-b flex items-center justify-between shrink-0">
         <div>
-          <h3 className="text-sm font-semibold text-gray-900">
+          <h3 className="text-sm font-semibold text-text-primary">
             {view.table_display_name || view.name}
           </h3>
         </div>
-        <button onClick={onClose} className="p-1 hover:bg-gray-100 rounded">
+        <button onClick={onClose} className="p-1 hover:bg-surface-2 rounded">
           <X className="w-4 h-4" />
         </button>
       </div>
 
       {/* Description */}
       <div className="px-4 py-3 border-b shrink-0">
-        <label className="text-[10px] text-gray-500 uppercase block mb-1">Description</label>
+        <label className="text-[10px] text-text-tertiary uppercase block mb-1">Description</label>
         <input
           value={description}
           onChange={(e) => setDescription(e.target.value)}
@@ -303,12 +303,12 @@ export function DimensionMeasureEditor({ datasetId, view, onClose }: DimensionMe
         {/* Dimensions */}
         <div className="px-4 py-3">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-gray-700 uppercase">
+            <span className="text-xs font-medium text-text-secondary uppercase">
               Dimensions ({dimensions.length})
             </span>
             <button
               onClick={handleAddDimension}
-              className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
+              className="text-xs text-brand hover:text-brand flex items-center gap-1"
             >
               <Plus className="w-3 h-3" /> Add
             </button>
@@ -328,12 +328,12 @@ export function DimensionMeasureEditor({ datasetId, view, onClose }: DimensionMe
         {/* Measures */}
         <div className="px-4 py-3 border-t">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-gray-700 uppercase">
+            <span className="text-xs font-medium text-text-secondary uppercase">
               Measures ({measures.length})
             </span>
             <button
               onClick={handleAddMeasure}
-              className="text-xs text-orange-600 hover:text-orange-800 flex items-center gap-1"
+              className="text-xs text-warning hover:text-warning flex items-center gap-1"
             >
               <Plus className="w-3 h-3" /> Add
             </button>
@@ -355,14 +355,14 @@ export function DimensionMeasureEditor({ datasetId, view, onClose }: DimensionMe
       <div className="px-4 py-3 border-t flex items-center justify-end gap-2 shrink-0">
         <button
           onClick={onClose}
-          className="px-3 py-1.5 text-xs text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50"
+          className="px-3 py-1.5 text-xs text-text-secondary border border-[rgb(var(--border-strong))] rounded-md hover:bg-surface-2"
         >
           Cancel
         </button>
         <button
           onClick={handleSave}
           disabled={!isDirty || updateView.isPending}
-          className="px-3 py-1.5 text-xs text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5"
+          className="px-3 py-1.5 text-xs text-white bg-brand rounded-md hover:bg-brand-hover disabled:opacity-50 flex items-center gap-1.5"
         >
           {updateView.isPending ? (
             <Loader2 className="w-3 h-3 animate-spin" />

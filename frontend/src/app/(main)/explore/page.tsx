@@ -5,20 +5,22 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Trash2, BarChart3, Clock, Layers, Search, Share2, X } from 'lucide-react';
+import { Plus, Trash2, BarChart3, Clock, Layers, Search, Share2 } from 'lucide-react';
 import { useCharts, useDeleteChart } from '@/hooks/use-charts';
-import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
+import { Button, IconButton } from '@/components/ui/Button';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { FilterTag, filterTagBaseClass } from '@/components/ui/FilterTag';
 import { useI18n } from '@/providers/LanguageProvider';
 import { toast } from '@/lib/toast';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ChartType } from '@/types/api';
-import type { Chart, ChartListScope } from '@/types/api';
+import type { Chart } from '@/types/api';
 import { getActiveChartRoleConfig } from '@/lib/chart-config';
 
 const CHART_TYPE_LABELS: Record<string, string> = {
@@ -36,27 +38,26 @@ const CHART_TYPE_LABELS: Record<string, string> = {
   TABLE: 'Table',
 };
 
-const CHART_TYPE_FILTERS: Array<{ value: 'all' | ChartType; label: string }> = [
-  { value: 'all', label: 'All chart types' },
-  { value: ChartType.BAR, label: 'Bar' },
-  { value: ChartType.HORIZONTAL_BAR, label: 'Horizontal Bar' },
-  { value: ChartType.LINE, label: 'Line' },
-  { value: ChartType.PIE, label: 'Pie' },
-  { value: ChartType.TIME_SERIES, label: 'Time Series' },
-  { value: ChartType.AREA, label: 'Area' },
-  { value: ChartType.STACKED_BAR, label: 'Stacked Bar' },
-  { value: ChartType.GROUPED_BAR, label: 'Grouped Bar' },
-  { value: ChartType.BAR_LINE, label: 'Bar + Line' },
-  { value: ChartType.SCATTER, label: 'Scatter' },
-  { value: ChartType.KPI, label: 'KPI' },
-  { value: ChartType.TABLE, label: 'Table' },
-];
-
 function buildChartSourceLabel(chart: Chart): string | null {
   const parts = [chart.dataset_name, chart.dataset_table_name]
     .map((value) => String(value ?? '').trim())
     .filter(Boolean);
   return parts.length > 0 ? parts.join(' / ') : null;
+}
+
+const EXPLORE_STATIC_TAG_TONES = {
+  neutral: 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary',
+  brand: 'border-brand/20 bg-brand/10 text-brand',
+} as const;
+
+function ExploreStaticTag({
+  children,
+  tone = 'neutral',
+}: {
+  children: React.ReactNode;
+  tone?: keyof typeof EXPLORE_STATIC_TAG_TONES;
+}) {
+  return <span className={`${filterTagBaseClass} ${EXPLORE_STATIC_TAG_TONES[tone]}`}>{children}</span>;
 }
 
 export default function ExplorePage() {
@@ -67,36 +68,55 @@ export default function ExplorePage() {
   const deleteChart = useDeleteChart();
 
   const [searchText, setSearchText] = useState('');
-  const [typeFilter, setTypeFilter] = useState<'all' | ChartType>('all');
-  const [scopeFilter, setScopeFilter] = useState<ChartListScope>('all');
+  const [listFilters, setListFilters] = useState<{ type?: string; scope?: string; owner?: string }>({});
   const [chartToDelete, setChartToDelete] = useState<Chart | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingChart, setIsDeletingChart] = useState(false);
   const [shareChart, setShareChart] = useState<Chart | null>(null);
 
-  const debouncedSearchText = useDebouncedValue(searchText.trim(), 250);
-  const activeFilterCount = Number(Boolean(searchText.trim())) + Number(typeFilter !== 'all') + Number(scopeFilter !== 'all');
-
-  const { data: allCharts = [] } = useCharts({
-    limit: 500,
-    sort: 'updated_desc',
-  });
-  const { data: charts = [], isLoading } = useCharts({
-    limit: 500,
-    q: debouncedSearchText || undefined,
-    chart_type: typeFilter !== 'all' ? typeFilter : undefined,
-    scope: scopeFilter,
-    sort: debouncedSearchText ? 'relevance' : 'updated_desc',
-  });
+  const { data: allCharts = [], isLoading } = useCharts({ limit: 500, sort: 'updated_desc' });
 
   const chartTypesUsed = new Set(allCharts.map((chart) => chart.chart_type)).size;
   const updatedThisWeek = allCharts.filter((chart) => {
     const updatedAt = new Date(chart.updated_at).getTime();
     return Number.isFinite(updatedAt) && Date.now() - updatedAt <= 7 * 24 * 60 * 60 * 1000;
   }).length;
+  const activeListFilterCount = Object.values(listFilters).filter(Boolean).length;
 
-  const description = activeFilterCount > 0
-    ? `Showing ${charts.length} of ${allCharts.length} accessible charts`
+  const toggleListFilter = (key: 'type' | 'scope' | 'owner', value: string) => {
+    setListFilters((current) => ({
+      ...current,
+      [key]: current[key] === value ? undefined : value,
+    }));
+  };
+
+  const clearListFilters = () => setListFilters({});
+
+  const filteredCharts = allCharts.filter((chart) => {
+    const needle = searchText.trim().toLowerCase();
+    const sourceLabel = buildChartSourceLabel(chart)?.toLowerCase() ?? '';
+    const config = chart.config as any;
+    const activeRoleConfig = getActiveChartRoleConfig(config);
+    const scopeValue = chart.is_owned_by_current_user ? 'mine' : 'shared';
+    const matchesSearch =
+      needle.length === 0 ||
+      chart.name.toLowerCase().includes(needle) ||
+      (chart.description ?? '').toLowerCase().includes(needle) ||
+      sourceLabel.includes(needle) ||
+      (activeRoleConfig?.dimension ?? '').toLowerCase().includes(needle) ||
+      (chart.owner_email ?? '').toLowerCase().includes(needle) ||
+      (CHART_TYPE_LABELS[chart.chart_type] ?? chart.chart_type).toLowerCase().includes(needle);
+
+    return (
+      matchesSearch &&
+      (!listFilters.type || chart.chart_type === listFilters.type) &&
+      (!listFilters.scope || scopeValue === listFilters.scope) &&
+      (!listFilters.owner || chart.owner_email === listFilters.owner)
+    );
+  });
+
+  const description = searchText.trim().length > 0 || activeListFilterCount > 0
+    ? `Showing ${filteredCharts.length} of ${allCharts.length} saved charts`
     : `${allCharts.length} saved chart${allCharts.length !== 1 ? 's' : ''}`;
 
   const handleDeleteChart = (chart: Chart) => {
@@ -109,25 +129,19 @@ export default function ExplorePage() {
     setIsDeletingChart(true);
     try {
       await deleteChart.mutateAsync(chartToDelete.id);
-      toast.success(`Da xoa bieu do "${chartToDelete.name}"`);
+      toast.success(`Đã xoá biểu đồ "${chartToDelete.name}"`);
       setChartToDelete(null);
     } catch (error: any) {
       const detail = error.response?.data?.detail;
       if (detail?.constraints) {
         setDeleteConstraints(detail.constraints);
       } else {
-        toast.error(`Khong the xoa: ${detail || error.message}`);
+        toast.error(`Không thể xoá: ${detail || error.message}`);
         setChartToDelete(null);
       }
     } finally {
       setIsDeletingChart(false);
     }
-  };
-
-  const clearFilters = () => {
-    setSearchText('');
-    setTypeFilter('all');
-    setScopeFilter('all');
   };
 
   return (
@@ -142,32 +156,21 @@ export default function ExplorePage() {
             description={t('overview.explore.description')}
             badges={[t('overview.explore.badge1'), t('overview.explore.badge2'), t('overview.explore.badge3')]}
             stats={[
-              {
-                label: t('overview.explore.saved'),
-                value: allCharts.length,
-                helper: t('overview.explore.savedHelper'),
-              },
-              {
-                label: t('overview.explore.types'),
-                value: chartTypesUsed,
-                helper: t('overview.explore.typesHelper'),
-              },
-              {
-                label: t('overview.explore.updated'),
-                value: updatedThisWeek,
-                helper: t('overview.explore.updatedHelper'),
-              },
+              { label: t('overview.explore.saved'), value: allCharts.length, helper: t('overview.explore.savedHelper') },
+              { label: t('overview.explore.types'), value: chartTypesUsed, helper: t('overview.explore.typesHelper') },
+              { label: t('overview.explore.updated'), value: updatedThisWeek, helper: t('overview.explore.updatedHelper') },
             ]}
           />
         )}
         action={canEdit ? (
-          <button
+          <Button
+            variant="primary"
+            size="sm"
+            leadingIcon={<Plus className="h-3.5 w-3.5" />}
             onClick={() => router.push('/explore/new')}
-            className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700"
           >
-            <Plus className="h-4 w-4" />
             {t('action.newChart')}
-          </button>
+          </Button>
         ) : undefined}
         isLoading={isLoading}
         loadingText={t('common.loading')}
@@ -175,250 +178,256 @@ export default function ExplorePage() {
         searchValue={searchText}
         onSearchValueChange={setSearchText}
         defaultView="list"
-        toolbarExtra={(
+        activeFilters={activeListFilterCount > 0 ? (
           <>
-            <label className="flex min-w-[190px] flex-col gap-1">
-              <span className="text-xs font-medium uppercase tracking-wide text-gray-500">
-                Chart type
-              </span>
-              <select
-                value={typeFilter}
-                onChange={(event) => setTypeFilter(event.target.value as 'all' | ChartType)}
-                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
+            {listFilters.type && (
+              <FilterTag tone="brand" active onClick={() => toggleListFilter('type', listFilters.type!)}>
+                {CHART_TYPE_LABELS[listFilters.type] ?? listFilters.type}
+              </FilterTag>
+            )}
+            {listFilters.scope && (
+              <FilterTag
+                tone={listFilters.scope === 'mine' ? 'info' : 'brand'}
+                active
+                onClick={() => toggleListFilter('scope', listFilters.scope!)}
               >
-                {CHART_TYPE_FILTERS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="flex min-w-[170px] flex-col gap-1">
-              <span className="text-xs font-medium uppercase tracking-wide text-gray-500">
-                Ownership
-              </span>
-              <select
-                value={scopeFilter}
-                onChange={(event) => setScopeFilter(event.target.value as ChartListScope)}
-                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="all">All accessible</option>
-                <option value="mine">Mine only</option>
-                <option value="shared">Shared only</option>
-              </select>
-            </label>
-
-            <button
-              type="button"
-              onClick={clearFilters}
-              disabled={activeFilterCount === 0}
-              className="mt-6 inline-flex items-center justify-center rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <X className="mr-2 h-4 w-4" />
+                {listFilters.scope === 'mine' ? 'Mine' : 'Shared'}
+              </FilterTag>
+            )}
+            {listFilters.owner && (
+              <FilterTag active onClick={() => toggleListFilter('owner', listFilters.owner!)}>
+                Owner: {listFilters.owner.split('@')[0]}
+              </FilterTag>
+            )}
+            <Button variant="ghost" size="xs" onClick={clearListFilters}>
               Clear filters
-            </button>
+            </Button>
           </>
-        )}
+        ) : null}
       >
         {({ viewMode }) => {
           if (!allCharts.length && !isLoading) {
             return (
-              <div className="flex h-64 flex-col items-center justify-center text-center">
-                <BarChart3 className="mb-4 h-14 w-14 text-gray-300" />
-                <h3 className="mb-1 text-lg font-medium text-gray-700">No saved charts yet</h3>
-                <p className="mb-4 text-sm text-gray-500">Create your first chart from a dataset table</p>
-                {canEdit && (
-                  <button
+              <EmptyState
+                icon={<BarChart3 />}
+                title="No saved charts yet"
+                description="Create your first chart from a dataset table."
+                action={canEdit ? (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    leadingIcon={<Plus className="h-3.5 w-3.5" />}
                     onClick={() => router.push('/explore/new')}
-                    className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700"
                   >
-                    <Plus className="h-4 w-4" />
                     New Chart
-                  </button>
-                )}
-              </div>
+                  </Button>
+                ) : undefined}
+              />
             );
           }
 
           return (
             <div className="space-y-6">
-              {charts.length === 0 ? (
-                <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-dashed border-gray-300 bg-white text-center">
-                  <Search className="mb-2 h-8 w-8 text-gray-300" />
-                  <p className="text-sm text-gray-500">No charts match the current search or filters.</p>
+              {filteredCharts.length === 0 ? (
+                <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 text-center">
+                  <Search className="mb-2 h-7 w-7 text-text-quaternary" />
+                  <p className="text-caption text-text-tertiary">No charts match the current search or tag filters.</p>
                 </div>
               ) : viewMode === 'list' ? (
-                <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-                  <div className="flex flex-col divide-y divide-gray-100">
-                    {charts.map((chart) => {
+                <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+                  <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
+                    <thead className="bg-surface-2">
+                      <tr>
+                        <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                          Chart
+                        </th>
+                        <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                          Tags
+                        </th>
+                        <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                          Owner
+                        </th>
+                        <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                          Updated
+                        </th>
+                        <th className="px-5 py-3 text-right text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                          Actions
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
+                    {filteredCharts.map((chart) => {
                       const config = chart.config as any;
                       const activeRoleConfig = getActiveChartRoleConfig(config);
                       const typeLabel = CHART_TYPE_LABELS[chart.chart_type] ?? chart.chart_type;
-                      const createdAt = new Date(chart.created_at).toLocaleDateString(locale, {
-                        day: '2-digit',
-                        month: '2-digit',
-                        year: 'numeric',
-                      });
+                      const updatedAt = new Date(chart.updated_at).toLocaleDateString(locale, { day: '2-digit', month: '2-digit', year: 'numeric' });
                       const itemPerms = getResourcePermissions(chart.user_permission);
                       const sourceLabel = buildChartSourceLabel(chart);
+                      const scopeValue = chart.is_owned_by_current_user ? 'mine' : 'shared';
 
                       return (
-                        <div
+                        <tr
                           key={chart.id}
-                          className="group flex cursor-pointer gap-4 px-4 py-4 transition-colors hover:bg-gray-50"
-                          onClick={() => router.push(`/explore/${chart.id}`)}
+                          className="hover:bg-surface-2"
                         >
-                          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md bg-blue-50">
-                            <BarChart3 className="h-4 w-4 text-blue-600" />
-                          </div>
+                          <td className="px-5 py-3.5">
+                            <button
+                              onClick={() => router.push(`/explore/${chart.id}`)}
+                              className="flex items-start gap-3 text-left"
+                            >
+                              <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">
+                                <BarChart3 className="h-3.5 w-3.5" />
+                              </div>
+                              <div className="min-w-0">
+                                <p className="truncate text-caption font-emphasis text-text-primary transition-colors hover:text-brand">{chart.name}</p>
+                                {sourceLabel && (
+                                  <p className="mt-0.5 truncate text-tiny font-emphasis text-text-secondary">{sourceLabel}</p>
+                                )}
 
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="truncate text-sm font-semibold text-gray-900">{chart.name}</p>
+                                {chart.description ? (
+                                  <p className="mt-0.5 truncate text-tiny text-text-tertiary">{chart.description}</p>
+                                ) : activeRoleConfig?.dimension ? (
+                                  <p className="mt-0.5 flex items-center gap-1 truncate text-tiny text-text-tertiary">
+                                    <Layers className="h-3 w-3 flex-shrink-0" />
+                                    {activeRoleConfig.dimension}
+                                  </p>
+                                ) : null}
+                              </div>
+                            </button>
+                          </td>
+                          <td className="px-5 py-3.5">
+                            <div className="flex flex-wrap gap-1.5">
+                              <FilterTag
+                                tone="brand"
+                                active={listFilters.type === chart.chart_type}
+                                onClick={() => toggleListFilter('type', chart.chart_type)}
+                              >
+                                {typeLabel}
+                              </FilterTag>
+                              <FilterTag
+                                tone={scopeValue === 'mine' ? 'info' : 'brand'}
+                                active={listFilters.scope === scopeValue}
+                                onClick={() => toggleListFilter('scope', scopeValue)}
+                              >
+                                {scopeValue === 'mine' ? 'Mine' : 'Shared'}
+                              </FilterTag>
                               {chart.is_shared && (
-                                <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700">
-                                  Shared
-                                </span>
+                                <ExploreStaticTag tone="brand">Shared link</ExploreStaticTag>
                               )}
-                              <OwnerBadge email={chart.owner_email} />
                             </div>
-
-                            {sourceLabel && (
-                              <p className="mt-1 truncate text-xs font-medium text-gray-600">{sourceLabel}</p>
-                            )}
-
-                            {chart.description ? (
-                              <p className="mt-1 truncate text-xs text-gray-500">{chart.description}</p>
-                            ) : activeRoleConfig?.dimension ? (
-                              <p className="mt-1 flex items-center gap-1 truncate text-xs text-gray-500">
-                                <Layers className="h-3 w-3 flex-shrink-0" />
-                                {activeRoleConfig.dimension}
-                              </p>
-                            ) : null}
-                          </div>
-
-                          <div className="flex flex-col items-end gap-2 text-xs">
-                            <span className="rounded-full bg-blue-50 px-2 py-0.5 font-medium text-blue-700">
-                              {typeLabel}
-                            </span>
-                            <span className="flex items-center gap-1 text-gray-400">
+                          </td>
+                          <td className="px-5 py-3.5 whitespace-nowrap">
+                            <OwnerBadge
+                              email={chart.owner_email}
+                              active={listFilters.owner === chart.owner_email}
+                              onClick={chart.owner_email ? () => toggleListFilter('owner', chart.owner_email!) : undefined}
+                            />
+                          </td>
+                          <td className="px-5 py-3.5 whitespace-nowrap text-caption text-text-tertiary">
+                            <span className="inline-flex items-center gap-1">
                               <Clock className="h-3 w-3" />
-                              {createdAt}
+                              {updatedAt}
                             </span>
-                            <div className="flex items-center gap-1 opacity-0 transition-all group-hover:opacity-100">
+                          </td>
+                          <td className="px-5 py-3.5 whitespace-nowrap text-right">
+                            <div className="flex items-center justify-end gap-0.5">
                               {itemPerms.canShare && (
-                                <button
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    setShareChart(chart);
-                                  }}
-                                  className="rounded p-1 text-gray-400 transition-colors hover:bg-purple-50 hover:text-purple-600"
-                                  title="Share"
+                                <IconButton
+                                  aria-label="Share"
+                                  variant="ghost"
+                                  size="xs"
+                                  onClick={() => setShareChart(chart)}
                                 >
-                                  <Share2 className="h-4 w-4" />
-                                </button>
+                                  <Share2 className="h-3.5 w-3.5" />
+                                </IconButton>
                               )}
                               {itemPerms.canDelete && (
-                                <button
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    handleDeleteChart(chart);
-                                  }}
-                                  className="rounded p-1 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-600"
-                                  title="Delete"
+                                <IconButton
+                                  aria-label="Delete"
+                                  variant="ghost"
+                                  size="xs"
+                                  className="hover:text-danger hover:bg-danger/10"
+                                  onClick={() => handleDeleteChart(chart)}
                                 >
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </IconButton>
                               )}
                             </div>
-                          </div>
-                        </div>
+                          </td>
+                        </tr>
                       );
                     })}
-                  </div>
+                    </tbody>
+                  </table>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {charts.map((chart) => {
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {filteredCharts.map((chart) => {
                     const config = chart.config as any;
                     const activeRoleConfig = getActiveChartRoleConfig(config);
                     const typeLabel = CHART_TYPE_LABELS[chart.chart_type] ?? chart.chart_type;
-                    const createdAt = new Date(chart.created_at).toLocaleDateString(locale, {
-                      day: '2-digit',
-                      month: '2-digit',
-                      year: 'numeric',
-                    });
+                    const createdAt = new Date(chart.created_at).toLocaleDateString(locale, { day: '2-digit', month: '2-digit', year: 'numeric' });
                     const itemPerms = getResourcePermissions(chart.user_permission);
                     const sourceLabel = buildChartSourceLabel(chart);
 
                     return (
                       <div
                         key={chart.id}
-                        className="group flex cursor-pointer flex-col gap-3 rounded-lg border border-gray-200 bg-white p-4 transition-shadow hover:shadow-md"
+                        className="group flex cursor-pointer flex-col gap-2.5 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4 transition-all hover:border-[rgb(var(--border-strong))] hover:shadow-linear"
                         onClick={() => router.push(`/explore/${chart.id}`)}
                       >
                         <div className="flex items-start justify-between gap-3">
-                          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50">
-                            <BarChart3 className="h-5 w-5 text-blue-600" />
+                          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand/10 text-brand">
+                            <BarChart3 className="h-4 w-4" />
                           </div>
-                          <div className="flex items-center gap-1 opacity-0 transition-all group-hover:opacity-100">
+                          <div className="flex items-center gap-0.5 opacity-0 transition-all group-hover:opacity-100">
                             {itemPerms.canShare && (
-                              <button
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  setShareChart(chart);
-                                }}
-                                className="rounded p-1 text-gray-400 transition-colors hover:bg-purple-50 hover:text-purple-600"
-                                title="Share"
+                              <IconButton
+                                aria-label="Share"
+                                variant="ghost"
+                                size="xs"
+                                onClick={(event) => { event.stopPropagation(); setShareChart(chart); }}
                               >
-                                <Share2 className="h-4 w-4" />
-                              </button>
+                                <Share2 className="h-3.5 w-3.5" />
+                              </IconButton>
                             )}
                             {itemPerms.canDelete && (
-                              <button
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  handleDeleteChart(chart);
-                                }}
-                                className="rounded p-1 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-600"
-                                title="Delete"
+                              <IconButton
+                                aria-label="Delete"
+                                variant="ghost"
+                                size="xs"
+                                className="hover:text-danger hover:bg-danger/10"
+                                onClick={(event) => { event.stopPropagation(); handleDeleteChart(chart); }}
                               >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </IconButton>
                             )}
                           </div>
                         </div>
 
                         <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <h3 className="truncate text-sm font-semibold text-gray-900">{chart.name}</h3>
-                            {chart.is_shared && (
-                              <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700">
-                                Shared
-                              </span>
-                            )}
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <h3 className="truncate text-caption font-strong text-text-primary">{chart.name}</h3>
+                            {chart.is_shared && <ExploreStaticTag tone="brand">Shared</ExploreStaticTag>}
                           </div>
                           <div className="mt-1">
                             <OwnerBadge email={chart.owner_email} />
                           </div>
                           {sourceLabel && (
-                            <p className="mt-2 line-clamp-2 text-xs font-medium text-gray-600">{sourceLabel}</p>
+                            <p className="mt-1.5 line-clamp-2 text-tiny font-emphasis text-text-secondary">{sourceLabel}</p>
                           )}
                           {chart.description ? (
-                            <p className="mt-1 line-clamp-2 text-xs text-gray-500">{chart.description}</p>
+                            <p className="mt-0.5 line-clamp-2 text-tiny text-text-tertiary">{chart.description}</p>
                           ) : activeRoleConfig?.dimension ? (
-                            <p className="mt-1 flex items-center gap-1 truncate text-xs text-gray-500">
+                            <p className="mt-0.5 flex items-center gap-1 truncate text-tiny text-text-tertiary">
                               <Layers className="h-3 w-3 flex-shrink-0" />
                               {activeRoleConfig.dimension}
                             </p>
                           ) : null}
                         </div>
 
-                        <div className="flex items-center justify-between text-xs text-gray-400">
-                          <span className="rounded-full bg-blue-50 px-2 py-0.5 font-medium text-blue-700">
-                            {typeLabel}
-                          </span>
+                        <div className="flex items-center justify-between text-tiny text-text-quaternary">
+                          <ExploreStaticTag>{typeLabel}</ExploreStaticTag>
                           <span className="flex items-center gap-1">
                             <Clock className="h-3 w-3" />
                             {createdAt}
@@ -437,7 +446,7 @@ export default function ExplorePage() {
       {chartToDelete && (
         <DeleteConstraintModal
           itemName={chartToDelete.name}
-          itemTypeLabel="bieu do"
+          itemTypeLabel="biểu đồ"
           constraints={deleteConstraints}
           isDeleting={isDeletingChart}
           onConfirm={confirmDeleteChart}

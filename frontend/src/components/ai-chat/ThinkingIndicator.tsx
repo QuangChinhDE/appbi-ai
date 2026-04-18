@@ -2,12 +2,6 @@
 
 /**
  * ThinkingIndicator — real-time AI activity panel.
- *
- * Phase UI improvements:
- * - Intent mode badge: shows LOOKUP / EXPLORE / INSIGHT / CREATE
- * - Richer step icons per tool category
- * - Better visual hierarchy for multi-step INSIGHT analysis
- * - Smoother collapse transition
  */
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -26,19 +20,19 @@ interface ActivityPanelProps {
 
 // ── Intent badge config ──────────────────────────────────────────────────────
 
-const INTENT_CONFIG: Record<IntentType, { label: string; color: string; bg: string; border: string }> = {
-  LOOKUP:  { label: '🔍 Tra cứu',       color: 'text-blue-700',   bg: 'bg-blue-50',   border: 'border-blue-200' },
-  EXPLORE: { label: '🔬 Khám phá',      color: 'text-purple-700', bg: 'bg-purple-50', border: 'border-purple-200' },
-  INSIGHT: { label: '💡 Phân tích sâu', color: 'text-amber-700',  bg: 'bg-amber-50',  border: 'border-amber-200' },
-  CREATE:  { label: '🎨 Tạo biểu đồ',  color: 'text-green-700',  bg: 'bg-green-50',  border: 'border-green-200' },
-  VAGUE:   { label: '❓ Làm rõ',        color: 'text-gray-600',   bg: 'bg-gray-50',   border: 'border-gray-200' },
+const INTENT_CONFIG: Record<IntentType, { label: string; cls: string }> = {
+  LOOKUP:  { label: '🔍 Tra cứu',       cls: 'bg-brand/10 text-brand border-brand/20' },
+  EXPLORE: { label: '🔬 Khám phá',      cls: 'bg-surface-2 text-text-secondary border-[rgb(var(--border-line))]' },
+  INSIGHT: { label: '💡 Phân tích sâu', cls: 'bg-warning/10 text-warning border-warning/20' },
+  CREATE:  { label: '🎨 Tạo biểu đồ',  cls: 'bg-success/10 text-success border-success/20' },
+  VAGUE:   { label: '❓ Làm rõ',        cls: 'bg-surface-2 text-text-tertiary border-[rgb(var(--border-line))]' },
 };
 
 // ── Tool-specific icons ───────────────────────────────────────────────────────
 
 function ToolIcon({ toolLabel, status }: { toolLabel: string; status: 'running' | 'done' }) {
   const isRunning = status === 'running';
-  const cls = `h-3 w-3 ${isRunning ? 'text-blue-500' : 'text-green-500'}`;
+  const cls = `h-3 w-3 ${isRunning ? 'text-brand' : 'text-success'}`;
 
   if (toolLabel.includes('Tìm chart') || toolLabel.includes('search_chart'))
     return <BarChart3 className={cls} />;
@@ -94,18 +88,22 @@ export function ThinkingIndicator({ steps, isThinking, hasText, intent }: Activi
 
   const autoCollapsed = !isThinking && hasText;
   const collapsed = userCollapsed !== null ? userCollapsed : autoCollapsed;
-  const doneCount = steps.filter(s => s.status === 'done').length;
+  const doneCount = steps.filter((s) => s.status === 'done').length;
   const totalCount = steps.length;
   const intentCfg = intent ? INTENT_CONFIG[intent] : null;
 
-  // Initial spinner before first step arrives
+  // Initial state: animated dots while waiting for first step
   if (steps.length === 0) {
     return (
-      <div className="flex items-center gap-2 py-2 px-1 text-xs text-gray-400">
-        <Loader2 className="h-3.5 w-3.5 text-blue-400 animate-spin" />
+      <div className="flex items-center gap-2 py-2 px-1 text-caption text-text-quaternary">
+        <span className="inline-flex items-center gap-1">
+          <span className="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:0ms]" />
+          <span className="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:150ms]" />
+          <span className="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:300ms]" />
+        </span>
         <span>Đang phân tích câu hỏi…</span>
         {intentCfg && (
-          <span className={`ml-1 px-2 py-0.5 rounded-full text-[10px] font-medium border ${intentCfg.bg} ${intentCfg.border} ${intentCfg.color}`}>
+          <span className={`ml-1 inline-flex items-center rounded-full border px-2 py-0.5 text-tiny font-emphasis ${intentCfg.cls}`}>
             {intentCfg.label}
           </span>
         )}
@@ -114,20 +112,20 @@ export function ThinkingIndicator({ steps, isThinking, hasText, intent }: Activi
   }
 
   return (
-    <div className="rounded-xl border border-blue-100 bg-blue-50/40 text-sm overflow-hidden">
+    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 text-caption overflow-hidden">
 
       {/* ── Header / toggle ── */}
       <button
-        onClick={() => setUserCollapsed(c => (c === null ? !autoCollapsed : !c))}
-        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-blue-50/70 transition-colors text-left"
+        onClick={() => setUserCollapsed((c) => (c === null ? !autoCollapsed : !c))}
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-surface-2 transition-colors text-left"
       >
         {isThinking ? (
-          <Loader2 className="h-3.5 w-3.5 text-blue-500 animate-spin flex-shrink-0" />
+          <Loader2 className="h-3.5 w-3.5 text-brand animate-spin flex-shrink-0" />
         ) : (
-          <CheckCircle2 className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
+          <CheckCircle2 className="h-3.5 w-3.5 text-success flex-shrink-0" />
         )}
 
-        <span className="flex-1 text-xs font-medium text-gray-600 truncate">
+        <span className="flex-1 text-caption font-emphasis text-text-secondary truncate">
           {isThinking
             ? `Đang xử lý…${elapsed > 0 ? ` (${elapsed}s)` : ''}`
             : `Hoàn tất ${doneCount}/${totalCount} bước`}
@@ -135,24 +133,24 @@ export function ThinkingIndicator({ steps, isThinking, hasText, intent }: Activi
 
         {/* Intent badge */}
         {intentCfg && (
-          <span className={`hidden sm:inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${intentCfg.bg} ${intentCfg.border} ${intentCfg.color}`}>
+          <span className={`hidden sm:inline-flex items-center rounded-full border px-2 py-0.5 text-tiny font-emphasis ${intentCfg.cls}`}>
             {intentCfg.label}
           </span>
         )}
 
         {collapsed
-          ? <ChevronDown className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
-          : <ChevronUp className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />}
+          ? <ChevronDown className="h-3.5 w-3.5 text-text-quaternary flex-shrink-0" />
+          : <ChevronUp className="h-3.5 w-3.5 text-text-quaternary flex-shrink-0" />}
       </button>
 
       {/* ── Steps list ── */}
       {!collapsed && (
-        <div className="px-3 pb-3 border-t border-blue-100 space-y-1.5 pt-2">
+        <div className="px-3 pb-3 border-t border-[rgb(var(--border-line))] space-y-1.5 pt-2">
           {steps.map((step, idx) => (
             <div key={step.id} className="flex items-start gap-2">
               {/* Step number for multi-step INSIGHT */}
               {intent === 'INSIGHT' && totalCount > 3 && (
-                <span className="flex-shrink-0 mt-0.5 w-4 text-[9px] text-gray-400 text-right">
+                <span className="flex-shrink-0 mt-0.5 w-4 text-tiny text-text-quaternary text-right">
                   {idx + 1}
                 </span>
               )}
@@ -161,8 +159,8 @@ export function ThinkingIndicator({ steps, isThinking, hasText, intent }: Activi
               <div className="flex-shrink-0 mt-0.5 w-4 flex justify-center">
                 {step.type === 'thinking' ? (
                   step.status === 'running'
-                    ? <Brain className="h-3 w-3 text-blue-400 animate-pulse" />
-                    : <CheckCircle2 className="h-3 w-3 text-gray-300" />
+                    ? <Brain className="h-3 w-3 text-brand animate-pulse" />
+                    : <CheckCircle2 className="h-3 w-3 text-text-quaternary" />
                 ) : (
                   <ToolIcon toolLabel={step.label} status={step.status} />
                 )}
@@ -170,26 +168,28 @@ export function ThinkingIndicator({ steps, isThinking, hasText, intent }: Activi
 
               {/* Text */}
               <div className="flex-1 min-w-0">
-                <p className={`text-xs leading-relaxed ${
-                  step.status === 'running'
-                    ? 'text-gray-800 font-medium'
-                    : 'text-gray-500'
-                }`}>
+                <p
+                  className={`text-caption leading-relaxed ${
+                    step.status === 'running'
+                      ? 'text-text-primary font-emphasis'
+                      : 'text-text-tertiary'
+                  }`}
+                >
                   {step.label}
                 </p>
                 {step.detail && (
-                  <p className="text-[10px] text-gray-400 mt-0.5 leading-relaxed">{step.detail}</p>
+                  <p className="text-tiny text-text-quaternary mt-0.5 leading-relaxed">{step.detail}</p>
                 )}
               </div>
             </div>
           ))}
 
-          {/* Waiting dots */}
+          {/* Animated dots while still running */}
           {isThinking && (
-            <div className="flex items-center gap-1 pl-6 pt-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-bounce [animation-delay:0ms]" />
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-bounce [animation-delay:150ms]" />
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-bounce [animation-delay:300ms]" />
+            <div className="flex items-center gap-1 pl-6 pt-1 text-text-quaternary">
+              <span className="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:0ms]" />
+              <span className="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:150ms]" />
+              <span className="h-1.5 w-1.5 rounded-full bg-current animate-bounce [animation-delay:300ms]" />
             </div>
           )}
         </div>

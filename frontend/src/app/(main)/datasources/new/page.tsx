@@ -43,32 +43,32 @@ export default function NewDataSourcePage() {
         <div className="mb-3">
           <Link
             href="/datasources"
-            className="inline-flex items-center text-sm text-blue-600 hover:text-blue-700"
+            className="inline-flex items-center text-sm text-brand hover:text-brand"
           >
             <ArrowLeft className="w-4 h-4 mr-1" />
             Back to Data Sources
           </Link>
         </div>
         <div className="mb-4">
-          <h1 className="text-2xl font-bold text-gray-900">New Data Source</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
+          <h1 className="text-2xl font-bold text-text-primary">New Data Source</h1>
+          <p className="text-sm text-text-tertiary mt-0.5">
             Configure the connection and query source data live.
           </p>
         </div>
       </div>
 
       {/* Tabs card — stretches to fill remaining viewport height */}
-      <div className="flex-1 flex flex-col mx-8 mb-6 bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden min-h-0">
+      <div className="mx-8 mb-6 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
         {/* Tab nav */}
-        <div className="flex border-b border-gray-100 flex-shrink-0">
+        <div className="flex border-b border-[rgb(var(--border-line))] flex-shrink-0">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
                 className={`flex items-center gap-2 px-5 py-3 text-sm font-medium border-b-2 transition-colors ${
                   activeTab === tab.id
-                    ? 'border-blue-600 text-blue-700 bg-blue-50/40'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                    ? 'border-brand text-brand bg-brand/10/40'
+                    : 'border-transparent text-text-tertiary hover:text-text-secondary hover:bg-surface-2'
                 }`}
               >
                 {tab.icon}

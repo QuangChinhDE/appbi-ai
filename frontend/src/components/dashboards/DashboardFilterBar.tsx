@@ -21,9 +21,9 @@ import { DateInput } from '@/components/ui/DateInput';
 const TYPE_BADGE: Record<FilterType, string> = { text: 'T', number: '#', date: '📅', dropdown: '≡' };
 const TYPE_CLR: Record<FilterType, string> = {
   text:     'text-sky-500',
-  number:   'text-violet-500',
+  number:   'text-brand',
   date:     'text-teal-500',
-  dropdown: 'text-gray-500',
+  dropdown: 'text-text-tertiary',
 };
 
 interface DashboardFilterBarProps {
@@ -225,13 +225,13 @@ export function DashboardFilterBar({
       <button
         key={columnKey}
         onClick={() => addFilter(columnKey)}
-        className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 flex items-center justify-between group"
+        className="w-full text-left px-3 py-2 text-sm hover:bg-brand/15 flex items-center justify-between group"
       >
         <span className="flex items-center gap-2 min-w-0">
           <span className={`text-xs font-mono w-4 text-center ${TYPE_CLR[column.type]}`}>
             {TYPE_BADGE[column.type]}
           </span>
-          <span className="text-gray-700 group-hover:text-blue-700 truncate">{getColumnDisplayLabel(column)}</span>
+          <span className="text-text-secondary group-hover:text-brand truncate">{getColumnDisplayLabel(column)}</span>
         </span>
         <span className="flex items-center gap-2 pl-2">
           {sameTypeCount > 0 && (
@@ -240,7 +240,7 @@ export function DashboardFilterBar({
               +{sameTypeCount}
             </span>
           )}
-          <span className="text-xs text-gray-400">
+          <span className="text-xs text-text-quaternary">
             {getCoverageLabel(column)}
           </span>
         </span>
@@ -250,27 +250,27 @@ export function DashboardFilterBar({
 
   // ── Render ─────────────────────────────────────────────────────
   return (
-    <div className="bg-white rounded-lg border border-gray-200 mb-6 shadow-sm">
+    <div className="mb-6 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
       {/* ── Header bar ────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 px-4 py-2.5">
         <button
           onClick={() => setIsExpanded(!isExpanded)}
-          className="flex items-center gap-1.5 text-sm font-medium text-gray-700 hover:text-gray-900"
+          className="flex items-center gap-1.5 text-sm font-medium text-text-secondary hover:text-text-primary"
         >
-          <Filter className="w-4 h-4 text-blue-500" />
+          <Filter className="w-4 h-4 text-brand" />
           <span>Filters</span>
           {activeCount > 0 && (
-            <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full font-semibold">
+            <span className="px-1.5 py-0.5 bg-brand/15 text-brand text-xs rounded-full font-semibold">
               {activeCount}
             </span>
           )}
           {isExpanded
-            ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
-            : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}
+            ? <ChevronDown className="w-3.5 h-3.5 text-text-quaternary" />
+            : <ChevronRight className="w-3.5 h-3.5 text-text-quaternary" />}
         </button>
 
         {hasPendingChanges && (
-          <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+          <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">
             Draft changes
           </span>
         )}
@@ -283,14 +283,14 @@ export function DashboardFilterBar({
               .map(f => (
                 <span
                   key={f.id}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 border border-blue-200 text-blue-700 text-xs rounded-full"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-brand/10 border border-brand/30 text-brand text-xs rounded-full"
                 >
                   <span className="font-semibold">{getFilterDisplayLabel(f)}</span>
                   {f.datePreset && f.datePreset !== 'custom' && (
                     <span className="opacity-70">{DATE_PRESET_LABELS[f.datePreset]}</span>
                   )}
                   {f.linkedFields && f.linkedFields.length > 0 && (
-                    <Link2 className="w-3 h-3 text-blue-400" />
+                    <Link2 className="w-3 h-3 text-brand" />
                   )}
                   {Array.isArray(f.value) && f.value.length > 0 && (
                     <span className="opacity-70">({f.value.length})</span>
@@ -304,7 +304,7 @@ export function DashboardFilterBar({
           {hasPendingChanges && onReset && (
             <button
               onClick={onReset}
-              className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
+              className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2.5 py-1 text-xs font-medium text-text-secondary hover:bg-surface-2"
             >
               <RotateCcw className="h-3 w-3" />
               Reset
@@ -315,7 +315,7 @@ export function DashboardFilterBar({
             <button
               onClick={onApply}
               disabled={!hasPendingChanges || isApplying}
-              className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+              className="inline-flex items-center gap-1 rounded-md bg-brand px-2.5 py-1 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:bg-brand/40"
             >
               <Check className="h-3 w-3" />
               {isApplying ? 'Applying...' : 'Apply'}
@@ -325,7 +325,7 @@ export function DashboardFilterBar({
           {filters.length > 0 && (
             <button
               onClick={() => onFiltersChange([])}
-              className="text-xs text-gray-400 hover:text-red-500 transition-colors"
+              className="text-xs text-text-quaternary hover:text-danger transition-colors"
             >
               Clear all
             </button>
@@ -343,7 +343,7 @@ export function DashboardFilterBar({
               }}
               disabled={addableColumns.length === 0}
               title={addableColumns.length === 0 ? 'No dashboard filter fields available' : undefined}
-              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-600 border border-blue-300 rounded-md hover:bg-blue-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-brand border border-brand/40 rounded-md hover:bg-brand/15 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <Plus className="w-3 h-3" />
               Add Filter
@@ -355,20 +355,20 @@ export function DashboardFilterBar({
                   setAddingField(false);
                   setAddFilterSearch('');
                 }} />
-                <div className="absolute right-0 top-full z-40 mt-1 w-80 max-h-[28rem] overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
-                  <div className="p-2 border-b border-gray-100">
-                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Add a filter</p>
+                <div className="absolute right-0 top-full z-40 mt-1 max-h-[28rem] w-80 overflow-y-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
+                  <div className="p-2 border-b border-[rgb(var(--border-line))]">
+                    <p className="text-xs font-medium text-text-tertiary uppercase tracking-wide">Add a filter</p>
                   </div>
                   {addableColumns.length > 8 && (
-                    <div className="p-2 border-b border-gray-100">
+                    <div className="p-2 border-b border-[rgb(var(--border-line))]">
                       <div className="relative">
-                        <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                        <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-quaternary" />
                         <input
                           type="text"
                           value={addFilterSearch}
                           onChange={(e) => setAddFilterSearch(e.target.value)}
                           placeholder="Search fields..."
-                          className="w-full pl-7 pr-2 py-1.5 text-xs border border-gray-200 rounded focus:ring-1 focus:ring-blue-400 focus:border-blue-400 outline-none bg-white"
+                          className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1.5 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
                         />
                       </div>
                     </div>
@@ -381,7 +381,7 @@ export function DashboardFilterBar({
                     return (
                       <>
                         {dateColumns.length > 0 && (
-                          <div className="py-1 border-b border-gray-100">
+                          <div className="py-1 border-b border-[rgb(var(--border-line))]">
                             <div className="px-3 py-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-teal-600">
                               <Calendar className="w-3 h-3" />
                               Filter theo Ngày
@@ -391,7 +391,7 @@ export function DashboardFilterBar({
                         )}
                         {fieldColumns.length > 0 && (
                           <div className="py-1">
-                            <div className="px-3 py-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                            <div className="px-3 py-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">
                               <Filter className="w-3 h-3" />
                               Filter theo Trường
                             </div>
@@ -404,12 +404,12 @@ export function DashboardFilterBar({
 
                   {matchingAvailableColumns.length === 0 && (
                     addableColumns.length === 0 ? (
-                      <div className="px-3 py-3 text-xs text-gray-400">
-                        <p className="font-medium text-gray-500">No dashboard filter fields available.</p>
+                      <div className="px-3 py-3 text-xs text-text-quaternary">
+                        <p className="font-medium text-text-tertiary">No dashboard filter fields available.</p>
                         <p className="mt-1">Use chart-level filters for fields that only affect individual charts.</p>
                       </div>
                     ) : (
-                      <p className="px-3 py-3 text-xs text-gray-400 italic">
+                      <p className="px-3 py-3 text-xs text-text-quaternary italic">
                         No matching shared fields
                       </p>
                     )
@@ -451,13 +451,13 @@ export function DashboardFilterBar({
 
       {/* Empty state */}
       {isExpanded && filters.length === 0 && (
-        <div className="px-4 py-5 text-center border-t border-gray-100">
+        <div className="px-4 py-5 text-center border-t border-[rgb(var(--border-line))]">
           {addableColumns.length > 0 ? (
-            <p className="text-sm text-gray-400">
+            <p className="text-sm text-text-quaternary">
               No filters added. Click <strong>Add Filter</strong> to filter all charts in this dashboard.
             </p>
           ) : (
-            <p className="text-sm text-gray-400">
+            <p className="text-sm text-text-quaternary">
               No shared dashboard filters are available here. Use chart-level filters for chart-specific analysis.
             </p>
           )}
@@ -567,16 +567,16 @@ function FilterCard({
     : `${filterChartCount} chart${filterChartCount !== 1 ? 's' : ''}`;
 
   return (
-    <div className="border border-gray-200 rounded-lg bg-gray-50/70 overflow-hidden flex flex-col">
+    <div className="border border-[rgb(var(--border-line))] rounded-lg bg-surface-2/70 overflow-hidden flex flex-col">
       {/* Card header */}
-      <div className="flex items-center justify-between px-3 py-2 bg-white border-b border-gray-100">
+      <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
         <div className="flex items-center gap-1.5 min-w-0">
           <span className={`text-xs font-mono ${TYPE_CLR[f.type]}`}>
             {TYPE_BADGE[f.type]}
           </span>
-          <span className="text-sm font-semibold text-gray-800 truncate">{getFilterDisplayLabel(f)}</span>
+          <span className="text-sm font-semibold text-text-primary truncate">{getFilterDisplayLabel(f)}</span>
           {selected.length > 0 && (
-            <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full font-semibold flex-shrink-0">
+            <span className="px-1.5 py-0.5 bg-brand/15 text-brand text-xs rounded-full font-semibold flex-shrink-0">
               {selected.length}
             </span>
           )}
@@ -586,7 +586,7 @@ function FilterCard({
               className={`px-1.5 py-0.5 text-xs rounded-full flex-shrink-0 ${
                 linkedCount > 0
                   ? 'bg-teal-100 text-teal-700'
-                  : 'bg-gray-100 text-gray-500'
+                  : 'bg-surface-2 text-text-tertiary'
               }`}
               title={linkedCount > 0
                 ? `Linked to ${linkedCount} other column(s) - applies to more charts`
@@ -600,13 +600,13 @@ function FilterCard({
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
           {hasValue && (
-            <button onClick={onClear} className="text-xs text-gray-400 hover:text-gray-600">
+            <button onClick={onClear} className="text-xs text-text-quaternary hover:text-text-secondary">
               Clear
             </button>
           )}
           <button
             onClick={onRemove}
-            className="p-0.5 text-gray-400 hover:text-red-500 transition-colors"
+            className="p-0.5 text-text-quaternary hover:text-danger transition-colors"
             title="Remove filter"
           >
             <X className="w-3.5 h-3.5" />
@@ -636,10 +636,10 @@ function FilterCard({
 
       {/* ── Linked columns section ────────────────────────────────── */}
       {hasLinkableColumns && (
-        <div className="border-t border-gray-100">
+        <div className="border-t border-[rgb(var(--border-line))]">
           <button
             onClick={() => setShowLinked(!showLinked)}
-            className="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-50/80 transition-colors"
+            className="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-tertiary hover:text-text-secondary hover:bg-surface-2/80 transition-colors"
           >
             <Link2 className="w-3 h-3" />
             <span>
@@ -655,7 +655,7 @@ function FilterCard({
 
           {showLinked && (
             <div className="px-3 pb-2 space-y-0.5">
-              <p className="text-xs text-gray-400 mb-1">
+              <p className="text-xs text-text-quaternary mb-1">
                 Same filter value will apply to checked columns across charts:
               </p>
               {linkableColumns.map(col => {
@@ -666,21 +666,21 @@ function FilterCard({
                   <label
                     key={columnKey}
                     className={`flex items-center gap-2 px-1.5 py-1 rounded cursor-pointer text-xs ${
-                      isLinked ? 'bg-teal-50 text-teal-800' : 'hover:bg-gray-100 text-gray-600'
+                      isLinked ? 'bg-teal-50 text-teal-800' : 'hover:bg-surface-2 text-text-secondary'
                     }`}
                   >
                     <input
                       type="checkbox"
                       checked={isLinked}
                       onChange={() => onToggleLinkedField(columnKey)}
-                      className="w-3.5 h-3.5 rounded border-gray-300 text-teal-600 focus:ring-teal-500 focus:ring-1"
+                      className="w-3.5 h-3.5 rounded border-[rgb(var(--border-strong))] text-teal-600 focus:ring-teal-500 focus:ring-1"
                     />
                     <span className={`font-mono text-xs ${TYPE_CLR[col.type]}`}>
                       {TYPE_BADGE[col.type]}
                     </span>
                     <span className="truncate flex-1">{getColumnDisplayLabel(col)}</span>
                     {count > 0 && (
-                      <span className="text-xs text-gray-400 flex-shrink-0">
+                      <span className="text-xs text-text-quaternary flex-shrink-0">
                         {count} chart{count !== 1 ? 's' : ''}
                       </span>
                     )}
@@ -720,25 +720,25 @@ function MultiSelectBody({
       {/* Search */}
       {values.length > 8 && (
         <div className="relative mb-2">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-quaternary" />
           <input
             type="text"
             value={search}
             onChange={e => onSearchChange(e.target.value)}
             placeholder="Search values…"
-            className="w-full pl-7 pr-2 py-1 text-xs border border-gray-200 rounded focus:ring-1 focus:ring-blue-400 focus:border-blue-400 outline-none bg-white"
+            className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
           />
         </div>
       )}
 
       {/* Select / Deselect all */}
       {values.length > 1 && !search && (
-        <div className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-gray-100">
-          <button onClick={onSelectAll} className="text-xs text-blue-600 hover:text-blue-800">
+        <div className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-[rgb(var(--border-line))]">
+          <button onClick={onSelectAll} className="text-xs text-brand hover:text-brand">
             Select all
           </button>
-          <span className="text-gray-300">|</span>
-          <button onClick={onDeselectAll} className="text-xs text-gray-500 hover:text-gray-700">
+          <span className="text-text-quaternary">|</span>
+          <button onClick={onDeselectAll} className="text-xs text-text-tertiary hover:text-text-secondary">
             Deselect all
           </button>
         </div>
@@ -747,7 +747,7 @@ function MultiSelectBody({
       {/* Checkboxes */}
       <div className="max-h-48 overflow-y-auto space-y-0.5">
         {filteredValues.length === 0 ? (
-          <p className="text-xs text-gray-400 italic py-1">{values.length === 0 ? 'Loading values…' : 'No match'}</p>
+          <p className="text-xs text-text-quaternary italic py-1">{values.length === 0 ? 'Loading values…' : 'No match'}</p>
         ) : (
           filteredValues.map(val => {
             const checked = selected.includes(val);
@@ -755,14 +755,14 @@ function MultiSelectBody({
               <label
                 key={val}
                 className={`flex items-center gap-2 px-1.5 py-1 rounded cursor-pointer text-xs ${
-                  checked ? 'bg-blue-50 text-blue-800' : 'hover:bg-gray-100 text-gray-700'
+                  checked ? 'bg-brand/10 text-brand' : 'hover:bg-surface-2 text-text-secondary'
                 }`}
               >
                 <input
                   type="checkbox"
                   checked={checked}
                   onChange={() => onToggleValue(val)}
-                  className="w-3.5 h-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 focus:ring-1"
+                  className="w-3.5 h-3.5 rounded border-[rgb(var(--border-strong))] text-brand focus:ring-brand focus:ring-1"
                 />
                 <span className="truncate flex-1">{val || '(empty)'}</span>
               </label>
@@ -772,7 +772,7 @@ function MultiSelectBody({
       </div>
 
       {search && filteredValues.length < values.length && (
-        <p className="text-xs text-gray-400 mt-1">
+        <p className="text-xs text-text-quaternary mt-1">
           {filteredValues.length} of {values.length}
         </p>
       )}
@@ -795,7 +795,7 @@ function NumberBody({
       <select
         value={f.operator}
         onChange={e => onUpdateOperator(e.target.value as FilterOperator)}
-        className="w-full text-xs border border-gray-200 rounded px-2 py-1 bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+        className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
       >
         <option value="eq">= equals</option>
         <option value="neq">≠ not equals</option>
@@ -812,15 +812,15 @@ function NumberBody({
             value={Array.isArray(f.value) ? f.value[0] ?? '' : ''}
             onChange={e => onUpdateValue([e.target.value, Array.isArray(f.value) ? f.value[1] ?? '' : ''])}
             placeholder="Min"
-            className="flex-1 text-xs border border-gray-200 rounded px-2 py-1 bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+            className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
           />
-          <span className="text-gray-400 text-xs">–</span>
+          <span className="text-text-quaternary text-xs">–</span>
           <input
             type="number"
             value={Array.isArray(f.value) ? f.value[1] ?? '' : ''}
             onChange={e => onUpdateValue([Array.isArray(f.value) ? f.value[0] ?? '' : '', e.target.value])}
             placeholder="Max"
-            className="flex-1 text-xs border border-gray-200 rounded px-2 py-1 bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+            className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
           />
         </div>
       ) : (
@@ -829,7 +829,7 @@ function NumberBody({
           value={typeof f.value === 'number' ? f.value : f.value ?? ''}
           onChange={e => onUpdateValue(e.target.value === '' ? '' : Number(e.target.value))}
           placeholder="Enter value…"
-          className="w-full text-xs border border-gray-200 rounded px-2 py-1 bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+          className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
         />
       )}
     </div>
@@ -857,7 +857,7 @@ function DateBody({
       <select
         value={activePreset}
         onChange={e => onUpdateDatePreset(e.target.value as DatePreset)}
-        className="w-full text-xs border border-gray-200 rounded px-2 py-1 bg-white focus:ring-1 focus:ring-teal-400 outline-none font-medium text-teal-700"
+        className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs font-medium text-teal-700 outline-none focus:ring-1 focus:ring-teal-400"
       >
         {(Object.entries(DATE_PRESET_LABELS) as [DatePreset, string][]).map(([key, label]) => (
           <option key={key} value={key}>{label}</option>
@@ -870,7 +870,7 @@ function DateBody({
           <select
             value={f.operator}
             onChange={e => onUpdateOperator(e.target.value as FilterOperator)}
-            className="w-full text-xs border border-gray-200 rounded px-2 py-1 bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+            className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
           >
             <option value="between">↔ between dates</option>
             <option value="eq">= on date</option>
@@ -904,7 +904,7 @@ function DateBody({
 
       {/* ── Computed range preview (non-custom) ──────────── */}
       {!isCustom && Array.isArray(f.value) && f.value[0] && (
-        <p className="text-[11px] text-gray-500">
+        <p className="text-[11px] text-text-tertiary">
           {f.value[0]} → {f.value[1]}
         </p>
       )}

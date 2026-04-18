@@ -172,10 +172,10 @@ export function FilterBuilder({
       })}
 
       {filters.length === 0 && (
-        <span className="group/help relative inline-flex items-center gap-1 text-xs text-gray-400 italic py-0.5 cursor-default">
+        <span className="group/help relative inline-flex items-center gap-1 text-xs text-text-quaternary italic py-0.5 cursor-default">
           No filters
-          <Info className="h-3 w-3 text-gray-400 transition-colors group-hover/help:text-blue-500" />
-          <span className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden w-56 rounded-md bg-slate-900 px-2.5 py-2 text-[11px] font-normal not-italic tracking-normal text-white shadow-lg group-hover/help:block">
+          <Info className="h-3 w-3 text-text-quaternary transition-colors group-hover/help:text-brand" />
+          <span className="pointer-events-none absolute left-0 top-full z-50 mt-1 hidden w-56 rounded-md bg-surface-inverse px-2.5 py-2 text-[11px] font-normal not-italic tracking-normal text-white shadow-lg group-hover/help:block">
             Chart shows all data when no filters are applied.
           </span>
         </span>
@@ -185,7 +185,7 @@ export function FilterBuilder({
         <button
           onClick={addFilter}
           disabled={!cols.length}
-          className="flex items-center gap-1 text-xs text-orange-600 hover:text-orange-700 font-medium disabled:opacity-40"
+          className="flex items-center gap-1 text-xs text-warning hover:text-warning font-medium disabled:opacity-40"
         >
           <Plus className="w-3 h-3" /> Add Filter
         </button>
@@ -222,24 +222,24 @@ function FilterRow({
   };
 
   return (
-    <div className="bg-gray-50 rounded-lg border border-gray-200 p-2.5 space-y-2">
+    <div className="bg-surface-2 rounded-lg border border-[rgb(var(--border-line))] p-2.5 space-y-2">
 
       {/* Field + type badge + remove */}
       <div className="flex items-center gap-1.5">
-        <span className="text-[10px] text-gray-400 w-4 text-center flex-shrink-0" title={colType}>
+        <span className="text-[10px] text-text-quaternary w-4 text-center flex-shrink-0" title={colType}>
           {TYPE_ICON[colType]}
         </span>
         <select
           value={filter.field}
           onChange={e => onChangeField(e.target.value)}
-          className="flex-1 px-2 py-1 border border-gray-200 rounded text-xs bg-white focus:ring-1 focus:ring-blue-400 focus:border-blue-400 outline-none"
+          className="flex-1 px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand focus:border-brand/50 outline-none"
         >
           {fieldOptions.map(f => (
             <option key={f.name} value={f.name}>{f.name}</option>
           ))}
         </select>
         <button onClick={onRemove} title="Remove filter"
-          className="p-0.5 text-gray-400 hover:text-red-500 flex-shrink-0">
+          className="p-0.5 text-text-quaternary hover:text-danger flex-shrink-0">
           <Trash2 className="w-3.5 h-3.5" />
         </button>
       </div>
@@ -248,7 +248,7 @@ function FilterRow({
       <select
         value={filter.operator}
         onChange={e => onChangeOperator(e.target.value)}
-        className="w-full px-2 py-1 border border-gray-200 rounded text-xs bg-white focus:ring-1 focus:ring-blue-400 focus:border-blue-400 outline-none"
+        className="w-full px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand focus:border-brand/50 outline-none"
       >
         {operators.map(o => (
           <option key={o.value} value={o.value}>{o.label}</option>
@@ -259,14 +259,14 @@ function FilterRow({
       {colType === 'date' && filter.operator === 'between' && (
         <div className="grid grid-cols-2 gap-1.5">
           <div>
-            <p className="text-[10px] text-gray-400 mb-0.5">Từ ngày</p>
+            <p className="text-[10px] text-text-quaternary mb-0.5">Từ ngày</p>
             <DateInput
               value={Array.isArray(filter.value) ? filter.value[0] ?? '' : ''}
               onChange={d => onChangeValue([d, Array.isArray(filter.value) ? filter.value[1] ?? '' : ''])}
             />
           </div>
           <div>
-            <p className="text-[10px] text-gray-400 mb-0.5">Đến ngày</p>
+            <p className="text-[10px] text-text-quaternary mb-0.5">Đến ngày</p>
             <DateInput
               value={Array.isArray(filter.value) ? filter.value[1] ?? '' : ''}
               onChange={d => onChangeValue([Array.isArray(filter.value) ? filter.value[0] ?? '' : '', d])}
@@ -285,19 +285,19 @@ function FilterRow({
       {colType === 'number' && filter.operator === 'between' && (
         <div className="grid grid-cols-2 gap-1.5">
           <div>
-            <p className="text-[10px] text-gray-400 mb-0.5">Min</p>
+            <p className="text-[10px] text-text-quaternary mb-0.5">Min</p>
             <input type="number"
               value={Array.isArray(filter.value) ? filter.value[0] ?? '' : ''}
               onChange={e => onChangeValue([e.target.value, Array.isArray(filter.value) ? filter.value[1] ?? '' : ''])}
-              className="w-full px-2 py-1 border border-gray-200 rounded text-xs bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+              className="w-full px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand outline-none"
             />
           </div>
           <div>
-            <p className="text-[10px] text-gray-400 mb-0.5">Max</p>
+            <p className="text-[10px] text-text-quaternary mb-0.5">Max</p>
             <input type="number"
               value={Array.isArray(filter.value) ? filter.value[1] ?? '' : ''}
               onChange={e => onChangeValue([Array.isArray(filter.value) ? filter.value[0] ?? '' : '', e.target.value])}
-              className="w-full px-2 py-1 border border-gray-200 rounded text-xs bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+              className="w-full px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand outline-none"
             />
           </div>
         </div>
@@ -307,7 +307,7 @@ function FilterRow({
           value={filter.value ?? ''}
           onChange={e => onChangeValue(e.target.value === '' ? '' : Number(e.target.value))}
           placeholder="Enter number…"
-          className="w-full px-2 py-1 border border-gray-200 rounded text-xs bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+          className="w-full px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand outline-none"
         />
       )}
 
@@ -317,7 +317,7 @@ function FilterRow({
           value={typeof filter.value === 'string' ? filter.value : ''}
           onChange={e => onChangeValue(e.target.value)}
           placeholder="Enter value…"
-          className="w-full px-2 py-1 border border-gray-200 rounded text-xs bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+          className="w-full px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand outline-none"
         />
       )}
 
@@ -325,29 +325,29 @@ function FilterRow({
       {colType === 'dropdown' && (filter.operator === 'in' || filter.operator === 'not_in') && (
         <div className="relative">
           <button type="button" onClick={() => setDropOpen(o => !o)}
-            className="w-full flex items-center justify-between px-2 py-1 border border-gray-200 rounded text-xs bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+            className="w-full flex items-center justify-between px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand outline-none"
           >
-            <span className={selectedVals.length === 0 ? 'text-gray-400' : 'text-gray-700'}>
+            <span className={selectedVals.length === 0 ? 'text-text-quaternary' : 'text-text-secondary'}>
               {selectedVals.length === 0
                 ? 'Choose values…'
                 : selectedVals.length === 1
                   ? selectedVals[0]
                   : `${selectedVals.length} selected`}
             </span>
-            <ChevronDown className={`w-3 h-3 text-gray-400 transition-transform ${dropOpen ? 'rotate-180' : ''}`} />
+            <ChevronDown className={`w-3 h-3 text-text-quaternary transition-transform ${dropOpen ? 'rotate-180' : ''}`} />
           </button>
           {dropOpen && (
             <>
               <div className="fixed inset-0 z-10" onClick={() => setDropOpen(false)} />
-              <div className="absolute left-0 right-0 top-full mt-0.5 z-20 bg-white border border-gray-200 rounded-md shadow-lg max-h-48 overflow-y-auto">
+              <div className="absolute left-0 right-0 top-full mt-0.5 z-20 bg-surface-1 border border-[rgb(var(--border-line))] rounded-md shadow-linear-lg max-h-48 overflow-y-auto">
                 {distinctValues.length === 0
-                  ? <p className="text-xs text-gray-400 px-3 py-2 italic">No values in sample data</p>
+                  ? <p className="text-xs text-text-quaternary px-3 py-2 italic">No values in sample data</p>
                   : distinctValues.map(v => (
                     <label key={v}
-                      className={`flex items-center gap-2 px-2.5 py-1.5 cursor-pointer text-xs hover:bg-gray-50 ${selectedVals.includes(v) ? 'bg-blue-50 text-blue-800' : 'text-gray-700'}`}
+                      className={`flex items-center gap-2 px-2.5 py-1.5 cursor-pointer text-xs hover:bg-surface-2 ${selectedVals.includes(v) ? 'bg-brand/10 text-brand' : 'text-text-secondary'}`}
                     >
                       <input type="checkbox" checked={selectedVals.includes(v)} onChange={() => toggleVal(v)}
-                        className="w-3.5 h-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 focus:ring-1" />
+                        className="w-3.5 h-3.5 rounded border-[rgb(var(--border-strong))] text-brand focus:ring-brand focus:ring-1" />
                       <span className="truncate">{v || '(empty)'}</span>
                     </label>
                   ))
@@ -359,10 +359,10 @@ function FilterRow({
             <div className="flex flex-wrap gap-1 mt-1.5">
               {selectedVals.map(v => (
                 <span key={v}
-                  className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-blue-100 text-blue-700 text-[10px] rounded-full"
+                  className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-brand/15 text-brand text-[10px] rounded-full"
                 >
                   {v}
-                  <button onClick={() => toggleVal(v)} className="hover:text-blue-900 ml-0.5">×</button>
+                  <button onClick={() => toggleVal(v)} className="hover:text-brand ml-0.5">×</button>
                 </span>
               ))}
             </div>
@@ -374,7 +374,7 @@ function FilterRow({
           ? (
             <select value={typeof filter.value === 'string' ? filter.value : ''}
               onChange={e => onChangeValue(e.target.value)}
-              className="w-full px-2 py-1 border border-gray-200 rounded text-xs bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+              className="w-full px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand outline-none"
             >
               <option value="">— select value —</option>
               {distinctValues.map(v => <option key={v} value={v}>{v}</option>)}
@@ -384,7 +384,7 @@ function FilterRow({
             <input type="text" value={typeof filter.value === 'string' ? filter.value : ''}
               onChange={e => onChangeValue(e.target.value)}
               placeholder="Enter value…"
-              className="w-full px-2 py-1 border border-gray-200 rounded text-xs bg-white focus:ring-1 focus:ring-blue-400 outline-none"
+              className="w-full px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand outline-none"
             />
           )
       )}

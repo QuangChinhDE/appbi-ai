@@ -23,10 +23,10 @@ export function TemplateCardGrid({ templates, onDelete, deletingId }: TemplateCa
 
   if (templates.length === 0) {
     return (
-      <div className="rounded-lg border border-gray-200 bg-white p-12 text-center">
-        <FileText className="mx-auto mb-4 h-12 w-12 text-gray-400" />
-        <h3 className="mb-2 text-lg font-medium text-gray-900">Chưa có template nào</h3>
-        <p className="text-gray-500">Tạo template đầu tiên để bắt đầu.</p>
+      <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-12 text-center shadow-linear-sm">
+        <FileText className="mx-auto mb-4 h-12 w-12 text-text-quaternary" />
+        <h3 className="mb-2 text-lg font-medium text-text-primary">Chưa có template nào</h3>
+        <p className="text-text-tertiary">Tạo template đầu tiên để bắt đầu.</p>
       </div>
     );
   }
@@ -45,14 +45,14 @@ export function TemplateCardGrid({ templates, onDelete, deletingId }: TemplateCa
           <div
             key={tpl.id}
             onClick={() => router.push(`/templates/${tpl.id}`)}
-            className="group relative cursor-pointer rounded-xl border border-gray-200 bg-white p-4 shadow-sm transition-all hover:shadow-md hover:border-blue-200"
+            className="group relative cursor-pointer rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4 shadow-linear-sm transition-all hover:border-brand/30 hover:shadow-linear-md"
           >
             {/* Delete button */}
             {onDelete && (
               <button
                 onClick={(e) => { e.stopPropagation(); onDelete(tpl.id); }}
                 disabled={deletingId === tpl.id}
-                className="absolute right-3 top-3 rounded-lg p-1.5 text-gray-400 opacity-0 transition-opacity hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 disabled:opacity-50"
+                className="absolute right-3 top-3 rounded-lg p-1.5 text-text-quaternary opacity-0 transition-opacity hover:bg-danger/10 hover:text-danger group-hover:opacity-100 disabled:opacity-50"
                 title="Xoá"
               >
                 {deletingId === tpl.id ? (
@@ -65,44 +65,44 @@ export function TemplateCardGrid({ templates, onDelete, deletingId }: TemplateCa
 
             {/* Icon + Layout */}
             <div className="mb-3 flex items-center gap-2">
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand/10 text-brand">
                 <span className="text-base">{layoutIcon}</span>
               </div>
               {layout && (
-                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500 capitalize">
+                <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-text-tertiary capitalize">
                   {layout}
                 </span>
               )}
               {colCount > 0 && (
-                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-400">
+                <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] text-text-quaternary">
                   {colCount} cột
                 </span>
               )}
             </div>
 
             {/* Name */}
-            <h3 className="mb-1 truncate pr-6 text-sm font-semibold text-gray-900">{tpl.name}</h3>
+            <h3 className="mb-1 truncate pr-6 text-sm font-semibold text-text-primary">{tpl.name}</h3>
             {tpl.description && (
-              <p className="mb-2.5 line-clamp-2 text-xs text-gray-500">{tpl.description}</p>
+              <p className="mb-2.5 line-clamp-2 text-xs text-text-tertiary">{tpl.description}</p>
             )}
 
             {/* Datasource chip */}
             <div className="mb-3">
               {dsName ? (
-                <div className="inline-flex items-center gap-1 rounded-full border border-blue-100 bg-blue-50 px-2 py-0.5">
-                  <Database className="h-2.5 w-2.5 shrink-0 text-blue-500" />
-                  <span className="text-[10px] font-medium text-blue-700 truncate max-w-[120px]">
+                <div className="inline-flex items-center gap-1 rounded-full border border-brand/20 bg-brand/10 px-2 py-0.5">
+                  <Database className="h-2.5 w-2.5 shrink-0 text-brand" />
+                  <span className="text-[10px] font-medium text-brand truncate max-w-[120px]">
                     {dsName}
                   </span>
                   {tableName && (
                     <>
-                      <span className="text-[10px] text-blue-400">/</span>
-                      <span className="text-[10px] text-blue-600 truncate max-w-[80px]">{tableName}</span>
+                      <span className="text-[10px] text-brand">/</span>
+                      <span className="text-[10px] text-brand truncate max-w-[80px]">{tableName}</span>
                     </>
                   )}
                 </div>
               ) : (
-                <span className="inline-flex items-center gap-1 rounded-full border border-dashed border-gray-300 px-2 py-0.5 text-[10px] text-gray-400">
+                <span className="inline-flex items-center gap-1 rounded-full border border-dashed border-[rgb(var(--border-strong))] px-2 py-0.5 text-[10px] text-text-quaternary">
                   <Database className="h-2.5 w-2.5" />
                   Chưa bind dữ liệu
                 </span>
@@ -110,7 +110,7 @@ export function TemplateCardGrid({ templates, onDelete, deletingId }: TemplateCa
             </div>
 
             {/* Updated */}
-            <p className="text-[10px] text-gray-400">
+            <p className="text-[10px] text-text-quaternary">
               Cập nhật {new Date(tpl.updated_at).toLocaleDateString('vi-VN')}
             </p>
           </div>

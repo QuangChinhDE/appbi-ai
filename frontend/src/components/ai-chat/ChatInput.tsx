@@ -4,7 +4,8 @@
  * Auto-resizing textarea input for the chat.
  */
 import React, { useRef, useEffect } from 'react';
-import { Send, Loader2, Square } from 'lucide-react';
+import { Send, Square } from 'lucide-react';
+import { IconButton } from '@/components/ui/Button';
 
 interface ChatInputProps {
   value: string;
@@ -38,35 +39,45 @@ export function ChatInput({ value, onChange, onSend, onStop, disabled, loading }
   };
 
   return (
-    <div className="flex items-end gap-2 p-4 border-t border-gray-200 bg-white">
-      <textarea
-        ref={ref}
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder={loading ? 'AI đang xử lý… (Esc để dừng)' : 'Hỏi về dữ liệu của bạn… (Enter để gửi, Shift+Enter để xuống dòng)'}
-        rows={1}
-        disabled={disabled}
-        className="flex-1 resize-none overflow-hidden rounded-xl border border-gray-300 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50 bg-gray-50"
-      />
-      {loading ? (
-        <button
-          onClick={onStop}
-          className="flex-shrink-0 w-10 h-10 rounded-xl bg-red-500 text-white flex items-center justify-center hover:bg-red-600 transition-colors"
-          title="Dừng (Esc)"
-        >
-          <Square className="h-4 w-4 fill-current" />
-        </button>
-      ) : (
-        <button
-          onClick={onSend}
-          disabled={disabled || !value.trim()}
-          className="flex-shrink-0 w-10 h-10 rounded-xl bg-blue-500 text-white flex items-center justify-center hover:bg-blue-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          title="Send (Enter)"
-        >
-          <Send className="h-4 w-4" />
-        </button>
-      )}
+    <div className="px-4 py-3 border-t border-[rgb(var(--border-line))] bg-surface-1">
+      <div className="flex items-end gap-2 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 transition-[border-color,box-shadow] duration-150 focus-within:border-brand focus-within:shadow-focus-brand">
+        <textarea
+          ref={ref}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={
+            loading
+              ? 'AI đang xử lý… (Esc để dừng)'
+              : 'Hỏi về dữ liệu của bạn… (Enter để gửi, Shift+Enter để xuống dòng)'
+          }
+          rows={1}
+          disabled={disabled}
+          className="flex-1 resize-none overflow-hidden bg-transparent text-caption leading-relaxed text-text-primary placeholder:text-text-quaternary outline-none disabled:opacity-50"
+        />
+        {loading ? (
+          <IconButton
+            variant="danger"
+            size="sm"
+            onClick={onStop}
+            aria-label="Dừng"
+            title="Dừng (Esc)"
+          >
+            <Square className="h-3.5 w-3.5 fill-current" />
+          </IconButton>
+        ) : (
+          <IconButton
+            variant="primary"
+            size="sm"
+            onClick={onSend}
+            disabled={disabled || !value.trim()}
+            aria-label="Gửi"
+            title="Send (Enter)"
+          >
+            <Send className="h-3.5 w-3.5" />
+          </IconButton>
+        )}
+      </div>
     </div>
   );
 }

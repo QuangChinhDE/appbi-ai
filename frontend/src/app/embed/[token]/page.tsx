@@ -16,6 +16,8 @@ import {
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
+import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
 import {
   clearPublicSession,
   getPublicSession,
@@ -85,56 +87,59 @@ function EmbedPasswordGate({
   const [show, setShow] = useState(false);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_100%)] p-4">
-      <div className="w-full max-w-sm overflow-hidden rounded-[24px] border border-white/80 bg-white/92 shadow-[0_32px_90px_-52px_rgba(15,23,42,0.5)]">
-        <div className="relative overflow-hidden border-b border-slate-200/70 bg-[linear-gradient(135deg,rgba(240,249,255,0.95),rgba(236,253,245,0.92))] px-5 py-5 text-center text-slate-900">
-          <div className="absolute inset-x-10 top-0 h-16 rounded-full bg-sky-200/30 blur-3xl" />
-          <div className="relative mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950 text-white shadow-lg shadow-slate-900/10">
-            <Lock className="h-5 w-5" />
+    <div className="flex min-h-screen items-center justify-center bg-surface-0 p-4">
+      <div className="w-full max-w-sm overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear">
+        <div className="border-b border-[rgb(var(--border-line))] px-5 py-5 text-center">
+          <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-brand/10 text-brand">
+            <Lock className="h-4 w-4" />
           </div>
-          <p className="relative text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Protected embed</p>
-          <p className="relative mt-2 text-base font-semibold text-slate-950">
+          <p className="text-tiny font-emphasis uppercase tracking-[0.18em] text-text-quaternary">
+            Protected embed
+          </p>
+          <p className="mt-2 text-small font-strong text-text-primary">
             {isReauth ? 'Session expired - re-enter password' : 'Password required'}
           </p>
         </div>
         <div className="space-y-3 px-5 py-5">
-          <div className="relative">
-            <input
-              type={show ? 'text' : 'password'}
-              value={value}
-              onChange={(event) => setValue(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && value) {
-                  onSubmit(value);
-                }
-              }}
-              className="w-full rounded-2xl border border-slate-300 px-4 py-3 pr-10 text-sm text-slate-700 shadow-sm focus:border-sky-400 focus:outline-none focus:ring-4 focus:ring-sky-100"
-              placeholder="Enter password"
-              autoFocus
-            />
-            <button
-              type="button"
-              onClick={() => setShow((current) => !current)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-            >
-              {show ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-            </button>
-          </div>
+          <Input
+            type={show ? 'text' : 'password'}
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && value) {
+                onSubmit(value);
+              }
+            }}
+            placeholder="Enter password"
+            autoFocus
+            trailingIcon={
+              <button
+                type="button"
+                onClick={() => setShow((current) => !current)}
+                className="pointer-events-auto text-text-tertiary hover:text-text-primary"
+              >
+                {show ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </button>
+            }
+          />
           {error && (
-            <p className="flex items-center gap-1 text-xs text-rose-600">
+            <p className="flex items-center gap-1 text-tiny text-danger">
               <AlertTriangle className="h-3 w-3 flex-shrink-0" />
               {error}
             </p>
           )}
-          <button
+          <Button
+            variant="primary"
+            fullWidth
             onClick={() => value && onSubmit(value)}
             disabled={submitting || !value}
-            className="flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 py-3 text-sm font-medium text-white transition-colors hover:bg-slate-800 disabled:opacity-50"
+            leadingIcon={
+              submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Lock className="h-3.5 w-3.5" />
+            }
           >
-            {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Lock className="h-3.5 w-3.5" />}
             {submitting ? 'Verifying...' : isReauth ? 'Continue' : 'Unlock'}
-          </button>
-          <p className="text-center text-[10px] text-slate-400">Sessions last 2 hours</p>
+          </Button>
+          <p className="text-center text-tiny text-text-quaternary">Sessions last 2 hours</p>
         </div>
       </div>
     </div>
@@ -144,19 +149,16 @@ function EmbedPasswordGate({
 function SessionExpiredBanner({ onReauth }: { onReauth: () => void }) {
   return (
     <div className="fixed inset-x-0 bottom-0 z-50 px-3 pb-3">
-      <div className="mx-auto flex max-w-[960px] items-center justify-between gap-3 rounded-[20px] border border-amber-200 bg-amber-50/95 px-4 py-3 shadow-lg shadow-amber-100/50 backdrop-blur">
+      <div className="mx-auto flex max-w-[960px] items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 shadow-linear">
         <div className="flex items-center gap-2">
-          <RefreshCw className="h-4 w-4 flex-shrink-0 text-amber-600" />
-          <p className="text-xs font-medium text-amber-800">
+          <RefreshCw className="h-3.5 w-3.5 flex-shrink-0 text-warning" />
+          <p className="text-caption font-emphasis text-text-primary">
             Session expired. Re-enter the password to continue viewing.
           </p>
         </div>
-        <button
-          onClick={onReauth}
-          className="flex-shrink-0 rounded-xl bg-slate-950 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-slate-800"
-        >
+        <Button variant="primary" size="xs" onClick={onReauth}>
           Re-authenticate
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -542,13 +544,13 @@ export default function EmbedDashboardPage() {
 
   if (!mounted || pageState === 'unknown' || loading) {
     return (
-      <div className="flex min-h-[240px] items-center justify-center bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_100%)] px-4 py-6">
-        <div className="rounded-[24px] border border-white/80 bg-white/90 px-6 py-8 text-center shadow-[0_28px_80px_-56px_rgba(15,23,42,0.55)]">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950 text-white">
-            <Loader2 className="h-5 w-5 animate-spin" />
+      <div className="flex min-h-[240px] items-center justify-center bg-surface-0 px-4 py-6">
+        <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-6 py-8 text-center shadow-linear-sm">
+          <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-brand/10 text-brand">
+            <Loader2 className="h-4 w-4 animate-spin" />
           </div>
-          <p className="mt-3 text-sm font-semibold text-slate-950">Loading embedded dashboard</p>
-          <p className="mt-1 text-xs text-slate-500">Preparing the published report surface.</p>
+          <p className="mt-3 text-caption font-strong text-text-primary">Loading embedded dashboard</p>
+          <p className="mt-1 text-tiny text-text-tertiary">Preparing the published report surface.</p>
         </div>
       </div>
     );
@@ -567,11 +569,13 @@ export default function EmbedDashboardPage() {
 
   if (pageState === 'error' || !dashboard) {
     return (
-      <div className="flex min-h-[240px] items-center justify-center bg-[linear-gradient(180deg,#f8fafc_0%,#eef6ff_100%)] px-4 py-6 text-center">
-        <div className="rounded-[24px] border border-white/80 bg-white/90 px-6 py-8 shadow-[0_28px_80px_-56px_rgba(15,23,42,0.55)]">
-          <AlertTriangle className="mx-auto mb-3 h-8 w-8 text-amber-400" />
-          <p className="text-sm font-medium text-slate-800">Dashboard unavailable</p>
-          <p className="mt-1 text-xs text-slate-500">
+      <div className="flex min-h-[240px] items-center justify-center bg-surface-0 px-4 py-6 text-center">
+        <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-6 py-8 shadow-linear-sm">
+          <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-warning/10 text-warning">
+            <AlertTriangle className="h-4 w-4" />
+          </div>
+          <p className="text-caption font-emphasis text-text-primary">Dashboard unavailable</p>
+          <p className="mt-1 text-tiny text-text-tertiary">
             {error ?? 'This link may have expired or been revoked.'}
           </p>
         </div>
@@ -591,19 +595,25 @@ export default function EmbedDashboardPage() {
   });
 
   return (
-    <div className="px-3 py-3 text-slate-900 sm:px-4" style={{ ...publicTheme.pageStyle, minHeight: '220px' }}>
+    <div
+      className="bg-surface-0 px-3 py-3 text-text-primary sm:px-4"
+      style={{ ...publicTheme.pageStyle, minHeight: '220px' }}
+    >
       {pageState === 'reauth' && <SessionExpiredBanner onReauth={handleReauth} />}
 
-      <div className="w-full overflow-visible rounded-[24px] border backdrop-blur" style={publicTheme.shellStyle}>
+      <div
+        className="w-full overflow-visible rounded-xl border border-[rgb(var(--border-line))] bg-surface-1"
+        style={publicTheme.shellStyle}
+      >
         {showControlSurface && (
           <section
-            className="border-b px-3 py-3 sm:px-4 sm:py-4"
+            className="border-b border-[rgb(var(--border-line))] px-3 py-3 sm:px-4 sm:py-4"
             style={publicTheme.panelStyle}
           >
             {(showEmbedHeader || showPageTabs || showFilterControls) && (
               <div className="flex flex-col gap-3">
                 {showEmbedHeader && (
-                  <h1 className="truncate text-lg font-semibold tracking-tight text-slate-950">{presentationTitle}</h1>
+                  <h1 className="truncate text-small font-strong text-text-primary">{presentationTitle}</h1>
                 )}
 
                 {showPageTabs && (
@@ -613,17 +623,23 @@ export default function EmbedDashboardPage() {
                       const isPending = page.id === pendingPageId;
                       return (
                         <button
-                        key={page.id}
-                        type="button"
-                        onClick={() => {
-                          void handlePageSelect(page.id);
-                        }}
-                        className="inline-flex whitespace-nowrap rounded-full border px-3 py-1.5 text-[11px] font-medium transition"
-                        style={isActive ? publicTheme.pageTabActiveStyle : isPending ? publicTheme.accentPillStyle : publicTheme.pageTabInactiveStyle}
-                        disabled={isPending}
-                      >
-                        {isPending && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
-                        {page.name}
+                          key={page.id}
+                          type="button"
+                          onClick={() => {
+                            void handlePageSelect(page.id);
+                          }}
+                          className={`inline-flex items-center whitespace-nowrap rounded-full border px-3 py-1.5 text-tiny font-emphasis transition-colors ${
+                            isActive
+                              ? 'border-transparent bg-text-primary text-text-inverse'
+                              : isPending
+                                ? 'border-brand/20 bg-brand/10 text-brand'
+                                : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+                          }`}
+                          style={isActive ? publicTheme.pageTabActiveStyle : isPending ? publicTheme.accentPillStyle : publicTheme.pageTabInactiveStyle}
+                          disabled={isPending}
+                        >
+                          {isPending && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
+                          {page.name}
                         </button>
                       );
                     })}
@@ -636,56 +652,66 @@ export default function EmbedDashboardPage() {
                       columns={availableFilterColumns}
                       columnChartCount={availableFilterChartCount}
                       distinctValues={resolvedDistinctValues}
-                    filters={draftViewerFilters}
-                    onFiltersChange={setDraftViewerFilters}
-                    hasPendingChanges={hasPendingFilterChanges}
-                    onApply={handleApplyFilters}
-                    onReset={handleResetFilters}
-                    isApplying={isApplyingFilters}
-                    initialExpanded={false}
-                  />
-                </div>
-              )}
+                      filters={draftViewerFilters}
+                      onFiltersChange={setDraftViewerFilters}
+                      hasPendingChanges={hasPendingFilterChanges}
+                      onApply={handleApplyFilters}
+                      onReset={handleResetFilters}
+                      isApplying={isApplyingFilters}
+                      initialExpanded={false}
+                    />
+                  </div>
+                )}
               </div>
             )}
 
             {showLiveState && (
               <div className={showEmbedHeader || showPageTabs || showFilterControls ? 'mt-4 space-y-3' : 'space-y-3'}>
                 {pendingPageId && (
-                  <div className="rounded-[20px] border px-3 py-2.5 text-xs text-slate-500" style={publicTheme.neutralPillStyle}>
+                  <div
+                    className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2.5 text-tiny text-text-tertiary"
+                    style={publicTheme.neutralPillStyle}
+                  >
                     Opening next page...
                   </div>
                 )}
 
                 {crossFilterState && (
-                  <div className="flex flex-wrap items-center gap-2 rounded-[20px] border px-3 py-2.5 text-xs" style={publicTheme.accentPillStyle}>
-                    <span className="font-medium">
+                  <div
+                    className="flex flex-wrap items-center gap-2 rounded-lg border border-brand/20 bg-brand/10 px-3 py-2.5 text-tiny text-brand"
+                    style={publicTheme.accentPillStyle}
+                  >
+                    <span className="font-emphasis">
                       Cross-filter from {visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.layout?.custom_title
                         ?? visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.chart?.name
                         ?? `Chart ${crossFilterState.sourceChartId}`}:
                     </span>
-                    <span className="truncate">
+                    <span className="truncate text-text-secondary">
                       {getFilterDisplayLabel(crossFilterState.filter)} = {formatFilterValue(crossFilterState.filter.value)}
                     </span>
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      className="ml-auto"
                       onClick={() => setCrossFilterState(null)}
-                      className="ml-auto rounded-full border px-2.5 py-1 text-[11px] font-medium"
                       style={publicTheme.neutralPillStyle}
                     >
                       Clear
-                    </button>
+                    </Button>
                   </div>
                 )}
 
                 {chartLoadError && (
-                  <div className="rounded-[20px] border border-amber-200 bg-amber-50/85 px-3 py-2.5 text-xs text-amber-800">
+                  <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2.5 text-tiny text-warning">
                     {chartLoadError}
                   </div>
                 )}
 
                 {chartsLoading && !isApplyingFilters && (
-                  <div className="rounded-[20px] border px-3 py-2.5 text-xs text-slate-500" style={publicTheme.neutralPillStyle}>
+                  <div
+                    className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2.5 text-tiny text-text-tertiary"
+                    style={publicTheme.neutralPillStyle}
+                  >
                     Refreshing charts...
                   </div>
                 )}
@@ -696,16 +722,16 @@ export default function EmbedDashboardPage() {
 
         <div className="px-2 py-3 sm:px-3 sm:py-4">
           <section
-            className={`rounded-[24px] border p-3 transition-opacity duration-200 sm:p-4 ${pendingPageId ? 'opacity-70' : 'opacity-100'}`}
+            className={`rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3 transition-opacity duration-200 sm:p-4 ${pendingPageId ? 'opacity-70' : 'opacity-100'}`}
             style={publicTheme.canvasFrameStyle}
           >
             {visibleDashboardCharts.length === 0 ? (
-              <div className="flex h-48 items-center justify-center rounded-[24px] border-2 border-dashed border-slate-200 bg-slate-50/80">
-                <p className="text-xs text-slate-400">No charts on this page yet.</p>
+              <div className="flex h-48 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
+                <p className="text-tiny text-text-quaternary">No charts on this page yet.</p>
               </div>
             ) : (
               <div
-                className={`rounded-[24px] ${publicTheme.density.canvasPaddingClass}`}
+                className={`rounded-lg ${publicTheme.density.canvasPaddingClass}`}
                 style={publicTheme.canvasInnerStyle}
               >
                 <ResponsiveGridLayout

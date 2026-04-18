@@ -147,10 +147,10 @@ export function LeftPanel({
 
   if (collapsed) {
     return (
-      <div className="flex w-10 shrink-0 flex-col items-center gap-2 border-r border-gray-200 bg-white pt-3">
+      <div className="flex w-10 shrink-0 flex-col items-center gap-2 border-r border-[rgb(var(--border-line))] bg-surface-1 pt-3">
         <button
           onClick={() => setCollapsed(false)}
-          className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+          className="rounded-md p-1.5 text-text-quaternary hover:bg-surface-2 hover:text-text-secondary transition-colors"
           title="Mở panel"
         >
           <ChevronsRight className="h-4 w-4" />
@@ -160,13 +160,13 @@ export function LeftPanel({
   }
 
   return (
-    <div className="flex w-64 shrink-0 flex-col overflow-hidden border-r border-gray-200 bg-white">
+    <div className="flex w-64 shrink-0 flex-col overflow-hidden border-r border-[rgb(var(--border-line))] bg-surface-1">
       {/* Panel header */}
-      <div className="flex h-10 shrink-0 items-center justify-between border-b border-gray-100 px-3">
-        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Cấu hình</span>
+      <div className="flex h-10 shrink-0 items-center justify-between border-b border-[rgb(var(--border-line))] px-3">
+        <span className="text-xs font-semibold text-text-tertiary uppercase tracking-wider">Cấu hình</span>
         <button
           onClick={() => setCollapsed(true)}
-          className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+          className="rounded p-1 text-text-quaternary hover:bg-surface-2 hover:text-text-secondary transition-colors"
           title="Thu nhỏ panel"
         >
           <ChevronsLeft className="h-3.5 w-3.5" />
@@ -176,44 +176,44 @@ export function LeftPanel({
       <div className="flex-1 overflow-y-auto">
 
         {/* ── DATA SOURCE ── */}
-        <div className="border-b border-gray-100 px-3 py-2.5">
-          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+        <div className="border-b border-[rgb(var(--border-line))] px-3 py-2.5">
+          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
             Nguồn dữ liệu
           </p>
           {definition.dataSource ? (
             <button
               onClick={onOpenDataSourcePicker}
               disabled={!canEdit}
-              className="flex w-full items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-2 text-left transition-colors hover:bg-blue-100 disabled:cursor-not-allowed"
+              className="flex w-full items-center gap-2 rounded-lg border border-brand/30 bg-brand/10 px-2.5 py-2 text-left transition-colors hover:bg-brand/15 disabled:cursor-not-allowed"
             >
-              <Database className="h-3.5 w-3.5 shrink-0 text-blue-600" />
+              <Database className="h-3.5 w-3.5 shrink-0 text-brand" />
               <div className="min-w-0">
-                <p className="truncate text-xs font-medium text-blue-800">
+                <p className="truncate text-xs font-medium text-brand">
                   {definition.dataSource.datasetName ?? 'Dataset'}
                 </p>
-                <p className="truncate text-[10px] text-blue-600">
+                <p className="truncate text-[10px] text-brand">
                   {definition.dataSource.tableName ?? 'Table'}
                 </p>
               </div>
-              <ChevronDown className="ml-auto h-3 w-3 shrink-0 text-blue-500" />
+              <ChevronDown className="ml-auto h-3 w-3 shrink-0 text-brand" />
             </button>
           ) : (
             <button
               onClick={onOpenDataSourcePicker}
               disabled={!canEdit}
-              className="flex w-full items-center gap-2 rounded-lg border border-dashed border-gray-300 px-2.5 py-2 text-left transition-colors hover:border-blue-400 hover:bg-blue-50 disabled:cursor-not-allowed"
+              className="flex w-full items-center gap-2 rounded-lg border border-dashed border-[rgb(var(--border-strong))] px-2.5 py-2 text-left transition-colors hover:border-brand/50 hover:bg-brand/15 disabled:cursor-not-allowed"
             >
-              <Database className="h-3.5 w-3.5 shrink-0 text-gray-400" />
-              <span className="text-xs text-gray-500">Chọn nguồn dữ liệu…</span>
+              <Database className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+              <span className="text-xs text-text-tertiary">Chọn nguồn dữ liệu…</span>
             </button>
           )}
           {!isLoadingData && previewData && (
-            <p className="mt-1 text-[10px] text-gray-400">
+            <p className="mt-1 text-[10px] text-text-quaternary">
               {rowCount}{totalRows > rowCount ? ` / ${totalRows}` : ''} dòng dữ liệu
             </p>
           )}
           {isLoadingData && (
-            <p className="mt-1 text-[10px] text-gray-400">Đang tải dữ liệu…</p>
+            <p className="mt-1 text-[10px] text-text-quaternary">Đang tải dữ liệu…</p>
           )}
         </div>
 
@@ -226,7 +226,7 @@ export function LeftPanel({
             canEdit ? (
               <button
                 onClick={onAddColumn}
-                className="rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-blue-600 transition-colors"
+                className="rounded p-0.5 text-text-quaternary hover:bg-surface-2 hover:text-brand transition-colors"
                 title="Thêm cột"
               >
                 <Plus className="h-3.5 w-3.5" />
@@ -235,15 +235,15 @@ export function LeftPanel({
           }
         />
         {openSections.has('columns') && (
-          <div className="border-b border-gray-100 pb-1">
+          <div className="border-b border-[rgb(var(--border-line))] pb-1">
             {/* Column list */}
             {definition.columns.length === 0 ? (
               <div className="px-3 py-4 text-center">
-                <p className="text-xs text-gray-400">Chưa có cột nào</p>
+                <p className="text-xs text-text-quaternary">Chưa có cột nào</p>
                 {canEdit && (
                   <button
                     onClick={onAddColumn}
-                    className="mt-2 inline-flex items-center gap-1 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 transition-colors"
+                    className="mt-2 inline-flex items-center gap-1 rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover transition-colors"
                   >
                     <Plus className="h-3 w-3" />
                     Thêm cột đầu tiên
@@ -271,20 +271,20 @@ export function LeftPanel({
                       onClick={() => onSelectColumn(isSelected ? null : col.id)}
                       className={`group flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 text-xs transition-colors mb-0.5 ${
                         isSelected
-                          ? 'bg-blue-50 text-blue-700'
-                          : 'text-gray-700 hover:bg-gray-50'
+                          ? 'bg-brand/10 text-brand'
+                          : 'text-text-secondary hover:bg-surface-2'
                       }`}
                     >
                       {canEdit && (
-                        <GripVertical className="h-3 w-3 shrink-0 text-gray-300 cursor-grab" />
+                        <GripVertical className="h-3 w-3 shrink-0 text-text-quaternary cursor-grab" />
                       )}
                       <span
                         className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                          isFormula ? 'bg-amber-500' : isInput ? 'bg-blue-400' : 'bg-gray-400'
+                          isFormula ? 'bg-warning' : isInput ? 'bg-brand/60' : 'bg-surface-3'
                         }`}
                       />
                       <span className="flex-1 truncate font-medium">{col.label}</span>
-                      <span className={`shrink-0 text-[9px] font-mono ${isFormula ? 'text-amber-500' : 'text-gray-400'}`}>
+                      <span className={`shrink-0 text-[9px] font-mono ${isFormula ? 'text-warning' : 'text-text-quaternary'}`}>
                         {col.type === 'formula' ? 'ƒ' : col.type === 'subtotal' ? 'Σ' : col.type === 'input' ? '✎' : ''}
                       </span>
                     </div>
@@ -293,7 +293,7 @@ export function LeftPanel({
                 {canEdit && (
                   <button
                     onClick={onAddColumn}
-                    className="mt-1 flex w-full items-center gap-1.5 rounded-md border border-dashed border-gray-200 px-2 py-1.5 text-xs text-gray-400 hover:border-blue-300 hover:text-blue-600 transition-colors"
+                    className="mt-1 flex w-full items-center gap-1.5 rounded-md border border-dashed border-[rgb(var(--border-line))] px-2 py-1.5 text-xs text-text-quaternary hover:border-brand/40 hover:text-brand transition-colors"
                   >
                     <Plus className="h-3 w-3" />
                     Thêm cột
@@ -323,17 +323,17 @@ export function LeftPanel({
           onToggle={() => toggleSection('structure')}
         />
         {openSections.has('structure') && (
-          <div className="border-b border-gray-100 px-3 py-2 space-y-3">
+          <div className="border-b border-[rgb(var(--border-line))] px-3 py-2 space-y-3">
             {/* Group by */}
             <div>
-              <label className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 mb-1 block">
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-text-quaternary mb-1 block">
                 Nhóm theo
               </label>
               <select
                 value={definition.groupBy ?? ''}
                 onChange={(e) => onGroupByChange(e.target.value || undefined)}
                 disabled={!canEdit || groupableColumns.length === 0}
-                className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+                className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs text-text-secondary focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2 disabled:text-text-quaternary"
               >
                 <option value="">Không nhóm</option>
                 {groupableColumns.map((c) => (
@@ -347,27 +347,27 @@ export function LeftPanel({
             {/* Header lines */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   Tiêu đề báo cáo
                 </label>
                 {canEdit && (
                   <button
                     onClick={addHeaderLine}
-                    className="text-[10px] text-blue-600 hover:text-blue-700"
+                    className="text-[10px] text-brand hover:text-brand"
                   >
                     + Thêm dòng
                   </button>
                 )}
               </div>
               {headerLines.length === 0 && (
-                <p className="text-[10px] text-gray-400">
+                <p className="text-[10px] text-text-quaternary">
                   Chưa có dòng tiêu đề. Nhấn &ldquo;+ Thêm dòng&rdquo; để thêm tên công ty, địa chỉ…
                 </p>
               )}
               {headerLines.map((line, idx) => (
                 <div key={idx} className="flex items-center gap-1 mb-1">
                   <input
-                    className="flex-1 rounded border border-gray-200 bg-gray-50 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-blue-400"
+                    className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
                     value={line.text}
                     onChange={(e) => updateHeaderLineText(idx, e.target.value)}
                     disabled={!canEdit}
@@ -376,7 +376,7 @@ export function LeftPanel({
                   {canEdit && (
                     <button
                       onClick={() => removeHeaderLine(idx)}
-                      className="rounded p-0.5 text-gray-400 hover:text-red-500 transition-colors"
+                      className="rounded p-0.5 text-text-quaternary hover:text-danger transition-colors"
                     >
                       <X className="h-3 w-3" />
                     </button>
@@ -385,7 +385,7 @@ export function LeftPanel({
               ))}
               {/* Report title */}
               <input
-                className="mt-1 w-full rounded border border-gray-200 bg-gray-50 px-2 py-1 text-xs font-semibold outline-none focus:ring-1 focus:ring-blue-400"
+                className="mt-1 w-full rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-xs font-semibold outline-none focus:ring-1 focus:ring-brand"
                 value={definition.header?.title ?? ''}
                 onChange={(e) => onHeaderTitleChange(e.target.value, definition.header?.meta)}
                 disabled={!canEdit}
@@ -396,28 +396,28 @@ export function LeftPanel({
             {/* Column groups */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   Nhóm cột (merged header)
                 </label>
                 {canEdit && (
                   <button
                     onClick={addColumnGroup}
-                    className="text-[10px] text-blue-600 hover:text-blue-700"
+                    className="text-[10px] text-brand hover:text-brand"
                   >
                     + Thêm
                   </button>
                 )}
               </div>
               {columnGroups.length === 0 && (
-                <p className="text-[10px] text-gray-400">
+                <p className="text-[10px] text-text-quaternary">
                   Dùng để gộp nhiều cột dưới một tiêu đề chung.
                 </p>
               )}
               {columnGroups.map((group, gi) => (
-                <div key={group.id} className="mb-2 rounded-md border border-gray-200 p-2">
+                <div key={group.id} className="mb-2 rounded-md border border-[rgb(var(--border-line))] p-2">
                   <div className="flex items-center gap-1.5 mb-1.5">
                     <input
-                      className="flex-1 rounded border border-gray-200 bg-gray-50 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-blue-400"
+                      className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
                       value={group.label}
                       onChange={(e) => updateColumnGroup(gi, { label: e.target.value })}
                       disabled={!canEdit}
@@ -426,7 +426,7 @@ export function LeftPanel({
                     {canEdit && (
                       <button
                         onClick={() => removeColumnGroup(gi)}
-                        className="rounded p-0.5 text-gray-400 hover:text-red-500 transition-colors"
+                        className="rounded p-0.5 text-text-quaternary hover:text-danger transition-colors"
                       >
                         <X className="h-3 w-3" />
                       </button>
@@ -442,8 +442,8 @@ export function LeftPanel({
                           onClick={() => toggleColumnInGroup(gi, col.id)}
                           className={`rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
                             inGroup
-                              ? 'border-blue-400 bg-blue-100 text-blue-800'
-                              : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100'
+                              ? 'border-brand/50 bg-brand/15 text-brand'
+                              : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-tertiary hover:bg-surface-2'
                           }`}
                         >
                           {col.label}
@@ -458,13 +458,13 @@ export function LeftPanel({
             {/* Footer notes */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   Ghi chú cuối trang
                 </label>
                 {canEdit && (
                   <button
                     onClick={addFooterLine}
-                    className="text-[10px] text-blue-600 hover:text-blue-700"
+                    className="text-[10px] text-brand hover:text-brand"
                   >
                     + Thêm
                   </button>
@@ -473,7 +473,7 @@ export function LeftPanel({
               {(footer.lines ?? []).map((line, idx) => (
                 <div key={idx} className="flex items-center gap-1 mb-1">
                   <input
-                    className="flex-1 rounded border border-gray-200 bg-gray-50 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-blue-400"
+                    className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
                     value={line.text}
                     onChange={(e) => updateFooterLine(idx, e.target.value)}
                     disabled={!canEdit}
@@ -482,7 +482,7 @@ export function LeftPanel({
                   {canEdit && (
                     <button
                       onClick={() => removeFooterLine(idx)}
-                      className="rounded p-0.5 text-gray-400 hover:text-red-500 transition-colors"
+                      className="rounded p-0.5 text-text-quaternary hover:text-danger transition-colors"
                     >
                       <X className="h-3 w-3" />
                     </button>
@@ -491,7 +491,7 @@ export function LeftPanel({
               ))}
               {/* Signature slots */}
               <div className="flex items-center gap-2 mt-1">
-                <span className="text-[10px] text-gray-400">Ô chữ ký:</span>
+                <span className="text-[10px] text-text-quaternary">Ô chữ ký:</span>
                 <button
                   disabled={!canEdit}
                   onClick={() => {
@@ -499,13 +499,13 @@ export function LeftPanel({
                     const labels = [...(footer.signatureLabels ?? []), `Chữ ký ${slots}`];
                     onFooterChange({ ...footer, signatureSlots: slots, signatureLabels: labels });
                   }}
-                  className="text-[10px] text-blue-600 hover:text-blue-700 disabled:opacity-40"
+                  className="text-[10px] text-brand hover:text-brand disabled:opacity-40"
                 >
                   + Thêm
                 </button>
                 {(footer.signatureSlots ?? 0) > 0 && (
                   <>
-                    <span className="text-[10px] text-gray-500">{footer.signatureSlots} ô</span>
+                    <span className="text-[10px] text-text-tertiary">{footer.signatureSlots} ô</span>
                     <button
                       disabled={!canEdit}
                       onClick={() => {
@@ -513,7 +513,7 @@ export function LeftPanel({
                         const labels = (footer.signatureLabels ?? []).slice(0, slots);
                         onFooterChange({ ...footer, signatureSlots: slots, signatureLabels: labels });
                       }}
-                      className="text-[10px] text-red-500 hover:text-red-600 disabled:opacity-40"
+                      className="text-[10px] text-danger hover:text-danger disabled:opacity-40"
                     >
                       − Bớt
                     </button>
@@ -535,22 +535,22 @@ export function LeftPanel({
             <button
               onClick={onExportExcel}
               disabled={!previewData?.rows?.length}
-              className="flex w-full items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-3 py-2.5 text-sm font-medium text-green-800 transition-colors hover:bg-green-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="flex w-full items-center gap-2 rounded-lg border border-success/30 bg-success/10 px-3 py-2.5 text-sm font-medium text-success transition-colors hover:bg-success/15 disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <FileDown className="h-4 w-4 text-green-600" />
+              <FileDown className="h-4 w-4 text-success" />
               <div className="text-left">
                 <p className="text-xs font-semibold">Xuất Excel</p>
-                <p className="text-[10px] text-green-600 font-normal">Tải về file .xlsx</p>
+                <p className="text-[10px] text-success font-normal">Tải về file .xlsx</p>
               </div>
             </button>
             <button
               onClick={onExportPDF}
-              className="flex w-full items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100"
+              className="flex w-full items-center gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-2"
             >
-              <Printer className="h-4 w-4 text-gray-500" />
+              <Printer className="h-4 w-4 text-text-tertiary" />
               <div className="text-left">
                 <p className="text-xs font-semibold">In / Xuất PDF</p>
-                <p className="text-[10px] text-gray-500 font-normal">Mở hộp thoại in</p>
+                <p className="text-[10px] text-text-tertiary font-normal">Mở hộp thoại in</p>
               </div>
             </button>
           </div>
@@ -574,17 +574,17 @@ function SectionHeader({
   action?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2 bg-gray-50">
+    <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-3 py-2 bg-surface-2">
       <button
         onClick={onToggle}
         className="flex flex-1 items-center gap-1.5 text-left"
       >
         {open ? (
-          <ChevronDown className="h-3 w-3 text-gray-400" />
+          <ChevronDown className="h-3 w-3 text-text-quaternary" />
         ) : (
-          <ChevronRight className="h-3 w-3 text-gray-400" />
+          <ChevronRight className="h-3 w-3 text-text-quaternary" />
         )}
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-tertiary">
           {label}
         </span>
       </button>
@@ -611,15 +611,15 @@ function ColumnInlineProps({
   onRemove: () => void;
 }) {
   return (
-    <div className="mx-2 mb-2 rounded-lg border border-blue-200 bg-blue-50 p-3 space-y-2.5">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-blue-600">
+    <div className="mx-2 mb-2 rounded-lg border border-brand/30 bg-brand/10 p-3 space-y-2.5">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-brand">
         Cấu hình: <span className="font-mono normal-case">{column.label}</span>
       </p>
 
       {/* Tên hiển thị */}
       <Field label="Tên hiển thị">
         <input
-          className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full rounded border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-brand"
           value={column.label}
           onChange={(e) => onUpdate({ label: e.target.value })}
           disabled={!canEdit}
@@ -633,7 +633,7 @@ function ColumnInlineProps({
             value={column.sourceColumn ?? ''}
             onChange={(e) => onUpdate({ sourceColumn: e.target.value || undefined, type: 'raw' })}
             disabled={!canEdit}
-            className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-700 outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+            className="w-full rounded border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs text-text-secondary outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
           >
             <option value="">— Không liên kết —</option>
             {availableColumns.map((ac) => (
@@ -644,7 +644,7 @@ function ColumnInlineProps({
           </select>
         ) : (
           <input
-            className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full rounded border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-brand"
             value={column.sourceColumn ?? ''}
             onChange={(e) => onUpdate({ sourceColumn: e.target.value || undefined })}
             disabled={!canEdit}
@@ -656,7 +656,7 @@ function ColumnInlineProps({
       {/* Công thức tính */}
       <Field label="Công thức tính (tuỳ chọn)">
         <input
-          className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full rounded border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-brand"
           value={column.expression ?? ''}
           onChange={(e) =>
             onUpdate({
@@ -677,7 +677,7 @@ function ColumnInlineProps({
               value={column.format ?? 'text'}
               onChange={(e) => onUpdate({ format: e.target.value as NumberFormat })}
               disabled={!canEdit}
-              className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+              className="w-full rounded border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
             >
               <option value="text">Văn bản</option>
               <option value="integer">Số nguyên</option>
@@ -689,7 +689,7 @@ function ColumnInlineProps({
         <div className="w-20">
           <Field label="Đơn vị">
             <input
-              className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full rounded border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-brand"
               value={column.suffix ?? ''}
               onChange={(e) => onUpdate({ suffix: e.target.value || undefined })}
               disabled={!canEdit}
@@ -705,7 +705,7 @@ function ColumnInlineProps({
           <Field label="Rộng (px)">
             <input
               type="number"
-              className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full rounded border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs outline-none focus:ring-2 focus:ring-brand"
               value={column.width ?? ''}
               onChange={(e) => onUpdate({ width: e.target.value ? parseInt(e.target.value) : undefined })}
               disabled={!canEdit}
@@ -723,8 +723,8 @@ function ColumnInlineProps({
                   onClick={() => onUpdate({ align: a })}
                   className={`flex-1 rounded border py-1.5 text-[11px] transition-colors ${
                     column.align === a
-                      ? 'border-blue-600 bg-blue-600 text-white'
-                      : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                      ? 'border-brand bg-brand text-white'
+                      : 'border-[rgb(var(--border-strong))] bg-surface-1 text-text-secondary hover:bg-surface-2'
                   }`}
                 >
                   {a === 'left' ? '◂' : a === 'center' ? '≡' : '▸'}
@@ -737,30 +737,30 @@ function ColumnInlineProps({
 
       {/* Flags */}
       <div className="flex gap-3">
-        <label className="flex items-center gap-1.5 text-[10px] text-gray-600 cursor-pointer">
+        <label className="flex items-center gap-1.5 text-[10px] text-text-secondary cursor-pointer">
           <input
             type="checkbox"
             checked={column.bold ?? false}
             onChange={(e) => onUpdate({ bold: e.target.checked })}
             disabled={!canEdit}
-            className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600"
+            className="h-3.5 w-3.5 rounded border-[rgb(var(--border-strong))] text-brand"
           />
           In đậm
         </label>
-        <label className="flex items-center gap-1.5 text-[10px] text-gray-600 cursor-pointer">
+        <label className="flex items-center gap-1.5 text-[10px] text-text-secondary cursor-pointer">
           <input
             type="checkbox"
             checked={column.highlightNegative ?? false}
             onChange={(e) => onUpdate({ highlightNegative: e.target.checked })}
             disabled={!canEdit}
-            className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600"
+            className="h-3.5 w-3.5 rounded border-[rgb(var(--border-strong))] text-brand"
           />
           Đánh dấu số âm
         </label>
       </div>
 
       {/* Tổng phụ (sum this column in group) */}
-      <label className="flex items-center gap-1.5 text-[10px] text-gray-600 cursor-pointer">
+      <label className="flex items-center gap-1.5 text-[10px] text-text-secondary cursor-pointer">
         <input
           type="checkbox"
           checked={column.type === 'subtotal'}
@@ -768,7 +768,7 @@ function ColumnInlineProps({
             onUpdate({ type: e.target.checked ? 'subtotal' : (column.expression ? 'formula' : column.sourceColumn ? 'raw' : 'raw') })
           }
           disabled={!canEdit}
-          className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600"
+          className="h-3.5 w-3.5 rounded border-[rgb(var(--border-strong))] text-brand"
         />
         Hiển thị tổng phụ trong nhóm (Σ)
       </label>
@@ -777,7 +777,7 @@ function ColumnInlineProps({
       {canEdit && (
         <button
           onClick={onRemove}
-          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-red-200 bg-white py-1.5 text-xs text-red-600 hover:bg-red-50 transition-colors"
+          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-danger/30 bg-surface-1 py-1.5 text-xs text-danger hover:bg-danger/10 transition-colors"
         >
           <Trash2 className="h-3.5 w-3.5" />
           Xoá cột này
@@ -790,7 +790,7 @@ function ColumnInlineProps({
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="mb-0.5 block text-[10px] font-medium text-gray-500">{label}</label>
+      <label className="mb-0.5 block text-[10px] font-medium text-text-tertiary">{label}</label>
       {children}
     </div>
   );

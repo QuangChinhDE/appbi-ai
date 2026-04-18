@@ -71,20 +71,20 @@ export function BuilderCanvas({
   const titleWeightCls = definition.header?.titleBold === false ? 'font-medium' : 'font-bold';
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden bg-gray-100">
+    <div className="flex flex-1 flex-col overflow-hidden bg-surface-2">
       {/* ── Toolbar ── */}
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-gray-200 bg-white px-4">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
 
         {/* Layout switcher */}
-        <div className="flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+        <div className="flex items-center gap-1 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
           {LAYOUT_OPTIONS.map((opt) => (
             <button
               key={opt.value}
               onClick={() => onLayoutChange(opt.value)}
               className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
                 definition.layout === opt.value
-                  ? 'bg-white text-blue-700 shadow-sm border border-gray-200'
-                  : 'text-gray-500 hover:text-gray-700'
+                  ? 'border border-[rgb(var(--border-line))] bg-surface-1 text-brand shadow-linear-sm'
+                  : 'text-text-tertiary hover:text-text-secondary'
               }`}
             >
               <span>{opt.icon}</span>
@@ -93,10 +93,10 @@ export function BuilderCanvas({
           ))}
         </div>
 
-        <div className="mx-1 h-4 w-px bg-gray-200 shrink-0" />
+        <div className="mx-1 h-4 w-px bg-surface-3 shrink-0" />
 
         {/* Theme color dots */}
-        <span className="text-xs text-gray-400 shrink-0">Màu</span>
+        <span className="text-xs text-text-quaternary shrink-0">Màu</span>
         <div className="flex gap-1 shrink-0">
           {Object.entries(PRESET_THEMES).map(([key, t]) => {
             const isActive = theme.headerBg === t.headerBg;
@@ -106,7 +106,7 @@ export function BuilderCanvas({
                 onClick={() => onThemeChange(key === 'dark-blue' ? undefined : t)}
                 title={key}
                 className={`h-5 w-5 rounded-full border-2 transition-all ${
-                  isActive ? 'border-gray-800 scale-110' : 'border-gray-300 hover:border-gray-500'
+                  isActive ? 'border-[rgb(var(--border-strong))] scale-110' : 'border-[rgb(var(--border-strong))] hover:border-[rgb(var(--border-strong))]'
                 }`}
                 style={{ background: t.headerBg }}
               />
@@ -121,8 +121,8 @@ export function BuilderCanvas({
           onClick={() => setIsPreview(!isPreview)}
           className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
             isPreview
-              ? 'border-blue-300 bg-blue-50 text-blue-700'
-              : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+              ? 'border-brand/40 bg-brand/10 text-brand'
+                : 'border-[rgb(var(--border-strong))] bg-surface-1 text-text-secondary hover:bg-surface-2'
           }`}
         >
           {isPreview ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
@@ -134,7 +134,7 @@ export function BuilderCanvas({
       <div className="flex-1 overflow-auto p-4">
         <div
           ref={refToUse as React.RefObject<HTMLDivElement>}
-          className="mx-auto overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm"
+          className="mx-auto overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-white shadow-sm"
           style={{ minHeight: 480, maxWidth: 1100 }}
         >
           {/* ── Header Section ── */}
@@ -157,7 +157,7 @@ export function BuilderCanvas({
                       return (
                         <div
                           key={idx}
-                          className={`flex justify-between ${fsCls} ${line.bold ? 'font-bold' : ''} ${isPreview ? 'text-gray-900' : 'text-gray-200'}`}
+                          className={`flex justify-between ${fsCls} ${line.bold ? 'font-bold' : ''} ${isPreview ? 'text-text-primary' : 'text-text-secondary'}`}
                         >
                           <span>{line.text || '\u00A0'}</span>
                           <span>{line.rightText}</span>
@@ -167,7 +167,7 @@ export function BuilderCanvas({
                     return (
                       <p
                         key={idx}
-                        className={`${fsCls} ${alignCls} ${line.bold ? 'font-bold' : ''} ${isPreview ? 'text-gray-900' : 'text-gray-200'}`}
+                        className={`${fsCls} ${alignCls} ${line.bold ? 'font-bold' : ''} ${isPreview ? 'text-text-primary' : 'text-text-secondary'}`}
                       >
                         {line.text || '\u00A0'}
                       </p>
@@ -186,13 +186,13 @@ export function BuilderCanvas({
                         : titleAlign === 'right'
                           ? 'text-right'
                           : 'text-left'
-                    } ${isPreview ? 'text-gray-900' : ''}`}
+                    } ${isPreview ? 'text-text-primary' : ''}`}
                     style={!isPreview ? { color: theme.headerText } : undefined}
                   >
                     {definition.header.title}
                   </span>
                   {definition.header?.meta && (
-                    <span className={`absolute right-0 top-0 text-xs font-mono ${isPreview ? 'text-gray-500' : 'text-gray-400'}`}>
+                    <span className={`absolute right-0 top-0 text-xs font-mono ${isPreview ? 'text-text-tertiary' : 'text-text-quaternary'}`}>
                       {definition.header.meta}
                     </span>
                   )}
@@ -204,11 +204,11 @@ export function BuilderCanvas({
           {/* ── Empty state when no header and no columns ── */}
           {!definition.header?.title && headerLines.length === 0 && definition.columns.length === 0 && (
             <div className="flex flex-col items-center justify-center py-20 text-center px-8">
-              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-blue-50">
+              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-brand/10">
                 <span className="text-2xl">📋</span>
               </div>
-              <p className="text-sm font-semibold text-gray-700 mb-1">Bắt đầu tạo template</p>
-              <p className="text-xs text-gray-400 max-w-xs leading-relaxed">
+              <p className="text-sm font-semibold text-text-secondary mb-1">Bắt đầu tạo template</p>
+              <p className="text-xs text-text-quaternary max-w-xs leading-relaxed">
                 1. Chọn nguồn dữ liệu ở panel trái<br />
                 2. Thêm các cột cần hiển thị<br />
                 3. Thiết lập tiêu đề và cấu trúc
@@ -246,18 +246,18 @@ export function BuilderCanvas({
             <div className="flex flex-col items-center py-10">
               <button
                 onClick={onAddColumn}
-                className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+                className="inline-flex items-center gap-2 rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-hover transition-colors"
               >
                 + Thêm cột đầu tiên
               </button>
-              <p className="mt-2 text-xs text-gray-400">Hoặc thêm từ panel bên trái</p>
+              <p className="mt-2 text-xs text-text-quaternary">Hoặc thêm từ panel bên trái</p>
             </div>
           )}
 
           {/* ── Footer Section ── */}
           {((footer.lines && footer.lines.length > 0) || (footer.signatureSlots ?? 0) > 0) && (
             <div
-              className={`border-t px-5 py-4 ${isPreview ? 'border-gray-200' : ''}`}
+              className={`border-t px-5 py-4 ${isPreview ? 'border-[rgb(var(--border-line))]' : ''}`}
               style={!isPreview ? { background: theme.headerBg, borderColor: 'rgba(255,255,255,0.15)' } : undefined}
             >
               {(footer.lines ?? []).map((line, idx) => {
@@ -268,7 +268,7 @@ export function BuilderCanvas({
                 return (
                   <p
                     key={idx}
-                    className={`${fsCls} ${alignCls} ${line.bold ? 'font-bold' : ''} ${isPreview ? 'text-gray-700' : 'text-gray-300'} mb-1`}
+                    className={`${fsCls} ${alignCls} ${line.bold ? 'font-bold' : ''} ${isPreview ? 'text-text-secondary' : 'text-text-quaternary'} mb-1`}
                   >
                     {line.text || '\u00A0'}
                   </p>
@@ -284,8 +284,8 @@ export function BuilderCanvas({
                     const label = footer.signatureLabels?.[si] ?? `Chữ ký ${si + 1}`;
                     return (
                       <div key={si} className="flex flex-col items-center">
-                        <div className={`h-16 w-full rounded border ${isPreview ? 'border-gray-300' : 'border-gray-500'}`} />
-                        <span className={`mt-1 text-xs ${isPreview ? 'text-gray-600' : 'text-gray-400'}`}>
+                        <div className={`h-16 w-full rounded border ${isPreview ? 'border-[rgb(var(--border-strong))]' : 'border-[rgb(var(--border-strong))]'}`} />
+                        <span className={`mt-1 text-xs ${isPreview ? 'text-text-secondary' : 'text-text-quaternary'}`}>
                           {label}
                         </span>
                       </div>
@@ -299,7 +299,7 @@ export function BuilderCanvas({
 
         {/* Preview mode label */}
         {isPreview && (
-          <p className="mt-2 text-center text-xs text-gray-400">
+          <p className="mt-2 text-center text-xs text-text-quaternary">
             Chế độ xem trước — dữ liệu thực từ dataset
           </p>
         )}

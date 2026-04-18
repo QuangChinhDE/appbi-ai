@@ -118,9 +118,9 @@ function ColumnTagAutocomplete({
       {selected.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {selected.map(col => (
-            <span key={col} className="inline-flex items-center gap-1 bg-blue-100 text-blue-800 text-xs px-2 py-0.5 rounded-full">
+            <span key={col} className="inline-flex items-center gap-1 bg-brand/15 text-brand text-xs px-2 py-0.5 rounded-full">
               {col}
-              <button type="button" onClick={() => removeCol(col)} disabled={disabled} className="hover:text-blue-600">
+              <button type="button" onClick={() => removeCol(col)} disabled={disabled} className="hover:text-brand">
                 <X className="w-3 h-3" />
               </button>
             </span>
@@ -138,22 +138,22 @@ function ColumnTagAutocomplete({
           onKeyDown={handleKeyDown}
           placeholder={loading ? 'Đang tải cột...' : columns.length ? 'Tìm và chọn cột...' : 'Chọn bảng trước'}
           disabled={disabled || loading}
-          className="w-full px-3 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50"
+          className="w-full px-3 py-1.5 border border-[rgb(var(--border-strong))] rounded text-xs focus:outline-none focus:ring-1 focus:ring-brand disabled:bg-surface-2"
         />
-        {loading && <Loader2 className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 animate-spin text-gray-400" />}
+        {loading && <Loader2 className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 animate-spin text-text-quaternary" />}
 
         {/* Suggestion dropdown */}
         {open && suggestions.length > 0 && (
-          <div className="absolute z-20 top-full left-0 right-0 mt-0.5 bg-white border border-gray-200 rounded-md shadow-lg max-h-48 overflow-y-auto">
+          <div className="absolute left-0 right-0 top-full z-20 mt-0.5 max-h-48 overflow-y-auto rounded-md border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
             {suggestions.map(c => (
               <button
                 key={c.name}
                 type="button"
                 onMouseDown={e => { e.preventDefault(); addCol(c.name); }}
-                className="w-full flex items-center justify-between px-3 py-1.5 text-left hover:bg-blue-50"
+                className="w-full flex items-center justify-between px-3 py-1.5 text-left hover:bg-brand/15"
               >
-                <span className="text-xs text-gray-800">{c.name}</span>
-                <span className="text-xs text-gray-400 font-mono ml-2">{c.type}</span>
+                <span className="text-xs text-text-primary">{c.name}</span>
+                <span className="text-xs text-text-quaternary font-mono ml-2">{c.type}</span>
               </button>
             ))}
           </div>
@@ -180,7 +180,7 @@ function ColSelect({
         value={value}
         onChange={e => onChange(e.target.value)}
         placeholder={placeholder}
-        className="flex-1 min-w-0 border border-gray-300 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+        className="flex-1 min-w-0 border border-[rgb(var(--border-strong))] rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
         disabled={disabled}
       />
     );
@@ -189,12 +189,12 @@ function ColSelect({
     <select
       value={value}
       onChange={e => onChange(e.target.value)}
-      className="flex-1 min-w-0 border border-gray-300 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+      className="flex-1 min-w-0 border border-[rgb(var(--border-strong))] rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
       disabled={disabled}
     >
       <option value="">{placeholder}</option>
       {columns.map(c => (
-        <option key={c.name} value={c.name}>{c.name} <span className="text-gray-400">({c.type})</span></option>
+        <option key={c.name} value={c.name}>{c.name} <span className="text-text-quaternary">({c.type})</span></option>
       ))}
     </select>
   );
@@ -223,13 +223,13 @@ function JoinRow({
     .sort((a, b) => b.score - a.score);
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-3 mb-2 space-y-2">
+    <div className="mb-2 space-y-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
       {/* Row 1: JOIN type + table + remove */}
       <div className="flex items-center gap-2">
         <select
           value={join.joinType}
           onChange={e => onChange({ ...join, joinType: e.target.value as JoinSpec['joinType'] })}
-          className="border border-gray-300 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 shrink-0"
+          className="border border-[rgb(var(--border-strong))] rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand shrink-0"
           disabled={disabled}
         >
           <option value="LEFT">LEFT JOIN</option>
@@ -239,7 +239,7 @@ function JoinRow({
         <select
           value={join.joinTable}
           onChange={e => handleTableChange(e.target.value)}
-          className="flex-1 border border-gray-300 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+          className="flex-1 border border-[rgb(var(--border-strong))] rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
           disabled={disabled}
         >
           <option value="">Chọn bảng JOIN...</option>
@@ -249,15 +249,15 @@ function JoinRow({
             </option>
           ))}
         </select>
-        <button type="button" onClick={onRemove} className="text-red-400 hover:text-red-600 shrink-0" disabled={disabled}>
+        <button type="button" onClick={onRemove} className="text-danger hover:text-danger shrink-0" disabled={disabled}>
           <X className="w-4 h-4" />
         </button>
       </div>
 
       {/* Row 2: ON condition — only show once join table selected */}
       {join.joinTable && (
-        <div className="flex items-center gap-2 pl-3 border-l-2 border-blue-200">
-          <span className="text-xs font-mono text-blue-500 shrink-0">ON</span>
+        <div className="flex items-center gap-2 pl-3 border-l-2 border-brand/30">
+          <span className="text-xs font-mono text-brand shrink-0">ON</span>
           <ColSelect
             value={join.leftKey}
             onChange={v => onChange({ ...join, leftKey: v })}
@@ -265,7 +265,7 @@ function JoinRow({
             placeholder={`cột của ${baseTable}`}
             disabled={disabled}
           />
-          <span className="text-xs text-gray-400 shrink-0">=</span>
+          <span className="text-xs text-text-quaternary shrink-0">=</span>
           <ColSelect
             value={join.rightKey}
             onChange={v => onChange({ ...join, rightKey: v })}
@@ -518,13 +518,13 @@ export function QueryTableTab({
     <div className="p-6 space-y-5">
       {/* Datasource */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Datasource *</label>
+        <label className="block text-sm font-medium text-text-secondary mb-1">Datasource *</label>
         {lockDatasource ? (
           <input
             type="text"
             value={lockedDatasourceName}
             readOnly
-            className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm bg-gray-50 text-gray-500 cursor-not-allowed"
+            className="w-full px-3 py-2 border border-[rgb(var(--border-line))] rounded-md text-sm bg-surface-2 text-text-tertiary cursor-not-allowed"
           />
         ) : (
           <select
@@ -533,7 +533,7 @@ export function QueryTableTab({
               setSelectedDatasourceId(Number(e.target.value) || null);
               setVBaseTable(''); setVColumns([]); setVJoins([]);
             }}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand"
             disabled={loadingDatasources || isLoading}
           >
             <option value="">Chọn datasource...</option>
@@ -546,13 +546,13 @@ export function QueryTableTab({
 
       {/* Display name */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Tên hiển thị *</label>
+        <label className="block text-sm font-medium text-text-secondary mb-1">Tên hiển thị *</label>
         <input
           type="text"
           value={displayName}
           onChange={e => setDisplayName(e.target.value)}
           placeholder="vd: Doanh thu tháng"
-          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand"
           disabled={isLoading}
         />
       </div>
@@ -560,39 +560,39 @@ export function QueryTableTab({
       {/* Visual Builder / Advanced toggle */}
       <div>
         <div className="flex items-center justify-between mb-2">
-          <label className="block text-sm font-medium text-gray-700">
+          <label className="block text-sm font-medium text-text-secondary">
             {mode === 'visual' ? 'Visual Query Builder' : 'SQL Query *'}
           </label>
           <button
             type="button"
             onClick={() => setMode(m => m === 'visual' ? 'advanced' : 'visual')}
-            className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+            className="flex items-center gap-1 text-xs text-brand hover:text-brand"
           >
             <Code className="w-3.5 h-3.5" />
             {mode === 'visual' ? 'Chuyển sang SQL nâng cao' : 'Dùng Visual Builder'}
           </button>
         </div>
-        <p className="mb-2 text-xs text-gray-500">
+        <p className="mb-2 text-xs text-text-tertiary">
           WHERE, GROUP BY, CTE, va bieu thuc SQL tu do chi ho tro trong SQL nang cao.
         </p>
 
         {mode === 'visual' ? (
-          <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 space-y-4">
+          <div className="border border-[rgb(var(--border-line))] rounded-lg p-4 bg-surface-2 space-y-4">
             {/* Base table */}
             <div>
-              <label className="block text-xs font-semibold text-gray-600 mb-1 flex items-center">
+              <label className="block text-xs font-semibold text-text-secondary mb-1 flex items-center">
                 Bảng nguồn *
                 <HelpTooltip text="Chọn datasource bên trên trước để hiện danh sách bảng." />
               </label>
               {!selectedDatasourceId ? (
-                <p className="text-xs text-gray-400 italic">Chọn datasource trước</p>
+                <p className="text-xs text-text-quaternary italic">Chọn datasource trước</p>
               ) : loadingTables ? (
-                <div className="flex items-center gap-2 text-xs text-gray-400"><Loader2 className="w-3.5 h-3.5 animate-spin" />Đang tải danh sách bảng...</div>
+                <div className="flex items-center gap-2 text-xs text-text-quaternary"><Loader2 className="w-3.5 h-3.5 animate-spin" />Đang tải danh sách bảng...</div>
               ) : (
                 <select
                   value={vBaseTable}
                   onChange={e => { setVBaseTable(e.target.value); setVColumns([]); setVJoins([]); }}
-                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded text-sm focus:outline-none focus:ring-2 focus:ring-brand"
                   disabled={isLoading}
                 >
                   <option value="">Chọn bảng...</option>
@@ -605,7 +605,7 @@ export function QueryTableTab({
               <>
                 {/* Column picker */}
                 <div>
-                  <label className="block text-xs font-semibold text-gray-600 mb-1 flex items-center">
+                  <label className="block text-xs font-semibold text-text-secondary mb-1 flex items-center">
                     Cột cần lấy
                     <HelpTooltip text="Để trống = lấy tất cả cột (*)" />
                   </label>
@@ -621,7 +621,7 @@ export function QueryTableTab({
                 {/* JOIN */}
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <label className="text-xs font-semibold text-gray-600">JOIN (tuỳ chọn)</label>
+                    <label className="text-xs font-semibold text-text-secondary">JOIN (tuỳ chọn)</label>
                     <button
                       type="button"
                       disabled={isLoading || tableNames.length < 2}
@@ -635,7 +635,7 @@ export function QueryTableTab({
                           rightKey: sugg.right,
                         }]);
                       }}
-                      className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 disabled:opacity-40"
+                      className="flex items-center gap-1 text-xs text-brand hover:text-brand disabled:opacity-40"
                     >
                       <Plus className="w-3.5 h-3.5" /> Thêm JOIN
                     </button>
@@ -658,23 +658,23 @@ export function QueryTableTab({
                 {/* Sort + Limit */}
                 <div className="flex gap-3">
                   <div className="flex-1">
-                    <label className="block text-xs font-semibold text-gray-600 mb-1">Sắp xếp theo</label>
+                    <label className="block text-xs font-semibold text-text-secondary mb-1">Sắp xếp theo</label>
                     <input
                       type="text"
                       value={vSortField}
                       onChange={e => setVSortField(e.target.value)}
                       placeholder="tên cột (tuỳ chọn)"
-                      className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      className="w-full px-2 py-1.5 border border-[rgb(var(--border-strong))] rounded text-xs focus:outline-none focus:ring-1 focus:ring-brand"
                       disabled={isLoading}
                     />
                   </div>
                   {vSortField && (
                     <div>
-                      <label className="block text-xs font-semibold text-gray-600 mb-1">Thứ tự</label>
+                      <label className="block text-xs font-semibold text-text-secondary mb-1">Thứ tự</label>
                       <select
                         value={vSortDir}
                         onChange={e => setVSortDir(e.target.value as 'ASC' | 'DESC')}
-                        className="px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        className="px-2 py-1.5 border border-[rgb(var(--border-strong))] rounded text-xs focus:outline-none focus:ring-1 focus:ring-brand"
                         disabled={isLoading}
                       >
                         <option value="ASC">ASC ↑</option>
@@ -683,7 +683,7 @@ export function QueryTableTab({
                     </div>
                   )}
                   <div>
-                    <label className="block text-xs font-semibold text-gray-600 mb-1">
+                    <label className="block text-xs font-semibold text-text-secondary mb-1">
                       Giới hạn dòng
                     </label>
                     <input
@@ -692,7 +692,7 @@ export function QueryTableTab({
                       onChange={e => setVLimit(e.target.value)}
                       placeholder="không giới hạn"
                       min={1}
-                      className="w-32 px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      className="w-32 px-2 py-1.5 border border-[rgb(var(--border-strong))] rounded text-xs focus:outline-none focus:ring-1 focus:ring-brand"
                       disabled={isLoading}
                     />
                   </div>
@@ -700,8 +700,8 @@ export function QueryTableTab({
 
                 {/* Generated SQL preview */}
                 <div>
-                  <label className="block text-xs font-semibold text-gray-600 mb-1">SQL được tạo tự động</label>
-                  <pre className="bg-white border border-gray-200 rounded-md p-3 text-xs font-mono text-gray-700 overflow-x-auto whitespace-pre-wrap max-h-32">
+                  <label className="block text-xs font-semibold text-text-secondary mb-1">SQL được tạo tự động</label>
+                  <pre className="max-h-32 overflow-x-auto whitespace-pre-wrap rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3 text-xs font-mono text-text-secondary">
                     {generateSql() || '— Chưa đủ thông tin —'}
                   </pre>
                 </div>
@@ -716,19 +716,19 @@ export function QueryTableTab({
               onChange={e => { setQuery(e.target.value); setValidationError(null); }}
               placeholder={`SELECT\n  order_id,\n  customer_name,\n  total_amount\nFROM orders\nWHERE order_date >= '2024-01-01'`}
               className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 font-mono text-sm h-56 resize-y ${
-                validationError ? 'border-red-300 focus:ring-red-500' : 'border-gray-300 focus:ring-blue-500'
+                validationError ? 'border-danger/40 focus:ring-danger' : 'border-[rgb(var(--border-strong))] focus:ring-brand'
               }`}
               disabled={isLoading}
             />
             {validationError && (
-              <div className="mt-2 flex items-start gap-2 text-red-600 text-sm">
+              <div className="mt-2 flex items-start gap-2 text-danger text-sm">
                 <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
                 <span>{validationError}</span>
               </div>
             )}
             <div className="mt-2 space-y-0.5">
-              <p className="text-xs text-gray-500">• Chỉ cho phép câu lệnh SELECT hoặc WITH (CTE)</p>
-              <p className="text-xs text-gray-500">• Không dùng dấu ; hoặc comment SQL</p>
+              <p className="text-xs text-text-tertiary">• Chỉ cho phép câu lệnh SELECT hoặc WITH (CTE)</p>
+              <p className="text-xs text-text-tertiary">• Không dùng dấu ; hoặc comment SQL</p>
             </div>
           </div>
         )}
@@ -737,7 +737,7 @@ export function QueryTableTab({
       {/* Action */}
       <div className="flex justify-end pt-2 border-t">
         {saveError && (
-          <div className="flex-1 flex items-start gap-2 text-red-600 text-sm mr-4">
+          <div className="flex-1 flex items-start gap-2 text-danger text-sm mr-4">
             <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
             <span>{saveError}</span>
           </div>
@@ -745,7 +745,7 @@ export function QueryTableTab({
         <button
           onClick={handleAdd}
           disabled={!canAdd}
-          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm"
+          className="px-4 py-2 bg-brand text-white rounded-md hover:bg-brand-hover disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm"
         >
           {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
           {lockDatasource ? 'Lưu thay đổi' : 'Thêm bảng'}

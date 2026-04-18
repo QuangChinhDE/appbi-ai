@@ -78,7 +78,7 @@ export function AddFilterDialog({ isOpen, onClose, onSave, availableFields = [] 
     <Modal isOpen={isOpen} onClose={onClose} title="Add Dashboard Filter">
       <div className="space-y-4">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="block text-sm font-medium text-text-secondary mb-1">
             Filter Name
           </label>
           <input
@@ -86,19 +86,19 @@ export function AddFilterDialog({ isOpen, onClose, onSave, availableFields = [] 
             value={formData.name}
             onChange={(e) => setFormData({ ...formData, name: e.target.value })}
             placeholder="e.g., Country Filter"
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
           />
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="block text-sm font-medium text-text-secondary mb-1">
             Field
           </label>
           {availableFields.length > 0 ? (
             <select
               value={formData.field}
               onChange={(e) => handleFieldChange(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
             >
               <option value="">Select a field...</option>
               {availableFields.map((field) => (
@@ -113,16 +113,16 @@ export function AddFilterDialog({ isOpen, onClose, onSave, availableFields = [] 
               value={formData.field}
               onChange={(e) => handleFieldChange(e.target.value)}
               placeholder="e.g., customers.country"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
             />
           )}
-          <p className="text-xs text-gray-500 mt-1">
+          <p className="text-xs text-text-tertiary mt-1">
             Qualified field name (e.g., view.field)
           </p>
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="block text-sm font-medium text-text-secondary mb-1">
             Type
           </label>
           <select
@@ -132,7 +132,7 @@ export function AddFilterDialog({ isOpen, onClose, onSave, availableFields = [] 
               type: e.target.value as any,
               operator: 'eq' 
             })}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
           >
             <option value="string">String</option>
             <option value="number">Number</option>
@@ -142,13 +142,13 @@ export function AddFilterDialog({ isOpen, onClose, onSave, availableFields = [] 
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="block text-sm font-medium text-text-secondary mb-1">
             Operator
           </label>
           <select
             value={formData.operator}
             onChange={(e) => setFormData({ ...formData, operator: e.target.value as any })}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
           >
             {availableOperators.map((op) => (
               <option key={op.value} value={op.value}>
@@ -159,7 +159,7 @@ export function AddFilterDialog({ isOpen, onClose, onSave, availableFields = [] 
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="block text-sm font-medium text-text-secondary mb-1">
             Value
           </label>
           {formData.type === 'string' && (
@@ -168,7 +168,7 @@ export function AddFilterDialog({ isOpen, onClose, onSave, availableFields = [] 
               value={formData.value}
               onChange={(e) => setFormData({ ...formData, value: e.target.value })}
               placeholder="Enter value..."
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
             />
           )}
           {formData.type === 'number' && (
@@ -177,7 +177,7 @@ export function AddFilterDialog({ isOpen, onClose, onSave, availableFields = [] 
               value={formData.value}
               onChange={(e) => setFormData({ ...formData, value: parseFloat(e.target.value) })}
               placeholder="Enter number..."
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
             />
           )}
           {(formData.type === 'date' || formData.type === 'datetime') && (
@@ -185,7 +185,7 @@ export function AddFilterDialog({ isOpen, onClose, onSave, availableFields = [] 
               type="date"
               value={formData.value}
               onChange={(e) => setFormData({ ...formData, value: e.target.value })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand"
             />
           )}
         </div>
@@ -193,13 +193,13 @@ export function AddFilterDialog({ isOpen, onClose, onSave, availableFields = [] 
         <div className="flex gap-3 pt-4">
           <button
             onClick={handleSave}
-            className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 font-medium"
+            className="flex-1 px-4 py-2 bg-brand text-white rounded-md hover:bg-brand-hover font-medium"
           >
             Add Filter
           </button>
           <button
             onClick={onClose}
-            className="flex-1 px-4 py-2 bg-white text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 font-medium"
+            className="flex-1 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-2 font-medium text-text-secondary hover:bg-surface-2"
           >
             Cancel
           </button>

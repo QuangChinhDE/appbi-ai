@@ -2,6 +2,8 @@
 
 import React from 'react';
 import { AlertTriangle, X } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { Button, IconButton } from '@/components/ui/Button';
 
 interface ConfirmDialogProps {
   isOpen: boolean;
@@ -31,56 +33,42 @@ export function ConfirmDialog({
     onClose();
   };
 
-  const variantStyles = {
-    danger: 'bg-red-600 hover:bg-red-700',
-    warning: 'bg-yellow-600 hover:bg-yellow-700',
-    info: 'bg-blue-600 hover:bg-blue-700',
-  };
+  const iconTone = {
+    danger: 'text-danger bg-danger/10',
+    warning: 'text-warning bg-warning/10',
+    info: 'text-info bg-info/10',
+  }[variant];
+
+  const confirmVariant = variant === 'danger' ? 'danger' : 'primary';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-      <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
-        {/* Header */}
-        <div className="flex items-start justify-between p-6 pb-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay/84 backdrop-blur-[3px] animate-fade-in">
+      <div className="relative mx-4 w-full max-w-md rounded-xl bg-surface-1 border border-[rgb(var(--border-strong))] shadow-linear-lg animate-slide-up">
+        <div className="flex items-start justify-between gap-3 px-5 pt-4 pb-3">
           <div className="flex items-start gap-3">
-            <div className={`flex-shrink-0 ${variant === 'danger' ? 'text-red-600' : variant === 'warning' ? 'text-yellow-600' : 'text-blue-600'}`}>
-              <AlertTriangle className="h-6 w-6" />
+            <div className={cn('flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg', iconTone)}>
+              <AlertTriangle className="h-4 w-4" />
             </div>
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900">
-                {title}
-              </h3>
-            </div>
+            <h3 className="text-small font-strong text-text-primary pt-1">
+              {title}
+            </h3>
           </div>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 transition-colors"
-          >
-            <X className="h-5 w-5" />
-          </button>
+          <IconButton aria-label="Close" variant="ghost" size="sm" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </IconButton>
         </div>
 
-        {/* Body */}
-        <div className="px-6 pb-6">
-          <p className="text-sm text-gray-600 ml-9">
-            {description}
-          </p>
+        <div className="px-5 pb-5 pl-16">
+          <p className="text-caption text-text-secondary">{description}</p>
         </div>
 
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-3 px-6 py-4 bg-gray-50 rounded-b-lg">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
-          >
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[rgb(var(--border-line))] bg-surface-2 rounded-b-xl">
+          <Button variant="secondary" size="sm" onClick={onClose}>
             {cancelLabel}
-          </button>
-          <button
-            onClick={handleConfirm}
-            className={`px-4 py-2 text-sm font-medium text-white rounded-md transition-colors ${variantStyles[variant]}`}
-          >
+          </Button>
+          <Button variant={confirmVariant} size="sm" onClick={handleConfirm}>
             {confirmLabel}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

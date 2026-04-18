@@ -50,55 +50,55 @@ export function ReviewPlanStep(props: any) {
   const domainLens = selectedDomain?.reviewLens?.[isVietnamese ? 'vi' : 'en'];
 
   const CHART_TYPE_COLORS = {
-    KPI: 'bg-violet-50 text-violet-700 border-violet-200',
-    BAR: 'bg-blue-50 text-blue-700 border-blue-200',
+    KPI: 'bg-brand/10 text-brand border-brand/30',
+    BAR: 'bg-brand/10 text-brand border-brand/30',
     LINE: 'bg-cyan-50 text-cyan-700 border-cyan-200',
     TIME_SERIES: 'bg-cyan-50 text-cyan-700 border-cyan-200',
     AREA: 'bg-teal-50 text-teal-700 border-teal-200',
-    PIE: 'bg-amber-50 text-amber-700 border-amber-200',
-    TABLE: 'bg-gray-50 text-gray-700 border-gray-200',
-    GROUPED_BAR: 'bg-indigo-50 text-indigo-700 border-indigo-200',
-    STACKED_BAR: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+    PIE: 'bg-warning/10 text-warning border-warning/30',
+    TABLE: 'bg-surface-2 text-text-secondary border-[rgb(var(--border-line))]',
+    GROUPED_BAR: 'bg-brand/10 text-brand border-brand/30',
+    STACKED_BAR: 'bg-brand/10 text-brand border-brand/30',
   };
 
   return (
     <div className="space-y-6">
       {/* ── Header: title + summary + stats ── */}
-      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
         <div className="grid gap-4 lg:grid-cols-[1fr_auto]">
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-emerald-700">
+              <span className="rounded-full border border-success/30 bg-success/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-success">
                 {domainLabel}
               </span>
               {domainVersion && (
-                <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-500">
+                <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-[11px] font-medium text-text-tertiary">
                   v{domainVersion}
                 </span>
               )}
               {domainLens && (
-                <span className="text-xs text-gray-500">{domainLens}</span>
+                <span className="text-xs text-text-tertiary">{domainLens}</span>
               )}
             </div>
             <div>
-              <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">
+              <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.16em] text-text-quaternary">
                 {isVietnamese ? 'Tiêu đề dashboard' : 'Dashboard title'}
               </label>
               <input
                 value={draftPlan.dashboard_title}
                 onChange={(e) => setDraftPlan((prev) => (prev ? { ...prev, dashboard_title: e.target.value } : prev))}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-base font-semibold text-gray-900 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+                className="w-full rounded-lg border border-[rgb(var(--border-line))] px-3 py-2 text-base font-semibold text-text-primary outline-none transition focus:border-brand/40 focus:ring-2 focus:ring-brand"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">
+              <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.16em] text-text-quaternary">
                 {isVietnamese ? 'Tóm tắt' : 'Summary'}
               </label>
               <textarea
                 rows={2}
                 value={draftPlan.dashboard_summary}
                 onChange={(e) => setDraftPlan((prev) => (prev ? { ...prev, dashboard_summary: e.target.value } : prev))}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 outline-none transition focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+                className="w-full rounded-lg border border-[rgb(var(--border-line))] px-3 py-2 text-sm text-text-secondary outline-none transition focus:border-brand/40 focus:ring-2 focus:ring-brand"
               />
             </div>
           </div>
@@ -107,24 +107,24 @@ export function ReviewPlanStep(props: any) {
           <div className="flex flex-wrap items-start gap-3 lg:flex-col lg:items-end">
             <div className="flex items-center gap-4">
               <div className="text-center">
-                <p className="text-2xl font-bold text-gray-900">{enabledSectionCount}</p>
-                <p className="text-[11px] text-gray-400">{isVietnamese ? 'section' : 'sections'}</p>
+                <p className="text-2xl font-bold text-text-primary">{enabledSectionCount}</p>
+                <p className="text-[11px] text-text-quaternary">{isVietnamese ? 'section' : 'sections'}</p>
               </div>
               <div className="text-center">
-                <p className="text-2xl font-bold text-gray-900">{enabledChartCount}</p>
-                <p className="text-[11px] text-gray-400">{isVietnamese ? 'chart' : 'charts'}</p>
+                <p className="text-2xl font-bold text-text-primary">{enabledChartCount}</p>
+                <p className="text-[11px] text-text-quaternary">{isVietnamese ? 'chart' : 'charts'}</p>
               </div>
               {typeof draftPlan.quality_score === 'number' && (
                 <div className="text-center">
-                  <p className="text-2xl font-bold text-emerald-600">{Math.round(draftPlan.quality_score * 100)}%</p>
-                  <p className="text-[11px] text-gray-400">{isVietnamese ? 'chất lượng' : 'quality'}</p>
+                  <p className="text-2xl font-bold text-success">{Math.round(draftPlan.quality_score * 100)}%</p>
+                  <p className="text-[11px] text-text-quaternary">{isVietnamese ? 'chất lượng' : 'quality'}</p>
                 </div>
               )}
             </div>
             <select
               value={buildMode}
               onChange={(e) => setBuildMode(e.target.value)}
-              className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 outline-none focus:border-blue-300"
+              className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-xs font-medium text-text-secondary outline-none focus:border-brand/40"
             >
               <option value="new_dashboard">{isVietnamese ? 'Tạo dashboard mới' : 'New dashboard'}</option>
               <option value="new_version">{isVietnamese ? 'Tạo version mới' : 'New version'}</option>
@@ -135,21 +135,21 @@ export function ReviewPlanStep(props: any) {
       </div>
 
       {(thesis?.central_thesis || draftPlan?.analysis_plan?.business_thesis) && (
-        <div className="rounded-xl border border-blue-200 bg-blue-50/60 p-5 shadow-sm">
+        <div className="rounded-xl border border-brand/30 bg-brand/10/60 p-5 shadow-linear-sm">
           <div className="flex items-start gap-3">
-            <div className="rounded-lg bg-white p-2 text-blue-600 shadow-sm">
+            <div className="rounded-lg bg-surface-1 p-2 text-brand shadow-linear-sm">
               <Sparkles className="h-4 w-4" />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-brand">
                 {isVietnamese ? 'Luan diem trung tam' : 'Central thesis'}
               </p>
-              <p className="mt-2 text-sm font-medium leading-6 text-slate-900">
+              <p className="mt-2 text-sm font-medium leading-6 text-text-primary">
                 {thesis?.central_thesis || draftPlan?.analysis_plan?.business_thesis}
               </p>
               {(thesis?.narrative_arc || narrativeFlow[0]) && (
-                <p className="mt-3 text-sm leading-6 text-slate-600">
-                  <span className="font-semibold text-slate-800">Narrative arc:</span>{' '}
+                <p className="mt-3 text-sm leading-6 text-text-secondary">
+                  <span className="font-semibold text-text-primary">Narrative arc:</span>{' '}
                   {thesis?.narrative_arc || narrativeFlow[0]}
                 </p>
               )}
@@ -158,7 +158,7 @@ export function ReviewPlanStep(props: any) {
                   {thesisArguments.map((item, index) => (
                     <span
                       key={`${item}-${index}`}
-                      className="rounded-full border border-blue-200 bg-white px-3 py-1 text-[11px] font-medium text-blue-700"
+                      className="rounded-full border border-brand/30 bg-surface-1 px-3 py-1 text-[11px] font-medium text-brand"
                     >
                       {item}
                     </span>
@@ -176,27 +176,27 @@ export function ReviewPlanStep(props: any) {
         const activeCount = sectionCharts.filter((c) => c.enabled !== false).length;
 
         return (
-          <div key={section.title + sIndex} className="rounded-xl border border-gray-200 bg-white shadow-sm">
+          <div key={section.title + sIndex} className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
             {/* Section header */}
-            <div className="border-b border-gray-100 px-5 py-4">
+            <div className="border-b border-[rgb(var(--border-line))] px-5 py-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h3 className="text-base font-semibold text-gray-900">{section.title}</h3>
+                  <h3 className="text-base font-semibold text-text-primary">{section.title}</h3>
                   {section.intent && (
-                    <p className="mt-1 text-sm text-gray-500">{section.intent}</p>
+                    <p className="mt-1 text-sm text-text-tertiary">{section.intent}</p>
                   )}
                   {section.why_this_section && (
-                    <p className="mt-1 text-xs text-gray-400">{section.why_this_section}</p>
+                    <p className="mt-1 text-xs text-text-quaternary">{section.why_this_section}</p>
                   )}
                 </div>
-                <span className="shrink-0 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600">
+                <span className="shrink-0 rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-text-secondary">
                   {activeCount}/{sectionCharts.length} {isVietnamese ? 'chart' : 'charts'}
                 </span>
               </div>
               {section.questions_covered?.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {section.questions_covered.map((q, qi) => (
-                    <span key={qi} className="rounded-full border border-blue-100 bg-blue-50 px-2.5 py-0.5 text-[11px] text-blue-700">
+                    <span key={qi} className="rounded-full border border-brand/20 bg-brand/10 px-2.5 py-0.5 text-[11px] text-brand">
                       {q}
                     </span>
                   ))}
@@ -215,7 +215,7 @@ export function ReviewPlanStep(props: any) {
                   <div
                     key={chart.key}
                     className={`rounded-lg border p-3.5 transition ${
-                      isEnabled ? 'border-gray-200 bg-white' : 'border-dashed border-gray-200 bg-gray-50 opacity-60'
+                      isEnabled ? 'border-[rgb(var(--border-line))] bg-surface-1' : 'border-dashed border-[rgb(var(--border-line))] bg-surface-2 opacity-60'
                     }`}
                   >
                     {/* Chart type badge + toggle */}
@@ -228,8 +228,8 @@ export function ReviewPlanStep(props: any) {
                         onClick={() => updateChart(chart.key, { enabled: !isEnabled })}
                         className={`rounded-md p-1 transition ${
                           isEnabled
-                            ? 'text-emerald-600 hover:bg-emerald-50'
-                            : 'text-gray-400 hover:bg-gray-100'
+                            ? 'text-success hover:bg-success/10'
+                            : 'text-text-quaternary hover:bg-surface-2'
                         }`}
                         title={isEnabled
                           ? (isVietnamese ? 'Bỏ chart này' : 'Disable chart')
@@ -243,33 +243,33 @@ export function ReviewPlanStep(props: any) {
                     <input
                       value={chart.title}
                       onChange={(e) => updateChart(chart.key, { title: e.target.value })}
-                      className="mb-1.5 w-full bg-transparent text-sm font-medium text-gray-900 outline-none focus:underline"
+                      className="mb-1.5 w-full bg-transparent text-sm font-medium text-text-primary outline-none focus:underline"
                     />
 
                     {/* Config summary */}
                     {configLines.length > 0 && (
                       <div className="space-y-0.5">
                         {configLines.map((line, li) => (
-                          <p key={li} className="text-[11px] text-gray-500">{line}</p>
+                          <p key={li} className="text-[11px] text-text-tertiary">{line}</p>
                         ))}
                       </div>
                     )}
 
                     {/* Hypothesis */}
                     {chart.hypothesis && (
-                      <p className="mt-2 text-[11px] italic text-gray-400">{chart.hypothesis}</p>
+                      <p className="mt-2 text-[11px] italic text-text-quaternary">{chart.hypothesis}</p>
                     )}
 
                     {/* Confidence */}
                     {typeof chart.confidence === 'number' && (
                       <div className="mt-2 flex items-center gap-1.5">
-                        <div className="h-1 flex-1 rounded-full bg-gray-100">
+                        <div className="h-1 flex-1 rounded-full bg-surface-2">
                           <div
-                            className="h-1 rounded-full bg-emerald-400"
+                            className="h-1 rounded-full bg-success/60"
                             style={{ width: `${Math.round(chart.confidence * 100)}%` }}
                           />
                         </div>
-                        <span className="text-[10px] text-gray-400">{Math.round(chart.confidence * 100)}%</span>
+                        <span className="text-[10px] text-text-quaternary">{Math.round(chart.confidence * 100)}%</span>
                       </div>
                     )}
                   </div>
@@ -282,15 +282,15 @@ export function ReviewPlanStep(props: any) {
 
       {/* ── Warnings ── */}
       {(warnings.length > 0 || qualityGateBlockers.length > 0) && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
-          <div className="mb-3 flex items-center gap-2 text-amber-900">
+        <div className="rounded-xl border border-warning/30 bg-warning/10 p-5">
+          <div className="mb-3 flex items-center gap-2 text-warning">
             <ShieldAlert className="h-5 w-5" />
             <h3 className="text-sm font-semibold">{isVietnamese ? 'Lưu ý từ AI' : 'AI warnings'}</h3>
           </div>
-          <ul className="space-y-1.5 text-sm text-amber-900">
+          <ul className="space-y-1.5 text-sm text-warning">
             {qualityGateBlockers.map((item, i) => (
               <li key={`b-${i}`} className="flex items-start gap-2">
-                <span className="mt-0.5 shrink-0 rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-700">BLOCKER</span>
+                <span className="mt-0.5 shrink-0 rounded bg-danger/15 px-1.5 py-0.5 text-[10px] font-bold text-danger">BLOCKER</span>
                 <span>{item}</span>
               </li>
             ))}
@@ -302,31 +302,31 @@ export function ReviewPlanStep(props: any) {
       )}
 
       {/* ── Collapsible technical details ── */}
-      <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
+      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
         <button
           type="button"
           onClick={() => setTechOpen(!techOpen)}
           className="flex w-full items-center justify-between px-5 py-4 text-left"
         >
-          <span className="text-sm font-medium text-gray-600">
+          <span className="text-sm font-medium text-text-secondary">
             {isVietnamese ? 'Chi tiết kỹ thuật' : 'Technical details'}
           </span>
-          {techOpen ? <ChevronDown className="h-4 w-4 text-gray-400" /> : <ChevronRight className="h-4 w-4 text-gray-400" />}
+          {techOpen ? <ChevronDown className="h-4 w-4 text-text-quaternary" /> : <ChevronRight className="h-4 w-4 text-text-quaternary" />}
         </button>
 
         {techOpen && (
-          <div className="space-y-4 border-t border-gray-100 px-5 py-4">
+          <div className="space-y-4 border-t border-[rgb(var(--border-line))] px-5 py-4">
             {/* Quality breakdown */}
             {qualityBreakdownEntries.length > 0 && (
               <div>
-                <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-text-quaternary">
                   {isVietnamese ? 'Phân tích chất lượng' : 'Quality breakdown'}
                 </p>
                 <div className="grid gap-2 sm:grid-cols-3">
                   {qualityBreakdownEntries.map(([key, value]) => (
-                    <div key={key} className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
-                      <p className="text-[11px] text-gray-500">{key.replace(/_/g, ' ')}</p>
-                      <p className="text-sm font-semibold text-gray-900">{Math.round(Number(value) * 100)}%</p>
+                    <div key={key} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
+                      <p className="text-[11px] text-text-tertiary">{key.replace(/_/g, ' ')}</p>
+                      <p className="text-sm font-semibold text-text-primary">{Math.round(Number(value) * 100)}%</p>
                     </div>
                   ))}
                 </div>
@@ -336,17 +336,17 @@ export function ReviewPlanStep(props: any) {
             {/* Dataset fit */}
             {datasetFitReport.length > 0 && (
               <div>
-                <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-text-quaternary">
                   {isVietnamese ? 'Độ phù hợp của bảng' : 'Dataset fit'}
                 </p>
                 <div className="space-y-2">
                   {datasetFitReport.map((item) => (
-                    <div key={item.table_id} className="flex items-center justify-between rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+                    <div key={item.table_id} className="flex items-center justify-between rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
                       <div>
-                        <p className="text-sm font-medium text-gray-900">{item.table_name}</p>
-                        <p className="text-[11px] text-gray-500">{item.suggested_role?.replace(/_/g, ' ')}</p>
+                        <p className="text-sm font-medium text-text-primary">{item.table_name}</p>
+                        <p className="text-[11px] text-text-tertiary">{item.suggested_role?.replace(/_/g, ' ')}</p>
                       </div>
-                      <span className="rounded-full bg-white px-2.5 py-0.5 text-xs font-semibold text-gray-700">
+                      <span className="rounded-full bg-surface-1 px-2.5 py-0.5 text-xs font-semibold text-text-secondary">
                         {Math.round(item.fit_score * 100)}%
                       </span>
                     </div>
@@ -358,14 +358,14 @@ export function ReviewPlanStep(props: any) {
             {/* Analysis question map */}
             {analysisQuestionMap.length > 0 && (
               <div>
-                <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-text-quaternary">
                   {isVietnamese ? 'Ánh xạ câu hỏi' : 'Question mapping'}
                 </p>
                 <div className="space-y-2">
                   {analysisQuestionMap.map((item, i) => (
-                    <div key={i} className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
-                      <p className="text-sm text-gray-900">{item.question}</p>
-                      <p className="mt-1 text-[11px] text-gray-500">
+                    <div key={i} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
+                      <p className="text-sm text-text-primary">{item.question}</p>
+                      <p className="mt-1 text-[11px] text-text-tertiary">
                         {item.target_table_name} — {item.suggested_method}
                       </p>
                     </div>
@@ -377,18 +377,18 @@ export function ReviewPlanStep(props: any) {
             {/* Profiling */}
             {profilingReport.length > 0 && (
               <div>
-                <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-text-quaternary">
                   {isVietnamese ? 'Profile dữ liệu' : 'Data profiling'}
                 </p>
                 <div className="space-y-2">
                   {profilingReport.map((item) => (
-                    <div key={item.table_id} className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
-                      <p className="text-sm font-medium text-gray-900">{item.table_name}</p>
-                      <p className="mt-1 text-[11px] text-gray-500">
+                    <div key={item.table_id} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
+                      <p className="text-sm font-medium text-text-primary">{item.table_name}</p>
+                      <p className="mt-1 text-[11px] text-text-tertiary">
                         {item.column_count} {isVietnamese ? 'cột' : 'columns'} · {item.row_sample_count} {isVietnamese ? 'dòng mẫu' : 'sample rows'} · {item.table_grain}
                       </p>
                       {item.candidate_metrics?.length > 0 && (
-                        <p className="mt-1 text-[11px] text-gray-400">
+                        <p className="mt-1 text-[11px] text-text-quaternary">
                           Metrics: {item.candidate_metrics.slice(0, 4).join(', ')}
                         </p>
                       )}

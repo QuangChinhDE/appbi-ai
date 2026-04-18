@@ -10,12 +10,12 @@ import type { TableColumn } from '@/types/api';
 type InferredType = 'integer' | 'decimal' | 'boolean' | 'date' | 'datetime' | 'text';
 
 const TYPE_COLORS: Record<InferredType, string> = {
-  integer:  'bg-blue-50 text-blue-700 border-blue-200',
+  integer:  'bg-brand/10 text-brand border-brand/30',
   decimal:  'bg-cyan-50 text-cyan-700 border-cyan-200',
-  boolean:  'bg-purple-50 text-purple-700 border-purple-200',
-  date:     'bg-emerald-50 text-emerald-700 border-emerald-200',
+  boolean:  'bg-brand/10 text-brand border-brand/30',
+  date:     'bg-success/10 text-success border-success/30',
   datetime: 'bg-teal-50 text-teal-700 border-teal-200',
-  text:     'bg-gray-100 text-gray-600 border-gray-200',
+  text:     'bg-surface-2 text-text-secondary border-[rgb(var(--border-line))]',
 };
 
 function isInteger(v: string): boolean {
@@ -58,21 +58,21 @@ function inferColumnTypes(preview: Record<string, unknown>[]): Record<string, In
 
 function PkBadge() {
   return (
-    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-300">
+    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-warning/15 text-warning border border-warning/40">
       PK
     </span>
   );
 }
 function FkBadge() {
   return (
-    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-100 text-blue-700 border border-blue-300">
+    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-brand/15 text-brand border border-brand/40">
       FK
     </span>
   );
 }
 function IdxBadge() {
   return (
-    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-100 text-purple-700 border border-purple-300">
+    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-brand/15 text-brand border border-brand/30">
       IDX
     </span>
   );
@@ -140,18 +140,18 @@ export default function TableDetailModal({ datasourceId, schema, table, onClose 
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/40" />
+      <div className="absolute inset-0 bg-overlay/84 backdrop-blur-[3px]" />
 
       {/* Modal */}
-      <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+      <div className="relative flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[rgb(var(--border-line))] flex-shrink-0">
           <div className="flex items-center gap-3">
-            <Table2 className="w-5 h-5 text-blue-500" />
+            <Table2 className="w-5 h-5 text-brand" />
             <div>
-              <h2 className="font-semibold text-gray-900 text-base">{table}</h2>
-              <p className="text-xs text-gray-400 mt-0.5">
+              <h2 className="font-semibold text-text-primary text-base">{table}</h2>
+              <p className="text-xs text-text-quaternary mt-0.5">
                 schema: <span className="font-mono">{schema}</span>
                 {detail?.row_count !== null && detail?.row_count !== undefined && (
                   <span className="ml-3">{formatRows(detail.row_count)} rows</span>
@@ -165,14 +165,14 @@ export default function TableDetailModal({ datasourceId, schema, table, onClose 
           <div className="flex items-center gap-2">
             <button
               onClick={() => refetch()}
-              className="p-1.5 hover:bg-gray-100 rounded text-gray-500 hover:text-gray-700"
+              className="p-1.5 hover:bg-surface-2 rounded text-text-tertiary hover:text-text-secondary"
               title="Refresh"
             >
               <RefreshCw className="w-4 h-4" />
             </button>
             <button
               onClick={onClose}
-              className="p-1.5 hover:bg-gray-100 rounded text-gray-500 hover:text-gray-700"
+              className="p-1.5 hover:bg-surface-2 rounded text-text-tertiary hover:text-text-secondary"
             >
               <X className="w-5 h-5" />
             </button>
@@ -182,50 +182,50 @@ export default function TableDetailModal({ datasourceId, schema, table, onClose 
         {/* Body */}
         <div className="flex-1 overflow-y-auto min-h-0">
           {isLoading ? (
-            <div className="flex items-center justify-center h-40 text-gray-400">
+            <div className="flex items-center justify-center h-40 text-text-quaternary">
               <Loader2 className="w-5 h-5 animate-spin mr-2" />
               Loading…
             </div>
           ) : error || !detail ? (
-            <div className="flex items-center gap-2 text-red-500 p-6">
+            <div className="flex items-center gap-2 text-danger p-6">
               <AlertCircle className="w-4 h-4" />
               <span className="text-sm">Failed to load table details.</span>
             </div>
           ) : (
-            <div className="divide-y divide-gray-100">
+            <div className="divide-y divide-[rgb(var(--border-line))]">
 
               {/* ── Columns ─────────────────────────────────── */}
               <section className="px-5 py-4">
-                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
+                <h3 className="text-xs font-semibold text-text-tertiary uppercase tracking-wide mb-3">
                   Columns ({detail.columns.length})
                 </h3>
-                <div className="overflow-x-auto rounded border border-gray-100">
+                <div className="overflow-x-auto rounded border border-[rgb(var(--border-line))]">
                   <table className="w-full text-sm">
-                    <thead className="bg-gray-50">
+                    <thead className="bg-surface-2">
                       <tr>
-                        <th className="text-left px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Column</th>
-                        <th className="text-left px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wide">DB type</th>
-                        <th className="text-left px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Inferred type</th>
-                        <th className="text-left px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Nullable</th>
-                        <th className="text-left px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wide">Keys</th>
+                        <th className="text-left px-3 py-2 text-xs font-medium text-text-tertiary uppercase tracking-wide">Column</th>
+                        <th className="text-left px-3 py-2 text-xs font-medium text-text-tertiary uppercase tracking-wide">DB type</th>
+                        <th className="text-left px-3 py-2 text-xs font-medium text-text-tertiary uppercase tracking-wide">Inferred type</th>
+                        <th className="text-left px-3 py-2 text-xs font-medium text-text-tertiary uppercase tracking-wide">Nullable</th>
+                        <th className="text-left px-3 py-2 text-xs font-medium text-text-tertiary uppercase tracking-wide">Keys</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-50">
+                    <tbody className="divide-y divide-[rgb(var(--border-line))]">
                       {detail.columns.map((col: TableColumn) => (
-                        <tr key={col.name} className="hover:bg-gray-50">
-                          <td className="px-3 py-2 font-mono text-sm text-gray-800">{col.name}</td>
-                          <td className="px-3 py-2 text-xs text-gray-500">{col.type}</td>
+                        <tr key={col.name} className="hover:bg-surface-2">
+                          <td className="px-3 py-2 font-mono text-sm text-text-primary">{col.name}</td>
+                          <td className="px-3 py-2 text-xs text-text-tertiary">{col.type}</td>
                           <td className="px-3 py-2">
                             {inferredTypes[col.name] ? (
                               <TypeBadge type={inferredTypes[col.name]} />
                             ) : (
-                              <span className="text-gray-300 text-xs">—</span>
+                              <span className="text-text-quaternary text-xs">—</span>
                             )}
                           </td>
-                          <td className="px-3 py-2 text-xs text-gray-400">
+                          <td className="px-3 py-2 text-xs text-text-quaternary">
                             {col.nullable
                               ? <span>nullable</span>
-                              : <span className="font-medium text-gray-600">NOT NULL</span>}
+                              : <span className="font-medium text-text-secondary">NOT NULL</span>}
                           </td>
                           <td className="px-3 py-2">
                             <div className="flex items-center gap-1">
@@ -244,13 +244,13 @@ export default function TableDetailModal({ datasourceId, schema, table, onClose 
               {/* ── Preview ─────────────────────────────────── */}
               <section className="px-5 py-4 pb-6">
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                  <h3 className="text-xs font-semibold text-text-tertiary uppercase tracking-wide">
                     Preview — {detail.preview.length} rows
                   </h3>
                   {detail.preview.length >= previewLimit && (
                     <button
                       onClick={() => setPreviewLimit((n) => n + 20)}
-                      className="flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                      className="flex items-center gap-1 text-xs text-brand hover:underline"
                     >
                       <ChevronDown className="w-3 h-3" />
                       Load more
@@ -258,14 +258,14 @@ export default function TableDetailModal({ datasourceId, schema, table, onClose 
                   )}
                 </div>
                 {detail.preview.length === 0 ? (
-                  <p className="text-xs text-gray-400 italic">No data</p>
+                  <p className="text-xs text-text-quaternary italic">No data</p>
                 ) : (
-                  <div className="overflow-x-auto rounded border border-gray-100">
+                  <div className="overflow-x-auto rounded border border-[rgb(var(--border-line))]">
                     <table className="text-xs w-full">
-                      <thead className="bg-gray-50 sticky top-0">
+                      <thead className="bg-surface-2 sticky top-0">
                         <tr>
                           {previewCols.map((c) => (
-                            <th key={c} className="px-2.5 py-2 text-left font-medium text-gray-500 whitespace-nowrap border-b border-gray-100">
+                            <th key={c} className="px-2.5 py-2 text-left font-medium text-text-tertiary whitespace-nowrap border-b border-[rgb(var(--border-line))]">
                               <div>{c}</div>
                               {inferredTypes[c] && (
                                 <div className="mt-0.5">
@@ -276,13 +276,13 @@ export default function TableDetailModal({ datasourceId, schema, table, onClose 
                           ))}
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-gray-50">
+                      <tbody className="divide-y divide-[rgb(var(--border-line))]">
                         {detail.preview.map((row: Record<string, unknown>, i: number) => (
-                          <tr key={i} className="hover:bg-gray-50">
+                          <tr key={i} className="hover:bg-surface-2">
                             {previewCols.map((c) => (
-                              <td key={c} className="px-2.5 py-1.5 text-gray-700 whitespace-nowrap max-w-[200px] truncate">
+                              <td key={c} className="px-2.5 py-1.5 text-text-secondary whitespace-nowrap max-w-[200px] truncate">
                                 {row[c] === null || row[c] === undefined
-                                  ? <span className="text-gray-300 italic">null</span>
+                                  ? <span className="text-text-quaternary italic">null</span>
                                   : String(row[c])}
                               </td>
                             ))}

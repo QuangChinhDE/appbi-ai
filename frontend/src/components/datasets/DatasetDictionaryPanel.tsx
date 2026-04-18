@@ -225,17 +225,17 @@ function DictionaryCatalog({
   return (
     <div className="flex h-full flex-col">
       {/* Toolbar */}
-      <div className="flex shrink-0 items-center gap-3 border-b border-gray-100 px-5 py-2.5">
+      <div className="flex shrink-0 items-center gap-3 border-b border-[rgb(var(--border-line))] px-5 py-2.5">
         <div className="relative flex-1 max-w-sm">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-quaternary" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search table, column, business name, description…"
-            className="w-full rounded-md border border-gray-200 py-1.5 pl-8 pr-3 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full rounded-md border border-[rgb(var(--border-line))] py-1.5 pl-8 pr-3 text-xs focus:outline-none focus:ring-2 focus:ring-brand"
           />
         </div>
-        <span className="text-[11px] text-gray-400 shrink-0">
+        <span className="text-[11px] text-text-quaternary shrink-0">
           {documentedColumns} documented / {totalColumns} column{totalColumns !== 1 ? 's' : ''} · {visibleTableCount} table{visibleTableCount !== 1 ? 's' : ''}
         </span>
       </div>
@@ -245,28 +245,28 @@ function DictionaryCatalog({
         {tables.length === 0 ? (
           <div className="flex h-full items-center justify-center p-8">
             <div className="max-w-sm text-center">
-              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-gray-100">
-                <Table2 className="h-5 w-5 text-gray-400" />
+              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-surface-2">
+                <Table2 className="h-5 w-5 text-text-quaternary" />
               </div>
-              <h3 className="text-base font-semibold text-gray-900">No dataset tables yet</h3>
-              <p className="mt-2 text-sm text-gray-500">
+              <h3 className="text-base font-semibold text-text-primary">No dataset tables yet</h3>
+              <p className="mt-2 text-sm text-text-tertiary">
                 Add tables to this dataset before editing the shared dictionary catalog.
               </p>
             </div>
           </div>
         ) : grouped.length === 0 ? (
-          <div className="flex h-full items-center justify-center p-8 text-sm text-gray-400">
+          <div className="flex h-full items-center justify-center p-8 text-sm text-text-quaternary">
             No columns match &quot;{search}&quot;.
           </div>
         ) : (
-          <div className="divide-y divide-gray-100">
+          <div className="divide-y divide-[rgb(var(--border-line))]">
             {grouped.map((group) => (
               <div key={group.table.id}>
                 {/* Table header */}
-                <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-gray-100 bg-gray-50 px-5 py-2">
-                  <Table2 className="h-3.5 w-3.5 text-gray-400" />
-                  <span className="text-xs font-semibold text-gray-700">{group.tableName}</span>
-                  <span className="text-[10px] text-gray-400">{group.documentedColumns}/{group.totalColumns} documented</span>
+                <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-2 px-5 py-2">
+                  <Table2 className="h-3.5 w-3.5 text-text-quaternary" />
+                  <span className="text-xs font-semibold text-text-secondary">{group.tableName}</span>
+                  <span className="text-[10px] text-text-quaternary">{group.documentedColumns}/{group.totalColumns} documented</span>
                 </div>
                 <TableNotesBar
                   tableNote={group.tableNote}
@@ -275,35 +275,35 @@ function DictionaryCatalog({
                   onPatchNote={(updater) => patchTableNote(group.table.id, updater)}
                 />
                 {group.totalColumns === 0 ? (
-                  <div className="px-5 py-6 text-sm text-gray-400">
+                  <div className="px-5 py-6 text-sm text-text-quaternary">
                     Column metadata is not available for this table yet.
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="min-w-full table-fixed">
-                      <thead className="border-b border-gray-50 bg-white">
+                      <thead className="border-b border-[rgb(var(--border-line))] bg-surface-1">
                         <tr>
-                          <th className="w-[220px] px-5 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-400">Column</th>
-                          <th className="w-[120px] px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-400">Type</th>
-                          <th className="w-[220px] px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-400">Business Name</th>
-                          <th className="px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-400">Description</th>
-                          <th className="w-[220px] px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-400">Examples</th>
+                          <th className="w-[220px] px-5 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">Column</th>
+                          <th className="w-[120px] px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">Type</th>
+                          <th className="w-[220px] px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">Business Name</th>
+                          <th className="px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">Description</th>
+                          <th className="w-[220px] px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">Examples</th>
                           {canEdit && (
-                            <th className="w-[88px] px-3 py-1.5 text-right text-[10px] font-semibold uppercase tracking-wide text-gray-400">Action</th>
+                            <th className="w-[88px] px-3 py-1.5 text-right text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">Action</th>
                           )}
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-gray-50 bg-white">
+                      <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
                         {group.rows.map((row) => {
                           const isDocumented = hasColumnDictionaryContent(row.note);
                           const examplesValue = (row.note?.examples ?? []).join(', ');
 
                           return (
-                            <tr key={`${row.tableId}-${row.columnName}`} className="align-top hover:bg-blue-50/20 transition-colors">
+                            <tr key={`${row.tableId}-${row.columnName}`} className="align-top hover:bg-brand/15/20 transition-colors">
                               <td className="px-5 py-3">
                                 <div className="flex items-center gap-2">
-                                  <span className="font-mono text-xs font-medium text-gray-900">{row.columnName}</span>
-                                  <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${isDocumented ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+                                  <span className="font-mono text-xs font-medium text-text-primary">{row.columnName}</span>
+                                  <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${isDocumented ? 'bg-success/10 text-success' : 'bg-surface-2 text-text-tertiary'}`}>
                                     {isDocumented ? 'Documented' : 'Empty'}
                                   </span>
                                 </div>
@@ -321,12 +321,12 @@ function DictionaryCatalog({
                                     }))}
                                     disabled={isSaving}
                                     placeholder="Friendly business label"
-                                    className="w-full rounded-md border border-gray-200 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                                    className="w-full rounded-md border border-[rgb(var(--border-line))] px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
                                   />
                                 ) : row.note?.business_name ? (
-                                  <span className="text-xs text-gray-700">{row.note.business_name}</span>
+                                  <span className="text-xs text-text-secondary">{row.note.business_name}</span>
                                 ) : (
-                                  <span className="text-[11px] text-gray-300">—</span>
+                                  <span className="text-[11px] text-text-quaternary">—</span>
                                 )}
                               </td>
                               <td className="px-3 py-3">
@@ -340,12 +340,12 @@ function DictionaryCatalog({
                                     }))}
                                     disabled={isSaving}
                                     placeholder="What does this column mean?"
-                                    className="w-full resize-y rounded-md border border-gray-200 px-3 py-2 text-xs leading-5 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                                    className="w-full resize-y rounded-md border border-[rgb(var(--border-line))] px-3 py-2 text-xs leading-5 focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
                                   />
                                 ) : row.note?.description ? (
-                                  <p className="text-[11px] leading-5 text-gray-600 whitespace-pre-wrap">{row.note.description}</p>
+                                  <p className="text-[11px] leading-5 text-text-secondary whitespace-pre-wrap">{row.note.description}</p>
                                 ) : (
-                                  <span className="text-[11px] text-gray-300">—</span>
+                                  <span className="text-[11px] text-text-quaternary">—</span>
                                 )}
                               </td>
                               <td className="px-3 py-3">
@@ -358,18 +358,18 @@ function DictionaryCatalog({
                                     }))}
                                     disabled={isSaving}
                                     placeholder="Comma-separated examples"
-                                    className="w-full rounded-md border border-gray-200 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+                                    className="w-full rounded-md border border-[rgb(var(--border-line))] px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
                                   />
                                 ) : (row.note?.examples?.length ?? 0) > 0 ? (
                                   <div className="flex flex-wrap gap-1.5">
                                     {row.note!.examples.map((example) => (
-                                      <span key={example} className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">
+                                      <span key={example} className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-secondary">
                                         {example}
                                       </span>
                                     ))}
                                   </div>
                                 ) : (
-                                  <span className="text-[11px] text-gray-300">—</span>
+                                  <span className="text-[11px] text-text-quaternary">—</span>
                                 )}
                               </td>
                               {canEdit && (
@@ -378,7 +378,7 @@ function DictionaryCatalog({
                                     type="button"
                                     onClick={() => removeColumnNote(row.tableId, row.columnName)}
                                     disabled={isSaving || !row.note}
-                                    className="rounded-md border border-gray-200 px-2.5 py-1.5 text-[11px] font-medium text-gray-500 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                                    className="rounded-md border border-[rgb(var(--border-line))] px-2.5 py-1.5 text-[11px] font-medium text-text-tertiary transition-colors hover:border-danger/30 hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
                                   >
                                     Clear
                                   </button>
@@ -437,17 +437,17 @@ export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit
 
   // ─── Loading / error ────────────────────────────────────────────────────────
 
-  if (isLoading) return <div className="h-full animate-pulse bg-gray-50" />;
+  if (isLoading) return <div className="h-full animate-pulse bg-surface-2" />;
 
   if (error) {
     return (
       <div className="flex h-full items-center justify-center p-8">
         <div className="max-w-sm text-center">
-          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-red-50">
-            <BookOpen className="h-5 w-5 text-red-400" />
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-danger/10">
+            <BookOpen className="h-5 w-5 text-danger" />
           </div>
-          <h3 className="text-base font-semibold text-gray-900">Could not load dictionary</h3>
-          <p className="mt-2 text-sm text-gray-500">
+          <h3 className="text-base font-semibold text-text-primary">Could not load dictionary</h3>
+          <p className="mt-2 text-sm text-text-tertiary">
             The dataset is available but the dictionary could not be loaded right now.
           </p>
         </div>
@@ -458,17 +458,17 @@ export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex h-full flex-col bg-white">
+    <div className="flex h-full flex-col bg-surface-1">
       {/* ── Top bar ── */}
-      <div className="flex shrink-0 items-center gap-3 border-b border-gray-200 px-5 py-3">
+      <div className="flex shrink-0 items-center gap-3 border-b border-[rgb(var(--border-line))] px-5 py-3">
         <div>
-          <div className="text-sm font-semibold text-gray-900">Dictionary Catalog</div>
-          <div className="text-xs text-gray-500">
+          <div className="text-sm font-semibold text-text-primary">Dictionary Catalog</div>
+          <div className="text-xs text-text-tertiary">
             Document table and column meaning directly from the dataset model workspace.
           </div>
         </div>
         <div className="flex-1" />
-        <span className="text-xs text-gray-400">
+        <span className="text-xs text-text-quaternary">
           {updatedAt ? `Saved ${updatedAt}` : datasetName}
         </span>
         {canEdit && (
@@ -476,7 +476,7 @@ export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit
             type="button"
             onClick={save}
             disabled={!isDirty || update.isPending}
-            className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Check className="h-4 w-4" />
             {update.isPending ? 'Saving…' : 'Save'}
@@ -493,7 +493,7 @@ export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit
       />
 
       {/* Status bar */}
-      <div className="shrink-0 border-t border-gray-100 px-5 py-2 text-xs text-gray-400">
+      <div className="shrink-0 border-t border-[rgb(var(--border-line))] px-5 py-2 text-xs text-text-quaternary">
         {canEdit ? (isDirty ? 'Unsaved changes — click Save to persist.' : 'All changes saved.') : 'View only'}
       </div>
     </div>

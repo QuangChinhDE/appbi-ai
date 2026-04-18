@@ -21,55 +21,59 @@ export default function ResultTable({
 }: ResultTableProps) {
   return (
     <div className="space-y-3">
-      {/* Metadata */}
-      <div className="flex items-center gap-4 text-sm text-gray-600">
-        <div className="flex items-center gap-1">
-          <Hash className="w-4 h-4" />
+      <div className="flex items-center gap-4 text-caption text-text-tertiary">
+        <div className="flex items-center gap-1.5">
+          <Hash className="w-3.5 h-3.5" />
           <span>{rowCount} rows</span>
         </div>
         {executionTimeMs !== undefined && (
-          <div className="flex items-center gap-1">
-            <Clock className="w-4 h-4" />
+          <div className="flex items-center gap-1.5">
+            <Clock className="w-3.5 h-3.5" />
             <span>{executionTimeMs}ms</span>
           </div>
         )}
       </div>
 
-      {/* Table */}
-      <div className="border border-gray-200 rounded-md overflow-hidden">
+      <div className="border border-[rgb(var(--border-line))] rounded-lg overflow-hidden bg-surface-1">
         <div className="overflow-x-auto max-h-96">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50 sticky top-0">
+          <table className="min-w-full">
+            <thead className="bg-surface-2 sticky top-0">
               <tr>
                 {columns.map((col) => (
                   <th
                     key={col}
-                    className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                    className="px-4 py-2 text-left text-tiny font-emphasis text-text-tertiary uppercase tracking-wider border-b border-[rgb(var(--border-line))]"
                   >
                     {col}
                   </th>
                 ))}
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
+            <tbody>
               {data.length === 0 ? (
                 <tr>
                   <td
                     colSpan={columns.length}
-                    className="px-4 py-8 text-center text-gray-500"
+                    className="px-4 py-10 text-center text-caption text-text-tertiary"
                   >
                     No results found
                   </td>
                 </tr>
               ) : (
                 data.map((row, idx) => (
-                  <tr key={idx} className="hover:bg-gray-50">
+                  <tr
+                    key={idx}
+                    className="hover:bg-surface-2 border-b border-[rgb(var(--border-line))] last:border-b-0 transition-colors"
+                  >
                     {columns.map((col) => (
-                      <td key={col} className="px-4 py-2 text-sm text-gray-900 whitespace-nowrap">
+                      <td
+                        key={col}
+                        className="px-4 py-2 text-caption text-text-primary whitespace-nowrap"
+                      >
                         {row[col] === null ? (
-                          <span className="text-gray-400 italic">null</span>
+                          <span className="text-text-quaternary italic">null</span>
                         ) : typeof row[col] === 'object' ? (
-                          <span className="text-gray-600 font-mono text-xs">
+                          <span className="text-text-tertiary font-mono text-tiny">
                             {JSON.stringify(row[col])}
                           </span>
                         ) : (

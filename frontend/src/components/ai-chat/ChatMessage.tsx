@@ -29,11 +29,11 @@ interface ChatMessageProps {
 // ── Intent badge ──────────────────────────────────────────────────────────────
 
 const INTENT_BADGE: Record<IntentType, { label: string; cls: string }> = {
-  LOOKUP:  { label: '🔍 Lookup',  cls: 'bg-blue-50 text-blue-600 border-blue-200' },
-  EXPLORE: { label: '🔬 Explore', cls: 'bg-purple-50 text-purple-600 border-purple-200' },
-  INSIGHT: { label: '💡 Insight', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
-  CREATE:  { label: '🎨 Create',  cls: 'bg-green-50 text-green-700 border-green-200' },
-  VAGUE:   { label: '❓ Clarify', cls: 'bg-gray-50 text-gray-500 border-gray-200' },
+  LOOKUP:  { label: '🔍 Lookup',  cls: 'bg-brand/10 text-brand border-brand/30' },
+  EXPLORE: { label: '🔬 Explore', cls: 'bg-brand/10 text-brand border-brand/30' },
+  INSIGHT: { label: '💡 Insight', cls: 'bg-warning/10 text-warning border-warning/30' },
+  CREATE:  { label: '🎨 Create',  cls: 'bg-success/10 text-success border-success/30' },
+  VAGUE:   { label: '❓ Clarify', cls: 'bg-surface-2 text-text-tertiary border-[rgb(var(--border-line))]' },
 };
 
 // ── Markdown renderer ─────────────────────────────────────────────────────────
@@ -47,11 +47,11 @@ function renderInline(text: string): React.ReactNode {
     <>
       {parts.map((part, i) => {
         if (part.startsWith('**') && part.endsWith('**')) {
-          return <strong key={i} className="font-semibold text-gray-900">{part.slice(2, -2)}</strong>;
+          return <strong key={i} className="font-semibold text-text-primary">{part.slice(2, -2)}</strong>;
         }
         if (part.startsWith('`') && part.endsWith('`')) {
           return (
-            <code key={i} className="bg-gray-100 px-1 py-0.5 rounded text-[11px] font-mono text-blue-700 border border-gray-200">
+            <code key={i} className="bg-surface-2 px-1 py-0.5 rounded text-[11px] font-mono text-brand border border-[rgb(var(--border-line))]">
               {part.slice(1, -1)}
             </code>
           );
@@ -81,7 +81,7 @@ function renderMarkdown(text: string, isInsight: boolean): React.ReactNode {
         <ul key={key++} className="space-y-1 my-2">
           {listItems.map((item, i) => (
             <li key={i} className="flex items-start gap-2 text-sm">
-              <span className="text-blue-400 mt-1 flex-shrink-0 text-xs">•</span>
+              <span className="text-brand mt-1 flex-shrink-0 text-xs">•</span>
               <span className="leading-relaxed">{renderInline(item)}</span>
             </li>
           ))}
@@ -90,7 +90,7 @@ function renderMarkdown(text: string, isInsight: boolean): React.ReactNode {
         <ol key={key++} className="space-y-1 my-2 list-none">
           {listItems.map((item, i) => (
             <li key={i} className="flex items-start gap-2 text-sm">
-              <span className="text-blue-500 font-medium text-xs mt-1 w-4 flex-shrink-0">{i + 1}.</span>
+              <span className="text-brand font-medium text-xs mt-1 w-4 flex-shrink-0">{i + 1}.</span>
               <span className="leading-relaxed">{renderInline(item)}</span>
             </li>
           ))}
@@ -107,7 +107,7 @@ function renderMarkdown(text: string, isInsight: boolean): React.ReactNode {
     if (line.startsWith('### ')) {
       flushList();
       elements.push(
-        <h4 key={key++} className="font-bold text-sm text-gray-900 mt-3 mb-1 pb-0.5 border-b border-gray-100">
+        <h4 key={key++} className="font-bold text-sm text-text-primary mt-3 mb-1 pb-0.5 border-b border-[rgb(var(--border-line))]">
           {renderInline(line.slice(4))}
         </h4>
       );
@@ -116,7 +116,7 @@ function renderMarkdown(text: string, isInsight: boolean): React.ReactNode {
     if (line.startsWith('## ')) {
       flushList();
       elements.push(
-        <h3 key={key++} className="font-bold text-sm text-gray-900 mt-4 mb-1.5 pb-1 border-b border-gray-200">
+        <h3 key={key++} className="font-bold text-sm text-text-primary mt-4 mb-1.5 pb-1 border-b border-[rgb(var(--border-line))]">
           {renderInline(line.slice(3))}
         </h3>
       );
@@ -125,7 +125,7 @@ function renderMarkdown(text: string, isInsight: boolean): React.ReactNode {
     if (line.startsWith('# ')) {
       flushList();
       elements.push(
-        <h2 key={key++} className="font-bold text-base text-gray-900 mt-4 mb-2">
+        <h2 key={key++} className="font-bold text-base text-text-primary mt-4 mb-2">
           {renderInline(line.slice(2))}
         </h2>
       );
@@ -157,7 +157,7 @@ function renderMarkdown(text: string, isInsight: boolean): React.ReactNode {
     // Regular paragraph line
     flushList();
     elements.push(
-      <p key={key++} className={`leading-relaxed ${isInsight ? 'text-sm text-gray-700' : 'text-sm'}`}>
+      <p key={key++} className={`leading-relaxed ${isInsight ? 'text-sm text-text-secondary' : 'text-sm'}`}>
         {renderInline(line)}
       </p>
     );
@@ -183,7 +183,7 @@ export function ChatMessage({ message, sessionId, onFeedback }: ChatMessageProps
     <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
       {/* Avatar */}
       <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
-        isUser ? 'bg-blue-500' : 'bg-gradient-to-br from-blue-600 to-blue-700'
+        isUser ? 'bg-brand' : 'bg-gradient-to-br from-blue-600 to-blue-700'
       }`}>
         {isUser
           ? <User className="h-4 w-4 text-white" />
@@ -207,10 +207,10 @@ export function ChatMessage({ message, sessionId, onFeedback }: ChatMessageProps
         {cleanText && (
           <div className={`px-4 py-3 text-sm leading-relaxed ${
             isUser
-              ? 'bg-blue-500 text-white rounded-2xl rounded-tr-sm'
+              ? 'bg-brand text-white rounded-2xl rounded-tr-sm'
               : isInsight
-                ? 'bg-white border border-amber-100 text-gray-800 rounded-2xl rounded-tl-sm shadow-sm'
-                : 'bg-white border border-gray-200 text-gray-800 rounded-2xl rounded-tl-sm shadow-sm'
+                ? 'bg-warning/10 border border-warning/20 text-text-primary rounded-2xl rounded-tl-sm shadow-linear-sm'
+                : 'bg-surface-1 border border-[rgb(var(--border-line))] text-text-primary rounded-2xl rounded-tl-sm shadow-linear-sm'
           }`}>
             {isUser
               ? <span className="whitespace-pre-wrap">{cleanText}</span>
@@ -295,7 +295,7 @@ export function ChatMessage({ message, sessionId, onFeedback }: ChatMessageProps
 
               {/* Model name */}
               <span
-                className="text-[10px] text-gray-400 ml-0.5 cursor-default"
+                className="text-[10px] text-text-quaternary ml-0.5 cursor-default"
                 title={`${metrics.provider} / ${metrics.model}`}
               >
                 {metrics.model.split('/').pop()?.split('-').slice(0, 2).join('-')}
@@ -309,8 +309,8 @@ export function ChatMessage({ message, sessionId, onFeedback }: ChatMessageProps
                 disabled={!!feedback}
                 className={`p-1 rounded transition-colors ${
                   feedback?.rating === 'up'
-                    ? 'text-green-600 bg-green-50'
-                    : 'text-gray-400 hover:text-green-600 hover:bg-green-50 disabled:opacity-30'
+                    ? 'text-success bg-success/10'
+                    : 'text-text-quaternary hover:text-success hover:bg-success/10 disabled:opacity-30'
                 }`}
                 title="Hữu ích"
               >
@@ -321,8 +321,8 @@ export function ChatMessage({ message, sessionId, onFeedback }: ChatMessageProps
                 disabled={!!feedback}
                 className={`p-1 rounded transition-colors ${
                   feedback?.rating === 'down'
-                    ? 'text-red-600 bg-red-50'
-                    : 'text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-30'
+                    ? 'text-danger bg-danger/10'
+                    : 'text-text-quaternary hover:text-danger hover:bg-danger/10 disabled:opacity-30'
                 }`}
                 title="Chưa hữu ích"
               >
@@ -331,7 +331,7 @@ export function ChatMessage({ message, sessionId, onFeedback }: ChatMessageProps
               {message.userQuery && (
                 <button
                   onClick={() => setIsCorrectModalOpen(true)}
-                  className="p-1 rounded transition-colors text-gray-400 hover:text-blue-600 hover:bg-blue-50"
+                  className="p-1 rounded transition-colors text-text-quaternary hover:text-brand hover:bg-brand/15"
                   title="Sửa câu trả lời"
                 >
                   <MessageSquarePlus className="h-3.5 w-3.5" />
@@ -366,10 +366,10 @@ function MetricPill({
   title?: string;
 }) {
   const color = warn
-    ? 'text-amber-600 bg-amber-50 border-amber-200'
+    ? 'text-warning bg-warning/10 border-warning/30'
     : good
-    ? 'text-green-600 bg-green-50 border-green-200'
-    : 'text-gray-500 bg-gray-50 border-gray-200';
+    ? 'text-success bg-success/10 border-success/30'
+    : 'text-text-tertiary bg-surface-2 border-[rgb(var(--border-line))]';
   return (
     <span
       className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium border cursor-default ${color}`}

@@ -36,8 +36,11 @@ function LazyChartSlot({ children }: { children: React.ReactNode }) {
 
   if (!visible) {
     return (
-      <div ref={ref} className="h-full bg-white rounded-lg border border-gray-200 flex items-center justify-center">
-        <Loader2 className="h-6 w-6 animate-spin text-gray-300" />
+      <div
+        ref={ref}
+        className="flex h-full items-center justify-center rounded-xl border border-[rgb(var(--border-line))] bg-surface-1"
+      >
+        <Loader2 className="h-5 w-5 animate-spin text-text-quaternary" />
       </div>
     );
   }
@@ -116,8 +119,8 @@ export function DashboardGrid({
 
   if (dashboardCharts.length === 0) {
     return (
-      <div className="flex items-center justify-center h-64 bg-gray-50 border-2 border-dashed border-gray-300 rounded-lg">
-        <p className="text-gray-500">
+      <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-2">
+        <p className="text-caption text-text-tertiary">
           {emptyMessage ?? 'No charts in this dashboard. Click "Add Chart" to get started.'}
         </p>
       </div>

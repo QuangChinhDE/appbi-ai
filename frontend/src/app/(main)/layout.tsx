@@ -9,7 +9,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <LanguageProvider>
-      <div className="flex h-screen overflow-hidden print:block">
+      <div className="flex h-screen overflow-hidden bg-surface-0 print:block">
         <div className="print:hidden">
           <Sidebar
             isCollapsed={isSidebarCollapsed}
@@ -17,8 +17,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           />
         </div>
         <main
-          className={`flex-1 overflow-y-auto bg-gray-50 transition-[margin] duration-300 print:ml-0 print:overflow-visible print:bg-white ${
-            isSidebarCollapsed ? 'ml-16' : 'ml-64'
+          className={`flex-1 overflow-y-auto bg-surface-0 transition-[margin] duration-300 print:ml-0 print:overflow-visible print:bg-white ${
+            isSidebarCollapsed ? 'ml-14' : 'ml-60'
           }`}
         >
           {children}

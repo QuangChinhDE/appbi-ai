@@ -505,14 +505,14 @@ export function ChartTile({
   }, [chart?.config, exploreConfig]);
 
   const renderStatusCard = (content: React.ReactNode, tone: 'neutral' | 'danger' = 'neutral') => (
-    <div className={`relative h-full rounded-lg border p-6 ${tone === 'danger' ? 'border-red-200 bg-white' : 'border-gray-200 bg-white'}`}>
+    <div className={`relative h-full rounded-lg border p-6 ${tone === 'danger' ? 'border-danger/30 bg-surface-1' : 'border-[rgb(var(--border-line))] bg-surface-1'}`}>
       {onRemove && (
         <button
           type="button"
           onMouseDown={e => e.stopPropagation()}
           onClick={() => onRemove(dashboardChartId)}
           disabled={isRemoving}
-          className={`absolute right-2 top-2 rounded-md border p-1.5 shadow-sm disabled:cursor-not-allowed disabled:opacity-50 ${tone === 'danger' ? 'border-red-200 bg-white text-red-600 hover:bg-red-50' : 'border-gray-300 bg-white text-red-600 hover:border-red-300 hover:bg-red-50'}`}
+          className={`absolute right-2 top-2 rounded-md border p-1.5 shadow-linear-sm disabled:cursor-not-allowed disabled:opacity-50 ${tone === 'danger' ? 'border-danger/30 bg-surface-1 text-danger hover:bg-danger/10' : 'border-[rgb(var(--border-strong))] bg-surface-1 text-danger hover:border-danger/40 hover:bg-danger/10'}`}
           title="Remove chart"
         >
           {isRemoving ? (
@@ -531,7 +531,7 @@ export function ChartTile({
   if (isLoadingChart || isLoadingData) {
     return renderStatusCard(
       <div className="flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+        <Loader2 className="h-8 w-8 animate-spin text-brand" />
       </div>
     );
   }
@@ -539,17 +539,17 @@ export function ChartTile({
   if (!chart || !chartData) {
     return renderStatusCard(
       <div className="text-center">
-        <p className="text-gray-500">Failed to load chart</p>
+        <p className="text-text-tertiary">Failed to load chart</p>
       </div>,
       'danger'
     );
   }
 
   return (
-    <div className={`h-full bg-white rounded-lg border p-3 overflow-hidden relative group flex flex-col ${
+    <div className={`relative group flex h-full flex-col overflow-hidden rounded-lg border bg-surface-1 p-3 ${
       isCrossFilterSource
-        ? 'border-amber-300 ring-1 ring-amber-200'
-        : 'border-gray-200'
+        ? 'border-warning/40 ring-1 ring-warning'
+        : 'border-[rgb(var(--border-line))]'
     }`}>
       {/* Remove button Ã¢â‚¬â€ outside drag handle so clicks always register */}
       {onRemove && (
@@ -557,13 +557,13 @@ export function ChartTile({
         onMouseDown={e => e.stopPropagation()}
         onClick={() => onRemove(dashboardChartId)}
         disabled={isRemoving}
-        className="absolute top-2 right-2 z-10 p-1.5 bg-white border border-gray-300 rounded-md shadow-sm opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50 hover:border-red-300 disabled:opacity-50"
+        className="absolute top-2 right-2 z-10 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 p-1.5 shadow-linear-sm opacity-0 transition-opacity group-hover:opacity-100 hover:border-danger/40 hover:bg-danger/10 disabled:opacity-50"
         title="Remove chart"
       >
         {isRemoving ? (
-          <Loader2 className="h-4 w-4 text-red-600 animate-spin" />
+          <Loader2 className="h-4 w-4 text-danger animate-spin" />
         ) : (
-          <X className="h-4 w-4 text-red-600" />
+          <X className="h-4 w-4 text-danger" />
         )}
       </button>
       )}
@@ -581,12 +581,12 @@ export function ChartTile({
               onKeyDown={handleTitleKeyDown}
               onBlur={saveTitle}
               onMouseDown={e => e.stopPropagation()}
-              className="flex-1 text-sm font-semibold border-b border-blue-400 outline-none bg-transparent cursor-text"
+              className="flex-1 text-sm font-semibold border-b border-brand/50 outline-none bg-transparent cursor-text"
             />
-            {isSavingTitle && <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500 flex-shrink-0" />}
+            {isSavingTitle && <Loader2 className="h-3.5 w-3.5 animate-spin text-brand flex-shrink-0" />}
             {!isSavingTitle && (
               <Check
-                className="h-3.5 w-3.5 text-blue-500 flex-shrink-0 cursor-pointer"
+                className="h-3.5 w-3.5 text-brand flex-shrink-0 cursor-pointer"
                 onMouseDown={e => { e.stopPropagation(); saveTitle(); }}
               />
             )}
@@ -597,7 +597,7 @@ export function ChartTile({
             <button
               onMouseDown={e => e.stopPropagation()}
               onClick={() => openDetailModal('data')}
-              className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-gray-400 hover:text-blue-600"
+              className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-text-quaternary hover:text-brand"
               title="View chart details"
             >
               <Eye className="h-3.5 w-3.5" />
@@ -606,7 +606,7 @@ export function ChartTile({
               <button
                 onMouseDown={e => e.stopPropagation()}
                 onClick={() => openDetailModal('appearance')}
-                className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-gray-400 hover:text-blue-600"
+                className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-text-quaternary hover:text-brand"
                 title="Edit chart appearance"
               >
                 <Palette className="h-3.5 w-3.5" />
@@ -617,7 +617,7 @@ export function ChartTile({
                 value={currentPageId ?? ''}
                 onMouseDown={e => e.stopPropagation()}
                 onChange={e => onMoveToPage(e.target.value)}
-                className="max-w-28 rounded border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] text-gray-500 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+                className="max-w-28 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-0.5 text-[10px] text-text-tertiary opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
                 title="Move chart to page"
               >
                 {availablePages.map((page) => (
@@ -633,14 +633,14 @@ export function ChartTile({
                 onClick={() => setIsHavingOpen(v => !v)}
                 className={`relative flex-shrink-0 transition-opacity ${
                   isHavingOpen || havingFilters.length > 0
-                    ? 'opacity-100 text-indigo-600'
-                    : 'opacity-0 group-hover:opacity-100 text-gray-400 hover:text-indigo-600'
+                    ? 'opacity-100 text-brand'
+                    : 'opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-brand'
                 }`}
                 title="Per-chart filters (HAVING)"
               >
                 <SlidersHorizontal className="h-3.5 w-3.5" />
                 {havingFilters.length > 0 && (
-                  <span className="absolute -top-1 -right-1 w-2 h-2 bg-indigo-500 rounded-full" />
+                  <span className="absolute -top-1 -right-1 w-2 h-2 bg-brand rounded-full" />
                 )}
               </button>
             )}
@@ -648,7 +648,7 @@ export function ChartTile({
             <button
               onMouseDown={e => e.stopPropagation()}
               onClick={startEditingTitle}
-              className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-gray-400 hover:text-blue-600"
+              className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-text-quaternary hover:text-brand"
               title="Edit title"
             >
               <Pencil className="h-3.5 w-3.5" />
@@ -664,7 +664,7 @@ export function ChartTile({
               <span
                 key={key}
                 title={key}
-                className="inline-flex items-center px-1.5 py-0.5 bg-purple-50 border border-purple-200 text-purple-700 rounded text-xs font-mono"
+                className="inline-flex items-center px-1.5 py-0.5 bg-brand/10 border border-brand/30 text-brand rounded text-xs font-mono"
               >
                 {String(val)}
               </span>
@@ -675,7 +675,7 @@ export function ChartTile({
         {havingFilters.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {havingFilters.map(f => (
-              <span key={f.id} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs rounded">
+              <span key={f.id} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-brand/10 border border-brand/30 text-brand text-xs rounded">
                 <span className="font-mono opacity-60 text-[0.6rem] uppercase">having</span>
                 {havingOptions.find(o => o.key === f.field)?.label ?? f.field}
                 {` ${f.operator} ${f.value}`}
@@ -683,7 +683,7 @@ export function ChartTile({
                 <button
                   onMouseDown={e => e.stopPropagation()}
                   onClick={() => setHavingFilters(prev => prev.filter(x => x.id !== f.id))}
-                  className="text-indigo-400 hover:text-indigo-700"
+                  className="text-brand hover:text-brand"
                 >
                   <X className="w-2.5 h-2.5" />
                 </button>
@@ -695,13 +695,13 @@ export function ChartTile({
         {/* HAVING filter editor panel */}
         {isHavingOpen && exploreConfig && havingOptions.length > 0 && (
           <div
-            className="border border-indigo-100 bg-indigo-50/50 rounded p-2 flex flex-wrap items-center gap-1.5"
+            className="border border-brand/20 bg-brand/10/50 rounded p-2 flex flex-wrap items-center gap-1.5"
             onMouseDown={e => e.stopPropagation()}
           >
             <select
               value={draftHavingField}
               onChange={e => setDraftHavingField(e.target.value)}
-              className="text-xs border border-gray-300 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-400 bg-white"
+              className="rounded border border-[rgb(var(--border-strong))] bg-surface-1 px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
             >
               {havingOptions.map(o => (
                 <option key={o.key} value={o.key}>{o.label}</option>
@@ -710,7 +710,7 @@ export function ChartTile({
             <select
               value={draftHavingOp}
               onChange={e => setDraftHavingOp(e.target.value as FilterOperator)}
-              className="text-xs border border-gray-300 rounded px-1.5 py-0.5 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-400"
+              className="rounded border border-[rgb(var(--border-strong))] bg-surface-1 px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-brand"
             >
               <option value="gt">&gt; greater than</option>
               <option value="gte">Ã¢â€°Â¥ greater or equal</option>
@@ -728,18 +728,18 @@ export function ChartTile({
                 if (e.key === 'Escape') setIsHavingOpen(false);
               }}
               placeholder="value"
-              className="text-xs border border-gray-300 rounded px-1.5 py-0.5 w-20 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+              className="text-xs border border-[rgb(var(--border-strong))] rounded px-1.5 py-0.5 w-20 focus:outline-none focus:ring-1 focus:ring-brand"
             />
             <button
               onClick={confirmHaving}
-              className="text-xs px-2 py-0.5 bg-indigo-500 text-white rounded hover:bg-indigo-600"
+              className="text-xs px-2 py-0.5 bg-brand text-white rounded hover:bg-brand-hover"
             >
               Apply
             </button>
             {havingFilters.length > 0 && (
               <button
                 onClick={() => setHavingFilters([])}
-                className="text-xs text-gray-400 hover:text-gray-600"
+                className="text-xs text-text-quaternary hover:text-text-secondary"
               >
                 Clear all
               </button>

@@ -26,7 +26,7 @@ export function Tooltip({ content, children, position = 'bottom' }: TooltipProps
       {children}
       {visible && (
         <span
-          className={`absolute z-50 whitespace-normal rounded-md bg-gray-900 px-2.5 py-1.5 text-[11px] leading-snug text-gray-100 shadow-lg pointer-events-none ${
+          className={`absolute z-50 whitespace-normal rounded-md bg-surface-inverse px-2.5 py-1.5 text-[11px] leading-snug text-text-secondary shadow-lg pointer-events-none ${
             position === 'top'
               ? 'bottom-full left-1/2 -translate-x-1/2 mb-1.5'
               : 'top-full left-1/2 -translate-x-1/2 mt-1.5'

@@ -673,8 +673,8 @@ function normalizeColorInput(value: string, fallback: string): string {
 function HelpTooltip({ text }: { text: string }) {
   return (
     <span className="group/help relative inline-flex items-center">
-      <Info className="h-3.5 w-3.5 text-gray-400 transition-colors group-hover/help:text-blue-500" />
-      <span className="pointer-events-none absolute right-0 top-full z-20 mt-2 hidden w-56 rounded-md bg-slate-900 px-2.5 py-2 text-[11px] font-normal normal-case tracking-normal text-white shadow-lg group-hover/help:block">
+      <Info className="h-3.5 w-3.5 text-text-quaternary transition-colors group-hover/help:text-brand" />
+      <span className="pointer-events-none absolute right-0 top-full z-20 mt-2 hidden w-56 rounded-md bg-surface-inverse px-2.5 py-2 text-[11px] font-normal normal-case tracking-normal text-white shadow-lg group-hover/help:block">
         {text}
       </span>
     </span>
@@ -687,19 +687,19 @@ function Disclosure({ title, hint, defaultOpen = false, children }: {
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2">
+    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2/70 px-3 py-2">
       <button
         type="button"
         onClick={() => setOpen(!open)}
         className="group flex w-full items-center justify-between py-1"
       >
-        <span className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+        <span className="flex items-center gap-1.5 text-xs font-semibold text-text-tertiary uppercase tracking-wide">
           <span>{title}</span>
           {hint && <HelpTooltip text={hint} />}
         </span>
-        <ChevronDown className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown className={`w-3.5 h-3.5 text-text-quaternary transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
       </button>
-      {open && <div className="mt-3 space-y-3 border-t border-slate-200 pt-3">{children}</div>}
+      {open && <div className="mt-3 space-y-3 border-t border-[rgb(var(--border-line))] pt-3">{children}</div>}
     </div>
   );
 }
@@ -709,12 +709,12 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
   return (
     <div
       className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2 transition-colors ${
-        checked ? 'border-blue-200 bg-blue-50/80' : 'border-gray-200 bg-white'
+        checked ? 'border-brand/30 bg-brand/10/80' : 'border-[rgb(var(--border-line))] bg-surface-1'
       }`}
     >
       <div className="min-w-0">
-        <div className={`text-xs font-semibold ${checked ? 'text-blue-700' : 'text-gray-600'}`}>{label}</div>
-        <div className={`text-[11px] ${checked ? 'text-blue-500' : 'text-gray-400'}`}>
+        <div className={`text-xs font-semibold ${checked ? 'text-brand' : 'text-text-secondary'}`}>{label}</div>
+        <div className={`text-[11px] ${checked ? 'text-brand' : 'text-text-quaternary'}`}>
           {checked ? 'Enabled' : 'Disabled'}
         </div>
       </div>
@@ -723,8 +723,8 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
         aria-pressed={checked}
         aria-label={`${checked ? 'Disable' : 'Enable'} ${label}`}
         onClick={() => onChange(!checked)}
-        className={`relative h-5 w-10 rounded-full border transition-colors focus:outline-none focus:ring-2 focus:ring-blue-200 ${
-          checked ? 'border-blue-500 bg-blue-500' : 'border-gray-300 bg-gray-200'
+        className={`relative h-5 w-10 rounded-full border transition-colors focus:outline-none focus:ring-2 focus:ring-brand ${
+          checked ? 'border-brand bg-brand' : 'border-[rgb(var(--border-strong))] bg-surface-3'
         }`}
       >
         <span
@@ -732,7 +732,7 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
             checked ? 'translate-x-5' : 'translate-x-0.5'
           }`}
         >
-          {checked && <Check className="h-2.5 w-2.5 text-blue-600" />}
+          {checked && <Check className="h-2.5 w-2.5 text-brand" />}
         </span>
       </button>
     </div>
@@ -751,11 +751,11 @@ function SectionPanel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="border-b border-slate-100 px-4 py-3">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">{step}</p>
+    <section className="rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
+      <div className="border-b border-[rgb(var(--border-line))] px-4 py-3">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">{step}</p>
         <div className="mt-1 flex items-center gap-1">
-          <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
+          <h3 className="text-sm font-semibold text-text-primary">{title}</h3>
           {description && <HelpTooltip text={description} />}
         </div>
       </div>
@@ -776,16 +776,16 @@ function SelectSlot({
   const missing = required && !value;
   return (
     <div>
-      <label className="flex items-center gap-1 text-xs font-semibold text-gray-600 mb-1">
+      <label className="flex items-center gap-1 text-xs font-semibold text-text-secondary mb-1">
         {label}
-        {required && <span className="text-red-400">*</span>}
+        {required && <span className="text-danger">*</span>}
         {hint && <HelpTooltip text={hint} />}
       </label>
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
-        className={`w-full px-2 py-1.5 text-xs border rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 ${
-          missing ? 'border-red-300 bg-red-50' : 'border-gray-300'
+        className={`w-full px-2 py-1.5 text-xs border rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand ${
+          missing ? 'border-danger/40 bg-danger/10' : 'border-[rgb(var(--border-strong))]'
         }`}
       >
         <option value="">{placeholder}</option>
@@ -822,9 +822,9 @@ function MetricSlot({
 
   return (
     <div>
-      <label className="flex items-center gap-1 text-xs font-semibold text-gray-600 mb-1.5">
+      <label className="flex items-center gap-1 text-xs font-semibold text-text-secondary mb-1.5">
         {label}
-        {required && <span className="text-red-400">*</span>}
+        {required && <span className="text-danger">*</span>}
         {hint && <HelpTooltip text={hint} />}
       </label>
 
@@ -833,20 +833,20 @@ function MetricSlot({
         <div className="space-y-1.5 mb-2">
           {value.map(m => (
             <div key={m.field}
-              className="flex items-center gap-1 pl-2 pr-1 py-1 rounded-md border border-blue-200 bg-blue-50"
+              className="flex items-center gap-1 pl-2 pr-1 py-1 rounded-md border border-brand/30 bg-brand/10"
             >
               <select
                 value={m.agg}
                 onChange={e => changeAgg(m.field, e.target.value as AggFn)}
-                className="text-xs font-bold text-blue-700 bg-transparent border-none outline-none cursor-pointer"
+                className="text-xs font-bold text-brand bg-transparent border-none outline-none cursor-pointer"
               >
                 {AGG_OPTIONS.map(a => (
                   <option key={a.value} value={a.value}>{a.label}</option>
                 ))}
               </select>
-              <span className="flex-1 text-xs text-blue-800 truncate" title={m.field}>{m.field}</span>
+              <span className="flex-1 text-xs text-brand truncate" title={m.field}>{m.field}</span>
               <button onClick={() => removeField(m.field)}
-                className="p-0.5 rounded hover:bg-blue-200 text-blue-500 flex-shrink-0"
+                className="p-0.5 rounded hover:bg-brand-hover text-brand flex-shrink-0"
               >
                 <X className="w-3 h-3" />
               </button>
@@ -860,8 +860,8 @@ function MetricSlot({
         <select
           value=""
           onChange={e => addField(e.target.value)}
-          className={`w-full px-2 py-1.5 text-xs border rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 ${
-            missing ? 'border-red-300 bg-red-50 text-red-400' : 'border-dashed border-gray-300 text-gray-400'
+          className={`w-full px-2 py-1.5 text-xs border rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand ${
+            missing ? 'border-danger/40 bg-danger/10 text-danger' : 'border-dashed border-[rgb(var(--border-strong))] text-text-quaternary'
           }`}
         >
           <option value="">{available.length === 0 ? 'all fields added' : '+ add field...'}</option>
@@ -928,11 +928,11 @@ function ColorField({
 
   return (
     <div ref={containerRef} className="relative">
-      <label className="mb-1 block text-xs font-semibold text-gray-600">{label}</label>
+      <label className="mb-1 block text-xs font-semibold text-text-secondary">{label}</label>
 
       <div
-        className={`flex items-center gap-2 rounded-md border bg-white px-2 py-1.5 transition-colors ${
-          open ? 'border-blue-300 ring-1 ring-blue-100' : 'border-gray-300'
+        className={`flex items-center gap-2 rounded-md border bg-surface-1 px-2 py-1.5 transition-colors ${
+          open ? 'border-brand/40 ring-1 ring-brand' : 'border-[rgb(var(--border-strong))]'
         }`}
       >
         <button
@@ -940,7 +940,7 @@ function ColorField({
           aria-expanded={open}
           aria-label={`Open color picker for ${label}`}
           onClick={() => setOpen((current) => !current)}
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-gray-200 bg-white hover:border-gray-300"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-[rgb(var(--border-line))] bg-surface-1 hover:border-[rgb(var(--border-strong))]"
         >
           <span
             className="h-4 w-4 rounded-sm border border-white/70 shadow-inner"
@@ -960,27 +960,27 @@ function ColorField({
             }
           }}
           placeholder="#1d4ed8"
-          className="min-w-0 flex-1 bg-transparent px-0 text-[11px] font-mono uppercase tracking-wide text-gray-700 focus:outline-none"
+          className="min-w-0 flex-1 bg-transparent px-0 text-[11px] font-mono uppercase tracking-wide text-text-secondary focus:outline-none"
         />
 
         <button
           type="button"
           aria-expanded={open}
           onClick={() => setOpen((current) => !current)}
-          className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+          className="rounded p-1 text-text-quaternary hover:bg-surface-2 hover:text-text-secondary"
         >
           <ChevronDown className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`} />
         </button>
       </div>
 
       {open && (
-        <div className="absolute right-0 top-full z-30 mt-1 w-52 rounded-lg border border-gray-200 bg-white p-2 shadow-xl">
+        <div className="absolute right-0 top-full z-30 mt-1 w-52 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-linear-lg">
           <div className="flex items-center gap-2">
             <input
               type="color"
               value={normalizedValue}
               onChange={e => applyColor(e.target.value)}
-              className="h-8 w-9 cursor-pointer rounded border border-gray-200 bg-white p-0.5"
+              className="h-8 w-9 cursor-pointer rounded border border-[rgb(var(--border-line))] bg-surface-1 p-0.5"
             />
 
             <input
@@ -994,13 +994,13 @@ function ColorField({
                   commitDraft();
                 }
               }}
-              className="min-w-0 flex-1 rounded border border-gray-200 bg-gray-50 px-2 py-1.5 text-[11px] font-mono uppercase text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="min-w-0 flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5 text-[11px] font-mono uppercase text-text-secondary focus:outline-none focus:ring-1 focus:ring-brand"
             />
 
             <button
               type="button"
               onClick={() => setOpen(false)}
-              className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              className="rounded p-1 text-text-quaternary hover:bg-surface-2 hover:text-text-secondary"
               title="Close color picker"
             >
               <X className="h-3 w-3" />
@@ -1016,7 +1016,7 @@ function ColorField({
                   type="button"
                   onClick={() => applyColor(preset)}
                   className={`h-6 rounded-md border transition-transform hover:scale-105 ${
-                    active ? 'border-slate-900 ring-1 ring-slate-900/20' : 'border-gray-200'
+                    active ? 'border-[rgb(var(--border-strong))] ring-1 ring-[rgb(var(--border-strong))]/20' : 'border-[rgb(var(--border-line))]'
                   }`}
                   style={{ backgroundColor: preset }}
                   title={preset}
@@ -1332,7 +1332,7 @@ export function ExploreChartConfig({
   return (
     <div className={`space-y-4 p-4${readOnly ? ' pointer-events-none opacity-60' : ''}`}>
       {validationMessage && (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+        <div className="rounded-2xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
           {validationMessage}
         </div>
       )}
@@ -1344,14 +1344,14 @@ export function ExploreChartConfig({
           title="Chart Type"
           description="Start with the visual form. The required field roles below will adapt to the chart you choose."
         >
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Chart Type</p>
+          <p className="text-xs font-semibold text-text-tertiary uppercase tracking-wide mb-2">Chart Type</p>
           <div className="grid grid-cols-4 gap-1">
             {CHART_TYPE_GRID.map(({ value, label, icon }) => (
               <button key={value} onClick={() => onChartTypeChange(value)}
                 className={`flex flex-col items-center gap-0.5 px-1 py-1.5 rounded-md text-[10px] leading-tight transition-colors border
                   ${chartType === value
-                    ? 'border-blue-400 bg-blue-50 text-blue-700 font-semibold'
-                    : 'border-transparent hover:bg-gray-50 text-gray-600'
+                    ? 'border-brand/50 bg-brand/10 text-brand font-semibold'
+                    : 'border-transparent hover:bg-surface-2 text-text-secondary'
                   }`}
                 title={label}
               >
@@ -1423,7 +1423,7 @@ export function ExploreChartConfig({
                     const allSelected = !normalizedRoleConfig.selectedColumns || normalizedRoleConfig.selectedColumns.length === availableColumns.length;
                     upd({ selectedColumns: allSelected ? [] : availableColumns.map(c => c.name) });
                   }}
-                  className="text-xs text-blue-600 hover:text-blue-800"
+                  className="text-xs text-brand hover:text-brand"
                 >
                   {!normalizedRoleConfig.selectedColumns || normalizedRoleConfig.selectedColumns.length === availableColumns.length ? 'Deselect all' : 'Select all'}
                 </button>
@@ -1432,7 +1432,7 @@ export function ExploreChartConfig({
                 {availableColumns.map(col => {
                   const checked = !normalizedRoleConfig.selectedColumns || normalizedRoleConfig.selectedColumns.includes(col.name);
                   return (
-                    <label key={col.name} className="flex items-center gap-2 py-1 px-2 rounded hover:bg-gray-50 cursor-pointer group">
+                    <label key={col.name} className="flex items-center gap-2 py-1 px-2 rounded hover:bg-surface-2 cursor-pointer group">
                       <input
                         type="checkbox"
                         checked={checked}
@@ -1441,10 +1441,10 @@ export function ExploreChartConfig({
                           const next = checked ? current.filter(n => n !== col.name) : [...current, col.name];
                           upd({ selectedColumns: next });
                         }}
-                        className="w-3.5 h-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        className="w-3.5 h-3.5 rounded border-[rgb(var(--border-strong))] text-brand focus:ring-brand"
                       />
-                      <span className="text-xs text-gray-700 truncate flex-1">{col.name}</span>
-                      <span className="text-xs text-gray-400 opacity-0 group-hover:opacity-100">{col.type}</span>
+                      <span className="text-xs text-text-secondary truncate flex-1">{col.name}</span>
+                      <span className="text-xs text-text-quaternary opacity-0 group-hover:opacity-100">{col.type}</span>
                     </label>
                   );
                 })}
@@ -1495,16 +1495,16 @@ export function ExploreChartConfig({
           hint="Resize columns directly from the table preview by dragging the header edge. Use these controls to set value alignment and clear saved widths."
           defaultOpen
         >
-          <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2">
+          <div className="flex items-center justify-between rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
             <div className="flex items-center gap-1">
-              <div className="text-xs font-semibold text-gray-700">Resizable columns</div>
+              <div className="text-xs font-semibold text-text-secondary">Resizable columns</div>
               <HelpTooltip text="Drag the divider on a column header in the preview to widen or shrink that column." />
             </div>
             <button
               type="button"
               onClick={resetAllTableColumnWidths}
               disabled={Object.keys(tableColumnWidths).length === 0}
-              className="rounded-md border border-gray-200 px-2.5 py-1.5 text-[11px] font-medium text-gray-600 hover:border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-md border border-[rgb(var(--border-line))] px-2.5 py-1.5 text-[11px] font-medium text-text-secondary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Reset all widths
             </button>
@@ -1518,12 +1518,12 @@ export function ExploreChartConfig({
               return (
                 <div
                   key={`table-column-layout-${column.name}`}
-                  className="rounded-lg border border-gray-200 bg-gray-50 p-3"
+                  className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="truncate text-xs font-semibold text-gray-700">{column.name}</div>
-                      <div className="mt-1 text-[11px] text-gray-400">
+                      <div className="truncate text-xs font-semibold text-text-secondary">{column.name}</div>
+                      <div className="mt-1 text-[11px] text-text-quaternary">
                         {column.type || 'column'}
                         {currentWidth ? ` | ${Math.round(currentWidth)}px` : ' | auto width'}
                       </div>
@@ -1532,15 +1532,15 @@ export function ExploreChartConfig({
                       type="button"
                       onClick={() => resetTableColumnWidth(column.name)}
                       disabled={!currentWidth}
-                      className="rounded-md border border-gray-200 px-2 py-1 text-[11px] font-medium text-gray-500 hover:border-gray-300 hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-[11px] font-medium text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:bg-surface-1 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Reset width
                     </button>
                   </div>
 
                   <div className="mt-3">
-                    <label className="mb-1.5 block text-xs font-semibold text-gray-600">Value alignment</label>
-                    <div className="inline-flex rounded-md border border-gray-200 bg-white p-1">
+                    <label className="mb-1.5 block text-xs font-semibold text-text-secondary">Value alignment</label>
+                    <div className="inline-flex rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-1">
                       {TABLE_COLUMN_ALIGNMENT_OPTIONS.map((option) => {
                         const active = currentAlignment === option.value;
                         return (
@@ -1550,8 +1550,8 @@ export function ExploreChartConfig({
                             onClick={() => updateTableColumnAlignment(column.name, option.value)}
                             className={`rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
                               active
-                                ? 'bg-blue-50 text-blue-700'
-                                : 'text-gray-500 hover:bg-gray-50'
+                                ? 'bg-brand/10 text-brand'
+                                : 'text-text-tertiary hover:bg-surface-2'
                             }`}
                           >
                             {option.label}
@@ -1580,16 +1580,16 @@ export function ExploreChartConfig({
                 return (
                   <div
                     key={`table-summary-row-${index}`}
-                    className="space-y-2.5 rounded-lg border border-gray-200 bg-gray-50 p-3"
+                    className="space-y-2.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3"
                   >
                     <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
                         Summary Row {index + 1}
                       </span>
                       <button
                         type="button"
                         onClick={() => removeTableSummaryRow(index)}
-                        className="rounded p-1 text-gray-400 hover:bg-white hover:text-red-500"
+                        className="rounded p-1 text-text-quaternary hover:bg-surface-1 hover:text-danger"
                         title="Remove summary row"
                       >
                         <X className="h-3.5 w-3.5" />
@@ -1598,24 +1598,24 @@ export function ExploreChartConfig({
 
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <label className="mb-1 block text-xs font-semibold text-gray-600">Label</label>
+                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Label</label>
                         <input
                           type="text"
                           value={summaryRow.label || ''}
                           onChange={e => updateTableSummaryRow(index, { label: e.target.value || `Summary ${index + 1}` })}
-                          className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs"
+                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
                           placeholder="Total"
                         />
                       </div>
 
                       <div>
-                        <label className="mb-1 block text-xs font-semibold text-gray-600">Formula</label>
+                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Formula</label>
                         <select
                           value={summaryRow.calculation}
                           onChange={e => updateTableSummaryRow(index, {
                             calculation: e.target.value as TableSummaryCalculation,
                           })}
-                          className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs"
+                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
                         >
                           {TABLE_SUMMARY_CALCULATION_OPTIONS.map((option) => (
                             <option key={option.value} value={option.value}>
@@ -1636,13 +1636,13 @@ export function ExploreChartConfig({
 
                     <div className="space-y-2">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-semibold text-gray-600">Columns</span>
-                        <div className="inline-flex rounded-md border border-gray-200 bg-white p-1">
+                        <span className="text-xs font-semibold text-text-secondary">Columns</span>
+                        <div className="inline-flex rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-1">
                           <button
                             type="button"
                             onClick={() => toggleTableSummaryRowColumnMode(index, true)}
                             className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-                              usesAllColumns ? 'bg-blue-50 text-blue-700' : 'text-gray-500 hover:bg-gray-50'
+                              usesAllColumns ? 'bg-brand/10 text-brand' : 'text-text-tertiary hover:bg-surface-2'
                             }`}
                           >
                             All numeric
@@ -1651,7 +1651,7 @@ export function ExploreChartConfig({
                             type="button"
                             onClick={() => toggleTableSummaryRowColumnMode(index, false)}
                             className={`rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-                              !usesAllColumns ? 'bg-blue-50 text-blue-700' : 'text-gray-500 hover:bg-gray-50'
+                              !usesAllColumns ? 'bg-brand/10 text-brand' : 'text-text-tertiary hover:bg-surface-2'
                             }`}
                           >
                             Pick columns
@@ -1670,8 +1670,8 @@ export function ExploreChartConfig({
                                 onClick={() => toggleTableSummaryColumnSelection(index, column.name)}
                                 className={`rounded-full border px-2 py-1 text-[11px] font-medium transition-colors ${
                                   selected
-                                    ? 'border-blue-200 bg-blue-50 text-blue-700'
-                                    : 'border-gray-200 bg-white text-gray-500 hover:border-gray-300'
+                                    ? 'border-brand/30 bg-brand/10 text-brand'
+                                    : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:border-[rgb(var(--border-strong))]'
                                 }`}
                               >
                                 {column.name}
@@ -1690,7 +1690,7 @@ export function ExploreChartConfig({
           <button
             type="button"
             onClick={addTableSummaryRow}
-            className="w-full rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
+            className="w-full rounded-md border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 px-3 py-2 text-xs font-medium text-text-secondary hover:bg-surface-2"
           >
             + Add summary row
           </button>
@@ -1708,16 +1708,16 @@ export function ExploreChartConfig({
               {tableHeatmapRules.map((rule, index) => (
                 <div
                   key={`table-heatmap-${index}`}
-                  className="space-y-2.5 rounded-lg border border-gray-200 bg-gray-50 p-3"
+                  className="space-y-2.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3"
                 >
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
                       Heatmap {index + 1}
                     </span>
                     <button
                       type="button"
                       onClick={() => removeTableHeatmapRule(index)}
-                      className="rounded p-1 text-gray-400 hover:bg-white hover:text-red-500"
+                      className="rounded p-1 text-text-quaternary hover:bg-surface-1 hover:text-danger"
                       title="Remove heatmap"
                     >
                       <X className="h-3.5 w-3.5" />
@@ -1734,11 +1734,11 @@ export function ExploreChartConfig({
                   />
 
                   <div>
-                    <label className="mb-1 block text-xs font-semibold text-gray-600">Bands</label>
+                    <label className="mb-1 block text-xs font-semibold text-text-secondary">Bands</label>
                     <select
                       value={String(rule.steps ?? 5)}
                       onChange={e => updateTableHeatmapRule(index, { steps: Number(e.target.value) })}
-                      className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs"
+                      className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
                     >
                       {TABLE_HEATMAP_STEP_OPTIONS.map((step) => (
                         <option key={step} value={step}>
@@ -1788,16 +1788,16 @@ export function ExploreChartConfig({
                 return (
                   <div
                     key={`table-rule-${index}`}
-                    className="space-y-2.5 rounded-lg border border-gray-200 bg-gray-50 p-3"
+                    className="space-y-2.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3"
                   >
                     <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
                         Rule {index + 1}
                       </span>
                       <button
                         type="button"
                         onClick={() => removeTableRule(index)}
-                        className="rounded p-1 text-gray-400 hover:bg-white hover:text-red-500"
+                        className="rounded p-1 text-text-quaternary hover:bg-surface-1 hover:text-danger"
                         title="Remove rule"
                       >
                         <X className="h-3.5 w-3.5" />
@@ -1815,13 +1815,13 @@ export function ExploreChartConfig({
 
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <label className="mb-1 block text-xs font-semibold text-gray-600">Operator</label>
+                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Operator</label>
                         <select
                           value={rule.operator}
                           onChange={e => updateTableRule(index, {
                             operator: e.target.value as ConditionalFormatRule['operator'],
                           })}
-                          className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs"
+                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
                         >
                           {CONDITIONAL_OPERATOR_OPTIONS.map(option => (
                             <option key={option.value} value={option.value}>
@@ -1832,7 +1832,7 @@ export function ExploreChartConfig({
                       </div>
 
                       <div>
-                        <label className="mb-1 block text-xs font-semibold text-gray-600">Benchmark Type</label>
+                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Benchmark Type</label>
                         <select
                           value={benchmarkMode}
                           onChange={e => {
@@ -1841,7 +1841,7 @@ export function ExploreChartConfig({
                               ? { benchmarkField: rule.benchmarkField ?? tableBenchmarkColumns[0]?.name }
                               : { benchmarkField: undefined });
                           }}
-                          className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs"
+                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
                         >
                           <option value="value">Fixed value</option>
                           <option value="field">Another column</option>
@@ -1860,13 +1860,13 @@ export function ExploreChartConfig({
                       />
                     ) : (
                       <div>
-                        <label className="mb-1 block text-xs font-semibold text-gray-600">Benchmark</label>
+                        <label className="mb-1 block text-xs font-semibold text-text-secondary">Benchmark</label>
                         <input
                           type="text"
                           value={String(rule.value ?? '')}
                           onChange={e => updateTableRule(index, { value: e.target.value })}
                           placeholder="e.g. 1000"
-                          className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs"
+                          className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs"
                         />
                       </div>
                     )}
@@ -1885,7 +1885,7 @@ export function ExploreChartConfig({
                     </div>
 
                     {benchmarkMode === 'value' && String(rule.value ?? '').trim() === '' && (
-                      <p className="text-[11px] text-amber-600">
+                      <p className="text-[11px] text-warning">
                         Enter a benchmark value to activate this rule on the table.
                       </p>
                     )}
@@ -1898,7 +1898,7 @@ export function ExploreChartConfig({
           <button
             type="button"
             onClick={addTableRule}
-            className="w-full rounded-md border border-dashed border-blue-300 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-100"
+            className="w-full rounded-md border border-dashed border-brand/40 bg-brand/10 px-3 py-2 text-xs font-medium text-brand hover:bg-brand/15"
           >
             + Add rule
           </button>
@@ -1932,18 +1932,18 @@ export function ExploreChartConfig({
         >
         <Disclosure title="Card Details" hint="Make the KPI card smarter with labels, context, benchmark, and value rules." defaultOpen>
           <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1 block">Card Label</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Card Label</label>
             <input
               type="text"
               value={normalizedStyleConfig.kpiLabel || ''}
               placeholder="Use metric label"
               onChange={e => updStyle({ kpiLabel: e.target.value })}
-              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md"
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md"
             />
           </div>
 
           <div>
-            <label className="flex items-center gap-1 text-xs font-semibold text-gray-600 mb-1">
+            <label className="flex items-center gap-1 text-xs font-semibold text-text-secondary mb-1">
               Context Template
               <HelpTooltip text="Use tokens like {value}, {benchmark}, {delta}, {deltaPercent}, {benchmarkLabel}, {label}, {rows}, {rawValue}. If Benchmark Metric is set, the card uses that dynamic value before the manual benchmark value." />
             </label>
@@ -1952,7 +1952,7 @@ export function ExploreChartConfig({
               placeholder="Example: {delta} above {benchmarkLabel} {benchmark}"
               onChange={e => updStyle({ kpiContextTemplate: e.target.value })}
               rows={3}
-              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md resize-none"
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md resize-none"
             />
             <div className="mt-2 flex flex-wrap gap-1">
               {KPI_TEMPLATE_TOKENS.map((token) => (
@@ -1962,7 +1962,7 @@ export function ExploreChartConfig({
                   onClick={() => updStyle({
                     kpiContextTemplate: `${normalizedStyleConfig.kpiContextTemplate || ''}${token}`,
                   })}
-                  className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700 hover:bg-blue-100"
+                  className="rounded-full border border-brand/30 bg-brand/10 px-2 py-0.5 text-[10px] font-medium text-brand hover:bg-brand/15"
                 >
                   {token}
                 </button>
@@ -1972,7 +1972,7 @@ export function ExploreChartConfig({
 
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">Manual Benchmark</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Manual Benchmark</label>
               <input
                 type="number"
                 value={normalizedStyleConfig.kpiBenchmarkValue ?? ''}
@@ -1980,18 +1980,18 @@ export function ExploreChartConfig({
                 onChange={e => updStyle({
                   kpiBenchmarkValue: e.target.value === '' ? '' : Number(e.target.value),
                 })}
-                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md"
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md"
               />
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">Benchmark Label</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Benchmark Label</label>
               <input
                 type="text"
                 value={normalizedStyleConfig.kpiBenchmarkLabel || ''}
                 placeholder="Target"
                 onChange={e => updStyle({ kpiBenchmarkLabel: e.target.value })}
-                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md"
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md"
               />
             </div>
           </div>
@@ -2011,11 +2011,11 @@ export function ExploreChartConfig({
 
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">Goal Direction</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Goal Direction</label>
               <select
                 value={normalizedStyleConfig.kpiGoalDirection || 'up'}
                 onChange={e => updStyle({ kpiGoalDirection: e.target.value as KpiGoalDirection })}
-                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white"
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
               >
                 {KPI_GOAL_DIRECTION_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
@@ -2046,9 +2046,9 @@ export function ExploreChartConfig({
           {normalizedStyleConfig.kpiEnableColorRules && (
             <div className="space-y-2">
               {(normalizedStyleConfig.kpiColorRules ?? []).map((rule, index) => (
-                <div key={`kpi-rule-${index}`} className="rounded-lg border border-gray-200 bg-gray-50/80 p-2 space-y-2">
+                <div key={`kpi-rule-${index}`} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2/80 p-2 space-y-2">
                   <div className="flex items-center justify-between gap-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
                       Rule {index + 1}
                     </div>
                     <button
@@ -2056,7 +2056,7 @@ export function ExploreChartConfig({
                       onClick={() => updStyle({
                         kpiColorRules: (normalizedStyleConfig.kpiColorRules ?? []).filter((_, ruleIndex) => ruleIndex !== index),
                       })}
-                      className="rounded p-1 text-gray-400 hover:bg-white hover:text-red-500"
+                      className="rounded p-1 text-text-quaternary hover:bg-surface-1 hover:text-danger"
                     >
                       <X className="h-3 w-3" />
                     </button>
@@ -2064,7 +2064,7 @@ export function ExploreChartConfig({
 
                   <div className="grid grid-cols-[96px_1fr] gap-2">
                     <div>
-                      <label className="text-[11px] font-semibold text-gray-500 mb-1 block">Operator</label>
+                      <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">Operator</label>
                       <select
                         value={rule.operator}
                         onChange={e => updStyle({
@@ -2074,7 +2074,7 @@ export function ExploreChartConfig({
                               : currentRule
                           )),
                         })}
-                        className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white"
+                        className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
                       >
                         {CONDITIONAL_OPERATOR_OPTIONS.map((option) => (
                           <option key={option.value} value={option.value}>{option.label}</option>
@@ -2083,7 +2083,7 @@ export function ExploreChartConfig({
                     </div>
 
                     <div>
-                      <label className="text-[11px] font-semibold text-gray-500 mb-1 block">Value</label>
+                      <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">Value</label>
                       <input
                         type="number"
                         value={rule.value}
@@ -2094,13 +2094,13 @@ export function ExploreChartConfig({
                               : currentRule
                           )),
                         })}
-                        className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white"
+                        className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
                       />
                     </div>
                   </div>
 
                   <div>
-                    <label className="text-[11px] font-semibold text-gray-500 mb-1 block">Status Label</label>
+                    <label className="text-[11px] font-semibold text-text-tertiary mb-1 block">Status Label</label>
                     <input
                       type="text"
                       value={rule.label || ''}
@@ -2112,7 +2112,7 @@ export function ExploreChartConfig({
                             : currentRule
                         )),
                       })}
-                      className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white"
+                      className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
                     />
                   </div>
 
@@ -2138,7 +2138,7 @@ export function ExploreChartConfig({
                     createDefaultKpiColorRule((normalizedStyleConfig.kpiColorRules ?? []).length),
                   ],
                 })}
-                className="w-full rounded-md border border-dashed border-gray-300 px-3 py-2 text-xs font-medium text-gray-500 hover:border-gray-400 hover:text-gray-700"
+                className="w-full rounded-md border border-dashed border-[rgb(var(--border-strong))] px-3 py-2 text-xs font-medium text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:text-text-secondary"
               >
                 + Add Color Rule
               </button>
@@ -2258,32 +2258,32 @@ export function ExploreChartConfig({
           {/* Color palette ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â compact horizontal row */}
           {/* Chart Title */}
           <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1 block">Chart Title</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Chart Title</label>
             <input type="text" value={styleConfig.chartTitle || ''} placeholder="Optional title"
               onChange={e => updStyle({ chartTitle: e.target.value })}
-              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
           </div>
 
           {/* PIE: donut hole slider */}
           {chartType === 'PIE' && (
             <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">
                 Donut Hole: {styleConfig.pieInnerRadius ?? 0}%
-                <span className="ml-1 font-normal text-gray-400">({(styleConfig.pieInnerRadius ?? 0) === 0 ? 'Pie' : 'Donut'})</span>
+                <span className="ml-1 font-normal text-text-quaternary">({(styleConfig.pieInnerRadius ?? 0) === 0 ? 'Pie' : 'Donut'})</span>
               </label>
               <input type="range" min={0} max={80} step={5} value={styleConfig.pieInnerRadius ?? 0}
                 onChange={e => updStyle({ pieInnerRadius: Number(e.target.value) })}
-                className="w-full h-1.5 bg-gray-200 rounded-lg accent-blue-500 cursor-pointer" />
+                className="w-full h-1.5 bg-surface-3 rounded-lg accent-blue-500 cursor-pointer" />
             </div>
           )}
 
           {/* STACKED_BAR: 100% stack mode */}
           {chartType === 'STACKED_BAR' && (
             <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">Stack Mode</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Stack Mode</label>
               <select value={styleConfig.stackMode || 'normal'}
                 onChange={e => updStyle({ stackMode: e.target.value as 'normal' | 'percent' })}
-                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
                 <option value="normal">Normal (absolute values)</option>
                 <option value="percent">100% Stacked (percentage)</option>
               </select>
@@ -2292,7 +2292,7 @@ export function ExploreChartConfig({
 
           {chartType !== 'KPI' && (
             <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1.5 block">Color Palette</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1.5 block">Color Palette</label>
               <div className="space-y-1.5">
                 {CHART_PALETTES.map(p => (
                   <button
@@ -2301,18 +2301,18 @@ export function ExploreChartConfig({
                     onClick={() => updStyle({ palette: p.name })}
                     className={`w-full rounded-lg border px-2.5 py-2 text-left transition-colors ${
                       (styleConfig.palette || 'default') === p.name
-                        ? 'border-blue-300 bg-blue-50'
-                        : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
+                        ? 'border-brand/40 bg-brand/10'
+                        : 'border-[rgb(var(--border-line))] bg-surface-1 hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-3">
                       <span className={`text-xs font-medium ${
-                        (styleConfig.palette || 'default') === p.name ? 'text-blue-700' : 'text-gray-700'
+                        (styleConfig.palette || 'default') === p.name ? 'text-brand' : 'text-text-secondary'
                       }`}>
                         {p.label}
                       </span>
                       {(styleConfig.palette || 'default') === p.name && (
-                        <Check className="h-3.5 w-3.5 shrink-0 text-blue-600" />
+                        <Check className="h-3.5 w-3.5 shrink-0 text-brand" />
                       )}
                     </div>
 
@@ -2339,10 +2339,10 @@ export function ExploreChartConfig({
 
           {/* Number format */}
           <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1 block">Number Format</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Number Format</label>
             <select value={styleConfig.numberFormat || 'compact'}
               onChange={e => updStyle({ numberFormat: e.target.value as NumberFormat })}
-              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
               <option value="auto">Auto (raw)</option>
               <option value="compact">Compact (1.2K, 3.4M)</option>
               <option value="number">Full Number (1,234)</option>
@@ -2354,10 +2354,10 @@ export function ExploreChartConfig({
           {/* Legend position */}
           {chartType !== 'KPI' && (
             <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">Legend</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Legend</label>
               <select value={styleConfig.legendPosition || 'bottom'}
                 onChange={e => updStyle({ legendPosition: e.target.value as LegendPosition })}
-                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
                 <option value="top">Top</option>
                 <option value="bottom">Bottom</option>
                 <option value="left">Left</option>
@@ -2383,36 +2383,36 @@ export function ExploreChartConfig({
           <Toggle label="Grid Lines" checked={styleConfig.showGrid ?? true}
             onChange={v => updStyle({ showGrid: v })} />
           <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1 block">X Axis Label</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">X Axis Label</label>
             <input type="text" value={styleConfig.xAxisLabel || ''} placeholder="auto"
               onChange={e => updStyle({ xAxisLabel: e.target.value })}
-              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
           </div>
           <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1 block">Y Axis Label</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Y Axis Label</label>
             <input type="text" value={styleConfig.yAxisLabel || ''} placeholder="auto"
               onChange={e => updStyle({ yAxisLabel: e.target.value })}
-              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">Y Min</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Y Min</label>
               <input type="number" value={styleConfig.yAxisMin ?? ''} placeholder="auto"
                 onChange={e => updStyle({ yAxisMin: e.target.value === '' ? '' : Number(e.target.value) })}
-                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
             </div>
             <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">Y Max</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Y Max</label>
               <input type="number" value={styleConfig.yAxisMax ?? ''} placeholder="auto"
                 onChange={e => updStyle({ yAxisMax: e.target.value === '' ? '' : Number(e.target.value) })}
-                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
             </div>
           </div>
           <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1 block">Font Size: {styleConfig.fontSize || 12}px</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Font Size: {styleConfig.fontSize || 12}px</label>
             <input type="range" min={9} max={18} step={1} value={styleConfig.fontSize || 12}
               onChange={e => updStyle({ fontSize: Number(e.target.value) })}
-              className="w-full h-1.5 bg-gray-200 rounded-lg accent-blue-500 cursor-pointer" />
+              className="w-full h-1.5 bg-surface-3 rounded-lg accent-blue-500 cursor-pointer" />
           </div>
         </Disclosure>
       )}
@@ -2430,7 +2430,7 @@ export function ExploreChartConfig({
             <>
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-xs font-semibold text-gray-600 mb-1 block">Benchmark Value</label>
+                  <label className="text-xs font-semibold text-text-secondary mb-1 block">Benchmark Value</label>
                   <input
                     type="number"
                     value={normalizedStyleConfig.benchmarkValue ?? ''}
@@ -2440,20 +2440,20 @@ export function ExploreChartConfig({
                     })}
                     className={`w-full px-2 py-1.5 text-xs border rounded-md ${
                       normalizedStyleConfig.benchmarkValue === ''
-                        ? 'border-amber-300 bg-amber-50'
-                        : 'border-gray-300'
+                        ? 'border-warning/40 bg-warning/10'
+                        : 'border-[rgb(var(--border-strong))]'
                     }`}
                   />
                 </div>
 
                 <div>
-                  <label className="text-xs font-semibold text-gray-600 mb-1 block">Label</label>
+                  <label className="text-xs font-semibold text-text-secondary mb-1 block">Label</label>
                   <input
                     type="text"
                     value={normalizedStyleConfig.benchmarkLabel ?? ''}
                     placeholder="Benchmark"
                     onChange={e => updStyle({ benchmarkLabel: e.target.value })}
-                    className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md"
+                    className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md"
                   />
                 </div>
               </div>
@@ -2466,11 +2466,11 @@ export function ExploreChartConfig({
                 />
 
                 <div>
-                  <label className="text-xs font-semibold text-gray-600 mb-1 block">Line Style</label>
+                  <label className="text-xs font-semibold text-text-secondary mb-1 block">Line Style</label>
                   <select
                     value={normalizedStyleConfig.benchmarkLineStyle || 'dashed'}
                     onChange={e => updStyle({ benchmarkLineStyle: e.target.value as ChartBenchmarkLineStyle })}
-                    className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white"
+                    className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
                   >
                     <option value="solid">Solid</option>
                     <option value="dashed">Dashed</option>
@@ -2485,16 +2485,16 @@ export function ExploreChartConfig({
       {isBarType && (
         <Disclosure title="Bar Shape">
           <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1 block">Bar Radius: {styleConfig.barRadius ?? 4}px</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Bar Radius: {styleConfig.barRadius ?? 4}px</label>
             <input type="range" min={0} max={12} step={1} value={styleConfig.barRadius ?? 4}
               onChange={e => updStyle({ barRadius: Number(e.target.value) })}
-              className="w-full h-1.5 bg-gray-200 rounded-lg accent-blue-500 cursor-pointer" />
+              className="w-full h-1.5 bg-surface-3 rounded-lg accent-blue-500 cursor-pointer" />
           </div>
           <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1 block">Bar Width (px)</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Bar Width (px)</label>
             <input type="number" min={4} max={200} value={styleConfig.barSize ?? ''} placeholder="auto"
               onChange={e => updStyle({ barSize: e.target.value === '' ? '' : Number(e.target.value) })}
-              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
           </div>
         </Disclosure>
       )}
@@ -2505,26 +2505,26 @@ export function ExploreChartConfig({
           <Toggle label="Show Dots" checked={styleConfig.showDots ?? true}
             onChange={v => updStyle({ showDots: v })} />
           <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1 block">Line Style</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Line Style</label>
             <select value={styleConfig.lineStyle || 'solid'}
               onChange={e => updStyle({ lineStyle: e.target.value as 'solid' | 'dashed' })}
-              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
               <option value="solid">Solid</option>
               <option value="dashed">Dashed</option>
             </select>
           </div>
           <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1 block">Line Width: {styleConfig.lineWidth ?? 2}px</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Line Width: {styleConfig.lineWidth ?? 2}px</label>
             <input type="range" min={1} max={6} step={1} value={styleConfig.lineWidth ?? 2}
               onChange={e => updStyle({ lineWidth: Number(e.target.value) })}
-              className="w-full h-1.5 bg-gray-200 rounded-lg accent-blue-500 cursor-pointer" />
+              className="w-full h-1.5 bg-surface-3 rounded-lg accent-blue-500 cursor-pointer" />
           </div>
           {(chartType === 'AREA') && (
             <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">Fill Opacity: {Math.round((styleConfig.areaOpacity ?? 0.6) * 100)}%</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Fill Opacity: {Math.round((styleConfig.areaOpacity ?? 0.6) * 100)}%</label>
               <input type="range" min={0} max={100} step={5} value={Math.round((styleConfig.areaOpacity ?? 0.6) * 100)}
                 onChange={e => updStyle({ areaOpacity: Number(e.target.value) / 100 })}
-                className="w-full h-1.5 bg-gray-200 rounded-lg accent-blue-500 cursor-pointer" />
+                className="w-full h-1.5 bg-surface-3 rounded-lg accent-blue-500 cursor-pointer" />
             </div>
           )}
         </Disclosure>
@@ -2537,10 +2537,10 @@ export function ExploreChartConfig({
             onChange={v => updStyle({ dualYAxis: v })} />
           {styleConfig.dualYAxis && (
             <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">Right Axis Label</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Right Axis Label</label>
               <input type="text" value={styleConfig.yAxisRightLabel || ''} placeholder="auto"
                 onChange={e => updStyle({ yAxisRightLabel: e.target.value })}
-                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
             </div>
           )}
         </Disclosure>
@@ -2550,10 +2550,10 @@ export function ExploreChartConfig({
       {chartType === 'TIME_SERIES' && (
         <Disclosure title="Time Granularity" hint="Bucket timestamps into time periods before aggregating. Useful for compressing high-frequency data.">
           <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1 block">Group by</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Group by</label>
             <select value={styleConfig.timeGranularity || 'raw'}
               onChange={e => updStyle({ timeGranularity: e.target.value as TimeGranularity })}
-              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
               <option value="raw">Raw (no bucketing)</option>
               <option value="day">Day</option>
               <option value="week">Week</option>
@@ -2569,10 +2569,10 @@ export function ExploreChartConfig({
       {chartType === 'SCATTER' && (
         <Disclosure title="Point Labels" hint="Show a label on each scatter point from a dimension column.">
           <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1 block">Label Field</label>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Label Field</label>
             <select value={styleConfig.scatterLabelField || ''}
               onChange={e => updStyle({ scatterLabelField: e.target.value })}
-              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
               <option value="">None</option>
               {allCols.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
             </select>
@@ -2586,35 +2586,35 @@ export function ExploreChartConfig({
           {/* Sort rules */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-gray-600">Sort Rules</span>
+              <span className="text-xs font-semibold text-text-secondary">Sort Rules</span>
               <button type="button"
                 onClick={() => {
                   if (sortLimitCols.length === 0) return;
                   updStyle({ chartSortRules: [...chartSortRules, { field: sortLimitCols[0].name, direction: 'asc' }] });
                 }}
                 disabled={sortLimitCols.length === 0}
-                className="text-xs text-blue-600 hover:text-blue-800 disabled:cursor-not-allowed disabled:text-gray-300">+ Add rule</button>
+                className="text-xs text-brand hover:text-brand disabled:cursor-not-allowed disabled:text-text-quaternary">+ Add rule</button>
             </div>
             {chartSortRules.length === 0 && sortLimitCols.length === 0 && (
-              <p className="text-[11px] text-gray-400 italic">Run query first to enable sorting.</p>
+              <p className="text-[11px] text-text-quaternary italic">Run query first to enable sorting.</p>
             )}
             {chartSortRules.map((rule, i) => (
-              <div key={i} className="flex items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 p-2">
-                <span className="text-[11px] text-gray-400 w-4 text-center">{i + 1}</span>
+              <div key={i} className="flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-2">
+                <span className="text-[11px] text-text-quaternary w-4 text-center">{i + 1}</span>
                 <select value={rule.field}
                   onChange={e => updStyle({ chartSortRules: chartSortRules.map((r, ri) => ri === i ? { ...r, field: e.target.value } : r) })}
-                  className="flex-1 px-1.5 py-1 text-xs border border-gray-300 rounded-md bg-white min-w-0">
+                  className="flex-1 px-1.5 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1 min-w-0">
                   {sortLimitCols.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                 </select>
                 <select value={rule.direction}
                   onChange={e => updStyle({ chartSortRules: chartSortRules.map((r, ri) => ri === i ? { ...r, direction: e.target.value as 'asc' | 'desc' } : r) })}
-                  className="w-20 px-1.5 py-1 text-xs border border-gray-300 rounded-md bg-white">
+                  className="w-20 px-1.5 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
                   <option value="asc">ASC</option>
                   <option value="desc">DESC</option>
                 </select>
                 <button type="button"
                   onClick={() => updStyle({ chartSortRules: chartSortRules.filter((_, ri) => ri !== i) })}
-                  className="p-0.5 text-gray-400 hover:text-red-500 flex-shrink-0">
+                  className="p-0.5 text-text-quaternary hover:text-danger flex-shrink-0">
                   <X className="w-3.5 h-3.5" />
                 </button>
               </div>
@@ -2624,19 +2624,19 @@ export function ExploreChartConfig({
           {/* Top N limit */}
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">Show</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Show</label>
               <select value={styleConfig.dataLimitDirection || 'top'}
                 onChange={e => updStyle({ dataLimitDirection: e.target.value as 'top' | 'bottom' })}
-                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white">
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
                 <option value="top">Top N</option>
                 <option value="bottom">Bottom N</option>
               </select>
             </div>
             <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">Limit (rows)</label>
+              <label className="text-xs font-semibold text-text-secondary mb-1 block">Limit (rows)</label>
               <input type="number" min={1} value={styleConfig.dataLimit ?? ''} placeholder="all"
                 onChange={e => updStyle({ dataLimit: e.target.value === '' ? '' : Number(e.target.value) })}
-                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-md" />
+                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
             </div>
           </div>
         </Disclosure>

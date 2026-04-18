@@ -10,6 +10,10 @@ import { PageListLayout } from '@/components/common/PageListLayout';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { CreateScopedChatModal } from '@/components/ai-chat/CreateScopedChatModal';
 import { ChatSessionList } from '@/components/ai-chat/ChatSessionList';
+import { Button } from '@/components/ui/Button';
+import { Badge } from '@/components/ui/Badge';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { FilterTag } from '@/components/ui/FilterTag';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getAiChatHttpUrl } from '@/lib/ai-services';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -26,6 +30,7 @@ export default function ChatListPage() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [authToken, setAuthToken] = useState<string>('');
   const [chatServiceAvailable, setChatServiceAvailable] = useState<boolean | null>(null);
+  const [listFilters, setListFilters] = useState<{ dataset?: string }>({});
   const { data: permData } = usePermissions();
   const canShare = hasPermission(permData?.permissions, 'ai_chat', 'edit');
   const activeToday = sessions.filter((session) => {
@@ -33,21 +38,19 @@ export default function ChatListPage() {
     return Number.isFinite(lastActive) && Date.now() - lastActive <= 24 * 60 * 60 * 1000;
   }).length;
 
+  const clearListFilters = () => setListFilters({});
+
   useEffect(() => {
     fetch('/api/auth/token')
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => {
-        if (data?.token) {
-          setAuthToken(data.token);
-        }
+        if (data?.token) setAuthToken(data.token);
       })
       .catch(() => {});
   }, []);
 
   useEffect(() => {
-    if (authToken) {
-      fetchSessions();
-    }
+    if (authToken) fetchSessions();
   }, [authToken]);
 
   function authHeaders(): Record<string, string> {
@@ -88,10 +91,7 @@ export default function ChatListPage() {
     try {
       const response = await fetch(`${getAiChatHttpUrl()}/chat/sessions`, {
         method: 'POST',
-        headers: {
-          ...authHeaders(),
-          'Content-Type': 'application/json',
-        },
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({
           context: {
             dataset_id: dataset.id,
@@ -134,9 +134,8 @@ export default function ChatListPage() {
 
   function ServiceWarning() {
     if (chatServiceAvailable !== false) return null;
-
     return (
-      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+      <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-caption text-warning">
         AI Chat service is offline. Start `ai-chat-service` if you want to use the chat module. AI Reports can still run separately.
       </div>
     );
@@ -154,27 +153,15 @@ export default function ChatListPage() {
             description={t('overview.chat.description')}
             badges={[t('overview.chat.badge1'), t('overview.chat.badge2'), t('overview.chat.badge3')]}
             stats={[
-              {
-                label: t('overview.chat.conversations'),
-                value: sessions.length,
-                helper: t('overview.chat.conversationsHelper'),
-              },
-              {
-                label: t('overview.chat.active'),
-                value: activeToday,
-                helper: t('overview.chat.activeHelper'),
-              },
+              { label: t('overview.chat.conversations'), value: sessions.length, helper: t('overview.chat.conversationsHelper') },
+              { label: t('overview.chat.active'), value: activeToday, helper: t('overview.chat.activeHelper') },
               {
                 label: t('overview.chat.service'),
                 value:
                   chatServiceAvailable === false ? (
-                    <span className="inline-flex rounded-full bg-rose-50 px-3 py-1 text-sm font-semibold text-rose-700">
-                      {t('overview.chat.offline')}
-                    </span>
+                    <Badge variant="danger" size="sm">{t('overview.chat.offline')}</Badge>
                   ) : (
-                    <span className="inline-flex rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700">
-                      {t('overview.chat.online')}
-                    </span>
+                    <Badge variant="success" size="sm" dot>{t('overview.chat.online')}</Badge>
                   ),
                 helper: t('overview.chat.serviceHelper'),
               },
@@ -182,48 +169,68 @@ export default function ChatListPage() {
           />
         )}
         action={
-          <button
+          <Button
+            variant="primary"
+            size="sm"
             onClick={handleNewChat}
             disabled={creating || chatServiceAvailable === false || !authToken}
-            className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+            loading={creating}
+            leadingIcon={creating ? undefined : <Plus className="h-3.5 w-3.5" />}
           >
-            {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             {t('action.newChat')}
-          </button>
+          </Button>
         }
         isLoading={loading}
         loadingText={t('common.loading')}
         searchPlaceholder={t('common.search')}
-        defaultView="grid"
+        defaultView="list"
+        activeFilters={listFilters.dataset ? (
+          <>
+            <FilterTag tone="brand" active onClick={clearListFilters}>
+              Dataset #{listFilters.dataset}
+            </FilterTag>
+            <Button variant="ghost" size="xs" onClick={clearListFilters}>
+              Clear filters
+            </Button>
+          </>
+        ) : null}
       >
         {({ viewMode, filterText }) => {
           const filtered = sessions.filter(
-            (session) =>
-              session.title.toLowerCase().includes(filterText.toLowerCase()) ||
-              (session.last_message ?? '').toLowerCase().includes(filterText.toLowerCase()),
+            (session) => {
+              const matchesSearch =
+                session.title.toLowerCase().includes(filterText.toLowerCase()) ||
+                (session.last_message ?? '').toLowerCase().includes(filterText.toLowerCase()) ||
+                (session.context?.dataset_name ?? '').toLowerCase().includes(filterText.toLowerCase());
+
+              return (
+                matchesSearch &&
+                (!listFilters.dataset || String(session.context?.dataset_id ?? '') === listFilters.dataset)
+              );
+            },
           );
 
           if (!loading && sessions.length === 0) {
             return (
-              <div className="space-y-4">
+              <div className="space-y-3">
                 <ServiceWarning />
-                <div className="rounded-lg border border-gray-200 bg-white p-12 text-center">
-                  <MessageSquareText className="mx-auto mb-4 h-12 w-12 text-gray-400" />
-                  <h3 className="mb-2 text-lg font-medium text-gray-900">No conversations yet</h3>
-                  <p className="text-gray-500">Start a new chat when the AI Chat service is running.</p>
-                </div>
+                <EmptyState
+                  icon={<MessageSquareText />}
+                  title="No conversations yet"
+                  description="Start a new chat when the AI Chat service is running."
+                />
               </div>
             );
           }
 
           if (filtered.length === 0) {
             return (
-              <div className="space-y-4">
+              <div className="space-y-3">
                 <ServiceWarning />
                 <div className="flex h-48 flex-col items-center justify-center text-center">
-                  <Search className="mb-2 h-8 w-8 text-gray-300" />
-                  <p className="text-sm text-gray-500">
-                    No results for &ldquo;<strong>{filterText}</strong>&rdquo;
+                  <Search className="mb-2 h-7 w-7 text-text-quaternary" />
+                  <p className="text-caption text-text-tertiary">
+                    No results for &ldquo;<strong className="text-text-primary">{filterText}</strong>&rdquo;
                   </p>
                 </div>
               </div>
@@ -231,7 +238,7 @@ export default function ChatListPage() {
           }
 
           return (
-            <div className="space-y-4">
+            <div className="space-y-3">
               <ServiceWarning />
               <ChatSessionList
                 sessions={filtered}
@@ -239,6 +246,15 @@ export default function ChatListPage() {
                 onDelete={handleDelete}
                 onShare={canShare ? (session) => setShareSession(session) : undefined}
                 deletingId={deletingId}
+                activeFilters={listFilters}
+                onFilterClick={(key, value) => {
+                  if (key === 'dataset') {
+                    setListFilters((current) => ({
+                      ...current,
+                      dataset: current.dataset === value ? undefined : value,
+                    }));
+                  }
+                }}
               />
             </div>
           );

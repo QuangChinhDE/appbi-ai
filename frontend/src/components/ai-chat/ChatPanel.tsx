@@ -25,15 +25,15 @@ interface SuggestionChipsProps {
 function SuggestionChips({ suggestions, onSelect, disabled }: SuggestionChipsProps) {
   if (!suggestions || suggestions.length === 0) return null;
   return (
-    <div className="px-4 py-2 border-t border-gray-100 bg-white/80">
-      <p className="text-[10px] text-gray-400 mb-1.5">Câu hỏi tiếp theo:</p>
+    <div className="border-t border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2">
+      <p className="text-[10px] text-text-quaternary mb-1.5">Câu hỏi tiếp theo:</p>
       <div className="flex flex-wrap gap-1.5">
         {suggestions.map((s, i) => (
           <button
             key={i}
             onClick={() => onSelect(s)}
             disabled={disabled}
-            className="text-xs px-3 py-1.5 bg-blue-50 border border-blue-200 text-blue-700 rounded-full hover:bg-blue-100 hover:border-blue-300 transition-all disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+            className="whitespace-nowrap rounded-full border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-1.5 text-xs text-text-secondary hover:border-brand/40 hover:bg-brand/15 hover:text-brand transition-all disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {s}
           </button>
@@ -411,35 +411,35 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const isLegacySession = historyLoaded && sessionContext !== null && !sessionContext?.dataset_id;
 
   return (
-    <div className="flex flex-col h-full bg-gray-50">
+    <div className="flex h-full flex-col bg-surface-0">
       {/* Header */}
-      <div className="flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-200">
+      <div className="flex items-center gap-3 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3">
         <button
           onClick={() => router.push('/chat')}
-          className="p-1.5 rounded-lg text-gray-500 hover:text-gray-800 hover:bg-gray-100 transition-colors"
+          className="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-2 transition-colors"
           title="Back to conversations"
         >
           <ArrowLeft className="h-4 w-4" />
         </button>
-        <div className="w-8 h-8 rounded-xl bg-blue-600 flex items-center justify-center flex-shrink-0">
+        <div className="w-8 h-8 rounded-xl bg-brand flex items-center justify-center flex-shrink-0">
           <Sparkles className="h-4 w-4 text-white" />
         </div>
         <div className="flex-1 min-w-0">
-          <h1 className="text-sm font-semibold text-gray-900 truncate">{sessionTitle}</h1>
+          <h1 className="text-sm font-semibold text-text-primary truncate">{sessionTitle}</h1>
           <p className="text-xs flex items-center gap-1.5">
             {loading ? (
-              <span className="text-blue-500 flex items-center gap-1">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+              <span className="text-brand flex items-center gap-1">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-brand/60 animate-pulse" />
                 Đang phân tích…
               </span>
             ) : wsConnected ? (
-              <span className="text-green-600 flex items-center gap-1">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />
+              <span className="text-success flex items-center gap-1">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-success" />
                 Sẵn sàng
               </span>
             ) : (
-              <span className="text-red-500 flex items-center gap-1">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-400" />
+              <span className="text-danger flex items-center gap-1">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-danger/60" />
                 Mất kết nối
               </span>
             )}
@@ -448,7 +448,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         {canShare && (
           <button
             onClick={() => setIsShareOpen(true)}
-            className="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+            className="p-1.5 rounded-lg text-text-quaternary hover:text-brand hover:bg-brand/15 transition-colors"
             title="Chia sẻ cuộc hội thoại"
           >
             <Share2 className="h-4 w-4" />
@@ -458,20 +458,20 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
       {/* Connection error banner */}
       {wsError && (
-        <div className="mx-4 mt-3 px-4 py-2.5 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex items-center justify-between">
+        <div className="mx-4 mt-3 px-4 py-2.5 bg-danger/10 border border-danger/30 rounded-lg text-sm text-danger flex items-center justify-between">
           <span>{wsError}</span>
-          <button onClick={() => connectWs()} className="ml-3 text-red-600 underline text-xs">Retry</button>
+          <button onClick={() => connectWs()} className="ml-3 text-danger underline text-xs">Retry</button>
         </div>
       )}
 
       {datasetLabel && (
-        <div className="mx-4 mt-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm text-blue-800">
+        <div className="mx-4 mt-3 rounded-lg border border-brand/30 bg-brand/10 px-4 py-2.5 text-sm text-brand">
           Phiên chat này đang được khóa trong <strong>{datasetLabel}</strong>. AI sẽ chỉ tìm chart, dashboard và dữ liệu trong dataset này.
         </div>
       )}
 
       {isLegacySession && (
-        <div className="mx-4 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
+        <div className="mx-4 mt-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-2.5 text-sm text-warning">
           Phiên chat này chưa được khóa theo dataset. Để AI trả lời ổn định hơn, hãy tạo conversation mới và chọn dataset ngay từ đầu.
         </div>
       )}
@@ -481,18 +481,18 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         {isEmpty && (
           <div className="flex flex-col items-center justify-center h-full gap-5 py-10">
             {/* Avatar */}
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-md">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-brand text-white shadow-linear-sm">
               <Bot className="h-8 w-8 text-white" />
             </div>
 
             {/* Greeting */}
             <div className="text-center">
-              <h2 className="text-lg font-semibold text-gray-800 mb-1">
+              <h2 className="text-lg font-semibold text-text-primary mb-1">
                 {datasetLabel
                   ? `Phân tích ${datasetLabel}`
                   : 'Xin chào! Tôi là AI Data Assistant'}
               </h2>
-              <p className="text-sm text-gray-500 max-w-sm leading-relaxed">
+              <p className="text-sm text-text-tertiary max-w-sm leading-relaxed">
                 {datasetLabel
                   ? `Hỏi tôi về dữ liệu trong dataset này — tra cứu số liệu, khám phá xu hướng, phân tích nguyên nhân hoặc tạo biểu đồ.`
                   : 'Hỏi tôi về dữ liệu trong hệ thống — tôi sẽ tìm chart phù hợp, chạy query và phân tích kết quả cho bạn.'}
@@ -507,7 +507,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
                 { icon: '💡', label: 'Phân tích sâu' },
                 { icon: '🎨', label: 'Tạo biểu đồ' },
               ].map(cap => (
-                <span key={cap.label} className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-50 border border-gray-200 rounded-full text-xs text-gray-600">
+                <span key={cap.label} className="inline-flex items-center gap-1 rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-xs text-text-secondary">
                   <span>{cap.icon}</span>{cap.label}
                 </span>
               ))}
@@ -515,7 +515,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
             {/* Dynamic starter questions */}
             <div className="w-full max-w-xl">
-              <p className="text-xs text-gray-400 text-center mb-2">
+              <p className="text-xs text-text-quaternary text-center mb-2">
                 {promptsLoading ? 'Đang tải gợi ý…' : 'Gợi ý câu hỏi:'}
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -524,9 +524,9 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
                     key={prompt}
                     onClick={() => sendMessage(prompt)}
                     disabled={!wsConnected || loading || promptsLoading}
-                    className="text-left px-3.5 py-2.5 text-sm text-gray-700 bg-white border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50/60 transition-all disabled:opacity-40 disabled:cursor-not-allowed group"
+                    className="group rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3.5 py-2.5 text-left text-sm text-text-secondary hover:border-brand/40 hover:bg-brand/15/60 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                   >
-                    <span className="group-hover:text-blue-700 transition-colors">{prompt}</span>
+                    <span className="group-hover:text-brand transition-colors">{prompt}</span>
                   </button>
                 ))}
               </div>

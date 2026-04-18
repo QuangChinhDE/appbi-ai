@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, FileText, Clock, Hash, Loader2, FileSpreadsheet } from 'lucide-react';
+import { Plus, FileText, Loader2, FileSpreadsheet } from 'lucide-react';
 import { toast } from '@/lib/toast';
 
 import { useReportTemplates, useCreateReportTemplate, useDeleteReportTemplate } from '@/hooks/use-report-templates';
@@ -13,6 +13,10 @@ import { TemplateList } from '@/components/templates/TemplateList';
 import { TemplateCardGrid } from '@/components/templates/TemplateCardGrid';
 import { ImportWizard } from '@/components/templates/ImportWizard';
 import { useI18n } from '@/providers/LanguageProvider';
+import { Button } from '@/components/ui/Button';
+import { FilterTag } from '@/components/ui/FilterTag';
+import { Input } from '@/components/ui/Input';
+import { isTemplateDefinition } from '@/types/template';
 
 export default function TemplatesPage() {
   const router = useRouter();
@@ -21,6 +25,7 @@ export default function TemplatesPage() {
   const [newName, setNewName] = useState('');
   const [deletingId, setDeletingId] = useState<number | undefined>();
   const [showImportWizard, setShowImportWizard] = useState(false);
+  const [listFilters, setListFilters] = useState<{ layout?: string; binding?: string; owner?: string }>({});
 
   const { data: templates, isLoading } = useReportTemplates();
   const { data: permData } = usePermissions();
@@ -29,6 +34,7 @@ export default function TemplatesPage() {
   const deleteMutation = useDeleteReportTemplate();
 
   const templateItems = templates ?? [];
+  const activeListFilterCount = Object.values(listFilters).filter(Boolean).length;
   const updatedThisWeek = useMemo(
     () =>
       templateItems.filter((tpl) => {
@@ -37,6 +43,15 @@ export default function TemplatesPage() {
       }).length,
     [templateItems],
   );
+
+  const toggleListFilter = (key: 'layout' | 'binding' | 'owner', value: string) => {
+    setListFilters((current) => ({
+      ...current,
+      [key]: current[key] === value ? undefined : value,
+    }));
+  };
+
+  const clearListFilters = () => setListFilters({});
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -104,62 +119,121 @@ export default function TemplatesPage() {
         canEdit ? (
           isCreating ? (
             <form onSubmit={handleCreate} className="flex items-center gap-2">
-              <input
+              <Input
                 autoFocus
                 type="text"
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 placeholder="Template name…"
-                className="rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                size="sm"
+                className="w-56"
               />
-              <button
+              <Button
                 type="submit"
+                variant="primary"
+                size="sm"
                 disabled={createMutation.isPending || !newName.trim()}
-                className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                leadingIcon={
+                  createMutation.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Plus className="h-3.5 w-3.5" />
+                  )
+                }
               >
-                {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
                 Create
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
+                variant="ghost"
+                size="sm"
                 onClick={() => setIsCreating(false)}
-                className="rounded-md px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100"
               >
                 {t('common.cancel')}
-              </button>
+              </Button>
             </form>
           ) : (
             <div className="flex items-center gap-2">
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => setShowImportWizard(true)}
-                className="inline-flex items-center gap-1.5 rounded-md border border-green-300 bg-green-50 px-4 py-2 text-sm font-medium text-green-700 hover:bg-green-100 transition-colors"
+                leadingIcon={<FileSpreadsheet className="h-3.5 w-3.5" />}
               >
-                <FileSpreadsheet className="h-4 w-4" />
                 Import from Excel
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
                 onClick={() => setIsCreating(true)}
-                className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                leadingIcon={<Plus className="h-3.5 w-3.5" />}
               >
-                <Plus className="h-4 w-4" />
                 {t('action.newTemplate')}
-              </button>
+              </Button>
             </div>
           )
         ) : null
       }
+      defaultView="list"
+      activeFilters={activeListFilterCount > 0 ? (
+        <>
+          {listFilters.layout && (
+            <FilterTag active onClick={() => toggleListFilter('layout', listFilters.layout!)}>
+              Layout: {listFilters.layout}
+            </FilterTag>
+          )}
+          {listFilters.binding && (
+            <FilterTag
+              tone={listFilters.binding === 'bound' ? 'success' : 'warning'}
+              active
+              onClick={() => toggleListFilter('binding', listFilters.binding!)}
+            >
+              {listFilters.binding === 'bound' ? 'Bound' : 'Unbound'}
+            </FilterTag>
+          )}
+          {listFilters.owner && (
+            <FilterTag active onClick={() => toggleListFilter('owner', listFilters.owner!)}>
+              Owner: {listFilters.owner.split('@')[0]}
+            </FilterTag>
+          )}
+          <Button variant="ghost" size="xs" onClick={clearListFilters}>
+            Clear filters
+          </Button>
+        </>
+      ) : null}
     >
       {({ viewMode, filterText }) => {
-        const filtered = templateItems.filter(
-          (tpl) =>
-            tpl.name.toLowerCase().includes(filterText.toLowerCase()) ||
-            (tpl.description ?? '').toLowerCase().includes(filterText.toLowerCase()),
-        );
+        const needle = filterText.trim().toLowerCase();
+        const filtered = templateItems.filter((tpl) => {
+          const definition = isTemplateDefinition(tpl.blocks) ? tpl.blocks : null;
+          const layout = definition?.layout ?? 'custom';
+          const binding = definition?.dataSource?.datasetName ? 'bound' : 'unbound';
+          const matchesSearch =
+            needle.length === 0 ||
+            tpl.name.toLowerCase().includes(needle) ||
+            (tpl.description ?? '').toLowerCase().includes(needle) ||
+            definition?.dataSource?.datasetName?.toLowerCase().includes(needle) ||
+            definition?.dataSource?.tableName?.toLowerCase().includes(needle) ||
+            (tpl.owner_email ?? '').toLowerCase().includes(needle);
+
+          return (
+            matchesSearch &&
+            (!listFilters.layout || layout === listFilters.layout) &&
+            (!listFilters.binding || binding === listFilters.binding) &&
+            (!listFilters.owner || tpl.owner_email === listFilters.owner)
+          );
+        });
 
         return viewMode === 'grid' ? (
           <TemplateCardGrid templates={filtered} onDelete={canEdit ? handleDelete : undefined} deletingId={deletingId} />
         ) : (
-          <TemplateList templates={filtered} onDelete={canEdit ? handleDelete : undefined} deletingId={deletingId} />
+          <TemplateList
+            templates={filtered}
+            onDelete={canEdit ? handleDelete : undefined}
+            deletingId={deletingId}
+            activeFilters={listFilters}
+            onFilterClick={(key, value) => toggleListFilter(key as 'layout' | 'binding' | 'owner', value)}
+          />
         );
       }}
     </PageListLayout>

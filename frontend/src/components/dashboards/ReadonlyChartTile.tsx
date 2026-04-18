@@ -139,24 +139,24 @@ export function ReadonlyChartTile({
 
   return (
     <div
-      className={`group h-full overflow-hidden rounded-[24px] border bg-white/90 p-4 shadow-[0_28px_60px_-42px_rgba(15,23,42,0.45)] backdrop-blur transition-[border-color,box-shadow] ${
+      className={`group h-full overflow-hidden rounded-[24px] border bg-surface-1 p-4 shadow-[0_28px_60px_-42px_rgba(15,23,42,0.45)] backdrop-blur transition-[border-color,box-shadow] ${
         isCrossFilterSource
           ? 'border-sky-300 ring-4 ring-sky-100/80 shadow-[0_32px_72px_-42px_rgba(14,165,233,0.4)]'
-          : 'border-slate-200/80 hover:border-slate-300/90 hover:shadow-[0_32px_72px_-48px_rgba(15,23,42,0.42)]'
+          : 'border-[rgb(var(--border-line))]/80 hover:border-[rgb(var(--border-strong))]/90 hover:shadow-[0_32px_72px_-48px_rgba(15,23,42,0.42)]'
       }`}
     >
       <div className="flex h-full min-h-0 flex-col">
         <div className={`mb-3 flex min-h-[2.5rem] items-start gap-3 ${compact ? 'text-xs' : 'text-sm'}`}>
           <div className="min-w-0 flex-1">
             {title ? (
-              <p className="truncate font-semibold text-slate-900">{title}</p>
+              <p className="truncate font-semibold text-text-primary">{title}</p>
             ) : (
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">
                 Untitled chart
               </p>
             )}
             {showChartTypeLabel && chart?.chart_type && (
-              <p className="mt-1 truncate text-[11px] text-slate-400">
+              <p className="mt-1 truncate text-[11px] text-text-quaternary">
                 {String(chart.chart_type).replace(/_/g, ' ')}
               </p>
             )}
@@ -164,10 +164,10 @@ export function ReadonlyChartTile({
           {havingOptions.length > 0 && (
             <button
               onClick={() => setIsHavingOpen((current) => !current)}
-              className={`ml-auto flex-shrink-0 rounded-full border border-transparent bg-white/70 p-1.5 transition ${
+                className={`ml-auto flex-shrink-0 rounded-full border border-transparent bg-surface-1 p-1.5 transition ${
                 isHavingOpen || havingFilters.length > 0
                   ? 'border-sky-200 bg-sky-50 text-sky-700 opacity-100'
-                  : 'text-slate-400 opacity-0 group-hover:opacity-100 hover:border-slate-200 hover:bg-slate-50 hover:text-sky-700'
+                  : 'text-text-quaternary opacity-0 group-hover:opacity-100 hover:border-[rgb(var(--border-line))] hover:bg-surface-2 hover:text-text-primary'
               }`}
               title="Per-chart filters"
             >
@@ -188,7 +188,7 @@ export function ReadonlyChartTile({
                 {` ${filter.operator} ${filter.value}`}
                 <button
                   onClick={() => setHavingFilters((current) => current.filter((item) => item.id !== filter.id))}
-                  className="text-sky-400 hover:text-sky-700"
+                  className="text-sky-400 hover:text-text-primary"
                 >
                   <X className="h-2.5 w-2.5" />
                 </button>
@@ -202,7 +202,7 @@ export function ReadonlyChartTile({
             <select
               value={draftHavingField}
               onChange={(event) => setDraftHavingField(event.target.value)}
-              className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-sky-400"
+              className="rounded-lg border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1 text-xs text-text-secondary focus:outline-none focus:ring-1 focus:ring-sky-400"
             >
               {havingOptions.map((option) => (
                 <option key={option.key} value={option.key}>{option.label}</option>
@@ -211,7 +211,7 @@ export function ReadonlyChartTile({
             <select
               value={draftHavingOp}
               onChange={(event) => setDraftHavingOp(event.target.value as FilterOperator)}
-              className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-sky-400"
+              className="rounded-lg border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1 text-xs text-text-secondary focus:outline-none focus:ring-1 focus:ring-sky-400"
             >
               <option value="gt">&gt; greater than</option>
               <option value="gte">≥ greater or equal</option>
@@ -229,18 +229,18 @@ export function ReadonlyChartTile({
                 if (event.key === 'Escape') setIsHavingOpen(false);
               }}
               placeholder="value"
-              className="w-24 rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-sky-400"
+              className="w-24 rounded-lg border border-[rgb(var(--border-strong))] px-2 py-1 text-xs text-text-secondary focus:outline-none focus:ring-1 focus:ring-sky-400"
             />
             <button
               onClick={confirmHaving}
-              className="rounded-lg bg-slate-950 px-2.5 py-1 text-xs text-white hover:bg-slate-800"
+              className="rounded-lg bg-surface-inverse px-2.5 py-1 text-xs text-white hover:bg-surface-3"
             >
               Apply
             </button>
             {havingFilters.length > 0 && (
               <button
                 onClick={() => setHavingFilters([])}
-                className="text-xs text-slate-500 hover:text-slate-700"
+                className="text-xs text-text-tertiary hover:text-text-secondary"
               >
                 Clear all
               </button>
@@ -252,8 +252,8 @@ export function ReadonlyChartTile({
           {!chart ? (
             <div className="flex h-full items-center justify-center text-center">
               <div>
-                <AlertTriangle className="mx-auto mb-2 h-5 w-5 text-amber-500" />
-                <p className={`${compact ? 'text-xs' : 'text-sm'} font-medium text-amber-700`}>
+                <AlertTriangle className="mx-auto mb-2 h-5 w-5 text-warning" />
+                <p className={`${compact ? 'text-xs' : 'text-sm'} font-medium text-warning`}>
                   Chart metadata unavailable
                 </p>
               </div>
@@ -261,11 +261,11 @@ export function ReadonlyChartTile({
           ) : error ? (
             <div className="flex h-full items-center justify-center text-center">
               <div>
-                <AlertTriangle className="mx-auto mb-2 h-5 w-5 text-amber-500" />
-                <p className={`${compact ? 'text-xs' : 'text-sm'} font-medium text-amber-700`}>
+                <AlertTriangle className="mx-auto mb-2 h-5 w-5 text-warning" />
+                <p className={`${compact ? 'text-xs' : 'text-sm'} font-medium text-warning`}>
                   Failed to load chart
                 </p>
-                <p className="mt-1 text-xs text-amber-600">{error}</p>
+                <p className="mt-1 text-xs text-warning">{error}</p>
               </div>
             </div>
           ) : !chartData ? (

@@ -4,23 +4,19 @@
  * DateInput — text input hiển thị theo định dạng DD/MM/YYYY quen thuộc với
  * người dùng Việt Nam, nhưng truyền/nhận giá trị ở dạng YYYY-MM-DD để tương
  * thích với HTML date input và các hàm filter.
- *
- * - Gõ số liên tục, dấu "/" được tự động chèn.
- * - Icon lịch bên phải mở native date picker để chọn nhanh.
- * - blur/commit: nếu chuỗi hợp lệ thì gọi onChange(YYYY-MM-DD).
  */
 
 import { useState, useEffect, useRef } from 'react';
 import { Calendar } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface DateInputProps {
-  value: string;          // YYYY-MM-DD hoặc ''
-  onChange: (v: string) => void; // trả về YYYY-MM-DD hoặc ''
+  value: string;
+  onChange: (v: string) => void;
   placeholder?: string;
   className?: string;
 }
 
-/** YYYY-MM-DD → DD/MM/YYYY */
 function toDisplay(iso: string): string {
   if (!iso) return '';
   const parts = iso.split('-');
@@ -29,7 +25,6 @@ function toDisplay(iso: string): string {
   return `${d}/${m}/${y}`;
 }
 
-/** DD/MM/YYYY → YYYY-MM-DD, trả '' nếu chưa đủ */
 function fromDisplay(text: string): string {
   const match = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
   if (!match) return '';
@@ -37,9 +32,7 @@ function fromDisplay(text: string): string {
   return `${y}-${m}-${d}`;
 }
 
-/** Tự động chèn dấu / khi người dùng gõ liên tục chỉ các chữ số */
 function autoFormat(raw: string): string {
-  // strip mọi thứ không phải số hoặc /
   const digits = raw.replace(/\D/g, '');
   let out = digits;
   if (out.length > 2) out = out.slice(0, 2) + '/' + out.slice(2);
@@ -56,13 +49,11 @@ export function DateInput({
   const [text, setText] = useState(() => toDisplay(value));
   const nativeRef = useRef<HTMLInputElement>(null);
 
-  // Đồng bộ khi value từ ngoài thay đổi (ví dụ: clear filter)
   useEffect(() => {
     setText(toDisplay(value));
   }, [value]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    // Cho phép backspace xoá ký tự / cùng với số phía trước
     if (e.key === 'Backspace') {
       const t = text;
       if (t.endsWith('/')) {
@@ -76,7 +67,6 @@ export function DateInput({
     const raw = e.target.value;
     const formatted = autoFormat(raw);
     setText(formatted);
-    // Tự động commit khi đủ DD/MM/YYYY
     if (formatted.length === 10) {
       const iso = fromDisplay(formatted);
       if (iso) onChange(iso);
@@ -95,7 +85,6 @@ export function DateInput({
       onChange(iso);
       setText(toDisplay(iso));
     }
-    // Chuỗi chưa hoàn chỉnh: giữ nguyên để user thấy
   };
 
   const handleNativeDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -105,7 +94,7 @@ export function DateInput({
   };
 
   return (
-    <div className={`relative flex items-center ${className}`}>
+    <div className={cn('relative flex items-center', className)}>
       <input
         type="text"
         value={text}
@@ -114,15 +103,19 @@ export function DateInput({
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
         maxLength={10}
-        className="w-full pr-7 px-2 py-1 border border-gray-200 rounded text-xs bg-white focus:ring-1 focus:ring-blue-400 focus:border-blue-400 outline-none"
+        className={cn(
+          'w-full pr-7 pl-2.5 py-1 h-8 rounded-md text-caption',
+          'bg-surface-1 text-text-primary placeholder:text-text-quaternary',
+          'border border-[rgb(var(--border-strong))]',
+          'focus:border-brand focus:shadow-focus-brand focus:outline-none',
+          'transition-[border-color,box-shadow]',
+        )}
       />
-      {/* Calendar icon mở native date picker */}
       <label
-        className="absolute right-1.5 top-1/2 -translate-y-1/2 cursor-pointer text-gray-400 hover:text-blue-500 transition-colors"
+        className="absolute right-1.5 top-1/2 -translate-y-1/2 cursor-pointer text-text-tertiary hover:text-brand transition-colors"
         title="Chọn ngày"
       >
         <span className="sr-only">Chọn ngày</span>
-        {/* Native input ẩn, click vào label sẽ trigger picker */}
         <input
           ref={nativeRef}
           type="date"

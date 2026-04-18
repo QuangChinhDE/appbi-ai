@@ -63,25 +63,25 @@ export function DataSourcePicker({ current, onSelect, onClose }: DataSourcePicke
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay/84 backdrop-blur-sm">
       <div
-        className="flex w-full max-w-2xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl"
+        className="flex w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg"
         style={{ maxHeight: '82vh' }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+        <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-5 py-4">
           <div>
             <div className="flex items-center gap-2 mb-0.5">
-              <Database className="h-4 w-4 text-blue-600" />
-              <span className="text-sm font-semibold text-gray-900">Chọn nguồn dữ liệu</span>
+              <Database className="h-4 w-4 text-brand" />
+              <span className="text-sm font-semibold text-text-primary">Chọn nguồn dữ liệu</span>
             </div>
-            <p className="text-xs text-gray-500">
+            <p className="text-xs text-text-tertiary">
               Chọn dataset và bảng để template lấy dữ liệu từ đó
             </p>
           </div>
           <button
             onClick={onClose}
-            className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+            className="rounded-lg p-1.5 text-text-quaternary hover:bg-surface-2 hover:text-text-secondary transition-colors"
           >
             <X className="h-4 w-4" />
           </button>
@@ -89,29 +89,29 @@ export function DataSourcePicker({ current, onSelect, onClose }: DataSourcePicke
 
         {/* Current binding notice */}
         {current && (
-          <div className="flex items-center gap-2 border-b border-blue-100 bg-blue-50 px-5 py-2">
-            <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-blue-600" />
-            <p className="text-xs text-blue-700">
+          <div className="flex items-center gap-2 border-b border-brand/20 bg-brand/10 px-5 py-2">
+            <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-brand" />
+            <p className="text-xs text-brand">
               Đang dùng: <span className="font-semibold">{current.datasetName}</span>
               {' → '}
               <span className="font-semibold">{current.tableName}</span>
-              <span className="text-blue-500"> (click bảng khác để thay đổi)</span>
+              <span className="text-brand"> (click bảng khác để thay đổi)</span>
             </p>
           </div>
         )}
 
         {/* Search */}
-        <div className="flex items-center gap-2 border-b border-gray-200 px-5 py-2.5">
-          <Search className="h-4 w-4 shrink-0 text-gray-400" />
+        <div className="flex items-center gap-2 border-b border-[rgb(var(--border-line))] px-5 py-2.5">
+          <Search className="h-4 w-4 shrink-0 text-text-quaternary" />
           <input
             autoFocus
-            className="flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400"
+            className="flex-1 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-quaternary"
             placeholder="Tìm dataset theo tên…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
           {search && (
-            <button onClick={() => setSearch('')} className="text-gray-400 hover:text-gray-600">
+            <button onClick={() => setSearch('')} className="text-text-quaternary hover:text-text-secondary">
               <X className="h-3.5 w-3.5" />
             </button>
           )}
@@ -120,13 +120,13 @@ export function DataSourcePicker({ current, onSelect, onClose }: DataSourcePicke
         {/* 2-column layout */}
         <div className="flex flex-1 overflow-hidden" style={{ minHeight: 300 }}>
           {/* Left: Datasets */}
-          <div className="w-2/5 overflow-y-auto border-r border-gray-200">
-            <div className="sticky top-0 bg-gray-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-gray-400 border-b border-gray-200">
+          <div className="w-2/5 overflow-y-auto border-r border-[rgb(var(--border-line))]">
+            <div className="sticky top-0 bg-surface-2 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary border-b border-[rgb(var(--border-line))]">
               Datasets ({filteredDatasets.length})
             </div>
             {datasetsLoading && (
               <div className="flex items-center justify-center py-10">
-                <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+                <Loader2 className="h-5 w-5 animate-spin text-brand" />
               </div>
             )}
             {filteredDatasets.map((ds) => {
@@ -136,25 +136,25 @@ export function DataSourcePicker({ current, onSelect, onClose }: DataSourcePicke
                 <button
                   key={ds.id}
                   onClick={() => setSelectedDatasetId(ds.id)}
-                  className={`flex w-full items-start gap-2 border-b border-gray-100 px-4 py-2.5 text-left transition-colors ${
+                  className={`flex w-full items-start gap-2 border-b border-[rgb(var(--border-line))] px-4 py-2.5 text-left transition-colors ${
                     isSelected
-                      ? 'bg-blue-50 border-l-2 border-l-blue-600'
-                      : 'border-l-2 border-l-transparent hover:bg-gray-50'
+                      ? 'bg-brand/10 border-l-2 border-l-blue-600'
+                      : 'border-l-2 border-l-transparent hover:bg-surface-2'
                   }`}
                 >
                   <Database
-                    className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${isSelected ? 'text-blue-600' : 'text-gray-400'}`}
+                    className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${isSelected ? 'text-brand' : 'text-text-quaternary'}`}
                   />
                   <div className="min-w-0">
-                    <p className={`truncate text-xs font-medium ${isSelected ? 'text-blue-800' : 'text-gray-900'}`}>
+                    <p className={`truncate text-xs font-medium ${isSelected ? 'text-brand' : 'text-text-primary'}`}>
                       {ds.name}
                     </p>
                     {ds.description && (
-                      <p className="mt-0.5 truncate text-[10px] text-gray-500">{ds.description}</p>
+                      <p className="mt-0.5 truncate text-[10px] text-text-tertiary">{ds.description}</p>
                     )}
                   </div>
                   {isCurrent && (
-                    <span className="ml-auto shrink-0 rounded-full bg-blue-100 px-1.5 py-0.5 text-[9px] font-medium text-blue-700">
+                    <span className="ml-auto shrink-0 rounded-full bg-brand/15 px-1.5 py-0.5 text-[9px] font-medium text-brand">
                       đang dùng
                     </span>
                   )}
@@ -162,7 +162,7 @@ export function DataSourcePicker({ current, onSelect, onClose }: DataSourcePicke
               );
             })}
             {!datasetsLoading && filteredDatasets.length === 0 && (
-              <div className="px-4 py-8 text-center text-xs text-gray-400">
+              <div className="px-4 py-8 text-center text-xs text-text-quaternary">
                 Không tìm thấy dataset
               </div>
             )}
@@ -170,20 +170,20 @@ export function DataSourcePicker({ current, onSelect, onClose }: DataSourcePicke
 
           {/* Right: Tables */}
           <div className="flex-1 overflow-y-auto">
-            <div className="sticky top-0 bg-gray-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-gray-400 border-b border-gray-200">
+            <div className="sticky top-0 bg-surface-2 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary border-b border-[rgb(var(--border-line))]">
               {selectedDatasetId
                 ? `Bảng (${enabledTables.length})`
                 : 'Bảng dữ liệu'}
             </div>
             {!selectedDatasetId && (
               <div className="flex flex-col items-center justify-center py-12 text-center px-4">
-                <Database className="h-8 w-8 text-gray-300 mb-2" />
-                <p className="text-xs text-gray-400">Chọn dataset bên trái để xem các bảng</p>
+                <Database className="h-8 w-8 text-text-quaternary mb-2" />
+                <p className="text-xs text-text-quaternary">Chọn dataset bên trái để xem các bảng</p>
               </div>
             )}
             {tablesLoading && selectedDatasetId && (
               <div className="flex items-center justify-center py-10">
-                <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+                <Loader2 className="h-5 w-5 animate-spin text-brand" />
               </div>
             )}
             {enabledTables.map((table) => {
@@ -196,20 +196,20 @@ export function DataSourcePicker({ current, onSelect, onClose }: DataSourcePicke
                 <button
                   key={table.id}
                   onClick={() => handleSelectTable(table)}
-                  className={`flex w-full flex-col gap-1 border-b border-gray-100 px-4 py-3 text-left transition-colors hover:bg-blue-50 ${
-                    isCurrent ? 'bg-blue-50 border-l-2 border-l-blue-600' : 'border-l-2 border-l-transparent'
+                  className={`flex w-full flex-col gap-1 border-b border-[rgb(var(--border-line))] px-4 py-3 text-left transition-colors hover:bg-brand/15 ${
+                    isCurrent ? 'bg-brand/10 border-l-2 border-l-blue-600' : 'border-l-2 border-l-transparent'
                   }`}
                 >
                   <div className="flex items-center gap-2">
-                    <Table2 className={`h-3.5 w-3.5 shrink-0 ${isCurrent ? 'text-blue-600' : 'text-blue-400'}`} />
-                    <span className={`text-xs font-semibold ${isCurrent ? 'text-blue-800' : 'text-gray-900'}`}>
+                    <Table2 className={`h-3.5 w-3.5 shrink-0 ${isCurrent ? 'text-brand' : 'text-brand'}`} />
+                    <span className={`text-xs font-semibold ${isCurrent ? 'text-brand' : 'text-text-primary'}`}>
                       {table.display_name}
                     </span>
                     {isCurrent && (
-                      <CheckCircle2 className="ml-auto h-3.5 w-3.5 shrink-0 text-blue-600" />
+                      <CheckCircle2 className="ml-auto h-3.5 w-3.5 shrink-0 text-brand" />
                     )}
                   </div>
-                  <div className="flex items-center gap-2 text-[10px] text-gray-400 pl-5">
+                  <div className="flex items-center gap-2 text-[10px] text-text-quaternary pl-5">
                     <span>{table.source_kind}</span>
                     {colCount > 0 && <span>{colCount} cột</span>}
                   </div>
@@ -218,13 +218,13 @@ export function DataSourcePicker({ current, onSelect, onClose }: DataSourcePicke
                       {colNames.map((name) => (
                         <span
                           key={name}
-                          className="rounded bg-gray-100 px-1.5 py-px text-[9px] font-mono text-gray-600"
+                          className="rounded bg-surface-2 px-1.5 py-px text-[9px] font-mono text-text-secondary"
                         >
                           {name}
                         </span>
                       ))}
                       {colCount > 6 && (
-                        <span className="text-[9px] text-gray-400">+{colCount - 6} more</span>
+                        <span className="text-[9px] text-text-quaternary">+{colCount - 6} more</span>
                       )}
                     </div>
                   )}
@@ -232,7 +232,7 @@ export function DataSourcePicker({ current, onSelect, onClose }: DataSourcePicke
               );
             })}
             {!tablesLoading && selectedDatasetId && enabledTables.length === 0 && (
-              <div className="px-4 py-8 text-center text-xs text-gray-400">
+              <div className="px-4 py-8 text-center text-xs text-text-quaternary">
                 Dataset này chưa có bảng nào được kích hoạt
               </div>
             )}
@@ -240,15 +240,15 @@ export function DataSourcePicker({ current, onSelect, onClose }: DataSourcePicke
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between border-t border-gray-200 bg-gray-50 px-5 py-3">
-          <p className="text-xs text-gray-400">
+        <div className="flex items-center justify-between border-t border-[rgb(var(--border-line))] bg-surface-2 px-5 py-3">
+          <p className="text-xs text-text-quaternary">
             {selectedDatasetId && enabledTables.length > 0
               ? 'Click vào bảng để chọn và đóng hộp thoại'
               : 'Chọn dataset → chọn bảng'}
           </p>
           <button
             onClick={onClose}
-            className="rounded-lg border border-gray-300 px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-100 transition-colors"
+            className="rounded-lg border border-[rgb(var(--border-strong))] px-4 py-1.5 text-sm text-text-secondary hover:bg-surface-2 transition-colors"
           >
             Đóng
           </button>

@@ -9,9 +9,9 @@ import { evaluateFormula, formatValue } from '@/hooks/use-template-data';
 /* ── Column header bg by type — fallback classes only ─────── */
 
 const COL_CELL_CLASSES: Record<string, string> = {
-  raw: 'text-gray-700',
-  input: 'text-gray-900',
-  formula: 'text-amber-700',
+  raw: 'text-text-secondary',
+  input: 'text-text-primary',
+  formula: 'text-warning',
   subtotal: 'font-semibold',
 };
 
@@ -158,7 +158,7 @@ export function TableLayout({
               className="flex items-center gap-2 border-b px-4 py-1.5"
               style={{ background: theme.groupBg, borderColor: theme.groupBg }}
             >
-              <span className="text-[10px] text-gray-400 cursor-grab">⠿</span>
+              <span className="text-[10px] text-text-quaternary cursor-grab">⠿</span>
               <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: theme.groupText }}>
                 {group.label}
               </span>
@@ -220,7 +220,7 @@ export function TableLayout({
 
           {/* Data rows */}
           {rows.length === 0 && !isLoading && (
-            <div className="px-4 py-6 text-center text-xs italic text-gray-400">
+            <div className="px-4 py-6 text-center text-xs italic text-text-quaternary">
               {definition.dataSource
                 ? 'No data rows. Run a preview to load data.'
                 : 'Bind a dataset to see data here.'}
@@ -228,7 +228,7 @@ export function TableLayout({
           )}
 
           {isLoading && (
-            <div className="px-4 py-6 text-center text-xs text-gray-500">
+            <div className="px-4 py-6 text-center text-xs text-text-tertiary">
               Loading data…
             </div>
           )}
@@ -236,9 +236,9 @@ export function TableLayout({
           {group.rows.map((row, ri) => (
             <div
               key={ri}
-              className="flex border-b border-gray-100 hover:bg-gray-50 transition-colors"
+              className="flex border-b border-[rgb(var(--border-line))] hover:bg-surface-2 transition-colors"
             >
-              <div className="px-2.5 py-1.5 text-xs font-mono text-gray-400 w-8 min-w-[32px] shrink-0 border-r border-gray-100">
+              <div className="px-2.5 py-1.5 text-xs font-mono text-text-quaternary w-8 min-w-[32px] shrink-0 border-r border-[rgb(var(--border-line))]">
                 {ri + 1}
               </div>
               {visibleCols.map((col) => {
@@ -252,9 +252,9 @@ export function TableLayout({
                   <div
                     key={col.id}
                     onClick={() => onSelectColumn(col.id)}
-                    className={`cursor-pointer px-2.5 py-1.5 text-xs font-mono border-r border-gray-100 truncate shrink-0 ${
+                    className={`cursor-pointer px-2.5 py-1.5 text-xs font-mono border-r border-[rgb(var(--border-line))] truncate shrink-0 ${
                       COL_CELL_CLASSES[col.type] ?? COL_CELL_CLASSES.raw
-                    } ${col.bold ? 'font-medium text-gray-900' : ''}`}
+                    } ${col.bold ? 'font-medium text-text-primary' : ''}`}
                     style={{
                       width: col.width ?? 100,
                       minWidth: col.width ?? 100,

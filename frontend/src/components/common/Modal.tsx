@@ -2,6 +2,8 @@
 
 import React from 'react';
 import { X } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { IconButton } from '@/components/ui/Button';
 
 interface ModalProps {
   isOpen: boolean;
@@ -39,34 +41,45 @@ export function Modal({
   const heightClass = size === 'full' ? 'h-[94vh] max-h-[94vh]' : 'max-h-[90vh]';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
+    <div className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in">
       <div
-        className="absolute inset-0 bg-black bg-opacity-50 transition-opacity"
+        className="absolute inset-0 bg-overlay/84 backdrop-blur-[3px]"
         onClick={onClose}
       />
-
-      {/* Modal */}
-      <div className={`relative mx-4 flex w-full flex-col overflow-hidden rounded-lg bg-white shadow-xl ${sizeClasses[size]} ${heightClass} ${contentClassName ?? ''}`}>
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
-          <button
+      <div
+        className={cn(
+          'relative mx-4 flex w-full flex-col overflow-hidden rounded-xl',
+          'bg-surface-1 border border-[rgb(var(--border-strong))] shadow-linear-lg',
+          'animate-slide-up',
+          sizeClasses[size],
+          heightClass,
+          contentClassName,
+        )}
+      >
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-[rgb(var(--border-line))]">
+          <h3 className="text-small font-strong text-text-primary">{title}</h3>
+          <IconButton
+            aria-label="Close"
+            variant="ghost"
+            size="sm"
             onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 transition-colors"
           >
-            <X className="h-5 w-5" />
-          </button>
+            <X className="h-4 w-4" />
+          </IconButton>
         </div>
 
-        {/* Body */}
-        <div className={`flex-1 overflow-y-auto px-6 py-4 ${bodyClassName ?? ''}`}>
+        <div className={cn('flex-1 overflow-y-auto px-5 py-4', bodyClassName)}>
           {children}
         </div>
 
-        {/* Footer */}
         {footer && (
-          <div className={`flex items-center justify-end gap-3 border-t border-gray-200 bg-gray-50 px-6 py-4 ${footerClassName ?? ''}`}>
+          <div
+            className={cn(
+              'flex items-center justify-end gap-2 px-5 py-3',
+              'border-t border-[rgb(var(--border-line))] bg-surface-2',
+              footerClassName,
+            )}
+          >
             {footer}
           </div>
         )}

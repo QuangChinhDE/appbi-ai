@@ -282,7 +282,7 @@ export function TableVisualization({
   if (cols.length === 0 || rows.length === 0) {
     return (
       <div className={clsx("p-8", className)}>
-        <div className="text-center text-sm text-gray-500">
+        <div className="text-center text-sm text-text-tertiary">
           No data to display.
         </div>
       </div>
@@ -321,7 +321,7 @@ export function TableVisualization({
   const getSortIndicator = (column: string) => {
     const sort = sorts.find(s => s.field === column);
     if (!sort) {
-      return onSortChange ? <ArrowUpDown className="h-3 w-3 text-gray-400" /> : null;
+      return onSortChange ? <ArrowUpDown className="h-3 w-3 text-text-quaternary" /> : null;
     }
     
     const Icon = sort.direction === 'asc' ? ArrowUp : ArrowDown;
@@ -329,8 +329,8 @@ export function TableVisualization({
     
     return (
       <span className="inline-flex items-center ml-1">
-        <Icon className="h-3 w-3 text-blue-600" />
-        {priority && <span className="text-[10px] text-blue-600">{priority}</span>}
+        <Icon className="h-3 w-3 text-brand" />
+        {priority && <span className="text-[10px] text-brand">{priority}</span>}
       </span>
     );
   };
@@ -373,7 +373,7 @@ export function TableVisualization({
               />
             ))}
           </colgroup>
-          <thead className="bg-gray-50 sticky top-0 z-10">
+          <thead className="bg-surface-2 sticky top-0 z-10">
             <tr>
               {cols.map((col) => {
                 const alignment = getColumnAlignment(col, columnAlignments);
@@ -385,8 +385,8 @@ export function TableVisualization({
                       headerCellRefs.current[col] = element;
                     }}
                     className={clsx(
-                      "group/table-header relative border-b-2 border-gray-200 px-4 py-3 font-semibold text-gray-700",
-                      onSortChange && "cursor-pointer hover:bg-gray-100 select-none",
+                      "group/table-header relative border-b-2 border-[rgb(var(--border-line))] px-4 py-3 font-semibold text-text-secondary",
+                      onSortChange && "cursor-pointer hover:bg-surface-2 select-none",
                     )}
                     style={{ textAlign: alignment }}
                     onClick={() => handleHeaderClick(col)}
@@ -408,8 +408,8 @@ export function TableVisualization({
                           className={clsx(
                             "absolute inset-y-2 right-1/2 w-px -translate-x-1/2 rounded-full transition-colors",
                             activeResizeColumn === col
-                              ? "bg-blue-500"
-                              : "bg-gray-300 opacity-0 group-hover/table-header:opacity-100",
+                              ? "bg-brand"
+                              : "bg-surface-3 opacity-0 group-hover/table-header:opacity-100",
                           )}
                         />
                       </button>
@@ -425,8 +425,8 @@ export function TableVisualization({
                 key={i} 
                 className={clsx(
                   "transition-colors",
-                  i % 2 === 0 ? "bg-white" : "bg-gray-50",
-                  enableDrilldown && onRowClick && "cursor-pointer hover:bg-blue-50"
+                  i % 2 === 0 ? "bg-white" : "bg-surface-2",
+                  enableDrilldown && onRowClick && "cursor-pointer hover:bg-brand/15"
                 )}
                 onClick={() => enableDrilldown && onRowClick?.(row)}
               >
@@ -440,7 +440,7 @@ export function TableVisualization({
                   return (
                     <td
                       key={col}
-                      className="border-b border-gray-100 px-4 py-2.5 align-top"
+                      className="border-b border-[rgb(var(--border-line))] px-4 py-2.5 align-top"
                       style={{
                         ...style,
                         textAlign: alignment,
@@ -459,8 +459,8 @@ export function TableVisualization({
                 <tr
                   key={`summary-row-${summaryIndex}`}
                   className={clsx(
-                    "font-semibold text-slate-900",
-                    summaryIndex % 2 === 0 ? "bg-slate-100" : "bg-slate-50",
+                    "font-semibold text-text-primary",
+                    summaryIndex % 2 === 0 ? "bg-surface-2" : "bg-surface-2",
                   )}
                 >
                   {cols.map((col) => {
@@ -470,9 +470,9 @@ export function TableVisualization({
                       <td
                         key={`summary-${summaryIndex}-${col}`}
                         className={clsx(
-                          "border-b border-slate-200 px-4 py-2.5 align-top",
-                          summaryIndex % 2 === 0 ? "bg-slate-100" : "bg-slate-50",
-                          summaryIndex === 0 && "border-t-2 border-slate-300",
+                          "border-b border-[rgb(var(--border-line))] px-4 py-2.5 align-top",
+                          summaryIndex % 2 === 0 ? "bg-surface-2" : "bg-surface-2",
+                          summaryIndex === 0 && "border-t-2 border-[rgb(var(--border-strong))]",
                         )}
                         style={{ textAlign: alignment }}
                       >
@@ -487,7 +487,7 @@ export function TableVisualization({
         </table>
       
       {rows.length > maxRows && (
-        <div className="px-4 py-2 bg-gray-50 border-t border-gray-200 text-xs text-gray-500 text-center">
+        <div className="px-4 py-2 bg-surface-2 border-t border-[rgb(var(--border-line))] text-xs text-text-tertiary text-center">
           Showing {maxRows} of {rows.length} rows
           {summaryRowsData.length > 0 ? ` | Summary uses all ${rows.length} rows` : ''}
         </div>

@@ -2,11 +2,15 @@
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Edit2, UserX, ChevronDown } from 'lucide-react';
+import { Plus, Edit2, UserX } from 'lucide-react';
 import { usersApi } from '@/lib/api-client';
 import { extractApiError, PASSWORD_REQUIREMENTS_TEXT, validatePasswordStrength } from '@/lib/api-errors';
 import { authConfig, getAuthMethodLabel, type AuthProvider } from '@/lib/auth-config';
 import { toast } from '@/lib/toast';
+import { Button, IconButton } from '@/components/ui/Button';
+import { Input, Select, FieldGroup } from '@/components/ui/Input';
+import { Badge } from '@/components/ui/Badge';
+import { Modal } from '@/components/common/Modal';
 
 type UserStatus = 'active' | 'deactivated';
 
@@ -21,11 +25,6 @@ interface User {
   last_login_at: string | null;
   created_at: string;
 }
-
-const STATUS_COLORS: Record<UserStatus, string> = {
-  active: 'bg-green-100 text-green-700',
-  deactivated: 'bg-red-100 text-red-700',
-};
 
 export default function UsersPage() {
   const qc = useQueryClient();
@@ -53,81 +52,70 @@ export default function UsersPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Users</h1>
-          <p className="text-gray-500 text-sm mt-1">Manage team members and their access levels.</p>
+          <h1 className="text-h1 text-text-primary font-emphasis">Users</h1>
+          <p className="text-caption text-text-tertiary mt-1">Manage team members and their access levels.</p>
         </div>
-        <button
+        <Button
+          variant="primary"
+          size="md"
+          leadingIcon={<Plus className="h-4 w-4" />}
           onClick={() => setShowInviteModal(true)}
-          className="flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700"
         >
-          <Plus className="h-4 w-4 mr-2" />
           Add user
-        </button>
+        </Button>
       </div>
 
-      {/* Table */}
-      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      {/* List */}
+      <div className="space-y-2">
         {isLoading ? (
-          <div className="p-12 text-center text-gray-400">Loading…</div>
+          <div className="p-12 text-center text-text-quaternary">Loading…</div>
         ) : users.length === 0 ? (
-          <div className="p-12 text-center text-gray-400">No users found.</div>
+          <div className="p-12 text-center text-text-quaternary">No users found.</div>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-200 bg-gray-50">
-                <th className="text-left px-6 py-3 font-medium text-gray-600">Name</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600">Email</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600">Login method</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600">Status</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600">Last login</th>
-                <th className="px-6 py-3" />
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {users.map((user) => (
-                <tr key={user.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-6 py-3 font-medium text-gray-900">{user.full_name}</td>
-                  <td className="px-6 py-3 text-gray-600">{user.email}</td>
-                  <td className="px-6 py-3 text-gray-600">
-                    <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-700">
-                      {getAuthMethodLabel(user.auth_provider, user.google_connected)}
-                    </span>
-                  </td>
-                  <td className="px-6 py-3">
-                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[user.status]}`}>
-                      {user.status}
-                    </span>
-                  </td>
-                  <td className="px-6 py-3 text-gray-500">
-                    {user.last_login_at
-                      ? new Date(user.last_login_at).toLocaleDateString()
-                      : 'Never'}
-                  </td>
-                  <td className="px-6 py-3">
-                    <div className="flex items-center justify-end space-x-2">
-                      <button
-                        onClick={() => setEditingUser(user)}
-                        className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded"
-                        title="Edit role"
-                      >
-                        <Edit2 className="h-4 w-4" />
-                      </button>
-                      {user.status === 'active' && (
-                        <button
-                          onClick={() => deactivateMutation.mutate(user.id)}
-                          disabled={deactivateMutation.isPending}
-                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded disabled:opacity-50"
-                          title="Deactivate user"
-                        >
-                          <UserX className="h-4 w-4" />
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          users.map((user) => (
+            <div
+              key={user.id}
+              className="bg-surface-1 border border-[rgb(var(--border-line))] rounded-lg p-3 flex items-center gap-3"
+            >
+              <div className="h-9 w-9 rounded-full flex items-center justify-center bg-brand text-text-inverse text-tiny font-strong flex-shrink-0">
+                {(user.full_name || user.email).slice(0, 2).toUpperCase()}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-emphasis text-text-primary truncate">{user.full_name}</span>
+                  <Badge variant={user.status === 'active' ? 'success' : 'danger'} size="xs">
+                    {user.status}
+                  </Badge>
+                </div>
+                <span className="text-tiny text-text-quaternary truncate block">{user.email}</span>
+              </div>
+              <Badge variant="neutral" size="sm">
+                {getAuthMethodLabel(user.auth_provider, user.google_connected)}
+              </Badge>
+              <span className="text-caption text-text-tertiary hidden md:inline">
+                {user.last_login_at
+                  ? new Date(user.last_login_at).toLocaleDateString()
+                  : 'Never'}
+              </span>
+              <div className="flex items-center gap-1">
+                <IconButton aria-label="Edit role" variant="ghost" size="sm" onClick={() => setEditingUser(user)}>
+                  <Edit2 className="h-4 w-4" />
+                </IconButton>
+                {user.status === 'active' && (
+                  <IconButton
+                    aria-label="Deactivate user"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => deactivateMutation.mutate(user.id)}
+                    disabled={deactivateMutation.isPending}
+                    className="hover:text-danger"
+                  >
+                    <UserX className="h-4 w-4" />
+                  </IconButton>
+                )}
+              </div>
+            </div>
+          ))
         )}
       </div>
 
@@ -197,87 +185,56 @@ function InviteModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-sm mx-4 p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">Add user</h2>
-        <form onSubmit={handleSubmit} className="space-y-3">
-          {error && (
-            <p className="text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>
-          )}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Full name</label>
-            <input
-              type="text"
+    <Modal
+      isOpen
+      onClose={onClose}
+      title="Add user"
+      size="sm"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" type="submit" form="users-invite-form" disabled={loading} loading={loading}>
+            {loading ? 'Creating…' : 'Create'}
+          </Button>
+        </>
+      }
+    >
+      <form id="users-invite-form" onSubmit={handleSubmit} className="space-y-3">
+        {error && (
+          <p className="text-caption text-danger bg-danger/10 border border-danger/20 rounded-md px-3 py-2">{error}</p>
+        )}
+        <FieldGroup label="Full name" required>
+          <Input type="text" required value={fullName} onChange={(e) => setFullName(e.target.value)} />
+        </FieldGroup>
+        <FieldGroup label="Email" required>
+          <Input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+        </FieldGroup>
+        {(authConfig.googleEnabled || authConfig.passwordEnabled) && (
+          <FieldGroup label="Login method">
+            <Select value={authProvider} onChange={(e) => setAuthProvider(e.target.value as AuthProvider)}>
+              {authConfig.googleEnabled && <option value="google">Google</option>}
+              {authConfig.passwordEnabled && <option value="password">Password</option>}
+            </Select>
+          </FieldGroup>
+        )}
+        {authProvider === 'password' ? (
+          <FieldGroup label="Password" required description={PASSWORD_REQUIREMENTS_TEXT}>
+            <Input
+              type="password"
               required
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              minLength={8}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Min 8 characters"
             />
+          </FieldGroup>
+        ) : (
+          <div className="rounded-md border border-brand/20 bg-brand/10 px-3 py-2 text-caption text-brand">
+            The user will sign in with Google using this email. No password is required.
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          {(authConfig.googleEnabled || authConfig.passwordEnabled) && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Login method</label>
-              <div className="relative">
-                <select
-                  value={authProvider}
-                  onChange={(e) => setAuthProvider(e.target.value as AuthProvider)}
-                  className="w-full appearance-none px-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                >
-                  {authConfig.googleEnabled && <option value="google">Google</option>}
-                  {authConfig.passwordEnabled && <option value="password">Password</option>}
-                </select>
-                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-              </div>
-            </div>
-          )}
-          {authProvider === 'password' ? (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-              <input
-                type="password"
-                required
-                minLength={8}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Min 8 characters"
-              />
-              <p className="mt-1 text-xs text-gray-500">{PASSWORD_REQUIREMENTS_TEXT}</p>
-            </div>
-          ) : (
-            <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-              The user will sign in with Google using this email. No password is required.
-            </div>
-          )}
-          <div className="flex justify-end space-x-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded-lg border border-gray-200"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={loading}
-              className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-60"
-            >
-              {loading ? 'Creating…' : 'Create'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        )}
+      </form>
+    </Modal>
   );
 }
 
@@ -312,46 +269,32 @@ function EditUserModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-sm mx-4 p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-1">Edit user</h2>
-        <p className="text-sm text-gray-500 mb-4">{user.email}</p>
-        <form onSubmit={handleSubmit} className="space-y-3">
-          {error && (
-            <p className="text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>
-          )}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-            <div className="relative">
-              <select
-                value={status}
-                onChange={(e) => setStatus(e.target.value as UserStatus)}
-                className="w-full appearance-none px-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-              >
-                <option value="active">Active</option>
-                <option value="deactivated">Deactivated</option>
-              </select>
-              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-            </div>
-          </div>
-          <div className="flex justify-end space-x-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded-lg border border-gray-200"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={loading}
-              className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-60"
-            >
-              {loading ? 'Saving…' : 'Save'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <Modal
+      isOpen
+      onClose={onClose}
+      title="Edit user"
+      size="sm"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" type="submit" form="users-edit-form" disabled={loading} loading={loading}>
+            {loading ? 'Saving…' : 'Save'}
+          </Button>
+        </>
+      }
+    >
+      <p className="text-caption text-text-tertiary mb-4">{user.email}</p>
+      <form id="users-edit-form" onSubmit={handleSubmit} className="space-y-3">
+        {error && (
+          <p className="text-caption text-danger bg-danger/10 border border-danger/20 rounded-md px-3 py-2">{error}</p>
+        )}
+        <FieldGroup label="Status">
+          <Select value={status} onChange={(e) => setStatus(e.target.value as UserStatus)}>
+            <option value="active">Active</option>
+            <option value="deactivated">Deactivated</option>
+          </Select>
+        </FieldGroup>
+      </form>
+    </Modal>
   );
 }

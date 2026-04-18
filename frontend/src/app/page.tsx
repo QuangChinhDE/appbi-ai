@@ -14,10 +14,10 @@ export default function Home() {
   }, [router]);
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+    <div className="min-h-screen bg-surface-2 flex items-center justify-center">
       <div className="text-center">
-        <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-        <p className="text-gray-600 mt-4">Loading…</p>
+        <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-brand"></div>
+        <p className="text-text-secondary mt-4">Loading…</p>
       </div>
     </div>
   );

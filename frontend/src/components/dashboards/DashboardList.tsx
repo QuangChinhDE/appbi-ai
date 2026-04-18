@@ -2,112 +2,175 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
-import { Eye, Trash2, Share2, LayoutDashboard, Loader2 } from 'lucide-react';
+import { Trash2, Share2, LayoutDashboard, Loader2 } from 'lucide-react';
 import { Dashboard } from '@/types/api';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { IconButton } from '@/components/ui/Button';
+import { FilterTag, type FilterTagTone } from '@/components/ui/FilterTag';
 
 interface DashboardListProps {
   dashboards: Dashboard[];
   onDelete?: (id: number) => void;
   onShare?: (dashboard: Dashboard) => void;
   deletingId?: number;
+  activeFilters?: Record<string, string | undefined>;
+  onFilterClick?: (key: string, value: string) => void;
 }
 
-export function DashboardList({ dashboards, onDelete, onShare, deletingId }: DashboardListProps) {
+export function DashboardList({
+  dashboards,
+  onDelete,
+  onShare,
+  deletingId,
+  activeFilters,
+  onFilterClick,
+}: DashboardListProps) {
   const router = useRouter();
+
+  const getAccessMeta = (permission?: string): { label: string; tone: FilterTagTone; value: string } => {
+    switch (permission) {
+      case 'full':
+        return { label: 'Full access', tone: 'brand', value: 'full' };
+      case 'edit':
+        return { label: 'Editable', tone: 'info', value: 'edit' };
+      case 'view':
+        return { label: 'View only', tone: 'neutral', value: 'view' };
+      default:
+        return { label: 'Restricted', tone: 'neutral', value: 'none' };
+    }
+  };
+
+  const getStateMeta = (chartCount: number): { label: string; tone: FilterTagTone; value: string } => {
+    if (chartCount > 0) {
+      return { label: 'Linked', tone: 'success', value: 'linked' };
+    }
+    return { label: 'Empty', tone: 'warning', value: 'empty' };
+  };
 
   if (dashboards.length === 0) {
     return (
-      <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
-        <LayoutDashboard className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-        <h3 className="text-lg font-medium text-gray-900 mb-2">No dashboards yet</h3>
-        <p className="text-gray-500">
-          Create your first dashboard to organize your charts.
-        </p>
-      </div>
+      <EmptyState
+        icon={<LayoutDashboard />}
+        title="No dashboards yet"
+        description="Create your first dashboard to organize your charts."
+      />
     );
   }
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-      <table className="min-w-full divide-y divide-gray-200">
-        <thead className="bg-gray-50">
+    <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+      <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
+        <thead className="bg-surface-2">
           <tr>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Name
+            <th className="px-6 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+              Dashboard
             </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+            <th className="px-6 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+              Tags
+            </th>
+            <th className="px-6 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
               Owner
             </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+            <th className="px-6 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
               Charts
             </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Created
+            <th className="px-6 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+              Updated
             </th>
-            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+            <th className="px-6 py-3 text-right text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
               Actions
             </th>
           </tr>
         </thead>
-        <tbody className="bg-white divide-y divide-gray-200">
+        <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
           {dashboards.map((dashboard) => {
             const perms = getResourcePermissions(dashboard.user_permission);
+            const chartCount = dashboard.dashboard_charts?.length || 0;
+            const stateMeta = getStateMeta(chartCount);
+            const accessMeta = getAccessMeta(dashboard.user_permission);
+
             return (
-            <tr key={dashboard.id} className="hover:bg-gray-50">
-              <td className="px-6 py-4">
-                <div className="text-sm font-medium text-gray-900">
-                  {dashboard.name}
-                </div>
-                {dashboard.description && (
-                  <div className="text-sm text-gray-500">{dashboard.description}</div>
-                )}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap">
-                <OwnerBadge email={dashboard.owner_email} />
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {dashboard.dashboard_charts?.length || 0} charts
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {new Date(dashboard.created_at).toLocaleDateString()}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                <div className="flex justify-end items-center gap-2">
+              <tr key={dashboard.id} className="hover:bg-surface-2">
+                <td className="px-6 py-4">
                   <button
+                    type="button"
                     onClick={() => router.push(`/dashboards/${dashboard.id}`)}
-                    className="text-blue-600 hover:text-blue-900 p-1 rounded hover:bg-blue-50"
-                    title="Open dashboard"
+                    className="text-left"
                   >
-                    <Eye className="h-4 w-4" />
-                  </button>
-                  {onShare && perms.canShare && (
-                  <button
-                    onClick={() => onShare(dashboard)}
-                    className="text-purple-600 hover:text-purple-900 p-1 rounded hover:bg-purple-50"
-                    title="Share"
-                  >
-                    <Share2 className="h-4 w-4" />
-                  </button>
-                  )}
-                  {onDelete && perms.canDelete && (
-                  <button
-                    onClick={() => onDelete(dashboard.id)}
-                    disabled={deletingId === dashboard.id}
-                    className="text-red-600 hover:text-red-900 p-1 rounded hover:bg-red-50 disabled:opacity-50"
-                    title="Delete dashboard"
-                  >
-                    {deletingId === dashboard.id ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Trash2 className="h-4 w-4" />
+                    <div className="text-caption font-emphasis text-text-primary transition-colors hover:text-brand">
+                      {dashboard.name}
+                    </div>
+                    {dashboard.description && (
+                      <div className="text-tiny text-text-tertiary">{dashboard.description}</div>
                     )}
                   </button>
-                  )}
-                </div>
-              </td>
-            </tr>
+                </td>
+                <td className="px-6 py-4">
+                  <div className="flex flex-wrap gap-1.5">
+                    <FilterTag
+                      tone={stateMeta.tone}
+                      active={activeFilters?.state === stateMeta.value}
+                      onClick={() => onFilterClick?.('state', stateMeta.value)}
+                    >
+                      {stateMeta.label}
+                    </FilterTag>
+                    <FilterTag
+                      tone={accessMeta.tone}
+                      active={activeFilters?.access === accessMeta.value}
+                      onClick={() => onFilterClick?.('access', accessMeta.value)}
+                    >
+                      {accessMeta.label}
+                    </FilterTag>
+                  </div>
+                </td>
+                <td className="whitespace-nowrap px-6 py-4">
+                  <OwnerBadge
+                    email={dashboard.owner_email}
+                    active={activeFilters?.owner === dashboard.owner_email}
+                    onClick={dashboard.owner_email ? () => onFilterClick?.('owner', dashboard.owner_email!) : undefined}
+                  />
+                </td>
+                <td className="whitespace-nowrap px-6 py-4 text-caption text-text-tertiary">
+                  {chartCount} charts
+                </td>
+                <td className="whitespace-nowrap px-6 py-4 text-caption text-text-tertiary">
+                  {new Date(dashboard.updated_at).toLocaleDateString()}
+                </td>
+                <td className="whitespace-nowrap px-6 py-4 text-right">
+                  <div className="flex items-center justify-end gap-1">
+                    {onShare && perms.canShare && (
+                      <IconButton
+                        aria-label="Share dashboard"
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => onShare(dashboard)}
+                        title="Share"
+                      >
+                        <Share2 className="h-3.5 w-3.5" />
+                      </IconButton>
+                    )}
+                    {onDelete && perms.canDelete && (
+                      <IconButton
+                        aria-label="Delete dashboard"
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => onDelete(dashboard.id)}
+                        disabled={deletingId === dashboard.id}
+                        title="Delete dashboard"
+                        className="text-danger hover:bg-danger/10"
+                      >
+                        {deletingId === dashboard.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" />
+                        )}
+                      </IconButton>
+                    )}
+                  </div>
+                </td>
+              </tr>
             );
           })}
         </tbody>

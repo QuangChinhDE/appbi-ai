@@ -20,22 +20,22 @@ import {
 } from 'lucide-react';
 import {
   useDatasetModel,
-  type DatasetModelView,
   type DimensionDefinition,
   type MeasureDefinition,
 } from '@/hooks/use-dataset-model';
+import { Input } from '@/components/ui/Input';
 
 function DimensionIcon({ type }: { type: string }) {
   switch (type) {
     case 'number':
-      return <Hash className="w-3 h-3 text-blue-500 shrink-0" />;
+      return <Hash className="h-3 w-3 shrink-0 text-brand" />;
     case 'date':
     case 'datetime':
-      return <Calendar className="w-3 h-3 text-green-600 shrink-0" />;
+      return <Calendar className="h-3 w-3 shrink-0 text-success" />;
     case 'yesno':
-      return <ToggleLeft className="w-3 h-3 text-purple-500 shrink-0" />;
+      return <ToggleLeft className="h-3 w-3 shrink-0 text-brand" />;
     default:
-      return <Type className="w-3 h-3 text-gray-500 shrink-0" />;
+      return <Type className="h-3 w-3 shrink-0 text-text-tertiary" />;
   }
 }
 
@@ -99,17 +99,17 @@ export function ExploreColumnPanel({
 
   if (isLoading) {
     return (
-      <div className="px-4 py-3 text-xs text-gray-400">Loading model…</div>
+      <div className="px-4 py-3 text-caption text-text-quaternary">Loading model...</div>
     );
   }
 
   if (!model?.model_id || views.length === 0) {
     return (
-      <div className="group/help relative px-4 py-3 flex items-center gap-1.5 text-xs text-gray-400 italic cursor-default">
+      <div className="group/help relative flex cursor-default items-center gap-1.5 px-4 py-3 text-caption italic text-text-quaternary">
         No data model.
         <span className="inline-flex items-center">
-          <Info className="h-3.5 w-3.5 text-gray-400 transition-colors group-hover/help:text-blue-500" />
-          <span className="pointer-events-none absolute left-4 top-full z-50 mt-1 hidden w-64 rounded-md bg-slate-900 px-2.5 py-2 text-[11px] font-normal not-italic tracking-normal text-white shadow-lg group-hover/help:block">
+          <Info className="h-3.5 w-3.5 text-text-quaternary transition-colors group-hover/help:text-brand" />
+          <span className="pointer-events-none absolute left-4 top-full z-50 mt-1 hidden w-64 rounded-md bg-surface-inverse px-2.5 py-2 text-tiny not-italic tracking-normal text-text-inverse shadow-linear-lg group-hover/help:block">
             Generate a data model from the dataset Model tab to start using the column panel.
           </span>
         </span>
@@ -119,20 +119,16 @@ export function ExploreColumnPanel({
 
   return (
     <div className="flex flex-col">
-      {/* Search */}
-      <div className="px-4 pt-3 pb-2">
-        <div className="relative">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-          <input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search columns…"
-            className="w-full pl-7 pr-3 py-1.5 text-xs border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-400"
-          />
-        </div>
+      <div className="px-4 pb-2 pt-3">
+        <Input
+          size="sm"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search columns..."
+          leadingIcon={<Search className="h-3.5 w-3.5" />}
+        />
       </div>
 
-      {/* Views Tree */}
       <div className="flex-1 overflow-y-auto pb-2">
         {filteredViews.map((view) => {
           const isExpanded = expandedViews[view.id] ?? false;
@@ -141,36 +137,34 @@ export function ExploreColumnPanel({
 
           return (
             <div key={view.id}>
-              {/* View header */}
               <button
                 onClick={() => toggleView(view.id)}
-                className="w-full flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                className="flex w-full items-center gap-1.5 px-4 py-1.5 text-caption font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
               >
                 {isExpanded ? (
-                  <ChevronDown className="w-3 h-3 text-gray-400" />
+                  <ChevronDown className="h-3 w-3 text-text-quaternary" />
                 ) : (
-                  <ChevronRight className="w-3 h-3 text-gray-400" />
+                  <ChevronRight className="h-3 w-3 text-text-quaternary" />
                 )}
-                <TableIcon className="w-3 h-3 text-gray-400" />
+                <TableIcon className="h-3 w-3 text-text-quaternary" />
                 <span className="truncate">{view.table_display_name || view.name}</span>
-                <span className="ml-auto text-[10px] text-gray-400">
+                <span className="ml-auto text-tiny text-text-quaternary">
                   {visibleDims.length}d · {visibleMeasures.length}m
                 </span>
               </button>
 
               {isExpanded && (
                 <div className="ml-4">
-                  {/* Dimensions */}
                   {visibleDims.length > 0 && (
                     <div className="mb-1">
-                      <div className="px-4 py-1 text-[10px] font-medium text-gray-400 uppercase">
+                      <div className="px-4 py-1 text-tiny font-emphasis uppercase text-text-quaternary">
                         Dimensions
                       </div>
                       {visibleDims.map((dim) => (
                         <button
                           key={dim.name}
                           onClick={() => onSelectDimension?.(dim, view.name)}
-                          className="w-full flex items-center gap-2 px-4 py-1 text-xs text-gray-600 hover:bg-blue-50 hover:text-blue-700 rounded-sm transition-colors"
+                          className="flex w-full items-center gap-2 rounded-sm px-4 py-1 text-caption text-text-secondary transition-colors hover:bg-brand/10 hover:text-brand"
                           title={dim.description || dim.sql || dim.name}
                         >
                           <DimensionIcon type={dim.type} />
@@ -180,22 +174,21 @@ export function ExploreColumnPanel({
                     </div>
                   )}
 
-                  {/* Measures */}
                   {visibleMeasures.length > 0 && (
                     <div className="mb-1">
-                      <div className="px-4 py-1 text-[10px] font-medium text-gray-400 uppercase">
+                      <div className="px-4 py-1 text-tiny font-emphasis uppercase text-text-quaternary">
                         Measures
                       </div>
                       {visibleMeasures.map((m) => (
                         <button
                           key={m.name}
                           onClick={() => onSelectMeasure?.(m, view.name)}
-                          className="w-full flex items-center gap-2 px-4 py-1 text-xs text-gray-600 hover:bg-orange-50 hover:text-orange-700 rounded-sm transition-colors"
+                          className="flex w-full items-center gap-2 rounded-sm px-4 py-1 text-caption text-text-secondary transition-colors hover:bg-warning/10 hover:text-warning"
                           title={`${m.type.toUpperCase()}(${m.sql || m.name})`}
                         >
-                          <Sigma className="w-3 h-3 text-orange-500 shrink-0" />
+                          <Sigma className="h-3 w-3 shrink-0 text-warning" />
                           <span className="truncate">{m.label || m.name}</span>
-                          <span className="ml-auto text-[10px] text-gray-400 uppercase">
+                          <span className="ml-auto text-tiny uppercase text-text-quaternary">
                             {m.type}
                           </span>
                         </button>

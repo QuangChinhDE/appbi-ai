@@ -3,6 +3,8 @@
 import React from 'react';
 import { AlertTriangle, RefreshCcw } from 'lucide-react';
 
+import { Button } from '@/components/ui/Button';
+
 type Props = {
   children: React.ReactNode;
   isVietnamese: boolean;
@@ -40,32 +42,32 @@ export class WizardRenderErrorBoundary extends React.Component<Props, State> {
     }
 
     return (
-      <div className="rounded-2xl border border-rose-200 bg-white p-6 shadow-sm">
+      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-6 shadow-linear-sm">
         <div className="flex items-start gap-3">
-          <div className="rounded-xl bg-rose-50 p-2 text-rose-700">
-            <AlertTriangle className="h-5 w-5" />
+          <div className="rounded-lg bg-danger/10 p-2 text-danger">
+            <AlertTriangle className="h-4 w-4" />
           </div>
           <div className="min-w-0 flex-1">
-            <h3 className="text-lg font-semibold text-gray-900">
+            <h3 className="text-small font-strong text-text-primary">
               {isVietnamese ? 'Wizard AI Reports gặp lỗi render' : 'AI Reports wizard render error'}
             </h3>
-            <p className="mt-2 text-sm leading-6 text-gray-600">
+            <p className="mt-2 text-caption leading-6 text-text-secondary">
               {isVietnamese
                 ? 'Một lỗi giao diện đã xảy ra trong lúc render wizard. Mình đang chặn lỗi này ở phạm vi module để không làm sập toàn bộ ứng dụng.'
                 : 'A UI error occurred while rendering the wizard. This is being contained to the module so it does not crash the whole app.'}
             </p>
-            <div className="mt-4 rounded-xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-              <p className="font-medium">{error.message || 'Unknown render error'}</p>
+            <div className="mt-4 rounded-lg border border-danger/20 bg-danger/10 px-4 py-3 text-caption text-danger">
+              <p className="font-emphasis">{error.message || 'Unknown render error'}</p>
             </div>
             <div className="mt-4 flex flex-wrap gap-3">
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={this.handleReset}
-                className="inline-flex items-center gap-2 rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+                leadingIcon={<RefreshCcw className="h-3.5 w-3.5" />}
               >
-                <RefreshCcw className="h-4 w-4" />
                 {isVietnamese ? 'Thử render lại' : 'Try rendering again'}
-              </button>
+              </Button>
             </div>
           </div>
         </div>

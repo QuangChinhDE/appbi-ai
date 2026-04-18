@@ -376,40 +376,51 @@ export function AddColumnModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      {/* Fixed 900×640 — does not resize when panels expand */}
-      <div className="bg-white rounded-xl shadow-2xl flex flex-col" style={{ width: 900, height: 640 }}>
-
-        {/* Header */}
-        <div className="flex items-start justify-between px-6 py-4 border-b shrink-0">
-          <div className="flex items-center gap-1.5">
-            <h2 className="text-lg font-semibold text-gray-900">
-              {isEditMode ? `Sửa cột: ${editingStep?.params.newField}` : 'Thêm cột tính toán'}
-            </h2>
-            <HelpTooltip text={isEditMode ? 'Sửa công thức Excel · tên cột không thể đổi' : 'Dùng công thức Excel để tạo cột mới từ dữ liệu hiện có'} />
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay/84 p-4 backdrop-blur-[3px]">
+      <div className="flex h-[640px] max-h-[640px] w-[900px] max-w-[96vw] flex-col overflow-hidden rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg">
+        <div className="shrink-0 border-b border-[rgb(var(--border-line))] px-5 py-3.5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
+                <Info className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-small font-strong text-text-primary">
+                  {isEditMode ? `Sửa cột: ${editingStep?.params.newField}` : 'Thêm cột tính toán'}
+                </h2>
+                <div className="mt-0.5 text-caption text-text-tertiary">
+                  {isEditMode ? 'Sửa công thức Excel hiện có, giữ nguyên tên cột.' : 'Dùng công thức Excel để tạo cột mới từ dữ liệu hiện có.'}
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isSaving}
+              className="rounded-md p-2 text-text-quaternary transition-colors hover:bg-surface-2 hover:text-text-secondary disabled:opacity-50"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
-          <button onClick={onClose} disabled={isSaving} className="text-gray-400 hover:text-gray-600 mt-0.5">
-            <X className="w-5 h-5" />
-          </button>
         </div>
 
         <div className="flex flex-1 min-h-0 overflow-hidden">
 
           {/* Left: editor */}
-          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+          <div className="flex-1 overflow-y-auto bg-surface-0 px-6 py-4 space-y-4">
 
             {/* Column name — hidden (and fixed) in edit mode */}
             {!isEditMode && (
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Tên cột mới <span className="text-red-500">*</span>
+                <label className="block text-sm font-medium text-text-secondary mb-1">
+                  Tên cột mới <span className="text-danger">*</span>
                 </label>
                 <input
                   type="text"
                   value={columnName}
                   onChange={(e) => setColumnName(e.target.value)}
                   placeholder="vd: THANH_TIEN  (không khoảng trắng)"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
                   disabled={isSaving}
                 />
               </div>
@@ -418,7 +429,7 @@ export function AddColumnModal({
             {/* Column chips — grouped by source table */}
             {resolvedGroups.length > 0 && (
               <div>
-                <p className="text-xs text-gray-500 mb-1.5 font-medium flex items-center">
+                <p className="text-xs text-text-tertiary mb-1.5 font-medium flex items-center">
                   Cột khả dụng
                   <HelpTooltip text="Click vào tên cột để chèn vào công thức." />
                 </p>
@@ -427,14 +438,14 @@ export function AddColumnModal({
                     <div key={group.sourceLabel}>
                       {/* Show source label only when there are multiple groups (joins) */}
                       {resolvedGroups.length > 1 && (
-                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">
+                        <p className="text-[10px] font-semibold text-text-quaternary uppercase tracking-wide mb-1">
                           📋 {group.sourceLabel}
                         </p>
                       )}
                       <div className="flex flex-wrap gap-1.5">
                         {group.columns.map((col) => (
                           <button key={col} type="button" onClick={() => insertColumnRef(col)}
-                            className="px-2 py-0.5 text-[11px] font-mono bg-emerald-50 text-emerald-700 border border-emerald-200 rounded hover:bg-emerald-100 transition-colors">
+                            className="px-2 py-0.5 text-[11px] font-mono bg-success/10 text-success border border-success/30 rounded hover:bg-success/15 transition-colors">
                             [{col}]
                           </button>
                         ))}
@@ -447,18 +458,18 @@ export function AddColumnModal({
 
             {/* Formula input */}
             <div>
-              <label className="text-sm font-medium text-gray-700 flex items-center mb-1">
-                Công thức <span className="text-red-500 ml-0.5">*</span>
+              <label className="text-sm font-medium text-text-secondary flex items-center mb-1">
+                Công thức <span className="text-danger ml-0.5">*</span>
                 <HelpTooltip text="Dùng [TênCột] để tham chiếu cột · cú pháp y hệt Excel" />
               </label>
-              <div className="relative border border-gray-300 rounded-md overflow-hidden focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-500">
+              <div className="relative overflow-hidden rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 focus-within:border-brand focus-within:ring-2 focus-within:ring-brand">
                 <textarea
                   ref={textareaRef}
                   value={formula}
                   onChange={(e) => setFormula(e.target.value)}
                   spellCheck={false}
                   placeholder={`IF([Doanh_thu]>1000000,"Cao","Thấp")`}
-                  className="w-full px-3 py-2 font-mono text-sm focus:outline-none resize-y min-h-[90px] bg-white"
+                  className="min-h-[90px] w-full resize-y bg-surface-1 px-3 py-2 font-mono text-sm text-text-primary focus:outline-none"
                   disabled={isSaving}
                   onKeyDown={(e) => {
                     if (e.key === 'Tab') {
@@ -478,33 +489,33 @@ export function AddColumnModal({
             {previewRows.length > 0 && formula.trim() && (
               <div>
                 <div className="flex items-center gap-2 mb-1.5">
-                  <Play className="w-3.5 h-3.5 text-gray-500" />
-                  <span className="text-xs font-medium text-gray-700">Xem trước ({Math.min(5, previewRows.length)} hàng đầu)</span>
-                  {allPreviewOk && <span className="text-[10px] text-green-600 font-medium">✓ Hợp lệ</span>}
-                  {hasPreviewError && <span className="text-[10px] text-red-600 font-medium">✗ Có lỗi</span>}
+                  <Play className="w-3.5 h-3.5 text-text-tertiary" />
+                  <span className="text-xs font-medium text-text-secondary">Xem trước ({Math.min(5, previewRows.length)} hàng đầu)</span>
+                  {allPreviewOk && <span className="text-[10px] text-success font-medium">✓ Hợp lệ</span>}
+                  {hasPreviewError && <span className="text-[10px] text-danger font-medium">✗ Có lỗi</span>}
                 </div>
-                <div className="border border-gray-200 rounded-md overflow-hidden">
+                <div className="border border-[rgb(var(--border-line))] rounded-md overflow-hidden">
                   <table className="w-full text-xs">
-                    <thead className="bg-gray-50 border-b border-gray-200">
+                    <thead className="bg-surface-2 border-b border-[rgb(var(--border-line))]">
                       <tr>
-                        <th className="px-3 py-1.5 text-left text-gray-500 font-medium w-10">#</th>
-                        <th className="px-3 py-1.5 text-left text-gray-500 font-medium">{columnName.trim() || '(tên cột)'}</th>
-                        <th className="px-3 py-1.5 text-left text-gray-500 font-medium w-28">Trạng thái</th>
+                        <th className="px-3 py-1.5 text-left text-text-tertiary font-medium w-10">#</th>
+                        <th className="px-3 py-1.5 text-left text-text-tertiary font-medium">{columnName.trim() || '(tên cột)'}</th>
+                        <th className="px-3 py-1.5 text-left text-text-tertiary font-medium w-28">Trạng thái</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-100">
+                    <tbody className="divide-y divide-[rgb(var(--border-line))]">
                       {livePreview.map((res, i) => (
-                        <tr key={i} className={res.ok ? 'bg-white' : 'bg-red-50'}>
-                          <td className="px-3 py-1.5 text-gray-400 font-mono">{i + 1}</td>
+                        <tr key={i} className={res.ok ? 'bg-surface-1' : 'bg-danger/10'}>
+                          <td className="px-3 py-1.5 text-text-quaternary font-mono">{i + 1}</td>
                           <td className="px-3 py-1.5 font-mono truncate max-w-xs">
                             {res.ok
-                              ? <span className="text-gray-800">{renderValue(res.value)}</span>
-                              : <span className="text-red-400">—</span>}
+                              ? <span className="text-text-primary">{renderValue(res.value)}</span>
+                              : <span className="text-danger">—</span>}
                           </td>
                           <td className="px-3 py-1.5">
                             {res.ok
-                              ? <span className="text-green-600">✓ OK</span>
-                              : <span className="text-red-600 break-all text-[10px]">{(res as any).error}</span>}
+                              ? <span className="text-success">✓ OK</span>
+                              : <span className="text-danger break-all text-[10px]">{(res as any).error}</span>}
                           </td>
                         </tr>
                       ))}
@@ -515,7 +526,7 @@ export function AddColumnModal({
             )}
 
             {saveError && (
-              <div className="flex items-start gap-2 text-red-600 text-sm">
+              <div className="flex items-start gap-2 text-danger text-sm">
                 <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
                 <span>{saveError}</span>
               </div>
@@ -523,18 +534,18 @@ export function AddColumnModal({
           </div>
 
           {/* Right: function reference panel */}
-          <div className="w-60 border-l bg-gray-50 flex flex-col overflow-hidden">
-            <div className="px-3 py-2 border-b bg-white shrink-0">
-              <p className="text-xs font-semibold text-gray-700 flex items-center gap-1.5">
-                <Info className="w-3.5 h-3.5 text-blue-500" />
+          <div className="flex w-60 flex-col overflow-hidden border-l border-[rgb(var(--border-line))] bg-surface-2">
+            <div className="shrink-0 border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+              <p className="text-xs font-semibold text-text-secondary flex items-center gap-1.5">
+                <Info className="w-3.5 h-3.5 text-brand" />
                 Hàm Excel khả dụng
               </p>
             </div>
             <div className="flex-1 overflow-y-auto">
               {/* Lookup table list */}
               {lookupData && Object.keys(lookupData).length > 0 && (
-                <div className="px-3 py-2 border-b bg-amber-50">
-                  <p className="text-[10px] font-semibold text-amber-700 mb-1.5">Bảng lookup khả dụng:</p>
+                <div className="px-3 py-2 border-b bg-warning/10">
+                  <p className="text-[10px] font-semibold text-warning mb-1.5">Bảng lookup khả dụng:</p>
                   <div className="space-y-1">
                     {lookupTables && lookupTables.length > 0 ? (
                       lookupTables.map((lookupTable) => (
@@ -542,11 +553,11 @@ export function AddColumnModal({
                           key={lookupTable.identifier}
                           type="button"
                           onClick={() => insertFnExample(`LOOKUP([khóa],"${lookupTable.identifier}","cột_khóa","cột_cần_lấy")`)}
-                          className="w-full text-left px-2 py-1 bg-amber-100 hover:bg-amber-200 rounded border border-amber-200 transition-colors"
+                          className="w-full text-left px-2 py-1 bg-warning/15 hover:bg-warning/20 rounded border border-warning/30 transition-colors"
                         >
-                          <span className="text-[10px] font-semibold text-amber-800 block">{lookupTable.label}</span>
-                          <span className="text-[9px] font-mono text-amber-700 block">"{lookupTable.identifier}"</span>
-                          <span className="text-[9px] text-amber-600">{lookupTable.rowCount} rows cache · click chèn mẫu</span>
+                          <span className="text-[10px] font-semibold text-warning block">{lookupTable.label}</span>
+                          <span className="text-[9px] font-mono text-warning block">"{lookupTable.identifier}"</span>
+                          <span className="text-[9px] text-warning">{lookupTable.rowCount} rows cache · click chèn mẫu</span>
                         </button>
                       ))
                     ) : (
@@ -555,10 +566,10 @@ export function AddColumnModal({
                           key={tableKey}
                           type="button"
                           onClick={() => insertFnExample(`LOOKUP([khóa],"${tableKey}","cột_khóa","cột_cần_lấy")`)}
-                          className="w-full text-left px-2 py-1 bg-amber-100 hover:bg-amber-200 rounded border border-amber-200 transition-colors"
+                          className="w-full text-left px-2 py-1 bg-warning/15 hover:bg-warning/20 rounded border border-warning/30 transition-colors"
                         >
-                          <span className="text-[10px] font-mono font-semibold text-amber-800 block">"{tableKey}"</span>
-                          <span className="text-[9px] text-amber-600">{rows.length} rows cache · click chèn mẫu</span>
+                          <span className="text-[10px] font-mono font-semibold text-warning block">"{tableKey}"</span>
+                          <span className="text-[9px] text-warning">{rows.length} rows cache · click chèn mẫu</span>
                         </button>
                       ))
                     )}
@@ -568,7 +579,7 @@ export function AddColumnModal({
               {FUNCTION_GROUPS.map((group) => (
                 <div key={group.group}>
                   <button
-                    className="w-full flex items-center justify-between px-3 py-2 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 transition-colors"
+                    className="w-full flex items-center justify-between px-3 py-2 text-[11px] font-semibold text-text-secondary hover:bg-surface-2 transition-colors"
                     onClick={() => setOpenGroup(openGroup === group.group ? null : group.group)}
                   >
                     <span>{group.group}</span>
@@ -583,13 +594,13 @@ export function AddColumnModal({
                           key={fn.name}
                           type="button"
                           onClick={() => insertFnExample(fn.example)}
-                          className="w-full text-left px-3 py-1.5 hover:bg-blue-50 group"
+                          className="w-full text-left px-3 py-1.5 hover:bg-brand/15 group"
                         >
                           <div className="flex items-center justify-between">
-                            <span className="text-[11px] font-mono font-semibold text-blue-700 group-hover:text-blue-900">{fn.name}</span>
-                            <span className="text-[9px] text-gray-400">chèn</span>
+                            <span className="text-[11px] font-mono font-semibold text-brand group-hover:text-brand">{fn.name}</span>
+                            <span className="text-[9px] text-text-quaternary">chèn</span>
                           </div>
-                          <p className="text-[10px] text-gray-500 mt-0.5">{fn.desc}</p>
+                          <p className="text-[10px] text-text-tertiary mt-0.5">{fn.desc}</p>
                         </button>
                       ))}
                     </div>
@@ -600,21 +611,17 @@ export function AddColumnModal({
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="flex items-center justify-between px-6 py-3 border-t bg-gray-50 rounded-b-xl">
-          <div className="flex gap-3">
-            <button onClick={onClose} disabled={isSaving} className="px-4 py-2 text-sm text-gray-700 hover:text-gray-900">Huỷ</button>
-            <button
-              onClick={handleSave}
-              disabled={isSaving || (!isEditMode && !columnName.trim()) || !formula.trim() || hasPreviewError}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
-              {isEditMode ? 'Cập nhật cột' : 'Thêm cột'}
-            </button>
-          </div>
+        <div className="flex items-center justify-end gap-2 border-t border-[rgb(var(--border-line))] bg-surface-2 px-5 py-3">
+          <button onClick={onClose} disabled={isSaving} className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary disabled:opacity-50">Huỷ</button>
+          <button
+            onClick={handleSave}
+            disabled={isSaving || (!isEditMode && !columnName.trim()) || !formula.trim() || hasPreviewError}
+            className="flex items-center gap-2 rounded-md bg-brand px-4 py-2 text-sm text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+          >
+            {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+            {isEditMode ? 'Cập nhật cột' : 'Thêm cột'}
+          </button>
         </div>
-
       </div>
     </div>
   );

@@ -287,7 +287,7 @@ function applyTimeGranularity(
 
 function EmptyState({ message }: { message: string }) {
   return (
-    <div className="h-full flex items-center justify-center text-gray-400">
+    <div className="h-full flex items-center justify-center text-text-quaternary">
       <p className="text-sm text-center max-w-xs px-4">{message}</p>
     </div>
   );
@@ -406,7 +406,7 @@ function ExploreChartInner({
 
   // Truncation banner ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â shown above the chart when data points exceed MAX_CHART_POINTS
   const TruncationBanner = truncated ? (
-    <div className="px-3 py-1.5 bg-amber-50 border border-amber-200 rounded text-xs text-amber-700 mb-1">
+    <div className="px-3 py-1.5 bg-warning/10 border border-warning/30 rounded text-xs text-warning mb-1">
       Showing top {MAX_CHART_POINTS.toLocaleString()} of {totalPoints.toLocaleString()} groups. Add filters or choose a lower-cardinality dimension for the full picture.
     </div>
   ) : null;
@@ -443,7 +443,7 @@ function ExploreChartInner({
   const yAxisLabel = style.yAxisLabel || undefined;
 
   const ChartTitleEl = chartTitle ? (
-    <div className="text-center text-sm font-semibold text-gray-700 mb-1">{chartTitle}</div>
+    <div className="text-center text-sm font-semibold text-text-secondary mb-1">{chartTitle}</div>
   ) : null;
 
   const renderXAxis = (dataKey: string, count: number = categoricalData.length) => {
@@ -583,12 +583,12 @@ function ExploreChartInner({
       if (!active || !payload?.length) return null;
       const pt = payload[0]?.payload;
       return (
-        <div className="bg-white border border-gray-200 rounded px-3 py-2 shadow-sm" style={{ fontSize }}>
+        <div className="bg-surface-1 border border-[rgb(var(--border-line))] rounded px-3 py-2 shadow-linear-sm" style={{ fontSize }}>
           {dimension && pt.label !== undefined && (
-            <div className="font-semibold text-gray-800 mb-1">{String(pt.label)}</div>
+            <div className="font-semibold text-text-primary mb-1">{String(pt.label)}</div>
           )}
-          <div className="text-gray-600">{scatterX}: <span className="font-medium text-gray-800">{formatNumber(pt.x, style)}</span></div>
-          <div className="text-gray-600">{scatterY}: <span className="font-medium text-gray-800">{formatNumber(pt.y, style)}</span></div>
+          <div className="text-text-secondary">{scatterX}: <span className="font-medium text-text-primary">{formatNumber(pt.x, style)}</span></div>
+          <div className="text-text-secondary">{scatterY}: <span className="font-medium text-text-primary">{formatNumber(pt.y, style)}</span></div>
         </div>
       );
     };

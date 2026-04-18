@@ -68,7 +68,7 @@ export function CrossTabLayout({ definition, previewData, isLoading }: CrossTabL
 
   if (!pivotCol || !valueCol || rowCols.length === 0) {
     return (
-      <div className="px-4 py-8 text-center text-xs text-gray-400">
+      <div className="px-4 py-8 text-center text-xs text-text-quaternary">
         Configure cross-tab: set row columns, pivot column, and value column in properties.
       </div>
     );
@@ -77,7 +77,7 @@ export function CrossTabLayout({ definition, previewData, isLoading }: CrossTabL
   return (
     <div className="overflow-x-auto p-3">
       {isLoading && (
-        <div className="py-8 text-center text-xs text-gray-500">Loading data…</div>
+        <div className="py-8 text-center text-xs text-text-tertiary">Loading data…</div>
       )}
 
       {!isLoading && (
@@ -87,7 +87,7 @@ export function CrossTabLayout({ definition, previewData, isLoading }: CrossTabL
               {rowCols.map((col) => (
                 <th
                   key={col.id}
-                  className="border border-gray-200 bg-gray-800 px-2.5 py-1.5 text-left text-[10px] font-medium font-mono text-gray-300 whitespace-nowrap"
+                  className="border border-[rgb(var(--border-line))] bg-surface-inverse/80 px-2.5 py-1.5 text-left text-[10px] font-medium font-mono text-text-quaternary whitespace-nowrap"
                 >
                   {col.label}
                 </th>
@@ -95,13 +95,13 @@ export function CrossTabLayout({ definition, previewData, isLoading }: CrossTabL
               {pivotValues.map((pv) => (
                 <th
                   key={pv}
-                  className="border border-gray-200 bg-gray-900 px-2.5 py-1.5 text-center text-[10px] font-medium font-mono text-gray-300 whitespace-nowrap"
+                  className="border border-[rgb(var(--border-line))] bg-surface-inverse px-2.5 py-1.5 text-center text-[10px] font-medium font-mono text-text-quaternary whitespace-nowrap"
                 >
                   {pv}
                 </th>
               ))}
               {crossTabConfig?.showRowTotal !== false && (
-                <th className="border border-gray-200 bg-blue-50 px-2.5 py-1.5 text-center text-[10px] font-semibold font-mono text-blue-700 whitespace-nowrap">
+                <th className="border border-[rgb(var(--border-line))] bg-brand/10 px-2.5 py-1.5 text-center text-[10px] font-semibold font-mono text-brand whitespace-nowrap">
                   Total
                 </th>
               )}
@@ -109,11 +109,11 @@ export function CrossTabLayout({ definition, previewData, isLoading }: CrossTabL
           </thead>
           <tbody>
             {pivotRows.map((entry, ri) => (
-              <tr key={ri} className="hover:bg-gray-50 transition-colors">
+              <tr key={ri} className="hover:bg-surface-2 transition-colors">
                 {rowCols.map((col) => (
                   <td
                     key={col.id}
-                    className="border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-left text-xs font-medium text-gray-900 whitespace-nowrap"
+                    className="border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1.5 text-left text-xs font-medium text-text-primary whitespace-nowrap"
                   >
                     {String(entry.rowData[col.sourceColumn ?? col.key] ?? '')}
                   </td>
@@ -121,7 +121,7 @@ export function CrossTabLayout({ definition, previewData, isLoading }: CrossTabL
                 {pivotValues.map((pv) => (
                   <td
                     key={pv}
-                    className="border border-gray-200 px-2.5 py-1.5 text-right text-[10px] font-mono text-gray-600 whitespace-nowrap"
+                    className="border border-[rgb(var(--border-line))] px-2.5 py-1.5 text-right text-[10px] font-mono text-text-secondary whitespace-nowrap"
                   >
                     {entry.values[pv]
                       ? formatValue(entry.values[pv], valueCol.format, valueCol.suffix)
@@ -129,7 +129,7 @@ export function CrossTabLayout({ definition, previewData, isLoading }: CrossTabL
                   </td>
                 ))}
                 {crossTabConfig?.showRowTotal !== false && (
-                  <td className="border border-gray-200 bg-blue-50 px-2.5 py-1.5 text-right text-[10px] font-mono font-semibold text-blue-700 whitespace-nowrap">
+                  <td className="border border-[rgb(var(--border-line))] bg-brand/10 px-2.5 py-1.5 text-right text-[10px] font-mono font-semibold text-brand whitespace-nowrap">
                     {formatValue(entry.total, valueCol.format, valueCol.suffix)}
                   </td>
                 )}
@@ -142,7 +142,7 @@ export function CrossTabLayout({ definition, previewData, isLoading }: CrossTabL
                 {rowCols.map((col, ci) => (
                   <td
                     key={col.id}
-                    className="border border-gray-200 bg-blue-50 px-2.5 py-1.5 text-left text-xs font-semibold text-blue-700 whitespace-nowrap"
+                    className="border border-[rgb(var(--border-line))] bg-brand/10 px-2.5 py-1.5 text-left text-xs font-semibold text-brand whitespace-nowrap"
                   >
                     {ci === 0 ? `TOTAL — ${pivotRows.length} rows` : ''}
                   </td>
@@ -150,13 +150,13 @@ export function CrossTabLayout({ definition, previewData, isLoading }: CrossTabL
                 {pivotValues.map((pv) => (
                   <td
                     key={pv}
-                    className="border border-gray-200 bg-blue-50 px-2.5 py-1.5 text-right text-[10px] font-mono font-semibold text-blue-700 whitespace-nowrap"
+                    className="border border-[rgb(var(--border-line))] bg-brand/10 px-2.5 py-1.5 text-right text-[10px] font-mono font-semibold text-brand whitespace-nowrap"
                   >
                     {formatValue(colTotals[pv] ?? 0, valueCol.format, valueCol.suffix)}
                   </td>
                 ))}
                 {crossTabConfig?.showRowTotal !== false && (
-                  <td className="border border-gray-200 bg-blue-100 px-2.5 py-1.5 text-right text-[10px] font-mono font-semibold text-blue-800 whitespace-nowrap">
+                  <td className="border border-[rgb(var(--border-line))] bg-brand/15 px-2.5 py-1.5 text-right text-[10px] font-mono font-semibold text-brand whitespace-nowrap">
                     {formatValue(
                       Object.values(colTotals).reduce((s, v) => s + v, 0),
                       valueCol.format,
