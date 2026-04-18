@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000/api/v1';
+const LEGACY_REFRESH_COOKIE_PATH = '/api/auth/refresh';
 
 export async function POST(req: NextRequest) {
   const cookie = req.cookies.get('access_token')?.value;
@@ -41,7 +42,16 @@ export async function POST(req: NextRequest) {
     sameSite: 'lax',
     secure: process.env.COOKIE_SECURE !== 'false',
     maxAge: 0,
-    path: '/api/auth/refresh',
+    path: '/',
+  });
+  response.cookies.set({
+    name: 'refresh_token',
+    value: '',
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.COOKIE_SECURE !== 'false',
+    maxAge: 0,
+    path: LEGACY_REFRESH_COOKIE_PATH,
   });
 
   return response;

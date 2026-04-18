@@ -54,8 +54,10 @@ logger = logging.getLogger(__name__)
 _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
 _limiter = Limiter(key_func=get_remote_address)
 
-ACCESS_TOKEN_EXPIRE_HOURS = 1
-REFRESH_TOKEN_EXPIRE_DAYS = 7
+# App sessions use a 2-hour inactivity window. The refresh token is rotated
+# on every refresh, so active users stay signed in while idle sessions expire.
+ACCESS_TOKEN_EXPIRE_HOURS = 2
+REFRESH_TOKEN_EXPIRE_HOURS = 2
 _DUMMY_BCRYPT_HASH = "$2b$12$KIXBKl9Xv5iyYFiC.gEuQuT3s.d6OM2nqYbJt6n4PjNn2YGFQbZxO"
 _ADMIN_PERMISSIONS = {
     "data_sources": "full",
@@ -159,7 +161,7 @@ def create_refresh_token(user: User) -> str:
         "sub": str(user.id),
         "jti": str(uuid.uuid4()),
         "iat": now,
-        "exp": now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        "exp": now + timedelta(hours=REFRESH_TOKEN_EXPIRE_HOURS),
         "type": "refresh",
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
@@ -184,7 +186,7 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
         httponly=True,
         samesite="lax",
         secure=settings.COOKIE_SECURE,
-        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        max_age=REFRESH_TOKEN_EXPIRE_HOURS * 3600,
         path="/api/v1/auth/refresh",
     )
 

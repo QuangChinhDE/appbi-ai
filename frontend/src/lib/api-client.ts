@@ -1,13 +1,17 @@
 /**
  * API client for making requests to the backend.
  */
-import axios from 'axios';
+import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 
 // NEXT_PUBLIC_API_URL is baked at build time as '/api/v1' (relative).
 // Next.js rewrites (localhost) or nginx (/api/ location) proxy it to the backend.
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 const API_CLIENT_BUILD_STAMP = '2026-04-01-001';
 const API_DEBUG_LOGGING = process.env.NEXT_PUBLIC_DEBUG_API === 'true';
+
+type RetriableRequestConfig = InternalAxiosRequestConfig & { _retry?: boolean };
+
+let refreshPromise: Promise<boolean> | null = null;
 
 export const apiClient = axios.create({
   baseURL: API_URL,
@@ -16,6 +20,46 @@ export const apiClient = axios.create({
   },
   withCredentials: true,  // send httpOnly auth cookie on every request
 });
+
+function isInteractiveLoginRequest(url?: string): boolean {
+  if (!url) return false;
+  return url.includes('/auth/login') || url.includes('/auth/google');
+}
+
+function buildLoginUrl(): string {
+  if (typeof window === 'undefined') return '/login';
+  const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (!next || next === '/login') return '/login';
+  return `/login?next=${encodeURIComponent(next)}`;
+}
+
+export function redirectToLogin(): void {
+  if (typeof window === 'undefined') return;
+  if (window.location.pathname === '/login') return;
+  window.location.assign(buildLoginUrl());
+}
+
+export async function refreshAuthSession(options?: { redirectOnFailure?: boolean }): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+
+  if (!refreshPromise) {
+    refreshPromise = fetch('/api/auth/refresh', {
+      method: 'POST',
+      credentials: 'include',
+    })
+      .then((response) => response.ok)
+      .catch(() => false)
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+
+  const refreshed = await refreshPromise;
+  if (!refreshed && options?.redirectOnFailure !== false) {
+    redirectToLogin();
+  }
+  return refreshed;
+}
 
 // Request interceptor for logging
 apiClient.interceptors.request.use(
@@ -30,19 +74,37 @@ apiClient.interceptors.request.use(
   }
 );
 
-// Response interceptor: redirect to login on 401
+// Response interceptor: transparently refresh once before forcing login.
 apiClient.interceptors.response.use(
   (response) => {
     return response;
   },
-  (error) => {
+  async (error: AxiosError) => {
     if (API_DEBUG_LOGGING) {
       console.error(`[API Error ${API_CLIENT_BUILD_STAMP}]`, error.response?.data || error.message);
     }
-    if (error.response?.status === 401 && typeof window !== 'undefined') {
-      window.location.href = '/login';
+
+    if (error.response?.status !== 401 || typeof window === 'undefined') {
+      return Promise.reject(error);
     }
-    return Promise.reject(error);
+
+    const originalRequest = error.config as RetriableRequestConfig | undefined;
+    if (!originalRequest || isInteractiveLoginRequest(originalRequest.url)) {
+      return Promise.reject(error);
+    }
+
+    if (originalRequest._retry) {
+      redirectToLogin();
+      return Promise.reject(error);
+    }
+
+    const refreshed = await refreshAuthSession();
+    if (!refreshed) {
+      return Promise.reject(error);
+    }
+
+    originalRequest._retry = true;
+    return apiClient(originalRequest);
   }
 );
 

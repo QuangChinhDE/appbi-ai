@@ -7,6 +7,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000/api/v1';
+const ACCESS_TOKEN_MAX_AGE_SECONDS = 2 * 60 * 60;
+const REFRESH_TOKEN_MAX_AGE_SECONDS = 2 * 60 * 60;
+const LEGACY_REFRESH_COOKIE_PATH = '/api/auth/refresh';
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
@@ -36,7 +39,7 @@ export async function POST(req: NextRequest) {
     httpOnly: true,
     sameSite: 'lax',
     secure: process.env.COOKIE_SECURE !== 'false',
-    maxAge: 1 * 60 * 60,
+    maxAge: ACCESS_TOKEN_MAX_AGE_SECONDS,
     path: '/',
   });
 
@@ -46,12 +49,21 @@ export async function POST(req: NextRequest) {
       const value = cookieStr.split('=')[1]?.split(';')[0] ?? '';
       response.cookies.set({
         name: 'refresh_token',
+        value: '',
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: process.env.COOKIE_SECURE !== 'false',
+        maxAge: 0,
+        path: LEGACY_REFRESH_COOKIE_PATH,
+      });
+      response.cookies.set({
+        name: 'refresh_token',
         value,
         httpOnly: true,
         sameSite: 'lax',
         secure: process.env.COOKIE_SECURE !== 'false',
-        maxAge: 7 * 24 * 60 * 60,
-        path: '/api/auth/refresh',
+        maxAge: REFRESH_TOKEN_MAX_AGE_SECONDS,
+        path: '/',
       });
     }
   }

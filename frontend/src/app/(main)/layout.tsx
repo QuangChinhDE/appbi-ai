@@ -1,6 +1,8 @@
 'use client';
 
 import { useState } from 'react';
+
+import { SessionKeepAlive } from '@/components/auth/SessionKeepAlive';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { LanguageProvider } from '@/providers/LanguageProvider';
 
@@ -9,6 +11,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <LanguageProvider>
+      <SessionKeepAlive />
       <div className="flex h-screen overflow-hidden bg-surface-0 print:block">
         <div className="print:hidden">
           <Sidebar

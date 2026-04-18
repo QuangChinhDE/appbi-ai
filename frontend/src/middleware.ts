@@ -14,6 +14,9 @@ import { jwtVerify } from 'jose';
 
 // Public paths that do NOT require authentication
 const PUBLIC_PATHS = ['/login', '/d/', '/embed/'];
+const ACCESS_TOKEN_MAX_AGE_SECONDS = 2 * 60 * 60;
+const REFRESH_TOKEN_MAX_AGE_SECONDS = 2 * 60 * 60;
+const LEGACY_REFRESH_COOKIE_PATH = '/api/auth/refresh';
 
 function getSecret(): Uint8Array {
   const secret = process.env.SECRET_KEY ?? 'change-this-in-production';
@@ -79,7 +82,7 @@ export async function middleware(request: NextRequest) {
             httpOnly: true,
             sameSite: 'lax',
             secure: process.env.COOKIE_SECURE !== 'false',
-            maxAge: 1 * 60 * 60,
+            maxAge: ACCESS_TOKEN_MAX_AGE_SECONDS,
             path: '/',
           });
           // Proxy new refresh token
@@ -89,12 +92,21 @@ export async function middleware(request: NextRequest) {
               const value = cookieStr.split('=')[1]?.split(';')[0] ?? '';
               response.cookies.set({
                 name: 'refresh_token',
+                value: '',
+                httpOnly: true,
+                sameSite: 'lax',
+                secure: process.env.COOKIE_SECURE !== 'false',
+                maxAge: 0,
+                path: LEGACY_REFRESH_COOKIE_PATH,
+              });
+              response.cookies.set({
+                name: 'refresh_token',
                 value,
                 httpOnly: true,
                 sameSite: 'lax',
                 secure: process.env.COOKIE_SECURE !== 'false',
-                maxAge: 7 * 24 * 60 * 60,
-                path: '/api/auth/refresh',
+                maxAge: REFRESH_TOKEN_MAX_AGE_SECONDS,
+                path: '/',
               });
             }
           }
@@ -108,9 +120,35 @@ export async function middleware(request: NextRequest) {
     // Invalid/expired token and refresh failed — redirect to login
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = '/login';
+    loginUrl.searchParams.set('next', pathname);
     const response = NextResponse.redirect(loginUrl);
-    response.cookies.delete('access_token');
-    response.cookies.delete('refresh_token');
+    response.cookies.set({
+      name: 'access_token',
+      value: '',
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.COOKIE_SECURE !== 'false',
+      maxAge: 0,
+      path: '/',
+    });
+    response.cookies.set({
+      name: 'refresh_token',
+      value: '',
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.COOKIE_SECURE !== 'false',
+      maxAge: 0,
+      path: '/',
+    });
+    response.cookies.set({
+      name: 'refresh_token',
+      value: '',
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.COOKIE_SECURE !== 'false',
+      maxAge: 0,
+      path: LEGACY_REFRESH_COOKIE_PATH,
+    });
     return response;
   }
 

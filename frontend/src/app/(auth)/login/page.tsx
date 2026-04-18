@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Script from 'next/script';
 import { BarChart3 } from 'lucide-react';
 
@@ -17,6 +18,7 @@ function extractDetail(detail: unknown, fallback: string): string {
 }
 
 export default function LoginPage() {
+  const searchParams = useSearchParams();
   const googleButtonRef = useRef<HTMLDivElement | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -27,6 +29,8 @@ export default function LoginPage() {
 
   const canUseGoogle = authConfig.googleEnabled && Boolean(authConfig.googleClientId);
   const canUsePassword = authConfig.passwordEnabled;
+  const nextPath = searchParams.get('next');
+  const redirectTarget = nextPath && nextPath.startsWith('/') ? nextPath : '/dashboards';
 
   const submitGoogleCredential = useCallback(async (credential: string) => {
     setError('');
@@ -39,13 +43,13 @@ export default function LoginPage() {
       });
       const data = await res.json();
       if (!res.ok) throw { response: { status: res.status, data } };
-      window.location.replace('/dashboards');
+      window.location.replace(redirectTarget);
     } catch (err: any) {
       setError(extractDetail(err?.response?.data, 'Google sign-in failed. Please try again.'));
     } finally {
       setGoogleLoading(false);
     }
-  }, []);
+  }, [redirectTarget]);
 
   useEffect(() => {
     if (!canUseGoogle || !googleReady || !googleButtonRef.current || !window.google) return;
@@ -76,7 +80,7 @@ export default function LoginPage() {
       });
       const data = await res.json();
       if (!res.ok) throw { response: { status: res.status, data } };
-      window.location.replace('/dashboards');
+      window.location.replace(redirectTarget);
     } catch (err: any) {
       const detail = err?.response?.data?.detail;
       if (typeof detail === 'string') setError(detail);
