@@ -5,7 +5,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { dashboardApi } from '@/lib/api/dashboards';
-import { DashboardCreate, DashboardUpdate, DashboardChartLayout } from '@/types/api';
+import { Dashboard, DashboardCreate, DashboardUpdate, DashboardChartLayout } from '@/types/api';
 import type {
   DashboardHtmlImportAnalyzeInput,
   DashboardHtmlImportBuildInput,
@@ -28,11 +28,13 @@ export const useDashboard = (id: number) => {
 
 export const useCreateDashboard = () => {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: (data: DashboardCreate) => dashboardApi.create(data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['dashboards'] });
+    onSuccess: (newDashboard) => {
+      queryClient.setQueryData<Dashboard[]>(['dashboards'], (old) =>
+        old ? [...old, newDashboard] : [newDashboard],
+      );
     },
   });
 };

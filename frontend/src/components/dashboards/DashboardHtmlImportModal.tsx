@@ -188,6 +188,7 @@ export function DashboardHtmlImportModal({
       return;
     }
 
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const htmlSummary = summarizeImportedDashboardHtml(trimmedHtml);
     try {
       const result = await analyzeMutation.mutateAsync({
