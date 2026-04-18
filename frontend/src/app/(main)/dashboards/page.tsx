@@ -392,11 +392,13 @@ export default function DashboardsPage() {
         />
       )}
 
-      <DashboardHtmlImportModal
-        isOpen={isHtmlImportOpen}
-        onClose={() => setIsHtmlImportOpen(false)}
-        targetMode="new_dashboard"
-      />
+      {isHtmlImportOpen && (
+        <DashboardHtmlImportModal
+          isOpen={isHtmlImportOpen}
+          onClose={() => setIsHtmlImportOpen(false)}
+          targetMode="new_dashboard"
+        />
+      )}
     </>
   );
 }

@@ -1194,16 +1194,18 @@ export default function DashboardDetailPage() {
           currentPageName={currentPage?.name}
         />
 
-        <DashboardHtmlImportModal
-          isOpen={isHtmlImportOpen}
-          onClose={() => setIsHtmlImportOpen(false)}
-          targetMode="append_to_dashboard"
-          targetDashboardId={dashboardId}
-          targetDashboardName={dashboard.name}
-          onBuilt={(result) => {
-            setCurrentPageId(result.page_id);
-          }}
-        />
+        {isHtmlImportOpen && (
+          <DashboardHtmlImportModal
+            isOpen={isHtmlImportOpen}
+            onClose={() => setIsHtmlImportOpen(false)}
+            targetMode="append_to_dashboard"
+            targetDashboardId={dashboardId}
+            targetDashboardName={dashboard.name}
+            onBuilt={(result) => {
+              setCurrentPageId(result.page_id);
+            }}
+          />
+        )}
 
         <DashboardChartManagerModal
           isOpen={isChartManagerOpen}
