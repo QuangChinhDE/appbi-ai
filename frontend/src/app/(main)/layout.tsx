@@ -17,7 +17,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           />
         </div>
         <main
-          className={`flex-1 overflow-y-auto bg-surface-0 transition-[margin] duration-300 print:ml-0 print:overflow-visible print:bg-white ${
+          className={`flex-1 overflow-y-auto [scrollbar-gutter:stable] bg-surface-0 transition-[margin] duration-300 print:ml-0 print:overflow-visible print:bg-white ${
             isSidebarCollapsed ? 'ml-14' : 'ml-60'
           }`}
         >

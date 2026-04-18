@@ -355,6 +355,7 @@ function isSourceTimeColumn(column: ColumnMetadata): boolean {
 export interface ExploreEditorProps {
   chartId?: number | null;
   embedded?: boolean;
+  embeddedVariant?: 'default' | 'dashboard-modal';
   initialDatasetId?: number | null;
   initialTableId?: number | null;
   onBack?: () => void;
@@ -366,6 +367,7 @@ export interface ExploreEditorProps {
 export function ExploreEditor({
   chartId = null,
   embedded = false,
+  embeddedVariant = 'default',
   initialDatasetId = null,
   initialTableId = null,
   onBack,
@@ -375,6 +377,7 @@ export function ExploreEditor({
 }: ExploreEditorProps) {
   const router = useRouter();
   const isNew = chartId == null;
+  const isDashboardModal = embeddedVariant === 'dashboard-modal';
 
   const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(initialDatasetId);
   const [selectedTableId, setSelectedTableId] = useState<number | null>(initialTableId);
@@ -391,7 +394,7 @@ export function ExploreEditor({
   const [isChartLoaded, setIsChartLoaded] = useState(isNew); // skip load for new charts
 
   // isConfigOpen removed - chart config panel is always visible in right panel
-  const [isFiltersOpen, setIsFiltersOpen] = useState(true);
+  const [isFiltersOpen, setIsFiltersOpen] = useState(!isDashboardModal);
   const [isDescDrawerOpen, setIsDescDrawerOpen] = useState(false);
   const [isSchemaSnapshotOpen, setIsSchemaSnapshotOpen] = useState(false);
   // resultTab removed - new layout shows chart + table simultaneously, SQL via sqlMode toggle
@@ -427,6 +430,12 @@ export function ExploreEditor({
   const resPerms = getResourcePermissions(isNew ? 'full' : chart?.user_permission);
   const skipNextSourceResetRef = useRef(false);
   const resolvedBackLabel = backLabel ?? (embedded ? 'Back to dashboard' : 'All Charts');
+
+  useEffect(() => {
+    if (isDashboardModal && sqlMode !== 'generated') {
+      setSqlMode('generated');
+    }
+  }, [isDashboardModal, sqlMode]);
 
   useEffect(() => {
     if (initialDatasetId != null && selectedDatasetId == null) {
@@ -1205,48 +1214,98 @@ export function ExploreEditor({
           </div>
 
           <div className="flex shrink-0 items-center gap-2 pr-2">
-            {isEditingDesc ? (
-              <input
-                autoFocus
-                type="text"
-                value={chartDescInput}
-                onChange={(e) => setChartDescInput(e.target.value)}
-                onBlur={() => {
-                  setIsEditingDesc(false);
-                  if (chartId) updateChart.mutate({ id: chartId, data: { description: chartDescInput.trim() || null } });
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                  if (e.key === 'Escape') { setChartDescInput(chart?.description ?? ''); setIsEditingDesc(false); }
-                }}
-                placeholder="Add note..."
-                className="w-52 border-b border-brand/50 bg-transparent px-0.5 text-xs text-text-secondary outline-none"
-              />
-            ) : resPerms.canEdit ? (
-              <div
-                onClick={() => setIsEditingDesc(true)}
-                className="group/desc mr-1 flex cursor-text items-center gap-1 rounded-md px-2 py-1 text-xs text-text-quaternary hover:bg-surface-2 hover:text-text-secondary"
-              >
-                {chartDescInput || <span className="italic">Add note...</span>}
-                <Pencil className="h-3 w-3 opacity-0 transition-opacity group-hover/desc:opacity-100" />
-              </div>
-            ) : chartDescInput ? (
-              <span className="text-xs text-text-quaternary">{chartDescInput}</span>
-            ) : null}
-            {resPerms.canEdit && (
-              <button
-                onClick={handleSaveLook}
-                disabled={!selectedTableId}
-                className="flex items-center gap-1.5 rounded-md border border-brand bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Save className="h-3.5 w-3.5" />
-                {saveButtonLabel ?? (chartId ? 'Update' : 'Save Chart')}
-              </button>
+            {isDashboardModal ? (
+              <>
+                {isQueryDirty && (
+                  <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+                    Run to refresh
+                  </span>
+                )}
+                {activeQueryState && (
+                  <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-xs text-text-tertiary">
+                    {activeQueryState.rows.length} row{activeQueryState.rows.length === 1 ? '' : 's'}
+                    {activeQueryState.executionTimeMs != null ? ` · ${activeQueryState.executionTimeMs}ms` : ''}
+                  </span>
+                )}
+                <label className="flex items-center gap-1 text-xs text-text-tertiary">
+                  Limit
+                  <select
+                    value={effectiveQueryLimit}
+                    onChange={(e) => setQueryLimit(Number(e.target.value))}
+                    disabled={!resPerms.canEdit}
+                    className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-0.5 text-xs disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {queryLimitOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                </label>
+                <button
+                  onClick={() => void handleRunQuery()}
+                  disabled={!selectedTableId || isRunningQuery || (isConfigBuilderMode && isPreviewLoading)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isRunningQuery
+                    ? <div className="h-3 w-3 animate-spin rounded-full border-2 border-text-secondary border-t-transparent" />
+                    : <Play className="h-3 w-3" />}
+                  {isRunningQuery ? 'Running...' : 'Run Preview'}
+                </button>
+                {resPerms.canEdit && (
+                  <button
+                    onClick={handleSaveLook}
+                    disabled={!selectedTableId}
+                    className="flex items-center gap-1.5 rounded-md border border-brand bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Save className="h-3.5 w-3.5" />
+                    {saveButtonLabel ?? (chartId ? 'Update' : 'Save Chart')}
+                  </button>
+                )}
+              </>
+            ) : (
+              <>
+                {isEditingDesc ? (
+                  <input
+                    autoFocus
+                    type="text"
+                    value={chartDescInput}
+                    onChange={(e) => setChartDescInput(e.target.value)}
+                    onBlur={() => {
+                      setIsEditingDesc(false);
+                      if (chartId) updateChart.mutate({ id: chartId, data: { description: chartDescInput.trim() || null } });
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                      if (e.key === 'Escape') { setChartDescInput(chart?.description ?? ''); setIsEditingDesc(false); }
+                    }}
+                    placeholder="Add note..."
+                    className="w-52 border-b border-brand/50 bg-transparent px-0.5 text-xs text-text-secondary outline-none"
+                  />
+                ) : resPerms.canEdit ? (
+                  <div
+                    onClick={() => setIsEditingDesc(true)}
+                    className="group/desc mr-1 flex cursor-text items-center gap-1 rounded-md px-2 py-1 text-xs text-text-quaternary hover:bg-surface-2 hover:text-text-secondary"
+                  >
+                    {chartDescInput || <span className="italic">Add note...</span>}
+                    <Pencil className="h-3 w-3 opacity-0 transition-opacity group-hover/desc:opacity-100" />
+                  </div>
+                ) : chartDescInput ? (
+                  <span className="text-xs text-text-quaternary">{chartDescInput}</span>
+                ) : null}
+                {resPerms.canEdit && (
+                  <button
+                    onClick={handleSaveLook}
+                    disabled={!selectedTableId}
+                    className="flex items-center gap-1.5 rounded-md border border-brand bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Save className="h-3.5 w-3.5" />
+                    {saveButtonLabel ?? (chartId ? 'Update' : 'Save Chart')}
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>
       </div>
 
+      {!isDashboardModal && (
       <div className="shrink-0 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-1.5">
         <div className="flex items-center justify-between gap-3">
           {/* Left: Mode toggle + description */}
@@ -1335,8 +1394,273 @@ export function ExploreEditor({
           </div>
         </div>
       </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-auto">
+        {isDashboardModal ? (
+        <div className="flex h-full min-w-[1480px] gap-4 p-4">
+          <div className="flex w-[17.5rem] shrink-0 flex-col overflow-hidden rounded-[24px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
+            <div className="border-b border-[rgb(var(--border-line))] px-4 py-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Source</p>
+              <p className="mt-2 text-sm font-medium text-text-secondary">
+                {selectedTable ? ((selectedTable as any).display_name || 'Selected table') : 'Choose a source table'}
+              </p>
+              <p className="mt-1 text-xs text-text-tertiary">
+                {selectedTable && dataset?.name
+                  ? `${dataset.name} dataset`
+                  : 'Pick the dataset table that this chart should use.'}
+              </p>
+              <div className="mt-3">
+                <ExploreSourceSelector
+                  selectedDatasetId={selectedDatasetId}
+                  selectedTableId={selectedTableId}
+                  onDatasetChange={setSelectedDatasetId}
+                  onTableChange={setSelectedTableId}
+                  disabled={!resPerms.canEdit}
+                />
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              {!selectedTableId ? (
+                <div className="flex h-full items-center justify-center px-2 text-center">
+                  <div>
+                    <Search className="mx-auto mb-3 h-10 w-10 text-text-quaternary" />
+                    <p className="text-sm font-medium text-text-secondary">Choose a table to load its fields</p>
+                    <p className="mt-1 text-xs text-text-quaternary">
+                      Those fields will immediately become available in Chart Setup.
+                    </p>
+                  </div>
+                </div>
+              ) : isPreviewLoading ? (
+                <div className="flex h-full items-center justify-center">
+                  <div className="text-center">
+                    <div className="mx-auto mb-3 inline-block h-7 w-7 animate-spin rounded-full border-4 border-brand border-t-transparent" />
+                    <p className="text-sm text-text-tertiary">Loading source schema...</p>
+                  </div>
+                </div>
+              ) : previewError ? (
+                <div className="flex h-full items-center justify-center px-6">
+                  <div className="max-w-xs text-center">
+                    <p className="text-sm font-medium text-danger">Could not load source schema</p>
+                    <p className="mt-1 text-xs text-danger/90">{previewErrorMessage}</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap gap-2">
+                    <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-secondary">
+                      {previewColumns.length} columns
+                    </span>
+                    <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-secondary">
+                      {configBuilderSourceStats.measureColumns.length} measures
+                    </span>
+                    <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-secondary">
+                      {configBuilderSourceStats.dimensionColumns.length} dimensions
+                    </span>
+                    <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-secondary">
+                      {configBuilderSourceStats.timeColumns.length} time fields
+                    </span>
+                    {hasActiveTransforms && (
+                      <span className="rounded-full border border-warning/30 bg-warning/10 px-2.5 py-1 text-[11px] font-medium text-warning">
+                        Transforms on
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2">
+                    <div className="border-b border-[rgb(var(--border-line))] px-4 py-3">
+                      <p className="text-sm font-medium text-text-primary">Available fields</p>
+                      <p className="mt-1 text-xs text-text-tertiary">
+                        Use these columns in the configuration panel.
+                      </p>
+                    </div>
+                    <div className="max-h-[34rem] overflow-y-auto">
+                      {previewColumns.map((column) => {
+                        const kind = isSourceTimeColumn(column)
+                          ? 'time'
+                          : column.type === 'number'
+                            ? 'measure'
+                            : 'dimension';
+                        return (
+                          <div
+                            key={column.name}
+                            className="flex items-center justify-between gap-3 border-b border-[rgb(var(--border-line))] px-4 py-2.5 last:border-b-0"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-text-secondary">{column.name}</p>
+                              <p className="text-[11px] text-text-quaternary">{column.type}</p>
+                            </div>
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                              kind === 'time'
+                                ? 'bg-success/10 text-success'
+                                : kind === 'measure'
+                                  ? 'bg-brand/10 text-brand'
+                                  : 'bg-surface-1 text-text-secondary'
+                            }`}>
+                              {kind}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[24px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
+            <div className="border-b border-[rgb(var(--border-line))] px-5 py-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Chart Setup</p>
+              <p className="mt-2 text-sm font-medium text-text-secondary">
+                Keep field mapping, style, and saved filters in one focused workspace.
+              </p>
+              <p className="mt-1 text-xs text-text-tertiary">
+                {selectedTableId
+                  ? 'This is the primary workspace for building the chart before you save it to the dashboard.'
+                  : 'Choose a source table on the left to unlock mapping and styling.'}
+              </p>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {selectedTableId ? (
+                <>
+                  <ExploreChartConfig
+                    chartType={chartType}
+                    roleConfig={activeRoleConfig}
+                    styleConfig={chartStyleConfig}
+                    availableColumns={configColumns}
+                    sortLimitColumns={sortLimitColumns}
+                    tableDisplayColumns={tableDisplayColumns}
+                    queryMode={sqlMode}
+                    validationMessage={activeValidationMessage}
+                    readOnly={!resPerms.canEdit}
+                    onChartTypeChange={handleChartTypeChange}
+                    onRoleConfigChange={sqlMode === 'custom' ? setCustomRoleConfig : setGeneratedRoleConfig}
+                    onStyleConfigChange={setChartStyleConfig}
+                  />
+
+                  <div className="border-t">
+                    <button
+                      onClick={() => setIsFiltersOpen((open) => !open)}
+                      className="flex w-full items-center justify-between px-4 py-2.5 transition-colors hover:bg-surface-2"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Settings2 className="h-3.5 w-3.5 text-text-quaternary" />
+                        <span className="text-xs font-semibold text-text-secondary">Chart Filters</span>
+                        {filters.length > 0 && (
+                          <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">
+                            {filters.length}
+                          </span>
+                        )}
+                      </div>
+                      {isFiltersOpen
+                        ? <ChevronDown className="h-3.5 w-3.5 text-text-quaternary" />
+                        : <ChevronRight className="h-3.5 w-3.5 text-text-quaternary" />}
+                    </button>
+                    {isFiltersOpen && (
+                      <div className="px-4 pb-4">
+                        <p className="mb-2 text-[11px] text-text-tertiary">
+                          Saved with this chart and still applied after you add the chart to a dashboard.
+                        </p>
+                        <p className="mb-3 text-[10px] text-text-quaternary">
+                          These filters run before dashboard-level filters.
+                        </p>
+                        <FilterBuilder
+                          filters={filters}
+                          onChange={setFilters}
+                          columns={filterColumns}
+                          dataRows={filterRows}
+                          readOnly={!resPerms.canEdit}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="flex h-full min-h-[28rem] items-center justify-center p-8">
+                  <div className="max-w-md text-center">
+                    <Settings2 className="mx-auto mb-3 h-10 w-10 text-text-quaternary" />
+                    <p className="text-sm font-medium text-text-secondary">Source first, then configure the chart</p>
+                    <p className="mt-1 text-xs text-text-quaternary">
+                      After a table is selected, this panel expands into the full chart builder with mapping, styling, and saved filters.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex w-[28rem] shrink-0 flex-col overflow-hidden rounded-[24px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
+            <div className="border-b border-[rgb(var(--border-line))] px-5 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Live Preview</p>
+                  <h2 className="mt-1 truncate text-base font-semibold text-text-primary">
+                    {chartNameInput || 'Untitled chart'}
+                  </h2>
+                  <p className="mt-1 text-xs text-text-tertiary">
+                    {selectedTableId
+                      ? 'Run after field changes to refresh this preview before saving.'
+                      : 'Pick a source table to unlock the chart preview.'}
+                  </p>
+                </div>
+                <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-xs text-text-tertiary">
+                  {displayedQueryState
+                    ? `${displayedQueryState.rows.length} row${displayedQueryState.rows.length === 1 ? '' : 's'}`
+                    : 'No run yet'}
+                </span>
+              </div>
+            </div>
+
+            {queryError && (
+              <div className="border-b border-danger/30 bg-danger/10 px-5 py-2 text-xs text-danger">
+                {queryError}
+              </div>
+            )}
+
+            <div className="min-h-0 flex-1 p-5">
+              {!selectedTableId ? (
+                <div className="flex h-full items-center justify-center">
+                  <div className="max-w-sm text-center">
+                    <Search className="mx-auto mb-3 h-12 w-12 text-text-quaternary" />
+                    <p className="text-sm font-medium text-text-secondary">Choose a dataset table to start</p>
+                    <p className="mt-1 text-xs text-text-quaternary">The source selector defines what this chart can use.</p>
+                  </div>
+                </div>
+              ) : !displayedQueryState ? (
+                <div className="flex h-full items-center justify-center">
+                  <div className="max-w-sm text-center">
+                    <Database className="mx-auto mb-3 h-10 w-10 text-text-quaternary" />
+                    <p className="text-sm font-medium text-text-secondary">Run the query to preview the chart</p>
+                    <p className="mt-1 text-xs text-text-quaternary">
+                      Configure fields in Chart Setup, then run once to populate the preview.
+                    </p>
+                  </div>
+                </div>
+              ) : customRunMessage ? (
+                <div className="flex h-full items-center justify-center">
+                  <div className="max-w-sm text-center">
+                    <Settings2 className="mx-auto mb-3 h-10 w-10 text-warning" />
+                    <p className="text-sm font-medium text-text-secondary">Finish the chart roles in Chart Setup</p>
+                    <p className="mt-1 text-xs text-text-quaternary">{customRunMessage}</p>
+                  </div>
+                </div>
+              ) : (
+                <ExploreChart
+                  type={chartType}
+                  data={displayedQueryState.chartRows}
+                  roleConfig={normalizedRoleConfig}
+                  styleConfig={chartStyleConfig}
+                  onStyleConfigChange={setChartStyleConfig}
+                  preAggregated={displayedQueryState.chartPreAggregated}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+        ) : (
         <div className="flex h-full min-w-[1320px] gap-4 p-4">
           <div className={`flex shrink-0 flex-col overflow-hidden rounded-[24px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm ${
             isConfigBuilderMode ? 'w-72' : 'w-[25rem]'
@@ -1777,6 +2101,7 @@ export function ExploreEditor({
           </div>
         )}
       </div>
+        )}
       </div>
 
       {/* AI Description drawer — opened from MODE bar */}
