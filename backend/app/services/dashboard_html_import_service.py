@@ -504,6 +504,62 @@ def _load_uploaded_excel_source_profile(
     return source_profile
 
 
+def _load_uploaded_multi_source_profiles(
+    *,
+    files: List[Tuple[bytes, Optional[str]]],
+    primary_source_key: Optional[str] = None,
+) -> Tuple[Dict[str, Dict[str, Any]], str]:
+    """Build source profiles from multiple uploaded Excel/CSV files.
+
+    Returns ``(profiles_by_key, resolved_primary_key)``.
+    Key format: ``'{filename}::{sheet_name}'``.
+    """
+    all_profiles: Dict[str, Dict[str, Any]] = {}
+    first_key: Optional[str] = None
+
+    for file_bytes, filename in files:
+        safe_filename = filename or "uploaded"
+        all_sheets = parse_uploaded_source_sheets(file_bytes=file_bytes, filename=filename)
+        for sheet_name, sheet_data in all_sheets.items():
+            source_key = f"{safe_filename}::{sheet_name}"
+            if first_key is None:
+                first_key = source_key
+            columns = list(sheet_data.get("columns") or [])
+            rows = list(sheet_data.get("rows") or [])
+            profile = _source_profile_from_rows(
+                source_mode="upload_excel",
+                dataset_id=None,
+                dataset_name=None,
+                dataset_table_id=None,
+                dataset_table_name=sheet_name,
+                columns=columns,
+                sample_rows=rows,
+                row_count=len(rows),
+                uploaded_filename=safe_filename,
+            )
+            profile["source_key"] = source_key
+            profile["available_sheets"] = []
+            all_profiles[source_key] = profile
+
+    all_keys = list(all_profiles.keys())
+    for profile in all_profiles.values():
+        profile["available_sheets"] = all_keys
+
+    resolved_primary = primary_source_key
+    if not resolved_primary or resolved_primary not in all_profiles:
+        resolved_primary = first_key or ""
+    return all_profiles, resolved_primary
+
+
+def _plan_quality_score(plan: Dict[str, Any]) -> Tuple[int, int, float, int]:
+    """Score a finalized plan for multi-source selection.  Higher is better."""
+    fields_count = len(plan.get("source_fields_used") or [])
+    type_bonus = 0 if plan.get("final_chart_type") == "TABLE" else 1
+    confidence = plan.get("confidence", 0)
+    warning_penalty = -len(plan.get("warnings") or [])
+    return (fields_count, type_bonus, confidence, warning_penalty)
+
+
 def _plain_html_excerpt(html_text: str) -> str:
     stripped = re.sub(r"<script[\s\S]*?</script>", " ", html_text, flags=re.IGNORECASE)
     stripped = re.sub(r"<style[\s\S]*?</style>", " ", stripped, flags=re.IGNORECASE)
@@ -969,13 +1025,50 @@ def _complete_json_with_import_provider(
     return LLMClient.complete_json(prompt, system=system_prompt, model=model, max_tokens=max_tokens)
 
 
+def _validate_calculated_fields(
+    calculated_fields: List[Dict[str, Any]],
+    source_columns: List[str],
+) -> List[Dict[str, Any]]:
+    """Validate AI-suggested calculated fields, keeping only safe ones."""
+    from app.services.transformation_compiler import TransformationCompiler
+
+    valid: List[Dict[str, Any]] = []
+    seen_names: set = set()
+    all_known_columns = set(source_columns)
+
+    for field in calculated_fields:
+        if not isinstance(field, dict):
+            continue
+        name = str(field.get("name") or "").strip()
+        expression = str(field.get("expression") or "").strip()
+        if not name or not expression or name in seen_names:
+            continue
+
+        is_valid, error = TransformationCompiler.validate_expression(expression)
+        if not is_valid:
+            logger.warning("Skipping calculated field '%s': %s", name, error)
+            continue
+
+        seen_names.add(name)
+        all_known_columns.add(name)
+        valid.append({
+            "name": name,
+            "expression": expression,
+            "label": str(field.get("label") or field.get("description") or name),
+            "source_key": field.get("source_key"),
+        })
+
+    return valid
+
+
 def _ai_chart_plans(
     *,
     document_summary: Dict[str, Any],
     source_profile: Dict[str, Any],
-) -> Tuple[Optional[List[Dict[str, Any]]], Dict[str, Any]]:
+) -> Tuple[Optional[List[Dict[str, Any]]], List[Dict[str, Any]], Dict[str, Any]]:
+    """Return ``(charts, calculated_fields, ai_meta)``."""
     if settings.template_import_ai_provider == "unavailable":
-        return None, build_ai_assist_meta(
+        return None, [], build_ai_assist_meta(
             requested=True,
             applied=False,
             status="unavailable",
@@ -984,20 +1077,25 @@ def _ai_chart_plans(
 
     candidates, _ignored = _candidate_blocks(document_summary)
     if not candidates:
-        return None, build_ai_assist_meta(
+        return None, [], build_ai_assist_meta(
             requested=True,
             applied=False,
             status="failed",
             message="No chart-like blocks were detected in the HTML summary.",
         )
 
+    source_col_names = [col.get("name") for col in (source_profile.get("columns") or [])]
+
     prompt = json.dumps(
         {
-            "task": "Map HTML dashboard blocks into AppBI-native chart plans.",
+            "task": "Map HTML dashboard blocks into AppBI-native chart plans. When the HTML references metrics that do not exist directly in the source columns, propose calculated_fields with SQL-safe expressions to derive them.",
             "supported_chart_types": sorted(_SUPPORTED_CHART_TYPES),
             "rules": [
                 "Stay inside the supported chart types list.",
-                "Only use fields that exist in source_profile.columns.",
+                "Use fields from source_profile.columns OR from calculated_fields you define.",
+                "If the HTML implies a metric not directly in the source (e.g. percentage, cumulative sum, profit = revenue - cost, remaining = budget - spent), create a calculated_field for it.",
+                "Calculated field expressions must be simple SQL-safe math: +, -, *, /, ROUND(), COALESCE(), IF(condition, true_val, false_val). No SELECT/FROM/JOIN.",
+                "Calculated field names must be valid SQL identifiers (no spaces, no special chars).",
                 "If the HTML implies a chart AppBI does not support, choose the closest supported chart type and explain it in conversion_note.",
                 "Skip narrative-only blocks by omitting them from charts.",
                 "Prefer TABLE when confidence is low or when the block behaves like a wide data table.",
@@ -1035,6 +1133,14 @@ def _ai_chart_plans(
             },
             "return_json_shape": {
                 "dashboard_title": "string",
+                "calculated_fields": [
+                    {
+                        "name": "ValidSQLIdentifier",
+                        "expression": "col_a / col_b * 100",
+                        "label": "Human readable label",
+                        "source_key": "optional source_key for multi-source",
+                    }
+                ],
                 "charts": [
                     {
                         "block_id": "string",
@@ -1064,13 +1170,15 @@ def _ai_chart_plans(
 
     system_prompt = (
         "You convert HTML dashboard summaries into AppBI-native chart plans. "
-        "Be conservative. Do not invent source fields. Stay inside the supported chart types. "
+        "When the raw data lacks a metric the HTML dashboard displays (like percentages, totals, differences, cumulative values), "
+        "define it as a calculated_field with a SQL-safe expression before referencing it in charts. "
+        "Be conservative. Stay inside the supported chart types. "
         "When the HTML is too rich for the native canvas, adapt it to the closest chart the system already supports."
     )
 
-    payload = _complete_json_with_import_provider(prompt, system_prompt=system_prompt, max_tokens=2200)
+    payload = _complete_json_with_import_provider(prompt, system_prompt=system_prompt, max_tokens=3000)
     if not isinstance(payload, dict):
-        return None, build_ai_assist_meta(
+        return None, [], build_ai_assist_meta(
             requested=True,
             applied=False,
             status="failed",
@@ -1081,7 +1189,7 @@ def _ai_chart_plans(
 
     charts = payload.get("charts")
     if not isinstance(charts, list):
-        return None, build_ai_assist_meta(
+        return None, [], build_ai_assist_meta(
             requested=True,
             applied=False,
             status="failed",
@@ -1090,13 +1198,18 @@ def _ai_chart_plans(
             message="AI payload did not include a charts array.",
         )
 
-    return charts, build_ai_assist_meta(
+    raw_calc_fields = payload.get("calculated_fields") or []
+    if not isinstance(raw_calc_fields, list):
+        raw_calc_fields = []
+    validated_calc_fields = _validate_calculated_fields(raw_calc_fields, source_col_names)
+
+    return charts, validated_calc_fields, build_ai_assist_meta(
         requested=True,
         applied=True,
         status="applied",
         provider=settings.template_import_ai_provider,
         model=settings.template_import_ai_model,
-        message="AI refined HTML block classification and field mapping inside the native dashboard/chart contract.",
+        message="AI refined HTML block classification, field mapping, and calculated fields inside the native dashboard/chart contract.",
     )
 
 
@@ -1105,11 +1218,12 @@ def analyze_dashboard_html_import(
     html_text: str,
     html_summary: Dict[str, Any] | None,
     source_profile: Dict[str, Any],
+    all_source_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     document_summary = _build_document_summary(html_text=html_text, html_summary=html_summary)
     candidates, ignored = _candidate_blocks(document_summary)
 
-    ai_plans, ai_meta = _ai_chart_plans(
+    ai_plans, calculated_fields, ai_meta = _ai_chart_plans(
         document_summary=document_summary,
         source_profile=source_profile,
     )
@@ -1119,14 +1233,53 @@ def analyze_dashboard_html_import(
         if isinstance(item, dict) and str(item.get("block_id") or "").strip()
     }
 
-    finalized_plans = [
-        _finalize_plan(
-            block=block,
-            raw_plan=ai_lookup.get(block["id"]),
-            source_profile=source_profile,
-        )
-        for block in candidates
-    ]
+    # Enrich source profiles with calculated field names so _finalize_plan accepts them
+    def _enrich_profile(profile: Dict[str, Any], calc_fields: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not calc_fields:
+            return profile
+        enriched = dict(profile)
+        existing_cols = list(enriched.get("columns") or [])
+        existing_names = {col.get("name") for col in existing_cols}
+        for cf in calc_fields:
+            if cf["name"] not in existing_names:
+                existing_cols.append({"name": cf["name"], "type": "number"})
+        enriched["columns"] = existing_cols
+        existing_numeric = list(enriched.get("numeric_columns") or [])
+        for cf in calc_fields:
+            if cf["name"] not in existing_numeric:
+                existing_numeric.append(cf["name"])
+        enriched["numeric_columns"] = existing_numeric
+        return enriched
+
+    enriched_profile = _enrich_profile(source_profile, calculated_fields)
+    enriched_all = None
+    if all_source_profiles:
+        enriched_all = {k: _enrich_profile(v, calculated_fields) for k, v in all_source_profiles.items()}
+
+    use_multi = enriched_all and len(enriched_all) > 1
+    finalized_plans: List[Dict[str, Any]] = []
+    for block in candidates:
+        if use_multi:
+            best_plan: Optional[Dict[str, Any]] = None
+            for key, profile in enriched_all.items():
+                plan = _finalize_plan(
+                    block=block,
+                    raw_plan=ai_lookup.get(block["id"]),
+                    source_profile=profile,
+                )
+                plan["source_key"] = key
+                if best_plan is None or _plan_quality_score(plan) > _plan_quality_score(best_plan):
+                    best_plan = plan
+            if best_plan is not None:
+                finalized_plans.append(best_plan)
+        else:
+            plan = _finalize_plan(
+                block=block,
+                raw_plan=ai_lookup.get(block["id"]),
+                source_profile=enriched_profile,
+            )
+            finalized_plans.append(plan)
+
     finalized_plans = [plan for plan in finalized_plans if plan.get("source_fields_used") or plan.get("final_chart_type") == "TABLE"]
     finalized_plans.sort(key=lambda item: (item.get("order", 0), item.get("block_id", "")))
     _assign_layouts(finalized_plans)
@@ -1143,6 +1296,7 @@ def analyze_dashboard_html_import(
         "document_title": document_summary.get("title"),
         "source_profile": source_profile,
         "chart_plans": finalized_plans,
+        "calculated_fields": calculated_fields,
         "ignored_blocks": ignored,
         "warnings": warnings,
         "ai_meta": ai_meta,
@@ -1212,6 +1366,96 @@ def create_manual_dataset_from_excel_source(
     return dataset.id, primary_table_id
 
 
+def create_manual_dataset_from_multi_excel_source(
+    db: Session,
+    *,
+    current_user: User,
+    files: List[Tuple[bytes, Optional[str]]],
+    requested_name: Optional[str],
+) -> Tuple[int, Dict[str, int]]:
+    """Create a dataset from multiple Excel/CSV files.
+
+    Returns ``(dataset_id, source_key_to_table_id_map)``.
+    """
+    all_sheet_data: Dict[str, Dict[str, Any]] = {}
+    source_key_to_safe_name: Dict[str, str] = {}
+
+    for file_bytes, filename in files:
+        safe_filename = filename or "uploaded"
+        sheets = parse_uploaded_source_sheets(file_bytes=file_bytes, filename=filename)
+        for sheet_name, sheet_data in sheets.items():
+            source_key = f"{safe_filename}::{sheet_name}"
+            # DuckDB cannot handle '::' in table names — use ' - ' for storage
+            safe_storage_name = f"{safe_filename} - {sheet_name}"
+            all_sheet_data[source_key] = sheet_data
+            source_key_to_safe_name[source_key] = safe_storage_name
+
+    if not all_sheet_data:
+        raise ValueError("Uploaded files do not contain usable data rows.")
+    if not any((data.get("rows") or []) for data in all_sheet_data.values()):
+        raise ValueError("Uploaded files do not contain usable data rows.")
+
+    # Build config with DuckDB-safe keys (no '::')
+    safe_config_sheets = {
+        source_key_to_safe_name[k]: v for k, v in all_sheet_data.items()
+    }
+
+    base_name = _normalize_text(requested_name) or "Imported Data"
+    datasource_name = f"[Dashboard Import] {base_name}"
+    data_source = DataSourceCRUDService.create(
+        db,
+        DataSourceCreate(
+            name=datasource_name,
+            type="manual",
+            config={"sheets": safe_config_sheets},
+        ),
+        owner_id=current_user.id,
+    )
+
+    dataset = DatasetCRUDService.create_dataset(
+        db,
+        DatasetCreate(name=base_name),
+        owner_id=current_user.id,
+    )
+
+    sheet_name_counts: Dict[str, int] = {}
+    for source_key in all_sheet_data:
+        _, sheet_name = source_key.rsplit("::", 1) if "::" in source_key else ("", source_key)
+        sheet_name_counts[sheet_name] = sheet_name_counts.get(sheet_name, 0) + 1
+
+    table_id_map: Dict[str, int] = {}
+    for source_key, sheet_data in all_sheet_data.items():
+        if not (sheet_data.get("columns") or []):
+            continue
+        if "::" in source_key:
+            filename_part, sheet_name = source_key.rsplit("::", 1)
+        else:
+            filename_part, sheet_name = "", source_key
+        if sheet_name_counts.get(sheet_name, 0) > 1 and filename_part:
+            display_name = f"{sheet_name} ({filename_part})"
+        else:
+            display_name = sheet_name
+
+        safe_name = source_key_to_safe_name[source_key]
+        table = DatasetCRUDService.add_table_to_dataset(
+            db,
+            dataset.id,
+            TableCreate(
+                datasource_id=data_source.id,
+                source_kind="physical_table",
+                source_table_name=safe_name,
+                display_name=display_name,
+            ),
+        )
+        if table is None:
+            raise ValueError(f"Failed to attach '{display_name}' as a dataset table.")
+        table_id_map[source_key] = table.id
+
+    if not table_id_map:
+        raise ValueError("No usable sheets found in uploaded files.")
+    return dataset.id, table_id_map
+
+
 def _build_chart_config(plan: Dict[str, Any], dataset_id: Optional[int]) -> Dict[str, Any]:
     role_config = dict(plan.get("role_config") or {})
     return {
@@ -1227,6 +1471,84 @@ def _build_chart_config(plan: Dict[str, Any], dataset_id: Optional[int]) -> Dict
     }
 
 
+def _apply_calculated_fields_to_tables(
+    db: Session,
+    *,
+    calculated_fields: List[Dict[str, Any]],
+    table_id_map: Dict[str, int],
+    default_table_id: Optional[int],
+) -> None:
+    """Inject ``add_column`` transformation steps into dataset tables for AI-suggested calculated fields."""
+    from app.services.transformation_compiler import TransformationCompiler
+
+    # Group fields by target table
+    table_fields: Dict[int, List[Dict[str, Any]]] = {}
+    for cf in calculated_fields:
+        if not isinstance(cf, dict):
+            continue
+        name = str(cf.get("name") or "").strip()
+        expression = str(cf.get("expression") or "").strip()
+        if not name or not expression:
+            continue
+
+        is_valid, _ = TransformationCompiler.validate_expression(expression)
+        if not is_valid:
+            continue
+
+        source_key = cf.get("source_key")
+        if source_key and source_key in table_id_map:
+            tid = table_id_map[source_key]
+        elif default_table_id:
+            tid = default_table_id
+        else:
+            # Apply to all tables as fallback
+            for tid_val in (table_id_map.values() if table_id_map else []):
+                table_fields.setdefault(tid_val, []).append(cf)
+            continue
+        table_fields.setdefault(tid, []).append(cf)
+
+    for table_id, fields in table_fields.items():
+        db_table = db.query(DatasetTable).filter(DatasetTable.id == table_id).first()
+        if not db_table:
+            continue
+
+        existing_transforms = list(db_table.transformations or [])
+        existing_calc_names = {
+            t.get("params", {}).get("newField")
+            for t in existing_transforms
+            if t.get("type") == "add_column"
+        }
+
+        for cf in fields:
+            field_name = cf["name"]
+            if field_name in existing_calc_names:
+                continue
+            existing_transforms.append({
+                "type": "add_column",
+                "enabled": True,
+                "params": {
+                    "newField": field_name,
+                    "expression": cf["expression"],
+                },
+            })
+            existing_calc_names.add(field_name)
+
+            # Update columns_cache with the new calculated column
+            cols_cache = list(db_table.columns_cache or [])
+            if not any(c.get("name") == field_name for c in cols_cache):
+                cols_cache.append({
+                    "name": field_name,
+                    "type": "number",
+                    "nullable": True,
+                    "is_calculated": True,
+                    "description": cf.get("label") or field_name,
+                })
+                db_table.columns_cache = cols_cache
+
+        db_table.transformations = existing_transforms
+        db.flush()
+
+
 def build_dashboard_from_import(
     db: Session,
     *,
@@ -1236,6 +1558,7 @@ def build_dashboard_from_import(
     dataset_table_id: Optional[int],
     source_bytes: Optional[bytes],
     source_filename: Optional[str],
+    source_files: Optional[List[Tuple[bytes, Optional[str]]]] = None,
     selected_sheet_name: Optional[str],
     dashboard_name: Optional[str],
     target_mode: TargetMode,
@@ -1251,6 +1574,7 @@ def build_dashboard_from_import(
 
     resolved_dataset_table_id = dataset_table_id
     resolved_dataset_id: Optional[int] = None
+    table_id_map: Dict[str, int] = {}
 
     if source_mode == "existing_dataset":
         if resolved_dataset_table_id is None:
@@ -1267,19 +1591,39 @@ def build_dashboard_from_import(
         dataset_permission = (current_user.permissions or {}).get("datasets", "none")
         if dataset_permission not in {"edit", "full"}:
             raise ValueError("Creating a temporary dataset from Excel requires datasets edit permission.")
-        if not source_bytes:
-            raise ValueError("Uploaded Excel source is no longer available. Please analyze again.")
-        resolved_dataset_id, resolved_dataset_table_id = create_manual_dataset_from_excel_source(
-            db,
-            current_user=current_user,
-            file_bytes=source_bytes,
-            filename=source_filename,
-            requested_name=dashboard_name or analysis.get("suggested_dashboard_name"),
-            selected_sheet_name=selected_sheet_name or analysis.get("source_profile", {}).get("selected_sheet_name"),
-        )
 
-    if resolved_dataset_table_id is None:
+        if source_files and len(source_files) > 0:
+            resolved_dataset_id, table_id_map = create_manual_dataset_from_multi_excel_source(
+                db,
+                current_user=current_user,
+                files=source_files,
+                requested_name=dashboard_name or analysis.get("suggested_dashboard_name"),
+            )
+            resolved_dataset_table_id = next(iter(table_id_map.values())) if table_id_map else None
+        elif source_bytes:
+            resolved_dataset_id, resolved_dataset_table_id = create_manual_dataset_from_excel_source(
+                db,
+                current_user=current_user,
+                file_bytes=source_bytes,
+                filename=source_filename,
+                requested_name=dashboard_name or analysis.get("suggested_dashboard_name"),
+                selected_sheet_name=selected_sheet_name or analysis.get("source_profile", {}).get("selected_sheet_name"),
+            )
+        else:
+            raise ValueError("Uploaded Excel source is no longer available. Please analyze again.")
+
+    if resolved_dataset_table_id is None and not table_id_map:
         raise ValueError("No dataset table is available for chart creation.")
+
+    # Apply AI-suggested calculated fields as transformation steps
+    calc_fields = analysis.get("calculated_fields") or []
+    if calc_fields and isinstance(calc_fields, list):
+        _apply_calculated_fields_to_tables(
+            db,
+            calculated_fields=calc_fields,
+            table_id_map=table_id_map,
+            default_table_id=resolved_dataset_table_id,
+        )
 
     created_charts: List[Chart] = []
     type_changes: List[Dict[str, Any]] = []
@@ -1293,16 +1637,23 @@ def build_dashboard_from_import(
             _normalize_text(plan.get("source_excerpt"), max_len=320),
         ]
         chart_description = "\n\n".join(part for part in chart_description_parts if part)
+
+        chart_table_id = resolved_dataset_table_id
+        if table_id_map:
+            plan_source_key = plan.get("source_key")
+            if plan_source_key and plan_source_key in table_id_map:
+                chart_table_id = table_id_map[plan_source_key]
+
         chart_config = with_chart_semantic_binding(
             db,
-            resolved_dataset_table_id,
+            chart_table_id,
             _build_chart_config(plan, resolved_dataset_id),
             auto_generate=True,
         )
         db_chart = Chart(
             name=internal_name,
             description=chart_description or None,
-            dataset_table_id=resolved_dataset_table_id,
+            dataset_table_id=chart_table_id,
             chart_type=ChartType(str(plan.get("final_chart_type") or "TABLE").upper()),
             config=chart_config,
             owner_id=current_user.id,
@@ -1401,4 +1752,5 @@ def build_dashboard_from_import(
         "page_name": import_page_name,
         "dataset_id": resolved_dataset_id,
         "dataset_table_id": resolved_dataset_table_id,
+        "dataset_table_ids": table_id_map if table_id_map else None,
     }

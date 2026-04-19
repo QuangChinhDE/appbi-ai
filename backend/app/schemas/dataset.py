@@ -321,6 +321,7 @@ class QualityRuleConfig(BaseModel):
     max_days: Optional[int] = Field(default=None, ge=0)
     min_z: Optional[float] = Field(default=None)
     max_z: Optional[float] = Field(default=None)
+    sql: Optional[str] = Field(default=None, max_length=5000)
 
 
 class QualityRuleCreate(BaseModel):
@@ -332,6 +333,10 @@ class QualityRuleCreate(BaseModel):
     config: Optional[QualityRuleConfig] = Field(default_factory=QualityRuleConfig)
     severity: QualitySeverity = "warning"
     enabled: bool = True
+
+
+class QualityRuleBulkCreate(BaseModel):
+    rules: List[QualityRuleCreate] = Field(..., min_length=1, max_length=200)
 
 
 class QualityRuleUpdate(BaseModel):
@@ -415,3 +420,39 @@ class QualitySummaryResponse(BaseModel):
     last_run: Optional[QualityRunResponse] = None
     score: Optional[float] = None          # from last completed run
     dimension_breakdown: List[QualityDimensionSummary] = Field(default_factory=list)
+
+
+# ── AI Rule Suggestion ────────────────────────────────────────────────────
+
+class QualityRulePreviewRequest(BaseModel):
+    table_id: int
+    rule_type: str = Field(..., min_length=1, max_length=80)
+    column_name: Optional[str] = Field(default=None, max_length=255)
+    config: Optional[QualityRuleConfig] = Field(default_factory=QualityRuleConfig)
+
+
+class QualityRulePreviewResponse(BaseModel):
+    sql: Optional[str] = None
+    pass_description: str = ""
+    fail_description: str = ""
+    scope_description: str = ""
+    error: Optional[str] = None
+
+
+class QualityAISuggestColumnInfo(BaseModel):
+    name: str
+    type: str = ""
+
+class QualityAISuggestRequest(BaseModel):
+    description: str = Field(..., min_length=3, max_length=2000)
+    table_name: str = Field(..., min_length=1, max_length=255)
+    columns: List[QualityAISuggestColumnInfo] = Field(default_factory=list, max_length=500)
+
+class QualityAISuggestResponse(BaseModel):
+    rule_type: str
+    dimension: str
+    column_name: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+    severity: str = "warning"
+    name: str = ""
+    explanation: str = ""

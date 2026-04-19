@@ -18,12 +18,14 @@
  *  - No run history / score report in this panel — setup only
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Code,
   Copy,
   Database,
   Eye,
@@ -33,24 +35,32 @@ import {
   Pencil,
   Play,
   Plus,
+  Search,
   ShieldCheck,
+  Sparkles,
   ToggleLeft,
   ToggleRight,
   Trash2,
+  Wand2,
   X,
   XCircle,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
+import { apiClient as api } from '@/lib/api-client';
 
 import {
   type DatasetTable,
   type QualityDimension,
   type QualityRule,
   type QualityRuleConfig,
+  type QualityRuleCreate,
   type QualityFormat,
   type QualityRuleUpdate,
   type QualitySeverity,
+  type QualityAISuggestResponse,
+  useAISuggestQualityRule,
+  useBulkCreateQualityRules,
   useCreateQualityRule,
   useDeleteQualityRule,
   useDuplicateQualityRule,
@@ -85,8 +95,8 @@ const DQ_DIMENSIONS: {
     border: 'border-brand/30',
     dot: 'bg-brand',
     ruleTypes: [
-      { value: 'not_null', label: 'Not Null', level: 'column', hint: 'Fails if any value in this column is NULL' },
-      { value: 'not_blank', label: 'Not Blank', level: 'column', hint: 'Fails if any value is an empty string after trimming' },
+      { value: 'not_null', label: 'Not Null', level: 'column', hint: 'Fails if any value in this column is NULL. Tip: use the multi-column mode to cover several columns in one step.' },
+      { value: 'not_blank', label: 'Not Blank', level: 'column', hint: 'Fails if any value is an empty string after trimming. Also supports multi-column selection.' },
       { value: 'completeness_pct', label: 'Completeness % ≥ threshold', level: 'column', hint: 'Fails if the % of non-null values is below the threshold' },
     ],
   },
@@ -100,9 +110,9 @@ const DQ_DIMENSIONS: {
     dot: 'bg-brand',
     ruleTypes: [
       { value: 'accepted_values', label: 'Accepted Values', level: 'column', hint: 'Fails if any non-null value is not in the allowed list' },
-      { value: 'pattern_match', label: 'Pattern Match (regex)', level: 'column', hint: 'Fails if any non-null value does not match the regex' },
+      { value: 'pattern_match', label: 'Pattern Match (regex)', level: 'column', hint: 'Fails if any non-null value does not match the regex. Use this for UPPER(column), custom formats, or anything beyond the built-in Format Check options.' },
       { value: 'range_check', label: 'Numeric Range [min, max]', level: 'column', hint: 'Fails if any value is outside the specified numeric range' },
-      { value: 'format_check', label: 'Format Check', level: 'column', hint: 'Checks a built-in format heuristic: email, url, date, phone…' },
+      { value: 'format_check', label: 'Format Check', level: 'column', hint: 'Built-in heuristics only (email, url, date, datetime, phone). For custom formats use Pattern Match.' },
     ],
   },
   {
@@ -115,7 +125,7 @@ const DQ_DIMENSIONS: {
     dot: 'bg-success',
     ruleTypes: [
       { value: 'unique_column', label: 'Unique Column', level: 'column', hint: 'Fails if any duplicate values exist in this column' },
-      { value: 'unique_combo', label: 'Unique Combination', level: 'table', hint: 'Fails if any combination of the specified columns is duplicated' },
+      { value: 'unique_combo', label: 'Unique Combination (table grain)', level: 'table', hint: 'Define table grain by listing the columns whose combination must be unique. Example: deal_id + payment_date + customer_id — each row = one payment, duplicates fail.' },
     ],
   },
   {
@@ -127,7 +137,7 @@ const DQ_DIMENSIONS: {
     border: 'border-warning/30',
     dot: 'bg-warning',
     ruleTypes: [
-      { value: 'cross_column', label: 'Same-table SQL Expression', level: 'table', hint: 'Write a SQL boolean expression (TRUE = valid row). Can reference multiple columns in the selected table.' },
+      { value: 'cross_column', label: 'Same-table SQL Expression', level: 'table', hint: 'Write any SQL boolean expression. A row FAILS when the expression is FALSE. Can reference any column in the selected table — great for conditional business rules (e.g. status=\'fully_received\' implies income_value = receivable + received).' },
       { value: 'cross_table', label: 'Cross-table Join Expression', level: 'table', hint: 'Join the selected table to another table, then evaluate a SQL boolean expression using aliases src and ref.' },
     ],
   },
@@ -154,15 +164,47 @@ const DQ_DIMENSIONS: {
     ruleTypes: [
       { value: 'row_count_range', label: 'Row Count Range [min, max]', level: 'table', hint: 'Fails if total row count is outside the specified range' },
       { value: 'statistical_range', label: 'Statistical Z-score Range', level: 'column', hint: 'Fails if values are outside mean ± z·stddev (outlier detection)' },
+      { value: 'custom_sql', label: 'Custom SQL (escape hatch)', level: 'table', hint: 'Write any SQL query that returns two columns: rows_checked and rows_failed. Use this when no other rule type fits.' },
     ],
   },
 ];
 
-const SEVERITY_META: Record<QualitySeverity, { label: string; textColor: string; bgColor: string; icon: React.ElementType }> = {
-  info:    { label: 'Info',    textColor: 'text-brand',  bgColor: 'bg-brand/10',  icon: Info },
-  warning: { label: 'Warning', textColor: 'text-warning', bgColor: 'bg-warning/10', icon: AlertTriangle },
-  error:   { label: 'Error',   textColor: 'text-danger',   bgColor: 'bg-danger/10',   icon: XCircle },
+// Flat list of all rule types, including their natural (default) dimension.
+// The natural dimension is only a suggestion — users can pair any rule type
+// with any dimension after the 2026-04 decoupling change.
+const ALL_RULE_TYPES: Array<{
+  value: string;
+  label: string;
+  level: 'column' | 'table' | 'both';
+  hint?: string;
+  naturalDimension: QualityDimension;
+}> = DQ_DIMENSIONS.flatMap((d) =>
+  d.ruleTypes.map((rt) => ({ ...rt, naturalDimension: d.key })),
+);
+
+// Rule types that accept column-level multi-select for bulk creation.
+const BULK_COLUMN_RULE_TYPES = new Set([
+  'not_null', 'not_blank', 'unique_column',
+  'format_check', 'range_check', 'completeness_pct',
+]);
+
+const SEVERITY_META: Record<QualitySeverity, { label: string; textColor: string; bgColor: string; icon: React.ElementType; tooltip: string; description: string }> = {
+  info:    { label: 'Info',    textColor: 'text-brand',  bgColor: 'bg-brand/10',  icon: Info,          tooltip: 'Informational only — does not affect trust score', description: 'Informational — does not affect the trust score' },
+  warning: { label: 'Warning', textColor: 'text-warning', bgColor: 'bg-warning/10', icon: AlertTriangle, tooltip: 'Worth monitoring — lowers score but not blocking', description: 'Lowers score but does not block usage' },
+  error:   { label: 'Error',   textColor: 'text-danger',   bgColor: 'bg-danger/10',   icon: XCircle,       tooltip: 'Data cannot be trusted — fix urgently', description: 'Data cannot be trusted — fix urgently' },
 };
+
+// ---------------------------------------------------------------------------
+// Live Preview types
+// ---------------------------------------------------------------------------
+
+interface RulePreviewResult {
+  sql: string | null;
+  pass_description: string;
+  fail_description: string;
+  scope_description: string;
+  error: string | null;
+}
 
 const FORMAT_OPTIONS: { value: QualityFormat; label: string }[] = [
   { value: 'email',    label: 'Email address' },
@@ -172,17 +214,36 @@ const FORMAT_OPTIONS: { value: QualityFormat; label: string }[] = [
   { value: 'phone',    label: 'Phone number' },
 ];
 
+const REGEX_PRESETS: { label: string; pattern: string; flags?: string }[] = [
+  { label: 'UPPERCASE',     pattern: '^[A-Z\\s]+$' },
+  { label: 'lowercase',     pattern: '^[a-z\\s]+$' },
+  { label: 'Alphanumeric',  pattern: '^[A-Za-z0-9]+$' },
+  { label: 'Numeric string', pattern: '^[0-9]+$' },
+  { label: 'No special',    pattern: '^[A-Za-z0-9\\s_-]+$' },
+  { label: 'UUID',          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', flags: 'i' },
+];
+
+// Fallback definition for custom (user-created) dimensions not in DQ_DIMENSIONS.
+const CUSTOM_DIM_DEF = {
+  label: 'Other',
+  description: 'Custom dimension',
+  color: 'text-text-secondary',
+  bg: 'bg-surface-2',
+  border: 'border-[rgb(var(--border-line))]',
+  dot: 'bg-text-quaternary',
+  ruleTypes: [] as { value: string; label: string; level: 'column' | 'table' | 'both'; hint?: string }[],
+};
+
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
 
 function dimDef(key: QualityDimension) {
-  return DQ_DIMENSIONS.find((d) => d.key === key)!;
+  return DQ_DIMENSIONS.find((d) => d.key === key) ?? { ...CUSTOM_DIM_DEF, key, label: key };
 }
 
-function getRuleTypeLabel(dim: QualityDimension, ruleType: string): string {
-  const d = dimDef(dim);
-  return d?.ruleTypes.find((r) => r.value === ruleType)?.label ?? ruleType;
+function getRuleTypeLabel(ruleType: string): string {
+  return ALL_RULE_TYPES.find((r) => r.value === ruleType)?.label ?? ruleType;
 }
 
 function getColumnOptions(tables: DatasetTable[], tableId: number): string[] {
@@ -193,10 +254,14 @@ function getColumnOptions(tables: DatasetTable[], tableId: number): string[] {
   return cols?.map((c) => c.name) ?? [];
 }
 
-type RuleTypeDefinition = (typeof DQ_DIMENSIONS)[number]['ruleTypes'][number];
+type RuleTypeDefinition = (typeof ALL_RULE_TYPES)[number];
 
-function getRuleTypeDef(dimension: QualityDimension, ruleType: string): RuleTypeDefinition | undefined {
-  return dimDef(dimension).ruleTypes.find((r) => r.value === ruleType);
+function getRuleTypeDef(ruleType: string): RuleTypeDefinition | undefined {
+  return ALL_RULE_TYPES.find((r) => r.value === ruleType);
+}
+
+function getNaturalDimension(ruleType: string): QualityDimension | undefined {
+  return getRuleTypeDef(ruleType)?.naturalDimension;
 }
 
 function ruleUsesColumn(ruleTypeDef?: RuleTypeDefinition): boolean {
@@ -320,7 +385,7 @@ function FieldLabel({ label, helpText, action }: {
   action?: React.ReactNode;
 }) {
   return (
-    <div className="mb-1.5 flex items-start justify-between gap-3">
+    <div className="mb-1.5 flex items-start justify-between gap-2">
       <div className="flex min-w-0 items-center text-xs font-medium text-text-secondary">
         <span>{label}</span>
         {helpText && <HelpTooltip text={helpText} />}
@@ -330,20 +395,17 @@ function FieldLabel({ label, helpText, action }: {
   );
 }
 
-function EditorSection({ title, description, children, className = '' }: {
+function SectionHeader({ title, helpText, icon: Icon }: {
   title: string;
-  description: string;
-  children: React.ReactNode;
-  className?: string;
+  helpText?: string;
+  icon?: React.ElementType;
 }) {
   return (
-    <section className={`rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 p-4 shadow-linear-sm ${className}`.trim()}>
-      <div className="mb-4">
-        <h4 className="text-sm font-semibold text-text-primary">{title}</h4>
-        <p className="mt-1 text-xs leading-5 text-text-tertiary">{description}</p>
-      </div>
-      {children}
-    </section>
+    <div className="flex items-center gap-1.5">
+      {Icon && <Icon className="h-3.5 w-3.5 text-text-quaternary" />}
+      <h4 className="text-xs font-semibold text-text-primary">{title}</h4>
+      {helpText && <HelpTooltip text={helpText} />}
+    </div>
   );
 }
 
@@ -361,14 +423,12 @@ function ColumnSelector({ tableId, tables, value, onChange, placeholder, label, 
     <div>
       {label && <FieldLabel label={label} helpText={helpText} />}
       {options.length > 0 ? (
-        <select
+        <SearchableSelect
+          options={options}
           value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none"
-        >
-          <option value="">— select column —</option>
-          {options.map((c) => <option key={c} value={c}>{c}</option>)}
-        </select>
+          onChange={onChange}
+          placeholder={placeholder ?? 'Search columns…'}
+        />
       ) : (
         <input
           type="text"
@@ -377,6 +437,615 @@ function ColumnSelector({ tableId, tables, value, onChange, placeholder, label, 
           placeholder={placeholder ?? 'column_name'}
           className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 text-sm focus:border-brand/50 focus:outline-none"
         />
+      )}
+    </div>
+  );
+}
+
+function SearchableSelect({ options, value, onChange, placeholder }: {
+  options: string[];
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  const [open, setOpen]   = useState(false);
+  const [query, setQuery] = useState('');
+  const [focusIdx, setFocusIdx] = useState(0);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const inputRef     = React.useRef<HTMLInputElement>(null);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setQuery('');
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = normalizedQuery
+    ? options.filter((o) => o.toLowerCase().includes(normalizedQuery))
+    : options;
+
+  function selectValue(v: string) {
+    onChange(v);
+    setOpen(false);
+    setQuery('');
+  }
+
+  function handleKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setOpen(true);
+      setFocusIdx((i) => Math.min(i + 1, filtered.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setFocusIdx((i) => Math.max(i - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (filtered[focusIdx]) selectValue(filtered[focusIdx]);
+    } else if (e.key === 'Escape') {
+      setOpen(false);
+      setQuery('');
+    }
+  }
+
+  const displayValue = open ? query : value;
+  const hintPlaceholder = placeholder ?? `Search columns (${options.length} available)…`;
+
+  return (
+    <div ref={containerRef} className="relative">
+      <div className="flex items-center gap-1.5 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 focus-within:border-brand/50">
+        <Search className="h-3.5 w-3.5 text-text-quaternary shrink-0" />
+        <input
+          ref={inputRef}
+          type="text"
+          value={displayValue}
+          onFocus={() => { setOpen(true); setFocusIdx(0); }}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); setFocusIdx(0); }}
+          onKeyDown={handleKey}
+          placeholder={hintPlaceholder}
+          className="w-full bg-transparent text-sm focus:outline-none"
+        />
+        {value && !open && (
+          <button
+            type="button"
+            onClick={() => { onChange(''); inputRef.current?.focus(); }}
+            className="text-text-quaternary hover:text-text-secondary"
+            aria-label="Clear"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-md">
+          {filtered.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-text-quaternary">No matches</p>
+          ) : (
+            filtered.map((opt, idx) => (
+              <button
+                key={opt}
+                type="button"
+                onMouseEnter={() => setFocusIdx(idx)}
+                onClick={() => selectValue(opt)}
+                className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm ${
+                  idx === focusIdx ? 'bg-brand/10 text-brand' : 'text-text-secondary hover:bg-surface-2'
+                }`}
+              >
+                <span className="truncate font-mono">{opt}</span>
+                {opt === value && <Check className="h-3.5 w-3.5 text-brand" />}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MultiColumnPicker({ tableId, tables, value, onChange }: {
+  tableId: number;
+  tables: DatasetTable[];
+  value: string[];
+  onChange: (v: string[]) => void;
+}) {
+  const options = getColumnOptions(tables, tableId);
+  const [query, setQuery] = useState('');
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = normalizedQuery
+    ? options.filter((o) => o.toLowerCase().includes(normalizedQuery))
+    : options;
+  const selectedSet = new Set(value);
+  const allVisibleSelected = filtered.length > 0 && filtered.every((o) => selectedSet.has(o));
+
+  function toggleColumn(col: string) {
+    if (selectedSet.has(col)) onChange(value.filter((v) => v !== col));
+    else onChange([...value, col]);
+  }
+
+  function toggleAllVisible() {
+    if (allVisibleSelected) {
+      onChange(value.filter((v) => !filtered.includes(v)));
+    } else {
+      const merged = new Set(value);
+      filtered.forEach((o) => merged.add(o));
+      onChange(Array.from(merged));
+    }
+  }
+
+  return (
+    <div>
+      <FieldLabel
+        label={`Columns (${value.length} selected)`}
+        helpText="Each selected column becomes its own rule with identical logic. Use search to quickly find columns in wide tables."
+        action={
+          value.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => onChange([])}
+              className="text-[11px] font-medium text-text-tertiary hover:text-text-secondary"
+            >
+              Clear
+            </button>
+          ) : undefined
+        }
+      />
+      {options.length === 0 ? (
+        <p className="rounded-xl border border-dashed border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-xs text-text-quaternary">
+          No columns available for this table. Refresh the schema to populate the column list.
+        </p>
+      ) : (
+        <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+          <div className="flex items-center gap-1.5 border-b border-[rgb(var(--border-line))] px-2 py-1.5">
+            <Search className="h-3.5 w-3.5 text-text-quaternary shrink-0" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={`Search ${options.length} columns…`}
+              className="w-full bg-transparent text-sm focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={toggleAllVisible}
+              className="shrink-0 rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-[11px] font-medium text-text-secondary hover:bg-surface-2"
+            >
+              {allVisibleSelected ? 'Deselect all' : 'Select all'}
+            </button>
+          </div>
+          <div className="max-h-64 overflow-auto py-1">
+            {filtered.length === 0 ? (
+              <p className="px-3 py-2 text-xs text-text-quaternary">No matches</p>
+            ) : (
+              filtered.map((col) => {
+                const checked = selectedSet.has(col);
+                return (
+                  <button
+                    key={col}
+                    type="button"
+                    onClick={() => toggleColumn(col)}
+                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm ${
+                      checked ? 'bg-brand/10 text-brand' : 'text-text-secondary hover:bg-surface-2'
+                    }`}
+                  >
+                    <span
+                      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                        checked ? 'border-brand bg-brand text-white' : 'border-[rgb(var(--border-line))] bg-surface-1'
+                      }`}
+                    >
+                      {checked && <Check className="h-3 w-3" />}
+                    </span>
+                    <span className="truncate font-mono">{col}</span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Rule Type search select (flat list with search, replacing <optgroup>)
+// ---------------------------------------------------------------------------
+
+function RuleTypeSearchSelect({ value, onChange }: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen]   = useState(false);
+  const [query, setQuery] = useState('');
+  const [focusIdx, setFocusIdx] = useState(0);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const inputRef     = React.useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setQuery('');
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = normalizedQuery
+    ? ALL_RULE_TYPES.filter((rt) =>
+        rt.label.toLowerCase().includes(normalizedQuery)
+        || (rt.hint ?? '').toLowerCase().includes(normalizedQuery)
+        || rt.naturalDimension.toLowerCase().includes(normalizedQuery)
+        || rt.value.toLowerCase().includes(normalizedQuery)
+      )
+    : ALL_RULE_TYPES;
+
+  function selectValue(v: string) {
+    onChange(v);
+    setOpen(false);
+    setQuery('');
+  }
+
+  function handleKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setFocusIdx((i) => Math.min(i + 1, filtered.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setFocusIdx((i) => Math.max(i - 1, 0)); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (filtered[focusIdx]) selectValue(filtered[focusIdx].value); }
+    else if (e.key === 'Escape') { setOpen(false); setQuery(''); }
+  }
+
+  const currentLabel = ALL_RULE_TYPES.find((r) => r.value === value)?.label ?? value;
+  const displayValue = open ? query : currentLabel;
+
+  return (
+    <div ref={containerRef} className="relative">
+      <div className="flex items-center gap-1.5 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 focus-within:border-brand/50">
+        <Search className="h-3.5 w-3.5 text-text-quaternary shrink-0" />
+        <input
+          ref={inputRef}
+          type="text"
+          value={displayValue}
+          onFocus={() => { setOpen(true); setFocusIdx(0); setQuery(''); }}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); setFocusIdx(0); }}
+          onKeyDown={handleKey}
+          placeholder="Search rule types…"
+          className="w-full bg-transparent text-sm focus:outline-none"
+        />
+        {!open && (
+          <ChevronDown className="h-3.5 w-3.5 text-text-quaternary shrink-0" />
+        )}
+      </div>
+      {open && (
+        <div className="absolute z-20 mt-1 max-h-72 w-full overflow-auto rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
+          {filtered.length === 0 ? (
+            <p className="px-3 py-3 text-xs text-text-quaternary">No matches — try different keywords</p>
+          ) : (
+            filtered.map((rt, idx) => {
+              const dimMeta = DQ_DIMENSIONS.find((d) => d.key === rt.naturalDimension);
+              return (
+                <button
+                  key={rt.value}
+                  type="button"
+                  title={rt.hint}
+                  onMouseEnter={() => setFocusIdx(idx)}
+                  onClick={() => selectValue(rt.value)}
+                  className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors ${
+                    idx === focusIdx ? 'bg-brand/10' : 'hover:bg-surface-2'
+                  }`}
+                >
+                  <span className={`min-w-0 flex-1 text-xs font-medium truncate ${rt.value === value ? 'text-brand' : 'text-text-primary'}`}>{rt.label}</span>
+                  {rt.value === value && <Check className="h-3 w-3 text-brand shrink-0" />}
+                  <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${dimMeta?.bg ?? 'bg-surface-2'} ${dimMeta?.color ?? 'text-text-tertiary'}`}>
+                    {dimMeta?.label ?? rt.naturalDimension}
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Table search select
+// ---------------------------------------------------------------------------
+
+function TableSearchSelect({ tables, value, onChange, disabled }: {
+  tables: DatasetTable[];
+  value: number;
+  onChange: (v: number) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen]   = useState(false);
+  const [query, setQuery] = useState('');
+  const [focusIdx, setFocusIdx] = useState(0);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setQuery('');
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = normalizedQuery
+    ? tables.filter((t) =>
+        (t.display_name ?? '').toLowerCase().includes(normalizedQuery)
+        || (t.source_table_name ?? '').toLowerCase().includes(normalizedQuery)
+      )
+    : tables;
+
+  function selectTable(id: number) {
+    onChange(id);
+    setOpen(false);
+    setQuery('');
+  }
+
+  const currentTable = tables.find((t) => t.id === value);
+  const currentLabel = currentTable?.display_name || currentTable?.source_table_name || 'Select table';
+  const displayValue = open ? query : currentLabel;
+
+  if (disabled) {
+    return (
+      <div className="flex items-center gap-1.5 rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-sm text-text-quaternary">
+        <Database className="h-3.5 w-3.5 shrink-0" />
+        <span className="truncate">{currentLabel}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div ref={containerRef} className="relative">
+      <div className="flex items-center gap-1.5 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 focus-within:border-brand/50">
+        <Database className="h-3.5 w-3.5 text-text-quaternary shrink-0" />
+        <input
+          type="text"
+          value={displayValue}
+          onFocus={() => { setOpen(true); setFocusIdx(0); setQuery(''); }}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); setFocusIdx(0); }}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setFocusIdx((i) => Math.min(i + 1, filtered.length - 1)); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); setFocusIdx((i) => Math.max(i - 1, 0)); }
+            else if (e.key === 'Enter') { e.preventDefault(); if (filtered[focusIdx]) selectTable(filtered[focusIdx].id); }
+            else if (e.key === 'Escape') { setOpen(false); setQuery(''); }
+          }}
+          placeholder={`Search ${tables.length} tables…`}
+          className="w-full bg-transparent text-sm focus:outline-none"
+        />
+        <ChevronDown className="h-3.5 w-3.5 text-text-quaternary shrink-0" />
+      </div>
+      {open && (
+        <div className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
+          {filtered.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-text-quaternary">No matches</p>
+          ) : (
+            filtered.map((t, idx) => (
+              <button
+                key={t.id}
+                type="button"
+                onMouseEnter={() => setFocusIdx(idx)}
+                onClick={() => selectTable(t.id)}
+                className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm ${
+                  idx === focusIdx ? 'bg-brand/10 text-brand' : 'text-text-secondary hover:bg-surface-2'
+                }`}
+              >
+                <span className="truncate">{t.display_name || t.source_table_name}</span>
+                {t.id === value && <Check className="h-3.5 w-3.5 text-brand shrink-0" />}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Intent-based quick-start cards
+// ---------------------------------------------------------------------------
+
+const INTENT_CARDS: Array<{
+  title: string;
+  description: string;
+  ruleType: string;
+  dimension: QualityDimension;
+  icon: string;
+}> = [
+  {
+    title: 'Column must not be NULL',
+    description: 'Check that required columns always have values. Supports multi-column selection.',
+    ruleType: 'not_null',
+    dimension: 'completeness',
+    icon: '🔒',
+  },
+  {
+    title: 'Unique combination (grain)',
+    description: 'Ensure a set of columns forms a unique key — e.g. deal_id + payment_date + customer_id.',
+    ruleType: 'unique_combo',
+    dimension: 'uniqueness',
+    icon: '🔑',
+  },
+  {
+    title: 'Business logic (SQL)',
+    description: 'Write any SQL condition rows must satisfy — conditional checks, cross-column formulas, etc.',
+    ruleType: 'cross_column',
+    dimension: 'consistency',
+    icon: '⚡',
+  },
+  {
+    title: 'Values in allowed list',
+    description: 'Restrict a column to a set of accepted values — statuses, categories, codes.',
+    ruleType: 'accepted_values',
+    dimension: 'validity',
+    icon: '📋',
+  },
+  {
+    title: 'Numeric range [min, max]',
+    description: 'Validate that numbers stay within expected bounds — amounts, ages, scores.',
+    ruleType: 'range_check',
+    dimension: 'validity',
+    icon: '📊',
+  },
+  {
+    title: 'Pattern / Regex match',
+    description: 'Validate format with regex — UPPER(), phone numbers, custom codes.',
+    ruleType: 'pattern_match',
+    dimension: 'validity',
+    icon: '🔤',
+  },
+  {
+    title: 'Data must be fresh',
+    description: 'Alert when the latest data is older than N days.',
+    ruleType: 'freshness_days',
+    dimension: 'timeliness',
+    icon: '⏰',
+  },
+  {
+    title: 'Custom SQL (escape hatch)',
+    description: 'Write any SQL query returning rows_checked and rows_failed. Ultimate flexibility.',
+    ruleType: 'custom_sql',
+    dimension: 'accuracy',
+    icon: '🛠️',
+  },
+];
+
+function IntentCardsGrid({ onSelect }: {
+  onSelect: (ruleType: string, dimension: QualityDimension) => void;
+}) {
+  return (
+    <div className="rounded-2xl border border-brand/20 bg-brand/5 p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <Wand2 className="h-3.5 w-3.5 text-brand" />
+        <h4 className="text-xs font-semibold text-brand">Quick start</h4>
+      </div>
+      <div className="grid gap-1.5 grid-cols-4 lg:grid-cols-8">
+        {INTENT_CARDS.map((card) => (
+          <button
+            key={card.ruleType}
+            type="button"
+            title={card.description}
+            onClick={() => onSelect(card.ruleType, card.dimension)}
+            className="flex flex-col items-center gap-1 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-2 text-center transition-all hover:border-brand/40 hover:bg-brand/5 hover:shadow-linear-sm group"
+          >
+            <span className="text-base leading-none">{card.icon}</span>
+            <span className="text-[10px] font-medium leading-tight text-text-secondary group-hover:text-brand transition-colors">{card.title}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AI Rule Assistant
+// ---------------------------------------------------------------------------
+
+function AIRuleAssistant({ datasetId, tableId, tables, onApply }: {
+  datasetId: number;
+  tableId: number;
+  tables: DatasetTable[];
+  onApply: (suggestion: QualityAISuggestResponse) => void;
+}) {
+  const [description, setDescription] = useState('');
+  const [lastResult, setLastResult]   = useState<QualityAISuggestResponse | null>(null);
+  const mutation = useAISuggestQualityRule(datasetId);
+
+  const selectedTable = tables.find((t) => t.id === tableId);
+  const tableName = selectedTable?.display_name || selectedTable?.source_table_name || '';
+  const columns: { name: string; type: string }[] = useMemo(() => {
+    if (!selectedTable?.columns_cache) return [];
+    const cache = selectedTable.columns_cache as Record<string, any>;
+    const cols = cache.columns as { name: string; type?: string }[] | undefined;
+    return cols?.map((c) => ({ name: c.name, type: c.type ?? '' })) ?? [];
+  }, [selectedTable]);
+
+  async function handleGenerate() {
+    if (!description.trim() || !tableName) return;
+    try {
+      const result = await mutation.mutateAsync({
+        description: description.trim(),
+        table_name: tableName,
+        columns,
+      });
+      setLastResult(result);
+    } catch {
+      // error handled by mutation state
+    }
+  }
+
+  function handleApply() {
+    if (lastResult) {
+      onApply(lastResult);
+      setLastResult(null);
+      setDescription('');
+    }
+  }
+
+  return (
+    <div className="rounded-2xl border border-purple-500/20 bg-purple-500/5 p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <Sparkles className="h-3.5 w-3.5 text-purple-500" />
+        <span className="text-xs font-semibold text-purple-700 dark:text-purple-400">AI assist</span>
+      </div>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleGenerate(); } }}
+          placeholder='Describe rule, e.g. "amount must not be null" or "status in (active, closed)"'
+          className="min-w-0 flex-1 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 text-xs focus:border-purple-500/50 focus:outline-none placeholder:text-text-quaternary"
+        />
+        <button
+          type="button"
+          onClick={handleGenerate}
+          disabled={!description.trim() || !tableName || mutation.isPending}
+          className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50"
+        >
+          {mutation.isPending
+            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            : <Sparkles className="h-3.5 w-3.5" />
+          }
+        </button>
+      </div>
+
+      {mutation.isError && (
+        <div className="mt-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-[11px] text-danger">
+          {(mutation.error as any)?.response?.data?.detail ?? 'AI unavailable'}
+        </div>
+      )}
+
+      {lastResult && (
+        <div className="mt-2 flex items-center gap-2 rounded-lg border border-purple-500/30 bg-surface-1 px-3 py-2">
+          <div className="min-w-0 flex-1">
+            <span className="text-xs font-medium text-text-primary">{lastResult.name}</span>
+            <span className="ml-2 text-[11px] text-text-tertiary" title={lastResult.explanation}>{getRuleTypeLabel(lastResult.rule_type)} · {lastResult.dimension}</span>
+          </div>
+          <button
+            type="button"
+            onClick={handleApply}
+            className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-purple-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-purple-700"
+          >
+            <Check className="h-3 w-3" /> Apply
+          </button>
+        </div>
       )}
     </div>
   );
@@ -455,6 +1124,17 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
               placeholder="i"
               className="w-24 rounded border border-[rgb(var(--border-line))] px-2 py-1.5 font-mono text-sm focus:border-brand/50 focus:outline-none" />
           </div>
+          <div className="flex flex-wrap gap-1 items-center">
+            <span className="text-[11px] text-text-quaternary mr-0.5">Presets:</span>
+            {REGEX_PRESETS.map((p) => (
+              <button key={p.label} type="button"
+                onClick={() => onPatch({ pattern: p.pattern, ...(p.flags ? { flags: p.flags } : {}) } as any)}
+                className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-0.5 text-[11px] text-text-secondary hover:bg-brand/10 hover:text-brand hover:border-brand/30 transition-colors"
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
         </div>
       );
 
@@ -497,6 +1177,9 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
             <option value="">— select format —</option>
             {FORMAT_OPTIONS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
           </select>
+          <p className="mt-1.5 text-[11px] text-text-quaternary">
+            For UPPER/LOWER case or custom format checks, switch to "Pattern Match" — it has presets.
+          </p>
         </div>
       );
 
@@ -524,20 +1207,41 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
             label="SQL boolean expression"
             helpText="Write a SQL condition that returns TRUE for valid rows and FALSE for failing rows."
           />
-          <textarea rows={3}
+          <textarea rows={4}
             value={config.expression ?? ''}
             onChange={(e) => onPatch({ expression: e.target.value || undefined })}
             placeholder={'end_date >= start_date\namount > 0 AND status != \'void\''}
             className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-1.5 font-mono text-xs focus:border-brand/50 focus:outline-none resize-none" />
           <p className="mt-1 text-[11px] text-text-quaternary">
-            Can reference any column in the selected table only. Use standard SQL operators.
+            Can reference any column in the selected table. Use standard SQL operators — conditional logic and multi-column checks both work.
           </p>
+          <ExpressionExamples
+            defaultOpen
+            examples={[
+              {
+                title: 'Conditional equality (Case 1)',
+                sql: "status != 'fully_received' OR income_value = (receivable + received)",
+                note: 'When status = fully_received, income_value must equal receivable + received.',
+              },
+              {
+                title: 'Conditional validity (Case 3)',
+                sql: "deal_id >= 0 OR owner_email = 'khoa.hoc@base.vn'",
+                note: 'Negative deal_id is only valid for a specific owner.',
+              },
+              {
+                title: 'Multi-column non-null + positive',
+                sql: 'amount IS NOT NULL AND amount > 0',
+                note: 'Combine common checks into a single rule.',
+              },
+            ]}
+            onCopy={(sql) => onPatch({ expression: sql })}
+          />
         </div>
       );
 
     case 'cross_table':
       return (
-        <div className="space-y-3">
+        <div className="space-y-2">
           <div>
             <FieldLabel
               label="Related table"
@@ -586,7 +1290,7 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
 
     case 'freshness_days':
       return (
-        <div className="space-y-3">
+        <div className="space-y-2">
           <ColumnSelector
             tableId={tableId} tables={tables}
             value={config.column ?? ''}
@@ -665,6 +1369,34 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
         </div>
       );
 
+    case 'custom_sql':
+      return (
+        <div className="space-y-2">
+          <FieldLabel
+            label="Custom SQL"
+            helpText="Write a SQL query that returns two columns: rows_checked (total rows in scope) and rows_failed (rows that violate your rule). Use {{ table }} as a placeholder for the target table — the runner replaces it before execution."
+          />
+          <div className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] leading-5 text-warning">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>Custom SQL runs directly on your datasource with no sandboxing. Ensure the query is safe, read-only, and performant before saving.</span>
+          </div>
+          <textarea rows={10}
+            value={config.sql ?? ''}
+            onChange={(e) => onPatch({ sql: e.target.value || undefined })}
+            placeholder={
+`-- Must SELECT two columns: rows_checked and rows_failed
+SELECT
+  COUNT(*) AS rows_checked,
+  COUNT(*) FILTER (WHERE NOT (amount >= 0)) AS rows_failed
+FROM {{ table }}`
+            }
+            className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-2 font-mono text-xs focus:border-brand/50 focus:outline-none resize-y" />
+          <p className="text-[11px] text-text-quaternary">
+            The query must return exactly two aliased columns. Failing rows are reported as rule failures.
+          </p>
+        </div>
+      );
+
     default:
       return (
         <div className="rounded-xl border border-dashed border-[rgb(var(--border-line))] bg-surface-1 px-3 py-3 text-xs leading-5 text-text-tertiary">
@@ -672,6 +1404,51 @@ function ConfigFields({ ruleType, config, onPatch, tableId, tables }: {
         </div>
       );
   }
+}
+
+function ExpressionExamples({ examples, onCopy, defaultOpen = false }: {
+  examples: Array<{ title: string; sql: string; note: string }>;
+  onCopy: (sql: string) => void;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="mt-2 rounded-xl border border-[rgb(var(--border-line))] bg-surface-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-medium text-text-secondary hover:bg-surface-1"
+      >
+        <span className="inline-flex items-center gap-1.5">
+          {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          Copy-paste examples
+        </span>
+        <span className="text-[11px] text-text-quaternary">{examples.length} patterns</span>
+      </button>
+      {open && (
+        <div className="space-y-2 border-t border-[rgb(var(--border-line))] p-2">
+          {examples.map((ex) => (
+            <div key={ex.title} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-semibold text-text-secondary">{ex.title}</p>
+                  <p className="mt-0.5 text-[11px] leading-4 text-text-quaternary">{ex.note}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onCopy(ex.sql)}
+                  className="shrink-0 rounded border border-brand/40 bg-brand/10 px-2 py-0.5 text-[11px] font-medium text-brand hover:bg-brand/20"
+                >
+                  Use
+                </button>
+              </div>
+              <pre className="mt-1 overflow-x-auto rounded bg-surface-2 px-2 py-1 font-mono text-[11px] leading-4 text-text-primary">{ex.sql}</pre>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -683,32 +1460,50 @@ interface RuleEditorProps {
   tables: DatasetTable[];
   editingRule: QualityRule | null;         // null = create mode
   defaultTableId?: number;
+  lastUsedTableId?: number;
   defaultDimension?: QualityDimension;
   onClose: () => void;
   onSaved: (rule: QualityRule) => void;
   onDuplicate?: (rule: QualityRule) => void;
 }
 
-function RuleEditorDrawer({
-  datasetId, tables, editingRule, defaultTableId, defaultDimension, onClose, onSaved, onDuplicate,
+function RuleEditorDrawerLegacy({
+  datasetId, tables, editingRule, defaultTableId, lastUsedTableId, defaultDimension, onClose, onSaved, onDuplicate,
 }: RuleEditorProps) {
   const isEdit = editingRule !== null;
+  const resolvedDefaultTable = editingRule?.table_id ?? defaultTableId ?? lastUsedTableId ?? (tables[0]?.id ?? 0);
 
-  const [tableId, setTableId]       = useState<number>(editingRule?.table_id ?? defaultTableId ?? (tables[0]?.id ?? 0));
+  const [tableId, setTableId]       = useState<number>(resolvedDefaultTable);
   const [dimension, setDimension]   = useState<QualityDimension>(editingRule?.dimension ?? defaultDimension ?? 'completeness');
   const [ruleType, setRuleType]     = useState<string>(editingRule?.rule_type ?? 'not_null');
   const [columnName, setColumnName] = useState<string>(editingRule?.column_name ?? '');
+  const [columnNames, setColumnNames] = useState<string[]>([]);
   const [name, setName]             = useState<string>(editingRule?.name ?? '');
   const [severity, setSeverity]     = useState<QualitySeverity>(editingRule?.severity ?? 'warning');
   const [enabled, setEnabled]       = useState<boolean>(editingRule?.enabled ?? true);
   const [config, setConfig]         = useState<QualityRuleConfig>(editingRule?.config ?? {});
   const [nameEdited, setNameEdited] = useState<boolean>(isEdit);
+  const [showIntentCards, setShowIntentCards] = useState<boolean>(false);
+  const [showAiAssistant, setShowAiAssistant] = useState<boolean>(false);
+  const [showBulkPicker, setShowBulkPicker] = useState<boolean>(false);
+  const [showNameEditor, setShowNameEditor] = useState<boolean>(isEdit);
+  const [dimExpanded, setDimExpanded] = useState<boolean>(false);
+  // When editing, dimension is already chosen by the user, so it counts as
+  // "touched". In create mode the auto-suggest kicks in until they click one.
+  const [dimensionTouched, setDimensionTouched] = useState<boolean>(isEdit || Boolean(defaultDimension));
+
+  // Live preview state
+  const [preview, setPreview] = useState<RulePreviewResult | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [showPreviewSql, setShowPreviewSql] = useState(false);
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const createMutation = useCreateQualityRule(datasetId);
   const updateMutation = useUpdateQualityRule(datasetId);
+  const bulkCreateMutation = useBulkCreateQualityRules(datasetId);
 
   const dimDef_ = dimDef(dimension);
-  const rtDef   = getRuleTypeDef(dimension, ruleType);
+  const rtDef   = getRuleTypeDef(ruleType);
   const usesColumn = ruleUsesColumn(rtDef);
   const suggestedName = useMemo(
     () => buildSuggestedRuleName(tables, tableId, rtDef, ruleType, columnName),
@@ -721,28 +1516,117 @@ function RuleEditorDrawer({
     setName(suggestedName);
   }, [name, nameEdited, suggestedName]);
 
+  // Debounced live preview
+  const fetchPreview = useCallback(async () => {
+    if (!tableId || !ruleType) { setPreview(null); return; }
+    setPreviewLoading(true);
+    try {
+      const res = await api.post<RulePreviewResult>(
+        `/datasets/${datasetId}/quality/rules/preview`,
+        { table_id: tableId, rule_type: ruleType, column_name: columnName || null, config },
+      );
+      setPreview(res.data);
+    } catch {
+      setPreview(null);
+    } finally {
+      setPreviewLoading(false);
+    }
+  }, [datasetId, tableId, ruleType, columnName, config]);
+
+  useEffect(() => {
+    if (previewTimer.current) clearTimeout(previewTimer.current);
+    previewTimer.current = setTimeout(fetchPreview, 500);
+    return () => { if (previewTimer.current) clearTimeout(previewTimer.current); };
+  }, [fetchPreview]);
+
   function patchConfig(partial: Partial<QualityRuleConfig>) {
     setConfig((prev) => ({ ...prev, ...partial }));
   }
 
+  // Dimension is an independent semantic label after the 2026-04 decoupling.
+  // Changing it no longer resets the rule type or its config.
   function switchDimension(d: QualityDimension) {
-    const firstType = DQ_DIMENSIONS.find((x) => x.key === d)!.ruleTypes[0].value;
-    const nextRuleDef = getRuleTypeDef(d, firstType);
     setDimension(d);
-    setRuleType(firstType);
-    setConfig({});
-    if (!ruleUsesColumn(nextRuleDef)) setColumnName('');
+    setDimensionTouched(true);
   }
 
   function switchRuleType(rt: string) {
-    const nextRuleDef = getRuleTypeDef(dimension, rt);
+    const nextRuleDef = getRuleTypeDef(rt);
     setRuleType(rt);
     setConfig({});
-    if (!ruleUsesColumn(nextRuleDef)) setColumnName('');
+    if (!ruleUsesColumn(nextRuleDef)) {
+      setColumnName('');
+      setColumnNames([]);
+    }
+    // Auto-suggest natural dimension only when the user has not manually
+    // overridden it yet — keeps the default path ergonomic without locking
+    // advanced users out.
+    if (!dimensionTouched) {
+      const natural = getNaturalDimension(rt);
+      if (natural) setDimension(natural);
+    }
   }
+
+  function handleIntentSelect(intentRuleType: string, intentDimension: QualityDimension) {
+    switchRuleType(intentRuleType);
+    setDimension(intentDimension);
+    setDimensionTouched(true);
+    setShowIntentCards(false);
+  }
+
+  function handleAIApply(suggestion: QualityAISuggestResponse) {
+    setRuleType(suggestion.rule_type);
+    if (suggestion.dimension) setDimension(suggestion.dimension as QualityDimension);
+    if (suggestion.column_name) setColumnName(suggestion.column_name);
+    if (suggestion.config) setConfig(suggestion.config);
+    if (suggestion.severity) setSeverity(suggestion.severity as QualitySeverity);
+    if (suggestion.name) { setName(suggestion.name); setNameEdited(true); }
+    setDimensionTouched(true);
+    setShowIntentCards(false);
+    setShowAiAssistant(false);
+  }
+
+  const bulkEligible = !isEdit && usesColumn && BULK_COLUMN_RULE_TYPES.has(ruleType);
+  const bulkActive   = bulkEligible && columnNames.length > 1;
+  const selectedTable = tables.find((t) => t.id === tableId);
+  const selectedTableLabel = selectedTable?.display_name || selectedTable?.source_table_name || 'No table selected';
+  const selectedColumns = columnNames.length > 0 ? columnNames : (columnName ? [columnName] : []);
+  const selectedColumnCount = selectedColumns.length;
+  const currentScopeLabel = usesColumn
+    ? (selectedColumnCount > 1 ? `${selectedColumnCount} columns selected` : columnName || 'No column selected')
+    : 'Whole table';
+
+  useEffect(() => {
+    if (!bulkEligible) setShowBulkPicker(false);
+  }, [bulkEligible]);
 
   async function handleSave() {
     if (!tables.find((t) => t.id === tableId)) { toast.error('Select a table'); return; }
+    if (bulkActive) {
+      if (columnNames.length === 0) { toast.error('Select at least one column'); return; }
+      try {
+        const selectedTable = tables.find((t) => t.id === tableId);
+        const tableLabel = selectedTable?.display_name || selectedTable?.source_table_name || '';
+        const ruleLabel = rtDef?.label ?? ruleType;
+        const items: QualityRuleCreate[] = columnNames.map((col) => ({
+          table_id: tableId,
+          column_name: col,
+          dimension,
+          rule_type: ruleType,
+          name: `${tableLabel}: ${col} - ${ruleLabel}`,
+          config,
+          severity,
+          enabled,
+        }));
+        const saved = await bulkCreateMutation.mutateAsync(items);
+        toast.success(`Created ${saved.length} rule${saved.length === 1 ? '' : 's'}`);
+        if (saved.length > 0) onSaved(saved[0]);
+      } catch {
+        toast.error('Failed to create rules');
+      }
+      return;
+    }
+
     if (!name.trim()) { toast.error('Rule name is required'); return; }
     const nextColumnName = usesColumn ? columnName.trim() || undefined : undefined;
     try {
@@ -766,27 +1650,7 @@ function RuleEditorDrawer({
     }
   }
 
-  const isPending = createMutation.isPending || updateMutation.isPending;
-  const selectedTable = tables.find((table) => table.id === tableId);
-  const selectedTableLabel = selectedTable?.display_name
-    || selectedTable?.source_table_name
-    || 'No table selected';
-  const severityMeta = SEVERITY_META[severity];
-  const previewCards = [
-    { label: 'Table', value: selectedTableLabel },
-    { label: 'Dimension', value: dimDef_.label },
-    { label: 'Rule type', value: rtDef?.label ?? ruleType },
-    { label: 'Scope', value: usesColumn ? (columnName.trim() ? `Column: ${columnName}` : 'Column-level rule') : 'Table-level rule' },
-  ];
-  const setupTips = [
-    'Hover the info icon next to any field to see what the rule checks and how to configure it.',
-    usesColumn
-      ? 'Pick a column before saving so the rule runs against the correct field in the selected table.'
-      : 'This rule evaluates table-level behavior, so you can leave the column selector empty.',
-    ruleType === 'cross_table'
-      ? 'Use src for the current table and ref for the related table in both the join and validation expressions.'
-      : 'Keep the suggested name until the rule logic is final, then rename it with business language if needed.',
-  ];
+  const isPending = createMutation.isPending || updateMutation.isPending || bulkCreateMutation.isPending;
 
   return (
     <>
@@ -794,85 +1658,157 @@ function RuleEditorDrawer({
 
       <div className="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-5 lg:p-8">
         <div className="flex h-full max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-[28px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
-          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-[rgb(var(--border-line))] px-5 py-4 sm:px-6">
-            <div className="min-w-0 space-y-3">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-brand">Quality rule setup</p>
-                <h3 className="mt-1 text-lg font-semibold text-text-primary">{isEdit ? 'Edit Quality Rule' : 'Create Quality Rule'}</h3>
-                <p className="mt-1 text-sm text-text-tertiary">
-                  {isEdit
-                    ? `Rule #${editingRule!.id} · update the rule without losing its run history.`
-                    : 'Set the scope, logic, and severity for a source-backed data quality check.'}
-                </p>
-              </div>
-              <div className="inline-flex max-w-2xl items-start gap-2 rounded-2xl border border-brand/20 bg-brand/10 px-3 py-2.5 text-sm text-brand">
-                <Info className="mt-0.5 h-4 w-4 shrink-0" />
-                <p>Hover the info icon next to any field to see what it checks and how to configure it.</p>
-              </div>
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[rgb(var(--border-line))] px-4 py-2 sm:px-5">
+            <div className="flex min-w-0 items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-brand shrink-0" />
+              <h3 className="text-sm font-semibold text-text-primary">{isEdit ? 'Edit Quality Rule' : 'Create Quality Rule'}</h3>
+              {isEdit && <span className="text-[11px] text-text-quaternary">#{editingRule!.id}</span>}
             </div>
-            <button onClick={onClose} className="rounded-xl p-2 text-text-quaternary transition-colors hover:bg-surface-2 hover:text-text-secondary">
+            <button onClick={onClose} className="rounded-xl p-1.5 text-text-quaternary transition-colors hover:bg-surface-2 hover:text-text-secondary">
               <X className="h-4 w-4" />
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-5 py-5 sm:px-6">
-            <div className="grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
-              <div className="space-y-5">
-                <EditorSection title="Basic setup" description="Choose the table, quality objective, and check style before defining the detailed rule logic.">
-                  <div className="space-y-4">
+          <div className="flex-1 overflow-y-auto px-4 py-2 sm:px-5">
+            <div className="grid gap-2 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+              <div className="space-y-2">
+                {/* ── Intent Cards (create mode only) ── */}
+                {!isEdit && showIntentCards && (
+                  <IntentCardsGrid onSelect={handleIntentSelect} />
+                )}
+
+                {/* ── AI Assistant (create mode only) ── */}
+                {!isEdit && (
+                  <AIRuleAssistant
+                    datasetId={datasetId}
+                    tableId={tableId}
+                    tables={tables}
+                    onApply={handleAIApply}
+                  />
+                )}
+
+                <div className="space-y-2">
+                  <SectionHeader title="Basic setup" helpText="Table, check type, and quality dimension." />
+                  <div className="space-y-2">
                     <div>
                       <FieldLabel
                         label="Table"
                         helpText="Pick the table this rule should validate. In edit mode the table stays locked so previous runs remain consistent."
                       />
-                      <select value={tableId} onChange={(e) => { setTableId(Number(e.target.value)); setColumnName(''); }} disabled={isEdit}
-                        className="w-full rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-sm focus:border-brand/50 focus:outline-none disabled:bg-surface-2 disabled:text-text-quaternary">
-                        {tables.map((t) => <option key={t.id} value={t.id}>{t.display_name || t.source_table_name}</option>)}
-                      </select>
-                    </div>
-
-                    <div>
-                      <FieldLabel
-                        label="DQ Dimension"
-                        helpText="Choose the quality area first. It controls which rule types are available and keeps setup focused on the right objective."
+                      <TableSearchSelect
+                        tables={tables}
+                        value={tableId}
+                        onChange={(v) => { setTableId(v); setColumnName(''); }}
+                        disabled={isEdit}
                       />
-                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                        {DQ_DIMENSIONS.map((d) => (
-                          <button key={d.key}
-                            onClick={() => switchDimension(d.key)}
-                            className={`rounded-2xl border px-3 py-3 text-left transition-colors ${
-                              dimension === d.key
-                                ? `${d.bg} ${d.color} ${d.border}`
-                                : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
-                            }`}>
-                            <span className="block text-sm font-semibold">{d.label}</span>
-                            <span className="mt-1 block text-[11px] leading-4 opacity-80">{d.description}</span>
-                          </button>
-                        ))}
-                      </div>
                     </div>
 
                     <div>
                       <FieldLabel
                         label="Rule Type"
-                        helpText="Pick the exact validation to run for the selected dimension. The helper text below explains what counts as a failure."
+                        helpText="Pick any rule type regardless of dimension. Search by name, keyword, or description. The dimension below is auto-suggested but you can override it freely."
                       />
-                      <select value={ruleType} onChange={(e) => switchRuleType(e.target.value)}
-                        className="w-full rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-sm focus:border-brand/50 focus:outline-none">
-                        {dimDef_.ruleTypes.map((rt) => <option key={rt.value} value={rt.value}>{rt.label}</option>)}
-                      </select>
-                      {rtDef?.hint && (
-                        <div className="mt-2 rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-xs leading-5 text-text-secondary">
-                          {rtDef.hint}
+                      <RuleTypeSearchSelect value={ruleType} onChange={switchRuleType} />
+                    </div>
+
+                    <div>
+                      <FieldLabel
+                        label="DQ Dimension"
+                        helpText="Grouping label only — auto-suggested from rule type but you can override freely."
+                      />
+                      {/* Inline auto-suggested dimension with expandable override */}
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-2">
+                          <span className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium ${dimDef_.bg} ${dimDef_.color}`}>
+                            <span className={`h-1.5 w-1.5 rounded-full ${dimDef_.dot}`} />
+                            {dimDef_.label}
+                          </span>
+                          {!dimensionTouched && (
+                            <span className="text-[11px] text-text-quaternary">(auto-suggested)</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setDimExpanded((v) => !v)}
+                            className="text-[11px] font-medium text-brand hover:text-brand-hover"
+                          >
+                            {dimExpanded ? 'Hide' : 'Change'}
+                          </button>
                         </div>
-                      )}
+                        {dimExpanded && (
+                          <div className="grid gap-1.5 grid-cols-4 lg:grid-cols-7">
+                            {DQ_DIMENSIONS.map((d) => (
+                              <button key={d.key}
+                                title={d.description}
+                                onClick={() => { switchDimension(d.key); setDimExpanded(false); }}
+                                className={`rounded-xl border px-2 py-1.5 text-center transition-colors ${
+                                  dimension === d.key
+                                    ? `${d.bg} ${d.color} ${d.border}`
+                                    : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
+                                }`}>
+                                <span className="text-xs font-medium">{d.label}</span>
+                              </button>
+                            ))}
+                            <button
+                              title="Custom dimension — type your own label"
+                              onClick={() => {
+                                const custom = prompt('Enter custom dimension name:');
+                                if (custom?.trim()) {
+                                  setDimension(custom.trim().toLowerCase().replace(/\s+/g, '_') as QualityDimension);
+                                  setDimensionTouched(true);
+                                  setDimExpanded(false);
+                                }
+                              }}
+                              className={`rounded-xl border px-2 py-1.5 text-center transition-colors ${
+                                !DQ_DIMENSIONS.some((d) => d.key === dimension)
+                                  ? 'bg-surface-3 text-text-primary border-[rgb(var(--border-strong))]'
+                                  : 'border-dashed border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
+                              }`}
+                            >
+                              <span className="text-xs font-medium">
+                                {!DQ_DIMENSIONS.some((d) => d.key === dimension) ? dimension : 'Other…'}
+                              </span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </EditorSection>
+                </div>
 
-                <EditorSection title="Rule logic" description="Define the exact scope and parameters that decide whether rows pass or fail.">
-                  <div className="space-y-4 rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2/70 p-4">
-                    {usesColumn && (
+                <div className="space-y-2">
+                  <SectionHeader title="Rule logic" helpText="Scope and parameters for pass/fail evaluation." />
+                  <div className="space-y-2">
+                    {/* Contextual hint for rule type */}
+                    {rtDef?.hint && (
+                      <div className="flex items-start gap-2 rounded-xl border border-brand/20 bg-brand/5 px-3 py-2 text-[11px] leading-5 text-text-secondary">
+                        <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand" />
+                        <span>{rtDef.hint}</span>
+                      </div>
+                    )}
+
+                    {/* For bulk-eligible types, always show multi-column picker */}
+                    {usesColumn && bulkEligible ? (
+                      <div>
+                        <FieldLabel
+                          label="Column(s)"
+                          helpText="Select one column for a single rule, or multiple columns to create one rule per column (bulk)."
+                        />
+                        <MultiColumnPicker
+                          tableId={tableId}
+                          tables={tables}
+                          value={columnNames.length > 0 ? columnNames : (columnName ? [columnName] : [])}
+                          onChange={(cols) => {
+                            setColumnNames(cols);
+                            setColumnName(cols[0] ?? '');
+                          }}
+                        />
+                        {columnNames.length > 1 && (
+                          <p className="mt-1 text-[11px] text-brand font-medium">
+                            → {columnNames.length} rules will be created (one per column)
+                          </p>
+                        )}
+                      </div>
+                    ) : usesColumn ? (
                       <ColumnSelector
                         tableId={tableId} tables={tables}
                         value={columnName}
@@ -883,21 +1819,22 @@ function RuleEditorDrawer({
                           : 'Choose the column this rule validates inside the selected table.'}
                         placeholder="column_name"
                       />
-                    )}
+                    ) : null}
 
                     <ConfigFields ruleType={ruleType} config={config} onPatch={patchConfig} tableId={tableId} tables={tables} />
                   </div>
-                </EditorSection>
+                </div>
               </div>
 
-              <div className="space-y-5">
-                <EditorSection title="Governance" description="Set the name, severity, and execution status that users see in summaries and review logs.">
-                  <div className="space-y-4">
+              <div className="space-y-2">
+                <div className="space-y-2">
+                  <SectionHeader title="Governance" helpText="Name, severity, execution status, and live preview." />
+                  <div className="space-y-2">
                     <div>
                       <FieldLabel
                         label="Rule Name"
                         helpText="This name appears in the rule list, quality summaries, and run history. Keep it business-readable."
-                        action={name.trim() !== suggestedName ? (
+                        action={!bulkActive && name.trim() !== suggestedName ? (
                           <button
                             type="button"
                             onClick={() => { setName(suggestedName); setNameEdited(false); }}
@@ -907,93 +1844,106 @@ function RuleEditorDrawer({
                           </button>
                         ) : undefined}
                       />
-                      <input type="text" value={name}
-                        onChange={(e) => { setName(e.target.value); setNameEdited(true); }}
-                        className="w-full rounded-xl border border-[rgb(var(--border-line))] px-3 py-2 text-sm focus:border-brand/50 focus:outline-none" />
-                      {!isEdit && (
-                        <p className="mt-2 text-[11px] leading-5 text-text-quaternary">
-                          The suggested name follows table, column, and rule type until you rename it.
-                        </p>
+                      {bulkActive ? (
+                        <div className="rounded-xl border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-[11px] text-text-tertiary" title="Each column gets its own rule with auto-generated name">
+                          Auto-named per column: <span className="font-mono text-text-secondary">{`{table}: {col} - ${rtDef?.label ?? ruleType}`}</span>
+                        </div>
+                      ) : (
+                        <>
+                          <input type="text" value={name}
+                            onChange={(e) => { setName(e.target.value); setNameEdited(true); }}
+                            className="w-full rounded-xl border border-[rgb(var(--border-line))] px-3 py-2 text-sm focus:border-brand/50 focus:outline-none" />
+                        </>
                       )}
                     </div>
 
                     <div>
                       <FieldLabel
                         label="Severity"
-                        helpText="Use info for light signals, warning for issues to monitor, and error for problems that should strongly reduce trust."
+                        helpText="Pick the right level for how strongly this rule should reduce trust when it fails."
                       />
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
                         {(['info', 'warning', 'error'] as QualitySeverity[]).map((s) => {
                           const meta = SEVERITY_META[s];
                           const Icon = meta.icon;
+                          const selected = severity === s;
                           return (
                             <button key={s} onClick={() => setSeverity(s)}
-                              className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl border py-2 text-xs font-medium transition-colors ${
-                                severity === s
+                              title={meta.description}
+                              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                                selected
                                   ? `${meta.bgColor} ${meta.textColor} border-current`
-                                  : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:border-[rgb(var(--border-strong))]'
+                                  : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
                               }`}>
-                              <Icon className="h-3.5 w-3.5" />
-                              {meta.label}
+                              <Icon className="h-3.5 w-3.5 shrink-0" />
+                              <span>{meta.label}</span>
                             </button>
                           );
                         })}
                       </div>
+                      {SEVERITY_META[severity] && (
+                        <p className="text-[11px] text-text-quaternary mt-0.5">{SEVERITY_META[severity].description}</p>
+                      )}
                     </div>
 
-                    <label className="flex cursor-pointer items-center justify-between rounded-2xl border border-[rgb(var(--border-line))] px-4 py-3">
-                      <div>
-                        <div className="flex items-center text-sm font-medium text-text-secondary">
-                          <span>Enabled</span>
-                          <HelpTooltip text="Only enabled rules run during dataset quality checks. Disable a rule when you want to keep its setup but skip execution." />
-                        </div>
-                        <p className="mt-1 text-xs text-text-quaternary">Disabled rules are skipped during quality runs</p>
-                      </div>
+                    <label className="flex cursor-pointer items-center justify-between rounded-xl border border-[rgb(var(--border-line))] px-3 py-2">
+                      <span className="text-xs font-medium text-text-secondary" title="Only enabled rules run during quality checks">Enabled</span>
                       <InlineToggle checked={enabled} onChange={setEnabled} />
                     </label>
                   </div>
-                </EditorSection>
-
-                <EditorSection title="Quick preview" description="Review the scope before saving so the rule reads clearly in the dataset quality workspace.">
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {previewCards.map((card) => (
-                      <div key={card.label} className="rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-3">
-                        <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-text-quaternary">{card.label}</p>
-                        <p className="mt-1 text-sm font-medium text-text-primary">{card.value}</p>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="mt-4 rounded-2xl border border-brand/20 bg-brand/10/80 p-4">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-brand">
-                      <Info className="h-4 w-4" />
-                      Setup guidance
+                  <div className="space-y-2 border-t border-[rgb(var(--border-line))] pt-2">
+                    <SectionHeader title="Live preview" helpText="What this rule checks and how it runs." icon={Eye} />
+                  {previewLoading ? (
+                    <div className="flex items-center gap-2 rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-3">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-text-quaternary" />
+                      <span className="text-xs text-text-quaternary">Generating preview…</span>
                     </div>
-                    <div className="mt-3 space-y-3">
-                      {setupTips.map((tip, index) => (
-                        <div key={tip} className="flex items-start gap-2 text-sm leading-5 text-brand">
-                          <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-surface-1 text-[11px] font-semibold text-brand">{index + 1}</span>
-                          <p>{tip}</p>
+                  ) : preview ? (
+                    <div className="space-y-2">
+                      <div className="rounded-xl border border-success/30 bg-success/5 px-3 py-2">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-success">✓ Pass</p>
+                        <p className="mt-0.5 text-xs text-text-primary">{preview.pass_description}</p>
+                      </div>
+                      <div className="rounded-xl border border-danger/30 bg-danger/5 px-3 py-2">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-danger">✗ Fail</p>
+                        <p className="mt-0.5 text-xs text-text-primary">{preview.fail_description}</p>
+                      </div>
+                      {preview.scope_description && (
+                        <p className="text-[11px] text-text-quaternary">{preview.scope_description}</p>
+                      )}
+                      {preview.sql && (
+                        <div className="mt-1">
+                          <button
+                            type="button"
+                            onClick={() => setShowPreviewSql((v) => !v)}
+                            className="inline-flex items-center gap-1 text-[11px] font-medium text-text-tertiary hover:text-text-secondary"
+                          >
+                            <Code className="h-3 w-3" />
+                            {showPreviewSql ? 'Hide SQL' : 'Show SQL'}
+                          </button>
+                          {showPreviewSql && (
+                            <pre className="mt-1 overflow-x-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 font-mono text-[11px] leading-5 text-text-secondary">
+                              {preview.sql}
+                            </pre>
+                          )}
                         </div>
-                      ))}
+                      )}
+                      {preview.error && (
+                        <p className="text-[11px] text-warning">{preview.error}</p>
+                      )}
                     </div>
-
-                    <div className="mt-4 rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-3 text-sm text-text-secondary">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="font-medium text-text-primary">Selected severity</span>
-                        <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${severityMeta.bgColor} ${severityMeta.textColor}`}>
-                          <severityMeta.icon className="h-3.5 w-3.5" />
-                          {severityMeta.label}
-                        </span>
-                      </div>
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-3 py-3 text-xs text-text-quaternary">
+                      Select a rule type and configure it to see a preview.
                     </div>
+                  )}
                   </div>
-                </EditorSection>
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="shrink-0 border-t border-[rgb(var(--border-line))] px-5 py-4 sm:px-6">
+          <div className="shrink-0 border-t border-[rgb(var(--border-line))] px-4 py-2 sm:px-5">
             <div className="flex items-center justify-between gap-2">
           {isEdit && onDuplicate && (
             <button
@@ -1011,7 +1961,666 @@ function RuleEditorDrawer({
                 <button onClick={handleSave} disabled={isPending}
                   className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-50">
                   {isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                  {isEdit ? 'Update Rule' : 'Create Rule'}
+                  {isEdit
+                    ? 'Update Rule'
+                    : bulkActive
+                      ? `Create ${columnNames.length} rule${columnNames.length === 1 ? '' : 's'}`
+                      : 'Create Rule'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Rule Editor Modal (Compact Builder)
+// ---------------------------------------------------------------------------
+
+function RuleEditorDrawer({
+  datasetId, tables, editingRule, defaultTableId, lastUsedTableId, defaultDimension, onClose, onSaved, onDuplicate,
+}: RuleEditorProps) {
+  const isEdit = editingRule !== null;
+  const resolvedDefaultTable = editingRule?.table_id ?? defaultTableId ?? lastUsedTableId ?? (tables[0]?.id ?? 0);
+
+  const [tableId, setTableId] = useState<number>(resolvedDefaultTable);
+  const [dimension, setDimension] = useState<QualityDimension>(editingRule?.dimension ?? defaultDimension ?? 'completeness');
+  const [ruleType, setRuleType] = useState<string>(editingRule?.rule_type ?? 'not_null');
+  const [columnName, setColumnName] = useState<string>(editingRule?.column_name ?? '');
+  const [columnNames, setColumnNames] = useState<string[]>([]);
+  const [name, setName] = useState<string>(editingRule?.name ?? '');
+  const [severity, setSeverity] = useState<QualitySeverity>(editingRule?.severity ?? 'warning');
+  const [enabled, setEnabled] = useState<boolean>(editingRule?.enabled ?? true);
+  const [config, setConfig] = useState<QualityRuleConfig>(editingRule?.config ?? {});
+  const [nameEdited, setNameEdited] = useState<boolean>(isEdit);
+  const [showIntentCards, setShowIntentCards] = useState<boolean>(false);
+  const [showAiAssistant, setShowAiAssistant] = useState<boolean>(false);
+  const [showBulkPicker, setShowBulkPicker] = useState<boolean>(false);
+  const [showNameEditor, setShowNameEditor] = useState<boolean>(isEdit);
+  const [dimExpanded, setDimExpanded] = useState<boolean>(false);
+  const [dimensionTouched, setDimensionTouched] = useState<boolean>(isEdit || Boolean(defaultDimension));
+  const [preview, setPreview] = useState<RulePreviewResult | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [showPreviewSql, setShowPreviewSql] = useState(false);
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const createMutation = useCreateQualityRule(datasetId);
+  const updateMutation = useUpdateQualityRule(datasetId);
+  const bulkCreateMutation = useBulkCreateQualityRules(datasetId);
+
+  const dimDef_ = dimDef(dimension);
+  const rtDef = getRuleTypeDef(ruleType);
+  const usesColumn = ruleUsesColumn(rtDef);
+  const bulkEligible = !isEdit && usesColumn && BULK_COLUMN_RULE_TYPES.has(ruleType);
+  const bulkActive = bulkEligible && columnNames.length > 1;
+  const selectedTable = tables.find((t) => t.id === tableId);
+  const selectedTableLabel = selectedTable?.display_name || selectedTable?.source_table_name || 'No table selected';
+  const selectedColumns = columnNames.length > 0 ? columnNames : (columnName ? [columnName] : []);
+  const selectedColumnCount = selectedColumns.length;
+  const currentScopeLabel = usesColumn
+    ? (selectedColumnCount > 1 ? `${selectedColumnCount} columns selected` : columnName || 'No column selected')
+    : 'Whole table';
+  const suggestedName = useMemo(
+    () => buildSuggestedRuleName(tables, tableId, rtDef, ruleType, columnName),
+    [tables, tableId, rtDef, ruleType, columnName],
+  );
+
+  useEffect(() => {
+    if (nameEdited || name.trim()) return;
+    setName(suggestedName);
+  }, [name, nameEdited, suggestedName]);
+
+  const fetchPreview = useCallback(async () => {
+    if (!tableId || !ruleType) { setPreview(null); return; }
+    setPreviewLoading(true);
+    try {
+      const res = await api.post<RulePreviewResult>(
+        `/datasets/${datasetId}/quality/rules/preview`,
+        { table_id: tableId, rule_type: ruleType, column_name: columnName || null, config },
+      );
+      setPreview(res.data);
+    } catch {
+      setPreview(null);
+    } finally {
+      setPreviewLoading(false);
+    }
+  }, [datasetId, tableId, ruleType, columnName, config]);
+
+  useEffect(() => {
+    if (previewTimer.current) clearTimeout(previewTimer.current);
+    previewTimer.current = setTimeout(fetchPreview, 500);
+    return () => { if (previewTimer.current) clearTimeout(previewTimer.current); };
+  }, [fetchPreview]);
+
+  useEffect(() => {
+    if (!bulkEligible) setShowBulkPicker(false);
+  }, [bulkEligible]);
+
+  function patchConfig(partial: Partial<QualityRuleConfig>) {
+    setConfig((prev) => ({ ...prev, ...partial }));
+  }
+
+  function switchDimension(d: QualityDimension) {
+    setDimension(d);
+    setDimensionTouched(true);
+  }
+
+  function switchRuleType(rt: string) {
+    const nextRuleDef = getRuleTypeDef(rt);
+    setRuleType(rt);
+    setConfig({});
+    if (!ruleUsesColumn(nextRuleDef)) {
+      setColumnName('');
+      setColumnNames([]);
+    }
+    if (!dimensionTouched) {
+      const natural = getNaturalDimension(rt);
+      if (natural) setDimension(natural);
+    }
+  }
+
+  function handleIntentSelect(intentRuleType: string, intentDimension: QualityDimension) {
+    switchRuleType(intentRuleType);
+    setDimension(intentDimension);
+    setDimensionTouched(true);
+    setShowIntentCards(false);
+  }
+
+  function handleAIApply(suggestion: QualityAISuggestResponse) {
+    setRuleType(suggestion.rule_type);
+    if (suggestion.dimension) setDimension(suggestion.dimension as QualityDimension);
+    if (suggestion.column_name) {
+      setColumnName(suggestion.column_name);
+      setColumnNames([suggestion.column_name]);
+    }
+    if (suggestion.config) setConfig(suggestion.config);
+    if (suggestion.severity) setSeverity(suggestion.severity as QualitySeverity);
+    if (suggestion.name) {
+      setName(suggestion.name);
+      setNameEdited(true);
+      setShowNameEditor(true);
+    }
+    setDimensionTouched(true);
+    setShowIntentCards(false);
+    setShowAiAssistant(false);
+    setShowBulkPicker(false);
+  }
+
+  async function handleSave() {
+    if (!tables.find((t) => t.id === tableId)) { toast.error('Select a table'); return; }
+    if (bulkActive) {
+      if (columnNames.length === 0) { toast.error('Select at least one column'); return; }
+      try {
+        const currentTable = tables.find((t) => t.id === tableId);
+        const tableLabel = currentTable?.display_name || currentTable?.source_table_name || '';
+        const ruleLabel = rtDef?.label ?? ruleType;
+        const items: QualityRuleCreate[] = columnNames.map((col) => ({
+          table_id: tableId,
+          column_name: col,
+          dimension,
+          rule_type: ruleType,
+          name: `${tableLabel}: ${col} - ${ruleLabel}`,
+          config,
+          severity,
+          enabled,
+        }));
+        const saved = await bulkCreateMutation.mutateAsync(items);
+        toast.success(`Created ${saved.length} rule${saved.length === 1 ? '' : 's'}`);
+        if (saved.length > 0) onSaved(saved[0]);
+      } catch {
+        toast.error('Failed to create rules');
+      }
+      return;
+    }
+
+    if (!name.trim()) { toast.error('Rule name is required'); return; }
+    const nextColumnName = usesColumn ? columnName.trim() || undefined : undefined;
+    try {
+      let saved: QualityRule;
+      if (isEdit) {
+        saved = await updateMutation.mutateAsync({
+          ruleId: editingRule!.id,
+          body: { column_name: nextColumnName, dimension, rule_type: ruleType, name: name.trim(), config, severity, enabled },
+        });
+        toast.success('Rule updated');
+      } else {
+        saved = await createMutation.mutateAsync({
+          table_id: tableId,
+          column_name: nextColumnName,
+          dimension,
+          rule_type: ruleType,
+          name: name.trim(),
+          config,
+          severity,
+          enabled,
+        });
+        toast.success('Rule created');
+      }
+      onSaved(saved);
+    } catch {
+      toast.error('Failed to save rule');
+    }
+  }
+
+  const isPending = createMutation.isPending || updateMutation.isPending || bulkCreateMutation.isPending;
+
+  return (
+    <>
+      <div className="fixed inset-0 z-30 bg-overlay/84 backdrop-blur-[2px]" onClick={onClose} />
+
+      <div className="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-5 lg:p-8">
+        <div className="flex h-full max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-[28px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[rgb(var(--border-line))] px-4 py-2 sm:px-5">
+            <div className="flex min-w-0 items-center gap-2">
+              <ShieldCheck className="h-4 w-4 shrink-0 text-brand" />
+              <h3 className="text-sm font-semibold text-text-primary">{isEdit ? 'Edit Quality Rule' : 'Create Quality Rule'}</h3>
+              {isEdit && <span className="text-[11px] text-text-quaternary">#{editingRule!.id}</span>}
+            </div>
+            <button onClick={onClose} className="rounded-xl p-1.5 text-text-quaternary transition-colors hover:bg-surface-2 hover:text-text-secondary">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-4 py-2 sm:px-5">
+            <div className="sticky top-0 z-10 mb-3 rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 p-3 shadow-linear-sm">
+              <div className="flex flex-wrap items-start gap-2">
+                <div className="min-w-[220px] flex-[1_1_240px]">
+                  <FieldLabel
+                    label="Table"
+                    helpText="Pick the table this rule should validate. In edit mode the table stays locked so previous runs remain consistent."
+                  />
+                  <TableSearchSelect
+                    tables={tables}
+                    value={tableId}
+                    onChange={(v) => {
+                      setTableId(v);
+                      setColumnName('');
+                      setColumnNames([]);
+                    }}
+                    disabled={isEdit}
+                  />
+                </div>
+
+                <div className="min-w-[250px] flex-[1.2_1_280px]">
+                  <FieldLabel
+                    label="Rule Type"
+                    helpText="Pick any rule type regardless of dimension. Search by name, keyword, or description."
+                  />
+                  <RuleTypeSearchSelect value={ruleType} onChange={switchRuleType} />
+                </div>
+
+                {usesColumn && (
+                  <div className="min-w-[230px] flex-[1_1_250px]">
+                    <FieldLabel
+                      label={rtDef?.level === 'both' ? 'Column (optional)' : 'Column'}
+                      helpText={bulkEligible
+                        ? 'Choose one column here for the common case, or open bulk select to create one rule per column.'
+                        : rtDef?.level === 'both'
+                          ? 'Choose a column when this rule should narrow the check to one field. Leave it empty if the rule should evaluate the whole table.'
+                          : 'Choose the column this rule validates inside the selected table.'}
+                      action={bulkEligible ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowBulkPicker((v) => !v);
+                            setShowIntentCards(false);
+                            setShowAiAssistant(false);
+                          }}
+                          className="text-[11px] font-medium text-brand hover:text-brand-hover"
+                        >
+                          {showBulkPicker ? 'Hide bulk' : 'Bulk select'}
+                        </button>
+                      ) : undefined}
+                    />
+                    <ColumnSelector
+                      tableId={tableId}
+                      tables={tables}
+                      value={columnName}
+                      onChange={(v) => {
+                        setColumnName(v);
+                        if (bulkEligible) setColumnNames(v ? [v] : []);
+                      }}
+                      placeholder="column_name"
+                    />
+                    {bulkEligible && selectedColumnCount > 1 && (
+                      <p className="mt-1 text-[11px] text-brand">{selectedColumnCount} columns selected.</p>
+                    )}
+                  </div>
+                )}
+
+                <div className="min-w-[220px] flex-[0_1_240px]">
+                  <FieldLabel
+                    label="Severity"
+                    helpText="Pick the right level for how strongly this rule should reduce trust when it fails."
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    {(['info', 'warning', 'error'] as QualitySeverity[]).map((s) => {
+                      const meta = SEVERITY_META[s];
+                      const Icon = meta.icon;
+                      const selected = severity === s;
+                      return (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => setSeverity(s)}
+                          title={meta.description}
+                          className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                            selected
+                              ? `${meta.bgColor} ${meta.textColor} border-current`
+                              : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
+                          }`}
+                        >
+                          <Icon className="h-3.5 w-3.5 shrink-0" />
+                          <span>{meta.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="min-w-[132px] flex-[0_0_132px]">
+                  <FieldLabel
+                    label="Enabled"
+                    helpText="Only enabled rules run during quality checks."
+                  />
+                  <div className="flex h-[42px] items-center justify-between rounded-xl border border-[rgb(var(--border-line))] px-3">
+                    <span className="text-xs font-medium text-text-secondary">{enabled ? 'On' : 'Off'}</span>
+                    <InlineToggle checked={enabled} onChange={setEnabled} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[rgb(var(--border-line))] pt-2">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-text-quaternary">Dimension</span>
+                <span className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium ${dimDef_.bg} ${dimDef_.color}`}>
+                  <span className={`h-1.5 w-1.5 rounded-full ${dimDef_.dot}`} />
+                  {dimDef_.label}
+                </span>
+                {!dimensionTouched && (
+                  <span className="text-[11px] text-text-quaternary">Auto-suggested</span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setDimExpanded((v) => !v)}
+                  className="text-[11px] font-medium text-brand hover:text-brand-hover"
+                >
+                  {dimExpanded ? 'Hide dimensions' : 'Change dimension'}
+                </button>
+
+                {!isEdit && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowIntentCards((v) => !v);
+                        setShowAiAssistant(false);
+                        setShowBulkPicker(false);
+                      }}
+                      className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                        showIntentCards
+                          ? 'border-brand/40 bg-brand/10 text-brand'
+                          : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2'
+                      }`}
+                    >
+                      <Wand2 className="h-3.5 w-3.5" />
+                      Templates
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAiAssistant((v) => !v);
+                        setShowIntentCards(false);
+                        setShowBulkPicker(false);
+                      }}
+                      className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                        showAiAssistant
+                          ? 'border-brand/40 bg-brand/10 text-brand'
+                          : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2'
+                      }`}
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      Suggest with AI
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {dimExpanded && (
+                <div className="mt-2 grid grid-cols-3 gap-1.5 md:grid-cols-4 xl:grid-cols-7">
+                  {DQ_DIMENSIONS.map((d) => (
+                    <button
+                      key={d.key}
+                      type="button"
+                      title={d.description}
+                      onClick={() => { switchDimension(d.key); setDimExpanded(false); }}
+                      className={`rounded-xl border px-2 py-1.5 text-center transition-colors ${
+                        dimension === d.key
+                          ? `${d.bg} ${d.color} ${d.border}`
+                          : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
+                      }`}
+                    >
+                      <span className="text-xs font-medium">{d.label}</span>
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    title="Custom dimension - type your own label"
+                    onClick={() => {
+                      const custom = prompt('Enter custom dimension name:');
+                      if (custom?.trim()) {
+                        setDimension(custom.trim().toLowerCase().replace(/\s+/g, '_') as QualityDimension);
+                        setDimensionTouched(true);
+                        setDimExpanded(false);
+                      }
+                    }}
+                    className={`rounded-xl border px-2 py-1.5 text-center transition-colors ${
+                      !DQ_DIMENSIONS.some((d) => d.key === dimension)
+                        ? 'border-[rgb(var(--border-strong))] bg-surface-3 text-text-primary'
+                        : 'border-dashed border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
+                    }`}
+                  >
+                    <span className="text-xs font-medium">
+                      {!DQ_DIMENSIONS.some((d) => d.key === dimension) ? dimension : 'Other...'}
+                    </span>
+                  </button>
+                </div>
+              )}
+
+              {!isEdit && showIntentCards && (
+                <div className="mt-2">
+                  <IntentCardsGrid onSelect={handleIntentSelect} />
+                </div>
+              )}
+
+              {!isEdit && showAiAssistant && (
+                <div className="mt-2">
+                  <AIRuleAssistant
+                    datasetId={datasetId}
+                    tableId={tableId}
+                    tables={tables}
+                    onApply={handleAIApply}
+                  />
+                </div>
+              )}
+
+              {bulkEligible && showBulkPicker && (
+                <div className="mt-2 rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2 p-2.5">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <SectionHeader
+                      title="Bulk columns"
+                      helpText="Select multiple columns to create one rule per column with the same configuration."
+                    />
+                    {selectedColumnCount > 0 && (
+                      <span className="text-[11px] text-text-quaternary">{selectedColumnCount} selected</span>
+                    )}
+                  </div>
+                  <MultiColumnPicker
+                    tableId={tableId}
+                    tables={tables}
+                    value={selectedColumns}
+                    onChange={(cols) => {
+                      setColumnNames(cols);
+                      setColumnName(cols[0] ?? '');
+                    }}
+                  />
+                  {selectedColumnCount > 1 && (
+                    <p className="mt-1 text-[11px] text-brand">
+                      Create {selectedColumnCount} rules. The logic below applies to each selected column.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_320px] xl:items-start">
+              <div className="space-y-3">
+                <div className="space-y-2 rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 p-3 shadow-linear-sm">
+                  <SectionHeader title="Rule logic" helpText="Scope and parameters for pass/fail evaluation." />
+                  {rtDef?.hint && (
+                    <div className="flex items-start gap-2 rounded-xl border border-brand/20 bg-brand/5 px-3 py-2 text-[11px] leading-5 text-text-secondary">
+                      <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand" />
+                      <span>{rtDef.hint}</span>
+                    </div>
+                  )}
+                  {bulkEligible && selectedColumnCount > 1 && (
+                    <div className="rounded-xl border border-brand/20 bg-brand/5 px-3 py-2 text-[11px] text-text-secondary">
+                      This configuration will be reused for all {selectedColumnCount} selected columns.
+                    </div>
+                  )}
+                  <ConfigFields ruleType={ruleType} config={config} onPatch={patchConfig} tableId={tableId} tables={tables} />
+                </div>
+              </div>
+
+              <div className="self-start xl:sticky xl:top-[9rem]">
+                <div className="space-y-2 rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 p-3 shadow-linear-sm xl:max-h-[calc(94vh-12rem)] xl:overflow-auto">
+                  <SectionHeader title="Review" helpText="Preview the rule before saving." icon={Eye} />
+
+                  <div className="flex flex-wrap gap-1.5">
+                    <span className="inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-text-secondary">
+                      {selectedTableLabel}
+                    </span>
+                    <span className="inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-text-secondary">
+                      {rtDef?.label ?? ruleType}
+                    </span>
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ${dimDef_.bg} ${dimDef_.color}`}>
+                      <span className={`h-1.5 w-1.5 rounded-full ${dimDef_.dot}`} />
+                      {dimDef_.label}
+                    </span>
+                    <span className="inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-text-secondary">
+                      {currentScopeLabel}
+                    </span>
+                  </div>
+
+                  <div className="space-y-2 border-t border-[rgb(var(--border-line))] pt-2">
+                    <FieldLabel
+                      label="Rule Name"
+                      helpText="This name appears in the rule list, quality summaries, and run history."
+                      action={!bulkActive ? (
+                        <div className="flex items-center gap-2">
+                          {!showNameEditor ? (
+                            <button
+                              type="button"
+                              onClick={() => setShowNameEditor(true)}
+                              className="text-[11px] font-medium text-brand hover:text-brand-hover"
+                            >
+                              Rename
+                            </button>
+                          ) : (
+                            <>
+                              {name.trim() !== suggestedName && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setName(suggestedName);
+                                    setNameEdited(false);
+                                  }}
+                                  className="text-[11px] font-medium text-brand hover:text-brand-hover"
+                                >
+                                  Use suggested
+                                </button>
+                              )}
+                              {!isEdit && (
+                                <button
+                                  type="button"
+                                  onClick={() => setShowNameEditor(false)}
+                                  className="text-[11px] font-medium text-text-tertiary hover:text-text-secondary"
+                                >
+                                  Hide
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      ) : undefined}
+                    />
+                    {bulkActive ? (
+                      <div className="rounded-xl border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-[11px] text-text-tertiary">
+                        Auto-named per column: <span className="font-mono text-text-secondary">{`{table}: {col} - ${rtDef?.label ?? ruleType}`}</span>
+                      </div>
+                    ) : showNameEditor ? (
+                      <input
+                        type="text"
+                        value={name}
+                        onChange={(e) => {
+                          setName(e.target.value);
+                          setNameEdited(true);
+                        }}
+                        className="w-full rounded-xl border border-[rgb(var(--border-line))] px-3 py-2 text-sm focus:border-brand/50 focus:outline-none"
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setShowNameEditor(true)}
+                        className="w-full rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-left text-sm text-text-primary hover:bg-surface-1"
+                      >
+                        {name || suggestedName}
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="space-y-2 border-t border-[rgb(var(--border-line))] pt-2">
+                    <SectionHeader title="Live preview" helpText="What this rule checks and how it runs." icon={Eye} />
+                    {previewLoading ? (
+                      <div className="flex items-center gap-2 rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-3">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-text-quaternary" />
+                        <span className="text-xs text-text-quaternary">Generating preview...</span>
+                      </div>
+                    ) : preview ? (
+                      <div className="space-y-2">
+                        <div className="rounded-xl border border-success/30 bg-success/5 px-3 py-2">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-success">Pass</p>
+                          <p className="mt-0.5 text-xs text-text-primary">{preview.pass_description}</p>
+                        </div>
+                        <div className="rounded-xl border border-danger/30 bg-danger/5 px-3 py-2">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-danger">Fail</p>
+                          <p className="mt-0.5 text-xs text-text-primary">{preview.fail_description}</p>
+                        </div>
+                        {preview.scope_description && (
+                          <p className="text-[11px] text-text-quaternary">{preview.scope_description}</p>
+                        )}
+                        {preview.sql && (
+                          <div className="mt-1">
+                            <button
+                              type="button"
+                              onClick={() => setShowPreviewSql((v) => !v)}
+                              className="inline-flex items-center gap-1 text-[11px] font-medium text-text-tertiary hover:text-text-secondary"
+                            >
+                              <Code className="h-3 w-3" />
+                              {showPreviewSql ? 'Hide SQL' : 'Show SQL'}
+                            </button>
+                            {showPreviewSql && (
+                              <pre className="mt-1 overflow-x-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 font-mono text-[11px] leading-5 text-text-secondary">
+                                {preview.sql}
+                              </pre>
+                            )}
+                          </div>
+                        )}
+                        {preview.error && (
+                          <p className="text-[11px] text-warning">{preview.error}</p>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-3 py-3 text-xs text-text-quaternary">
+                        Select a rule type and configure it to see a preview.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="shrink-0 border-t border-[rgb(var(--border-line))] px-4 py-2 sm:px-5">
+            <div className="flex items-center justify-between gap-2">
+              {isEdit && onDuplicate && (
+                <button
+                  onClick={() => onDuplicate(editingRule!)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[rgb(var(--border-line))] px-3 py-2 text-xs text-text-secondary hover:bg-surface-2"
+                >
+                  <Copy className="h-3.5 w-3.5" /> Duplicate
+                </button>
+              )}
+              <div className="ml-auto flex gap-2">
+                <button
+                  onClick={onClose}
+                  className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2 text-sm text-text-secondary hover:bg-surface-2"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={isPending}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-50"
+                >
+                  {isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  {isEdit
+                    ? 'Update Rule'
+                    : bulkActive
+                      ? `Create ${columnNames.length} rule${columnNames.length === 1 ? '' : 's'}`
+                      : 'Create Rule'}
                 </button>
               </div>
             </div>
@@ -1629,7 +3238,13 @@ function DimensionGroup({
                   className={`group flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2 transition-colors ${!rule.enabled ? 'opacity-50' : ''}`}
                 >
                   {/* Severity icon */}
-                  <SevIcon className={`h-3.5 w-3.5 shrink-0 ${sev.textColor}`} title={sev.label} />
+                  <span
+                    className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                      rule.severity === 'error' ? 'bg-danger' :
+                      rule.severity === 'warning' ? 'bg-warning' : 'bg-brand'
+                    }`}
+                    title={sev.tooltip}
+                  />
 
                   {/* Rule info */}
                   <div className="min-w-0 flex-1">
@@ -1650,7 +3265,7 @@ function DimensionGroup({
                         </>
                       )}
                       <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[11px]">
-                        {getRuleTypeLabel(rule.dimension, rule.rule_type)}
+                        {getRuleTypeLabel(rule.rule_type)}
                       </span>
                     </div>
                   </div>
@@ -1811,6 +3426,7 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
   const [editorOpen, setEditorOpen]             = useState(false);
   const [editingRule, setEditingRule]           = useState<QualityRule | null>(null);
   const [editorDefaultDim, setEditorDefaultDim] = useState<QualityDimension | undefined>(undefined);
+  const [lastUsedTableId, setLastUsedTableId]   = useState<number | undefined>(undefined);
   const [duplicatingRule, setDuplicatingRule]   = useState<QualityRule | null>(null);
   const [deletingRule, setDeletingRule]         = useState<QualityRule | null>(null);
   const [togglingIds, setTogglingIds]           = useState<Set<number>>(new Set());
@@ -2332,6 +3948,33 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
                 />
               );
             })}
+            {/* Custom dimension groups */}
+            {(() => {
+              const knownKeys = new Set(DQ_DIMENSIONS.map((d) => d.key));
+              return Object.entries(groupedByDim)
+                .filter(([k]) => !knownKeys.has(k as QualityDimension))
+                .map(([customKey, dimRules]) => {
+                  if (!dimRules || dimRules.length === 0) return null;
+                  return (
+                    <DimensionGroup
+                      key={customKey}
+                      dimKey={customKey as QualityDimension}
+                      rules={dimRules}
+                      tables={tables}
+                      runResultsMap={runResultsMap}
+                      canEdit={canEdit}
+                      isRunning={isRunning}
+                      onAddRule={openNewRule}
+                      onEditRule={openEditRule}
+                      onToggleRule={handleToggleRule}
+                      onDeleteRule={setDeletingRule}
+                      onDuplicateRule={setDuplicatingRule}
+                      onViewLog={handleViewLog}
+                      togglingIds={togglingIds}
+                    />
+                  );
+                });
+            })()}
           </div>
         )}
       </div>
@@ -2343,9 +3986,10 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
           tables={tables}
           editingRule={editingRule}
           defaultTableId={tableFilter !== 'all' ? tableFilter : undefined}
+          lastUsedTableId={lastUsedTableId}
           defaultDimension={editorDefaultDim}
           onClose={() => setEditorOpen(false)}
-          onSaved={() => setEditorOpen(false)}
+          onSaved={(rule) => { setEditorOpen(false); setLastUsedTableId(rule.table_id); }}
           onDuplicate={(rule) => { setEditorOpen(false); setDuplicatingRule(rule); }}
         />
       )}

@@ -88,9 +88,10 @@ RULE_TYPE_LEVEL: Dict[str, str] = {
     "freshness_days": "table",
     "row_count_range": "table",
     "statistical_range": "column",
+    "custom_sql": "table",
 }
 
-# rule_type → dimension mapping (for auto-validation)
+# rule_type → natural dimension (suggestion only; users may pick any dimension)
 RULE_TYPE_DIMENSION: Dict[str, str] = {
     "not_null": "completeness",
     "not_blank": "completeness",
@@ -106,6 +107,7 @@ RULE_TYPE_DIMENSION: Dict[str, str] = {
     "freshness_days": "timeliness",
     "row_count_range": "accuracy",
     "statistical_range": "accuracy",
+    "custom_sql": "accuracy",
 }
 
 # Pre-built format regex hints
@@ -412,6 +414,15 @@ def _build_check_sql(
             f"FROM {table_ref} CROSS JOIN stats"
         )
 
+    # ── Custom SQL escape hatch ────────────────────────────────────────────
+    if rule_type == "custom_sql":
+        sql = str(config.get("sql") or "").strip()
+        if not sql:
+            return None
+        # Replace {{ table }} placeholder with the resolved table_ref so users
+        # can write portable custom SQL without hard-coding table names.
+        return sql.replace("{{ table }}", table_ref).replace("{{table}}", table_ref)
+
     return None
 
 
@@ -715,6 +726,17 @@ def _normalize_quality_config(
             normalized["max_z"] = max_z
         return normalized
 
+    if rule_type == "custom_sql":
+        sql = _clean_optional_str(raw.get("sql"))
+        if not sql:
+            raise ValueError("Custom SQL is required")
+        if len(sql) > 5000:
+            raise ValueError("Custom SQL must be at most 5000 characters")
+        lowered = sql.lower()
+        if "rows_checked" not in lowered or "rows_failed" not in lowered:
+            raise ValueError("Custom SQL must select rows_checked and rows_failed columns")
+        return {"sql": sql}
+
     raise ValueError(f"Unsupported rule type: {rule_type}")
 
 
@@ -737,10 +759,6 @@ def _normalize_quality_rule_fields(
         raise ValueError(f"Unsupported rule type: {rule_type}")
     if normalized_severity not in VALID_SEVERITIES:
         raise ValueError("Severity is invalid")
-
-    expected_dimension = RULE_TYPE_DIMENSION[normalized_rule_type]
-    if normalized_dimension != expected_dimension:
-        raise ValueError(f"Rule type '{normalized_rule_type}' belongs to '{expected_dimension}', not '{normalized_dimension}'")
 
     normalized_column_name = _clean_optional_str(column_name)
     rule_level = RULE_TYPE_LEVEL[normalized_rule_type]
@@ -793,10 +811,177 @@ def _validate_cross_table_rule_config(
 
 
 # ---------------------------------------------------------------------------
+# Rule preview (template-based description + SQL)
+# ---------------------------------------------------------------------------
+
+_RULE_DESCRIPTION_TEMPLATES: Dict[str, Dict[str, str]] = {
+    "not_null": {
+        "pass": '"{col}" always has a value (no NULLs)',
+        "fail": '"{col}" contains NULL values',
+        "scope": "Column-level — checks every row",
+    },
+    "not_blank": {
+        "pass": '"{col}" is never an empty string',
+        "fail": '"{col}" contains empty/blank strings',
+        "scope": "Column-level — checks every row",
+    },
+    "completeness_pct": {
+        "pass": '"{col}" is at least {threshold}% non-null',
+        "fail": '"{col}" has more than {null_pct}% null values',
+        "scope": "Column-level — checks null ratio",
+    },
+    "accepted_values": {
+        "pass": '"{col}" only contains allowed values: {values}',
+        "fail": '"{col}" contains values outside the allowed list',
+        "scope": "Column-level — checks every non-null row",
+    },
+    "pattern_match": {
+        "pass": '"{col}" matches regex: {pattern}',
+        "fail": '"{col}" has values not matching the pattern',
+        "scope": "Column-level — checks every non-null row",
+    },
+    "range_check": {
+        "pass": '"{col}" is within [{min}, {max}]',
+        "fail": '"{col}" has values outside the numeric range',
+        "scope": "Column-level — checks every non-null row",
+    },
+    "format_check": {
+        "pass": '"{col}" matches {format} format',
+        "fail": '"{col}" has values that are not valid {format}',
+        "scope": "Column-level — checks every non-null row",
+    },
+    "unique_column": {
+        "pass": '"{col}" has no duplicate values',
+        "fail": '"{col}" contains duplicate values',
+        "scope": "Column-level — checks uniqueness",
+    },
+    "unique_combo": {
+        "pass": "Combination ({columns}) is unique across all rows",
+        "fail": "Duplicate rows found for combination ({columns})",
+        "scope": "Table-level — checks grain/key uniqueness",
+    },
+    "cross_column": {
+        "pass": "Expression evaluates to TRUE for all rows: {expression}",
+        "fail": "Some rows violate the condition: {expression}",
+        "scope": "Table-level — SQL boolean expression",
+    },
+    "cross_table": {
+        "pass": "Cross-table validation passes for all joined rows",
+        "fail": "Some joined rows violate: {expression}",
+        "scope": "Table-level — joins two tables",
+    },
+    "freshness_days": {
+        "pass": "Data in \"{date_col}\" is less than {max_days} day(s) old",
+        "fail": "Data is stale — latest value in \"{date_col}\" is older than {max_days} day(s)",
+        "scope": "Table-level — checks MAX(date) age",
+    },
+    "row_count_range": {
+        "pass": "Row count is within [{min}, {max}]",
+        "fail": "Row count is outside the expected range",
+        "scope": "Table-level — checks total volume",
+    },
+    "statistical_range": {
+        "pass": '"{col}" values are within z-score [{min_z}, {max_z}]',
+        "fail": '"{col}" has outliers beyond z-score bounds',
+        "scope": "Column-level — z-score outlier detection",
+    },
+    "custom_sql": {
+        "pass": "Custom query returns rows_failed = 0",
+        "fail": "Custom query found failing rows",
+        "scope": "Table-level — user-defined SQL",
+    },
+}
+
+
+def _build_description(rule_type: str, col: Optional[str], config: Dict[str, Any]) -> Dict[str, str]:
+    """Build human-readable pass/fail/scope descriptions from rule_type + config."""
+    templates = _RULE_DESCRIPTION_TEMPLATES.get(rule_type, {
+        "pass": "Rule passes",
+        "fail": "Rule fails",
+        "scope": "Unknown scope",
+    })
+
+    fmt_vars: Dict[str, str] = {
+        "col": col or "(no column)",
+        "threshold": str(config.get("threshold", 95)),
+        "null_pct": str(round(100 - float(config.get("threshold", 95)), 1)),
+        "values": ", ".join(str(v) for v in (config.get("values") or [])[:5]) or "(none)",
+        "pattern": str(config.get("pattern", "")),
+        "format": str(config.get("format", "")),
+        "min": str(config.get("min", "-∞")),
+        "max": str(config.get("max", "∞")),
+        "columns": ", ".join(config.get("columns") or []) or "(none)",
+        "expression": str(config.get("expression", ""))[:120],
+        "date_col": str(config.get("column", col or "")),
+        "max_days": str(config.get("max_days", 1)),
+        "min_z": str(config.get("min_z", "-∞")),
+        "max_z": str(config.get("max_z", "∞")),
+    }
+
+    try:
+        return {
+            "pass_description": templates["pass"].format(**fmt_vars),
+            "fail_description": templates["fail"].format(**fmt_vars),
+            "scope_description": templates["scope"].format(**fmt_vars),
+        }
+    except (KeyError, IndexError):
+        return {
+            "pass_description": templates.get("pass", "Rule passes"),
+            "fail_description": templates.get("fail", "Rule fails"),
+            "scope_description": templates.get("scope", ""),
+        }
+
+
+# ---------------------------------------------------------------------------
 # CRUD operations
 # ---------------------------------------------------------------------------
 
 class DatasetQualityService:
+
+    # ── Preview ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def preview_rule(
+        db: Session,
+        dataset_id: int,
+        table_id: int,
+        rule_type: str,
+        column_name: Optional[str],
+        config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Return a preview of what this rule would do, without saving it.
+        Returns SQL + human-readable descriptions.
+        """
+        table = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.id == table_id, DatasetTable.dataset_id == dataset_id)
+            .first()
+        )
+        if not table:
+            return {"error": "Table not found", "sql": None, **_build_description(rule_type, column_name, config)}
+
+        # Build descriptions
+        descs = _build_description(rule_type, column_name, config)
+
+        # Build SQL preview
+        table_name = table.display_name or table.source_table_name or "table"
+        # Use a readable placeholder for preview
+        table_ref = f'"{table_name}"'
+
+        sql = _build_check_sql(
+            table_ref=table_ref,
+            rule_type=rule_type,
+            col=column_name,
+            config=config,
+            dialect="postgresql",
+        )
+
+        return {
+            "sql": sql,
+            **descs,
+            "error": None,
+        }
 
     # ── Rules ──────────────────────────────────────────────────────────────
 
@@ -866,6 +1051,66 @@ class DatasetQualityService:
         db.commit()
         db.refresh(rule)
         return rule
+
+    @staticmethod
+    def create_rules_bulk(
+        db: Session,
+        dataset_id: int,
+        items: List[QualityRuleCreate],
+    ) -> List[DatasetQualityRule]:
+        """Create multiple rules atomically. Rolls back all on any failure."""
+        if not items:
+            return []
+        created: List[DatasetQualityRule] = []
+        try:
+            for data in items:
+                table = (
+                    db.query(DatasetTable)
+                    .filter(
+                        DatasetTable.id == data.table_id,
+                        DatasetTable.dataset_id == dataset_id,
+                    )
+                    .first()
+                )
+                if not table:
+                    raise ValueError("Table not found in this dataset")
+
+                normalized_name = _clean_optional_str(data.name)
+                if not normalized_name:
+                    raise ValueError("Rule name is required")
+
+                normalized = _normalize_quality_rule_fields(
+                    table=table,
+                    dimension=data.dimension,
+                    rule_type=data.rule_type,
+                    column_name=data.column_name,
+                    config=data.config,
+                    severity=data.severity,
+                )
+                _validate_cross_table_rule_config(db, dataset_id, normalized["rule_type"], normalized["config"])
+                rule = DatasetQualityRule(
+                    dataset_id=dataset_id,
+                    table_id=data.table_id,
+                    column_name=normalized["column_name"],
+                    dimension=normalized["dimension"],
+                    rule_type=normalized["rule_type"],
+                    name=normalized_name,
+                    config=normalized["config"],
+                    severity=normalized["severity"],
+                    enabled=data.enabled,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+                db.add(rule)
+                db.flush()
+                created.append(rule)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        for rule in created:
+            db.refresh(rule)
+        return created
 
     @staticmethod
     def update_rule(

@@ -16,6 +16,7 @@ import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { GettingStartedGuide } from '@/components/common/GettingStartedGuide';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
+import { BulkActionBar } from '@/components/common/BulkActionBar';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { Modal } from '@/components/common/Modal';
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
@@ -38,6 +39,8 @@ export default function DashboardsPage() {
   const [publicShareDash, setPublicShareDash] = useState<Dashboard | null>(null);
   const [shareDash, setShareDash] = useState<Dashboard | null>(null);
   const [isHtmlImportOpen, setIsHtmlImportOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   const { data: dashboards, isLoading } = useDashboards();
   const { data: permData } = usePermissions();
@@ -103,6 +106,44 @@ export default function DashboardsPage() {
     } finally {
       setIsDeletingDashboard(false);
     }
+  };
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = (ids: number[]) => {
+    setSelectedIds((prev) => {
+      const allSelected = ids.every((id) => prev.has(id));
+      if (allSelected) return new Set();
+      return new Set(ids);
+    });
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    const confirmed = window.confirm(`Delete ${selectedIds.size} dashboard(s)? This action cannot be undone.`);
+    if (!confirmed) return;
+    setIsBulkDeleting(true);
+    let successCount = 0;
+    let failCount = 0;
+    for (const id of selectedIds) {
+      try {
+        await deleteMutation.mutateAsync(id);
+        successCount++;
+      } catch {
+        failCount++;
+      }
+    }
+    setSelectedIds(new Set());
+    setIsBulkDeleting(false);
+    if (successCount > 0) toast.success(`Deleted ${successCount} dashboard(s)`);
+    if (failCount > 0) toast.error(`Failed to delete ${failCount} dashboard(s)`);
   };
 
   return (
@@ -307,6 +348,9 @@ export default function DashboardsPage() {
                       deletingId={isDeletingDashboard ? dashboardToDelete?.id : undefined}
                       activeFilters={listFilters}
                       onFilterClick={(key, value) => toggleListFilter(key as 'state' | 'access' | 'owner', value)}
+                      selectedIds={canEdit ? selectedIds : undefined}
+                      onToggleSelect={canEdit ? toggleSelect : undefined}
+                      onToggleSelectAll={canEdit ? toggleSelectAll : undefined}
                     />
                   )}
 
@@ -317,6 +361,15 @@ export default function DashboardsPage() {
           );
         }}
       </PageListLayout>
+
+      {canEdit && (
+        <BulkActionBar
+          selectedCount={selectedIds.size}
+          onDelete={handleBulkDelete}
+          onClear={() => setSelectedIds(new Set())}
+          isDeleting={isBulkDeleting}
+        />
+      )}
 
       <Modal
         isOpen={isCreating}

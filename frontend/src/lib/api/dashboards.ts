@@ -82,7 +82,14 @@ export const dashboardApi = {
     if (input.selectedSheetName?.trim()) {
       formData.append('selected_sheet_name', input.selectedSheetName.trim());
     }
-    if (input.excelFile) {
+    if (input.selectedSourceKey?.trim()) {
+      formData.append('selected_source_key', input.selectedSourceKey.trim());
+    }
+    if (input.excelFiles && input.excelFiles.length > 0) {
+      for (const file of input.excelFiles) {
+        formData.append('excel_files', file);
+      }
+    } else if (input.excelFile) {
       formData.append('excel_file', input.excelFile);
     }
 
@@ -112,7 +119,11 @@ export const dashboardApi = {
     if (input.targetDashboardId != null) {
       formData.append('target_dashboard_id', String(input.targetDashboardId));
     }
-    if (input.excelFile) {
+    if (input.excelFiles && input.excelFiles.length > 0) {
+      for (const file of input.excelFiles) {
+        formData.append('excel_files', file);
+      }
+    } else if (input.excelFile) {
       formData.append('excel_file', input.excelFile);
     }
 

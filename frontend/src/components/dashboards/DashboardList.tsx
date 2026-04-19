@@ -17,6 +17,9 @@ interface DashboardListProps {
   deletingId?: number;
   activeFilters?: Record<string, string | undefined>;
   onFilterClick?: (key: string, value: string) => void;
+  selectedIds?: Set<number>;
+  onToggleSelect?: (id: number) => void;
+  onToggleSelectAll?: (ids: number[]) => void;
 }
 
 export function DashboardList({
@@ -26,6 +29,9 @@ export function DashboardList({
   deletingId,
   activeFilters,
   onFilterClick,
+  selectedIds,
+  onToggleSelect,
+  onToggleSelectAll,
 }: DashboardListProps) {
   const router = useRouter();
 
@@ -59,11 +65,27 @@ export function DashboardList({
     );
   }
 
+  const selectable = Boolean(onToggleSelect);
+  const allSelected = selectable && dashboards.length > 0 && dashboards.every((d) => selectedIds?.has(d.id));
+  const someSelected = selectable && dashboards.some((d) => selectedIds?.has(d.id));
+
   return (
     <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+      <div className="overflow-x-auto">
       <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
         <thead className="bg-surface-2">
           <tr>
+            {selectable && (
+              <th className="w-10 px-3 py-3">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
+                  onChange={() => onToggleSelectAll?.(dashboards.map((d) => d.id))}
+                  className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))] cursor-pointer"
+                />
+              </th>
+            )}
             <th className="px-6 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
               Dashboard
             </th>
@@ -93,17 +115,27 @@ export function DashboardList({
 
             return (
               <tr key={dashboard.id} className="hover:bg-surface-2">
-                <td className="px-6 py-4">
+                {selectable && (
+                  <td className="w-10 px-3 py-4">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds?.has(dashboard.id) ?? false}
+                      onChange={() => onToggleSelect?.(dashboard.id)}
+                      className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))] cursor-pointer"
+                    />
+                  </td>
+                )}
+                <td className="px-6 py-4 max-w-[260px]">
                   <button
                     type="button"
                     onClick={() => router.push(`/dashboards/${dashboard.id}`)}
-                    className="text-left"
+                    className="text-left min-w-0 w-full"
                   >
-                    <div className="text-caption font-emphasis text-text-primary transition-colors hover:text-brand">
+                    <div className="truncate text-caption font-emphasis text-text-primary transition-colors hover:text-brand">
                       {dashboard.name}
                     </div>
                     {dashboard.description && (
-                      <div className="text-tiny text-text-tertiary">{dashboard.description}</div>
+                      <div className="truncate text-tiny text-text-tertiary">{dashboard.description}</div>
                     )}
                   </button>
                 </td>
@@ -175,6 +207,7 @@ export function DashboardList({
           })}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

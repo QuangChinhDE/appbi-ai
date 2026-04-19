@@ -11,6 +11,7 @@ import {
   Loader2,
   Sparkles,
   Upload,
+  X,
 } from 'lucide-react';
 
 import { Modal } from '@/components/common/Modal';
@@ -75,8 +76,9 @@ export function DashboardHtmlImportModal({
   const [sourceMode, setSourceMode] = useState<DashboardHtmlImportSourceMode>('existing_dataset');
   const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(null);
   const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
-  const [sourceFile, setSourceFile] = useState<File | null>(null);
-  const [sourcePreview, setSourcePreview] = useState<DashboardHtmlImportSourcePreviewResponse | null>(null);
+  const [sourceFiles, setSourceFiles] = useState<File[]>([]);
+  const [sourcePreviews, setSourcePreviews] = useState<Record<string, DashboardHtmlImportSourcePreviewResponse>>({});
+  const [activePreviewFilename, setActivePreviewFilename] = useState('');
   const [activeUploadSheetName, setActiveUploadSheetName] = useState('');
   const [buildName, setBuildName] = useState('');
   const [analysis, setAnalysis] = useState<DashboardHtmlImportAnalyzeResponse | null>(null);
@@ -102,8 +104,9 @@ export function DashboardHtmlImportModal({
       setSourceMode('existing_dataset');
       setSelectedDatasetId(null);
       setSelectedTableId(null);
-      setSourceFile(null);
-      setSourcePreview(null);
+      setSourceFiles([]);
+      setSourcePreviews({});
+      setActivePreviewFilename('');
       setActiveUploadSheetName('');
       setBuildName('');
       setAnalysis(null);
@@ -136,14 +139,23 @@ export function DashboardHtmlImportModal({
   );
   const selectedPlanCount = includedBlockIds.length;
   const totalPlanCount = analysis?.chart_plans.length ?? 0;
+  const activePreview = sourcePreviews[activePreviewFilename] ?? null;
+  const sourcePreviewFilenames = useMemo(
+    () => Object.keys(sourcePreviews),
+    [sourcePreviews],
+  );
   const sourcePreviewSheetNames = useMemo(
-    () => Object.keys(sourcePreview?.sheets ?? {}),
-    [sourcePreview],
+    () => (activePreview ? Object.keys(activePreview.sheets) : []),
+    [activePreview],
   );
   const activeUploadSheet = useMemo(() => {
-    if (!sourcePreview) return null;
-    return sourcePreview.sheets[activeUploadSheetName] ?? sourcePreview.sheets[sourcePreview.default_sheet_name] ?? null;
-  }, [activeUploadSheetName, sourcePreview]);
+    if (!activePreview) return null;
+    return activePreview.sheets[activeUploadSheetName] ?? activePreview.sheets[activePreview.default_sheet_name] ?? null;
+  }, [activeUploadSheetName, activePreview]);
+  const activeSourceKey = useMemo(() => {
+    if (!activePreviewFilename || !activeUploadSheetName) return '';
+    return `${activePreviewFilename}::${activeUploadSheetName}`;
+  }, [activePreviewFilename, activeUploadSheetName]);
 
   const handleHtmlFileChange = async (file: File | null) => {
     if (!file) return;
@@ -158,18 +170,42 @@ export function DashboardHtmlImportModal({
   };
 
   const handleSourceFileChange = async (file: File | null) => {
-    setSourceFile(file);
-    setSourcePreview(null);
-    setActiveUploadSheetName('');
     if (!file) return;
+    if (sourceFiles.some((f) => f.name === file.name && f.size === file.size)) {
+      toast.error(`File "${file.name}" is already added.`);
+      return;
+    }
 
     try {
       const preview = await previewSourceMutation.mutateAsync(file);
-      setSourcePreview(preview);
+      setSourceFiles((prev) => [...prev, file]);
+      setSourcePreviews((prev) => ({ ...prev, [file.name]: preview }));
+      setActivePreviewFilename(file.name);
       setActiveUploadSheetName(preview.default_sheet_name);
-      toast.success(`Loaded ${Object.keys(preview.sheets).length} table preview(s) from ${file.name}`);
+      toast.success(`Loaded ${Object.keys(preview.sheets).length} table(s) from ${file.name}`);
     } catch (error) {
       toast.error(getApiErrorMessage(error, 'Could not preview the uploaded source file.'));
+    }
+  };
+
+  const handleRemoveSourceFile = (filename: string) => {
+    setSourceFiles((prev) => prev.filter((f) => f.name !== filename));
+    setSourcePreviews((prev) => {
+      const next = { ...prev };
+      delete next[filename];
+      return next;
+    });
+    if (activePreviewFilename === filename) {
+      const remaining = sourceFiles.filter((f) => f.name !== filename);
+      if (remaining.length > 0) {
+        const nextFile = remaining[0].name;
+        setActivePreviewFilename(nextFile);
+        const nextPreview = sourcePreviews[nextFile];
+        setActiveUploadSheetName(nextPreview?.default_sheet_name ?? '');
+      } else {
+        setActivePreviewFilename('');
+        setActiveUploadSheetName('');
+      }
     }
   };
 
@@ -183,8 +219,8 @@ export function DashboardHtmlImportModal({
       toast.error('Select a dataset table to map the HTML into native charts.');
       return;
     }
-    if (sourceMode === 'upload_excel' && !sourceFile) {
-      toast.error('Upload an Excel or CSV source file for this import.');
+    if (sourceMode === 'upload_excel' && sourceFiles.length === 0) {
+      toast.error('Upload at least one Excel or CSV source file for this import.');
       return;
     }
 
@@ -196,8 +232,10 @@ export function DashboardHtmlImportModal({
         htmlSummary,
         sourceMode,
         datasetTableId: sourceMode === 'existing_dataset' ? selectedTableId : null,
-        selectedSheetName: sourceMode === 'upload_excel' ? activeUploadSheetName : null,
-        excelFile: sourceMode === 'upload_excel' ? sourceFile : null,
+        selectedSheetName: sourceMode === 'upload_excel' && sourceFiles.length === 1 ? activeUploadSheetName : null,
+        selectedSourceKey: sourceMode === 'upload_excel' && sourceFiles.length > 1 ? activeSourceKey : null,
+        excelFile: sourceMode === 'upload_excel' && sourceFiles.length === 1 ? sourceFiles[0] : null,
+        excelFiles: sourceMode === 'upload_excel' && sourceFiles.length > 1 ? sourceFiles : undefined,
       });
       setAnalysis(result);
       setIncludedBlockIds(result.chart_plans.map((plan) => plan.block_id));
@@ -223,9 +261,10 @@ export function DashboardHtmlImportModal({
         targetDashboardId,
         dashboardName: buildName.trim() || analysis.suggested_dashboard_name,
         datasetTableId: sourceMode === 'existing_dataset' ? selectedTableId : null,
-        selectedSheetName: sourceMode === 'upload_excel' ? activeUploadSheetName : null,
+        selectedSheetName: sourceMode === 'upload_excel' && sourceFiles.length === 1 ? activeUploadSheetName : null,
         includedBlockIds,
-        excelFile: sourceMode === 'upload_excel' ? sourceFile : null,
+        excelFile: sourceMode === 'upload_excel' && sourceFiles.length === 1 ? sourceFiles[0] : null,
+        excelFiles: sourceMode === 'upload_excel' && sourceFiles.length > 1 ? sourceFiles : undefined,
       });
 
       const typeChangeCount = result.type_changes.length;
@@ -433,26 +472,44 @@ export function DashboardHtmlImportModal({
                     onClick={() => sourceFileInputRef.current?.click()}
                     loading={previewSourceMutation.isPending}
                   >
-                    Upload Excel / CSV
+                    Add Excel / CSV File
                   </Button>
-                  {sourceFile && (
-                    <div className="rounded-lg border border-success/20 bg-success/10 px-3 py-2 text-caption text-success">
-                      {sourceFile.name}
+                  {sourceFiles.length > 0 && (
+                    <div className="space-y-1.5">
+                      {sourceFiles.map((file) => (
+                        <div key={file.name} className="flex items-center gap-2 rounded-lg border border-success/20 bg-success/10 px-3 py-1.5 text-caption text-success">
+                          <FileSpreadsheet className="h-3.5 w-3.5 flex-shrink-0" />
+                          <span className="flex-1 truncate">{file.name}</span>
+                          <span className="text-success/70">
+                            {sourcePreviews[file.name] ? `${Object.keys(sourcePreviews[file.name].sheets).length} sheet(s)` : ''}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveSourceFile(file.name)}
+                            className="rounded p-0.5 text-success/60 hover:bg-success/20 hover:text-success"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                      ))}
                     </div>
                   )}
                   <input
                     ref={sourceFileInputRef}
                     type="file"
                     accept=".xlsx,.xls,.csv"
+                    multiple
                     className="hidden"
                     onChange={(event) => {
-                      const file = event.target.files?.[0] ?? null;
-                      void handleSourceFileChange(file);
+                      const files = event.target.files;
+                      if (files) {
+                        Array.from(files).forEach((file) => void handleSourceFileChange(file));
+                      }
                       event.currentTarget.value = '';
                     }}
                   />
                   <p className="text-caption text-text-tertiary">
-                    Every sheet becomes a table during build. The first row of each sheet is treated as that table header.
+                    Upload one or more Excel/CSV files. Every sheet becomes a table during build. Charts are automatically matched to the best source.
                   </p>
                 </div>
               )}
@@ -493,9 +550,9 @@ export function DashboardHtmlImportModal({
 
               {sourceMode === 'upload_excel' && (
                 <div className="mt-4 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
-                  <p className="text-caption font-semibold text-text-primary">Demo-friendly source upload</p>
+                  <p className="text-caption font-semibold text-text-primary">Multi-file source upload</p>
                   <p className="mt-1 text-caption text-text-tertiary">
-                    Uploaded Excel/CSV will be turned into a manual dataset during build so the imported dashboard can run natively in AppBI. All sheets become tables; the selected sheet is used for chart mapping.
+                    Upload one or more Excel/CSV files. All sheets from all files become tables in the dataset. Each chart is automatically matched to the best-fitting source.
                   </p>
                 </div>
               )}
@@ -535,32 +592,57 @@ export function DashboardHtmlImportModal({
             </div>
           )}
 
-          {sourceMode === 'upload_excel' && sourcePreview && activeUploadSheet && (
+          {sourceMode === 'upload_excel' && Object.keys(sourcePreviews).length > 0 && activeUploadSheet && (
             <div className="rounded-xl border border-success/30 bg-success/10 overflow-hidden">
               <div className="flex items-center justify-between px-4 py-2 border-b border-success/30">
                 <div className="flex items-center gap-2">
                   <FileSpreadsheet className="w-4 h-4 text-success flex-shrink-0" />
-                  <span className="text-sm font-medium text-success truncate max-w-[280px]">
-                    {sourcePreview.filename || sourceFile?.name}
+                  <span className="text-sm font-medium text-success">
+                    {sourceFiles.length} file{sourceFiles.length === 1 ? '' : 's'} uploaded
                   </span>
                   <CheckCircle2 className="w-4 h-4 text-success" />
                   <span className="text-xs text-success">
-                    {sourcePreviewSheetNames.length} sheet{sourcePreviewSheetNames.length === 1 ? '' : 's'}
+                    {Object.values(sourcePreviews).reduce((sum, p) => sum + Object.keys(p.sheets).length, 0)} total sheet{Object.values(sourcePreviews).reduce((sum, p) => sum + Object.keys(p.sheets).length, 0) === 1 ? '' : 's'}
                   </span>
                 </div>
                 <Button
                   variant="ghost"
                   size="xs"
                   onClick={() => {
-                    setSourceFile(null);
-                    setSourcePreview(null);
+                    setSourceFiles([]);
+                    setSourcePreviews({});
+                    setActivePreviewFilename('');
                     setActiveUploadSheetName('');
                     previewSourceMutation.reset();
                   }}
                 >
-                  Clear
+                  Clear All
                 </Button>
               </div>
+
+              {sourcePreviewFilenames.length > 1 && (
+                <div className="flex overflow-x-auto border-b border-success/30 bg-surface-2">
+                  {sourcePreviewFilenames.map((filename) => (
+                    <button
+                      key={filename}
+                      type="button"
+                      onClick={() => {
+                        setActivePreviewFilename(filename);
+                        const preview = sourcePreviews[filename];
+                        if (preview) setActiveUploadSheetName(preview.default_sheet_name);
+                      }}
+                      className={`px-4 py-2 text-xs font-medium whitespace-nowrap border-r border-success/20 transition-colors ${
+                        activePreviewFilename === filename
+                          ? 'bg-brand/10 text-brand border-b-2 border-b-brand'
+                          : 'text-text-tertiary hover:bg-surface-2'
+                      }`}
+                    >
+                      {filename}
+                      <span className="ml-1.5 text-text-quaternary">{Object.keys(sourcePreviews[filename]?.sheets ?? {}).length} sheets</span>
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {sourcePreviewSheetNames.length > 1 && (
                 <div className="flex overflow-x-auto border-b border-success/30 bg-surface-1">
@@ -576,7 +658,7 @@ export function DashboardHtmlImportModal({
                       }`}
                     >
                       {sheetName}
-                      <span className="ml-1.5 text-text-quaternary">{sourcePreview.sheets[sheetName].rows.length}</span>
+                      <span className="ml-1.5 text-text-quaternary">{activePreview?.sheets[sheetName]?.rows.length ?? 0}</span>
                     </button>
                   ))}
                 </div>
@@ -684,13 +766,14 @@ export function DashboardHtmlImportModal({
                   <div className="mt-4 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3 text-caption text-text-tertiary">
                     <p>
                       Source: {analysis.source_profile.dataset_name || analysis.source_profile.uploaded_filename || 'Imported source'}
+                      {sourceFiles.length > 1 && ` (+${sourceFiles.length - 1} more file${sourceFiles.length > 2 ? 's' : ''})`}
                     </p>
                     <p className="mt-1">
                       Table: {analysis.source_profile.dataset_table_name || 'N/A'}
                     </p>
                     {analysis.source_profile.selected_sheet_name && (
                       <p className="mt-1">
-                        Mapping sheet: {analysis.source_profile.selected_sheet_name}
+                        Primary sheet: {analysis.source_profile.selected_sheet_name}
                       </p>
                     )}
                     <p className="mt-1">
@@ -699,6 +782,28 @@ export function DashboardHtmlImportModal({
                   </div>
                 </div>
               </div>
+
+              {!!(analysis.calculated_fields?.length) && (
+                <div className="rounded-xl border border-brand/20 bg-brand/5 p-4">
+                  <p className="text-sm font-semibold text-text-primary">
+                    Calculated Fields ({analysis.calculated_fields.length})
+                  </p>
+                  <p className="text-caption text-text-secondary mt-1">
+                    AI-suggested computed columns that will be added to the data model.
+                  </p>
+                  <div className="mt-3 space-y-2">
+                    {analysis.calculated_fields.map((cf) => (
+                      <div key={cf.name} className="rounded-lg border border-brand/20 bg-surface-1 px-3 py-2">
+                        <p className="text-sm font-semibold text-text-primary">{cf.label || cf.name}</p>
+                        <p className="text-caption text-text-tertiary font-mono mt-1">{cf.name} = {cf.expression}</p>
+                        {cf.source_key && (
+                          <p className="text-caption text-brand/80 mt-1">Source: {cf.source_key}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-3">
                 {analysis.chart_plans.map((plan) => {
@@ -732,6 +837,13 @@ export function DashboardHtmlImportModal({
                           {!!plan.source_fields_used.length && (
                             <p className="text-caption text-text-tertiary">
                               Fields: {plan.source_fields_used.join(', ')}
+                            </p>
+                          )}
+
+                          {plan.source_key && sourceFiles.length > 1 && (
+                            <p className="text-caption text-brand/80">
+                              <FileSpreadsheet className="inline h-3 w-3 mr-1 -mt-0.5" />
+                              Source: {plan.source_key}
                             </p>
                           )}
 

@@ -12,6 +12,7 @@ import { ShareDialog } from '@/components/common/ShareDialog';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
+import { BulkActionBar } from '@/components/common/BulkActionBar';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { Button, IconButton } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -74,6 +75,8 @@ export default function ExplorePage() {
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingChart, setIsDeletingChart] = useState(false);
   const [shareChart, setShareChart] = useState<Chart | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   const { data: allCharts = [], isLoading } = useCharts({ limit: 500, sort: 'updated_desc' });
 
@@ -143,6 +146,44 @@ export default function ExplorePage() {
     } finally {
       setIsDeletingChart(false);
     }
+  };
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = (ids: number[]) => {
+    setSelectedIds((prev) => {
+      const allSelected = ids.every((id) => prev.has(id));
+      if (allSelected) return new Set();
+      return new Set(ids);
+    });
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    const confirmed = window.confirm(`Delete ${selectedIds.size} chart(s)? This action cannot be undone.`);
+    if (!confirmed) return;
+    setIsBulkDeleting(true);
+    let successCount = 0;
+    let failCount = 0;
+    for (const id of selectedIds) {
+      try {
+        await deleteChart.mutateAsync(id);
+        successCount++;
+      } catch {
+        failCount++;
+      }
+    }
+    setSelectedIds(new Set());
+    setIsBulkDeleting(false);
+    if (successCount > 0) toast.success(`Deleted ${successCount} chart(s)`);
+    if (failCount > 0) toast.error(`Failed to delete ${failCount} chart(s)`);
   };
 
   return (
@@ -242,9 +283,21 @@ export default function ExplorePage() {
                     </div>
                   ) : viewMode === 'list' ? (
                     <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+                  <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
                     <thead className="bg-surface-2">
                       <tr>
+                        {canEdit && (
+                          <th className="w-10 px-3 py-3">
+                            <input
+                              type="checkbox"
+                              checked={pageItems.length > 0 && pageItems.every((c) => selectedIds.has(c.id))}
+                              ref={(el) => { if (el) el.indeterminate = pageItems.some((c) => selectedIds.has(c.id)) && !pageItems.every((c) => selectedIds.has(c.id)); }}
+                              onChange={() => toggleSelectAll(pageItems.map((c) => c.id))}
+                              className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))] cursor-pointer"
+                            />
+                          </th>
+                        )}
                         <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
                           Chart
                         </th>
@@ -277,7 +330,17 @@ export default function ExplorePage() {
                           key={chart.id}
                           className="hover:bg-surface-2"
                         >
-                          <td className="px-5 py-3.5">
+                          {canEdit && (
+                            <td className="w-10 px-3 py-3.5">
+                              <input
+                                type="checkbox"
+                                checked={selectedIds.has(chart.id)}
+                                onChange={() => toggleSelect(chart.id)}
+                                className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))] cursor-pointer"
+                              />
+                            </td>
+                          )}
+                          <td className="px-5 py-3.5 max-w-[260px]">
                             <button
                               onClick={() => router.push(`/explore/${chart.id}`)}
                               className="flex items-start gap-3 text-left"
@@ -367,6 +430,7 @@ export default function ExplorePage() {
                     </tbody>
                   </table>
                 </div>
+              </div>
                   ) : (
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                       {pageItems.map((chart) => {

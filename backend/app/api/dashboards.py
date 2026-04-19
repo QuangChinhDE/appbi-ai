@@ -47,6 +47,7 @@ from app.services import DashboardService
 from app.services.dashboard_html_import_service import (
     _load_existing_source_profile,
     _load_uploaded_excel_source_profile,
+    _load_uploaded_multi_source_profiles,
     analyze_dashboard_html_import,
     build_dashboard_from_import as build_dashboard_from_html_import_service,
     parse_uploaded_source_sheets,
@@ -118,7 +119,9 @@ async def analyze_html_dashboard_import(
     source_mode: str = Form(...),
     dataset_table_id: Optional[int] = Form(None),
     selected_sheet_name: Optional[str] = Form(None),
+    selected_source_key: Optional[str] = Form(None),
     excel_file: Optional[UploadFile] = File(None),
+    excel_files: List[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("dashboards", "edit")),
 ):
@@ -144,25 +147,51 @@ async def analyze_html_dashboard_import(
                 current_user=current_user,
                 dataset_table_id=dataset_table_id,
             )
-        else:
-            if excel_file is None:
-                raise HTTPException(status_code=400, detail="excel_file is required for upload_excel.")
-            file_bytes = await excel_file.read()
-            if len(file_bytes) == 0:
-                raise HTTPException(status_code=400, detail="Uploaded source file is empty.")
-            if len(file_bytes) > MAX_SOURCE_UPLOAD_SIZE:
-                raise HTTPException(status_code=400, detail="Source file is too large (max 10 MB).")
-            source_profile = _load_uploaded_excel_source_profile(
-                file_bytes=file_bytes,
-                filename=excel_file.filename,
-                sheet_name=selected_sheet_name,
+            return analyze_dashboard_html_import(
+                html_text=normalized_html,
+                html_summary=parsed_summary,
+                source_profile=source_profile,
             )
+        else:
+            # Collect files: prefer excel_files (multi), fall back to excel_file (single)
+            uploaded_files: List[UploadFile] = [f for f in excel_files if f and f.filename]
+            if not uploaded_files and excel_file is not None:
+                uploaded_files = [excel_file]
+            if not uploaded_files:
+                raise HTTPException(status_code=400, detail="excel_file(s) required for upload_excel.")
 
-        return analyze_dashboard_html_import(
-            html_text=normalized_html,
-            html_summary=parsed_summary,
-            source_profile=source_profile,
-        )
+            file_pairs: List[tuple] = []
+            for uf in uploaded_files:
+                file_bytes = await uf.read()
+                if len(file_bytes) == 0:
+                    raise HTTPException(status_code=400, detail=f"Uploaded file '{uf.filename}' is empty.")
+                if len(file_bytes) > MAX_SOURCE_UPLOAD_SIZE:
+                    raise HTTPException(status_code=400, detail=f"File '{uf.filename}' is too large (max 10 MB).")
+                file_pairs.append((file_bytes, uf.filename))
+
+            if len(file_pairs) == 1:
+                source_profile = _load_uploaded_excel_source_profile(
+                    file_bytes=file_pairs[0][0],
+                    filename=file_pairs[0][1],
+                    sheet_name=selected_sheet_name,
+                )
+                return analyze_dashboard_html_import(
+                    html_text=normalized_html,
+                    html_summary=parsed_summary,
+                    source_profile=source_profile,
+                )
+            else:
+                all_profiles, primary_key = _load_uploaded_multi_source_profiles(
+                    files=file_pairs,
+                    primary_source_key=selected_source_key or None,
+                )
+                primary_profile = all_profiles.get(primary_key, next(iter(all_profiles.values())))
+                return analyze_dashboard_html_import(
+                    html_text=normalized_html,
+                    html_summary=parsed_summary,
+                    source_profile=primary_profile,
+                    all_source_profiles=all_profiles,
+                )
     except HTTPException:
         raise
     except ValueError as exc:
@@ -187,6 +216,7 @@ async def build_html_dashboard_import(
     target_dashboard_id: Optional[int] = Form(None),
     included_block_ids_json: Optional[str] = Form(None),
     excel_file: Optional[UploadFile] = File(None),
+    excel_files: List[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("dashboards", "edit")),
 ):
@@ -206,15 +236,31 @@ async def build_html_dashboard_import(
 
     source_bytes: bytes | None = None
     source_filename: str | None = None
+    source_file_pairs: List[tuple] | None = None
+
     if normalized_source_mode == "upload_excel":
-        if excel_file is None:
-            raise HTTPException(status_code=400, detail="excel_file is required for upload_excel.")
-        source_bytes = await excel_file.read()
-        source_filename = excel_file.filename
-        if len(source_bytes) == 0:
-            raise HTTPException(status_code=400, detail="Uploaded source file is empty.")
-        if len(source_bytes) > MAX_SOURCE_UPLOAD_SIZE:
-            raise HTTPException(status_code=400, detail="Source file is too large (max 10 MB).")
+        uploaded_files: List[UploadFile] = [f for f in excel_files if f and f.filename]
+        if not uploaded_files and excel_file is not None:
+            uploaded_files = [excel_file]
+        if not uploaded_files:
+            raise HTTPException(status_code=400, detail="excel_file(s) required for upload_excel.")
+
+        if len(uploaded_files) == 1:
+            source_bytes = await uploaded_files[0].read()
+            source_filename = uploaded_files[0].filename
+            if len(source_bytes) == 0:
+                raise HTTPException(status_code=400, detail="Uploaded source file is empty.")
+            if len(source_bytes) > MAX_SOURCE_UPLOAD_SIZE:
+                raise HTTPException(status_code=400, detail="Source file is too large (max 10 MB).")
+        else:
+            source_file_pairs = []
+            for uf in uploaded_files:
+                file_bytes = await uf.read()
+                if len(file_bytes) == 0:
+                    raise HTTPException(status_code=400, detail=f"Uploaded file '{uf.filename}' is empty.")
+                if len(file_bytes) > MAX_SOURCE_UPLOAD_SIZE:
+                    raise HTTPException(status_code=400, detail=f"File '{uf.filename}' is too large (max 10 MB).")
+                source_file_pairs.append((file_bytes, uf.filename))
 
     try:
         return build_dashboard_from_html_import_service(
@@ -225,6 +271,7 @@ async def build_html_dashboard_import(
             dataset_table_id=dataset_table_id,
             source_bytes=source_bytes,
             source_filename=source_filename,
+            source_files=source_file_pairs,
             selected_sheet_name=selected_sheet_name,
             dashboard_name=dashboard_name,
             target_mode=normalized_target_mode,

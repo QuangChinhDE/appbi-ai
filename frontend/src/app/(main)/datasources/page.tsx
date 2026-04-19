@@ -11,6 +11,7 @@ import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { PageListLayout } from '@/components/common/PageListLayout';
+import { BulkActionBar } from '@/components/common/BulkActionBar';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
@@ -54,6 +55,8 @@ export default function DataSourcesPage() {
   const [queryResult, setQueryResult] = useState<QueryExecuteResponse | null>(null);
   const [queryError, setQueryError] = useState<string | null>(null);
   const [shareSource, setShareSource] = useState<DataSource | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   const { data: permData } = usePermissions();
   const canEdit = hasPermission(permData?.permissions, 'data_sources', 'edit');
@@ -99,6 +102,44 @@ export default function DataSourcesPage() {
     } finally {
       setIsDeletingSource(false);
     }
+  };
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = (ids: number[]) => {
+    setSelectedIds((prev) => {
+      const allSelected = ids.every((id) => prev.has(id));
+      if (allSelected) return new Set();
+      return new Set(ids);
+    });
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    const confirmed = window.confirm(`Delete ${selectedIds.size} data source(s)? This action cannot be undone.`);
+    if (!confirmed) return;
+    setIsBulkDeleting(true);
+    let successCount = 0;
+    let failCount = 0;
+    for (const id of selectedIds) {
+      try {
+        await deleteMutation.mutateAsync(id);
+        successCount++;
+      } catch {
+        failCount++;
+      }
+    }
+    setSelectedIds(new Set());
+    setIsBulkDeleting(false);
+    if (successCount > 0) toast.success(`Deleted ${successCount} data source(s)`);
+    if (failCount > 0) toast.error(`Failed to delete ${failCount} data source(s)`);
   };
 
   const handleEdit = (dataSource: DataSource) => {
@@ -296,6 +337,9 @@ export default function DataSourcesPage() {
                       isDeleting={deleteMutation.isPending ? deleteMutation.variables : null}
                       activeFilters={listFilters}
                       onFilterClick={(key, value) => toggleListFilter(key as 'type' | 'access' | 'owner', value)}
+                      selectedIds={canEdit ? selectedIds : undefined}
+                      onToggleSelect={canEdit ? toggleSelect : undefined}
+                      onToggleSelectAll={canEdit ? toggleSelectAll : undefined}
                     />
                   ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -376,6 +420,15 @@ export default function DataSourcesPage() {
           );
         }}
       </PageListLayout>
+
+      {canEdit && (
+        <BulkActionBar
+          selectedCount={selectedIds.size}
+          onDelete={handleBulkDelete}
+          onClear={() => setSelectedIds(new Set())}
+          isDeleting={isBulkDeleting}
+        />
+      )}
 
       {sourceToDelete && (
         <DeleteConstraintModal

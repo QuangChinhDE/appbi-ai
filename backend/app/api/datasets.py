@@ -2228,12 +2228,15 @@ def remove_model_join(
 from app.models.dataset import DatasetQualityRule, DatasetQualityRun
 from app.schemas.dataset import (
     QualityRuleCreate,
+    QualityRuleBulkCreate,
     QualityRuleUpdate,
     QualityRuleResponse,
     QualityRuleDuplicateRequest,
     QualityRunTriggerResponse,
     QualityRunResponse,
     QualitySummaryResponse,
+    QualityRulePreviewRequest,
+    QualityRulePreviewResponse,
 )
 
 
@@ -2271,6 +2274,29 @@ def list_quality_rules(
     return DatasetQualityService.list_rules(db, dataset_id, table_id=table_id)
 
 
+@router.post("/{dataset_id}/quality/rules/preview", response_model=QualityRulePreviewResponse)
+def preview_quality_rule(
+    dataset_id: int,
+    body: QualityRulePreviewRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Preview a rule's SQL and descriptions without saving it."""
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_view_access(db, current_user, ds, "datasets")
+
+    config_dict = body.config.model_dump(exclude_none=True) if body.config else {}
+    result = DatasetQualityService.preview_rule(
+        db=db,
+        dataset_id=dataset_id,
+        table_id=body.table_id,
+        rule_type=body.rule_type,
+        column_name=body.column_name,
+        config=config_dict,
+    )
+    return QualityRulePreviewResponse(**result)
+
+
 @router.post("/{dataset_id}/quality/rules", response_model=QualityRuleResponse, status_code=201)
 def create_quality_rule(
     dataset_id: int,
@@ -2292,6 +2318,36 @@ def create_quality_rule(
 
     try:
         return DatasetQualityService.create_rule(db, dataset_id, body)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{dataset_id}/quality/rules/bulk", response_model=List[QualityRuleResponse], status_code=201)
+def create_quality_rules_bulk(
+    dataset_id: int,
+    body: QualityRuleBulkCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create multiple quality rules in one atomic request. Rolls back on any failure."""
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_edit_access(db, current_user, ds, "datasets")
+
+    # Verify all referenced tables belong to the dataset
+    table_ids = {item.table_id for item in body.rules}
+    valid_tables = {
+        row.id
+        for row in db.query(DatasetTable.id)
+        .filter(DatasetTable.id.in_(table_ids), DatasetTable.dataset_id == dataset_id)
+        .all()
+    }
+    missing = table_ids - valid_tables
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Tables not found in this dataset: {sorted(missing)}")
+
+    try:
+        return DatasetQualityService.create_rules_bulk(db, dataset_id, body.rules)
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2441,3 +2497,34 @@ def get_quality_run(
     if not run:
         raise HTTPException(status_code=404, detail="Quality run not found")
     return run
+
+
+# ── AI Rule Suggestion ────────────────────────────────────────────────────
+
+from app.schemas.dataset import (
+    QualityAISuggestRequest,
+    QualityAISuggestResponse,
+)
+
+
+@router.post(
+    "/{dataset_id}/quality/ai-suggest",
+    response_model=QualityAISuggestResponse,
+)
+async def ai_suggest_quality_rule(
+    dataset_id: int,
+    body: QualityAISuggestRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Use AI to suggest a quality rule config from a natural-language description."""
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_edit_access(db, current_user, ds, "datasets")
+
+    from app.services.quality_ai_suggest import suggest_quality_rule
+    result = await suggest_quality_rule(
+        description=body.description,
+        table_name=body.table_name,
+        columns=[{"name": c.name, "type": c.type} for c in body.columns],
+    )
+    return result

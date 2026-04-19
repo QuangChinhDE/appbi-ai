@@ -23,6 +23,7 @@ import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
+import { BulkActionBar } from '@/components/common/BulkActionBar';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { useI18n } from '@/providers/LanguageProvider';
 import { toast } from '@/lib/toast';
@@ -57,6 +58,8 @@ export default function DatasetsPage() {
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingDataset, setIsDeletingDataset] = useState(false);
   const [shareDataset, setShareDataset] = useState<{ id: number; name: string } | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const activeListFilterCount = Object.values(listFilters).filter(Boolean).length;
 
   const toggleListFilter = (key: 'docs' | 'access' | 'owner', value: string) => {
@@ -107,6 +110,44 @@ export default function DatasetsPage() {
     } finally {
       setIsDeletingDataset(false);
     }
+  };
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = (ids: number[]) => {
+    setSelectedIds((prev) => {
+      const allSelected = ids.every((id) => prev.has(id));
+      if (allSelected) return new Set();
+      return new Set(ids);
+    });
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    const confirmed = window.confirm(`Delete ${selectedIds.size} dataset(s)? This action cannot be undone.`);
+    if (!confirmed) return;
+    setIsBulkDeleting(true);
+    let successCount = 0;
+    let failCount = 0;
+    for (const id of selectedIds) {
+      try {
+        await deleteMutation.mutateAsync(id);
+        successCount++;
+      } catch {
+        failCount++;
+      }
+    }
+    setSelectedIds(new Set());
+    setIsBulkDeleting(false);
+    if (successCount > 0) toast.success(`Deleted ${successCount} dataset(s)`);
+    if (failCount > 0) toast.error(`Failed to delete ${failCount} dataset(s)`);
   };
 
   // Error state
@@ -327,9 +368,21 @@ export default function DatasetsPage() {
                     </div>
                   ) : (
                     <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+                      <div className="overflow-x-auto">
                       <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
                         <thead className="bg-surface-2">
                           <tr>
+                            {canEdit && (
+                              <th className="w-10 px-3 py-3">
+                                <input
+                                  type="checkbox"
+                                  checked={pageItems.length > 0 && pageItems.every((d: any) => selectedIds.has(d.id))}
+                                  ref={(el) => { if (el) el.indeterminate = pageItems.some((d: any) => selectedIds.has(d.id)) && !pageItems.every((d: any) => selectedIds.has(d.id)); }}
+                                  onChange={() => toggleSelectAll(pageItems.map((d: any) => d.id))}
+                                  className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))] cursor-pointer"
+                                />
+                              </th>
+                            )}
                             <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
                               Dataset
                             </th>
@@ -354,7 +407,17 @@ export default function DatasetsPage() {
 
                     return (
                       <tr key={dataset.id} className="hover:bg-surface-2">
-                        <td className="px-5 py-3.5">
+                        {canEdit && (
+                          <td className="w-10 px-3 py-3.5">
+                            <input
+                              type="checkbox"
+                              checked={selectedIds.has(dataset.id)}
+                              onChange={() => toggleSelect(dataset.id)}
+                              className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))] cursor-pointer"
+                            />
+                          </td>
+                        )}
+                        <td className="px-5 py-3.5 max-w-[260px]">
                           <button
                             onClick={() => router.push(`/datasets/${dataset.id}`)}
                             className="flex items-start gap-3 text-left"
@@ -446,6 +509,7 @@ export default function DatasetsPage() {
                           })}
                         </tbody>
                       </table>
+                      </div>
                     </div>
                   )}
 
@@ -482,6 +546,15 @@ export default function DatasetsPage() {
           resourceId={shareDataset.id}
           resourceName={shareDataset.name}
           onClose={() => setShareDataset(null)}
+        />
+      )}
+
+      {canEdit && (
+        <BulkActionBar
+          selectedCount={selectedIds.size}
+          onDelete={handleBulkDelete}
+          onClear={() => setSelectedIds(new Set())}
+          isDeleting={isBulkDeleting}
         />
       )}
     </>

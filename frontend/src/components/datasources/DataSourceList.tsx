@@ -21,6 +21,9 @@ interface DataSourceListProps {
   isDeleting?: number | null;
   activeFilters?: Record<string, string | undefined>;
   onFilterClick?: (key: string, value: string) => void;
+  selectedIds?: Set<number>;
+  onToggleSelect?: (id: number) => void;
+  onToggleSelectAll?: (ids: number[]) => void;
 }
 
 export default function DataSourceList({
@@ -32,6 +35,9 @@ export default function DataSourceList({
   isDeleting,
   activeFilters,
   onFilterClick,
+  selectedIds,
+  onToggleSelect,
+  onToggleSelectAll,
 }: DataSourceListProps) {
   if (dataSources.length === 0) {
     return (
@@ -73,12 +79,27 @@ export default function DataSourceList({
     }
   };
 
+  const selectable = Boolean(onToggleSelect);
+  const allSelected = selectable && dataSources.length > 0 && dataSources.every((ds) => selectedIds?.has(ds.id));
+  const someSelected = selectable && dataSources.some((ds) => selectedIds?.has(ds.id));
+
   return (
     <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
       <div className="overflow-x-auto">
       <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
         <thead className="bg-surface-2">
           <tr>
+            {selectable && (
+              <th className="w-10 px-3 py-3">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
+                  onChange={() => onToggleSelectAll?.(dataSources.map((ds) => ds.id))}
+                  className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))] cursor-pointer"
+                />
+              </th>
+            )}
             <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
               Source
             </th>
@@ -107,7 +128,17 @@ export default function DataSourceList({
 
             return (
               <tr key={ds.id} className="hover:bg-surface-2">
-                <td className="px-5 py-3.5">
+                {selectable && (
+                  <td className="w-10 px-3 py-3.5">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds?.has(ds.id) ?? false}
+                      onChange={() => onToggleSelect?.(ds.id)}
+                      className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))] cursor-pointer"
+                    />
+                  </td>
+                )}
+                <td className="px-5 py-3.5 max-w-[260px]">
                   <div className="flex items-start gap-3">
                     <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">
                       <Database className="h-4 w-4" />
@@ -115,7 +146,7 @@ export default function DataSourceList({
                     <div className="min-w-0">
                       <Link
                         href={`/datasources/${ds.id}`}
-                        className="text-caption font-emphasis text-text-primary hover:text-brand"
+                        className="truncate text-caption font-emphasis text-text-primary hover:text-brand"
                       >
                         {ds.name}
                       </Link>

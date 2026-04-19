@@ -64,6 +64,7 @@ export interface DashboardHtmlImportChartPlan {
   warnings: string[];
   role_config: Record<string, any>;
   style_config?: Record<string, any>;
+  source_key?: string | null;
   layout?: {
     x: number;
     y: number;
@@ -72,11 +73,19 @@ export interface DashboardHtmlImportChartPlan {
   };
 }
 
+export interface DashboardHtmlImportCalculatedField {
+  name: string;
+  expression: string;
+  label?: string | null;
+  source_key?: string | null;
+}
+
 export interface DashboardHtmlImportAnalyzeResponse {
   suggested_dashboard_name: string;
   document_title?: string | null;
   source_profile: DashboardHtmlImportSourceProfile;
   chart_plans: DashboardHtmlImportChartPlan[];
+  calculated_fields?: DashboardHtmlImportCalculatedField[];
   ignored_blocks: Array<Record<string, any>>;
   warnings: string[];
   ai_meta: DashboardHtmlImportAiMeta;
@@ -99,6 +108,7 @@ export interface DashboardHtmlImportBuildResponse {
   page_name: string;
   dataset_id?: number | null;
   dataset_table_id?: number | null;
+  dataset_table_ids?: Record<string, number> | null;
 }
 
 export interface DashboardHtmlImportAnalyzeInput {
@@ -107,7 +117,9 @@ export interface DashboardHtmlImportAnalyzeInput {
   sourceMode: DashboardHtmlImportSourceMode;
   datasetTableId?: number | null;
   selectedSheetName?: string | null;
+  selectedSourceKey?: string | null;
   excelFile?: File | null;
+  excelFiles?: File[];
 }
 
 export interface DashboardHtmlImportBuildInput {
@@ -120,6 +132,7 @@ export interface DashboardHtmlImportBuildInput {
   targetDashboardId?: number | null;
   includedBlockIds: string[];
   excelFile?: File | null;
+  excelFiles?: File[];
 }
 
 export interface DashboardHtmlSummaryBlock {

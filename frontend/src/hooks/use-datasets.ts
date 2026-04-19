@@ -268,6 +268,7 @@ export interface QualityRuleConfig {
   max_days?: number;
   min_z?: number;
   max_z?: number;
+  sql?: string;
   [key: string]: unknown;
 }
 
@@ -818,6 +819,23 @@ export function useCreateQualityRule(datasetId: number) {
   });
 }
 
+export function useBulkCreateQualityRules(datasetId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (rules: QualityRuleCreate[]) => {
+      const res = await api.post<QualityRule[]>(
+        `/datasets/${datasetId}/quality/rules/bulk`,
+        { rules }
+      );
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.qualityRules(datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.qualitySummary(datasetId) });
+    },
+  });
+}
+
 export function useUpdateQualityRule(datasetId: number) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -921,5 +939,35 @@ export function useQualityRunPoll(
     staleTime: 0,
     // Không retry khi poll bị lỗi tạm thời
     retry: false,
+  });
+}
+
+// ===== AI Quality Rule Suggestion =====
+
+export interface QualityAISuggestRequest {
+  description: string;
+  table_name: string;
+  columns: { name: string; type: string }[];
+}
+
+export interface QualityAISuggestResponse {
+  rule_type: string;
+  dimension: string;
+  column_name?: string | null;
+  config?: QualityRuleConfig | null;
+  severity: string;
+  name: string;
+  explanation: string;
+}
+
+export function useAISuggestQualityRule(datasetId: number) {
+  return useMutation({
+    mutationFn: async (body: QualityAISuggestRequest) => {
+      const res = await api.post<QualityAISuggestResponse>(
+        `/datasets/${datasetId}/quality/ai-suggest`,
+        body,
+      );
+      return res.data;
+    },
   });
 }
