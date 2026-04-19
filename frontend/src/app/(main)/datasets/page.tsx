@@ -297,7 +297,7 @@ export default function DatasetsPage() {
               resetKey={JSON.stringify({ filterText, viewMode, listFilters })}
             >
               {({ pageItems, pagination }) => (
-                <div className="space-y-6">
+                <div className="space-y-3">
                   {viewMode === 'grid' ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                       {pageItems.map((dataset: any) => (
@@ -368,8 +368,8 @@ export default function DatasetsPage() {
                     </div>
                   ) : (
                     <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
-                      <div className="overflow-x-auto">
-                      <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
+                      <div className="app-list-table-wrap">
+                      <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
                         <thead className="bg-surface-2">
                           <tr>
                             {canEdit && (
@@ -383,19 +383,19 @@ export default function DatasetsPage() {
                                 />
                               </th>
                             )}
-                            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                            <th className="app-list-header w-[36%]">
                               Dataset
                             </th>
-                            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                            <th className="app-list-header w-[22%]">
                               Tags
                             </th>
-                            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                            <th className="app-list-header w-[16%]">
                               Owner
                             </th>
-                            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                            <th className="app-list-header w-[14%]">
                               Updated
                             </th>
-                            <th className="px-5 py-3 text-right text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                            <th className="app-list-header w-[96px] text-right">
                               Actions
                             </th>
                           </tr>
@@ -417,25 +417,25 @@ export default function DatasetsPage() {
                             />
                           </td>
                         )}
-                        <td className="px-5 py-3.5 max-w-[260px]">
+                        <td className="app-list-cell">
                           <button
                             onClick={() => router.push(`/datasets/${dataset.id}`)}
-                            className="flex items-start gap-3 text-left"
+                            className="flex w-full items-start gap-3 text-left"
                           >
                             <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">
                               <Database className="h-4 w-4" />
                             </div>
                             <div className="min-w-0">
-                              <span className="block truncate text-caption font-emphasis text-text-primary transition-colors hover:text-brand">
+                              <span className="app-list-text-main block text-caption font-emphasis text-text-primary transition-colors hover:text-brand">
                                 {dataset.name}
                               </span>
-                              <p className="mt-0.5 max-w-md truncate text-tiny text-text-tertiary">
+                              <p className="app-list-text-sub mt-0.5 text-tiny text-text-tertiary">
                                 {dataset.description || 'No dataset notes yet'}
                               </p>
                             </div>
                           </button>
                         </td>
-                        <td className="px-5 py-3.5">
+                        <td className="app-list-cell">
                           <div className="flex flex-wrap gap-1.5">
                             <FilterTag
                               tone={docState === 'documented' ? 'success' : 'warning'}
@@ -459,7 +459,7 @@ export default function DatasetsPage() {
                             </FilterTag>
                           </div>
                         </td>
-                        <td className="px-5 py-3.5 whitespace-nowrap">
+                        <td className="app-list-cell">
                           {dataset.owner_email ? (
                             <OwnerBadge
                               email={dataset.owner_email}
@@ -470,13 +470,13 @@ export default function DatasetsPage() {
                             <span className="text-tiny text-text-quaternary">—</span>
                           )}
                         </td>
-                        <td className="px-5 py-3.5 whitespace-nowrap text-caption text-text-tertiary">
+                        <td className="app-list-cell text-caption text-text-tertiary">
                           <span className="inline-flex items-center gap-1">
                             <Calendar className="h-3 w-3" />
                             {new Date(dataset.updated_at).toLocaleDateString(locale)}
                           </span>
                         </td>
-                        <td className="px-5 py-3.5 whitespace-nowrap text-right">
+                        <td className="app-list-cell-tight text-right">
                           <div className="flex items-center justify-end gap-1">
                             {getResourcePermissions(dataset.user_permission).canShare && (
                               <IconButton

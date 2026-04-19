@@ -71,8 +71,8 @@ export function DashboardList({
 
   return (
     <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
-      <div className="overflow-x-auto">
-      <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
+      <div className="app-list-table-wrap">
+      <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
         <thead className="bg-surface-2">
           <tr>
             {selectable && (
@@ -86,22 +86,22 @@ export function DashboardList({
                 />
               </th>
             )}
-            <th className="px-6 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+            <th className="app-list-header w-[34%]">
               Dashboard
             </th>
-            <th className="px-6 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+            <th className="app-list-header w-[20%]">
               Tags
             </th>
-            <th className="px-6 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+            <th className="app-list-header w-[16%]">
               Owner
             </th>
-            <th className="px-6 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+            <th className="app-list-header w-[12%]">
               Charts
             </th>
-            <th className="px-6 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+            <th className="app-list-header w-[12%]">
               Updated
             </th>
-            <th className="px-6 py-3 text-right text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+            <th className="app-list-header w-[96px] text-right">
               Actions
             </th>
           </tr>
@@ -125,21 +125,21 @@ export function DashboardList({
                     />
                   </td>
                 )}
-                <td className="px-6 py-4 max-w-[260px]">
+                <td className="app-list-cell">
                   <button
                     type="button"
                     onClick={() => router.push(`/dashboards/${dashboard.id}`)}
                     className="text-left min-w-0 w-full"
                   >
-                    <div className="truncate text-caption font-emphasis text-text-primary transition-colors hover:text-brand">
+                    <div className="app-list-text-main text-caption font-emphasis text-text-primary transition-colors hover:text-brand">
                       {dashboard.name}
                     </div>
                     {dashboard.description && (
-                      <div className="truncate text-tiny text-text-tertiary">{dashboard.description}</div>
+                      <div className="app-list-text-sub text-tiny text-text-tertiary">{dashboard.description}</div>
                     )}
                   </button>
                 </td>
-                <td className="px-6 py-4">
+                <td className="app-list-cell">
                   <div className="flex flex-wrap gap-1.5">
                     <FilterTag
                       tone={stateMeta.tone}
@@ -157,20 +157,20 @@ export function DashboardList({
                     </FilterTag>
                   </div>
                 </td>
-                <td className="whitespace-nowrap px-6 py-4">
+                <td className="app-list-cell">
                   <OwnerBadge
                     email={dashboard.owner_email}
                     active={activeFilters?.owner === dashboard.owner_email}
                     onClick={dashboard.owner_email ? () => onFilterClick?.('owner', dashboard.owner_email!) : undefined}
                   />
                 </td>
-                <td className="whitespace-nowrap px-6 py-4 text-caption text-text-tertiary">
+                <td className="app-list-cell text-caption text-text-tertiary">
                   {chartCount} charts
                 </td>
-                <td className="whitespace-nowrap px-6 py-4 text-caption text-text-tertiary">
+                <td className="app-list-cell text-caption text-text-tertiary">
                   {new Date(dashboard.updated_at).toLocaleDateString()}
                 </td>
-                <td className="whitespace-nowrap px-6 py-4 text-right">
+                <td className="app-list-cell-tight text-right">
                   <div className="flex items-center justify-end gap-1">
                     {onShare && perms.canShare && (
                       <IconButton

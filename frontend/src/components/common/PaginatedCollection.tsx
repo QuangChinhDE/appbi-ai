@@ -148,13 +148,15 @@ export function PaginatedCollection<T>({
   }, [items, currentPage, pageSize]);
 
   const pagination = (
-    <PaginationControls
-      currentPage={currentPage}
-      totalPages={totalPages}
-      pageSize={pageSize}
-      totalItems={totalItems}
-      onPageChange={setCurrentPage}
-    />
+    <div className="mt-3">
+      <PaginationControls
+        currentPage={currentPage}
+        totalPages={totalPages}
+        pageSize={pageSize}
+        totalItems={totalItems}
+        onPageChange={setCurrentPage}
+      />
+    </div>
   );
 
   return <>{children({ pageItems, pagination, currentPage, totalPages, pageSize, totalItems })}</>;

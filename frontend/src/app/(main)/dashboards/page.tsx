@@ -250,7 +250,7 @@ export default function DashboardsPage() {
               resetKey={JSON.stringify({ filterText, viewMode, listFilters })}
             >
               {({ pageItems, pagination }) => (
-                <div className="space-y-6">
+                <div className="space-y-3">
                   {(!dashboards || dashboards.length === 0) ? (
                     <DashboardList dashboards={[]} onDelete={handleDelete} />
                   ) : filtered.length === 0 ? (

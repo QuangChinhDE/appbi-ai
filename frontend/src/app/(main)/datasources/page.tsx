@@ -326,7 +326,7 @@ export default function DataSourcesPage() {
               resetKey={JSON.stringify({ filterText, viewMode, listFilters, currentView })}
             >
               {({ pageItems, pagination }) => (
-                <div className="space-y-6">
+                <div className="space-y-3">
                   {viewMode === 'list' ? (
                     <DataSourceList
                       dataSources={pageItems}

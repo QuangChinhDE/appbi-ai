@@ -73,7 +73,7 @@ export function PageListLayout({
   const showToolbar = searchable || viewToggle || Boolean(toolbarExtraContent) || Boolean(activeFiltersContent);
 
   return (
-    <div className="px-8 py-6">
+    <div className="px-4 py-6 sm:px-6 xl:px-8">
       <div className="mb-4">
         <div className="flex items-start justify-between gap-4">
           <div>

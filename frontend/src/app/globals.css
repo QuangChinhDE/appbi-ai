@@ -249,6 +249,67 @@
   .shadow-focus-brand {
     box-shadow: 0 0 0 3px rgb(var(--brand) / 0.18);
   }
+
+  .app-list-table-wrap {
+    overflow-x: hidden;
+  }
+
+  .app-list-table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+
+  .app-list-table thead th {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    vertical-align: top;
+    line-height: 1.15;
+  }
+
+  .app-list-table td {
+    vertical-align: top;
+  }
+
+  .app-list-header {
+    padding: 0.75rem 0.875rem;
+    text-align: left;
+    font-size: 0.625rem;
+    font-weight: 590;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: rgb(var(--text-quaternary));
+  }
+
+  .app-list-cell {
+    padding: 0.875rem;
+  }
+
+  .app-list-cell-tight {
+    padding: 0.875rem 0.75rem;
+  }
+
+  .app-list-text-main {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .app-list-text-sub {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
 }
 
 /* ── Template Print Styles ─────────────────────────────── */

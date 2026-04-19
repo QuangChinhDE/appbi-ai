@@ -85,8 +85,8 @@ export default function DataSourceList({
 
   return (
     <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
-      <div className="overflow-x-auto">
-      <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
+      <div className="app-list-table-wrap">
+      <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
         <thead className="bg-surface-2">
           <tr>
             {selectable && (
@@ -100,22 +100,22 @@ export default function DataSourceList({
                 />
               </th>
             )}
-            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+            <th className="app-list-header w-[32%]">
               Source
             </th>
-            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+            <th className="app-list-header w-[22%]">
               Tags
             </th>
-            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+            <th className="app-list-header w-[16%]">
               Owner
             </th>
-            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+            <th className="app-list-header w-[12%]">
               Updated
             </th>
-            <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+            <th className="app-list-header w-[12%]">
               Created
             </th>
-            <th className="px-5 py-3 text-right text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+            <th className="app-list-header w-[120px] text-right">
               Actions
             </th>
           </tr>
@@ -138,7 +138,7 @@ export default function DataSourceList({
                     />
                   </td>
                 )}
-                <td className="px-5 py-3.5 max-w-[260px]">
+                <td className="app-list-cell">
                   <div className="flex items-start gap-3">
                     <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">
                       <Database className="h-4 w-4" />
@@ -146,17 +146,17 @@ export default function DataSourceList({
                     <div className="min-w-0">
                       <Link
                         href={`/datasources/${ds.id}`}
-                        className="truncate text-caption font-emphasis text-text-primary hover:text-brand"
+                        className="app-list-text-main text-caption font-emphasis text-text-primary hover:text-brand"
                       >
                         {ds.name}
                       </Link>
-                      <p className="mt-0.5 max-w-md truncate text-tiny text-text-tertiary">
+                      <p className="app-list-text-sub mt-0.5 text-tiny text-text-tertiary">
                         {ds.description || 'No description yet'}
                       </p>
                     </div>
                   </div>
                 </td>
-                <td className="px-5 py-3.5">
+                <td className="app-list-cell">
                   <div className="flex flex-wrap gap-1.5">
                     <FilterTag
                       tone={typeMeta.tone}
@@ -180,7 +180,7 @@ export default function DataSourceList({
                     </FilterTag>
                   </div>
                 </td>
-                <td className="px-5 py-3.5 whitespace-nowrap">
+                <td className="app-list-cell">
                   {ds.owner_email ? (
                     <OwnerBadge
                       email={ds.owner_email}
@@ -191,13 +191,13 @@ export default function DataSourceList({
                     <span className="text-tiny text-text-quaternary">—</span>
                   )}
                 </td>
-                <td className="px-5 py-3.5 whitespace-nowrap text-caption text-text-tertiary">
+                <td className="app-list-cell text-caption text-text-tertiary">
                   {new Date(ds.updated_at).toLocaleDateString()}
                 </td>
-                <td className="px-5 py-3.5 whitespace-nowrap text-caption text-text-tertiary">
+                <td className="app-list-cell text-caption text-text-tertiary">
                   {new Date(ds.created_at).toLocaleDateString()}
                 </td>
-                <td className="px-5 py-3.5 whitespace-nowrap text-right text-caption">
+                <td className="app-list-cell-tight text-right text-caption">
                   <div className="flex items-center justify-end gap-1">
                     <IconButton
                       aria-label="Test connection"
