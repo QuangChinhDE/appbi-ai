@@ -15,6 +15,7 @@ import {
 } from '@/hooks/use-dashboards';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
+import { ChartTile } from '@/components/dashboards/ChartTile';
 import { AddChartModal } from '@/components/dashboards/AddChartModal';
 import { DashboardChartManagerModal } from '@/components/dashboards/DashboardChartManagerModal';
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
@@ -917,35 +918,37 @@ export default function DashboardDetailPage() {
   const activeCrossFilter = crossFilterState?.filter ?? null;
 
   const handleExportPdf = async () => {
+    const el = dashboardContentRef.current;
+    if (!el) return;
     setIsExportingPdf(true);
     try {
       const safeName = (dashboard.name || 'dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
 
       if (dashboardPages.length <= 1) {
-        // Single page — capture the visible content directly
-        const el = dashboardContentRef.current;
-        if (el) {
-          const { exportElementToPdf } = await import('@/lib/export-pdf');
-          await exportElementToPdf(el, `${safeName}.pdf`);
-        }
+        // Single page — capture the visible content
+        const { exportElementToPdf } = await import('@/lib/export-pdf');
+        await exportElementToPdf(el, `${safeName}.pdf`);
       } else {
-        // Multi-page: switch visible page, capture grid for each, build PDF
+        // Multi-page: switch page, wait, capture, repeat
         const { captureAndBuildPdf } = await import('@/lib/export-pdf');
         const originalPageId = activePageId;
 
         await captureAndBuildPdf(dashboardPages.length, async (pageIndex) => {
           const page = dashboardPages[pageIndex];
-          setCurrentPageId(page.id);
-          // Wait for React to re-render with the new page's charts
+          // Only switch if not already on this page
+          if (page.id !== activePageId || pageIndex > 0) {
+            setCurrentPageId(page.id);
+          }
+          // Wait for grid to stabilise after page switch
           await new Promise<void>((resolve) => {
             requestAnimationFrame(() => requestAnimationFrame(() => {
-              setTimeout(resolve, 600);
+              setTimeout(resolve, 800);
             }));
           });
           return dashboardContentRef.current;
         }, `${safeName}.pdf`);
 
-        // Restore original page
+        // Restore original page without animation
         setCurrentPageId(originalPageId);
       }
     } catch (err) {
@@ -1257,25 +1260,30 @@ export default function DashboardDetailPage() {
         />
         </div>
 
-        {/* Hidden off-screen grids for non-active pages — pre-warm chart data via React Query */}
-        {chartsPerPage
-          .filter((pg) => pg.pageId !== activePageId && pg.charts.length > 0)
-          .map((pageGroup) => (
-            <div
-              key={pageGroup.pageId}
-              aria-hidden
-              data-html2canvas-ignore
-              style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden', opacity: 0, pointerEvents: 'none' }}
-            >
-              <DashboardGrid
+        {/* Hidden off-screen ChartTiles for non-active pages — pre-warm React Query cache.
+            Renders only ChartTile (no grid layout) to avoid WidthProvider / layout interference. */}
+        <div
+          aria-hidden
+          data-html2canvas-ignore
+          style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', opacity: 0, pointerEvents: 'none' }}
+        >
+          {chartsPerPage
+            .filter((pg) => pg.pageId !== activePageId && pg.charts.length > 0)
+            .flatMap((pg) => pg.charts)
+            .map((dc) => (
+              <ChartTile
+                key={`prewarm-${dc.id}`}
+                chartId={dc.chart_id}
+                dashboardChartId={dc.id}
                 dashboardId={dashboardId}
-                dashboardCharts={pageGroup.charts}
+                currentLayout={dc.layout as Record<string, any>}
+                canEdit={false}
+                allowAppearanceEdit={false}
                 globalFilters={appliedGlobalFilters}
-                disableLazy
+                instanceParameters={dc.parameters ?? {}}
               />
-            </div>
-          ))
-        }
+            ))}
+        </div>
 
         {/* Add Chart Modal */}
         <AddChartModal

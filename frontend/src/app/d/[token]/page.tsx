@@ -671,21 +671,24 @@ export default function PublicDashboardPage() {
             <h1 className="text-h2 font-emphasis tracking-[-0.022em] text-text-primary">
               {presentationTitle}
             </h1>
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={handleExportPdf}
               disabled={isExportingPdf || chartsLoading || !allPagesLoaded}
-              className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-2 text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60 print:hidden"
+              leadingIcon={
+                isExportingPdf || !allPagesLoaded
+                  ? <Loader2 className="h-4 w-4 animate-spin" />
+                  : <Download className="h-4 w-4" />
+              }
+              className="print:hidden"
               title={!allPagesLoaded ? 'Loading chart data…' : 'Export this dashboard as PDF'}
               data-html2canvas-ignore
             >
-              {isExportingPdf || !allPagesLoaded ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Download className="h-4 w-4" />
-              )}
-              <span className="hidden sm:inline">{isExportingPdf ? 'Exporting…' : !allPagesLoaded ? 'Loading…' : 'Export PDF'}</span>
-            </button>
+              <span className="hidden sm:inline">
+                {isExportingPdf ? 'Exporting…' : !allPagesLoaded ? 'Loading…' : 'Export PDF'}
+              </span>
+            </Button>
           </div>
 
           {(showPageTabs || showFilterControls || showLiveState) && (
