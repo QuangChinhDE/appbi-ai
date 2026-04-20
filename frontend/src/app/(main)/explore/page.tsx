@@ -13,6 +13,7 @@ import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { BulkActionBar } from '@/components/common/BulkActionBar';
+import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { Button, IconButton } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -77,6 +78,7 @@ export default function ExplorePage() {
   const [shareChart, setShareChart] = useState<Chart | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
 
   const { data: allCharts = [], isLoading } = useCharts({ limit: 500, sort: 'updated_desc' });
 
@@ -165,10 +167,14 @@ export default function ExplorePage() {
     });
   };
 
+  const handleBulkDeleteClick = () => {
+    if (selectedIds.size === 0) return;
+    setIsBulkDeleteOpen(true);
+  };
+
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
-    const confirmed = window.confirm(`Delete ${selectedIds.size} chart(s)? This action cannot be undone.`);
-    if (!confirmed) return;
+    setIsBulkDeleteOpen(false);
     setIsBulkDeleting(true);
     let successCount = 0;
     let failCount = 0;
@@ -283,8 +289,8 @@ export default function ExplorePage() {
                     </div>
                   ) : viewMode === 'list' ? (
                     <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
-                  <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-[rgb(var(--border-line))]">
+                  <div className="app-list-table-wrap">
+                  <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
                     <thead className="bg-surface-2">
                       <tr>
                         {canEdit && (
@@ -298,19 +304,19 @@ export default function ExplorePage() {
                             />
                           </th>
                         )}
-                        <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                        <th className="app-list-header w-[34%]">
                           Chart
                         </th>
-                        <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                        <th className="app-list-header w-[20%]">
                           Tags
                         </th>
-                        <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                        <th className="app-list-header w-[16%]">
                           Owner
                         </th>
-                        <th className="px-5 py-3 text-left text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                        <th className="app-list-header w-[14%]">
                           Updated
                         </th>
-                        <th className="px-5 py-3 text-right text-tiny font-emphasis uppercase tracking-[0.14em] text-text-quaternary">
+                        <th className="app-list-header w-[96px] text-right">
                           Actions
                         </th>
                       </tr>
@@ -331,7 +337,7 @@ export default function ExplorePage() {
                           className="hover:bg-surface-2"
                         >
                           {canEdit && (
-                            <td className="w-10 px-3 py-3.5">
+                            <td className="w-10 px-3 py-4">
                               <input
                                 type="checkbox"
                                 checked={selectedIds.has(chart.id)}
@@ -340,32 +346,33 @@ export default function ExplorePage() {
                               />
                             </td>
                           )}
-                          <td className="px-5 py-3.5 max-w-[260px]">
+                          <td className="app-list-cell">
                             <button
                               onClick={() => router.push(`/explore/${chart.id}`)}
-                              className="flex items-start gap-3 text-left"
+                              className="text-left min-w-0 w-full"
                             >
-                              <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">
-                                <BarChart3 className="h-3.5 w-3.5" />
-                              </div>
-                              <div className="min-w-0">
-                                <p className="truncate text-caption font-emphasis text-text-primary transition-colors hover:text-brand">{chart.name}</p>
-                                {sourceLabel && (
-                                  <p className="mt-0.5 truncate text-tiny font-emphasis text-text-secondary">{sourceLabel}</p>
-                                )}
-
-                                {chart.description ? (
-                                  <p className="mt-0.5 truncate text-tiny text-text-tertiary">{chart.description}</p>
-                                ) : activeRoleConfig?.dimension ? (
-                                  <p className="mt-0.5 flex items-center gap-1 truncate text-tiny text-text-tertiary">
-                                    <Layers className="h-3 w-3 flex-shrink-0" />
-                                    {activeRoleConfig.dimension}
-                                  </p>
-                                ) : null}
+                              <div className="flex items-start gap-3">
+                                <div className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">
+                                  <BarChart3 className="h-3.5 w-3.5" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="app-list-text-main text-caption font-emphasis text-text-primary transition-colors hover:text-brand">{chart.name}</div>
+                                  {sourceLabel && (
+                                    <div className="app-list-text-sub mt-0.5 text-tiny font-emphasis text-text-secondary">{sourceLabel}</div>
+                                  )}
+                                  {chart.description ? (
+                                    <div className="app-list-text-sub mt-0.5 text-tiny text-text-tertiary">{chart.description}</div>
+                                  ) : activeRoleConfig?.dimension ? (
+                                    <div className="app-list-text-sub mt-0.5 flex items-center gap-1 text-tiny text-text-tertiary">
+                                      <Layers className="h-3 w-3 flex-shrink-0" />
+                                      {activeRoleConfig.dimension}
+                                    </div>
+                                  ) : null}
+                                </div>
                               </div>
                             </button>
                           </td>
-                          <td className="px-5 py-3.5">
+                          <td className="app-list-cell">
                             <div className="flex flex-wrap gap-1.5">
                               <FilterTag
                                 tone="brand"
@@ -386,20 +393,20 @@ export default function ExplorePage() {
                               )}
                             </div>
                           </td>
-                          <td className="px-5 py-3.5 whitespace-nowrap">
+                          <td className="app-list-cell">
                             <OwnerBadge
                               email={chart.owner_email}
                               active={listFilters.owner === chart.owner_email}
                               onClick={chart.owner_email ? () => toggleListFilter('owner', chart.owner_email!) : undefined}
                             />
                           </td>
-                          <td className="px-5 py-3.5 whitespace-nowrap text-caption text-text-tertiary">
+                          <td className="app-list-cell text-caption text-text-tertiary">
                             <span className="inline-flex items-center gap-1">
                               <Clock className="h-3 w-3" />
                               {updatedAt}
                             </span>
                           </td>
-                          <td className="px-5 py-3.5 whitespace-nowrap text-right">
+                          <td className="app-list-cell-tight text-right">
                             <div className="flex items-center justify-end gap-0.5">
                               {itemPerms.canShare && (
                                 <IconButton
@@ -540,6 +547,26 @@ export default function ExplorePage() {
           onClose={() => setShareChart(null)}
         />
       )}
+
+      {canEdit && (
+        <BulkActionBar
+          selectedCount={selectedIds.size}
+          onDelete={handleBulkDeleteClick}
+          onClear={() => setSelectedIds(new Set())}
+          isDeleting={isBulkDeleting}
+        />
+      )}
+
+      <ConfirmDialog
+        isOpen={isBulkDeleteOpen}
+        onClose={() => setIsBulkDeleteOpen(false)}
+        onConfirm={handleBulkDelete}
+        title={`Xoá ${selectedIds.size} biểu đồ?`}
+        description="Hành động này không thể hoàn tác. Tất cả biểu đồ đã chọn sẽ bị xoá vĩnh viễn."
+        confirmLabel="Xoá"
+        cancelLabel="Huỷ"
+        variant="danger"
+      />
     </>
   );
 }

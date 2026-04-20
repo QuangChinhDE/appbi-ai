@@ -122,8 +122,8 @@ export function PaginatedCollection<T>({
   items,
   viewMode = 'list',
   resetKey,
-  listPageSize = 12,
-  gridPageSize = 12,
+  listPageSize = 20,
+  gridPageSize = 20,
   children,
 }: PaginatedCollectionProps<T>) {
   const [currentPage, setCurrentPage] = React.useState(1);
@@ -148,7 +148,7 @@ export function PaginatedCollection<T>({
   }, [items, currentPage, pageSize]);
 
   const pagination = (
-    <div className="mt-3">
+    <div className="sticky bottom-0 z-10 mt-3 pb-2 pt-1 bg-[rgb(var(--bg-page))]">
       <PaginationControls
         currentPage={currentPage}
         totalPages={totalPages}
