@@ -293,7 +293,7 @@ def _build_live_relation_for_semantic_view(
                     return build_live_base_query_plan(
                         joined_datasource,
                         joined_table,
-                        apply_type_overrides=True,
+                        apply_type_overrides=False,
                     ).sql
                 except Exception:
                     logger.debug(
@@ -446,13 +446,11 @@ def _adapt_live_sql_for_semantic_filters(
             if not join_relation:
                 continue
             join_condition = _render_live_join_condition(join_def, f"_appbi_sem_join_{join_index}")
-            # When built from from_column/to_column (no sql_on template),
-            # verify to_column actually exists in the joined semantic view;
-            # otherwise fall through to the validation block below.
-            if join_condition and not str(join_def.get("sql_on") or "").strip():
-                _jtc = str(join_def.get("to_column") or "").strip()
-                if _jtc and not _semantic_view_has_field(semantic_view, _jtc):
-                    join_condition = None
+            # Verify to_column actually exists in the joined semantic view;
+            # otherwise fall through to rebuild the condition with from_column.
+            _jtc = str(join_def.get("to_column") or "").strip()
+            if join_condition and _jtc and not _semantic_view_has_field(semantic_view, _jtc):
+                join_condition = None
             if not join_condition:
                 join_from_column = str(join_def.get("from_column"))
                 join_to_column = str(join_def.get("to_column"))
@@ -520,6 +518,7 @@ def _adapt_live_sql_for_semantic_filters(
         f'FROM ({base_sql}) AS _appbi_base '
         f'{" ".join(join_clauses)}'
     )
+    logger.debug("Semantic enriched SQL: %s", enriched_sql)
     return enriched_sql, effective_filters
 
 
