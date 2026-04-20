@@ -446,6 +446,13 @@ def _adapt_live_sql_for_semantic_filters(
             if not join_relation:
                 continue
             join_condition = _render_live_join_condition(join_def, f"_appbi_sem_join_{join_index}")
+            # When built from from_column/to_column (no sql_on template),
+            # verify to_column actually exists in the joined semantic view;
+            # otherwise fall through to the validation block below.
+            if join_condition and not str(join_def.get("sql_on") or "").strip():
+                _jtc = str(join_def.get("to_column") or "").strip()
+                if _jtc and not _semantic_view_has_field(semantic_view, _jtc):
+                    join_condition = None
             if not join_condition:
                 join_from_column = str(join_def.get("from_column"))
                 join_to_column = str(join_def.get("to_column"))

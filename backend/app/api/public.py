@@ -23,7 +23,7 @@ from app.core.config import settings
 from app.core.dependencies import ALGORITHM
 from app.core.logging import get_logger
 from app.models.models import Dashboard, DashboardChart, DashboardPublicLink
-from app.schemas import DashboardResponse
+from app.schemas import ChartDataResponse, DashboardResponse
 from app.services import ChartService
 from app.services.dataset_model_service import get_dataset_model, get_distinct_field_values
 
@@ -396,7 +396,7 @@ def get_public_filter_distinct_values(
         )
 
 
-@router.get("/dashboards/{token}/charts/{chart_id}/data")
+@router.get("/dashboards/{token}/charts/{chart_id}/data", response_model=ChartDataResponse)
 @_limiter.limit("30/minute")
 def get_public_chart_data(
     token: str,
@@ -465,7 +465,7 @@ def get_public_chart_data(
     except ValueError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chart data not found.")
     except Exception as exc:
-        logger.error(f"Public chart data error for token={token} chart={chart_id}: {exc}")
+        logger.exception("Public chart data error for token=%s chart=%s", token, chart_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to load chart data.",
