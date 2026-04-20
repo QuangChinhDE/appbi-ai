@@ -1,65 +1,117 @@
 import html2canvas from 'html2canvas-pro';
 import { jsPDF } from 'jspdf';
 
-/**
- * Capture a DOM element as a PDF (screenshot-style) and trigger download.
- * Uses html2canvas to rasterise the element, then lays it onto a jsPDF page
- * that matches the captured aspect ratio.
- */
-export async function exportElementToPdf(
-  element: HTMLElement,
-  filename = 'report.pdf',
-): Promise<void> {
-  // Force all lazy / intersection-observer charts to render before capture
-  const lazyPlaceholders = element.querySelectorAll('[data-lazy-chart]');
-  lazyPlaceholders.forEach((el) => el.setAttribute('data-force-visible', 'true'));
+// Landscape A4 dimensions in mm
+const A4_W = 297;
+const A4_H = 210;
+const PAGE_PADDING = 4; // mm padding inside each PDF page
 
-  const canvas = await html2canvas(element, {
-    scale: 2, // retina quality
-    useCORS: true, // allow cross-origin images (chart icons, etc.)
+/** Capture a single DOM element to a canvas at retina quality. */
+async function captureElement(element: HTMLElement): Promise<HTMLCanvasElement> {
+  return html2canvas(element, {
+    scale: 2,
+    useCORS: true,
     logging: false,
     backgroundColor: '#ffffff',
     windowWidth: element.scrollWidth,
     windowHeight: element.scrollHeight,
   });
+}
 
-  const imgWidth = canvas.width;
-  const imgHeight = canvas.height;
+/**
+ * Place a captured canvas onto one landscape-A4 PDF page.
+ * The image is scaled to fit entirely within the page (no cropping).
+ */
+function addCanvasToPage(pdf: jsPDF, canvas: HTMLCanvasElement): void {
+  const usableW = A4_W - PAGE_PADDING * 2;
+  const usableH = A4_H - PAGE_PADDING * 2;
+  const imgRatio = canvas.width / canvas.height;
+  const pageRatio = usableW / usableH;
 
-  // A4 width in mm = 210, but we use the captured aspect ratio
-  const pdfWidth = 297; // landscape A4 width mm
-  const pdfHeight = (imgHeight * pdfWidth) / imgWidth;
-
-  // If the content is taller than a single page, split into multiple pages
-  const pageHeight = 210; // landscape A4 height mm
-  const totalPages = Math.ceil(pdfHeight / pageHeight);
-
-  const pdf = new jsPDF({
-    orientation: pdfHeight > pdfWidth ? 'portrait' : 'landscape',
-    unit: 'mm',
-    format: totalPages === 1 ? [pdfWidth, pdfHeight] : [pdfWidth, pageHeight],
-  });
-
-  if (totalPages === 1) {
-    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, pdfWidth, pdfHeight);
+  let drawW: number;
+  let drawH: number;
+  if (imgRatio > pageRatio) {
+    // wider than the page → fit by width
+    drawW = usableW;
+    drawH = usableW / imgRatio;
   } else {
-    // Multi-page: slice the canvas vertically
-    const sliceHeightPx = (pageHeight / pdfWidth) * imgWidth;
-    for (let i = 0; i < totalPages; i++) {
-      if (i > 0) pdf.addPage([pdfWidth, pageHeight]);
+    // taller than the page → fit by height
+    drawH = usableH;
+    drawW = usableH * imgRatio;
+  }
 
-      const srcY = i * sliceHeightPx;
-      const srcH = Math.min(sliceHeightPx, imgHeight - srcY);
-      const destH = (srcH * pdfWidth) / imgWidth;
+  const offsetX = PAGE_PADDING + (usableW - drawW) / 2;
+  const offsetY = PAGE_PADDING + (usableH - drawH) / 2;
 
-      // Draw a slice of the original canvas onto a temp canvas
-      const sliceCanvas = document.createElement('canvas');
-      sliceCanvas.width = imgWidth;
-      sliceCanvas.height = srcH;
-      const ctx = sliceCanvas.getContext('2d')!;
-      ctx.drawImage(canvas, 0, srcY, imgWidth, srcH, 0, 0, imgWidth, srcH);
+  pdf.addImage(
+    canvas.toDataURL('image/png'),
+    'PNG',
+    offsetX,
+    offsetY,
+    drawW,
+    drawH,
+  );
+}
 
-      pdf.addImage(sliceCanvas.toDataURL('image/png'), 'PNG', 0, 0, pdfWidth, destH);
+/**
+ * Export a single DOM element as a one-page landscape-A4 PDF.
+ * Kept for backward compatibility with simple single-section exports.
+ */
+export async function exportElementToPdf(
+  element: HTMLElement,
+  filename = 'report.pdf',
+): Promise<void> {
+  const canvas = await captureElement(element);
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  addCanvasToPage(pdf, canvas);
+  pdf.save(filename);
+}
+
+/**
+ * Export multiple DOM elements — one per PDF page — as a single landscape-A4 PDF.
+ * Designed for multi-page dashboards where each dashboard page becomes one PDF page.
+ *
+ * @param pages  Array of { element, label? } for each dashboard page.
+ *               Elements must already be rendered and visible in the DOM.
+ * @param filename  Output file name.
+ */
+export async function exportMultiPageToPdf(
+  pages: Array<{ element: HTMLElement; label?: string }>,
+  filename = 'report.pdf',
+): Promise<void> {
+  if (pages.length === 0) return;
+
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+
+  for (let i = 0; i < pages.length; i++) {
+    if (i > 0) pdf.addPage('a4', 'landscape');
+    const canvas = await captureElement(pages[i].element);
+    addCanvasToPage(pdf, canvas);
+  }
+
+  pdf.save(filename);
+}
+
+/**
+ * Build a multi-page PDF by calling a callback for each page index.
+ * The callback should switch the visible page and return the element to capture.
+ * This is useful when the same DOM node is reused across pages (e.g. public dashboards).
+ */
+export async function captureAndBuildPdf(
+  pageCount: number,
+  getElement: (pageIndex: number) => Promise<HTMLElement | null>,
+  filename = 'report.pdf',
+): Promise<void> {
+  if (pageCount === 0) return;
+
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+
+  for (let i = 0; i < pageCount; i++) {
+    if (i > 0) pdf.addPage('a4', 'landscape');
+    const el = await getElement(i);
+    if (el) {
+      const canvas = await captureElement(el);
+      addCanvasToPage(pdf, canvas);
     }
   }
 

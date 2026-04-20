@@ -14,7 +14,6 @@ import {
   Eye,
   EyeOff,
 } from 'lucide-react';
-import { exportElementToPdf } from '@/lib/export-pdf';
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
@@ -198,6 +197,7 @@ export default function EmbedDashboardPage() {
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const embedContentRef = useRef<HTMLDivElement>(null);
+  const gridSectionRef = useRef<HTMLElement>(null);
 
   const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chartRequestIdRef = useRef(0);
@@ -452,17 +452,37 @@ export default function EmbedDashboardPage() {
 
   const handleExportPdf = useCallback(async () => {
     const el = embedContentRef.current;
-    if (!el) return;
+    if (!el || !dashboard) return;
     setIsExportingPdf(true);
     try {
-      const safeName = (dashboard?.name || 'embedded-dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
-      await exportElementToPdf(el, `${safeName}.pdf`);
+      const safeName = (dashboard.name || 'embedded-dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
+
+      if (dashboardPages.length <= 1) {
+        const { exportElementToPdf } = await import('@/lib/export-pdf');
+        await exportElementToPdf(el, `${safeName}.pdf`);
+      } else {
+        const { captureAndBuildPdf } = await import('@/lib/export-pdf');
+        const originalPageId = activePageId;
+
+        await captureAndBuildPdf(dashboardPages.length, async (pageIndex) => {
+          const page = dashboardPages[pageIndex];
+          setCurrentPageId(page.id);
+          await new Promise<void>((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+              setTimeout(resolve, 500);
+            }));
+          });
+          return gridSectionRef.current;
+        }, `${safeName}.pdf`);
+
+        setCurrentPageId(originalPageId);
+      }
     } catch (err) {
       console.error('PDF export failed', err);
     } finally {
       setIsExportingPdf(false);
     }
-  }, [dashboard?.name]);
+  }, [activePageId, dashboard, dashboardPages]);
 
   const filterRuntime = useMemo(
     () => buildPublicDashboardFilterRuntime(visibleDashboardCharts, chartData),
@@ -532,6 +552,27 @@ export default function EmbedDashboardPage() {
       Boolean(chartData[dashboardChart.chart_id]) || Boolean(chartErrors[dashboardChart.chart_id])
     ));
   }, [chartData, chartErrors, dashboard]);
+
+  // Pre-fetch ALL pages on mount so PDF export has complete data
+  const preWarmDoneRef = useRef(false);
+  useEffect(() => {
+    if (!dashboard || pageState !== 'loaded') return;
+    if (preWarmDoneRef.current) return;
+    if (dashboardPages.length <= 1) return;
+    preWarmDoneRef.current = true;
+    const storedSession = getPublicSession(token) ?? undefined;
+    for (const page of dashboardPages) {
+      if (page.id !== activePageId) {
+        fetchChartsForPage(page.id, storedSession, null);
+      }
+    }
+  }, [dashboard, pageState, dashboardPages, activePageId, fetchChartsForPage, token]);
+
+  // All pages have settled (every chart has data or error)
+  const allPagesLoaded = useMemo(() => {
+    if (!dashboard) return false;
+    return dashboardPages.every((page) => hasSettledPageCache(page.id));
+  }, [dashboard, dashboardPages, hasSettledPageCache]);
 
   const handlePageSelect = useCallback(async (pageId: string) => {
     if (pageId === activePageId || pendingPageId === pageId) {
@@ -741,6 +782,7 @@ export default function EmbedDashboardPage() {
 
         <div className="px-2 py-3 sm:px-3 sm:py-4">
           <section
+            ref={gridSectionRef}
             className={`rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3 transition-opacity duration-200 sm:p-4 ${pendingPageId ? 'opacity-70' : 'opacity-100'}`}
             style={publicTheme.canvasFrameStyle}
           >
@@ -799,13 +841,13 @@ export default function EmbedDashboardPage() {
       <button
         type="button"
         onClick={handleExportPdf}
-        disabled={isExportingPdf || chartsLoading}
+        disabled={isExportingPdf || chartsLoading || !allPagesLoaded}
         className="fixed bottom-3 right-3 z-30 inline-flex h-9 w-9 items-center justify-center rounded-full border border-[rgb(var(--border-strong))] bg-surface-1/90 text-text-tertiary shadow-linear transition-all hover:bg-surface-2 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 print:hidden"
         style={publicTheme.panelStyle}
-        title="Export as PDF"
+        title={!allPagesLoaded ? 'Loading chart data…' : 'Export as PDF'}
         data-html2canvas-ignore
       >
-        {isExportingPdf ? (
+        {isExportingPdf || !allPagesLoaded ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : (
           <Download className="h-3.5 w-3.5" />

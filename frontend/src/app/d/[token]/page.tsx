@@ -14,7 +14,6 @@ import {
   Eye,
   EyeOff,
 } from 'lucide-react';
-import { exportElementToPdf } from '@/lib/export-pdf';
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
@@ -193,6 +192,7 @@ export default function PublicDashboardPage() {
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const publicContentRef = useRef<HTMLElement>(null);
+  const gridSectionRef = useRef<HTMLElement>(null);
 
   const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chartRequestIdRef = useRef(0);
@@ -446,18 +446,42 @@ export default function PublicDashboardPage() {
   }, []);
 
   const handleExportPdf = useCallback(async () => {
-    const el = publicContentRef.current;
-    if (!el) return;
+    const mainEl = publicContentRef.current;
+    if (!mainEl || !dashboard) return;
     setIsExportingPdf(true);
     try {
-      const safeName = (dashboard?.name || 'shared-dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
-      await exportElementToPdf(el, `${safeName}.pdf`);
+      const safeName = (dashboard.name || 'shared-dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
+
+      if (dashboardPages.length <= 1) {
+        // Single page — capture the whole main content
+        const { exportElementToPdf } = await import('@/lib/export-pdf');
+        await exportElementToPdf(mainEl, `${safeName}.pdf`);
+      } else {
+        // Multi-page: switch to each page, capture grid section for each
+        const { captureAndBuildPdf } = await import('@/lib/export-pdf');
+        const originalPageId = activePageId;
+
+        await captureAndBuildPdf(dashboardPages.length, async (pageIndex) => {
+          const page = dashboardPages[pageIndex];
+          setCurrentPageId(page.id);
+          // Wait for React to re-render with new page's charts
+          await new Promise<void>((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+              setTimeout(resolve, 500);
+            }));
+          });
+          return gridSectionRef.current;
+        }, `${safeName}.pdf`);
+
+        // Restore original page
+        setCurrentPageId(originalPageId);
+      }
     } catch (err) {
       console.error('PDF export failed', err);
     } finally {
       setIsExportingPdf(false);
     }
-  }, [dashboard?.name]);
+  }, [activePageId, dashboard, dashboardPages]);
 
   const filterRuntime = useMemo(
     () => buildPublicDashboardFilterRuntime(visibleDashboardCharts, chartData),
@@ -525,6 +549,28 @@ export default function PublicDashboardPage() {
       Boolean(chartData[dashboardChart.chart_id]) || Boolean(chartErrors[dashboardChart.chart_id])
     ));
   }, [chartData, chartErrors, dashboard]);
+
+  // Pre-fetch ALL pages on mount so PDF export has complete data
+  const preWarmDoneRef = useRef(false);
+  useEffect(() => {
+    if (!dashboard || pageState !== 'loaded') return;
+    if (preWarmDoneRef.current) return;
+    if (dashboardPages.length <= 1) return;
+    preWarmDoneRef.current = true;
+    const storedSession = getPublicSession(token) ?? undefined;
+    // Fetch data for all non-active pages
+    for (const page of dashboardPages) {
+      if (page.id !== activePageId) {
+        fetchChartsForPage(page.id, storedSession, null);
+      }
+    }
+  }, [dashboard, pageState, dashboardPages, activePageId, fetchChartsForPage, token]);
+
+  // All pages have settled (every chart has data or error)
+  const allPagesLoaded = useMemo(() => {
+    if (!dashboard) return false;
+    return dashboardPages.every((page) => hasSettledPageCache(page.id));
+  }, [dashboard, dashboardPages, hasSettledPageCache]);
 
   const handlePageSelect = useCallback(async (pageId: string) => {
     if (pageId === activePageId || pendingPageId === pageId) {
@@ -621,9 +667,26 @@ export default function PublicDashboardPage() {
           className="overflow-visible rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-4 sm:px-5 sm:py-5"
           style={publicTheme.panelStyle}
         >
-          <h1 className="text-h2 font-emphasis tracking-[-0.022em] text-text-primary">
-            {presentationTitle}
-          </h1>
+          <div className="flex items-center justify-between gap-3">
+            <h1 className="text-h2 font-emphasis tracking-[-0.022em] text-text-primary">
+              {presentationTitle}
+            </h1>
+            <button
+              type="button"
+              onClick={handleExportPdf}
+              disabled={isExportingPdf || chartsLoading || !allPagesLoaded}
+              className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-2 text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60 print:hidden"
+              title={!allPagesLoaded ? 'Loading chart data…' : 'Export this dashboard as PDF'}
+              data-html2canvas-ignore
+            >
+              {isExportingPdf || !allPagesLoaded ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4" />
+              )}
+              <span className="hidden sm:inline">{isExportingPdf ? 'Exporting…' : !allPagesLoaded ? 'Loading…' : 'Export PDF'}</span>
+            </button>
+          </div>
 
           {(showPageTabs || showFilterControls || showLiveState) && (
             <div className="mt-3 space-y-3">
@@ -732,6 +795,7 @@ export default function PublicDashboardPage() {
         </section>
 
         <section
+          ref={gridSectionRef}
           className={`w-full rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3 transition-opacity duration-200 sm:p-4 ${pendingPageId ? 'opacity-70' : 'opacity-100'}`}
           style={publicTheme.canvasFrameStyle}
         >
@@ -784,23 +848,7 @@ export default function PublicDashboardPage() {
         </section>
       </main>
 
-      {/* Floating PDF export button */}
-      <button
-        type="button"
-        onClick={handleExportPdf}
-        disabled={isExportingPdf || chartsLoading}
-        className="fixed bottom-5 right-5 z-30 inline-flex items-center gap-2 rounded-full border border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-2.5 text-small font-emphasis text-text-secondary shadow-linear-lg transition-all hover:bg-surface-2 hover:shadow-linear-xl disabled:cursor-not-allowed disabled:opacity-60 print:hidden"
-        style={publicTheme.panelStyle}
-        title="Export this dashboard as PDF"
-        data-html2canvas-ignore
-      >
-        {isExportingPdf ? (
-          <Loader2 className="h-4 w-4 animate-spin" />
-        ) : (
-          <Download className="h-4 w-4" />
-        )}
-        <span className="hidden sm:inline">{isExportingPdf ? 'Exporting…' : 'Export PDF'}</span>
-      </button>
+
     </div>
   );
 }

@@ -65,6 +65,8 @@ interface DashboardGridProps {
   emptyMessage?: string;
   canEdit?: boolean;
   allowAppearanceEdit?: boolean;
+  /** When true, skip IntersectionObserver lazy loading — render all charts immediately. */
+  disableLazy?: boolean;
 }
 
 export function DashboardGrid({
@@ -84,6 +86,7 @@ export function DashboardGrid({
   emptyMessage,
   canEdit = false,
   allowAppearanceEdit = false,
+  disableLazy = false,
 }: DashboardGridProps) {
   // Convert backend layout to react-grid-layout format
   const layouts = dashboardCharts.map((dc) => {
@@ -141,39 +144,42 @@ export function DashboardGrid({
       compactType="vertical"
       preventCollision={false}
     >
-      {dashboardCharts.map((dc) => (
-        <div key={dc.id.toString()}>
-          <ChartErrorBoundary
+      {dashboardCharts.map((dc) => {
+        const tile = (
+          <ChartTile
             chartId={dc.chart_id}
             dashboardChartId={dc.id}
+            dashboardId={dashboardId}
+            currentLayout={dc.layout as Record<string, any>}
+            canEdit={canEdit}
+            allowAppearanceEdit={allowAppearanceEdit}
             onRemove={onRemoveChart}
             isRemoving={removingChartId === dc.id}
-          >
-            <LazyChartSlot>
-              <ChartTile
-                chartId={dc.chart_id}
-                dashboardChartId={dc.id}
-                dashboardId={dashboardId}
-                currentLayout={dc.layout as Record<string, any>}
-                canEdit={canEdit}
-                allowAppearanceEdit={allowAppearanceEdit}
-                onRemove={onRemoveChart}
-                isRemoving={removingChartId === dc.id}
-                dashboardFilters={dashboardFilters}
-                globalFilters={globalFilters}
-                crossFilters={crossFilterSourceChartId === dc.chart_id ? [] : crossFilters}
-                onDataLoaded={onChartDataLoaded}
-                onSelectCrossFilter={onSelectCrossFilter ? (filter) => onSelectCrossFilter(dc.chart_id, filter) : undefined}
-                isCrossFilterSource={crossFilterSourceChartId === dc.chart_id}
-                instanceParameters={dc.parameters ?? {}}
-                availablePages={availablePages}
-                currentPageId={typeof dc.layout?.pageId === 'string' ? dc.layout.pageId : (availablePages[0]?.id ?? null)}
-                onMoveToPage={onMoveChartToPage ? (pageId) => onMoveChartToPage(dc.id, pageId) : undefined}
-              />
-            </LazyChartSlot>
-          </ChartErrorBoundary>
-        </div>
-      ))}
+            dashboardFilters={dashboardFilters}
+            globalFilters={globalFilters}
+            crossFilters={crossFilterSourceChartId === dc.chart_id ? [] : crossFilters}
+            onDataLoaded={onChartDataLoaded}
+            onSelectCrossFilter={onSelectCrossFilter ? (filter) => onSelectCrossFilter(dc.chart_id, filter) : undefined}
+            isCrossFilterSource={crossFilterSourceChartId === dc.chart_id}
+            instanceParameters={dc.parameters ?? {}}
+            availablePages={availablePages}
+            currentPageId={typeof dc.layout?.pageId === 'string' ? dc.layout.pageId : (availablePages[0]?.id ?? null)}
+            onMoveToPage={onMoveChartToPage ? (pageId) => onMoveChartToPage(dc.id, pageId) : undefined}
+          />
+        );
+        return (
+          <div key={dc.id.toString()}>
+            <ChartErrorBoundary
+              chartId={dc.chart_id}
+              dashboardChartId={dc.id}
+              onRemove={onRemoveChart}
+              isRemoving={removingChartId === dc.id}
+            >
+              {disableLazy ? tile : <LazyChartSlot>{tile}</LazyChartSlot>}
+            </ChartErrorBoundary>
+          </div>
+        );
+      })}
     </ResponsiveGridLayout>
   );
 }

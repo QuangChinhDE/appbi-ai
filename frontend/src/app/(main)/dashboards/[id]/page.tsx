@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Bot, Sparkles, Trash2, LayoutGrid, Download } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
-import { useQueries } from '@tanstack/react-query';
+import { useQueries, useIsFetching } from '@tanstack/react-query';
 import {
   useDashboard,
   useUpdateDashboard,
@@ -47,7 +47,6 @@ import {
   normalizeDashboardPages,
 } from '@/lib/dashboard-pages';
 import { toast } from '@/lib/toast';
-import { exportElementToPdf } from '@/lib/export-pdf';
 
 // Debounce utility
 function useDebounce<T extends (...args: any[]) => any>(
@@ -160,6 +159,7 @@ export default function DashboardDetailPage() {
   const [editedPageName, setEditedPageName] = useState('');
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const dashboardContentRef = React.useRef<HTMLDivElement>(null);
+  const chartsFetching = useIsFetching({ queryKey: ['charts'] });
   const [pendingDeletePageId, setPendingDeletePageId] = useState<string | null>(null);
   // columnChartCount: how many distinct chartIds have each column
   const columnChartCountRef = React.useRef<Map<string, Set<number>>>(new Map());
@@ -222,6 +222,23 @@ export default function DashboardDetailPage() {
     () => getDashboardChartsForPage(dashboard?.dashboard_charts, activePageId),
     [dashboard?.dashboard_charts, activePageId],
   );
+
+  // Charts for each page (used for hidden pre-warm grids and multi-page export)
+  const chartsPerPage = React.useMemo(
+    () => dashboardPages.map((page) => ({
+      pageId: page.id,
+      pageName: page.name,
+      charts: getDashboardChartsForPage(dashboard?.dashboard_charts, page.id),
+    })),
+    [dashboard?.dashboard_charts, dashboardPages],
+  );
+  const totalChartCount = React.useMemo(
+    () => chartsPerPage.reduce((sum, p) => sum + p.charts.length, 0),
+    [chartsPerPage],
+  );
+  // True when no chart queries are still in-flight
+  const allChartsReady = chartsFetching === 0 && totalChartCount > 0;
+
   const hasPendingFilterChanges = React.useMemo(
     () => JSON.stringify(draftGlobalFilters) !== JSON.stringify(appliedGlobalFilters),
     [draftGlobalFilters, appliedGlobalFilters],
@@ -900,12 +917,37 @@ export default function DashboardDetailPage() {
   const activeCrossFilter = crossFilterState?.filter ?? null;
 
   const handleExportPdf = async () => {
-    const el = dashboardContentRef.current;
-    if (!el) return;
     setIsExportingPdf(true);
     try {
       const safeName = (dashboard.name || 'dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
-      await exportElementToPdf(el, `${safeName}.pdf`);
+
+      if (dashboardPages.length <= 1) {
+        // Single page — capture the visible content directly
+        const el = dashboardContentRef.current;
+        if (el) {
+          const { exportElementToPdf } = await import('@/lib/export-pdf');
+          await exportElementToPdf(el, `${safeName}.pdf`);
+        }
+      } else {
+        // Multi-page: switch visible page, capture grid for each, build PDF
+        const { captureAndBuildPdf } = await import('@/lib/export-pdf');
+        const originalPageId = activePageId;
+
+        await captureAndBuildPdf(dashboardPages.length, async (pageIndex) => {
+          const page = dashboardPages[pageIndex];
+          setCurrentPageId(page.id);
+          // Wait for React to re-render with the new page's charts
+          await new Promise<void>((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+              setTimeout(resolve, 600);
+            }));
+          });
+          return dashboardContentRef.current;
+        }, `${safeName}.pdf`);
+
+        // Restore original page
+        setCurrentPageId(originalPageId);
+      }
     } catch (err) {
       console.error('PDF export failed', err);
       toast.error('Failed to export PDF');
@@ -1015,16 +1057,16 @@ export default function DashboardDetailPage() {
             <div className="flex flex-wrap items-center gap-2 xl:justify-end">
               <button
                 onClick={handleExportPdf}
-                disabled={isExportingPdf}
+                disabled={isExportingPdf || !allChartsReady}
                 className="inline-flex items-center rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-60"
-                title="Export as PDF"
+                title={!allChartsReady ? 'Loading chart data…' : 'Export as PDF'}
               >
-                {isExportingPdf ? (
+                {isExportingPdf || !allChartsReady ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 ) : (
                   <Download className="mr-2 h-4 w-4" />
                 )}
-                {isExportingPdf ? 'Exporting…' : 'Export PDF'}
+                {isExportingPdf ? 'Exporting…' : !allChartsReady ? 'Loading…' : 'Export PDF'}
               </button>
               {canEditResource && (
                 <button
@@ -1214,6 +1256,26 @@ export default function DashboardDetailPage() {
           emptyMessage={emptyPageMessage}
         />
         </div>
+
+        {/* Hidden off-screen grids for non-active pages — pre-warm chart data via React Query */}
+        {chartsPerPage
+          .filter((pg) => pg.pageId !== activePageId && pg.charts.length > 0)
+          .map((pageGroup) => (
+            <div
+              key={pageGroup.pageId}
+              aria-hidden
+              data-html2canvas-ignore
+              style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden', opacity: 0, pointerEvents: 'none' }}
+            >
+              <DashboardGrid
+                dashboardId={dashboardId}
+                dashboardCharts={pageGroup.charts}
+                globalFilters={appliedGlobalFilters}
+                disableLazy
+              />
+            </div>
+          ))
+        }
 
         {/* Add Chart Modal */}
         <AddChartModal
