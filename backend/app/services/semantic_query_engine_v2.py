@@ -39,7 +39,8 @@ class SemanticQueryEngineV2:
         window_functions: List[Dict[str, Any]] = None,
         calculated_fields: List[Dict[str, Any]] = None,
         time_grains: Dict[str, str] = None,
-        top_n: Optional[Dict[str, Any]] = None
+        top_n: Optional[Dict[str, Any]] = None,
+        measure_agg_overrides: Optional[Dict[str, str]] = None,
     ) -> Tuple[str, List[str], List[PivotedColumn]]:
         """
         Generate SQL from semantic query definition (v2)
@@ -81,7 +82,8 @@ class SemanticQueryEngineV2:
         # Build SELECT clause
         select_parts, column_names = self._build_select_clause(
             dimensions, measures, pivots, pivot_values, 
-            window_functions, calculated_fields, time_grains
+            window_functions, calculated_fields, time_grains,
+            measure_agg_overrides=measure_agg_overrides or {},
         )
         
         # Build pivot metadata
@@ -195,7 +197,8 @@ class SemanticQueryEngineV2:
         pivot_values: List[str],
         window_functions: List[Dict[str, Any]],
         calculated_fields: List[Dict[str, Any]],
-        time_grains: Dict[str, str]
+        time_grains: Dict[str, str],
+        measure_agg_overrides: Optional[Dict[str, str]] = None,
     ) -> Tuple[List[str], List[str]]:
         """Build SELECT clause with all features"""
         select_parts = []
@@ -223,9 +226,11 @@ class SemanticQueryEngineV2:
         if pivots and pivot_values:
             # Pivoted measures
             for measure_field in measures:
+                agg_over = (measure_agg_overrides or {}).get(measure_field)
                 for pval in pivot_values:
                     pivot_sql = self._render_pivoted_measure(
-                        measure_field, pivots[0], pval
+                        measure_field, pivots[0], pval,
+                        agg_override=agg_over,
                     )
                     alias = self._pivot_column_alias(measure_field, pval)
                     select_parts.append(f"{pivot_sql} AS {alias}")
@@ -233,7 +238,8 @@ class SemanticQueryEngineV2:
         else:
             # Regular measures
             for measure_field in measures:
-                measure_sql = self._render_measure(measure_field)
+                agg_over = (measure_agg_overrides or {}).get(measure_field)
+                measure_sql = self._render_measure(measure_field, agg_override=agg_over)
                 alias = self._safe_alias(measure_field)
                 select_parts.append(f"{measure_sql} AS {alias}")
                 column_names.append(alias)
@@ -290,8 +296,14 @@ class SemanticQueryEngineV2:
         else:  # PostgreSQL
             return f"DATE_TRUNC('{grain}', {base_sql})"
     
-    def _render_measure(self, field_ref: str) -> str:
-        """Render measure SQL with aggregation"""
+    def _render_measure(self, field_ref: str, *, agg_override: Optional[str] = None) -> str:
+        """Render measure SQL with aggregation.
+
+        When *agg_override* is provided (e.g. ``"max"``, ``"count_distinct"``),
+        it takes precedence over the aggregation type stored in the view
+        definition.  This allows callers (chart rendering, Explore API) to
+        request a specific aggregation without mutating the semantic model.
+        """
         view_name, field_name = self._parse_field_ref(field_ref)
         view = self.views_cache.get(view_name)
         
@@ -302,7 +314,7 @@ class SemanticQueryEngineV2:
         if not measure_def:
             raise ValueError(f"Measure '{field_name}' not found in view '{view_name}'")
         
-        measure_type = measure_def.get('type', 'count')
+        measure_type = (agg_override or measure_def.get('type', 'count')).lower().strip()
         sql_template = measure_def.get('sql', '*')
         base_sql = self._render_sql_template(sql_template, view_name)
         
@@ -328,7 +340,9 @@ class SemanticQueryEngineV2:
         self, 
         measure_field: str, 
         pivot_field: str, 
-        pivot_value: str
+        pivot_value: str,
+        *,
+        agg_override: Optional[str] = None,
     ) -> str:
         """Render measure with CASE for pivot"""
         view_name, field_name = self._parse_field_ref(measure_field)
@@ -338,7 +352,7 @@ class SemanticQueryEngineV2:
         if not measure_def:
             raise ValueError(f"Measure '{field_name}' not found")
         
-        measure_type = measure_def.get('type', 'sum')
+        measure_type = (agg_override or measure_def.get('type', 'sum')).lower().strip()
         sql_template = measure_def.get('sql', '*')
         base_sql = self._render_sql_template(sql_template, view_name)
         

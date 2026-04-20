@@ -218,6 +218,7 @@ class SemanticQueryRequest(BaseModel):
     calculated_fields: List[CalculatedFieldDefinition] = []  # Calculated fields
     time_grains: Dict[str, Literal["day", "week", "month", "quarter", "year"]] = {}  # Dimension -> grain
     top_n: Optional[TopNDefinition] = None  # Top N filtering
+    measure_agg_overrides: Dict[str, str] = {}  # measure field -> agg type override (e.g. {"view.col": "max"})
 
 
 class PivotedColumn(BaseModel):

@@ -407,7 +407,8 @@ def execute_semantic_query(
             window_functions=[wf.model_dump() for wf in query_request.window_functions],
             calculated_fields=[cf.model_dump() for cf in query_request.calculated_fields],
             time_grains=query_request.time_grains,
-            top_n=query_request.top_n.model_dump() if query_request.top_n else None
+            top_n=query_request.top_n.model_dump() if query_request.top_n else None,
+            measure_agg_overrides=query_request.measure_agg_overrides or None,
         )
         
         # Determine data source (use first available)
