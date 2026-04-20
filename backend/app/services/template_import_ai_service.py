@@ -138,9 +138,9 @@ def refine_import_analysis_with_ai(
 def _provider_candidates() -> List[Tuple[str, str]]:
     candidates: List[Tuple[str, str]] = []
     if settings.GEMINI_API_KEY.strip():
-        candidates.append(("gemini", settings.GEMINI_IMPORT_MODEL.strip() or "gemini-2.5-flash-lite"))
+        candidates.append(("gemini", settings.template_import_gemini_model))
     if settings.active_api_keys:
-        candidates.append(("openrouter-gemini", settings.OPENROUTER_GEMINI_IMPORT_MODEL.strip() or "google/gemini-2.5-flash-lite"))
+        candidates.append(("openrouter-gemini", settings.template_import_openrouter_model))
     return candidates
 
 

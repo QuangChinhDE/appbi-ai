@@ -260,7 +260,7 @@ async def _llm_classify(
             import google.genai.types as gtypes
             from app.config import settings as _s
             _clf_client = genai.Client(api_key=_s.gemini_api_key)
-            _clf_model_name = model or _s.gemini_fast_model
+            _clf_model_name = model or _s.intent_classifier_model
             _resp = await _clf_client.aio.models.generate_content(
                 model=_clf_model_name,
                 contents=prompt,

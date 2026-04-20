@@ -8,6 +8,13 @@ from pydantic_settings import BaseSettings
 _ROOT_ENV = str(pathlib.Path(__file__).resolve().parent.parent.parent / ".env")
 
 
+def _first_non_empty(*values: str) -> str:
+    for value in values:
+        if value and value.strip():
+            return value.strip()
+    return ""
+
+
 class Settings(BaseSettings):
     bi_api_url: str = Field("http://localhost:8000/api/v1", alias="BI_API_URL")
     secret_key: str = Field("dev-secret-key-change-in-production", alias="SECRET_KEY")
@@ -19,9 +26,19 @@ class Settings(BaseSettings):
     # Environment — set to 'dev' to skip secret validation
     environment: str = Field("production", alias="ENVIRONMENT")
 
-    llm_model: str = Field("openai/gpt-4o-mini", alias="LLM_MODEL")
+    llm_model: str = Field("google/gemini-2.5-flash-lite", alias="LLM_MODEL")
     llm_fallback_chain: str = Field("", alias="LLM_FALLBACK_CHAIN")
     llm_timeout_seconds: int = Field(60, alias="LLM_TIMEOUT_SECONDS")
+
+    ai_report_default_model: str = Field("", alias="AI_REPORT_DEFAULT_MODEL")
+    ai_report_fallback_models: str = Field("", alias="AI_REPORT_FALLBACK_MODELS")
+    ai_report_llm_fallback_chain: str = Field("", alias="AI_REPORT_LLM_FALLBACK_CHAIN")
+    ai_report_timeout_seconds: int = Field(0, alias="AI_REPORT_TIMEOUT_SECONDS")
+    ai_report_brief_enrichment_model: str = Field("", alias="AI_REPORT_BRIEF_ENRICHMENT_MODEL")
+    ai_report_analysis_planning_model: str = Field("", alias="AI_REPORT_ANALYSIS_PLANNING_MODEL")
+    ai_report_insight_generation_model: str = Field("", alias="AI_REPORT_INSIGHT_GENERATION_MODEL")
+    ai_report_narrative_synthesis_model: str = Field("", alias="AI_REPORT_NARRATIVE_SYNTHESIS_MODEL")
+    ai_report_summary_reader_model: str = Field("", alias="AI_REPORT_SUMMARY_READER_MODEL")
 
     ai_agent_model: str = Field("", alias="AI_AGENT_MODEL")
     ai_agent_llm_model: str = Field("", alias="AI_AGENT_LLM_MODEL")
@@ -72,12 +89,18 @@ class Settings(BaseSettings):
 
     @property
     def active_llm_timeout_seconds(self) -> int:
-        return self.ai_agent_llm_timeout_seconds or self.llm_timeout_seconds
+        return (
+            self.ai_report_timeout_seconds
+            or self.ai_agent_llm_timeout_seconds
+            or self.llm_timeout_seconds
+        )
 
     @property
     def active_llm_fallback_chain(self) -> List[dict]:
         raw_chain = (
-            self.ai_agent_fallback_models.strip()
+            self.ai_report_fallback_models.strip()
+            or self.ai_report_llm_fallback_chain.strip()
+            or self.ai_agent_fallback_models.strip()
             or self.ai_agent_llm_fallback_chain.strip()
             or self.llm_fallback_chain.strip()
         )
@@ -103,13 +126,30 @@ class Settings(BaseSettings):
     def model_for_phase(self, phase: str) -> str:
         phase_key = (phase or "").strip().lower()
         overrides = {
-            "enrichment": self.ai_agent_enrichment_model.strip() or self.ai_agent_model.strip(),
-            "planning": self.ai_agent_planning_model.strip() or self.ai_agent_model.strip(),
-            "insight": self.ai_agent_insight_model.strip(),
-            "narrative": self.ai_agent_narrative_model.strip(),
+            "enrichment": _first_non_empty(
+                self.ai_report_brief_enrichment_model,
+                self.ai_agent_enrichment_model,
+                self.ai_report_default_model,
+            ),
+            "planning": _first_non_empty(
+                self.ai_report_analysis_planning_model,
+                self.ai_agent_planning_model,
+                self.ai_report_default_model,
+            ),
+            "insight": _first_non_empty(
+                self.ai_report_insight_generation_model,
+                self.ai_agent_insight_model,
+                self.ai_report_default_model,
+            ),
+            "narrative": _first_non_empty(
+                self.ai_report_narrative_synthesis_model,
+                self.ai_agent_narrative_model,
+                self.ai_report_default_model,
+            ),
         }
         return (
             overrides.get(phase_key)
+            or self.ai_report_default_model.strip()
             or self.ai_agent_llm_model.strip()
             or self.ai_agent_model.strip()
             or self.llm_model

@@ -19,11 +19,12 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 def _openrouter_embed(content: str) -> Optional[List[float]]:
-    if not settings.OPENROUTER_API_KEY:
+    api_keys = settings.active_api_keys
+    if not api_keys:
         return None
 
     payload: Dict[str, Any] = {
-        "model": settings.OPENROUTER_EMBEDDING_MODEL,
+        "model": settings.active_embedding_model,
         "input": content,
         "encoding_format": "float",
     }
@@ -34,7 +35,7 @@ def _openrouter_embed(content: str) -> Optional[List[float]]:
         response = httpx.post(
             f"{OPENROUTER_BASE_URL}/embeddings",
             headers={
-                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+                "Authorization": f"Bearer {api_keys[0]}",
                 "Content-Type": "application/json",
                 "HTTP-Referer": settings.OPENROUTER_SITE_URL,
                 "X-Title": settings.OPENROUTER_APP_NAME,

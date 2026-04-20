@@ -496,6 +496,7 @@ class AutoTaggingService:
             result = LLMClient.complete_json(
                 _build_table_prompt(table),
                 system=_TABLE_DESCRIBE_SYSTEM,
+                model=settings.active_dataset_docs_model,
                 max_tokens=800,
             )
             if not result:
@@ -541,6 +542,7 @@ class AutoTaggingService:
             result = LLMClient.complete_json(
                 _build_table_prompt(table),
                 system=_TABLE_DESCRIBE_SYSTEM,
+                model=settings.active_dataset_docs_model,
                 max_tokens=800,
             )
             if not result:
@@ -582,6 +584,7 @@ class AutoTaggingService:
             result = LLMClient.complete_json(
                 _build_chart_prompt(chart, table),
                 system=_CHART_TAG_SYSTEM,
+                model=settings.active_chart_docs_model,
                 max_tokens=800,
             )
             if not result:

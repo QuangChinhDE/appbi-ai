@@ -11,12 +11,27 @@ from typing import List
 _ROOT_ENV = str(pathlib.Path(__file__).resolve().parent.parent.parent / ".env")
 
 
+def _first_non_empty(*values: str) -> str:
+    for value in values:
+        if value and value.strip():
+            return value.strip()
+    return ""
+
+
 class Settings(BaseSettings):
     # BI backend
     bi_api_url: str = Field("http://localhost:8000/api/v1", alias="BI_API_URL")
 
-    # OpenRouter-backed chat runtime
-    llm_model: str = Field("openai/gpt-4o-mini", alias="LLM_MODEL")
+    # Global default model (OpenRouter fallback)
+    llm_model: str = Field("google/gemini-2.5-flash-lite", alias="LLM_MODEL")
+    ai_chat_default_model: str = Field("", alias="AI_CHAT_DEFAULT_MODEL")
+    ai_chat_intent_classifier_model: str = Field("", alias="AI_CHAT_INTENT_CLASSIFIER_MODEL")
+    ai_chat_lookup_model: str = Field("", alias="AI_CHAT_LOOKUP_MODEL")
+    ai_chat_explore_model: str = Field("", alias="AI_CHAT_EXPLORE_MODEL")
+    ai_chat_create_model: str = Field("", alias="AI_CHAT_CREATE_MODEL")
+    ai_chat_insight_planning_model: str = Field("", alias="AI_CHAT_INSIGHT_PLANNING_MODEL")
+    ai_chat_insight_execution_model: str = Field("", alias="AI_CHAT_INSIGHT_EXECUTION_MODEL")
+    ai_chat_suggestion_model: str = Field("", alias="AI_CHAT_SUGGESTION_MODEL")
     ai_chat_model: str = Field("", alias="AI_CHAT_MODEL")
 
     # Fallback chain - accepts either plain models or legacy provider:model pairs
@@ -36,12 +51,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field("", alias="ANTHROPIC_API_KEY")
     gemini_api_key: str = Field("", alias="GEMINI_API_KEY")
 
-    # Gemini per-role model overrides
-    # Tier 1 — fastest/cheapest: Intent Classifier, QueryAgent (LOOKUP), Suggestion Generator
+    # Legacy Gemini per-task model overrides kept for backward compatibility.
     gemini_fast_model: str = Field("gemini-2.5-flash-lite", alias="GEMINI_FAST_MODEL")
-    # Tier 2 — balanced: ExploreAgent, VizAgent (CREATE) — need schema understanding
+    gemini_explore_model: str = Field("", alias="GEMINI_EXPLORE_MODEL")
+    gemini_create_model: str = Field("", alias="GEMINI_CREATE_MODEL")
     gemini_balanced_model: str = Field("gemini-2.5-flash-lite", alias="GEMINI_BALANCED_MODEL")
-    # Tier 3 — best reasoning: InsightAgent Phase A (planning) + Phase B (execution)
     gemini_insight_model: str = Field("gemini-2.5-flash", alias="GEMINI_INSIGHT_MODEL")
 
     @property
@@ -85,23 +99,98 @@ class Settings(BaseSettings):
 
     @property
     def active_model(self) -> str:
-        """Default model for the active provider (Tier 1 fast model)."""
+        """Default model reported for the active provider."""
+        return self.default_chat_model
+
+    @property
+    def default_chat_model(self) -> str:
         if self.active_provider == "gemini":
-            return self.gemini_fast_model
-        return self.ai_chat_model.strip() or self.llm_model
+            return _first_non_empty(
+                self.ai_chat_default_model,
+                self.gemini_balanced_model,
+                self.gemini_fast_model,
+                "gemini-2.5-flash-lite",
+            )
+        return _first_non_empty(
+            self.ai_chat_default_model,
+            self.ai_chat_model,
+            self.llm_model,
+        )
+
+    @property
+    def intent_classifier_model(self) -> str:
+        return _first_non_empty(
+            self.ai_chat_intent_classifier_model,
+            self.gemini_fast_model if self.active_provider == "gemini" else "",
+            self.default_chat_model,
+        )
+
+    @property
+    def lookup_model(self) -> str:
+        return _first_non_empty(
+            self.ai_chat_lookup_model,
+            self.ai_chat_intent_classifier_model,
+            self.gemini_fast_model if self.active_provider == "gemini" else "",
+            self.default_chat_model,
+        )
+
+    @property
+    def explore_model(self) -> str:
+        return _first_non_empty(
+            self.ai_chat_explore_model,
+            self.gemini_explore_model if self.active_provider == "gemini" else "",
+            self.gemini_balanced_model if self.active_provider == "gemini" else "",
+            self.default_chat_model,
+        )
+
+    @property
+    def create_model(self) -> str:
+        return _first_non_empty(
+            self.ai_chat_create_model,
+            self.gemini_create_model if self.active_provider == "gemini" else "",
+            self.gemini_balanced_model if self.active_provider == "gemini" else "",
+            self.default_chat_model,
+        )
+
+    @property
+    def insight_planning_model(self) -> str:
+        return _first_non_empty(
+            self.ai_chat_insight_planning_model,
+            self.gemini_insight_model if self.active_provider == "gemini" else "",
+            self.ai_chat_insight_execution_model,
+            self.default_chat_model,
+        )
+
+    @property
+    def insight_execution_model(self) -> str:
+        return _first_non_empty(
+            self.ai_chat_insight_execution_model,
+            self.gemini_insight_model if self.active_provider == "gemini" else "",
+            self.default_chat_model,
+        )
+
+    @property
+    def suggestion_model(self) -> str:
+        return _first_non_empty(
+            self.ai_chat_suggestion_model,
+            self.ai_chat_intent_classifier_model,
+            self.gemini_fast_model if self.active_provider == "gemini" else "",
+            self.default_chat_model,
+        )
+
+    def model_for_intent(self, intent_value: str) -> str:
+        """Return the execution model for a given chat intent."""
+        if intent_value == "INSIGHT":
+            return self.insight_execution_model
+        if intent_value == "EXPLORE":
+            return self.explore_model
+        if intent_value == "CREATE":
+            return self.create_model
+        return self.lookup_model
 
     def gemini_model_for_intent(self, intent_value: str) -> str:
-        """Return the appropriate Gemini model tier for a given intent string.
-
-        INSIGHT          → Tier 3: gemini-2.5-flash      (heavy reasoning)
-        EXPLORE / CREATE → Tier 2: gemini-2.5-flash-lite  (schema understanding)
-        LOOKUP / VAGUE   → Tier 1: gemini-2.0-flash       (fast/cheap)
-        """
-        if intent_value == "INSIGHT":
-            return self.gemini_insight_model
-        if intent_value in ("EXPLORE", "CREATE"):
-            return self.gemini_balanced_model
-        return self.gemini_fast_model
+        """Legacy alias kept for existing Gemini call sites."""
+        return self.model_for_intent(intent_value)
 
     @property
     def fallback_chain(self) -> List[dict]:

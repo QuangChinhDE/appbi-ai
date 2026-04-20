@@ -106,7 +106,7 @@ async def _call_gemini(user_prompt: str) -> Optional[Dict[str, Any]]:
 
     genai.configure(api_key=settings.GEMINI_API_KEY)
     model = genai.GenerativeModel(
-        model_name=settings.GEMINI_IMPORT_MODEL.strip() or "gemini-2.5-flash-lite",
+        model_name=settings.active_quality_model,
         system_instruction=SYSTEM_PROMPT,
         generation_config={
             "temperature": 0.15,
@@ -138,7 +138,7 @@ async def _call_openrouter(user_prompt: str) -> Optional[Dict[str, Any]]:
                 "X-Title": settings.OPENROUTER_APP_NAME,
             },
             json={
-                "model": settings.active_description_model,
+                "model": settings.active_quality_model,
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},

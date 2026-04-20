@@ -36,6 +36,13 @@ _PROJECT_ROOT = _find_project_root()
 _ROOT_ENV = str(_PROJECT_ROOT / ".env")
 
 
+def _first_non_empty(*values: str) -> str:
+    for value in values:
+        if value and value.strip():
+            return value.strip()
+    return ""
+
+
 def _resolve_data_dir(raw: str) -> pathlib.Path:
     """Resolve DATA_DIR to an absolute path relative to project root."""
     p = pathlib.Path(raw)
@@ -101,9 +108,19 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY_5: str = ""
     OPENROUTER_SITE_URL: str = "http://localhost:3000"
     OPENROUTER_APP_NAME: str = "AppBI"
-    AI_DESCRIPTION_MODEL: str = "openai/gpt-4o-mini"
+    BACKEND_AI_DEFAULT_MODEL: str = ""
+    BACKEND_AI_DATASET_DOCS_MODEL: str = ""
+    BACKEND_AI_CHART_DOCS_MODEL: str = ""
+    BACKEND_AI_QUALITY_RULE_GEMINI_MODEL: str = ""
+    BACKEND_AI_QUALITY_RULE_OPENROUTER_MODEL: str = ""
+    BACKEND_AI_TEMPLATE_IMPORT_GEMINI_MODEL: str = ""
+    BACKEND_AI_TEMPLATE_IMPORT_OPENROUTER_MODEL: str = ""
+    BACKEND_AI_EMBEDDING_MODEL: str = ""
+    BACKEND_AI_REPORT_SUMMARY_MODEL: str = ""
+    AI_DESCRIPTION_MODEL: str = "google/gemini-2.5-flash-lite"
     GEMINI_API_KEY: str = ""
     GEMINI_IMPORT_MODEL: str = "gemini-2.5-flash-lite"
+    GEMINI_QUALITY_MODEL: str = ""
     OPENROUTER_GEMINI_IMPORT_MODEL: str = "google/gemini-2.5-flash-lite"
     OPENROUTER_EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
     OPENROUTER_EMBEDDING_DIMENSIONS: int = 768
@@ -122,7 +139,61 @@ class Settings(BaseSettings):
 
     @property
     def active_description_model(self) -> str:
-        return self.AI_DESCRIPTION_MODEL.strip() or "openai/gpt-4o-mini"
+        return self.active_dataset_docs_model
+
+    @property
+    def active_dataset_docs_model(self) -> str:
+        return _first_non_empty(
+            self.BACKEND_AI_DATASET_DOCS_MODEL,
+            self.AI_DESCRIPTION_MODEL,
+            self.BACKEND_AI_DEFAULT_MODEL,
+            "google/gemini-2.5-flash-lite",
+        )
+
+    @property
+    def active_chart_docs_model(self) -> str:
+        return _first_non_empty(
+            self.BACKEND_AI_CHART_DOCS_MODEL,
+            self.AI_DESCRIPTION_MODEL,
+            self.BACKEND_AI_DATASET_DOCS_MODEL,
+            self.BACKEND_AI_DEFAULT_MODEL,
+            "google/gemini-2.5-flash-lite",
+        )
+
+    @property
+    def active_quality_model(self) -> str:
+        """Model for quality rule suggestions."""
+        if self.GEMINI_API_KEY.strip():
+            return _first_non_empty(
+                self.BACKEND_AI_QUALITY_RULE_GEMINI_MODEL,
+                self.GEMINI_QUALITY_MODEL,
+                self.BACKEND_AI_TEMPLATE_IMPORT_GEMINI_MODEL,
+                self.GEMINI_IMPORT_MODEL,
+                "gemini-2.5-flash-lite",
+            )
+        return _first_non_empty(
+            self.BACKEND_AI_QUALITY_RULE_OPENROUTER_MODEL,
+            self.BACKEND_AI_DEFAULT_MODEL,
+            self.AI_DESCRIPTION_MODEL,
+            "google/gemini-2.5-flash-lite",
+        )
+
+    @property
+    def template_import_gemini_model(self) -> str:
+        return _first_non_empty(
+            self.BACKEND_AI_TEMPLATE_IMPORT_GEMINI_MODEL,
+            self.GEMINI_IMPORT_MODEL,
+            "gemini-2.5-flash-lite",
+        )
+
+    @property
+    def template_import_openrouter_model(self) -> str:
+        return _first_non_empty(
+            self.BACKEND_AI_TEMPLATE_IMPORT_OPENROUTER_MODEL,
+            self.OPENROUTER_GEMINI_IMPORT_MODEL,
+            self.BACKEND_AI_DEFAULT_MODEL,
+            "google/gemini-2.5-flash-lite",
+        )
 
     @property
     def template_import_ai_provider(self) -> str:
@@ -139,8 +210,16 @@ class Settings(BaseSettings):
     @property
     def template_import_ai_model(self) -> str:
         if self.template_import_ai_provider == "gemini":
-            return self.GEMINI_IMPORT_MODEL.strip() or "gemini-2.5-flash-lite"
-        return self.OPENROUTER_GEMINI_IMPORT_MODEL.strip() or "google/gemini-2.5-flash-lite"
+            return self.template_import_gemini_model
+        return self.template_import_openrouter_model
+
+    @property
+    def active_embedding_model(self) -> str:
+        return _first_non_empty(
+            self.BACKEND_AI_EMBEDDING_MODEL,
+            self.OPENROUTER_EMBEDDING_MODEL,
+            "openai/text-embedding-3-small",
+        )
 
     @property
     def active_api_keys(self) -> List[str]:

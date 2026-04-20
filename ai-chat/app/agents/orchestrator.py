@@ -185,9 +185,9 @@ def _make_gemini_model(model_name: str, agent_config=None):
     return _make_gemini_config(model_name, agent_config)
 
 
-def _build_provider_chain() -> List[Dict[str, str]]:
+def _build_provider_chain(primary_model: str | None = None) -> List[Dict[str, str]]:
     """Build ordered list of OpenRouter models to try, primary first."""
-    chain = [{"provider": settings.active_provider, "model": settings.active_model}]
+    chain = [{"provider": settings.active_provider, "model": primary_model or settings.active_model}]
     for entry in settings.fallback_chain:
         if entry not in chain:
             chain.append(entry)
@@ -605,9 +605,8 @@ async def run_agent(
     token: str = session.context.get("auth_token", "")
 
     # ── Step 0: Classify intent to select the right agent config ──
-    provider_chain = _build_provider_chain()
-    primary_provider = provider_chain[0]["provider"] if provider_chain else "openrouter"
-    primary_model = provider_chain[0]["model"] if provider_chain else ""
+    primary_provider = settings.active_provider
+    primary_model = settings.intent_classifier_model
 
     from app.agents.intent_classifier import classify_intent, IntentType
     agent_config = await classify_intent(user_message, primary_provider, primary_model)
@@ -713,6 +712,8 @@ async def run_agent(
         "provider": "",
         "model": "",
     }
+
+    provider_chain = _build_provider_chain(settings.model_for_intent(agent_config.intent.value))
 
     for attempt, provider_info in enumerate(provider_chain):
         provider = provider_info["provider"]
@@ -867,7 +868,17 @@ async def _run_with_provider(
     if provider == "openai":
         client = _make_openai_client()
         if _use_insight_loop:
-            async for event in _insight_loop(client, model, session, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context, agent_config=agent_config):
+            async for event in _insight_loop(
+                client,
+                settings.insight_planning_model,
+                settings.insight_execution_model,
+                session,
+                chart_data_cache,
+                metrics_ctx,
+                token=token,
+                turn_context=turn_context,
+                agent_config=agent_config,
+            ):
                 yield event
         else:
             yield ThinkingEvent(content="Đang phân tích câu hỏi...").model_dump()
@@ -881,14 +892,16 @@ async def _run_with_provider(
     elif provider == "gemini":
         from app.agents.intent_classifier import IntentType as _IT2
         _intent_val = agent_config.intent.value if agent_config else "LOOKUP"
-        # Select model tier based on intent
-        _gemini_model_name = settings.gemini_model_for_intent(_intent_val)
+        _gemini_model_name = settings.model_for_intent(_intent_val)
         metrics_ctx["model"] = _gemini_model_name
 
         if agent_config is not None and agent_config.intent == _IT2.INSIGHT:
-            # INSIGHT: 2-phase loop — planning (no tools) then execution
             async for event in _gemini_insight_loop(
-                _gemini_model_name, session, chart_data_cache, metrics_ctx,
+                settings.insight_planning_model,
+                _gemini_model_name,
+                session,
+                chart_data_cache,
+                metrics_ctx,
                 token=token, turn_context=turn_context, agent_config=agent_config,
             ):
                 yield event
@@ -909,7 +922,17 @@ async def _run_with_provider(
             try:
                 client = _make_openrouter_client(api_key=api_key)
                 if _use_insight_loop:
-                    async for event in _insight_loop(client, model, session, chart_data_cache, metrics_ctx, token=token, turn_context=turn_context, agent_config=agent_config):
+                    async for event in _insight_loop(
+                        client,
+                        settings.insight_planning_model,
+                        settings.insight_execution_model,
+                        session,
+                        chart_data_cache,
+                        metrics_ctx,
+                        token=token,
+                        turn_context=turn_context,
+                        agent_config=agent_config,
+                    ):
                         yield event
                 else:
                     if key_index == 1:
@@ -1373,7 +1396,8 @@ async def _anthropic_loop(
 
 async def _insight_loop(
     client,
-    model: str,
+    planning_model: str,
+    execution_model: str,
     session: ConversationSession,
     chart_data_cache: Dict[int, Dict],
     metrics_ctx: Dict[str, Any],
@@ -1416,7 +1440,7 @@ async def _insight_loop(
     try:
         plan_resp = await asyncio.wait_for(
             client.chat.completions.create(
-                model=model,
+                model=planning_model,
                 messages=plan_messages,
                 stream=False,
                 temperature=0.5,
@@ -1477,7 +1501,7 @@ async def _insight_loop(
         try:
             response = await asyncio.wait_for(
                 client.chat.completions.create(
-                    model=model,
+                    model=execution_model,
                     messages=exec_messages,
                     tools=active_tools,
                     tool_choice=force_tool,
@@ -1604,7 +1628,8 @@ async def _insight_loop(
 # ── Gemini insight loop (2-phase: plan → execute) ─────────────────────────────
 
 async def _gemini_insight_loop(
-    model_name: str,
+    planning_model_name: str,
+    execution_model_name: str,
     session: ConversationSession,
     chart_data_cache: Dict[int, Dict],
     metrics_ctx: Dict[str, Any],
@@ -1646,7 +1671,7 @@ async def _gemini_insight_loop(
 
         plan_resp = await asyncio.wait_for(
             plan_client.aio.models.generate_content(
-                model=model_name,
+                model=planning_model_name,
                 contents=plan_user_msg,
                 config=gtypes.GenerateContentConfig(
                     system_instruction=INSIGHT_PLANNING_PROMPT,
@@ -1689,7 +1714,7 @@ async def _gemini_insight_loop(
         )
 
     # Build execution config (3-tuple) with plan-enriched system instruction via new SDK
-    exec_model_config = _make_gemini_config(model_name, agent_config=agent_config, system_prompt_override=exec_system)
+    exec_model_config = _make_gemini_config(execution_model_name, agent_config=agent_config, system_prompt_override=exec_system)
 
     # Delegate to standard _gemini_loop with the enriched config
     async for event in _gemini_loop(
@@ -2046,18 +2071,14 @@ async def _generate_suggestions(provider: str, model: str, session: Conversation
         '["câu hỏi 1", "câu hỏi 2", "câu hỏi 3"]'
     )
 
-    # D4 fix: always use a cheap fast model for suggestions regardless of main model
-    _SUGGESTION_MODEL = "openai/gpt-4o-mini"
-
     try:
         if provider in ("openai", "openrouter"):
+            _suggestion_model = settings.suggestion_model
             if provider == "openai":
                 client = _make_openai_client()
-                _suggestion_model = settings.llm_model  # Use cheapest configured
             else:
                 keys = settings.active_api_keys
                 client = _make_openrouter_client(api_key=keys[0] if keys else "")
-                _suggestion_model = _SUGGESTION_MODEL
             resp = await client.chat.completions.create(
                 model=_suggestion_model,
                 messages=[{"role": "user", "content": suggest_prompt}],
@@ -2077,8 +2098,7 @@ async def _generate_suggestions(provider: str, model: str, session: Conversation
         elif provider == "gemini":
             import google.generativeai as genai
             genai.configure(api_key=settings.gemini_api_key)
-            # Always use Tier 1 (fast/cheap) for suggestions regardless of main model
-            _sugg_model = settings.gemini_fast_model
+            _sugg_model = settings.suggestion_model
             m = genai.GenerativeModel(_sugg_model, generation_config={"temperature": 0.7, "max_output_tokens": 150})
             r = await m.generate_content_async(suggest_prompt)
             raw = r.text if r.text else ""
