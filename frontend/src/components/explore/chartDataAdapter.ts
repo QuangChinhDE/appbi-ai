@@ -212,7 +212,7 @@ function buildPivotTableModel(args: {
     group.cells.get(columnValue)!.push(row);
   }
 
-  const dynamicColumns = Array.from(pivotColumnValues).slice(0, TABLE_PIVOT_COLUMN_LIMIT);
+  const dynamicColumns = Array.from(pivotColumnValues).sort().slice(0, TABLE_PIVOT_COLUMN_LIMIT);
   const rows = Array.from(rowGroups.entries()).map(([, { rowValue, cells }]) => {
     const result: Record<string, any> = { [rowField]: rowValue };
     dynamicColumns.forEach((columnValue) => {
