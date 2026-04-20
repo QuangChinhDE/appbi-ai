@@ -25,11 +25,18 @@ class QueryValidator:
     # Dangerous patterns
     DANGEROUS_PATTERNS = [
         r';',  # Multiple statements
-        r'--',  # SQL comments
-        r'/\*',  # Block comments
         r'\bxp_',  # SQL Server extended procedures
         r'\bsp_',  # SQL Server stored procedures
     ]
+
+    @staticmethod
+    def _strip_comments(query: str) -> str:
+        """Remove SQL comments (-- line comments and /* block comments */) for safe keyword checking."""
+        # Remove block comments (non-greedy)
+        result = re.sub(r'/\*.*?\*/', ' ', query, flags=re.DOTALL)
+        # Remove line comments
+        result = re.sub(r'--[^\n]*', ' ', result)
+        return result
     
     @staticmethod
     def validate_select_only(query: str) -> Tuple[bool, Optional[str]]:
@@ -45,8 +52,11 @@ class QueryValidator:
         if not query or not query.strip():
             return False, "Query cannot be empty"
         
+        # Strip comments before checking keywords
+        stripped = QueryValidator._strip_comments(query)
+        
         # Normalize: remove extra whitespace, convert to uppercase for checking
-        normalized = ' '.join(query.split()).upper()
+        normalized = ' '.join(stripped.split()).upper()
         
         # Must start with SELECT or WITH (for CTEs)
         if not (normalized.startswith('SELECT') or normalized.startswith('WITH')):
@@ -59,14 +69,12 @@ class QueryValidator:
             if re.search(pattern, normalized):
                 return False, f"Dangerous keyword not allowed: {keyword}"
         
-        # Check for dangerous patterns
+        # Check for dangerous patterns (on the comment-stripped text)
         for pattern in QueryValidator.DANGEROUS_PATTERNS:
-            if re.search(pattern, query):
+            if re.search(pattern, stripped):
                 # Provide friendly error messages
                 if pattern == r';':
                     return False, "Multiple statements not allowed (no semicolons)"
-                elif pattern in [r'--', r'/\*']:
-                    return False, "SQL comments not allowed"
                 else:
                     return False, f"Dangerous pattern detected: {pattern}"
         

@@ -38,6 +38,8 @@ from app.schemas.schemas import (
     # Query
     QueryExecuteRequest,
     QueryExecuteResponse,
+    SqlValidateRequest,
+    SqlValidateResponse,
     
     # Error
     ErrorResponse,

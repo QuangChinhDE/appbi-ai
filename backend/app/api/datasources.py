@@ -31,6 +31,8 @@ from app.schemas import (
     DataSourceTestResponse,
     QueryExecuteRequest,
     QueryExecuteResponse,
+    SqlValidateRequest,
+    SqlValidateResponse,
 )
 from app.services import DataSourceCRUDService, DataSourceConnectionService
 from app.core.logging import get_logger
@@ -473,6 +475,55 @@ def execute_query(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_build_query_error_detail(e),
         )
+
+
+@router.post("/validate-sql", response_model=SqlValidateResponse)
+@_limiter.limit("30/minute")
+def validate_sql(
+    request: Request,
+    body: SqlValidateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Validate a SQL query against a datasource without returning data.
+
+    Sends the query wrapped in a dry-run construct (LIMIT 0, EXPLAIN, etc.)
+    to the actual database engine so the user receives real error messages
+    from their specific RDBMS dialect.
+    """
+    data_source = DataSourceCRUDService.get_by_id(db, body.data_source_id)
+    if not data_source:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Data source with ID {body.data_source_id} not found",
+        )
+    require_view_access(db, current_user, data_source, "data_sources")
+
+    ds_type = (
+        data_source.type if isinstance(data_source.type, str) else data_source.type.value
+    )
+
+    # Client-side safety check first
+    from app.services.query_validator import QueryValidator, QueryValidationError
+
+    try:
+        cleaned = QueryValidator.validate_and_clean(body.sql_query)
+    except QueryValidationError as exc:
+        return SqlValidateResponse(valid=False, error=str(exc), dialect=ds_type)
+
+    # Dry-run: execute with LIMIT 0 to let the DB parse without returning rows
+    try:
+        DataSourceConnectionService.execute_query(
+            ds_type,
+            data_source.config,
+            cleaned,
+            limit=1,
+            timeout_seconds=10,
+        )
+        return SqlValidateResponse(valid=True, error=None, dialect=ds_type)
+    except Exception as exc:
+        error_msg = " ".join(str(exc).split()).strip()
+        return SqlValidateResponse(valid=False, error=error_msg, dialect=ds_type)
 
 
 # ── Schema Browser ────────────────────────────────────────────────────────────

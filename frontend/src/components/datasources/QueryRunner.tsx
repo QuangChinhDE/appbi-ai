@@ -7,6 +7,7 @@
 import { useState } from 'react';
 import { DataSource, QueryExecuteResponse } from '@/types/api';
 import { Play, Loader2, Clock, Hash } from 'lucide-react';
+import { SqlEditor, type SqlDialect } from '@/components/ui/SqlEditor';
 
 interface QueryRunnerProps {
   dataSources: DataSource[];
@@ -34,6 +35,16 @@ export default function QueryRunner({
   const [sqlQuery, setSqlQuery] = useState('SELECT * FROM ');
   const [limit, setLimit] = useState(100);
   const [timeout, setTimeout] = useState(30);
+
+  const selectedDs = dataSources.find(ds => ds.id === selectedDataSourceId);
+  const sqlDialect: SqlDialect = (() => {
+    switch (selectedDs?.type) {
+      case 'bigquery': return 'bigquery';
+      case 'mysql': return 'mysql';
+      case 'postgresql': return 'postgresql';
+      default: return 'standard';
+    }
+  })();
 
   const handleExecute = () => {
     if (!selectedDataSourceId || !sqlQuery.trim()) return;
@@ -100,12 +111,13 @@ export default function QueryRunner({
           <label className="block text-sm font-medium text-text-secondary mb-1">
             SQL Query
           </label>
-          <textarea
+          <SqlEditor
             value={sqlQuery}
-            onChange={(e) => setSqlQuery(e.target.value)}
-            className="w-full min-h-[200px] px-3 py-2 bg-surface-2 border border-[rgb(var(--border-strong))] rounded-md focus:outline-none focus:ring-2 focus:ring-brand font-mono text-sm"
-            rows={6}
+            onChange={setSqlQuery}
+            dialect={sqlDialect}
             placeholder="SELECT * FROM table_name WHERE condition"
+            height="200px"
+            hasError={!!error}
           />
           <p className="text-xs text-text-tertiary mt-1">
             💡 Only SELECT queries are supported

@@ -5,6 +5,7 @@ import { AlertCircle, Loader2, Sigma, TableProperties } from 'lucide-react';
 
 import type { AddTableInput, DatasetTable } from '@/hooks/use-datasets';
 import { buildDatasetTableAliasMap } from '@/lib/dataset-table-aliases';
+import { SqlEditor } from '@/components/ui/SqlEditor';
 
 interface CalculatedTableTabProps {
   onAddTable?: (input: AddTableInput) => Promise<void>;
@@ -45,9 +46,16 @@ export function CalculatedTableTab({
   const [query, setQuery] = useState(initialQuery);
   const [search, setSearch] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const aliasByTableId = useMemo(() => buildDatasetTableAliasMap(availableTables), [availableTables]);
+
+  // Collect alias names for SQL autocomplete
+  const aliasNames = useMemo(() => {
+    return availableTables
+      .filter((t) => excludeTableId == null || t.id !== excludeTableId)
+      .map((t) => aliasByTableId[t.id])
+      .filter(Boolean) as string[];
+  }, [aliasByTableId, availableTables, excludeTableId]);
 
   const referenceTables = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
@@ -66,26 +74,11 @@ export function CalculatedTableTab({
   const exampleAlias = referenceTables[0] ? aliasByTableId[referenceTables[0].id] : 'orders';
 
   const insertAlias = (alias: string) => {
-    const textarea = textareaRef.current;
-    const nextValue = alias;
-    if (!textarea) {
-      setQuery((current) => `${current}${current.trim() ? '\n' : ''}${nextValue}`);
-      return;
-    }
-
-    const start = textarea.selectionStart ?? query.length;
-    const end = textarea.selectionEnd ?? query.length;
-    const prefix = query.slice(0, start);
-    const suffix = query.slice(end);
-    const updated = `${prefix}${alias}${suffix}`;
-    setQuery(updated);
-    setValidationError(null);
-
-    requestAnimationFrame(() => {
-      textarea.focus();
-      const cursor = start + alias.length;
-      textarea.setSelectionRange(cursor, cursor);
+    setQuery((current) => {
+      const trimmed = current.trim();
+      return trimmed ? `${current} ${alias}` : alias;
     });
+    setValidationError(null);
   };
 
   const validateQuery = (sql: string): string | null => {
@@ -96,7 +89,6 @@ export function CalculatedTableTab({
       return 'Calculated table SQL must start with SELECT or WITH';
     }
     if (trimmed.includes(';')) return 'Only one SQL statement is allowed';
-    if (trimmed.includes('--') || trimmed.includes('/*')) return 'SQL comments are not allowed';
     return null;
   };
 
@@ -148,18 +140,18 @@ export function CalculatedTableTab({
             <label className="block text-sm font-medium text-text-secondary">Dataset SQL *</label>
             <span className="text-xs text-text-tertiary">Use only tables from this dataset</span>
           </div>
-          <textarea
-            ref={textareaRef}
+          <SqlEditor
             value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
+            onChange={(val) => {
+              setQuery(val);
               setValidationError(null);
             }}
+            dialect="postgresql"
             placeholder={`WITH agg AS (\n  SELECT * FROM ${exampleAlias}\n)\nSELECT * FROM agg`}
-            className={`h-80 w-full resize-y rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 ${
-              validationError ? 'border-danger/40 focus:ring-danger' : 'border-[rgb(var(--border-strong))] focus:ring-brand'
-            }`}
             disabled={isLoading}
+            height="320px"
+            hasError={!!validationError}
+            tables={aliasNames}
           />
           {validationError && (
             <div className="mt-2 flex items-start gap-2 text-sm text-danger">
@@ -171,7 +163,7 @@ export function CalculatedTableTab({
             <p>
               Use the aliases from the right panel, for example <code>{exampleAlias}</code>.
             </p>
-            <p>Only SELECT/WITH queries are allowed in phase 1.</p>
+            <p>Only SELECT/WITH queries are allowed. Supports comments and line numbers.</p>
           </div>
         </div>
 
@@ -179,7 +171,10 @@ export function CalculatedTableTab({
           {saveError && (
             <div className="mr-4 flex flex-1 items-start gap-2 text-sm text-danger">
               <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-              <span>{saveError}</span>
+              <div className="flex-1 min-w-0">
+                <span className="font-medium">Lỗi từ CSDL:</span>
+                <pre className="mt-1 whitespace-pre-wrap break-words rounded bg-danger/5 px-2 py-1.5 text-xs font-mono">{saveError}</pre>
+              </div>
             </div>
           )}
           <button

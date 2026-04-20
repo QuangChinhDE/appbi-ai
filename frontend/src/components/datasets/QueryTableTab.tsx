@@ -4,11 +4,13 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Loader2, AlertCircle, X, Plus, ChevronDown, Code } from 'lucide-react';
+import { Loader2, AlertCircle, X, Plus, ChevronDown, Code, Play } from 'lucide-react';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
 import { useDataSources } from '@/hooks/use-datasources';
 import { useDatasourceTables, useDatasourceTableColumns } from '@/hooks/use-datasets';
 import type { AddTableInput } from '@/hooks/use-datasets';
+import { SqlEditor, type SqlDialect } from '@/components/ui/SqlEditor';
+import { dataSourceApi } from '@/lib/api/datasources';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -438,6 +440,20 @@ export function QueryTableTab({
   )?.type;
   const isBigQuery = selectedDatasourceType === 'bigquery';
 
+  // Map datasource type to SQL dialect for the editor
+  const sqlDialect: SqlDialect = (() => {
+    switch (selectedDatasourceType) {
+      case 'bigquery': return 'bigquery';
+      case 'mysql': return 'mysql';
+      case 'postgresql': return 'postgresql';
+      default: return 'standard';
+    }
+  })();
+
+  // Server-side SQL validation state
+  const [isValidating, setIsValidating] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
+
   // Wrap an identifier in the correct SQL quoting for the datasource dialect.
   // BigQuery uses backticks; PostgreSQL / others use double-quotes.
   const quoteSqlId = useCallback(
@@ -488,8 +504,36 @@ export function QueryTableTab({
       if (new RegExp(`\\b${kw}\\b`, 'i').test(trimmed)) return `Từ khóa không được phép: ${kw.toUpperCase()}`;
     }
     if (trimmed.includes(';')) return 'Không được dùng nhiều câu lệnh (dấu ;)';
-    if (trimmed.includes('--') || trimmed.includes('/*')) return 'Không được dùng comment SQL';
     return null;
+  };
+
+  // Validate SQL against the actual database to get real errors
+  const validateSqlOnServer = async (sqlText: string): Promise<string | null> => {
+    if (!selectedDatasourceId) return 'Chưa chọn datasource';
+    setIsValidating(true);
+    setServerError(null);
+    try {
+      await dataSourceApi.validateSql({
+        data_source_id: selectedDatasourceId,
+        sql_query: sqlText,
+      });
+      return null;
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      const msg = typeof detail === 'object' ? detail?.message || JSON.stringify(detail) : detail || err.message || 'Lỗi không xác định';
+      setServerError(msg);
+      return msg;
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
+  const handleValidate = async () => {
+    const finalQuery = mode === 'visual' ? generateSql() : query;
+    const clientErr = validateQuery(finalQuery);
+    if (clientErr) { setValidationError(clientErr); return; }
+    setValidationError(null);
+    await validateSqlOnServer(finalQuery.trim());
   };
 
   const handleAdd = async () => {
@@ -498,6 +542,7 @@ export function QueryTableTab({
     const err = validateQuery(finalQuery);
     if (err) { setValidationError(err); return; }
     setValidationError(null);
+    setServerError(null);
     if (lockDatasource && onSave) {
       onSave(displayName.trim(), finalQuery.trim());
     } else if (onAddTable) {
@@ -709,16 +754,25 @@ export function QueryTableTab({
             )}
           </div>
         ) : (
-          /* Advanced SQL textarea */
+          /* Advanced SQL editor with syntax highlighting */
           <div>
-            <textarea
+            {selectedDatasourceType && selectedDatasourceType !== 'manual' && selectedDatasourceType !== 'google_sheets' && (
+              <div className="mb-2 flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-secondary border border-[rgb(var(--border-line))]">
+                  <span className="h-1.5 w-1.5 rounded-full bg-brand" />
+                  SQL Dialect: {selectedDatasourceType === 'bigquery' ? 'BigQuery (Standard SQL)' : selectedDatasourceType === 'mysql' ? 'MySQL' : selectedDatasourceType === 'postgresql' ? 'PostgreSQL' : selectedDatasourceType}
+                </span>
+              </div>
+            )}
+            <SqlEditor
               value={query}
-              onChange={e => { setQuery(e.target.value); setValidationError(null); }}
+              onChange={(val) => { setQuery(val); setValidationError(null); setServerError(null); }}
+              dialect={sqlDialect}
               placeholder={`SELECT\n  order_id,\n  customer_name,\n  total_amount\nFROM orders\nWHERE order_date >= '2024-01-01'`}
-              className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 font-mono text-sm h-56 resize-y ${
-                validationError ? 'border-danger/40 focus:ring-danger' : 'border-[rgb(var(--border-strong))] focus:ring-brand'
-              }`}
               disabled={isLoading}
+              height="280px"
+              hasError={!!(validationError || serverError)}
+              tables={tableNames}
             />
             {validationError && (
               <div className="mt-2 flex items-start gap-2 text-danger text-sm">
@@ -726,9 +780,29 @@ export function QueryTableTab({
                 <span>{validationError}</span>
               </div>
             )}
-            <div className="mt-2 space-y-0.5">
-              <p className="text-xs text-text-tertiary">• Chỉ cho phép câu lệnh SELECT hoặc WITH (CTE)</p>
-              <p className="text-xs text-text-tertiary">• Không dùng dấu ; hoặc comment SQL</p>
+            {serverError && !validationError && (
+              <div className="mt-2 flex items-start gap-2 text-sm text-danger">
+                <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <span className="font-medium">Lỗi từ CSDL:</span>
+                  <pre className="mt-1 whitespace-pre-wrap break-words rounded bg-danger/5 px-2 py-1.5 text-xs font-mono">{serverError}</pre>
+                </div>
+              </div>
+            )}
+            <div className="mt-2 flex items-center justify-between">
+              <div className="space-y-0.5">
+                <p className="text-xs text-text-tertiary">• Chỉ cho phép câu lệnh SELECT hoặc WITH (CTE)</p>
+                <p className="text-xs text-text-tertiary">• Hỗ trợ comment SQL (-- và /* */), line numbers, auto-complete</p>
+              </div>
+              <button
+                type="button"
+                onClick={handleValidate}
+                disabled={!selectedDatasourceId || !query.trim() || isValidating || isLoading}
+                className="flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-strong))] px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-2 hover:text-text-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                {isValidating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                Kiểm tra SQL
+              </button>
             </div>
           </div>
         )}
@@ -739,13 +813,16 @@ export function QueryTableTab({
         {saveError && (
           <div className="flex-1 flex items-start gap-2 text-danger text-sm mr-4">
             <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-            <span>{saveError}</span>
+            <div className="flex-1 min-w-0">
+              <span className="font-medium">Lỗi từ CSDL:</span>
+              <pre className="mt-1 whitespace-pre-wrap break-words rounded bg-danger/5 px-2 py-1.5 text-xs font-mono">{saveError}</pre>
+            </div>
           </div>
         )}
         <button
           onClick={handleAdd}
           disabled={!canAdd}
-          className="px-4 py-2 bg-brand text-white rounded-md hover:bg-brand-hover disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm"
+          className="px-4 py-2 bg-brand text-white rounded-md hover:bg-brand-hover disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm shrink-0"
         >
           {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
           {lockDatasource ? 'Lưu thay đổi' : 'Thêm bảng'}

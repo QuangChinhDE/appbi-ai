@@ -343,6 +343,19 @@ class QueryExecuteResponse(BaseModel):
     execution_time_ms: float
 
 
+class SqlValidateRequest(BaseModel):
+    """Schema for validating a SQL query against a datasource without executing it."""
+    data_source_id: int
+    sql_query: str = Field(..., min_length=1)
+
+
+class SqlValidateResponse(BaseModel):
+    """Schema for SQL validation result."""
+    valid: bool
+    error: Optional[str] = None
+    dialect: Optional[str] = None
+
+
 # Error Response Schema
 class ErrorResponse(BaseModel):
     """Schema for error responses."""

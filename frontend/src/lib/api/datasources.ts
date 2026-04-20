@@ -52,6 +52,11 @@ export const dataSourceApi = {
     return response.data;
   },
 
+  validateSql: async (request: { data_source_id: number; sql_query: string }): Promise<{ valid: boolean; error: string | null; dialect: string | null }> => {
+    const response = await apiClient.post('/datasources/validate-sql', request);
+    return response.data;
+  },
+
   // ── Schema Browser ──────────────────────────────────────────────────────
 
   getSchema: async (id: number): Promise<SchemaResponse> => {
