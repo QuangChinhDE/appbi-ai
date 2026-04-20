@@ -308,4 +308,15 @@ class TransformationCompiler:
         if ";" in expression:
             return False, "Semicolons not allowed"
 
+        # Whitelist allowed function calls to prevent dangerous DuckDB builtins
+        _ALLOWED_FUNCTIONS = {
+            "ROUND", "COALESCE", "IF", "ABS", "CEIL", "FLOOR",
+            "NULLIF", "CAST", "GREATEST", "LEAST",
+            "SAFE_INT", "SAFE_FLOAT", "SAFE_NUMBER",
+        }
+        func_calls = re.findall(r"\b([A-Za-z_]\w*)\s*\(", expression)
+        for func_name in func_calls:
+            if func_name.upper() not in _ALLOWED_FUNCTIONS:
+                return False, f"Function not allowed in expression: {func_name}"
+
         return True, None

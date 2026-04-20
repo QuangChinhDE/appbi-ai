@@ -1,13 +1,14 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft,
   Bot,
   CheckCircle2,
   Clock,
+  Download,
   ExternalLink,
   FileText,
   LayoutDashboard,
@@ -16,6 +17,7 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react';
+import { exportElementToPdf } from '@/lib/export-pdf';
 
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { useDashboard } from '@/hooks/use-dashboards';
@@ -41,6 +43,8 @@ export default function AIReportReaderPage() {
   const specId = Number(params.id);
   const { data: spec, isLoading } = useAgentReportSpec(Number.isFinite(specId) ? specId : null);
   const deleteSpecMutation = useDeleteAgentReportSpec();
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const reportContentRef = useRef<HTMLDivElement>(null);
 
   const sortedRuns = useMemo(
     () =>
@@ -58,6 +62,20 @@ export default function AIReportReaderPage() {
   const dashboardId = spec?.latest_dashboard_id ?? null;
   const { data: dashboard, isLoading: isLoadingDashboard } = useDashboard(dashboardId ?? 0);
   const canEditDashboardAppearance = getResourcePermissions(dashboard?.user_permission).canEdit;
+
+  async function handleExportPdf() {
+    const el = reportContentRef.current;
+    if (!el) return;
+    setIsExportingPdf(true);
+    try {
+      const safeName = (spec?.name || 'ai-report').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
+      await exportElementToPdf(el, `${safeName}.pdf`);
+    } catch (err) {
+      console.error('PDF export failed', err);
+    } finally {
+      setIsExportingPdf(false);
+    }
+  }
 
   async function handleDeleteReport() {
     if (!spec) return;
@@ -139,6 +157,20 @@ export default function AIReportReaderPage() {
             </span>
             <button
               type="button"
+              onClick={handleExportPdf}
+              disabled={isExportingPdf}
+              className="inline-flex items-center gap-2 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-60"
+              title="Export as PDF"
+            >
+              {isExportingPdf ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4" />
+              )}
+              {isExportingPdf ? 'Exporting…' : 'Export PDF'}
+            </button>
+            <button
+              type="button"
               onClick={() => router.push(`/ai-reports/${spec.id}/edit`)}
               className="inline-flex items-center gap-2 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-2"
             >
@@ -167,6 +199,7 @@ export default function AIReportReaderPage() {
           </div>
         </div>
 
+        <div ref={reportContentRef}>
         <div className="mb-6 grid gap-4 lg:grid-cols-5">
           <div className={metricCardClassName}>
             <p className="text-xs uppercase tracking-[0.16em] text-text-quaternary">Latest run</p>
@@ -402,6 +435,7 @@ export default function AIReportReaderPage() {
               </div>
             ) : null}
           </div>
+        </div>
         </div>
       </div>
     </div>

@@ -3,14 +3,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
+  AlertCircle,
   AlertTriangle,
   CheckCircle2,
   Database,
   FileCode2,
   FileSpreadsheet,
   Loader2,
+  RefreshCw,
   Sparkles,
   Upload,
+  Wrench,
   X,
 } from 'lucide-react';
 
@@ -20,7 +23,9 @@ import { FieldGroup, Input, Select, Textarea } from '@/components/ui/Input';
 import {
   useAnalyzeDashboardHtmlImport,
   useBuildDashboardHtmlImport,
+  useFixDashboardHtmlImportChartPlan,
   usePreviewDashboardHtmlImportSource,
+  useValidateDashboardHtmlImportPlans,
 } from '@/hooks/use-dashboards';
 import { useDatasets, useDatasetTables, useTablePreview } from '@/hooks/use-datasets';
 import { summarizeImportedDashboardHtml } from '@/lib/dashboard-html-import';
@@ -28,9 +33,11 @@ import { toast } from '@/lib/toast';
 import type {
   DashboardHtmlImportAnalyzeResponse,
   DashboardHtmlImportBuildResponse,
+  DashboardHtmlImportChartPlan,
   DashboardHtmlImportSourcePreviewResponse,
   DashboardHtmlImportTargetMode,
   DashboardHtmlImportSourceMode,
+  DashboardHtmlImportValidationResult,
 } from '@/types/dashboard-html-import';
 
 interface DashboardHtmlImportModalProps {
@@ -83,6 +90,10 @@ export function DashboardHtmlImportModal({
   const [buildName, setBuildName] = useState('');
   const [analysis, setAnalysis] = useState<DashboardHtmlImportAnalyzeResponse | null>(null);
   const [includedBlockIds, setIncludedBlockIds] = useState<string[]>([]);
+  const [validationResults, setValidationResults] = useState<Record<string, DashboardHtmlImportValidationResult>>({});
+  const [validationRan, setValidationRan] = useState(false);
+  const [fixingBlockIds, setFixingBlockIds] = useState<Set<string>>(new Set());
+  const [selectedFixBlockIds, setSelectedFixBlockIds] = useState<Set<string>>(new Set());
 
   const { data: datasets = [] } = useDatasets(0, 200);
   const { data: tables = [] } = useDatasetTables(selectedDatasetId);
@@ -95,6 +106,8 @@ export function DashboardHtmlImportModal({
   const analyzeMutation = useAnalyzeDashboardHtmlImport();
   const buildMutation = useBuildDashboardHtmlImport();
   const previewSourceMutation = usePreviewDashboardHtmlImportSource();
+  const validateMutation = useValidateDashboardHtmlImportPlans();
+  const fixChartMutation = useFixDashboardHtmlImportChartPlan();
 
   useEffect(() => {
     if (!isOpen) {
@@ -111,11 +124,17 @@ export function DashboardHtmlImportModal({
       setBuildName('');
       setAnalysis(null);
       setIncludedBlockIds([]);
+      setValidationResults({});
+      setValidationRan(false);
+      setFixingBlockIds(new Set());
+      setSelectedFixBlockIds(new Set());
       analyzeMutation.reset();
       buildMutation.reset();
       previewSourceMutation.reset();
+      validateMutation.reset();
+      fixChartMutation.reset();
     }
-  }, [analyzeMutation, buildMutation, isOpen, previewSourceMutation]);
+  }, [analyzeMutation, buildMutation, isOpen, previewSourceMutation, validateMutation, fixChartMutation]);
 
   useEffect(() => {
     if (!selectedDatasetId) {
@@ -215,8 +234,8 @@ export function DashboardHtmlImportModal({
       toast.error('HTML import content is required.');
       return;
     }
-    if (sourceMode === 'existing_dataset' && !selectedTableId) {
-      toast.error('Select a dataset table to map the HTML into native charts.');
+    if (sourceMode === 'existing_dataset' && !selectedDatasetId) {
+      toast.error('Select a dataset to map the HTML into native charts.');
       return;
     }
     if (sourceMode === 'upload_excel' && sourceFiles.length === 0) {
@@ -231,7 +250,7 @@ export function DashboardHtmlImportModal({
         htmlContent: trimmedHtml,
         htmlSummary,
         sourceMode,
-        datasetTableId: sourceMode === 'existing_dataset' ? selectedTableId : null,
+        datasetId: sourceMode === 'existing_dataset' ? selectedDatasetId : null,
         selectedSheetName: sourceMode === 'upload_excel' && sourceFiles.length === 1 ? activeUploadSheetName : null,
         selectedSourceKey: sourceMode === 'upload_excel' && sourceFiles.length > 1 ? activeSourceKey : null,
         excelFile: sourceMode === 'upload_excel' && sourceFiles.length === 1 ? sourceFiles[0] : null,
@@ -240,9 +259,147 @@ export function DashboardHtmlImportModal({
       setAnalysis(result);
       setIncludedBlockIds(result.chart_plans.map((plan) => plan.block_id));
       setBuildName((current) => current.trim() || result.suggested_dashboard_name);
+      setValidationResults({});
+      setValidationRan(false);
+      setSelectedFixBlockIds(new Set());
       setStep('preview');
+
+      // Auto-validate when a dataset_id is available
+      if (sourceMode === 'existing_dataset' && selectedDatasetId) {
+        try {
+          const valResp = await validateMutation.mutateAsync({
+            analysis: result,
+            datasetId: selectedDatasetId,
+          });
+          const map: Record<string, DashboardHtmlImportValidationResult> = {};
+          for (const r of valResp.results) map[r.block_id] = r;
+          setValidationResults(map);
+          setValidationRan(true);
+          const errorCount = valResp.results.filter((r) => r.status === 'error').length;
+          if (errorCount > 0) {
+            toast.warning(`${errorCount} chart(s) have query issues. You can use AI to fix them.`);
+            // Auto-select error charts for easy batch fix
+            const errorBlockIds = valResp.results.filter((r) => r.status === 'error').map((r) => r.block_id);
+            setSelectedFixBlockIds(new Set(errorBlockIds));
+          }
+        } catch {
+          // non-blocking — user can still build without validation
+        }
+      }
     } catch (error) {
       toast.error(getApiErrorMessage(error, 'Could not analyze imported HTML.'));
+    }
+  };
+
+  const handleValidate = async () => {
+    if (!analysis || !selectedDatasetId) return;
+    try {
+      const valResp = await validateMutation.mutateAsync({
+        analysis,
+        datasetId: selectedDatasetId,
+      });
+      const map: Record<string, DashboardHtmlImportValidationResult> = {};
+      for (const r of valResp.results) map[r.block_id] = r;
+      setValidationResults(map);
+      setValidationRan(true);
+      const errorCount = valResp.results.filter((r) => r.status === 'error').length;
+      if (errorCount === 0) {
+        toast.success('All chart queries validated successfully.');
+      } else {
+        toast.warning(`${errorCount} chart(s) have query issues.`);
+      }
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, 'Validation failed.'));
+    }
+  };
+
+  const handleFixChart = async (plan: DashboardHtmlImportChartPlan) => {
+    if (!analysis) return;
+    const validation = validationResults[plan.block_id];
+    if (!validation || validation.status !== 'error') return;
+    await handleBatchFix(new Set([plan.block_id]));
+  };
+
+  const handleBatchFix = async (blockIds?: Set<string>) => {
+    if (!analysis) return;
+    const idsToFix = blockIds ?? selectedFixBlockIds;
+    if (idsToFix.size === 0) return;
+
+    // Track the latest analysis locally to avoid stale React state
+    let currentAnalysis = analysis;
+    const plansToFix = currentAnalysis.chart_plans.filter(
+      (p) => idsToFix.has(p.block_id) && validationResults[p.block_id]?.status === 'error',
+    );
+    if (plansToFix.length === 0) return;
+
+    for (const plan of plansToFix) {
+      setFixingBlockIds((prev) => new Set(prev).add(plan.block_id));
+      try {
+        const validation = validationResults[plan.block_id];
+        const resp = await fixChartMutation.mutateAsync({
+          chartPlan: plan,
+          errorMessage: validation?.error || 'Unknown error',
+          sourceProfile: currentAnalysis.source_profile,
+          allSourceProfiles: currentAnalysis.all_source_profiles,
+          datasetId: selectedDatasetId,
+          calculatedFields: currentAnalysis.calculated_fields,
+        });
+        const fixedPlan = resp.fixed_plan;
+        // Update LOCAL tracking so next iterations and re-validation use the latest
+        currentAnalysis = {
+          ...currentAnalysis,
+          chart_plans: currentAnalysis.chart_plans.map((p) =>
+            p.block_id === fixedPlan.block_id ? { ...p, ...fixedPlan } : p,
+          ),
+        };
+        setAnalysis(currentAnalysis);
+        // If the backend validated the fix, mark it as OK immediately
+        if ((fixedPlan as any).fix_validated) {
+          setValidationResults((prev) => ({
+            ...prev,
+            [fixedPlan.block_id]: { block_id: fixedPlan.block_id, status: 'ok', error: null },
+          }));
+        } else {
+          setValidationResults((prev) => {
+            const next = { ...prev };
+            delete next[fixedPlan.block_id];
+            return next;
+          });
+        }
+        toast.success(`Fixed: ${fixedPlan.fix_note || plan.title}`);
+      } catch (error) {
+        toast.error(getApiErrorMessage(error, `AI could not fix "${plan.title}".`));
+      } finally {
+        setFixingBlockIds((prev) => {
+          const next = new Set(prev);
+          next.delete(plan.block_id);
+          return next;
+        });
+      }
+    }
+
+    setSelectedFixBlockIds(new Set());
+
+    // Re-validate with the UPDATED analysis (not the stale closure `analysis`)
+    if (selectedDatasetId) {
+      try {
+        const valResp = await validateMutation.mutateAsync({
+          analysis: currentAnalysis,
+          datasetId: selectedDatasetId,
+        });
+        const map: Record<string, DashboardHtmlImportValidationResult> = {};
+        for (const r of valResp.results) map[r.block_id] = r;
+        setValidationResults(map);
+        setValidationRan(true);
+        const errorCount = valResp.results.filter((r) => r.status === 'error').length;
+        if (errorCount === 0) {
+          toast.success('All chart queries validated successfully after fix.');
+        } else {
+          toast.warning(`${errorCount} chart(s) still have query issues.`);
+        }
+      } catch (error) {
+        toast.error(getApiErrorMessage(error, 'Re-validation failed.'));
+      }
     }
   };
 
@@ -260,7 +417,7 @@ export function DashboardHtmlImportModal({
         targetMode,
         targetDashboardId,
         dashboardName: buildName.trim() || analysis.suggested_dashboard_name,
-        datasetTableId: sourceMode === 'existing_dataset' ? selectedTableId : null,
+        datasetId: sourceMode === 'existing_dataset' ? selectedDatasetId : null,
         selectedSheetName: sourceMode === 'upload_excel' && sourceFiles.length === 1 ? activeUploadSheetName : null,
         includedBlockIds,
         excelFile: sourceMode === 'upload_excel' && sourceFiles.length === 1 ? sourceFiles[0] : null,
@@ -313,7 +470,7 @@ export function DashboardHtmlImportModal({
       footer={
         <>
           {step === 'preview' && (
-            <Button variant="ghost" size="sm" onClick={() => setStep('configure')} disabled={buildMutation.isPending}>
+            <Button variant="ghost" size="sm" onClick={() => { setStep('configure'); setAnalysis(null); setValidationResults({}); setValidationRan(false); setSelectedFixBlockIds(new Set()); }} disabled={buildMutation.isPending}>
               Back
             </Button>
           )}
@@ -448,20 +605,22 @@ export function DashboardHtmlImportModal({
                       ))}
                     </Select>
                   </FieldGroup>
-                  <FieldGroup label="Dataset Table">
-                    <Select
-                      value={selectedTableId ?? ''}
-                      onChange={(event) => setSelectedTableId(event.target.value ? Number(event.target.value) : null)}
-                      disabled={!selectedDatasetId}
-                    >
-                      <option value="">Select table</option>
-                      {tables.map((table) => (
-                        <option key={table.id} value={table.id}>
-                          {table.display_name}
-                        </option>
-                      ))}
-                    </Select>
-                  </FieldGroup>
+                  {selectedDatasetId && tables.length > 0 && (
+                    <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
+                      <p className="text-caption font-semibold text-text-primary">
+                        {tables.filter((t) => t.source_kind !== 'generated_calendar').length} data table(s)
+                      </p>
+                      <p className="mt-1 text-caption text-text-tertiary">
+                        {tables
+                          .filter((t) => t.source_kind !== 'generated_calendar')
+                          .map((t) => t.display_name)
+                          .join(', ')}
+                      </p>
+                      <p className="mt-1 text-caption text-text-tertiary">
+                        Each chart will be automatically matched to the best-fitting table.
+                      </p>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="mt-4 space-y-3">
@@ -537,13 +696,13 @@ export function DashboardHtmlImportModal({
                 />
               </FieldGroup>
 
-              {sourceMode === 'existing_dataset' && selectedDataset && selectedTable && (
+              {sourceMode === 'existing_dataset' && selectedDataset && (
                 <div className="mt-4 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
                   <p className="text-caption font-semibold text-text-primary">
-                    {selectedDataset.name} / {selectedTable.display_name}
+                    {selectedDataset.name}
                   </p>
                   <p className="mt-1 text-caption text-text-tertiary">
-                    {tablePreviewQuery.data?.columns.length ?? 0} columns available for chart mapping.
+                    {tables.filter((t) => t.source_kind !== 'generated_calendar').length} data table(s) — all tables used for chart mapping.
                   </p>
                 </div>
               )}
@@ -806,12 +965,97 @@ export function DashboardHtmlImportModal({
               )}
 
               <div className="space-y-3">
+                {/* Validation summary bar */}
+                {validationRan && (
+                  <div className={`flex items-center justify-between rounded-xl border p-3 ${
+                    Object.values(validationResults).some((r) => r.status === 'error')
+                      ? 'border-danger/30 bg-danger/10'
+                      : 'border-success/30 bg-success/10'
+                  }`}>
+                    <div className="flex items-center gap-2 text-sm">
+                      {Object.values(validationResults).some((r) => r.status === 'error') ? (
+                        <>
+                          <AlertCircle className="h-4 w-4 text-danger" />
+                          <span className="text-danger font-medium">
+                            {Object.values(validationResults).filter((r) => r.status === 'error').length} chart(s) failed query validation
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="h-4 w-4 text-success" />
+                          <span className="text-success font-medium">All chart queries validated successfully</span>
+                        </>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {Object.values(validationResults).some((r) => r.status === 'error') && (
+                        <Button
+                          variant="secondary"
+                          size="xs"
+                          leadingIcon={fixingBlockIds.size > 0 ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
+                          onClick={() => {
+                            if (selectedFixBlockIds.size > 0) {
+                              handleBatchFix();
+                            } else {
+                              const errorIds = Object.entries(validationResults)
+                                .filter(([, r]) => r.status === 'error')
+                                .map(([id]) => id);
+                              handleBatchFix(new Set(errorIds));
+                            }
+                          }}
+                          disabled={fixingBlockIds.size > 0}
+                        >
+                          {fixingBlockIds.size > 0
+                            ? `Fixing ${fixingBlockIds.size}...`
+                            : selectedFixBlockIds.size > 0
+                              ? `Fix Selected (${selectedFixBlockIds.size})`
+                              : `Fix All Errors`}
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        leadingIcon={<RefreshCw className="h-3 w-3" />}
+                        onClick={handleValidate}
+                        loading={validateMutation.isPending}
+                      >
+                        Re-validate
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                {!validationRan && sourceMode === 'existing_dataset' && selectedDatasetId && (
+                  <div className="flex items-center justify-between rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 p-3">
+                    <p className="text-caption text-text-tertiary">
+                      Run validation to test each chart query against the data source before building.
+                    </p>
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      leadingIcon={<CheckCircle2 className="h-3 w-3" />}
+                      onClick={handleValidate}
+                      loading={validateMutation.isPending}
+                    >
+                      Validate All
+                    </Button>
+                  </div>
+                )}
+
                 {analysis.chart_plans.map((plan) => {
                   const checked = includedBlockIds.includes(plan.block_id);
+                  const validation = validationResults[plan.block_id];
+                  const isFixing = fixingBlockIds.has(plan.block_id);
+                  const hasError = validation?.status === 'error';
                   return (
                     <label
                       key={plan.block_id}
-                      className={`block rounded-xl border p-4 transition-colors ${checked ? 'border-brand/40 bg-brand/10' : 'border-[rgb(var(--border-line))] bg-surface-1'}`}
+                      className={`block rounded-xl border p-4 transition-colors ${
+                        validation?.status === 'error'
+                          ? 'border-danger/40 bg-danger/5'
+                          : checked
+                            ? 'border-brand/40 bg-brand/10'
+                            : 'border-[rgb(var(--border-line))] bg-surface-1'
+                      }`}
                     >
                       <div className="flex items-start gap-3">
                         <input
@@ -832,6 +1076,21 @@ export function DashboardHtmlImportModal({
                             <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-text-tertiary">
                               {Math.round(plan.confidence * 100)}% confidence
                             </span>
+                            {/* Validation status badge */}
+                            {validation && (
+                              validation.status === 'ok' ? (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-semibold text-success">
+                                  <CheckCircle2 className="h-3 w-3" /> OK
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-danger/10 px-2 py-0.5 text-[11px] font-semibold text-danger">
+                                  <AlertCircle className="h-3 w-3" /> Error
+                                </span>
+                              )
+                            )}
+                            {validateMutation.isPending && !validation && (
+                              <Loader2 className="h-3 w-3 animate-spin text-text-tertiary" />
+                            )}
                           </div>
 
                           {!!plan.source_fields_used.length && (
@@ -840,7 +1099,7 @@ export function DashboardHtmlImportModal({
                             </p>
                           )}
 
-                          {plan.source_key && sourceFiles.length > 1 && (
+                          {plan.source_key && (sourceFiles.length > 1 || sourceMode === 'existing_dataset') && (
                             <p className="text-caption text-brand/80">
                               <FileSpreadsheet className="inline h-3 w-3 mr-1 -mt-0.5" />
                               Source: {plan.source_key}
@@ -864,6 +1123,48 @@ export function DashboardHtmlImportModal({
                                   {warning}
                                 </p>
                               ))}
+                            </div>
+                          )}
+
+                          {/* Validation error + AI fix */}
+                          {validation?.status === 'error' && validation.error && (
+                            <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2">
+                              <p className="text-caption text-danger font-mono break-all">{validation.error}</p>
+                              <div className="mt-2 flex items-center gap-2">
+                                <label className="flex items-center gap-1.5 text-caption text-text-secondary cursor-pointer" onClick={(e) => e.stopPropagation()}>
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedFixBlockIds.has(plan.block_id)}
+                                    onChange={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedFixBlockIds((prev) => {
+                                        const next = new Set(prev);
+                                        if (next.has(plan.block_id)) next.delete(plan.block_id);
+                                        else next.add(plan.block_id);
+                                        return next;
+                                      });
+                                    }}
+                                  />
+                                  Select for batch fix
+                                </label>
+                                <Button
+                                  variant="secondary"
+                                  size="xs"
+                                  leadingIcon={isFixing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
+                                  onClick={(e) => { e.preventDefault(); handleFixChart(plan); }}
+                                  disabled={isFixing || fixingBlockIds.size > 0}
+                                >
+                                  {isFixing ? 'Fixing...' : 'AI Fix'}
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Show fix note if AI fixed this plan */}
+                          {(plan as any).fix_note && (
+                            <div className="rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-caption text-success">
+                              <Wrench className="inline h-3 w-3 mr-1 -mt-0.5" />
+                              AI fix: {(plan as any).fix_note}
                             </div>
                           )}
                         </div>
@@ -893,7 +1194,7 @@ export function DashboardHtmlImportModal({
       )}
       </div>
 
-      {(previewSourceMutation.isPending || analyzeMutation.isPending || buildMutation.isPending) && (
+      {(previewSourceMutation.isPending || analyzeMutation.isPending || buildMutation.isPending || validateMutation.isPending) && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-overlay/45 backdrop-blur-[1px]">
           <div className="rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 px-5 py-4 shadow-linear-lg">
             <div className="flex items-center gap-3">
@@ -903,7 +1204,9 @@ export function DashboardHtmlImportModal({
                   ? 'Parsing uploaded source file...'
                   : analyzeMutation.isPending
                     ? 'Analyzing imported HTML...'
-                    : 'Building native dashboard...'}
+                    : validateMutation.isPending
+                      ? 'Validating chart queries...'
+                      : 'Building native dashboard...'}
               </span>
             </div>
           </div>

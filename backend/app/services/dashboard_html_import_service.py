@@ -459,6 +459,12 @@ def _load_existing_source_profile(
     else:
         columns = []
 
+    if not columns:
+        raise ValueError(
+            f"Dataset table '{db_table.display_name}' has no column metadata yet. "
+            "Please preview the table first so column information is cached."
+        )
+
     return _source_profile_from_rows(
         source_mode="existing_dataset",
         dataset_id=dataset_obj.id,
@@ -468,6 +474,92 @@ def _load_existing_source_profile(
         columns=columns,
         sample_rows=sample_rows[:10],
     )
+
+
+def _load_existing_dataset_profiles(
+    db: Session,
+    *,
+    current_user: User,
+    dataset_id: int,
+) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
+    """Load source profiles for ALL data tables in a dataset.
+
+    Returns ``(primary_profile, all_profiles_dict)`` where keys in
+    *all_profiles_dict* are the table display names (used as ``source_key``
+    in the multi-source analyze/build flow).
+    """
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise ValueError("Dataset not found")
+    require_view_access(db, current_user, dataset_obj, "datasets")
+
+    db_tables = (
+        db.query(DatasetTable)
+        .filter(
+            DatasetTable.dataset_id == dataset_id,
+            DatasetTable.source_kind != "generated_calendar",
+        )
+        .order_by(DatasetTable.id)
+        .all()
+    )
+    if not db_tables:
+        raise ValueError("Dataset has no data tables.")
+
+    all_profiles: Dict[str, Dict[str, Any]] = {}
+    for db_table in db_tables:
+        columns_cache = db_table.columns_cache if isinstance(db_table.columns_cache, dict) else {}
+        cached_columns = columns_cache.get("columns") if isinstance(columns_cache, dict) else None
+        sample_rows = list(db_table.sample_cache or [])
+
+        if isinstance(cached_columns, list) and cached_columns:
+            columns = [
+                {
+                    "name": str(col.get("name") or ""),
+                    "type": str(col.get("type") or "string"),
+                }
+                for col in cached_columns
+                if str(col.get("name") or "").strip()
+            ]
+        elif sample_rows:
+            first_row = sample_rows[0]
+            columns = [
+                {
+                    "name": str(key),
+                    "type": (
+                        "number"
+                        if isinstance(value, (int, float))
+                        else "date"
+                        if hasattr(value, "isoformat")
+                        else "string"
+                    ),
+                }
+                for key, value in first_row.items()
+            ]
+        else:
+            columns = []
+
+        if not columns:
+            continue  # skip tables without column metadata
+
+        source_key = db_table.display_name
+        all_profiles[source_key] = _source_profile_from_rows(
+            source_mode="existing_dataset",
+            dataset_id=dataset_obj.id,
+            dataset_name=dataset_obj.name,
+            dataset_table_id=db_table.id,
+            dataset_table_name=db_table.display_name,
+            columns=columns,
+            sample_rows=sample_rows[:10],
+        )
+
+    if not all_profiles:
+        raise ValueError(
+            "No tables with column metadata found in the dataset. "
+            "Please preview tables first so column information is cached."
+        )
+
+    primary_profile = next(iter(all_profiles.values()))
+    return primary_profile, all_profiles
 
 
 def _load_uploaded_excel_source_profile(
@@ -1065,6 +1157,7 @@ def _ai_chart_plans(
     *,
     document_summary: Dict[str, Any],
     source_profile: Dict[str, Any],
+    all_source_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Tuple[Optional[List[Dict[str, Any]]], List[Dict[str, Any]], Dict[str, Any]]:
     """Return ``(charts, calculated_fields, ai_meta)``."""
     if settings.template_import_ai_provider == "unavailable":
@@ -1085,6 +1178,51 @@ def _ai_chart_plans(
         )
 
     source_col_names = [col.get("name") for col in (source_profile.get("columns") or [])]
+    if all_source_profiles and len(all_source_profiles) > 1:
+        source_col_names = list({
+            col.get("name")
+            for prof in all_source_profiles.values()
+            for col in (prof.get("columns") or [])
+        })
+
+    # Build source_profile section for prompt — include all tables when multi-source
+    use_multi_prompt = all_source_profiles and len(all_source_profiles) > 1
+    if use_multi_prompt:
+        source_section = {
+            "dataset_name": source_profile.get("dataset_name"),
+            "tables": [
+                {
+                    "source_key": key,
+                    "dataset_table_name": prof.get("dataset_table_name"),
+                    "columns": [
+                        {"name": item.get("name"), "type": item.get("type")}
+                        for item in (prof.get("columns") or [])
+                    ],
+                    "numeric_columns": prof.get("numeric_columns"),
+                    "date_columns": prof.get("date_columns"),
+                    "sample_rows": (prof.get("sample_rows") or [])[:3],
+                }
+                for key, prof in all_source_profiles.items()
+            ],
+        }
+        multi_source_rules = [
+            "The dataset has MULTIPLE tables. Each chart should use fields from ONE table only.",
+            "For each chart, set source_key to the table name that best fits the chart's data needs.",
+            "Calculated fields must reference columns from a single table; set source_key on the calculated_field too.",
+        ]
+    else:
+        source_section = {
+            "dataset_name": source_profile.get("dataset_name"),
+            "dataset_table_name": source_profile.get("dataset_table_name"),
+            "columns": [
+                {"name": item.get("name"), "type": item.get("type")}
+                for item in (source_profile.get("columns") or [])
+            ],
+            "numeric_columns": source_profile.get("numeric_columns"),
+            "date_columns": source_profile.get("date_columns"),
+            "sample_rows": source_profile.get("sample_rows"),
+        }
+        multi_source_rules = []
 
     prompt = json.dumps(
         {
@@ -1102,6 +1240,7 @@ def _ai_chart_plans(
                 "KPI requires one numeric metric. TIME_SERIES requires one date field and one numeric metric. PIE requires one dimension and one numeric metric.",
                 "BAR_LINE requires one dimension plus one bar metric and one line metric.",
                 "SCATTER requires two numeric fields.",
+                *multi_source_rules,
             ],
             "document_summary": {
                 "title": document_summary.get("title"),
@@ -1120,17 +1259,7 @@ def _ai_chart_plans(
                     for block in candidates[:16]
                 ],
             },
-            "source_profile": {
-                "dataset_name": source_profile.get("dataset_name"),
-                "dataset_table_name": source_profile.get("dataset_table_name"),
-                "columns": [
-                    {"name": item.get("name"), "type": item.get("type")}
-                    for item in (source_profile.get("columns") or [])
-                ],
-                "numeric_columns": source_profile.get("numeric_columns"),
-                "date_columns": source_profile.get("date_columns"),
-                "sample_rows": source_profile.get("sample_rows"),
-            },
+            "source_profile": source_section,
             "return_json_shape": {
                 "dashboard_title": "string",
                 "calculated_fields": [
@@ -1147,6 +1276,7 @@ def _ai_chart_plans(
                         "title": "string",
                         "original_chart_type": "string",
                         "suggested_chart_type": "BAR|HORIZONTAL_BAR|LINE|PIE|TIME_SERIES|TABLE|AREA|STACKED_BAR|GROUPED_BAR|BAR_LINE|SCATTER|KPI",
+                        "source_key": "table display_name (required for multi-table datasets)",
                         "field_mapping": {
                             "dimension": "string | null",
                             "timeField": "string | null",
@@ -1172,6 +1302,7 @@ def _ai_chart_plans(
         "You convert HTML dashboard summaries into AppBI-native chart plans. "
         "When the raw data lacks a metric the HTML dashboard displays (like percentages, totals, differences, cumulative values), "
         "define it as a calculated_field with a SQL-safe expression before referencing it in charts. "
+        "When the dataset has multiple tables, assign each chart to the most appropriate table via source_key. "
         "Be conservative. Stay inside the supported chart types. "
         "When the HTML is too rich for the native canvas, adapt it to the closest chart the system already supports."
     )
@@ -1213,6 +1344,203 @@ def _ai_chart_plans(
     )
 
 
+_APPBI_META_RE = re.compile(
+    r'<script[^>]+type\s*=\s*["\']application/appbi-dashboard["\'][^>]*>(.*?)</script>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _extract_embedded_metadata(html_text: str) -> Optional[Dict[str, Any]]:
+    """Extract ``<script type="application/appbi-dashboard">`` JSON from HTML.
+
+    Returns the parsed dict or *None* when no valid metadata block is found.
+    """
+    match = _APPBI_META_RE.search(html_text)
+    if not match:
+        return None
+    try:
+        payload = json.loads(match.group(1))
+        if isinstance(payload, dict) and isinstance(payload.get("charts"), list):
+            return payload
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("Found appbi-dashboard script tag but JSON is invalid.")
+    return None
+
+
+def _finalize_plan_from_metadata(
+    *,
+    raw: Dict[str, Any],
+    source_profile: Dict[str, Any],
+    order: int,
+) -> Dict[str, Any]:
+    """Build a finalized chart plan from embedded metadata (no AI needed).
+
+    This mirrors ``_finalize_plan`` output but trusts the metadata values since
+    they were authored by the skill-guided generation process.
+    """
+    suggested_type = str(raw.get("suggested_chart_type") or raw.get("chart_type") or "TABLE").upper()
+    final_chart_type = suggested_type if suggested_type in _SUPPORTED_CHART_TYPES else "TABLE"
+    changed = final_chart_type != suggested_type
+
+    fm = raw.get("field_mapping") or {}
+    dimension = str(fm.get("dimension") or "").strip() or None
+    time_field = str(fm.get("timeField") or "").strip() or None
+    breakdown = str(fm.get("breakdown") or "").strip() or None
+    scatter_x = str(fm.get("scatterX") or "").strip() or None
+    scatter_y = str(fm.get("scatterY") or "").strip() or None
+    selected_columns = [str(c).strip() for c in (fm.get("selectedColumns") or []) if str(c).strip()]
+
+    metrics = []
+    for m in (fm.get("metrics") or []):
+        if isinstance(m, dict) and m.get("field"):
+            metrics.append({"field": str(m["field"]).strip(), "agg": str(m.get("agg") or "sum").lower()})
+
+    line_metric = None
+    if fm.get("lineMetric") and isinstance(fm["lineMetric"], dict) and fm["lineMetric"].get("field"):
+        line_metric = {"field": str(fm["lineMetric"]["field"]).strip(), "agg": str(fm["lineMetric"].get("agg") or "sum").lower()}
+
+    title = _normalize_text(raw.get("title"), max_len=160) or f"Imported {final_chart_type.title()}"
+
+    # Build role_config matching _finalize_plan output
+    role_config: Dict[str, Any] = {"metrics": metrics}
+    if dimension:
+        role_config["dimension"] = dimension
+    if time_field:
+        role_config["timeField"] = time_field
+    if breakdown:
+        role_config["breakdown"] = breakdown
+    if line_metric:
+        role_config["lineMetric"] = line_metric
+    if selected_columns:
+        role_config["selectedColumns"] = selected_columns
+    if scatter_x:
+        role_config["scatterX"] = scatter_x
+    if scatter_y:
+        role_config["scatterY"] = scatter_y
+
+    source_fields_used = sorted({
+        *(([dimension] if dimension else [])),
+        *(([time_field] if time_field else [])),
+        *(([breakdown] if breakdown else [])),
+        *(([scatter_x] if scatter_x else [])),
+        *(([scatter_y] if scatter_y else [])),
+        *([m.get("field") for m in metrics if m.get("field")]),
+        *(([line_metric["field"]] if line_metric and line_metric.get("field") else [])),
+        *(selected_columns or []),
+    })
+
+    confidence = 0.95
+    try:
+        confidence = max(0.05, min(float(raw.get("confidence", 0.95)), 0.99))
+    except (TypeError, ValueError):
+        pass
+
+    size_hint = str(raw.get("size_hint") or "half").lower()
+    if size_hint not in {"full", "half", "third", "kpi"}:
+        size_hint = "kpi" if final_chart_type == "KPI" else ("full" if final_chart_type == "TABLE" else "half")
+
+    return {
+        "block_id": str(raw.get("block_id") or f"meta-{order}"),
+        "order": order,
+        "title": title,
+        "block_role": final_chart_type.lower() if final_chart_type in ("TABLE", "KPI") else "chart",
+        "source_excerpt": _normalize_text(raw.get("reasoning"), max_len=280),
+        "original_chart_type": str(raw.get("original_chart_type") or final_chart_type).upper(),
+        "requested_chart_type": suggested_type,
+        "final_chart_type": final_chart_type,
+        "changed_chart_type": changed,
+        "conversion_note": None if not changed else f"Requested {suggested_type}, imported as {final_chart_type}.",
+        "rationale": _normalize_text(raw.get("reasoning"), max_len=260),
+        "confidence": confidence,
+        "size_hint": size_hint,
+        "source_fields_used": source_fields_used,
+        "warnings": [],
+        "role_config": role_config,
+        "style_config": {"chartTitle": title},
+        "source_key": raw.get("source_key"),
+    }
+
+
+def _analyze_from_embedded_metadata(
+    *,
+    embedded: Dict[str, Any],
+    document_summary: Dict[str, Any],
+    source_profile: Dict[str, Any],
+    all_source_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Build the full analyze response from embedded ``application/appbi-dashboard`` metadata."""
+    from app.services.transformation_compiler import TransformationCompiler
+
+    raw_charts = embedded.get("charts") or []
+    raw_calc_fields = embedded.get("calculated_fields") or []
+
+    # Collect all known column names across profiles for calc-field validation
+    all_col_names: List[str] = [col.get("name") for col in (source_profile.get("columns") or [])]
+    if all_source_profiles:
+        for prof in all_source_profiles.values():
+            for col in (prof.get("columns") or []):
+                if col.get("name") not in all_col_names:
+                    all_col_names.append(col.get("name"))
+
+    validated_calc_fields = _validate_calculated_fields(raw_calc_fields, all_col_names)
+
+    # Enrich profiles with calculated field names
+    def _enrich(profile: Dict[str, Any]) -> Dict[str, Any]:
+        if not validated_calc_fields:
+            return profile
+        enriched = dict(profile)
+        existing_cols = list(enriched.get("columns") or [])
+        existing_names = {col.get("name") for col in existing_cols}
+        for cf in validated_calc_fields:
+            if cf["name"] not in existing_names:
+                existing_cols.append({"name": cf["name"], "type": "number"})
+        enriched["columns"] = existing_cols
+        return enriched
+
+    enriched_profile = _enrich(source_profile)
+
+    finalized_plans: List[Dict[str, Any]] = []
+    for idx, raw in enumerate(raw_charts, start=1):
+        if not isinstance(raw, dict):
+            continue
+        plan = _finalize_plan_from_metadata(
+            raw=raw,
+            source_profile=enriched_profile,
+            order=idx,
+        )
+        finalized_plans.append(plan)
+
+    finalized_plans.sort(key=lambda p: (p.get("order", 0), p.get("block_id", "")))
+    _assign_layouts(finalized_plans)
+
+    title = _normalize_text(embedded.get("dashboard_title") or document_summary.get("title"), max_len=180) or "Imported Dashboard"
+
+    _, ignored = _candidate_blocks(document_summary)
+
+    warnings: List[str] = []
+    if not finalized_plans:
+        warnings.append("Embedded metadata contained no valid chart plans.")
+    if any(p.get("changed_chart_type") for p in finalized_plans):
+        warnings.append("One or more chart types from the metadata were adapted to supported AppBI types.")
+
+    return {
+        "suggested_dashboard_name": title,
+        "document_title": document_summary.get("title"),
+        "source_profile": source_profile,
+        "all_source_profiles": all_source_profiles,
+        "chart_plans": finalized_plans,
+        "calculated_fields": validated_calc_fields,
+        "ignored_blocks": ignored,
+        "warnings": warnings,
+        "ai_meta": build_ai_assist_meta(
+            requested=False,
+            applied=False,
+            status="skipped",
+            message="Chart plans loaded from embedded application/appbi-dashboard metadata. AI was not needed.",
+        ),
+    }
+
+
 def analyze_dashboard_html_import(
     *,
     html_text: str,
@@ -1221,11 +1549,24 @@ def analyze_dashboard_html_import(
     all_source_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     document_summary = _build_document_summary(html_text=html_text, html_summary=html_summary)
+
+    # ── Fast path: embedded metadata from skill-generated HTML ──────────
+    embedded = _extract_embedded_metadata(html_text)
+    if embedded is not None:
+        return _analyze_from_embedded_metadata(
+            embedded=embedded,
+            document_summary=document_summary,
+            source_profile=source_profile,
+            all_source_profiles=all_source_profiles,
+        )
+
+    # ── Standard path: AI-assisted analysis ─────────────────────────────
     candidates, ignored = _candidate_blocks(document_summary)
 
     ai_plans, calculated_fields, ai_meta = _ai_chart_plans(
         document_summary=document_summary,
         source_profile=source_profile,
+        all_source_profiles=all_source_profiles,
     )
     ai_lookup = {
         str(item.get("block_id")): item
@@ -1295,6 +1636,7 @@ def analyze_dashboard_html_import(
         "suggested_dashboard_name": _normalize_text(document_summary.get("title"), max_len=180) or "Imported Dashboard",
         "document_title": document_summary.get("title"),
         "source_profile": source_profile,
+        "all_source_profiles": all_source_profiles,
         "chart_plans": finalized_plans,
         "calculated_fields": calculated_fields,
         "ignored_blocks": ignored,
@@ -1534,16 +1876,26 @@ def _apply_calculated_fields_to_tables(
             existing_calc_names.add(field_name)
 
             # Update columns_cache with the new calculated column
-            cols_cache = list(db_table.columns_cache or [])
-            if not any(c.get("name") == field_name for c in cols_cache):
-                cols_cache.append({
+            # columns_cache is stored as {"columns": [...], ...} dict format
+            raw_cache = db_table.columns_cache
+            if isinstance(raw_cache, dict):
+                cols_list = list(raw_cache.get("columns") or [])
+            elif isinstance(raw_cache, list):
+                cols_list = list(raw_cache)
+            else:
+                cols_list = []
+            if not any(c.get("name") == field_name for c in cols_list):
+                cols_list.append({
                     "name": field_name,
                     "type": "number",
                     "nullable": True,
                     "is_calculated": True,
                     "description": cf.get("label") or field_name,
                 })
-                db_table.columns_cache = cols_cache
+                if isinstance(raw_cache, dict):
+                    db_table.columns_cache = {**raw_cache, "columns": cols_list}
+                else:
+                    db_table.columns_cache = {"columns": cols_list}
 
         db_table.transformations = existing_transforms
         db.flush()
@@ -1556,6 +1908,7 @@ def build_dashboard_from_import(
     analysis: Dict[str, Any],
     source_mode: SourceMode,
     dataset_table_id: Optional[int],
+    dataset_id: Optional[int] = None,
     source_bytes: Optional[bytes],
     source_filename: Optional[str],
     source_files: Optional[List[Tuple[bytes, Optional[str]]]] = None,
@@ -1577,16 +1930,40 @@ def build_dashboard_from_import(
     table_id_map: Dict[str, int] = {}
 
     if source_mode == "existing_dataset":
-        if resolved_dataset_table_id is None:
-            raise ValueError("dataset_table_id is required when building from an existing source.")
-        db_table = db.query(DatasetTable).filter(DatasetTable.id == resolved_dataset_table_id).first()
-        if not db_table:
-            raise ValueError("Dataset table not found.")
-        dataset_obj = db.query(Dataset).filter(Dataset.id == db_table.dataset_id).first()
-        if not dataset_obj:
-            raise ValueError("Dataset not found.")
-        require_view_access(db, current_user, dataset_obj, "datasets")
-        resolved_dataset_id = dataset_obj.id
+        if dataset_id is not None:
+            # Multi-table mode: use all non-calendar tables from the dataset
+            dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+            if not dataset_obj:
+                raise ValueError("Dataset not found.")
+            require_view_access(db, current_user, dataset_obj, "datasets")
+            resolved_dataset_id = dataset_obj.id
+
+            db_tables = (
+                db.query(DatasetTable)
+                .filter(
+                    DatasetTable.dataset_id == dataset_id,
+                    DatasetTable.source_kind != "generated_calendar",
+                )
+                .order_by(DatasetTable.id)
+                .all()
+            )
+            if not db_tables:
+                raise ValueError("Dataset has no data tables.")
+            for dt in db_tables:
+                table_id_map[dt.display_name] = dt.id
+            resolved_dataset_table_id = db_tables[0].id
+        elif resolved_dataset_table_id is not None:
+            # Legacy single-table mode
+            db_table = db.query(DatasetTable).filter(DatasetTable.id == resolved_dataset_table_id).first()
+            if not db_table:
+                raise ValueError("Dataset table not found.")
+            dataset_obj = db.query(Dataset).filter(Dataset.id == db_table.dataset_id).first()
+            if not dataset_obj:
+                raise ValueError("Dataset not found.")
+            require_view_access(db, current_user, dataset_obj, "datasets")
+            resolved_dataset_id = dataset_obj.id
+        else:
+            raise ValueError("dataset_id or dataset_table_id is required when building from an existing source.")
     else:
         dataset_permission = (current_user.permissions or {}).get("datasets", "none")
         if dataset_permission not in {"edit", "full"}:
@@ -1754,3 +2131,243 @@ def build_dashboard_from_import(
         "dataset_table_id": resolved_dataset_table_id,
         "dataset_table_ids": table_id_map if table_id_map else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Validate chart plans — dry-run queries before building
+# ---------------------------------------------------------------------------
+
+
+class _VirtualTable:
+    """Lightweight wrapper injecting extra transformations without touching the ORM object."""
+
+    def __init__(self, real_table: DatasetTable, extra_transformations: List[Dict[str, Any]]):
+        self._real = real_table
+        self.transformations = list(real_table.transformations or []) + extra_transformations
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
+
+def validate_chart_plans(
+    db: Session,
+    *,
+    current_user: User,
+    dataset_id: int,
+    chart_plans: List[Dict[str, Any]],
+    calculated_fields: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Dry-run each chart plan's query against DuckDB and return per-block results.
+
+    Returns a list of ``{"block_id": str, "status": "ok"|"error", "error": str|None}``.
+    """
+    from app.models.models import DataSource
+    from app.services.datasource_service import DataSourceConnectionService
+    from app.services.live_query_service import build_live_agg_query, build_live_base_query_plan
+
+    tables = (
+        db.query(DatasetTable)
+        .filter(
+            DatasetTable.dataset_id == dataset_id,
+            DatasetTable.source_kind != "generated_calendar",
+        )
+        .all()
+    )
+    if not tables:
+        return [
+            {"block_id": p.get("block_id", ""), "status": "error", "error": "No data tables found in dataset."}
+            for p in chart_plans
+        ]
+
+    table_map: Dict[str, DatasetTable] = {t.display_name: t for t in tables}
+    default_table = tables[0]
+
+    datasource = db.query(DataSource).filter(DataSource.id == default_table.datasource_id).first()
+    if not datasource:
+        return [
+            {"block_id": p.get("block_id", ""), "status": "error", "error": "DataSource not found."}
+            for p in chart_plans
+        ]
+
+    ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+
+    # Group calculated fields by source_key so we inject them into the right table
+    calc_by_source: Dict[str, List[Dict[str, Any]]] = {}
+    for cf in calculated_fields or []:
+        sk = cf.get("source_key") or "__default__"
+        calc_by_source.setdefault(sk, []).append(cf)
+
+    def _extra_transforms_for(table_display_name: str) -> List[Dict[str, Any]]:
+        items = list(calc_by_source.get(table_display_name, []))
+        items.extend(calc_by_source.get("__default__", []))
+        return [
+            {
+                "type": "add_column",
+                "enabled": True,
+                "params": {"newField": cf["name"], "expression": cf["expression"]},
+            }
+            for cf in items
+        ]
+
+    results: List[Dict[str, Any]] = []
+    for plan in chart_plans:
+        block_id = plan.get("block_id", "")
+        try:
+            source_key = plan.get("source_key")
+            real_table = table_map.get(source_key, default_table) if source_key else default_table
+
+            virtual = _VirtualTable(real_table, _extra_transforms_for(real_table.display_name))
+            base_plan = build_live_base_query_plan(datasource, virtual)
+            base_table = f"({base_plan.sql}) AS _appbi_live"
+
+            chart_type = plan.get("final_chart_type", "TABLE")
+            role_config = dict(plan.get("role_config") or {})
+            agg_sql, _ = build_live_agg_query(
+                base_table, chart_type, role_config, [], "duckdb", limit_override=5,
+            )
+
+            logger.info(
+                "validate_chart_plan block_id=%s source_key=%s table=%s base_sql=%s agg_sql=%s",
+                block_id, source_key, real_table.display_name, base_plan.sql[:200], agg_sql[:300],
+            )
+
+            DataSourceConnectionService.execute_query(ds_type, datasource.config, agg_sql, limit=5)
+            results.append({"block_id": block_id, "status": "ok", "error": None})
+        except Exception as exc:
+            logger.error("validate_chart_plan FAILED block_id=%s source_key=%s error=%s", block_id, source_key, str(exc))
+            results.append({"block_id": block_id, "status": "error", "error": str(exc)})
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# AI fix a single broken chart plan
+# ---------------------------------------------------------------------------
+
+
+def ai_fix_chart_plan(
+    *,
+    chart_plan: Dict[str, Any],
+    error_message: str,
+    source_profile: Dict[str, Any],
+    all_source_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Ask the configured AI provider to repair a chart plan that failed validation.
+
+    Returns the corrected plan dict (same shape) or ``None`` on failure.
+    """
+    if settings.template_import_ai_provider == "unavailable":
+        return None
+
+    # Build column inventory — include ALL tables so AI can reassign source_key
+    plan_source_key = chart_plan.get("source_key")
+    current_profile = source_profile
+    if plan_source_key and all_source_profiles and plan_source_key in all_source_profiles:
+        current_profile = all_source_profiles[plan_source_key]
+
+    # Build per-table column maps
+    tables_info: Dict[str, Any] = {}
+    if all_source_profiles and len(all_source_profiles) > 1:
+        for tbl_key, prof in all_source_profiles.items():
+            tables_info[tbl_key] = {
+                "columns": [{"name": c.get("name"), "type": c.get("type")} for c in (prof.get("columns") or [])],
+                "numeric_columns": prof.get("numeric_columns", []),
+                "date_columns": prof.get("date_columns", []),
+            }
+    else:
+        tbl_key = plan_source_key or "__default__"
+        tables_info[tbl_key] = {
+            "columns": [{"name": c.get("name"), "type": c.get("type")} for c in (current_profile.get("columns") or [])],
+            "numeric_columns": current_profile.get("numeric_columns", []),
+            "date_columns": current_profile.get("date_columns", []),
+        }
+
+    has_multi_tables = len(tables_info) > 1
+
+    rules = [
+        "Return the FULL fixed chart plan in the same shape as chart_plan above.",
+        "field_mapping is derived from role_config — only return role_config.",
+        "If a referenced field does not exist in the current table, first check if another table has those fields and change source_key to that table.",
+        "Only if no table has the fields, replace them with the closest matching column from the current table.",
+        "If no reasonable fix is possible, change final_chart_type to TABLE and use selectedColumns from available_columns.",
+        "Keep block_id and title unchanged.",
+        "Return JSON only.",
+    ]
+    if has_multi_tables:
+        rules.insert(2, f"The dataset has multiple tables: {list(tables_info.keys())}. You MAY change source_key to reassign the chart to the correct table.")
+
+    prompt = json.dumps(
+        {
+            "task": (
+                "A chart plan failed validation against the data source. "
+                "Fix the chart plan so the query succeeds. "
+                "You may change role_config fields, aggregations, chart type, or source_key (table assignment)."
+            ),
+            "supported_chart_types": sorted(_SUPPORTED_CHART_TYPES),
+            "error_message": error_message,
+            "chart_plan": {
+                "block_id": chart_plan.get("block_id"),
+                "title": chart_plan.get("title"),
+                "final_chart_type": chart_plan.get("final_chart_type"),
+                "role_config": chart_plan.get("role_config"),
+                "source_key": chart_plan.get("source_key"),
+            },
+            "tables": tables_info,
+            "role_config_shapes": {
+                "BAR|HORIZONTAL_BAR|LINE|PIE|AREA|STACKED_BAR|GROUPED_BAR": {"dimension": "field_name", "metrics": [{"field": "field_name", "agg": "sum|count|avg|min|max"}], "breakdown": "optional_field"},
+                "KPI": {"metrics": [{"field": "field_name", "agg": "sum|count|avg|min|max"}]},
+                "TABLE": {"selectedColumns": ["col1", "col2"], "metrics": []},
+                "SCATTER": {"scatterX": "field_name", "scatterY": "field_name", "metrics": []},
+                "BAR_LINE": {"dimension": "field_name", "metrics": [{"field": "f", "agg": "sum"}], "lineMetric": {"field": "f", "agg": "avg"}},
+                "TIME_SERIES": {"timeField": "date_field", "metrics": [{"field": "f", "agg": "sum"}]},
+            },
+            "rules": rules,
+            "return_json_shape": {
+                "block_id": "string",
+                "title": "string",
+                "final_chart_type": "string",
+                "role_config": {},
+                "source_key": "string | null",
+                "fix_note": "string (brief explanation of what was changed)",
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    system_prompt = (
+        "You are an expert at fixing broken BI chart configurations. "
+        "Return only a single JSON object with the corrected chart plan. "
+        "Do not add commentary outside the JSON."
+    )
+
+    result = _complete_json_with_import_provider(prompt, system_prompt=system_prompt, max_tokens=1200)
+    logger.info("ai_fix_chart_plan block_id=%s AI_INPUT=%s", chart_plan.get("block_id"), prompt[:500])
+    logger.info("ai_fix_chart_plan block_id=%s AI_OUTPUT=%s", chart_plan.get("block_id"), json.dumps(result, ensure_ascii=False)[:500] if result else "None")
+    if not isinstance(result, dict) or "role_config" not in result:
+        return None
+
+    # Merge the fix back onto the original plan so callers get a complete object
+    fixed = dict(chart_plan)
+    fixed["final_chart_type"] = result.get("final_chart_type", chart_plan.get("final_chart_type"))
+    fixed["role_config"] = result["role_config"]
+    fixed["fix_note"] = result.get("fix_note")
+    # Allow AI to reassign to a different table
+    if result.get("source_key"):
+        fixed["source_key"] = result["source_key"]
+    # Re-derive source_fields_used from the new role_config
+    rc = fixed["role_config"]
+    fields: List[str] = []
+    for key in ("dimension", "timeField", "breakdown", "scatterX", "scatterY"):
+        val = rc.get(key)
+        if val:
+            fields.append(val)
+    for m in rc.get("metrics") or []:
+        if isinstance(m, dict) and m.get("field"):
+            fields.append(m["field"])
+    lm = rc.get("lineMetric")
+    if isinstance(lm, dict) and lm.get("field"):
+        fields.append(lm["field"])
+    for col in rc.get("selectedColumns") or []:
+        fields.append(col)
+    fixed["source_fields_used"] = list(dict.fromkeys(fields))
+    return fixed

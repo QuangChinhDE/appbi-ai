@@ -7,12 +7,14 @@ import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import {
   AlertTriangle,
+  Download,
   Loader2,
   Lock,
   RefreshCw,
   Eye,
   EyeOff,
 } from 'lucide-react';
+import { exportElementToPdf } from '@/lib/export-pdf';
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
@@ -189,6 +191,8 @@ export default function PublicDashboardPage() {
   const [pageState, setPageState] = useState<PageState>('unknown');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const publicContentRef = useRef<HTMLElement>(null);
 
   const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chartRequestIdRef = useRef(0);
@@ -441,6 +445,20 @@ export default function PublicDashboardPage() {
     setAuthError(null);
   }, []);
 
+  const handleExportPdf = useCallback(async () => {
+    const el = publicContentRef.current;
+    if (!el) return;
+    setIsExportingPdf(true);
+    try {
+      const safeName = (dashboard?.name || 'shared-dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
+      await exportElementToPdf(el, `${safeName}.pdf`);
+    } catch (err) {
+      console.error('PDF export failed', err);
+    } finally {
+      setIsExportingPdf(false);
+    }
+  }, [dashboard?.name]);
+
   const filterRuntime = useMemo(
     () => buildPublicDashboardFilterRuntime(visibleDashboardCharts, chartData),
     [chartData, visibleDashboardCharts],
@@ -598,7 +616,7 @@ export default function PublicDashboardPage() {
         <SessionExpiredOverlay onReauth={handleReauth} />
       )}
 
-      <main className={`flex w-full flex-col ${publicTheme.density.listGapClass} px-3 py-4 sm:px-4 lg:px-6 lg:py-5`}>
+      <main ref={publicContentRef} className={`flex w-full flex-col ${publicTheme.density.listGapClass} px-3 py-4 sm:px-4 lg:px-6 lg:py-5`}>
         <section
           className="overflow-visible rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-4 sm:px-5 sm:py-5"
           style={publicTheme.panelStyle}
@@ -766,6 +784,23 @@ export default function PublicDashboardPage() {
         </section>
       </main>
 
+      {/* Floating PDF export button */}
+      <button
+        type="button"
+        onClick={handleExportPdf}
+        disabled={isExportingPdf || chartsLoading}
+        className="fixed bottom-5 right-5 z-30 inline-flex items-center gap-2 rounded-full border border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-2.5 text-small font-emphasis text-text-secondary shadow-linear-lg transition-all hover:bg-surface-2 hover:shadow-linear-xl disabled:cursor-not-allowed disabled:opacity-60 print:hidden"
+        style={publicTheme.panelStyle}
+        title="Export this dashboard as PDF"
+        data-html2canvas-ignore
+      >
+        {isExportingPdf ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <Download className="h-4 w-4" />
+        )}
+        <span className="hidden sm:inline">{isExportingPdf ? 'Exporting…' : 'Export PDF'}</span>
+      </button>
     </div>
   );
 }

@@ -46,11 +46,14 @@ from app.schemas import (
 from app.services import DashboardService
 from app.services.dashboard_html_import_service import (
     _load_existing_source_profile,
+    _load_existing_dataset_profiles,
     _load_uploaded_excel_source_profile,
     _load_uploaded_multi_source_profiles,
+    ai_fix_chart_plan,
     analyze_dashboard_html_import,
     build_dashboard_from_import as build_dashboard_from_html_import_service,
     parse_uploaded_source_sheets,
+    validate_chart_plans,
 )
 from app.core.logging import get_logger
 
@@ -117,6 +120,7 @@ async def analyze_html_dashboard_import(
     html_content: str = Form(...),
     html_summary_json: Optional[str] = Form(None),
     source_mode: str = Form(...),
+    dataset_id: Optional[int] = Form(None),
     dataset_table_id: Optional[int] = Form(None),
     selected_sheet_name: Optional[str] = Form(None),
     selected_source_key: Optional[str] = Form(None),
@@ -140,18 +144,37 @@ async def analyze_html_dashboard_import(
 
     try:
         if normalized_source_mode == "existing_dataset":
-            if dataset_table_id is None:
-                raise HTTPException(status_code=400, detail="dataset_table_id is required for existing_dataset.")
-            source_profile = _load_existing_source_profile(
-                db,
-                current_user=current_user,
-                dataset_table_id=dataset_table_id,
-            )
-            return analyze_dashboard_html_import(
-                html_text=normalized_html,
-                html_summary=parsed_summary,
-                source_profile=source_profile,
-            )
+            if dataset_id is not None:
+                # Multi-table: load all tables from dataset
+                primary_profile, all_profiles = _load_existing_dataset_profiles(
+                    db, current_user=current_user, dataset_id=dataset_id,
+                )
+                if len(all_profiles) == 1:
+                    return analyze_dashboard_html_import(
+                        html_text=normalized_html,
+                        html_summary=parsed_summary,
+                        source_profile=primary_profile,
+                    )
+                return analyze_dashboard_html_import(
+                    html_text=normalized_html,
+                    html_summary=parsed_summary,
+                    source_profile=primary_profile,
+                    all_source_profiles=all_profiles,
+                )
+            elif dataset_table_id is not None:
+                # Legacy single-table path
+                source_profile = _load_existing_source_profile(
+                    db,
+                    current_user=current_user,
+                    dataset_table_id=dataset_table_id,
+                )
+                return analyze_dashboard_html_import(
+                    html_text=normalized_html,
+                    html_summary=parsed_summary,
+                    source_profile=source_profile,
+                )
+            else:
+                raise HTTPException(status_code=400, detail="dataset_id or dataset_table_id is required for existing_dataset.")
         else:
             # Collect files: prefer excel_files (multi), fall back to excel_file (single)
             uploaded_files: List[UploadFile] = [f for f in excel_files if f and f.filename]
@@ -211,6 +234,7 @@ async def build_html_dashboard_import(
     source_mode: str = Form(...),
     target_mode: str = Form(...),
     dashboard_name: Optional[str] = Form(None),
+    dataset_id: Optional[int] = Form(None),
     dataset_table_id: Optional[int] = Form(None),
     selected_sheet_name: Optional[str] = Form(None),
     target_dashboard_id: Optional[int] = Form(None),
@@ -269,6 +293,7 @@ async def build_html_dashboard_import(
             analysis=analysis,
             source_mode=normalized_source_mode,
             dataset_table_id=dataset_table_id,
+            dataset_id=dataset_id,
             source_bytes=source_bytes,
             source_filename=source_filename,
             source_files=source_file_pairs,
@@ -314,6 +339,120 @@ async def preview_html_dashboard_import_source(
     except Exception as exc:
         logger.exception("Failed to preview HTML dashboard import source")
         raise HTTPException(status_code=500, detail=f"Failed to preview source file: {exc}") from exc
+
+
+@router.post("/import-html/validate-plans")
+async def validate_html_import_plans(
+    analysis_json: str = Form(...),
+    dataset_id: int = Form(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("dashboards", "edit")),
+):
+    """Dry-run each chart plan's query and return per-block pass/fail results."""
+    analysis = _parse_optional_json_form_field(analysis_json, "analysis_json")
+    if not isinstance(analysis, dict):
+        raise HTTPException(status_code=400, detail="analysis_json must decode to an object.")
+
+    chart_plans = analysis.get("chart_plans") or []
+    calculated_fields = analysis.get("calculated_fields") or []
+    if not chart_plans:
+        return {"results": []}
+
+    try:
+        results = validate_chart_plans(
+            db,
+            current_user=current_user,
+            dataset_id=dataset_id,
+            chart_plans=chart_plans,
+            calculated_fields=calculated_fields,
+        )
+        return {"results": results}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to validate chart plans")
+        raise HTTPException(status_code=500, detail=f"Validation failed: {exc}") from exc
+
+
+@router.post("/import-html/fix-chart-plan")
+async def fix_html_import_chart_plan(
+    chart_plan_json: str = Form(...),
+    error_message: str = Form(...),
+    source_profile_json: str = Form(...),
+    all_source_profiles_json: Optional[str] = Form(None),
+    dataset_id: Optional[int] = Form(None),
+    calculated_fields_json: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("dashboards", "edit")),
+):
+    """Use AI to fix a chart plan that failed validation.
+
+    When *dataset_id* is supplied, the fix is validated against the live data
+    source.  If validation fails, the AI is retried with the new error message
+    (up to 2 additional attempts).
+    """
+    chart_plan = _parse_optional_json_form_field(chart_plan_json, "chart_plan_json")
+    if not isinstance(chart_plan, dict):
+        raise HTTPException(status_code=400, detail="chart_plan_json must decode to an object.")
+
+    source_profile = _parse_optional_json_form_field(source_profile_json, "source_profile_json")
+    if not isinstance(source_profile, dict):
+        raise HTTPException(status_code=400, detail="source_profile_json must decode to an object.")
+
+    all_source_profiles = _parse_optional_json_form_field(all_source_profiles_json, "all_source_profiles_json")
+    calc_fields = _parse_optional_json_form_field(calculated_fields_json, "calculated_fields_json")
+    if not isinstance(calc_fields, list):
+        calc_fields = []
+
+    MAX_RETRIES = 3
+    last_error = str(error_message or "")
+    current_plan = dict(chart_plan)
+
+    try:
+        for attempt in range(MAX_RETRIES):
+            fixed = ai_fix_chart_plan(
+                chart_plan=current_plan,
+                error_message=last_error,
+                source_profile=source_profile,
+                all_source_profiles=all_source_profiles if isinstance(all_source_profiles, dict) else None,
+            )
+            if fixed is None:
+                raise HTTPException(status_code=422, detail="AI could not produce a fix for this chart plan.")
+
+            # If dataset_id is provided, validate the fix against real data
+            if dataset_id:
+                val_results = validate_chart_plans(
+                    db,
+                    current_user=current_user,
+                    dataset_id=dataset_id,
+                    chart_plans=[fixed],
+                    calculated_fields=calc_fields,
+                )
+                if val_results and val_results[0].get("status") == "error":
+                    new_error = val_results[0].get("error", "")
+                    logger.warning(
+                        "AI fix attempt %d for block_id=%s failed validation: %s",
+                        attempt + 1, fixed.get("block_id"), new_error,
+                    )
+                    last_error = f"Previous fix attempt still fails: {new_error}"
+                    current_plan = fixed  # feed the AI's output back so it can iterate
+                    continue
+                # Validation passed
+                fixed["fix_validated"] = True
+
+            return {"fixed_plan": fixed}
+
+        # All retries exhausted — return last fix with warning
+        if fixed:
+            fixed["fix_note"] = (fixed.get("fix_note") or "") + " (Warning: fix could not be validated)"
+            return {"fixed_plan": fixed}
+
+        raise HTTPException(status_code=422, detail="AI could not produce a valid fix after multiple attempts.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to fix chart plan via AI")
+        raise HTTPException(status_code=500, detail=f"AI fix failed: {exc}") from exc
 
 
 @router.get("/{dashboard_id}", response_model=DashboardResponse)

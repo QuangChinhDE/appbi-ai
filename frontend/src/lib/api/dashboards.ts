@@ -14,7 +14,11 @@ import type {
   DashboardHtmlImportAnalyzeResponse,
   DashboardHtmlImportBuildInput,
   DashboardHtmlImportBuildResponse,
+  DashboardHtmlImportFixChartInput,
+  DashboardHtmlImportFixChartResponse,
   DashboardHtmlImportSourcePreviewResponse,
+  DashboardHtmlImportValidateInput,
+  DashboardHtmlImportValidateResponse,
 } from '@/types/dashboard-html-import';
 
 export const dashboardApi = {
@@ -76,6 +80,9 @@ export const dashboardApi = {
     formData.append('html_content', input.htmlContent);
     formData.append('html_summary_json', JSON.stringify(input.htmlSummary ?? {}));
     formData.append('source_mode', input.sourceMode);
+    if (input.datasetId != null) {
+      formData.append('dataset_id', String(input.datasetId));
+    }
     if (input.datasetTableId != null) {
       formData.append('dataset_table_id', String(input.datasetTableId));
     }
@@ -110,6 +117,9 @@ export const dashboardApi = {
     if (input.dashboardName?.trim()) {
       formData.append('dashboard_name', input.dashboardName.trim());
     }
+    if (input.datasetId != null) {
+      formData.append('dataset_id', String(input.datasetId));
+    }
     if (input.datasetTableId != null) {
       formData.append('dataset_table_id', String(input.datasetTableId));
     }
@@ -142,6 +152,36 @@ export const dashboardApi = {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
+    });
+    return response.data;
+  },
+
+  validateHtmlImportPlans: async (input: DashboardHtmlImportValidateInput): Promise<DashboardHtmlImportValidateResponse> => {
+    const formData = new FormData();
+    formData.append('analysis_json', JSON.stringify(input.analysis));
+    formData.append('dataset_id', String(input.datasetId));
+    const response = await apiClient.post('/dashboards/import-html/validate-plans', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
+  fixHtmlImportChartPlan: async (input: DashboardHtmlImportFixChartInput): Promise<DashboardHtmlImportFixChartResponse> => {
+    const formData = new FormData();
+    formData.append('chart_plan_json', JSON.stringify(input.chartPlan));
+    formData.append('error_message', input.errorMessage);
+    formData.append('source_profile_json', JSON.stringify(input.sourceProfile));
+    if (input.allSourceProfiles) {
+      formData.append('all_source_profiles_json', JSON.stringify(input.allSourceProfiles));
+    }
+    if (input.datasetId) {
+      formData.append('dataset_id', String(input.datasetId));
+    }
+    if (input.calculatedFields) {
+      formData.append('calculated_fields_json', JSON.stringify(input.calculatedFields));
+    }
+    const response = await apiClient.post('/dashboards/import-html/fix-chart-plan', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
     });
     return response.data;
   },

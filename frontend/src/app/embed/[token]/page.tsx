@@ -7,12 +7,14 @@ import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import {
   AlertTriangle,
+  Download,
   Loader2,
   Lock,
   RefreshCw,
   Eye,
   EyeOff,
 } from 'lucide-react';
+import { exportElementToPdf } from '@/lib/export-pdf';
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
@@ -194,6 +196,8 @@ export default function EmbedDashboardPage() {
   const [pageState, setPageState] = useState<PageState>('unknown');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const embedContentRef = useRef<HTMLDivElement>(null);
 
   const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chartRequestIdRef = useRef(0);
@@ -446,6 +450,20 @@ export default function EmbedDashboardPage() {
     setAuthError(null);
   }, []);
 
+  const handleExportPdf = useCallback(async () => {
+    const el = embedContentRef.current;
+    if (!el) return;
+    setIsExportingPdf(true);
+    try {
+      const safeName = (dashboard?.name || 'embedded-dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
+      await exportElementToPdf(el, `${safeName}.pdf`);
+    } catch (err) {
+      console.error('PDF export failed', err);
+    } finally {
+      setIsExportingPdf(false);
+    }
+  }, [dashboard?.name]);
+
   const filterRuntime = useMemo(
     () => buildPublicDashboardFilterRuntime(visibleDashboardCharts, chartData),
     [chartData, visibleDashboardCharts],
@@ -602,6 +620,7 @@ export default function EmbedDashboardPage() {
       {pageState === 'reauth' && <SessionExpiredBanner onReauth={handleReauth} />}
 
       <div
+        ref={embedContentRef}
         className="w-full overflow-visible rounded-xl border border-[rgb(var(--border-line))] bg-surface-1"
         style={publicTheme.shellStyle}
       >
@@ -775,6 +794,23 @@ export default function EmbedDashboardPage() {
         </div>
 
       </div>
+
+      {/* Floating PDF export — small icon-only on embed */}
+      <button
+        type="button"
+        onClick={handleExportPdf}
+        disabled={isExportingPdf || chartsLoading}
+        className="fixed bottom-3 right-3 z-30 inline-flex h-9 w-9 items-center justify-center rounded-full border border-[rgb(var(--border-strong))] bg-surface-1/90 text-text-tertiary shadow-linear transition-all hover:bg-surface-2 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 print:hidden"
+        style={publicTheme.panelStyle}
+        title="Export as PDF"
+        data-html2canvas-ignore
+      >
+        {isExportingPdf ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Download className="h-3.5 w-3.5" />
+        )}
+      </button>
     </div>
   );
 }

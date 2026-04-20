@@ -133,6 +133,7 @@ export function summarizeImportedDashboardHtml(html: string): DashboardHtmlSumma
   const root = doc.body ?? doc.documentElement;
   const candidateElements = collectBlocks(root);
   const seen = new Set<HTMLElement>();
+  const seenIds = new Set<string>();
   const blocks = candidateElements
     .filter((element) => {
       if (seen.has(element)) return false;
@@ -140,7 +141,15 @@ export function summarizeImportedDashboardHtml(html: string): DashboardHtmlSumma
       return true;
     })
     .slice(0, 24)
-    .map((element, index) => summarizeElement(element, index + 1))
+    .map((element, index) => {
+      const block = summarizeElement(element, index + 1);
+      // Deduplicate block IDs to prevent AI lookup mismatches and duplicate charts
+      if (seenIds.has(block.id)) {
+        block.id = `block-${index + 1}`;
+      }
+      seenIds.add(block.id);
+      return block;
+    })
     .filter((block) => block.text || block.heading || block.table);
 
   const title = normalizeText(

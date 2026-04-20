@@ -3,7 +3,7 @@
 import React, { useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Bot, Sparkles, Trash2, LayoutGrid } from 'lucide-react';
+import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Bot, Sparkles, Trash2, LayoutGrid, Download } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import { useQueries } from '@tanstack/react-query';
 import {
@@ -47,6 +47,7 @@ import {
   normalizeDashboardPages,
 } from '@/lib/dashboard-pages';
 import { toast } from '@/lib/toast';
+import { exportElementToPdf } from '@/lib/export-pdf';
 
 // Debounce utility
 function useDebounce<T extends (...args: any[]) => any>(
@@ -157,6 +158,8 @@ export default function DashboardDetailPage() {
   const [localPagesConfig, setLocalPagesConfig] = useState<DashboardPageConfig[] | null>(null);
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
   const [editedPageName, setEditedPageName] = useState('');
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const dashboardContentRef = React.useRef<HTMLDivElement>(null);
   const [pendingDeletePageId, setPendingDeletePageId] = useState<string | null>(null);
   // columnChartCount: how many distinct chartIds have each column
   const columnChartCountRef = React.useRef<Map<string, Set<number>>>(new Map());
@@ -895,6 +898,22 @@ export default function DashboardDetailPage() {
 
   const linkedAgentReport = agentReportSpecs.find((spec) => spec.latest_dashboard_id === dashboardId);
   const activeCrossFilter = crossFilterState?.filter ?? null;
+
+  const handleExportPdf = async () => {
+    const el = dashboardContentRef.current;
+    if (!el) return;
+    setIsExportingPdf(true);
+    try {
+      const safeName = (dashboard.name || 'dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
+      await exportElementToPdf(el, `${safeName}.pdf`);
+    } catch (err) {
+      console.error('PDF export failed', err);
+      toast.error('Failed to export PDF');
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
+
   const isRenamingCurrentPage = editingPageId === currentPage?.id;
   const emptyPageMessage = currentPage
     ? `No charts on ${currentPage.name} yet. Add a chart to start this page.`
@@ -994,6 +1013,19 @@ export default function DashboardDetailPage() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+              <button
+                onClick={handleExportPdf}
+                disabled={isExportingPdf}
+                className="inline-flex items-center rounded-md border border-[rgb(var(--border-strong))] px-3 py-2 text-sm text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-60"
+                title="Export as PDF"
+              >
+                {isExportingPdf ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="mr-2 h-4 w-4" />
+                )}
+                {isExportingPdf ? 'Exporting…' : 'Export PDF'}
+              </button>
               {canEditResource && (
                 <button
                   onClick={() => setIsPublicShareOpen(true)}
@@ -1132,6 +1164,7 @@ export default function DashboardDetailPage() {
         </div>
 
         {/* Dashboard Filter Bar */}
+        <div ref={dashboardContentRef}>
         <DashboardFilterBar
           columns={resolvedAvailableColumns}
           columnChartCount={resolvedColumnChartCount}
@@ -1180,6 +1213,7 @@ export default function DashboardDetailPage() {
           onMoveChartToPage={canEditResource ? handleMoveChartToPage : undefined}
           emptyMessage={emptyPageMessage}
         />
+        </div>
 
         {/* Add Chart Modal */}
         <AddChartModal

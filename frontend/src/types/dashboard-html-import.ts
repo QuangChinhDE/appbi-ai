@@ -84,6 +84,7 @@ export interface DashboardHtmlImportAnalyzeResponse {
   suggested_dashboard_name: string;
   document_title?: string | null;
   source_profile: DashboardHtmlImportSourceProfile;
+  all_source_profiles?: Record<string, DashboardHtmlImportSourceProfile> | null;
   chart_plans: DashboardHtmlImportChartPlan[];
   calculated_fields?: DashboardHtmlImportCalculatedField[];
   ignored_blocks: Array<Record<string, any>>;
@@ -115,6 +116,7 @@ export interface DashboardHtmlImportAnalyzeInput {
   htmlContent: string;
   htmlSummary: Record<string, any>;
   sourceMode: DashboardHtmlImportSourceMode;
+  datasetId?: number | null;
   datasetTableId?: number | null;
   selectedSheetName?: string | null;
   selectedSourceKey?: string | null;
@@ -127,6 +129,7 @@ export interface DashboardHtmlImportBuildInput {
   sourceMode: DashboardHtmlImportSourceMode;
   targetMode: DashboardHtmlImportTargetMode;
   dashboardName?: string;
+  datasetId?: number | null;
   datasetTableId?: number | null;
   selectedSheetName?: string | null;
   targetDashboardId?: number | null;
@@ -149,6 +152,43 @@ export interface DashboardHtmlSummaryBlock {
     headers: string[];
     rows: string[][];
   } | null;
+}
+
+// ── Validation & AI fix ──────────────────────────────────────────────────────
+
+export interface DashboardHtmlImportValidationResult {
+  block_id: string;
+  status: 'ok' | 'error';
+  error: string | null;
+}
+
+export interface DashboardHtmlImportValidateResponse {
+  results: DashboardHtmlImportValidationResult[];
+}
+
+export interface DashboardHtmlImportValidateInput {
+  analysis: DashboardHtmlImportAnalyzeResponse;
+  datasetId: number;
+}
+
+export interface DashboardHtmlImportFixChartInput {
+  chartPlan: DashboardHtmlImportChartPlan;
+  errorMessage: string;
+  sourceProfile: DashboardHtmlImportSourceProfile;
+  allSourceProfiles?: Record<string, DashboardHtmlImportSourceProfile> | null;
+  datasetId?: number | null;
+  calculatedFields?: DashboardHtmlImportCalculatedField[] | null;
+}
+
+export interface DashboardHtmlImportFixChartsInput {
+  chartPlans: DashboardHtmlImportChartPlan[];
+  validationResults: Record<string, DashboardHtmlImportValidationResult>;
+  sourceProfile: DashboardHtmlImportSourceProfile;
+  allSourceProfiles?: Record<string, DashboardHtmlImportSourceProfile> | null;
+}
+
+export interface DashboardHtmlImportFixChartResponse {
+  fixed_plan: DashboardHtmlImportChartPlan & { fix_note?: string };
 }
 
 export interface DashboardHtmlSummary {

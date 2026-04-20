@@ -10,6 +10,8 @@ import { Dashboard, DashboardCreate, DashboardUpdate, DashboardChartLayout } fro
 import type {
   DashboardHtmlImportAnalyzeInput,
   DashboardHtmlImportBuildInput,
+  DashboardHtmlImportFixChartInput,
+  DashboardHtmlImportValidateInput,
 } from '@/types/dashboard-html-import';
 
 export const useDashboards = () => {
@@ -150,6 +152,18 @@ export const useBuildDashboardHtmlImport = () => {
 export const usePreviewDashboardHtmlImportSource = () => {
   return useMutation({
     mutationFn: (file: File) => dashboardApi.previewHtmlImportSource(file),
+  });
+};
+
+export const useValidateDashboardHtmlImportPlans = () => {
+  return useMutation({
+    mutationFn: (input: DashboardHtmlImportValidateInput) => dashboardApi.validateHtmlImportPlans(input),
+  });
+};
+
+export const useFixDashboardHtmlImportChartPlan = () => {
+  return useMutation({
+    mutationFn: (input: DashboardHtmlImportFixChartInput) => dashboardApi.fixHtmlImportChartPlan(input),
   });
 };
 
