@@ -1,8 +1,11 @@
 /**
  * DataModelCanvas — Visual ERD viewer for a dataset.
  *
- * Cards are laid out in a fixed grid (no drag). Lines are anchored
- * to the exact column row elements via useLayoutEffect measurement.
+ * Cards start in an auto-computed topology-aware layout (rank by outgoing
+ * joins) and can be freely dragged. User drag positions are persisted per
+ * model in localStorage. Edges are smooth cubic beziers whose endpoints
+ * automatically choose the closest card edge (left/right) — so lines stay
+ * clean at any card arrangement.
  */
 'use client';
 
@@ -47,47 +50,74 @@ import { toast } from '@/lib/toast';
 
 // ─── Layout constants ────────────────────────────────────────────────────────
 
-const CARD_WIDTH    = 272;
-const COLS          = 2;
-const GAP_X         = 240;   // horizontal gap between the two columns
-const GAP_Y         = 80;    // vertical gap between rows
-const PAD           = 48;
-const ROW_HEIGHT    = 360;   // generous row height estimate
-
-// Derived routing geometry — the vertical "highway" in the gap between columns.
-// ALL relationship lines travel through this channel; no card ever occupies it.
-const COL0_RIGHT    = PAD + CARD_WIDTH;                   // 320  right edge of col 0
-const COL1_LEFT     = PAD + CARD_WIDTH + GAP_X;           // 560  left  edge of col 1
-const CHAN_X        = Math.round((COL0_RIGHT + COL1_LEFT) / 2); // 440  routing channel
+const CARD_WIDTH   = 272;
+const CARD_GAP_X   = 220;   // horizontal breathing between columns
+const CARD_GAP_Y   = 56;    // vertical breathing between rows
+const CANVAS_PAD   = 56;
+const ROW_HEIGHT   = 360;   // initial card height estimate for auto-layout
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
- * Topology-aware layout:
- *  - Sort views by outgoing join count (fact → dim ordering).
- *  - Arrange in a strict 2-column left-aligned grid (no centering).
- *    Left-alignment guarantees the routing channel (CHAN_X) is always clear.
+ * Rank-based auto layout:
+ *   - rank 0: views with many outgoing joins (fact-like)   — leftmost column
+ *   - rank 1: views with some outgoing joins                — middle column
+ *   - rank 2: views with no outgoing joins (leaf dimensions) — rightmost column
+ *
+ * Ranks are mapped to successive columns with comfortable spacing. When all
+ * views fall in the same rank (e.g. no edges yet) we split them into two
+ * columns so the canvas doesn't collapse into one.
  */
 function computeLayout(
   views: DatasetModelView[],
   explores: DatasetModelExplore[],
 ): Record<number, { x: number; y: number }> {
+  if (!views.length) return {};
+
   const outgoing: Record<number, number> = {};
   views.forEach((v) => { outgoing[v.id] = 0; });
   explores.forEach((ex) => {
     outgoing[ex.base_view_id] = (outgoing[ex.base_view_id] ?? 0) + ex.joins.length;
   });
 
-  const sorted = [...views].sort(
-    (a, b) => (outgoing[b.id] ?? 0) - (outgoing[a.id] ?? 0),
-  );
+  const maxOut = Math.max(0, ...Object.values(outgoing));
+  const rankOf = (id: number): number => {
+    const o = outgoing[id] ?? 0;
+    if (maxOut > 0 && o >= maxOut) return 0;
+    if (o > 0) return 1;
+    return maxOut > 0 ? 2 : 0;
+  };
+
+  const buckets: Record<number, DatasetModelView[]> = {};
+  views.forEach((v) => {
+    const r = rankOf(v.id);
+    (buckets[r] ??= []).push(v);
+  });
+
+  let rankKeys = Object.keys(buckets).map(Number).sort((a, b) => a - b);
+
+  // No edges at all → spread into two columns for visual balance.
+  if (rankKeys.length === 1 && views.length > 1) {
+    const all = buckets[rankKeys[0]].slice().sort((a, b) =>
+      (a.table_display_name || a.name).localeCompare(b.table_display_name || b.name),
+    );
+    const half = Math.ceil(all.length / 2);
+    buckets[0] = all.slice(0, half);
+    buckets[1] = all.slice(half);
+    rankKeys = [0, 1];
+  }
 
   const out: Record<number, { x: number; y: number }> = {};
-  sorted.forEach((v, i) => {
-    out[v.id] = {
-      x: PAD + (i % COLS) * (CARD_WIDTH + GAP_X),
-      y: PAD + Math.floor(i / COLS) * (ROW_HEIGHT + GAP_Y),
-    };
+  rankKeys.forEach((r, colIdx) => {
+    const col = buckets[r].slice().sort((a, b) =>
+      (a.table_display_name || a.name).localeCompare(b.table_display_name || b.name),
+    );
+    col.forEach((v, i) => {
+      out[v.id] = {
+        x: CANVAS_PAD + colIdx * (CARD_WIDTH + CARD_GAP_X),
+        y: CANVAS_PAD + i * (ROW_HEIGHT + CARD_GAP_Y),
+      };
+    });
   });
   return out;
 }
@@ -103,29 +133,36 @@ function cardinalityLabels(rel?: string): { src: string; tgt: string } {
 }
 
 /**
- * Orthogonal (Manhattan) path with rounded corners (r=8px).
- * All paths route through the fixed vertical channel at CHAN_X so they
- * never pass behind a card.
- *
- * Segments: H(sx→CHAN_X) → V(sy→ty) → H(CHAN_X→tx)
- * Same-level shortcut: straight H when |sy-ty| < 2.
+ * Cubic bezier path from (sx,sy) exiting in direction sDir (+1 right / −1 left)
+ * to (tx,ty) entered in direction tDir. Control-point pull is adaptive to
+ * horizontal distance so curves stay gentle at any card arrangement and never
+ * "crook" even when endpoints are close together or on the same side.
  */
-function makeOrthogonalPath(sx: number, sy: number, tx: number, ty: number): string {
-  if (Math.abs(sy - ty) < 2) {
-    return `M ${sx} ${sy} H ${tx}`;
-  }
-  const r  = 8;
-  const s1 = CHAN_X > sx ? 1 : -1;   // exit direction from source  (→ or ←)
-  const s2 = ty > sy    ? 1 : -1;   // vertical direction           (↓ or ↑)
-  const s3 = tx > CHAN_X ? 1 : -1;  // entry direction to target   (→ or ←)
-  return [
-    `M ${sx} ${sy}`,
-    `H ${CHAN_X - s1 * r}`,
-    `Q ${CHAN_X} ${sy} ${CHAN_X} ${sy + s2 * r}`,
-    `V ${ty - s2 * r}`,
-    `Q ${CHAN_X} ${ty} ${CHAN_X + s3 * r} ${ty}`,
-    `H ${tx}`,
-  ].join(' ');
+function bezierControlDistance(sx: number, tx: number): number {
+  return Math.max(48, Math.min(180, Math.abs(tx - sx) / 2 + 40));
+}
+
+function makeBezierPath(
+  sx: number, sy: number, sDir: 1 | -1,
+  tx: number, ty: number, tDir: 1 | -1,
+): string {
+  const d = bezierControlDistance(sx, tx);
+  const c1x = sx + sDir * d;
+  const c2x = tx + tDir * d;
+  return `M ${sx} ${sy} C ${c1x} ${sy}, ${c2x} ${ty}, ${tx} ${ty}`;
+}
+
+/** Midpoint of the same bezier at t = 0.5 → (P0 + 3P1 + 3P2 + P3) / 8. */
+function bezierMidpoint(
+  sx: number, sy: number, sDir: 1 | -1,
+  tx: number, ty: number, tDir: 1 | -1,
+): { mx: number; my: number } {
+  const d = bezierControlDistance(sx, tx);
+  const c1x = sx + sDir * d;
+  const c2x = tx + tDir * d;
+  const mx = (sx + 3 * c1x + 3 * c2x + tx) / 8;
+  const my = (sy + 3 * sy + 3 * ty + ty) / 8;
+  return { mx, my };
 }
 
 /** Parse "${TABLE}.col = ${view}.col" from sql_on string. */
@@ -306,6 +343,10 @@ interface RelLineProps {
   /** Absolute canvas coordinates of the connection endpoints */
   sx: number; sy: number;
   tx: number; ty: number;
+  /** Exit direction at source (+1 = right, −1 = left) */
+  sDir: 1 | -1;
+  /** Exit direction at target (+1 = right, −1 = left); points AWAY from card */
+  tDir: 1 | -1;
   fromCol?: string;
   toCol?: string;
   relationship?: string;
@@ -316,13 +357,15 @@ interface RelLineProps {
 
 function RelLine({
   sx, sy, tx, ty,
+  sDir, tDir,
   fromCol, toCol,
   relationship, joinType,
   isSelected, onClick,
 }: RelLineProps) {
   const [hovered, setHovered] = useState(false);
 
-  const path = makeOrthogonalPath(sx, sy, tx, ty);
+  const path = makeBezierPath(sx, sy, sDir, tx, ty, tDir);
+  const { mx: chipX, my: chipY } = bezierMidpoint(sx, sy, sDir, tx, ty, tDir);
   const { src, tgt } = cardinalityLabels(relationship);
   const active = isSelected || hovered;
   const stroke = active ? '#6366f1' : '#94a3b8';
@@ -331,24 +374,13 @@ function RelLine({
   const fromLW = Math.min(90, (fromCol?.length ?? 0) * 5.8 + 14);
   const toLW   = Math.min(90, (toCol?.length   ?? 0) * 5.8 + 14);
 
-  // Source exits rightward when sx is left of the channel (col 0 right edge).
-  // Source exits leftward when sx is right of or at the channel (col 1 left edge).
-  const sxExitsRight   = sx < CHAN_X;
-  // Target is approached from the right when tx is right of channel (col 1 left edge).
-  // Target is approached from the left when tx is left of channel (col 0 right edge).
-  const txFromRight    = tx > CHAN_X;
+  // Badges sit just outside the card edge in the exit direction
+  const srcBadgeX  = sx + sDir * 9;
+  const tgtBadgeX  = tx + tDir * 9;
 
-  // Badge offsets: sit just outside the card edge where the line starts/ends
-  const srcBadgeX  = sxExitsRight ? sx + 9   : sx - 9;
-  const tgtBadgeX  = txFromRight  ? tx - 9   : tx + 9;
-
-  // Label offsets: further out from the card edge
-  const srcLabelX  = sxExitsRight ? sx + fromLW / 2 + 14 : sx - fromLW / 2 - 14;
-  const tgtLabelX  = txFromRight  ? tx - toLW  / 2 - 14  : tx + toLW  / 2 + 14;
-
-  // JOIN-type chip sits at the routing channel midpoint — always clear of cards
-  const chipX = CHAN_X;
-  const chipY = (sy + ty) / 2;
+  // Column name pills sit a bit further out
+  const srcLabelX  = sx + sDir * (fromLW / 2 + 14);
+  const tgtLabelX  = tx + tDir * (toLW  / 2 + 14);
 
   return (
     <g>
@@ -442,7 +474,7 @@ function RelLine({
         </text>
       </g>
 
-      {/* ── Channel join-type chip — always in the routing gap, never behind a card ── */}
+      {/* ── Join-type chip — rides the bezier midpoint so it tracks the line cleanly ── */}
       <g transform={`translate(${chipX}, ${chipY})`} style={{ pointerEvents: 'none' }}>
         <rect x={-22} y={-9} width={44} height={18} rx={9} fill={active ? '#6366f1' : '#94a3b8'} />
         <text
@@ -663,6 +695,106 @@ export function DataModelCanvas({
     return computeLayout(visibleViews, layoutExplores);
   }, [model?.model_id, visibleViews, layoutExplores]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // User-overridden card positions (from dragging). Keyed by view id and
+  // persisted to localStorage per (datasetId, model_id) so layouts survive
+  // reloads without leaking between datasets.
+  const storageKey = model?.model_id
+    ? `appbi:dm-layout:${datasetId}:${model.model_id}`
+    : null;
+  const [userPositions, setUserPositions] = useState<Record<number, { x: number; y: number }>>({});
+  const userPositionsRef = useRef(userPositions);
+  useEffect(() => { userPositionsRef.current = userPositions; }, [userPositions]);
+
+  // Load persisted layout when the model/dataset changes.
+  useEffect(() => {
+    if (!storageKey) { setUserPositions({}); return; }
+    try {
+      const raw = typeof window !== 'undefined' ? window.localStorage.getItem(storageKey) : null;
+      setUserPositions(raw ? JSON.parse(raw) : {});
+    } catch {
+      setUserPositions({});
+    }
+  }, [storageKey]);
+
+  const persistPositions = useCallback((next: Record<number, { x: number; y: number }>) => {
+    if (!storageKey || typeof window === 'undefined') return;
+    try { window.localStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* quota / disabled */ }
+  }, [storageKey]);
+
+  const effectivePositions = useMemo<Record<number, { x: number; y: number }>>(() => {
+    const merged = { ...positions };
+    Object.entries(userPositions).forEach(([id, pos]) => {
+      const key = Number(id);
+      if (merged[key]) merged[key] = pos;   // only honor overrides for views still visible
+    });
+    return merged;
+  }, [positions, userPositions]);
+
+  // Drag handling (pointer events → works for mouse, touch, pen).
+  const dragRef = useRef<{
+    id: number;
+    originX: number;
+    originY: number;
+    startClientX: number;
+    startClientY: number;
+    moved: boolean;
+  } | null>(null);
+  const [draggingId, setDraggingId] = useState<number | null>(null);
+
+  const startCardDrag = useCallback((viewId: number, e: React.PointerEvent<HTMLDivElement>) => {
+    // Allow interaction with inner buttons / inputs without hijacking the click.
+    const target = e.target as HTMLElement | null;
+    if (target?.closest('button, a, input, textarea, select, [data-nodrag]')) return;
+    const pos = userPositionsRef.current[viewId] ?? positions[viewId];
+    if (!pos) return;
+    e.preventDefault();
+    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+    dragRef.current = {
+      id: viewId,
+      originX: pos.x,
+      originY: pos.y,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      moved: false,
+    };
+    setDraggingId(viewId);
+  }, [positions]);
+
+  const onCardDragMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const dx = e.clientX - d.startClientX;
+    const dy = e.clientY - d.startClientY;
+    if (!d.moved && Math.hypot(dx, dy) < 4) return;   // click threshold
+    d.moved = true;
+    const nx = Math.max(0, Math.round(d.originX + dx));
+    const ny = Math.max(0, Math.round(d.originY + dy));
+    setUserPositions((prev) => {
+      const curr = prev[d.id];
+      if (curr && curr.x === nx && curr.y === ny) return prev;
+      return { ...prev, [d.id]: { x: nx, y: ny } };
+    });
+  }, []);
+
+  const endCardDrag = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    if (!d) return;
+    try { (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    const moved = d.moved;
+    dragRef.current = null;
+    setDraggingId(null);
+    if (moved) persistPositions(userPositionsRef.current);
+  }, [persistPositions]);
+
+  const handleResetLayout = useCallback(() => {
+    setUserPositions({});
+    if (storageKey && typeof window !== 'undefined') {
+      try { window.localStorage.removeItem(storageKey); } catch { /* ignore */ }
+    }
+  }, [storageKey]);
+
+  const hasUserLayout = Object.keys(userPositions).length > 0;
+
   // Refs to card DOM elements
   const cardRefs = useRef<Record<number, HTMLDivElement | null>>({});
 
@@ -771,10 +903,12 @@ export function DataModelCanvas({
     setColumnAnchorY(next);
   }, []);
 
-  // Measure after initial render (useLayoutEffect = sync, after DOM paint)
+  // Measure after initial render (useLayoutEffect = sync, after DOM paint).
+  // Column offsetTop inside a card is independent of the card's canvas
+  // position, so we only remeasure when the underlying model/view set changes.
   useLayoutEffect(() => {
-    if (Object.keys(positions).length > 0) measureColumns();
-  }, [positions, measureColumns]);
+    if (visibleViews.length > 0) measureColumns();
+  }, [visibleViews, measureColumns]);
 
   // Re-measure when card content changes height (section open/close)
   useEffect(() => {
@@ -793,13 +927,13 @@ export function DataModelCanvas({
   const canvasSize = useMemo(() => {
     let w = 800, h = 500;
     visibleViews.forEach((v) => {
-      const pos = positions[v.id];
+      const pos = effectivePositions[v.id];
       if (!pos) return;
-      w = Math.max(w, pos.x + CARD_WIDTH + PAD);
-      h = Math.max(h, pos.y + ROW_HEIGHT + PAD);
+      w = Math.max(w, pos.x + CARD_WIDTH + CANVAS_PAD);
+      h = Math.max(h, pos.y + ROW_HEIGHT + CANVAS_PAD);
     });
     return { width: w, height: h };
-  }, [positions, visibleViews]);
+  }, [effectivePositions, visibleViews]);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -855,44 +989,48 @@ export function DataModelCanvas({
   // ── Build SVG line endpoints (must be before early returns — Rules of Hooks) ──
 
   /**
-   * For each relationship, compute the exact (sx,sy) → (tx,ty) in canvas space.
+   * For each relationship, compute bezier endpoints (sx,sy) → (tx,ty) and
+   * the exit direction at each end.
    *
-   * X: right edge for col-0 cards, left edge for col-1 cards — both route through CHAN_X.
-   * Y: positions[viewId].y + columnAnchorY[viewId][colName]
-   *    columnAnchorY = offsetTop from card-wrapper to column row centre (layout Y,
-   *    unaffected by overflow scroll). Join cols are sorted to the top so this
-   *    value is always within the card's visible bounds.
+   * Edge side selection: whichever horizontal edge (left/right) of each card
+   * is closer to the other card's centre. This keeps beziers short and
+   * prevents the line from ducking behind its own card — regardless of how
+   * the user has arranged the cards via drag.
+   *
+   * Y anchor: card.y + columnAnchorY[viewId][colName] (layout-based offset
+   * from card top, robust to in-card scroll). Join columns are pinned to the
+   * top of the column list so the value is always inside the visible area.
    */
   const lineEndpoints = useMemo(() => {
     return relationships.flatMap((rel) => {
-      const fromPos = positions[rel.fromViewId];
+      const fromPos = effectivePositions[rel.fromViewId];
       const toView  = viewByName[rel.presentationViewName];
       if (!fromPos || !toView) return [];
-      const toPos = positions[toView.id];
+      const toPos = effectivePositions[toView.id];
       if (!toPos) return [];
 
-      // Determine which card edge to use for each endpoint.
-      // Cards in col 0 (x < CHAN_X) route through their right edge.
-      // Cards in col 1 (x >= CHAN_X) route through their left edge.
-      // This ensures all paths go through CHAN_X and never pass behind a card.
-      const fromInCol0 = fromPos.x < CHAN_X;
-      const toInCol0   = toPos.x   < CHAN_X;
-      const sx = fromInCol0 ? fromPos.x + CARD_WIDTH : fromPos.x;
-      const tx = toInCol0   ? toPos.x   + CARD_WIDTH : toPos.x;
+      const fromCenterX = fromPos.x + CARD_WIDTH / 2;
+      const toCenterX   = toPos.x   + CARD_WIDTH / 2;
 
-      // columnAnchorY[id][col] = offsetTop from card-wrapper top to the column row centre.
-      // Add the card's canvas Y to get the absolute canvas coordinate.
-      // Join columns are sorted to the top of the list, so offsetTop is always small
-      // and within the card's visible area — never clipped by the overflow scroll area.
-      const HEADER_CY = 22; // fallback: approx header centre offset
+      // Source exits on the side closer to the target; target is entered on
+      // the side closer to the source. For non-overlapping cards these are
+      // always opposite sides (classic L→R case).
+      const sDir: 1 | -1 = toCenterX >= fromCenterX ? 1 : -1;
+      const tDir: 1 | -1 = toCenterX >= fromCenterX ? -1 : 1;
+
+      const sx = sDir > 0 ? fromPos.x + CARD_WIDTH : fromPos.x;
+      const tx = tDir > 0 ? toPos.x   + CARD_WIDTH : toPos.x;
+
+      // columnAnchorY[id][col] = offsetTop from card top to the column row centre.
+      const HEADER_CY = 22; // fallback ~ header centre
       const fromOff = columnAnchorY[rel.fromViewId]?.[rel.fromCol ?? ''];
       const toOff   = columnAnchorY[toView.id]?.[rel.toCol   ?? ''];
       const sy = fromPos.y + (fromOff != null ? fromOff : HEADER_CY);
       const ty = toPos.y   + (toOff   != null ? toOff   : HEADER_CY);
 
-      return [{ rel, sx, sy, tx, ty }];
+      return [{ rel, sx, sy, sDir, tx, ty, tDir }];
     });
-  }, [relationships, positions, viewByName, columnAnchorY]);
+  }, [relationships, effectivePositions, viewByName, columnAnchorY]);
 
   // ── Render guards (after all hooks) ──────────────────────────────────────
 
@@ -1002,6 +1140,17 @@ export function DataModelCanvas({
             <BookOpen className="w-3.5 h-3.5" />
             Dictionary
           </button>
+          {hasUserLayout && (
+            <button
+              onClick={handleResetLayout}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-text-secondary
+                border border-[rgb(var(--border-strong))] rounded-md hover:bg-surface-2 transition-colors"
+              title="Reset card positions to the auto layout"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Reset layout
+            </button>
+          )}
           {canEdit && (
             <button
               onClick={() => { setSelectedRelKey(null); setDialogOpen(true); }}
@@ -1065,11 +1214,12 @@ export function DataModelCanvas({
               overflow: 'visible',
             }}
           >
-            {lineEndpoints.map(({ rel, sx, sy, tx, ty }) => (
+            {lineEndpoints.map(({ rel, sx, sy, sDir, tx, ty, tDir }) => (
               <RelLine
                 key={rel.key}
                 sx={sx} sy={sy}
                 tx={tx} ty={ty}
+                sDir={sDir} tDir={tDir}
                 fromCol={rel.fromCol}
                 toCol={rel.toCol}
                 relationship={rel.relationship}
@@ -1080,20 +1230,29 @@ export function DataModelCanvas({
             ))}
           </svg>
 
-          {/* Table cards — fixed positions, no drag */}
+          {/* Table cards — draggable; auto layout with per-view overrides */}
           {visibleViews.map((view) => {
-            const pos = positions[view.id];
+            const pos = effectivePositions[view.id];
             if (!pos) return null;
+            const isDragging = draggingId === view.id;
             return (
               <div
                 key={view.id}
                 ref={(el) => { cardRefs.current[view.id] = el; }}
+                onPointerDown={(e) => startCardDrag(view.id, e)}
+                onPointerMove={onCardDragMove}
+                onPointerUp={endCardDrag}
+                onPointerCancel={endCardDrag}
                 style={{
                   position: 'absolute',
                   left: pos.x,
                   top: pos.y,
                   width: CARD_WIDTH,
-                  zIndex: 1,
+                  zIndex: isDragging ? 10 : 1,
+                  cursor: isDragging ? 'grabbing' : 'grab',
+                  touchAction: 'none',
+                  transition: isDragging ? 'none' : 'box-shadow 0.15s',
+                  boxShadow: isDragging ? '0 8px 24px rgba(15, 23, 42, 0.18)' : undefined,
                 }}
               >
                 <ViewCard

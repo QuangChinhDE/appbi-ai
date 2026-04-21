@@ -38,33 +38,41 @@ def validate_select_only(sql_query: str) -> None:
     
     # Normalize: remove comments and extra whitespace
     normalized = _normalize_sql(sql_query)
-    
-    # Check for dangerous keywords (case-insensitive)
+
+    # Strip string literals and quoted identifiers before keyword scanning
+    # so that words like CALL / MERGE / REPLACE appearing inside 'text',
+    # "ident" or `ident` don't trigger false positives.
+    # NOTE: REPLACE is intentionally NOT in the blocklist because it is a
+    # legitimate BigQuery string function and SELECT * REPLACE(...) modifier.
+    scannable = _strip_literals_and_quoted_idents(normalized)
+
+    # Check for dangerous keywords (case-insensitive).
+    # Only true DML/DDL/procedural statement keywords belong here.
     dangerous_keywords = [
-        'INSERT', 'UPDATE', 'DELETE', 'DROP', 'TRUNCATE', 
-        'ALTER', 'CREATE', 'REPLACE', 'MERGE', 'EXEC',
-        'EXECUTE', 'CALL'
+        'INSERT', 'UPDATE', 'DELETE', 'DROP', 'TRUNCATE',
+        'ALTER', 'CREATE', 'MERGE', 'EXEC',
+        'EXECUTE', 'CALL', 'GRANT', 'REVOKE'
     ]
-    
-    normalized_upper = normalized.upper()
+
+    scannable_upper = scannable.upper()
     for keyword in dangerous_keywords:
         # Use word boundaries to avoid false positives (e.g., "SELECT_INSERT" column name)
         pattern = r'\b' + keyword + r'\b'
-        if re.search(pattern, normalized_upper):
+        if re.search(pattern, scannable_upper):
             raise ValueError(
                 f"Only SELECT queries are allowed. Query contains forbidden keyword: {keyword}"
             )
     
     # Check for multiple statements (semicolon followed by non-whitespace/non-comment)
     # Allow trailing semicolon and comments after it
-    if _has_multiple_statements(normalized):
+    if _has_multiple_statements(scannable):
         raise ValueError(
             "Only single SELECT queries are allowed. Multiple statements detected."
         )
     
     # Verify it starts with SELECT or WITH (CTE).
     # Compiled transformations produce "WITH base AS (...) SELECT ..." queries.
-    stripped_upper = normalized_upper.strip()
+    stripped_upper = normalized.upper().strip()
     if not (stripped_upper.startswith('SELECT') or stripped_upper.startswith('WITH')):
         raise ValueError(
             "Query must start with SELECT. Only SELECT queries are allowed."
@@ -84,6 +92,38 @@ def _normalize_sql(sql_query: str) -> str:
     # Remove multi-line comments (/* comment */)
     sql_query = re.sub(r'/\*.*?\*/', '', sql_query, flags=re.DOTALL)
     
+    return sql_query
+
+
+def _strip_literals_and_quoted_idents(sql_query: str) -> str:
+    """
+    Remove the contents of string literals and quoted identifiers so that
+    SQL keywords appearing inside them do not trigger the forbidden-keyword
+    check.
+
+    Handles:
+      - Single-quoted strings: 'text' (with '' escape)
+      - Double-quoted strings/identifiers: "text" (with "" escape)
+      - Backtick-quoted identifiers (BigQuery/MySQL): `ident`
+      - Triple-quoted BigQuery strings: '''...''' and \"\"\"...\"\"\"
+      - Raw/byte string prefixes: r'...', b'...', rb'...' (prefix left intact,
+        body stripped)
+
+    The replacement keeps the quote characters but empties the content so the
+    query structure (length, semicolon positions, etc.) is still
+    approximately preserved for downstream checks.
+    """
+    # Order matters: handle triple-quoted before single/double to avoid
+    # partial matches.
+    patterns = [
+        (r"'''.*?'''", "''''''"),
+        (r'""".*?"""', '""""""'),
+        (r"'(?:''|[^'])*'", "''"),
+        (r'"(?:""|[^"])*"', '""'),
+        (r"`[^`]*`", "``"),
+    ]
+    for pat, repl in patterns:
+        sql_query = re.sub(pat, repl, sql_query, flags=re.DOTALL)
     return sql_query
 
 
