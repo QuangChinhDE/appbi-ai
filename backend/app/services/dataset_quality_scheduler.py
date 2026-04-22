@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -40,6 +40,20 @@ from app.services.quality_report_pdf import build_quality_run_pdf
 logger = logging.getLogger(__name__)
 
 _scheduler: Optional[BackgroundScheduler] = None
+
+
+def _rule_status(rule: DatasetQualityRule, result: Dict[str, Any]) -> str:
+    if result.get("skipped"):
+        return "skipped"
+    if result.get("passed") and not result.get("error"):
+        return "passed"
+
+    severity = str(getattr(rule, "severity", "warning") or "warning").lower()
+    if result.get("error") or severity == "error":
+        return "failed"
+    if severity == "warning":
+        return "warning"
+    return "info"
 
 
 def _job_id(dataset_id: int) -> str:
@@ -165,7 +179,7 @@ def _execute_scheduled_run(dataset_id: int, schedule_id: int) -> None:
                 pdf_bytes = None
 
             subject = _build_subject(dataset.name, run.status, run.score)
-            text_body, html_body = _build_bodies(dataset.name, run)
+            text_body, html_body = _build_bodies(dataset.name, run, rules)
             filename = f"quality-{dataset.id}-run-{run.id}.pdf"
 
             delivered = send_quality_report(
@@ -216,21 +230,36 @@ def _build_subject(dataset_name: str, status: Optional[str], score: Optional[flo
     return f"[AppBI] Quality report · {dataset_name}{score_label} · {status_label}"
 
 
-def _build_bodies(dataset_name: str, run: DatasetQualityRun) -> tuple[str, str]:
+def _build_bodies(
+    dataset_name: str,
+    run: DatasetQualityRun,
+    rules: list[DatasetQualityRule],
+) -> tuple[str, str]:
     score = run.score
     score_text = f"{score:.1f}%" if isinstance(score, (int, float)) else "—"
     status_text = (run.status or "").capitalize() or "Completed"
     results = run.results or {}
-    failed = sum(
-        1 for v in results.values() if isinstance(v, dict) and not v.get("passed") and not v.get("skipped")
+    stats = {"passed": 0, "info": 0, "warning": 0, "failed": 0, "skipped": 0}
+    total = 0
+    for rule in rules:
+        result = results.get(str(rule.id)) if isinstance(results, dict) else None
+        if not isinstance(result, dict):
+            continue
+        total += 1
+        stats[_rule_status(rule, result)] += 1
+
+    findings_line = (
+        f"pass {stats['passed']} · info {stats['info']} · "
+        f"warning {stats['warning']} · failed {stats['failed']}"
     )
-    total = len(results)
+    if stats["skipped"]:
+        findings_line += f" · skipped {stats['skipped']}"
 
     text = (
         f"AppBI Dataset Quality — {dataset_name}\n"
         f"Run #{run.id} · {status_text}\n"
         f"Score: {score_text}\n"
-        f"Rules failed: {failed} / {total}\n\n"
+        f"Rule status summary: {findings_line} (total {total})\n\n"
         "See the attached PDF for the full breakdown."
     )
     html = (
@@ -241,7 +270,7 @@ def _build_bodies(dataset_name: str, run: DatasetQualityRun) -> tuple[str, str]:
         f"<li><b>Run:</b> #{run.id}</li>"
         f"<li><b>Status:</b> {status_text}</li>"
         f"<li><b>Score:</b> {score_text}</li>"
-        f"<li><b>Rules failed:</b> {failed} / {total}</li>"
+        f"<li><b>Rule status summary:</b> {findings_line} (total {total})</li>"
         f"</ul>"
         f"<p>Full details are attached as a PDF report.</p>"
         f"<p style='color:#6b7280;font-size:12px'>— Sent automatically by AppBI.</p>"

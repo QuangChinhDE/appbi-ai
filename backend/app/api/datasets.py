@@ -2238,6 +2238,8 @@ from app.schemas.dataset import (
     QualitySummaryResponse,
     QualityRulePreviewRequest,
     QualityRulePreviewResponse,
+    QualityRuleTestRequest,
+    QualityRuleTestResponse,
 )
 
 
@@ -2296,6 +2298,29 @@ def preview_quality_rule(
         config=config_dict,
     )
     return QualityRulePreviewResponse(**result)
+
+
+@router.post("/{dataset_id}/quality/rules/test", response_model=QualityRuleTestResponse)
+def test_quality_rule(
+    dataset_id: int,
+    body: QualityRuleTestRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Execute a rule preview against live data without saving it."""
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_view_access(db, current_user, ds, "datasets")
+
+    config_dict = body.config.model_dump(exclude_none=True) if body.config else {}
+    result = DatasetQualityService.test_rule(
+        db=db,
+        dataset_id=dataset_id,
+        table_id=body.table_id,
+        rule_type=body.rule_type,
+        column_name=body.column_name,
+        config=config_dict,
+    )
+    return QualityRuleTestResponse(**result)
 
 
 @router.post("/{dataset_id}/quality/rules", response_model=QualityRuleResponse, status_code=201)

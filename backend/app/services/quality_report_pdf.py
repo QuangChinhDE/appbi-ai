@@ -47,6 +47,20 @@ _DIMENSIONS_ORDER = [
 ]
 
 
+def _rule_status(rule: DatasetQualityRule, result: Dict[str, Any]) -> str:
+    if result.get("skipped"):
+        return "skipped"
+    if result.get("passed") and not result.get("error"):
+        return "passed"
+
+    severity = str(getattr(rule, "severity", "warning") or "warning").lower()
+    if result.get("error") or severity == "error":
+        return "failed"
+    if severity == "warning":
+        return "warning"
+    return "info"
+
+
 def _fmt_dt(value: Optional[datetime]) -> str:
     if not value:
         return "—"
@@ -161,13 +175,18 @@ def build_quality_run_pdf(
     rule_by_id = {r.id: r for r in rules}
     table_by_id = {t.id: t for t in tables}
 
-    total = len(rule_by_id)
-    passed_n = sum(1 for v in results.values() if isinstance(v, dict) and v.get("passed"))
-    failed_n = sum(
-        1 for v in results.values() if isinstance(v, dict) and not v.get("passed") and not v.get("skipped")
-    )
-    skipped_n = sum(1 for v in results.values() if isinstance(v, dict) and v.get("skipped"))
-    error_n = sum(1 for v in results.values() if isinstance(v, dict) and v.get("error"))
+    stats = {"passed": 0, "info": 0, "warning": 0, "failed": 0, "skipped": 0}
+    error_n = 0
+    total = 0
+    for rule in rules:
+        result = results.get(str(rule.id)) if isinstance(results, dict) else None
+        if not isinstance(result, dict):
+            continue
+        total += 1
+        status = _rule_status(rule, result)
+        stats[status] += 1
+        if result.get("error"):
+            error_n += 1
 
     overview_rows = [
         ["Status", (run.status or "").capitalize()],
@@ -175,11 +194,14 @@ def build_quality_run_pdf(
         ["Started at", _fmt_dt(run.started_at)],
         ["Completed at", _fmt_dt(run.completed_at)],
         ["Rules evaluated", f"{total}"],
-        ["Passed", f"{passed_n}"],
-        ["Failed", f"{failed_n}"],
-        ["Skipped", f"{skipped_n}"],
-        ["Errors", f"{error_n}"],
+        ["Passed", f"{stats['passed']}"],
+        ["Info findings", f"{stats['info']}"],
+        ["Warning findings", f"{stats['warning']}"],
+        ["Failed findings", f"{stats['failed']}"],
+        ["Skipped", f"{stats['skipped']}"],
     ]
+    if error_n:
+        overview_rows.append(["Execution errors", f"{error_n}"])
     if run.error_message:
         overview_rows.append(["Run error", _truncate(run.error_message, 240)])
 
@@ -205,27 +227,37 @@ def build_quality_run_pdf(
     story.append(Paragraph("Dimension breakdown", section_style))
     dim_stats: Dict[str, Dict[str, int]] = {}
     for rule in rules:
-        d = dim_stats.setdefault(rule.dimension, {"total": 0, "passed": 0, "failed": 0, "skipped": 0})
-        d["total"] += 1
         res = results.get(str(rule.id)) if isinstance(results, dict) else None
-        if isinstance(res, dict):
-            if res.get("skipped"):
-                d["skipped"] += 1
-            elif res.get("passed"):
-                d["passed"] += 1
-            else:
-                d["failed"] += 1
+        if not isinstance(res, dict):
+            continue
+        d = dim_stats.setdefault(
+            rule.dimension,
+            {"total": 0, "passed": 0, "info": 0, "warning": 0, "failed": 0, "skipped": 0},
+        )
+        d["total"] += 1
+        d[_rule_status(rule, res)] += 1
 
-    dim_rows = [["Dimension", "Total", "Passed", "Failed", "Skipped"]]
+    dim_rows = [["Dimension", "Total", "Passed", "Info", "Warning", "Failed", "Skipped"]]
     for dim in _DIMENSIONS_ORDER:
         if dim not in dim_stats:
             continue
         s = dim_stats[dim]
-        dim_rows.append([dim.capitalize(), str(s["total"]), str(s["passed"]), str(s["failed"]), str(s["skipped"])])
+        dim_rows.append([
+            dim.capitalize(),
+            str(s["total"]),
+            str(s["passed"]),
+            str(s["info"]),
+            str(s["warning"]),
+            str(s["failed"]),
+            str(s["skipped"]),
+        ])
     if len(dim_rows) == 1:
-        dim_rows.append(["—", "0", "0", "0", "0"])
+        dim_rows.append(["—", "0", "0", "0", "0", "0", "0"])
 
-    dim_table = Table(dim_rows, colWidths=[50 * mm, 26 * mm, 26 * mm, 26 * mm, 26 * mm])
+    dim_table = Table(
+        dim_rows,
+        colWidths=[44 * mm, 18 * mm, 18 * mm, 18 * mm, 18 * mm, 18 * mm, 18 * mm],
+    )
     dim_table.setStyle(
         TableStyle(
             [
@@ -244,12 +276,13 @@ def build_quality_run_pdf(
     )
     story.append(dim_table)
 
-    # ── Failed rules ─────────────────────────────────────────────────
-    story.append(Paragraph("Failed rules", section_style))
+    # ── Non-pass findings ────────────────────────────────────────────
+    story.append(Paragraph("Non-pass findings", section_style))
     failed_rows = [[
         _paragraph("Rule", failed_header_style),
         _paragraph("Table / Column", failed_header_style),
         _paragraph("Dimension", failed_header_style),
+        _paragraph("Status", failed_header_style),
         _paragraph("Severity", failed_header_style),
         _paragraph("Rows failed / checked", failed_header_style),
         _paragraph("Detail", failed_header_style),
@@ -266,8 +299,11 @@ def build_quality_run_pdf(
         rule = rule_by_id.get(rid)
         if rule is None:
             continue
+        status = _rule_status(rule, res)
+        if status in {"passed", "skipped"}:
+            continue
         table = table_by_id.get(rule.table_id)
-        table_label = table.display_name if table else f"#{rule.table_id}"
+        table_label = (table.display_name or table.source_table_name) if table else f"#{rule.table_id}"
         scope = f"{table_label}" + (f" · {rule.column_name}" if rule.column_name else "")
         rows_failed = res.get("rows_failed")
         rows_checked = res.get("rows_checked")
@@ -275,12 +311,13 @@ def build_quality_run_pdf(
             f"{rows_failed if rows_failed is not None else '—'} / "
             f"{rows_checked if rows_checked is not None else '—'}"
         )
-        detail = _truncate(res.get("detail") or ("ERROR" if res.get("error") else ""), 180)
+        detail = _truncate(res.get("detail") or ("EXECUTION ERROR" if res.get("error") else ""), 180)
         failed_rows.append(
             [
                 _paragraph(_truncate(rule.name, 90), table_cell_style),
                 _paragraph(_truncate(scope, 90), table_cell_style),
                 _paragraph(rule.dimension.capitalize(), table_cell_center_style),
+                _paragraph(status.capitalize(), table_cell_center_style),
                 _paragraph(rule.severity.capitalize(), table_cell_center_style),
                 _paragraph(counts, table_cell_center_style),
                 _paragraph(detail, table_cell_style),
@@ -290,20 +327,20 @@ def build_quality_run_pdf(
     if len(failed_rows) == 1:
         story.append(
             Paragraph(
-                "All evaluated rules passed — no failures to report.",
+                "No info, warning, or failed findings to report for this run.",
                 body_style,
             )
         )
     else:
         failed_table = Table(
             failed_rows,
-            colWidths=[34 * mm, 34 * mm, 20 * mm, 18 * mm, 24 * mm, 44 * mm],
+            colWidths=[28 * mm, 30 * mm, 18 * mm, 16 * mm, 16 * mm, 24 * mm, 38 * mm],
             repeatRows=1,
         )
         failed_table.setStyle(
             TableStyle(
                 [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#991b1b")),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
                     ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
                     ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#e5e7eb")),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),

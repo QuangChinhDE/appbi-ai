@@ -50,6 +50,7 @@ import re
 import time
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -1209,8 +1210,28 @@ class DatasetQualityService:
         if not table:
             return {"error": "Table not found", "sql": None, **_build_description(rule_type, column_name, config)}
 
-        # Build descriptions
         descs = _build_description(rule_type, column_name, config)
+
+        try:
+            normalized_rule_type = (_clean_optional_str(rule_type) or "").lower()
+            if normalized_rule_type not in RULE_TYPE_DIMENSION:
+                raise ValueError(f"Unsupported rule type: {rule_type}")
+            normalized = _normalize_quality_rule_fields(
+                table=table,
+                dimension=RULE_TYPE_DIMENSION[normalized_rule_type],
+                rule_type=normalized_rule_type,
+                column_name=column_name,
+                config=config,
+                severity="warning",
+            )
+            _validate_cross_table_rule_config(
+                db,
+                dataset_id,
+                normalized["rule_type"],
+                normalized["config"],
+            )
+        except ValueError as exc:
+            return {"sql": None, **descs, "error": str(exc)}
 
         # Build SQL preview
         table_name = table.display_name or table.source_table_name or "table"
@@ -1219,17 +1240,144 @@ class DatasetQualityService:
 
         sql = _build_check_sql(
             table_ref=table_ref,
-            rule_type=rule_type,
-            col=column_name,
-            config=config,
+            rule_type=normalized["rule_type"],
+            col=normalized["column_name"],
+            config=normalized["config"],
             dialect="postgresql",
         )
 
         return {
             "sql": sql,
-            **descs,
+            **_build_description(
+                normalized["rule_type"],
+                normalized["column_name"],
+                normalized["config"],
+            ),
             "error": None,
         }
+
+    @staticmethod
+    def test_rule(
+        db: Session,
+        dataset_id: int,
+        table_id: int,
+        rule_type: str,
+        column_name: Optional[str],
+        config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        from app.models import DataSource
+
+        table = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.id == table_id, DatasetTable.dataset_id == dataset_id)
+            .first()
+        )
+        if not table:
+            return {
+                "passed": False,
+                "rows_checked": None,
+                "rows_failed": None,
+                "detail": "Table not found",
+                "sql": None,
+                "preview_sql": None,
+                "preview_note": None,
+                "preview_columns": [],
+                "preview_rows": [],
+                "log": ["[0ms] VALIDATION ERROR: Table not found"],
+                "elapsed_ms": 0,
+                "skipped": False,
+                "error": True,
+            }
+
+        try:
+            normalized_rule_type = (_clean_optional_str(rule_type) or "").lower()
+            if normalized_rule_type not in RULE_TYPE_DIMENSION:
+                raise ValueError(f"Unsupported rule type: {rule_type}")
+            normalized = _normalize_quality_rule_fields(
+                table=table,
+                dimension=RULE_TYPE_DIMENSION[normalized_rule_type],
+                rule_type=normalized_rule_type,
+                column_name=column_name,
+                config=config,
+                severity="warning",
+            )
+            _validate_cross_table_rule_config(
+                db,
+                dataset_id,
+                normalized["rule_type"],
+                normalized["config"],
+            )
+        except ValueError as exc:
+            return {
+                "passed": False,
+                "rows_checked": None,
+                "rows_failed": None,
+                "detail": str(exc),
+                "sql": None,
+                "preview_sql": None,
+                "preview_note": None,
+                "preview_columns": [],
+                "preview_rows": [],
+                "log": [f"[0ms] VALIDATION ERROR: {exc}"],
+                "elapsed_ms": 0,
+                "skipped": False,
+                "error": True,
+            }
+
+        dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if dataset_obj is None:
+            return {
+                "passed": False,
+                "rows_checked": None,
+                "rows_failed": None,
+                "detail": "Dataset not found",
+                "sql": None,
+                "preview_sql": None,
+                "preview_note": None,
+                "preview_columns": [],
+                "preview_rows": [],
+                "log": ["[0ms] VALIDATION ERROR: Dataset not found"],
+                "elapsed_ms": 0,
+                "skipped": False,
+                "error": True,
+            }
+
+        table_map: Dict[int, DatasetTable] = {
+            t.id: t
+            for t in db.query(DatasetTable)
+            .filter(DatasetTable.dataset_id == dataset_id)
+            .all()
+        }
+        ds_map: Dict[int, Any] = {}
+        for db_table in table_map.values():
+            if db_table.datasource_id and db_table.datasource_id not in ds_map:
+                datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+                if datasource:
+                    ds_map[db_table.datasource_id] = datasource
+
+        preview_rule = SimpleNamespace(
+            id=0,
+            dataset_id=dataset_id,
+            table_id=table_id,
+            column_name=normalized["column_name"],
+            dimension=RULE_TYPE_DIMENSION[normalized["rule_type"]],
+            rule_type=normalized["rule_type"],
+            name="Preview rule",
+            config=normalized["config"],
+            severity="warning",
+            enabled=True,
+        )
+
+        result = DatasetQualityService._execute_single_rule(
+            db,
+            dataset_obj,
+            preview_rule,
+            table_map,
+            ds_map,
+        )
+        result["preview_columns"] = list(result.get("preview_columns") or [])
+        result["preview_rows"] = list(result.get("preview_rows") or [])
+        return result
 
     # ── Rules ──────────────────────────────────────────────────────────────
 

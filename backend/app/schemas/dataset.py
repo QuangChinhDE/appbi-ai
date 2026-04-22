@@ -450,6 +450,29 @@ class QualityRulePreviewResponse(BaseModel):
     error: Optional[str] = None
 
 
+class QualityRuleTestRequest(BaseModel):
+    table_id: int
+    rule_type: str = Field(..., min_length=1, max_length=80)
+    column_name: Optional[str] = Field(default=None, max_length=255)
+    config: Optional[QualityRuleConfig] = Field(default_factory=QualityRuleConfig)
+
+
+class QualityRuleTestResponse(BaseModel):
+    passed: bool
+    rows_checked: Optional[int] = None
+    rows_failed: Optional[int] = None
+    detail: Optional[str] = None
+    sql: Optional[str] = None
+    preview_sql: Optional[str] = None
+    preview_note: Optional[str] = None
+    preview_columns: List[str] = Field(default_factory=list)
+    preview_rows: List[Dict[str, Any]] = Field(default_factory=list)
+    log: List[str] = Field(default_factory=list)
+    elapsed_ms: Optional[int] = None
+    skipped: Optional[bool] = None
+    error: Optional[bool] = None
+
+
 class QualityAISuggestColumnInfo(BaseModel):
     name: str
     type: str = ""

@@ -209,6 +209,27 @@ interface RulePreviewResult {
   error: string | null;
 }
 
+interface RuleTestResult {
+  passed: boolean;
+  rows_checked?: number | null;
+  rows_failed?: number | null;
+  detail?: string | null;
+  sql?: string | null;
+  preview_sql?: string | null;
+  preview_note?: string | null;
+  preview_columns?: string[] | null;
+  preview_rows?: Array<Record<string, unknown>> | null;
+  log?: string[] | null;
+  elapsed_ms?: number | null;
+  skipped?: boolean;
+  error?: boolean;
+}
+
+function getRequestErrorMessage(error: any, fallback: string): string {
+  const message = error?.response?.data?.detail ?? error?.response?.data?.message ?? error?.message ?? fallback;
+  return typeof message === 'string' ? message : JSON.stringify(message);
+}
+
 const FORMAT_OPTIONS: { value: QualityFormat; label: string }[] = [
   { value: 'email',    label: 'Email address' },
   { value: 'url',      label: 'URL (http/https)' },
@@ -1395,7 +1416,7 @@ FROM {{ table }}`
             }
             className="w-full rounded border border-[rgb(var(--border-line))] px-2 py-2 font-mono text-xs focus:border-brand/50 focus:outline-none resize-y" />
           <p className="text-[11px] text-text-quaternary">
-            The query must return exactly two aliased columns. Failing rows are reported as rule failures.
+            The query must return exactly two aliased columns. Failing rows are reported as rule failures. Use Run test in the preview panel to validate the SQL and inspect live output before saving.
           </p>
         </div>
       );
@@ -1895,7 +1916,7 @@ function RuleEditorDrawerLegacy({
                     </label>
                   </div>
                   <div className="space-y-2 border-t border-[rgb(var(--border-line))] pt-2">
-                    <SectionHeader title="Live preview" helpText="What this rule checks and how it runs." icon={Eye} />
+                    <SectionHeader title="Live preview" helpText="See the generated SQL, then run a live test before saving if needed." icon={Eye} />
                   {previewLoading ? (
                     <div className="flex items-center gap-2 rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-3">
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-text-quaternary" />
@@ -2008,6 +2029,8 @@ function RuleEditorDrawer({
   const [preview, setPreview] = useState<RulePreviewResult | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showPreviewSql, setShowPreviewSql] = useState(false);
+  const [testResult, setTestResult] = useState<RuleTestResult | null>(null);
+  const [testLoading, setTestLoading] = useState(false);
   const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const createMutation = useCreateQualityRule(datasetId);
@@ -2062,6 +2085,10 @@ function RuleEditorDrawer({
     if (!bulkEligible) setShowBulkPicker(false);
   }, [bulkEligible]);
 
+  useEffect(() => {
+    setTestResult(null);
+  }, [tableId, ruleType, columnName, config]);
+
   function patchConfig(partial: Partial<QualityRuleConfig>) {
     setConfig((prev) => ({ ...prev, ...partial }));
   }
@@ -2111,6 +2138,40 @@ function RuleEditorDrawer({
     setShowAiAssistant(false);
     setShowBulkPicker(false);
   }
+
+  const handleRunTest = useCallback(async () => {
+    if (!tableId || !ruleType) {
+      setTestResult(null);
+      return;
+    }
+
+    setTestLoading(true);
+    try {
+      const res = await api.post<RuleTestResult>(
+        `/datasets/${datasetId}/quality/rules/test`,
+        { table_id: tableId, rule_type: ruleType, column_name: columnName || null, config },
+      );
+      setTestResult(res.data);
+    } catch (error: any) {
+      setTestResult({
+        passed: false,
+        rows_checked: null,
+        rows_failed: null,
+        detail: getRequestErrorMessage(error, 'Could not run test.'),
+        sql: null,
+        preview_sql: null,
+        preview_note: null,
+        preview_columns: [],
+        preview_rows: [],
+        log: [],
+        elapsed_ms: null,
+        skipped: false,
+        error: true,
+      });
+    } finally {
+      setTestLoading(false);
+    }
+  }, [datasetId, tableId, ruleType, columnName, config]);
 
   async function handleSave() {
     if (!tables.find((t) => t.id === tableId)) { toast.error('Select a table'); return; }
@@ -2169,6 +2230,35 @@ function RuleEditorDrawer({
   }
 
   const isPending = createMutation.isPending || updateMutation.isPending || bulkCreateMutation.isPending;
+  const testStatus = useMemo(() => {
+    if (!testResult) return null;
+    if (testResult.skipped) {
+      return {
+        label: 'Skipped',
+        badgeClass: 'bg-surface-2 text-text-tertiary',
+        detailClass: 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary',
+      };
+    }
+    if (testResult.error) {
+      return {
+        label: 'Error',
+        badgeClass: 'bg-danger/10 text-danger',
+        detailClass: 'border-danger/30 bg-danger/5 text-danger',
+      };
+    }
+    if (testResult.passed) {
+      return {
+        label: 'Pass',
+        badgeClass: 'bg-success/10 text-success',
+        detailClass: 'border-success/20 bg-success/5 text-text-secondary',
+      };
+    }
+    return {
+      label: 'Fail',
+      badgeClass: 'bg-warning/10 text-warning',
+      detailClass: 'border-warning/20 bg-warning/10 text-text-secondary',
+    };
+  }, [testResult]);
 
   return (
     <>
@@ -2545,7 +2635,7 @@ function RuleEditorDrawer({
                   </div>
 
                   <div className="space-y-2 border-t border-[rgb(var(--border-line))] pt-2">
-                    <SectionHeader title="Live preview" helpText="What this rule checks and how it runs." icon={Eye} />
+                    <SectionHeader title="Live preview" helpText="See the generated SQL, then run a live test before saving if needed." icon={Eye} />
                     {previewLoading ? (
                       <div className="flex items-center gap-2 rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-3">
                         <Loader2 className="h-3.5 w-3.5 animate-spin text-text-quaternary" />
@@ -2582,8 +2672,195 @@ function RuleEditorDrawer({
                           </div>
                         )}
                         {preview.error && (
-                          <p className="text-[11px] text-warning">{preview.error}</p>
+                          <div className="rounded-lg border border-warning/20 bg-warning/10 px-3 py-2 text-[11px] text-warning">
+                            {preview.error}
+                          </div>
                         )}
+
+                        <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0 flex-1">
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-text-quaternary">Run test before save</p>
+                              <p className="mt-1 text-xs text-text-secondary">
+                                {ruleType === 'custom_sql'
+                                  ? 'Execute this custom SQL on the current table to surface syntax/runtime errors and preview failing output before you create the rule.'
+                                  : 'Execute this rule on live data to verify counts and inspect the failing output before you create the rule.'}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={handleRunTest}
+                              disabled={testLoading || !tableId || !ruleType}
+                              className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-xs font-medium text-text-secondary hover:bg-surface-1 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {testLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                              {testLoading ? 'Running test...' : 'Run test'}
+                            </button>
+                          </div>
+
+                          {testResult ? (
+                            <div className="mt-3 space-y-3 border-t border-[rgb(var(--border-line))] pt-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                {testStatus && (
+                                  <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide ${testStatus.badgeClass}`}>
+                                    {testStatus.label}
+                                  </span>
+                                )}
+                                {testResult.elapsed_ms != null && (
+                                  <span className="text-[11px] text-text-quaternary">{testResult.elapsed_ms} ms</span>
+                                )}
+                              </div>
+
+                              <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-4">
+                                <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
+                                  <p className="text-[10px] uppercase tracking-wide text-text-quaternary">Rows Checked</p>
+                                  <p className="mt-1 text-sm font-semibold text-text-primary">{formatMetricCount(testResult.rows_checked)}</p>
+                                </div>
+                                <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
+                                  <p className="text-[10px] uppercase tracking-wide text-text-quaternary">Rows Failed</p>
+                                  <p className="mt-1 text-sm font-semibold text-text-primary">{formatMetricCount(testResult.rows_failed)}</p>
+                                </div>
+                                <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
+                                  <p className="text-[10px] uppercase tracking-wide text-text-quaternary">Preview Output</p>
+                                  <p className="mt-1 text-sm font-semibold text-text-primary">
+                                    {testResult.preview_rows?.length ? `${testResult.preview_rows.length} row(s)` : '—'}
+                                  </p>
+                                </div>
+                                <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
+                                  <p className="text-[10px] uppercase tracking-wide text-text-quaternary">Preview Query</p>
+                                  <p className="mt-1 text-sm font-semibold text-text-primary">{testResult.preview_sql ? 'Available' : '—'}</p>
+                                </div>
+                              </div>
+
+                              {testResult.detail && testStatus && (
+                                <div className={`rounded-lg border px-3 py-2 ${testStatus.detailClass}`}>
+                                  {testResult.error ? (
+                                    <div className="flex items-start gap-2">
+                                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                                      <div className="min-w-0 flex-1">
+                                        <p className="text-[11px] font-semibold uppercase tracking-[0.14em]">Database / execution error</p>
+                                        <pre className="mt-1 whitespace-pre-wrap break-words rounded bg-danger/10 px-2 py-1.5 text-xs font-mono text-danger">
+                                          {testResult.detail}
+                                        </pre>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <p className="text-sm">{testResult.detail}</p>
+                                  )}
+                                </div>
+                              )}
+
+                              {testResult.preview_note && (
+                                <div className="rounded-lg border border-warning/20 bg-warning/10 px-3 py-2 text-sm text-text-secondary">
+                                  {testResult.preview_note}
+                                </div>
+                              )}
+
+                              <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div>
+                                    <p className="text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">Output Preview</p>
+                                    <p className="mt-1 text-xs text-text-secondary">
+                                      {testResult.preview_rows?.length
+                                        ? `Showing ${testResult.preview_rows.length} row(s) from the live test output.`
+                                        : 'No output rows are available for this test yet.'}
+                                    </p>
+                                  </div>
+                                  {testResult.preview_rows?.length ? (
+                                    <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[11px] font-medium text-brand">
+                                      first {testResult.preview_rows.length} rows
+                                    </span>
+                                  ) : null}
+                                </div>
+
+                                {testResult.preview_rows && testResult.preview_rows.length > 0 ? (
+                                  <div className="mt-3 overflow-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
+                                    <table className="min-w-full divide-y divide-[rgb(var(--border-line))] text-left text-xs">
+                                      <thead className="bg-surface-2">
+                                        <tr>
+                                          {(testResult.preview_columns && testResult.preview_columns.length > 0
+                                            ? testResult.preview_columns
+                                            : Object.keys(testResult.preview_rows[0] ?? {})
+                                          ).map((column) => (
+                                            <th key={column} className="whitespace-nowrap px-3 py-2 font-semibold text-text-secondary">
+                                              {column}
+                                            </th>
+                                          ))}
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
+                                        {testResult.preview_rows.map((row, rowIndex) => {
+                                          const columns = testResult.preview_columns && testResult.preview_columns.length > 0
+                                            ? testResult.preview_columns
+                                            : Object.keys(row ?? {});
+                                          return (
+                                            <tr key={`test-preview-${rowIndex}`}>
+                                              {columns.map((column) => (
+                                                <td key={`test-preview-${rowIndex}-${column}`} className="max-w-[240px] whitespace-pre-wrap break-words px-3 py-2 align-top text-text-primary">
+                                                  {formatPreviewCellValue(row?.[column])}
+                                                </td>
+                                              ))}
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                ) : (
+                                  <div className="mt-3 rounded-lg border border-dashed border-[rgb(var(--border-line))] bg-surface-1 px-3 py-4 text-sm text-text-tertiary">
+                                    {testResult.preview_note || 'This test run did not return output rows to preview.'}
+                                  </div>
+                                )}
+                              </div>
+
+                              {testResult.sql && (
+                                <details className="group rounded-lg border border-[rgb(var(--border-line))] bg-surface-2">
+                                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium text-text-secondary">
+                                    <span>Check SQL</span>
+                                    <span className="text-[11px] text-text-quaternary">Click to expand/collapse</span>
+                                  </summary>
+                                  <div className="border-t border-[rgb(var(--border-line))] px-3 py-3">
+                                    <pre className="max-h-56 overflow-auto rounded-lg bg-surface-inverse p-3 font-mono text-xs leading-relaxed text-success whitespace-pre-wrap break-all">
+                                      {testResult.sql}
+                                    </pre>
+                                  </div>
+                                </details>
+                              )}
+
+                              {testResult.preview_sql && (
+                                <details className="group rounded-lg border border-[rgb(var(--border-line))] bg-surface-2">
+                                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium text-text-secondary">
+                                    <span>Output SQL</span>
+                                    <span className="text-[11px] text-text-quaternary">Click to expand/collapse</span>
+                                  </summary>
+                                  <div className="border-t border-[rgb(var(--border-line))] px-3 py-3">
+                                    <pre className="max-h-56 overflow-auto rounded-lg bg-surface-inverse p-3 font-mono text-xs leading-relaxed text-success whitespace-pre-wrap break-all">
+                                      {testResult.preview_sql}
+                                    </pre>
+                                  </div>
+                                </details>
+                              )}
+
+                              {testResult.log && testResult.log.length > 0 && (
+                                <details className="group rounded-lg border border-[rgb(var(--border-line))] bg-surface-2">
+                                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium text-text-secondary">
+                                    <span>Execution log</span>
+                                    <span className="text-[11px] text-text-quaternary">Click to expand/collapse</span>
+                                  </summary>
+                                  <div className="border-t border-[rgb(var(--border-line))] px-3 py-3">
+                                    <pre className="max-h-64 overflow-auto rounded-lg bg-surface-inverse p-3 font-mono text-xs leading-relaxed text-text-secondary whitespace-pre-wrap break-all">
+                                      {testResult.log.join('\n')}
+                                    </pre>
+                                  </div>
+                                </details>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="mt-3 rounded-lg border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-3 py-4 text-sm text-text-tertiary">
+                              Run a live test to validate the rule and preview the output before saving.
+                            </div>
+                          )}
+                        </div>
                       </div>
                     ) : (
                       <div className="rounded-xl border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-3 py-3 text-xs text-text-quaternary">
@@ -3766,16 +4043,69 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
   // Score từ latest completed run (hoặc summary)
   const overallScore: number | null = latestCompletedRun?.score ?? summary?.score ?? null;
 
-  // Pass / fail / skipped / error counts từ latest completed run
+  // Severity-aware run breakdown for the latest completed run.
+  // A failed info rule stays informational, a failed warning rule stays warning,
+  // and hard failures include error-severity rules plus execution errors.
   const runStats = useMemo(() => {
-    const vals = Object.values(runResultsMap);
-    if (vals.length === 0) return null;
-    const pass    = vals.filter((r) => r.passed && !r.skipped).length;
-    const fail    = vals.filter((r) => !r.passed && !r.skipped && !r.error).length;
-    const skipped = vals.filter((r) => r.skipped).length;
-    const error   = vals.filter((r) => r.error).length;
-    return { pass, fail, skipped, error, total: vals.length };
-  }, [runResultsMap]);
+    const executedRules = allRules
+      .filter((rule) => rule.id in runResultsMap)
+      .map((rule) => ({
+        rule,
+        result: runResultsMap[rule.id] as {
+          passed?: boolean;
+          skipped?: boolean;
+          error?: boolean;
+        },
+      }));
+
+    if (executedRules.length === 0) return null;
+
+    const counts = {
+      pass: 0,
+      info: 0,
+      warning: 0,
+      failed: 0,
+      skipped: 0,
+      total: executedRules.length,
+      evaluated: 0,
+    };
+
+    for (const { rule, result } of executedRules) {
+      if (result?.skipped) {
+        counts.skipped += 1;
+        continue;
+      }
+
+      counts.evaluated += 1;
+
+      if (result?.passed && !result?.error) {
+        counts.pass += 1;
+        continue;
+      }
+
+      if (result?.error || rule.severity === 'error') {
+        counts.failed += 1;
+        continue;
+      }
+
+      if (rule.severity === 'warning') {
+        counts.warning += 1;
+        continue;
+      }
+
+      counts.info += 1;
+    }
+
+    const pct = (value: number) => counts.evaluated > 0 ? (value / counts.evaluated) * 100 : 0;
+
+    return {
+      ...counts,
+      passPct: pct(counts.pass),
+      infoPct: pct(counts.info),
+      warningPct: pct(counts.warning),
+      failedPct: pct(counts.failed),
+    };
+  }, [allRules, runResultsMap]);
 
   // Dimension breakdown từ summary (có passed/failed per-dimension)
   const dimBreakdown = summary?.dimension_breakdown ?? [];
@@ -3957,24 +4287,31 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
 
             {/* ── Stat counts (inline text) ── */}
             {runStats && (
-              <div className="flex items-center gap-2.5 text-xs shrink-0">
+              <div className="flex items-center gap-2.5 text-xs shrink-0 flex-wrap">
                 <span className="flex items-center gap-1">
                   <CheckCircle2 className="h-3 w-3 text-success" />
-                  <span className="font-semibold text-success">{runStats.pass}</span>
+                  <span className="font-semibold text-success">{formatMetricPercent(runStats.passPct)}</span>
                   <span className="text-text-quaternary">pass</span>
+                  <span className="text-text-tertiary">({runStats.pass})</span>
+                </span>
+                <span className="flex items-center gap-1">
+                  <Info className="h-3 w-3 text-brand" />
+                  <span className="font-semibold text-brand">{formatMetricPercent(runStats.infoPct)}</span>
+                  <span className="text-text-quaternary">info</span>
+                  <span className="text-text-tertiary">({runStats.info})</span>
+                </span>
+                <span className="flex items-center gap-1">
+                  <AlertTriangle className="h-3 w-3 text-warning" />
+                  <span className="font-semibold text-warning">{formatMetricPercent(runStats.warningPct)}</span>
+                  <span className="text-text-quaternary">warning</span>
+                  <span className="text-text-tertiary">({runStats.warning})</span>
                 </span>
                 <span className="flex items-center gap-1">
                   <XCircle className="h-3 w-3 text-danger" />
-                  <span className="font-semibold text-danger">{runStats.fail}</span>
-                  <span className="text-text-quaternary">fail</span>
+                  <span className="font-semibold text-danger">{formatMetricPercent(runStats.failedPct)}</span>
+                  <span className="text-text-quaternary">failed</span>
+                  <span className="text-text-tertiary">({runStats.failed})</span>
                 </span>
-                {runStats.error > 0 && (
-                  <span className="flex items-center gap-1">
-                    <AlertTriangle className="h-3 w-3 text-warning" />
-                    <span className="font-semibold text-warning">{runStats.error}</span>
-                    <span className="text-text-quaternary">error</span>
-                  </span>
-                )}
                 {runStats.skipped > 0 && (
                   <span className="flex items-center gap-1">
                     <Info className="h-3 w-3 text-text-quaternary" />

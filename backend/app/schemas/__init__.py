@@ -80,6 +80,10 @@ from app.schemas.dataset import (
     QualityRunResponse,
     QualityDimensionSummary,
     QualitySummaryResponse,
+    QualityRulePreviewRequest,
+    QualityRulePreviewResponse,
+    QualityRuleTestRequest,
+    QualityRuleTestResponse,
 )
 from app.schemas.agent_report import (
     AgentReportSpecCreate,
@@ -170,6 +174,10 @@ __all__ = [
     "QualityRunResponse",
     "QualityDimensionSummary",
     "QualitySummaryResponse",
+    "QualityRulePreviewRequest",
+    "QualityRulePreviewResponse",
+    "QualityRuleTestRequest",
+    "QualityRuleTestResponse",
 
     # Dashboard HTML import
     "DashboardHtmlImportAnalyzeResponse",

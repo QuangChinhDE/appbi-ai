@@ -38,10 +38,11 @@ interface RuleResultEntry {
   rule: QualityRule;
   tableName: string;
   result: QualityRuleResult;
-  kind: 'passed' | 'failed' | 'skipped' | 'error';
+  kind: 'passed' | 'info' | 'warning' | 'failed' | 'skipped';
 }
 
-type OutcomeFilter = 'all' | 'passed' | 'failed' | 'skipped' | 'error';
+type ReportStatus = RuleResultEntry['kind'];
+type OutcomeFilter = 'all' | ReportStatus;
 type SeverityFilter = 'all' | 'info' | 'warning' | 'error';
 
 const RULE_TYPE_LABELS: Record<string, string> = {
@@ -68,11 +69,12 @@ const SEVERITY_STYLES: Record<'info' | 'warning' | 'error', string> = {
   error: 'bg-danger/10 text-danger',
 };
 
-const OUTCOME_STYLES: Record<'passed' | 'failed' | 'skipped' | 'error', string> = {
+const OUTCOME_STYLES: Record<ReportStatus, string> = {
   passed: 'bg-success/10 text-success',
+  info: 'bg-brand/10 text-brand',
+  warning: 'bg-warning/10 text-warning',
   failed: 'bg-danger/10 text-danger',
   skipped: 'bg-surface-3 text-text-secondary',
-  error: 'bg-warning/10 text-warning',
 };
 
 function fmtDate(value?: string | null): string {
@@ -86,10 +88,23 @@ function fmtDimensionLabel(value: string): string {
   return value.slice(0, 1).toUpperCase() + value.slice(1);
 }
 
-function resultKind(result: QualityRuleResult): 'passed' | 'failed' | 'skipped' | 'error' {
-  if (result.error) return 'error';
+function resultKind(rule: QualityRule, result: QualityRuleResult): ReportStatus {
   if (result.skipped) return 'skipped';
-  return result.passed ? 'passed' : 'failed';
+  if (result.passed && !result.error) return 'passed';
+  if (result.error || rule.severity === 'error') return 'failed';
+  if (rule.severity === 'warning') return 'warning';
+  return 'info';
+}
+
+function buildReportStats(entries: RuleResultEntry[]) {
+  return {
+    passed: entries.filter((entry) => entry.kind === 'passed').length,
+    info: entries.filter((entry) => entry.kind === 'info').length,
+    warning: entries.filter((entry) => entry.kind === 'warning').length,
+    failed: entries.filter((entry) => entry.kind === 'failed').length,
+    skipped: entries.filter((entry) => entry.kind === 'skipped').length,
+    total: entries.length,
+  };
 }
 
 export function DatasetQualityReportModal({
@@ -121,12 +136,12 @@ export function DatasetQualityReportModal({
           rule,
           tableName: tableMap.get(rule.table_id) || `Table ${rule.table_id}`,
           result,
-          kind: resultKind(result),
+          kind: resultKind(rule, result),
         };
       })
       .filter((entry): entry is RuleResultEntry => Boolean(entry))
       .sort((a, b) => {
-        const order = { failed: 0, error: 1, skipped: 2, passed: 3 };
+        const order: Record<ReportStatus, number> = { failed: 0, warning: 1, info: 2, skipped: 3, passed: 4 };
         if (order[a.kind] !== order[b.kind]) {
           return order[a.kind] - order[b.kind];
         }
@@ -136,20 +151,11 @@ export function DatasetQualityReportModal({
   }, [latestRun, rules, tables]);
 
   const runStats = useMemo(() => {
-    const values = ruleEntries.map((entry) => entry.result);
-    return {
-      passed: values.filter((result) => resultKind(result) === 'passed').length,
-      failed: values.filter((result) => resultKind(result) === 'failed').length,
-      skipped: values.filter((result) => resultKind(result) === 'skipped').length,
-      error: values.filter((result) => resultKind(result) === 'error').length,
-      total: values.length,
-    };
+    return buildReportStats(ruleEntries);
   }, [ruleEntries]);
 
-  const failedEntries = useMemo(
-    () => ruleEntries.filter((entry) => {
-      return entry.kind === 'failed' || entry.kind === 'error';
-    }),
+  const attentionEntries = useMemo(
+    () => ruleEntries.filter((entry) => entry.kind === 'warning' || entry.kind === 'failed'),
     [ruleEntries],
   );
 
@@ -164,28 +170,23 @@ export function DatasetQualityReportModal({
   }, [ruleEntries, outcomeFilter, dimensionFilter, tableFilter, severityFilter]);
 
   const filteredStats = useMemo(() => {
-    const values = filteredEntries.map((entry) => entry.result);
-    return {
-      passed: values.filter((result) => resultKind(result) === 'passed').length,
-      failed: values.filter((result) => resultKind(result) === 'failed').length,
-      skipped: values.filter((result) => resultKind(result) === 'skipped').length,
-      error: values.filter((result) => resultKind(result) === 'error').length,
-      total: values.length,
-    };
+    return buildReportStats(filteredEntries);
   }, [filteredEntries]);
 
   const issueEntries = useMemo(
-    () => filteredEntries.filter((entry) => entry.kind === 'failed' || entry.kind === 'error').slice(0, 6),
+    () => filteredEntries.filter((entry) => entry.kind === 'warning' || entry.kind === 'failed').slice(0, 6),
     [filteredEntries],
   );
 
-  const posture = typeof latestRun?.score === 'number'
-    ? latestRun.score >= 90
-      ? 'Stable'
-      : latestRun.score >= 70
-        ? 'Watch'
-        : 'At risk'
-    : 'Not scored';
+  const posture = runStats.failed > 0
+    ? 'At risk'
+    : runStats.warning > 0
+      ? 'Watch'
+      : runStats.info > 0
+        ? 'Monitor'
+        : typeof latestRun?.score === 'number'
+          ? 'Stable'
+          : 'Not scored';
 
   const uniqueTableNames = useMemo(
     () => Array.from(new Set(ruleEntries.map((entry) => entry.tableName))).sort(),
@@ -258,9 +259,9 @@ export function DatasetQualityReportModal({
                   <div>
                     <div className="text-small font-emphasis text-text-primary">{posture}</div>
                     <div className="text-caption text-text-tertiary">
-                      {failedEntries.length === 0
-                        ? 'No failed findings in the latest run.'
-                        : `${failedEntries.length} issue${failedEntries.length === 1 ? '' : 's'} need attention.`}
+                      {attentionEntries.length === 0
+                        ? 'No warning or failed findings in the latest run.'
+                        : `${attentionEntries.length} issue${attentionEntries.length === 1 ? '' : 's'} need attention.`}
                     </div>
                   </div>
                 </div>
@@ -273,9 +274,9 @@ export function DatasetQualityReportModal({
             </div>
           </section>
 
-          <section className="grid gap-3 border-b border-[rgb(var(--border-line))] px-6 py-4 md:grid-cols-2 xl:grid-cols-5">
+          <section className="grid gap-3 border-b border-[rgb(var(--border-line))] px-6 py-4 md:grid-cols-2 xl:grid-cols-6">
             <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3">
-              <div className="text-[11px] uppercase tracking-wide text-text-quaternary">Rules evaluated</div>
+              <div className="text-[11px] uppercase tracking-wide text-text-quaternary">Rules in run</div>
               <div className="mt-1 text-small font-emphasis text-text-primary">{runStats.total}</div>
             </div>
             <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3">
@@ -283,16 +284,20 @@ export function DatasetQualityReportModal({
               <div className="mt-1 text-small font-emphasis text-success">{runStats.passed}</div>
             </div>
             <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3">
+              <div className="text-[11px] uppercase tracking-wide text-text-quaternary">Info findings</div>
+              <div className="mt-1 text-small font-emphasis text-brand">{runStats.info}</div>
+            </div>
+            <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3">
+              <div className="text-[11px] uppercase tracking-wide text-text-quaternary">Warning findings</div>
+              <div className="mt-1 text-small font-emphasis text-warning">{runStats.warning}</div>
+            </div>
+            <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3">
               <div className="text-[11px] uppercase tracking-wide text-text-quaternary">Failed</div>
               <div className="mt-1 text-small font-emphasis text-danger">{runStats.failed}</div>
             </div>
             <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3">
-              <div className="text-[11px] uppercase tracking-wide text-text-quaternary">Errors / skipped</div>
-              <div className="mt-1 text-small font-emphasis text-text-primary">{runStats.error + runStats.skipped}</div>
-            </div>
-            <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3">
-              <div className="text-[11px] uppercase tracking-wide text-text-quaternary">Tables covered</div>
-              <div className="mt-1 text-small font-emphasis text-text-primary">{uniqueTableNames.length}</div>
+              <div className="text-[11px] uppercase tracking-wide text-text-quaternary">Skipped</div>
+              <div className="mt-1 text-small font-emphasis text-text-primary">{runStats.skipped}</div>
             </div>
           </section>
 
@@ -311,8 +316,9 @@ export function DatasetQualityReportModal({
                 >
                   <option value="all">All outcomes</option>
                   <option value="passed">Passed</option>
+                  <option value="info">Info</option>
+                  <option value="warning">Warning</option>
                   <option value="failed">Failed</option>
-                  <option value="error">Error</option>
                   <option value="skipped">Skipped</option>
                 </select>
               </label>
@@ -357,7 +363,7 @@ export function DatasetQualityReportModal({
               </label>
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2 text-caption text-text-tertiary">
-              <span>Showing {filteredStats.total} of {runStats.total} evaluated rules.</span>
+              <span>Showing {filteredStats.total} of {runStats.total} rules.</span>
               <button
                 type="button"
                 onClick={() => {
@@ -380,18 +386,22 @@ export function DatasetQualityReportModal({
                   <CalendarClock className="h-4 w-4 text-brand" />
                   Executive summary
                 </div>
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
                   <div className="rounded-xl bg-surface-2 px-3 py-3">
                     <div className="text-[11px] uppercase tracking-wide text-text-quaternary">Filtered pass</div>
                     <div className="mt-1 text-small font-emphasis text-success">{filteredStats.passed}</div>
                   </div>
                   <div className="rounded-xl bg-surface-2 px-3 py-3">
-                    <div className="text-[11px] uppercase tracking-wide text-text-quaternary">Filtered fail</div>
-                    <div className="mt-1 text-small font-emphasis text-danger">{filteredStats.failed}</div>
+                    <div className="text-[11px] uppercase tracking-wide text-text-quaternary">Filtered info</div>
+                    <div className="mt-1 text-small font-emphasis text-brand">{filteredStats.info}</div>
                   </div>
                   <div className="rounded-xl bg-surface-2 px-3 py-3">
-                    <div className="text-[11px] uppercase tracking-wide text-text-quaternary">Filtered error</div>
-                    <div className="mt-1 text-small font-emphasis text-warning">{filteredStats.error}</div>
+                    <div className="text-[11px] uppercase tracking-wide text-text-quaternary">Filtered warning</div>
+                    <div className="mt-1 text-small font-emphasis text-warning">{filteredStats.warning}</div>
+                  </div>
+                  <div className="rounded-xl bg-surface-2 px-3 py-3">
+                    <div className="text-[11px] uppercase tracking-wide text-text-quaternary">Filtered failed</div>
+                    <div className="mt-1 text-small font-emphasis text-danger">{filteredStats.failed}</div>
                   </div>
                   <div className="rounded-xl bg-surface-2 px-3 py-3">
                     <div className="text-[11px] uppercase tracking-wide text-text-quaternary">Filtered scope</div>
@@ -399,8 +409,8 @@ export function DatasetQualityReportModal({
                   </div>
                 </div>
                 <p className="mt-4 text-caption leading-6 text-text-secondary">
-                  {failedEntries.length === 0
-                    ? 'The current report shows no failed controls. Quality posture is stable for the evaluated rules.'
+                  {attentionEntries.length === 0
+                    ? 'The current report shows no warning or failed controls. Quality posture is stable for the evaluated rules.'
                     : 'Use the findings register below as the static review artifact for operational discussions, root-cause triage, and follow-up assignments.'}
                 </p>
               </div>
@@ -499,7 +509,7 @@ export function DatasetQualityReportModal({
                 <div className="mb-3 text-small font-emphasis text-text-primary">Priority issues</div>
                 {issueEntries.length === 0 ? (
                   <div className="rounded-xl bg-success/10 px-3 py-3 text-caption text-success">
-                    No failed or errored findings remain under the current filters.
+                    No warning or failed findings remain under the current filters.
                   </div>
                 ) : (
                   <div className="space-y-2.5">
