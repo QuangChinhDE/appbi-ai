@@ -14,6 +14,12 @@ interface ExploreSourceSelectorProps {
   onDatasetChange: (datasetId: number | null) => void;
   onTableChange: (tableId: number | null) => void;
   disabled?: boolean;
+  /**
+   * When true, the dataset dropdown is locked but the table dropdown stays
+   * interactive. Useful in wizard flows that have already committed to a
+   * dataset and only want the user to switch tables inside it.
+   */
+  lockDataset?: boolean;
 }
 
 export function ExploreSourceSelector({
@@ -22,6 +28,7 @@ export function ExploreSourceSelector({
   onDatasetChange,
   onTableChange,
   disabled,
+  lockDataset = false,
 }: ExploreSourceSelectorProps) {
   const { data: datasets = [], isLoading: loadingDatasets } = useDatasets();
   const { data: dataset } = useDataset(selectedDatasetId);
@@ -51,7 +58,7 @@ export function ExploreSourceSelector({
           size="sm"
           value={selectedDatasetId || ''}
           onChange={(e) => handleDatasetChange(e.target.value)}
-          disabled={disabled || loadingDatasets}
+          disabled={disabled || lockDataset || loadingDatasets}
         >
           <option value="">Select dataset...</option>
           {datasets.map((ws: any) => (

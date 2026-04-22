@@ -352,6 +352,33 @@ function isSourceTimeColumn(column: ColumnMetadata): boolean {
   );
 }
 
+export interface ExploreEditorEphemeralSeed {
+  chartType?: ChartType;
+  chartName?: string | null;
+  chartDescription?: string | null;
+  queryMode?: 'generated' | 'custom';
+  generatedRoleConfig?: ChartRoleConfig | null;
+  customRoleConfig?: ChartRoleConfig | null;
+  customSql?: string | null;
+  styleConfig?: ChartStyleConfig | null;
+  baseFilters?: Filter[] | null;
+}
+
+export interface ExploreEditorEphemeralResult {
+  chartType: ChartType;
+  chartName: string;
+  chartDescription: string | null;
+  queryMode: 'generated' | 'custom';
+  customSql: string | null;
+  generatedRoleConfig: ChartRoleConfig;
+  customRoleConfig: ChartRoleConfig;
+  activeRoleConfig: ChartRoleConfig;
+  styleConfig: ChartStyleConfig;
+  baseFilters: Filter[];
+  datasetId: number | null;
+  datasetTableId: number | null;
+}
+
 export interface ExploreEditorProps {
   chartId?: number | null;
   embedded?: boolean;
@@ -360,8 +387,23 @@ export interface ExploreEditorProps {
   initialTableId?: number | null;
   onBack?: () => void;
   onChartSaved?: (chartId: number) => void | Promise<void>;
+  /**
+   * Fired whenever the currently-selected dataset changes. Lets parents (e.g.
+   * a Calculated-Tables side tab) know which dataset the user is working on.
+   */
+  onDatasetChange?: (datasetId: number | null) => void;
   backLabel?: string;
   saveButtonLabel?: string;
+  // ── Ephemeral (unsaved draft) mode ──────────────────────────────────────
+  // When mode='ephemeral', no chart row is created/updated in the DB. Save
+  // invokes onEphemeralSave with the full config snapshot so the caller
+  // (e.g. the HTML-import wizard) can fold it back into its own state.
+  mode?: 'full' | 'ephemeral';
+  initialSeed?: ExploreEditorEphemeralSeed;
+  onEphemeralSave?: (result: ExploreEditorEphemeralResult) => void | Promise<void>;
+  // Lock the dataset dropdown — useful when the wizard has already committed
+  // to a specific dataset and the user should only change tables within it.
+  lockDatasetSelection?: boolean;
 }
 
 export function ExploreEditor({
@@ -372,11 +414,19 @@ export function ExploreEditor({
   initialTableId = null,
   onBack,
   onChartSaved,
+  onDatasetChange,
   backLabel,
   saveButtonLabel,
+  mode = 'full',
+  initialSeed,
+  onEphemeralSave,
+  lockDatasetSelection = false,
 }: ExploreEditorProps) {
   const router = useRouter();
-  const isNew = chartId == null;
+  const isEphemeral = mode === 'ephemeral';
+  // Ephemeral editors are never bound to an existing chart row.
+  const effectiveChartId = isEphemeral ? null : chartId;
+  const isNew = effectiveChartId == null;
   const isDashboardModal = embeddedVariant === 'dashboard-modal';
 
   const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(initialDatasetId);
@@ -425,11 +475,45 @@ export function ExploreEditor({
   const executeDatasetQuery = useExecuteDatasetTableQueryMutation();
   const previewChartData = usePreviewChartData();
 
-  const { data: chart, isLoading: isChartLoading } = useChart(chartId ?? 0);
+  const { data: chart, isLoading: isChartLoading } = useChart(isEphemeral ? 0 : (chartId ?? 0));
   const { data: dataset } = useDataset(selectedDatasetId);
   const resPerms = getResourcePermissions(isNew ? 'full' : chart?.user_permission);
   const skipNextSourceResetRef = useRef(false);
+  const seedAppliedRef = useRef(false);
   const resolvedBackLabel = backLabel ?? (embedded ? 'Back to dashboard' : 'All Charts');
+
+  // One-shot seed of editor state from the ephemeral initialSeed. Must run
+  // before the generic "sync role config with columns" effects so it wins.
+  useEffect(() => {
+    if (!isEphemeral || seedAppliedRef.current) return;
+    if (!initialSeed) {
+      seedAppliedRef.current = true;
+      return;
+    }
+    seedAppliedRef.current = true;
+    if (initialSeed.chartType) setChartType(initialSeed.chartType);
+    if (initialSeed.chartName != null) setChartNameInput(initialSeed.chartName);
+    if (initialSeed.chartDescription != null) setChartDescInput(initialSeed.chartDescription);
+    if (initialSeed.styleConfig) {
+      setChartStyleConfig(normalizeChartStyleConfig(initialSeed.styleConfig, undefined));
+    }
+    if (initialSeed.baseFilters) setFilters(initialSeed.baseFilters);
+    const seedChartType = initialSeed.chartType ?? 'TABLE';
+    if (initialSeed.generatedRoleConfig) {
+      setGeneratedRoleConfig(normalizeRoleConfig(seedChartType, initialSeed.generatedRoleConfig));
+    }
+    if (initialSeed.customRoleConfig) {
+      setCustomRoleConfig(normalizeRoleConfig(seedChartType, initialSeed.customRoleConfig));
+    }
+    if (initialSeed.customSql != null) setCustomSqlDraft(initialSeed.customSql);
+    if (initialSeed.queryMode === 'custom' && initialSeed.customSql) {
+      setSqlMode('custom');
+    } else {
+      setSqlMode('generated');
+    }
+    // Name editing starts closed once we have a real seeded name.
+    if (initialSeed.chartName) setIsEditingName(false);
+  }, [isEphemeral, initialSeed]);
 
   useEffect(() => {
     if (isDashboardModal && sqlMode !== 'generated') {
@@ -442,6 +526,10 @@ export function ExploreEditor({
       setSelectedDatasetId(initialDatasetId);
     }
   }, [initialDatasetId, selectedDatasetId]);
+
+  useEffect(() => {
+    onDatasetChange?.(selectedDatasetId);
+  }, [selectedDatasetId, onDatasetChange]);
 
   useEffect(() => {
     if (initialTableId != null && selectedTableId == null) {
@@ -1045,6 +1133,40 @@ export function ExploreEditor({
         : {}),
     };
 
+    // Ephemeral mode: don't persist anything — hand the snapshot back to the
+    // caller (e.g. the HTML-import wizard) and let it fold into its own state.
+    if (isEphemeral) {
+      if (!onEphemeralSave) {
+        toast.error('No save handler was provided for this editor.');
+        return;
+      }
+      const name = chartNameInput.trim();
+      if (!name) {
+        setIsEditingName(true);
+        toast.error('Please enter a chart name');
+        return;
+      }
+      try {
+        await onEphemeralSave({
+          chartType: chartType as ChartType,
+          chartName: name,
+          chartDescription: chartDescInput.trim() || null,
+          queryMode: sqlMode,
+          customSql: trimmedCustomSql || null,
+          generatedRoleConfig,
+          customRoleConfig,
+          activeRoleConfig: activeSavedRoleConfig,
+          styleConfig: chartStyleConfig,
+          baseFilters: filters,
+          datasetId: selectedDatasetId,
+          datasetTableId: selectedTableId,
+        });
+      } catch (error: any) {
+        toast.error(getApiErrorMessage(error, 'Could not save chart changes.'));
+      }
+      return;
+    }
+
     const metaPayload: ChartMetadataUpsert = {
       domain: metaDomain || null,
       intent: metaIntent || null,
@@ -1417,6 +1539,7 @@ export function ExploreEditor({
                   onDatasetChange={setSelectedDatasetId}
                   onTableChange={setSelectedTableId}
                   disabled={!resPerms.canEdit}
+                  lockDataset={lockDatasetSelection}
                 />
               </div>
             </div>
@@ -1681,6 +1804,7 @@ export function ExploreEditor({
                   onDatasetChange={setSelectedDatasetId}
                   onTableChange={setSelectedTableId}
                   disabled={!resPerms.canEdit}
+                  lockDataset={lockDatasetSelection}
                 />
               </div>
 

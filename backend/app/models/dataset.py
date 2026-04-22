@@ -22,6 +22,10 @@ class Dataset(Base):
     settings = Column(JSONB, nullable=True, default=None)
     dictionary = Column(JSONB, nullable=True, default=None)
     dictionary_updated_at = Column(DateTime, nullable=True, default=None)
+    # Drafts are created by the Dashboard HTML Import wizard so users can edit
+    # per-table transformations before materializing charts. They are excluded
+    # from normal listings and deleted if the wizard is cancelled.
+    is_draft = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)

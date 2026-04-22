@@ -96,4 +96,11 @@ with engine.connect() as conn:
         print(f"==> Users table already has rows — skipping admin seed.")
 PYEOF
 
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+# --proxy-headers + --forwarded-allow-ips="*" lets Uvicorn honour
+# X-Forwarded-For / X-Real-IP from nginx so request.client.host reflects
+# the real viewer IP. Without this, slowapi's get_remote_address() sees
+# every public-link request as coming from 127.0.0.1 on prod, and one
+# busy dashboard (e.g. an HTML-imported one with many tiles) exhausts
+# the shared rate-limit bucket, making chart data silently fail to load.
+exec uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+    --proxy-headers --forwarded-allow-ips="*"

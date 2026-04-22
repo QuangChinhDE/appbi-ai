@@ -11,6 +11,8 @@ import type {
   DashboardHtmlImportAnalyzeInput,
   DashboardHtmlImportBuildInput,
   DashboardHtmlImportFixChartInput,
+  DashboardHtmlImportPreviewCalculatedInput,
+  DashboardHtmlImportPrepareDraftInput,
   DashboardHtmlImportValidateInput,
 } from '@/types/dashboard-html-import';
 
@@ -164,6 +166,30 @@ export const useValidateDashboardHtmlImportPlans = () => {
 export const useFixDashboardHtmlImportChartPlan = () => {
   return useMutation({
     mutationFn: (input: DashboardHtmlImportFixChartInput) => dashboardApi.fixHtmlImportChartPlan(input),
+  });
+};
+
+export const usePreviewDashboardHtmlImportCalculatedFields = () => {
+  return useMutation({
+    mutationFn: (input: DashboardHtmlImportPreviewCalculatedInput) =>
+      dashboardApi.previewHtmlImportCalculatedFields(input),
+  });
+};
+
+export const usePrepareDashboardHtmlImportDraft = () => {
+  return useMutation({
+    mutationFn: (input: DashboardHtmlImportPrepareDraftInput) =>
+      dashboardApi.prepareHtmlImportDraft(input),
+  });
+};
+
+export const useCancelDashboardHtmlImportDraft = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (datasetId: number) => dashboardApi.cancelHtmlImportDraft(datasetId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['datasets'] });
+    },
   });
 };
 

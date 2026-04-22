@@ -1799,18 +1799,45 @@ def create_manual_dataset_from_multi_excel_source(
 
 
 def _build_chart_config(plan: Dict[str, Any], dataset_id: Optional[int]) -> Dict[str, Any]:
+    """Materialize a chart plan into the persisted chart config shape.
+
+    Honors optional fields produced by the manual-edit flow:
+      - query_mode: 'generated' | 'custom'
+      - custom_sql: SQL text for custom mode
+      - custom_role_config: role config bound to the custom SQL output
+      - base_filters: base filter list applied to all runtime queries
+    Missing fields fall back to the legacy generated-only behavior so that
+    plans produced before this was added continue to build correctly.
+    """
     role_config = dict(plan.get("role_config") or {})
-    return {
+    custom_role_config = dict(plan.get("custom_role_config") or {}) or {"metrics": []}
+
+    raw_query_mode = str(plan.get("query_mode") or "generated").strip().lower()
+    custom_sql = str(plan.get("custom_sql") or "").strip()
+    query_mode = "custom" if (raw_query_mode == "custom" and custom_sql) else "generated"
+
+    base_filters_raw = plan.get("base_filters") or []
+    base_filters = [item for item in base_filters_raw if isinstance(item, dict)]
+
+    if query_mode == "custom":
+        active_role_config = custom_role_config or role_config
+    else:
+        active_role_config = role_config
+
+    config: Dict[str, Any] = {
         "dataset_id": dataset_id,
-        "filters": [],
-        "baseFilters": [],
+        "filters": list(base_filters),
+        "baseFilters": list(base_filters),
         "chartType": plan.get("final_chart_type"),
-        "queryMode": "generated",
-        "roleConfig": role_config,
+        "queryMode": query_mode,
+        "roleConfig": active_role_config,
         "generatedRoleConfig": role_config,
-        "customRoleConfig": {"metrics": []},
+        "customRoleConfig": custom_role_config,
         "styleConfig": dict(plan.get("style_config") or {}),
     }
+    if custom_sql:
+        config["customSql"] = custom_sql
+    return config
 
 
 def _apply_calculated_fields_to_tables(
@@ -2006,20 +2033,42 @@ def build_dashboard_from_import(
     type_changes: List[Dict[str, Any]] = []
 
     for index, plan in enumerate(chart_plans, start=1):
-        display_title = _normalize_text(plan.get("title"), max_len=160) or f"Imported Chart {index}"
+        # Prefer user-edited title/description from the manual editor, falling back
+        # to the AI-generated ones captured during analysis.
+        raw_user_name = _normalize_text(plan.get("chart_name"), max_len=160)
+        display_title = (
+            raw_user_name
+            or _normalize_text(plan.get("title"), max_len=160)
+            or f"Imported Chart {index}"
+        )
         internal_name = _unique_chart_name(db, current_user.id, display_title)
-        chart_description_parts = [
-            _normalize_text(plan.get("rationale"), max_len=400),
-            _normalize_text(plan.get("conversion_note"), max_len=280),
-            _normalize_text(plan.get("source_excerpt"), max_len=320),
-        ]
-        chart_description = "\n\n".join(part for part in chart_description_parts if part)
+        user_description = _normalize_text(plan.get("chart_description"), max_len=1024)
+        if user_description:
+            chart_description = user_description
+        else:
+            chart_description_parts = [
+                _normalize_text(plan.get("rationale"), max_len=400),
+                _normalize_text(plan.get("conversion_note"), max_len=280),
+                _normalize_text(plan.get("source_excerpt"), max_len=320),
+            ]
+            chart_description = "\n\n".join(part for part in chart_description_parts if part)
 
         chart_table_id = resolved_dataset_table_id
         if table_id_map:
             plan_source_key = plan.get("source_key")
             if plan_source_key and plan_source_key in table_id_map:
                 chart_table_id = table_id_map[plan_source_key]
+
+        # Manual edit may have switched the chart to a different table within the
+        # same dataset. The override is an absolute dataset_table_id; we verify it
+        # belongs to the active dataset before trusting it.
+        table_override = plan.get("dataset_table_id_override")
+        if isinstance(table_override, int) and table_override > 0:
+            override_table = db.query(DatasetTable).filter(DatasetTable.id == table_override).first()
+            if override_table and (
+                resolved_dataset_id is None or override_table.dataset_id == resolved_dataset_id
+            ):
+                chart_table_id = override_table.id
 
         chart_config = with_chart_semantic_binding(
             db,
@@ -2216,20 +2265,47 @@ def validate_chart_plans(
             source_key = plan.get("source_key")
             real_table = table_map.get(source_key, default_table) if source_key else default_table
 
-            virtual = _VirtualTable(real_table, _extra_transforms_for(real_table.display_name))
-            base_plan = build_live_base_query_plan(datasource, virtual)
-            base_table = f"({base_plan.sql}) AS _appbi_live"
+            # Manual edit may have picked a different table within the dataset.
+            override_id = plan.get("dataset_table_id_override")
+            if isinstance(override_id, int) and override_id > 0:
+                override_real = next((t for t in tables if t.id == override_id), None)
+                if override_real is not None:
+                    real_table = override_real
 
             chart_type = plan.get("final_chart_type", "TABLE")
             role_config = dict(plan.get("role_config") or {})
-            agg_sql, _ = build_live_agg_query(
-                base_table, chart_type, role_config, [], "duckdb", limit_override=5,
-            )
+            custom_role_config = dict(plan.get("custom_role_config") or {})
+            raw_query_mode = str(plan.get("query_mode") or "generated").strip().lower()
+            custom_sql = str(plan.get("custom_sql") or "").strip()
+            use_custom = raw_query_mode == "custom" and bool(custom_sql)
 
-            logger.info(
-                "validate_chart_plan block_id=%s source_key=%s table=%s base_sql=%s agg_sql=%s",
-                block_id, source_key, real_table.display_name, base_plan.sql[:200], agg_sql[:300],
-            )
+            if use_custom:
+                # Custom SQL path: wrap the user SQL as the base table and apply the
+                # chart-level aggregation on top, mirroring the runtime flow in
+                # LiveQueryService.execute_chart_query_from_sql.
+                from app.services.live_query_service import validate_select_only
+
+                validate_select_only(custom_sql)
+                base_table = f"({custom_sql.rstrip(';').strip()}) AS _appbi_live"
+                active_role_config = custom_role_config or role_config
+                agg_sql, _ = build_live_agg_query(
+                    base_table, chart_type, active_role_config, [], "duckdb", limit_override=5,
+                )
+                logger.info(
+                    "validate_chart_plan (custom SQL) block_id=%s table=%s agg_sql=%s",
+                    block_id, real_table.display_name, agg_sql[:300],
+                )
+            else:
+                virtual = _VirtualTable(real_table, _extra_transforms_for(real_table.display_name))
+                base_plan = build_live_base_query_plan(datasource, virtual)
+                base_table = f"({base_plan.sql}) AS _appbi_live"
+                agg_sql, _ = build_live_agg_query(
+                    base_table, chart_type, role_config, [], "duckdb", limit_override=5,
+                )
+                logger.info(
+                    "validate_chart_plan block_id=%s source_key=%s table=%s base_sql=%s agg_sql=%s",
+                    block_id, source_key, real_table.display_name, base_plan.sql[:200], agg_sql[:300],
+                )
 
             DataSourceConnectionService.execute_query(ds_type, datasource.config, agg_sql, limit=5)
             results.append({"block_id": block_id, "status": "ok", "error": None})

@@ -608,6 +608,7 @@ def list_datasets(
     """List datasets visible to the current user."""
     items = (
         _owned_or_shared(db, Dataset, ResourceType.DATASET, current_user)
+        .filter(Dataset.is_draft.is_(False))
         .offset(skip)
         .limit(limit)
         .all()

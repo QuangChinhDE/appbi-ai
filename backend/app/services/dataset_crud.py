@@ -237,20 +237,49 @@ class DatasetCRUDService:
         return query.filter(Dataset.id == dataset_id).first()
     
     @staticmethod
+    def _resolve_unique_name(db: Session, base_name: str) -> str:
+        """Return ``base_name`` if unused, otherwise ``base_name (1)``,
+        ``base_name (2)`` … until an unused name is found. Comparison is
+        case-sensitive to match Postgres defaults for ``varchar`` columns; we
+        still strip surrounding whitespace to avoid trivial drift."""
+        candidate = (base_name or "").strip() or "Untitled dataset"
+        # Fast path: the exact name is free.
+        existing = {
+            row[0]
+            for row in db.query(Dataset.name)
+            .filter(Dataset.name.like(f"{candidate}%"))
+            .all()
+        }
+        if candidate not in existing:
+            return candidate
+        suffix = 1
+        while True:
+            next_candidate = f"{candidate} ({suffix})"
+            if next_candidate not in existing:
+                return next_candidate
+            suffix += 1
+
+    @staticmethod
     def create_dataset(
         db: Session,
         dataset_in: DatasetCreate,
         owner_id=None,
     ) -> Dataset:
-        """Create a new dataset"""
+        """Create a new dataset.
+
+        Dataset names are auto-suffixed with ``(1)``, ``(2)``, … when the
+        requested name collides with an existing dataset so the user never
+        hits a "duplicate name" error.
+        """
         settings = normalize_dataset_settings(
             dataset_in.settings.model_dump() if getattr(dataset_in, "settings", None) else None,
             enabled_default=False,
         )
         if (settings.get("calendar_dimension") or {}).get("enabled"):
             raise ValueError(CALENDAR_REQUIRES_DATASOURCE_MESSAGE)
+        resolved_name = DatasetCRUDService._resolve_unique_name(db, dataset_in.name)
         db_dataset = Dataset(
-            name=dataset_in.name,
+            name=resolved_name,
             description=dataset_in.description,
             settings=settings,
             dictionary=normalize_dictionary_payload(
@@ -285,6 +314,21 @@ class DatasetCRUDService:
         incoming_settings = update_data.pop("settings", None)
         calendar_settings_updated = incoming_settings is not None and "calendar_dimension" in incoming_settings
         incoming_dictionary = update_data.pop("dictionary", None)
+        # Auto-suffix a renamed dataset when the new name collides with another
+        # dataset. Leaving the name unchanged is always allowed.
+        if "name" in update_data:
+            requested_name = (update_data.get("name") or "").strip()
+            if requested_name and requested_name != db_dataset.name:
+                conflict = (
+                    db.query(Dataset.id)
+                    .filter(Dataset.name == requested_name, Dataset.id != dataset_id)
+                    .first()
+                )
+                update_data["name"] = (
+                    DatasetCRUDService._resolve_unique_name(db, requested_name)
+                    if conflict is not None
+                    else requested_name
+                )
         for key, value in update_data.items():
             setattr(db_dataset, key, value)
 

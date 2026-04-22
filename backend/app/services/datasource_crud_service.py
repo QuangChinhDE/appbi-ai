@@ -49,6 +49,25 @@ def _snapshot_google_sheets(config: Dict[str, Any]) -> Dict[str, Any]:
 
 class DataSourceCRUDService:
     """Service for data source CRUD operations."""
+
+    @staticmethod
+    def _resolve_unique_name(db: Session, base_name: str, exclude_id: Optional[int] = None) -> str:
+        """Return a unique datasource name, suffixing with ``(1)``, ``(2)``, …
+        when the requested name already exists."""
+        candidate = (base_name or '').strip() or 'Untitled data source'
+        rows = db.query(DataSource.id, DataSource.name).filter(DataSource.name.like(f"{candidate}%")).all()
+        existing = {
+            name for row_id, name in rows
+            if exclude_id is None or row_id != exclude_id
+        }
+        if candidate not in existing:
+            return candidate
+        suffix = 1
+        while True:
+            next_candidate = f"{candidate} ({suffix})"
+            if next_candidate not in existing:
+                return next_candidate
+            suffix += 1
     
     @staticmethod
     def get_all(db: Session, skip: int = 0, limit: int = 50) -> List[DataSource]:
@@ -74,9 +93,10 @@ class DataSourceCRUDService:
             if data_source.type.value == 'google_sheets':
                 config = _snapshot_google_sheets(config)
             config = encrypt_config(config)
+            resolved_name = DataSourceCRUDService._resolve_unique_name(db, data_source.name)
 
             db_data_source = DataSource(
-                name=data_source.name,
+                name=resolved_name,
                 type=DataSourceType(data_source.type.value),
                 description=data_source.description,
                 config=config,
@@ -85,7 +105,7 @@ class DataSourceCRUDService:
             db.add(db_data_source)
             db.commit()
             db.refresh(db_data_source)
-            logger.info(f"Created data source: {data_source.name}")
+            logger.info(f"Created data source: {resolved_name}")
             return db_data_source
         except IntegrityError:
             db.rollback()
@@ -104,6 +124,14 @@ class DataSourceCRUDService:
         
         try:
             update_data = data_source_update.model_dump(exclude_unset=True)
+            if 'name' in update_data:
+                requested_name = (update_data['name'] or '').strip()
+                if requested_name and requested_name != db_data_source.name:
+                    update_data['name'] = DataSourceCRUDService._resolve_unique_name(
+                        db,
+                        requested_name,
+                        exclude_id=data_source_id,
+                    )
 
             # Re-snapshot sheets if config is being updated for a GG Sheets or Manual datasource.
             # Track whether config actually changed so we know to invalidate dataset-table caches.

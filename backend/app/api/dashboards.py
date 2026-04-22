@@ -3,7 +3,7 @@ API router for dashboard endpoints.
 """
 import json
 import secrets
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 from typing import Any, List, Optional
@@ -20,7 +20,8 @@ from app.core.dependencies import (
     get_effective_permission,
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
-from app.models.models import Chart, DashboardChart, Dashboard, DashboardPublicLink
+from app.models.models import Chart, DashboardChart, Dashboard, DashboardPublicLink, DataSource, DataSourceType
+from app.models.dataset import Dataset, DatasetTable
 from app.models.resource_share import ResourceType
 from app.models.user import User
 from app.schemas import (
@@ -52,6 +53,8 @@ from app.services.dashboard_html_import_service import (
     ai_fix_chart_plan,
     analyze_dashboard_html_import,
     build_dashboard_from_import as build_dashboard_from_html_import_service,
+    create_manual_dataset_from_excel_source,
+    create_manual_dataset_from_multi_excel_source,
     parse_uploaded_source_sheets,
     validate_chart_plans,
 )
@@ -236,6 +239,7 @@ async def build_html_dashboard_import(
     dashboard_name: Optional[str] = Form(None),
     dataset_id: Optional[int] = Form(None),
     dataset_table_id: Optional[int] = Form(None),
+    prepared_dataset_id: Optional[int] = Form(None),
     selected_sheet_name: Optional[str] = Form(None),
     target_dashboard_id: Optional[int] = Form(None),
     included_block_ids_json: Optional[str] = Form(None),
@@ -258,11 +262,20 @@ async def build_html_dashboard_import(
     normalized_source_mode = _normalize_import_source_mode(source_mode)
     normalized_target_mode = _normalize_import_target_mode(target_mode)
 
+    # Wizard-prepared dataset mode: user may have transformed tables inside
+    # the dataset editor before returning to build. We treat the prepared
+    # dataset as an existing_dataset source and skip file processing.
+    effective_source_mode = normalized_source_mode
+    effective_dataset_id = dataset_id
+    if prepared_dataset_id is not None:
+        effective_source_mode = "existing_dataset"
+        effective_dataset_id = prepared_dataset_id
+
     source_bytes: bytes | None = None
     source_filename: str | None = None
     source_file_pairs: List[tuple] | None = None
 
-    if normalized_source_mode == "upload_excel":
+    if effective_source_mode == "upload_excel":
         uploaded_files: List[UploadFile] = [f for f in excel_files if f and f.filename]
         if not uploaded_files and excel_file is not None:
             uploaded_files = [excel_file]
@@ -287,13 +300,13 @@ async def build_html_dashboard_import(
                 source_file_pairs.append((file_bytes, uf.filename))
 
     try:
-        return build_dashboard_from_html_import_service(
+        result = build_dashboard_from_html_import_service(
             db,
             current_user=current_user,
             analysis=analysis,
-            source_mode=normalized_source_mode,
+            source_mode=effective_source_mode,
             dataset_table_id=dataset_table_id,
-            dataset_id=dataset_id,
+            dataset_id=effective_dataset_id,
             source_bytes=source_bytes,
             source_filename=source_filename,
             source_files=source_file_pairs,
@@ -303,6 +316,14 @@ async def build_html_dashboard_import(
             target_dashboard_id=target_dashboard_id,
             included_block_ids=included_block_ids,
         )
+        if prepared_dataset_id is not None:
+            # Promote the draft dataset into a regular dataset once charts
+            # have been successfully created against it.
+            draft_row = db.query(Dataset).filter(Dataset.id == prepared_dataset_id).first()
+            if draft_row is not None and bool(getattr(draft_row, "is_draft", False)):
+                draft_row.is_draft = False
+                db.commit()
+        return result
     except HTTPException:
         raise
     except ValueError as exc:
@@ -341,6 +362,191 @@ async def preview_html_dashboard_import_source(
         raise HTTPException(status_code=500, detail=f"Failed to preview source file: {exc}") from exc
 
 
+@router.post("/import-html/prepare-draft")
+async def prepare_html_import_draft(
+    source_mode: str = Form(...),
+    dashboard_name: Optional[str] = Form(None),
+    dataset_id: Optional[int] = Form(None),
+    excel_file: Optional[UploadFile] = File(None),
+    excel_files: List[UploadFile] = File(default=[]),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("dashboards", "edit")),
+):
+    """Prepare a dataset that the user can transform before materialising charts.
+
+    - ``existing_dataset``: no DB writes; returns the selected dataset's
+      ``display_name -> table_id`` map so the wizard can deep-link into the
+      dataset editor.
+    - ``upload_excel``: creates a draft Dataset + DatasetTable(s) + manual
+      DataSource flagged ``is_draft=True``. If the wizard is cancelled the
+      draft is deleted via ``DELETE /import-html/drafts/{id}``. On ``build``
+      the draft flag is cleared instead of creating a new dataset.
+
+    Response shape::
+
+        {
+          "dataset_id": int,
+          "is_draft": bool,
+          "table_id_map": {"<source_key>": int, ...}
+        }
+    """
+    normalized_mode = _normalize_import_source_mode(source_mode)
+
+    if normalized_mode == "existing_dataset":
+        if dataset_id is None:
+            raise HTTPException(status_code=400, detail="dataset_id is required for existing_dataset.")
+        dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if not dataset_obj:
+            raise HTTPException(status_code=404, detail="Dataset not found.")
+        require_edit_access(db, current_user, dataset_obj, "datasets")
+        db_tables = (
+            db.query(DatasetTable)
+            .filter(
+                DatasetTable.dataset_id == dataset_id,
+                DatasetTable.source_kind != "generated_calendar",
+            )
+            .order_by(DatasetTable.id)
+            .all()
+        )
+        return {
+            "dataset_id": dataset_id,
+            "is_draft": False,
+            "table_id_map": {t.display_name: t.id for t in db_tables},
+        }
+
+    # upload_excel → create draft dataset
+    dataset_permission = (current_user.permissions or {}).get("datasets", "none")
+    if dataset_permission not in {"edit", "full"}:
+        raise HTTPException(status_code=403, detail="Creating a draft dataset requires datasets edit permission.")
+
+    uploaded_files: List[UploadFile] = [f for f in excel_files if f and f.filename]
+    if not uploaded_files and excel_file is not None:
+        uploaded_files = [excel_file]
+    if not uploaded_files:
+        raise HTTPException(status_code=400, detail="excel_file(s) required for upload_excel.")
+
+    file_pairs: List[tuple] = []
+    for uf in uploaded_files:
+        file_bytes = await uf.read()
+        if len(file_bytes) == 0:
+            raise HTTPException(status_code=400, detail=f"Uploaded file '{uf.filename}' is empty.")
+        if len(file_bytes) > MAX_SOURCE_UPLOAD_SIZE:
+            raise HTTPException(status_code=400, detail=f"File '{uf.filename}' is too large (max 10 MB).")
+        file_pairs.append((file_bytes, uf.filename))
+
+    draft_name = (dashboard_name or "Imported Dashboard").strip() or "Imported Dashboard"
+
+    try:
+        if len(file_pairs) == 1:
+            file_bytes, filename = file_pairs[0]
+            dataset_id_new, _primary_table_id = create_manual_dataset_from_excel_source(
+                db,
+                current_user=current_user,
+                file_bytes=file_bytes,
+                filename=filename,
+                requested_name=draft_name,
+            )
+            tables = (
+                db.query(DatasetTable)
+                .filter(DatasetTable.dataset_id == dataset_id_new)
+                .order_by(DatasetTable.id)
+                .all()
+            )
+            table_id_map: dict = {}
+            for t in tables:
+                if t.source_table_name:
+                    table_id_map[t.source_table_name] = t.id
+                table_id_map.setdefault(t.display_name, t.id)
+        else:
+            dataset_id_new, table_id_map = create_manual_dataset_from_multi_excel_source(
+                db,
+                current_user=current_user,
+                files=file_pairs,
+                requested_name=draft_name,
+            )
+
+        dataset_row = db.query(Dataset).filter(Dataset.id == dataset_id_new).first()
+        if dataset_row is None:
+            raise HTTPException(status_code=500, detail="Draft dataset could not be retrieved after creation.")
+        dataset_row.is_draft = True
+        db.commit()
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to prepare draft dataset for HTML import")
+        raise HTTPException(status_code=500, detail=f"Failed to prepare draft: {exc}") from exc
+
+    return {
+        "dataset_id": dataset_id_new,
+        "is_draft": True,
+        "table_id_map": table_id_map,
+    }
+
+
+@router.delete("/import-html/drafts/{dataset_id}", status_code=204)
+def cancel_html_import_draft(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("dashboards", "edit")),
+):
+    """Delete a draft dataset created by the HTML import wizard.
+
+    Idempotent: returns 204 even if the dataset no longer exists. Refuses to
+    delete if the dataset is NOT flagged as a draft (safety: protects real
+    datasets from accidental wipe via a leaked dataset_id).
+    """
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        return Response(status_code=204)
+    if not bool(getattr(dataset_obj, "is_draft", False)):
+        raise HTTPException(status_code=400, detail="Dataset is not a draft and will not be deleted.")
+    require_edit_access(db, current_user, dataset_obj, "datasets")
+
+    table_ids = [t.id for t in dataset_obj.tables]
+    datasource_ids = {t.datasource_id for t in dataset_obj.tables if t.datasource_id}
+
+    try:
+        if table_ids:
+            # Drafts should have no charts but clean up defensively so the
+            # dataset can be deleted without FK violations.
+            db.query(Chart).filter(Chart.dataset_table_id.in_(table_ids)).delete(
+                synchronize_session=False
+            )
+        db.delete(dataset_obj)
+        db.flush()
+
+        # Only delete manual datasources that were exclusively created for this
+        # draft (name prefixed by our helper) and are no longer referenced.
+        for ds_id in datasource_ids:
+            ds_row = db.query(DataSource).filter(DataSource.id == ds_id).first()
+            if not ds_row:
+                continue
+            if ds_row.type != DataSourceType.manual:
+                continue
+            if not str(ds_row.name or "").startswith("[Dashboard Import]"):
+                continue
+            still_in_use = (
+                db.query(DatasetTable)
+                .filter(DatasetTable.datasource_id == ds_id)
+                .first()
+            )
+            if still_in_use is None:
+                db.delete(ds_row)
+        db.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to cancel draft dataset %s", dataset_id)
+        raise HTTPException(status_code=500, detail=f"Failed to cancel draft: {exc}") from exc
+
+    return Response(status_code=204)
+
+
 @router.post("/import-html/validate-plans")
 async def validate_html_import_plans(
     analysis_json: str = Form(...),
@@ -372,6 +578,224 @@ async def validate_html_import_plans(
     except Exception as exc:
         logger.exception("Failed to validate chart plans")
         raise HTTPException(status_code=500, detail=f"Validation failed: {exc}") from exc
+
+
+@router.post("/import-html/preview-calculated")
+async def preview_html_import_calculated_fields(
+    sample_rows_json: str = Form(...),
+    columns_json: str = Form(...),
+    calculated_fields_json: str = Form(...),
+    row_limit: int = Form(200),
+    current_user: User = Depends(require_permission("dashboards", "edit")),
+):
+    """Compute AI/manual calculated fields against sample rows via DuckDB.
+
+    Used by the HTML import wizard so users can preview rows enriched with
+    calculated fields BEFORE the dashboard/dataset is materialised. Only the
+    first *row_limit* rows are returned.
+
+    Request fields (multipart form):
+    - ``sample_rows_json``: JSON array of row objects.
+    - ``columns_json``: JSON array of ``{name, type}`` column metadata.
+    - ``calculated_fields_json``: JSON array of
+      ``{name, expression, label?, source_key?}``.
+
+    Response shape::
+
+        {
+          "columns": [{"name": "...", "type": "..."}, ...],
+          "rows": [...],
+          "errors": [{"name": "...", "error": "..."}, ...]
+        }
+    """
+    from app.services.transformation_compiler import TransformationCompiler
+
+    rows = _parse_optional_json_form_field(sample_rows_json, "sample_rows_json")
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=400, detail="sample_rows_json must decode to an array.")
+    columns = _parse_optional_json_form_field(columns_json, "columns_json")
+    if not isinstance(columns, list):
+        raise HTTPException(status_code=400, detail="columns_json must decode to an array.")
+    calc_fields = _parse_optional_json_form_field(calculated_fields_json, "calculated_fields_json")
+    if not isinstance(calc_fields, list):
+        raise HTTPException(status_code=400, detail="calculated_fields_json must decode to an array.")
+
+    # Clamp row_limit to a sane range to protect DuckDB memory.
+    limit = max(1, min(int(row_limit or 200), 1000))
+    rows = rows[:limit]
+
+    col_names: List[str] = []
+    for col in columns:
+        if not isinstance(col, dict):
+            continue
+        name = str(col.get("name") or "").strip()
+        if name and name not in col_names:
+            col_names.append(name)
+
+    # Validate each calc field and keep only the safe ones.
+    valid_fields: List[dict] = []
+    field_errors: List[dict] = []
+    seen: set = set()
+    for field in calc_fields:
+        if not isinstance(field, dict):
+            continue
+        name = str(field.get("name") or "").strip()
+        expression = str(field.get("expression") or "").strip()
+        if not name or name in seen:
+            field_errors.append({"name": name, "error": "Duplicate or empty name."})
+            continue
+        if not expression:
+            field_errors.append({"name": name, "error": "Expression is required."})
+            continue
+        ok, err = TransformationCompiler.validate_expression(expression)
+        if not ok:
+            field_errors.append({"name": name, "error": err or "Invalid expression."})
+            continue
+        seen.add(name)
+        valid_fields.append({
+            "name": name,
+            "expression": expression,
+            "label": str(field.get("label") or name),
+        })
+
+    # If there are no safe calc fields, just return the sample rows as-is so
+    # the UI still has something to render.
+    try:
+        import duckdb  # local import so the rest of the module works without duckdb
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"DuckDB is unavailable: {exc}") from exc
+
+    try:
+        conn = duckdb.connect(database=":memory:")
+        try:
+            # Map the frontend-declared column types into DuckDB types so
+            # arithmetic expressions like ``a + b`` evaluate correctly.
+            def _duckdb_type(declared: str) -> str:
+                normalized = (declared or "string").strip().lower()
+                if normalized in {"number", "numeric", "integer", "int", "float", "double", "decimal"}:
+                    return "DOUBLE"
+                if normalized in {"bool", "boolean"}:
+                    return "BOOLEAN"
+                if normalized in {"date"}:
+                    return "DATE"
+                if normalized in {"datetime", "timestamp"}:
+                    return "TIMESTAMP"
+                return "VARCHAR"
+
+            declared_types: Dict[str, str] = {}
+            for col in columns:
+                if not isinstance(col, dict) or not col.get("name"):
+                    continue
+                declared_types[str(col["name"])] = _duckdb_type(str(col.get("type") or "string"))
+
+            # If the caller forgot to declare columns but provided rows, fall
+            # back to column names from the first row and treat everything as
+            # VARCHAR so the expressions compile at minimum.
+            if not col_names and rows and isinstance(rows[0], dict):
+                col_names = list(rows[0].keys())
+                for name in col_names:
+                    declared_types.setdefault(name, "VARCHAR")
+
+            # Always declare at least one placeholder column so the CREATE
+            # TABLE is valid even when the caller sent an empty schema.
+            if not col_names:
+                col_names = ["_placeholder"]
+                declared_types["_placeholder"] = "VARCHAR"
+
+            column_defs = ", ".join(
+                f'"{name}" {declared_types.get(name, "VARCHAR")}' for name in col_names
+            )
+            conn.execute(f"CREATE TEMP TABLE _preview_src ({column_defs})")
+
+            # Coerce row values to match their declared type so INSERT doesn't
+            # blow up on mixed JSON input (e.g. numbers arriving as strings).
+            def _coerce(value: Any, type_name: str) -> Any:
+                if value is None or value == "":
+                    return None
+                try:
+                    if type_name == "DOUBLE":
+                        return float(value)
+                    if type_name == "BOOLEAN":
+                        if isinstance(value, bool):
+                            return value
+                        return str(value).strip().lower() in {"1", "true", "yes", "y"}
+                except (TypeError, ValueError):
+                    return None
+                return value
+
+            if rows:
+                placeholders = ",".join(["?"] * len(col_names))
+                insert_sql = f"INSERT INTO _preview_src VALUES ({placeholders})"
+                batched = [
+                    tuple(
+                        _coerce(row.get(name) if isinstance(row, dict) else None,
+                                declared_types.get(name, "VARCHAR"))
+                        for name in col_names
+                    )
+                    for row in rows
+                ]
+                conn.executemany(insert_sql, batched)
+
+            transformations = [
+                {
+                    "type": "add_column",
+                    "enabled": True,
+                    "params": {"newField": f["name"], "expression": f["expression"]},
+                }
+                for f in valid_fields
+            ]
+            compiled_sql, _result_columns = TransformationCompiler.compile_transformations(
+                base_query="SELECT * FROM _preview_src",
+                transformations=transformations,
+                dialect="duckdb",
+                available_columns=list(col_names),
+            )
+
+            cursor = conn.execute(f"SELECT * FROM ({compiled_sql}) AS _final LIMIT {limit}")
+            desc = cursor.description or []
+            out_columns = [str(col[0]) for col in desc]
+            data_rows = cursor.fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.exception("Preview calculated fields failed")
+        raise HTTPException(status_code=400, detail=f"Could not evaluate expressions: {exc}") from exc
+
+    # Re-assemble row dicts and infer simple column metadata from sample values.
+    enriched_rows: List[dict] = []
+    for row in data_rows:
+        enriched_rows.append({out_columns[i]: row[i] for i in range(len(out_columns))})
+
+    def _infer_type(values: List[Any]) -> str:
+        for value in values:
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                return "boolean"
+            if isinstance(value, (int, float)):
+                return "numeric"
+            return "string"
+        return "string"
+
+    original_types: dict = {}
+    for col in columns:
+        if isinstance(col, dict) and col.get("name"):
+            original_types[str(col["name"])] = str(col.get("type") or "string")
+
+    response_columns: List[dict] = []
+    for name in out_columns:
+        if name in original_types:
+            response_columns.append({"name": name, "type": original_types[name]})
+            continue
+        sample_values = [row.get(name) for row in enriched_rows]
+        response_columns.append({"name": name, "type": _infer_type(sample_values)})
+
+    return {
+        "columns": response_columns,
+        "rows": enriched_rows,
+        "errors": field_errors,
+    }
+
 
 
 @router.post("/import-html/fix-chart-plan")

@@ -397,7 +397,12 @@ def get_public_filter_distinct_values(
 
 
 @router.get("/dashboards/{token}/charts/{chart_id}/data", response_model=ChartDataResponse)
-@_limiter.limit("30/minute")
+# Each dashboard page load fires one request per chart tile in parallel
+# (easily 15–20 for an HTML-imported dashboard), plus re-fetches on every
+# filter/page change. The previous 30/min ceiling was trivial to exceed
+# for a single honest viewer, so keep it generous but still enough to
+# block automated scraping.
+@_limiter.limit("300/minute")
 def get_public_chart_data(
     token: str,
     chart_id: int,

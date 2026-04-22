@@ -3,27 +3,36 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  AlertCircle,
   AlertTriangle,
   CheckCircle2,
   Database,
   FileCode2,
   FileSpreadsheet,
   Loader2,
+  Pencil,
   RefreshCw,
   Sparkles,
   Upload,
+  Wand2,
   Wrench,
   X,
 } from 'lucide-react';
 
 import { Modal } from '@/components/common/Modal';
+import {
+  HtmlImportChartEditor,
+  type HtmlImportChartEditResult,
+} from '@/components/dashboards/HtmlImportChartEditor';
+import { HtmlImportUploadChartEditor } from '@/components/dashboards/HtmlImportUploadChartEditor';
+import { CalculatedFieldsPanel } from '@/components/dashboards/CalculatedFieldsPanel';
 import { Button } from '@/components/ui/Button';
 import { FieldGroup, Input, Select, Textarea } from '@/components/ui/Input';
 import {
   useAnalyzeDashboardHtmlImport,
   useBuildDashboardHtmlImport,
+  useCancelDashboardHtmlImportDraft,
   useFixDashboardHtmlImportChartPlan,
+  usePrepareDashboardHtmlImportDraft,
   usePreviewDashboardHtmlImportSource,
   useValidateDashboardHtmlImportPlans,
 } from '@/hooks/use-dashboards';
@@ -33,6 +42,7 @@ import { toast } from '@/lib/toast';
 import type {
   DashboardHtmlImportAnalyzeResponse,
   DashboardHtmlImportBuildResponse,
+  DashboardHtmlImportCalculatedField,
   DashboardHtmlImportChartPlan,
   DashboardHtmlImportSourcePreviewResponse,
   DashboardHtmlImportTargetMode,
@@ -94,20 +104,36 @@ export function DashboardHtmlImportModal({
   const [validationRan, setValidationRan] = useState(false);
   const [fixingBlockIds, setFixingBlockIds] = useState<Set<string>>(new Set());
   const [selectedFixBlockIds, setSelectedFixBlockIds] = useState<Set<string>>(new Set());
+  const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
+  const [calculatedFieldsErrors, setCalculatedFieldsErrors] = useState<Record<string, string>>({});
+
+  /** Draft state: once the user clicks "Transform table", we materialize the
+   * wizard source into a real Dataset (for upload_excel) or resolve the
+   * selected dataset (existing_dataset). The user then edits transformations
+   * on a real dataset page and returns. If they cancel the wizard, we delete
+   * the draft so it never pollutes their dataset list. */
+  const [draftDatasetId, setDraftDatasetId] = useState<number | null>(null);
+  const [draftIsOwned, setDraftIsOwned] = useState(false);
+  const [draftTableIdMap, setDraftTableIdMap] = useState<Record<string, number>>({});
+  const [preparingDraft, setPreparingDraft] = useState(false);
+
+  const effectiveDatasetId = draftDatasetId ?? selectedDatasetId;
 
   const { data: datasets = [] } = useDatasets(0, 200);
-  const { data: tables = [] } = useDatasetTables(selectedDatasetId);
+  const { data: tables = [] } = useDatasetTables(effectiveDatasetId);
   const tablePreviewQuery = useTablePreview(
-    selectedDatasetId,
+    effectiveDatasetId,
     selectedTableId,
     { limit: 5 },
-    { enabled: isOpen && sourceMode === 'existing_dataset' && selectedDatasetId !== null && selectedTableId !== null },
+    { enabled: isOpen && effectiveDatasetId !== null && selectedTableId !== null },
   );
   const analyzeMutation = useAnalyzeDashboardHtmlImport();
   const buildMutation = useBuildDashboardHtmlImport();
   const previewSourceMutation = usePreviewDashboardHtmlImportSource();
   const validateMutation = useValidateDashboardHtmlImportPlans();
   const fixChartMutation = useFixDashboardHtmlImportChartPlan();
+  const prepareDraftMutation = usePrepareDashboardHtmlImportDraft();
+  const cancelDraftMutation = useCancelDashboardHtmlImportDraft();
 
   useEffect(() => {
     if (!isOpen) {
@@ -128,6 +154,12 @@ export function DashboardHtmlImportModal({
       setValidationRan(false);
       setFixingBlockIds(new Set());
       setSelectedFixBlockIds(new Set());
+      setEditingBlockId(null);
+      setCalculatedFieldsErrors({});
+      setDraftDatasetId(null);
+      setDraftIsOwned(false);
+      setDraftTableIdMap({});
+      setPreparingDraft(false);
       analyzeMutation.reset();
       buildMutation.reset();
       previewSourceMutation.reset();
@@ -137,10 +169,10 @@ export function DashboardHtmlImportModal({
   }, [analyzeMutation, buildMutation, isOpen, previewSourceMutation, validateMutation, fixChartMutation]);
 
   useEffect(() => {
-    if (!selectedDatasetId) {
+    if (!effectiveDatasetId) {
       setSelectedTableId(null);
     }
-  }, [selectedDatasetId]);
+  }, [effectiveDatasetId]);
 
   useEffect(() => {
     if (!tables.length) return;
@@ -188,6 +220,22 @@ export function DashboardHtmlImportModal({
     }
   };
 
+  /** If we already prepared a draft for the previous source-file set, drop it
+   * now — the new file list can no longer map to the draft's tables. The
+   * user will re-Analyze, which re-runs ensureDraft() with the new files. */
+  const invalidateDraftIfOwned = async () => {
+    if (draftDatasetId != null && draftIsOwned) {
+      try {
+        await cancelDraftMutation.mutateAsync(draftDatasetId);
+      } catch {
+        // Non-blocking.
+      }
+    }
+    setDraftDatasetId(null);
+    setDraftIsOwned(false);
+    setDraftTableIdMap({});
+  };
+
   const handleSourceFileChange = async (file: File | null) => {
     if (!file) return;
     if (sourceFiles.some((f) => f.name === file.name && f.size === file.size)) {
@@ -197,6 +245,7 @@ export function DashboardHtmlImportModal({
 
     try {
       const preview = await previewSourceMutation.mutateAsync(file);
+      await invalidateDraftIfOwned();
       setSourceFiles((prev) => [...prev, file]);
       setSourcePreviews((prev) => ({ ...prev, [file.name]: preview }));
       setActivePreviewFilename(file.name);
@@ -208,6 +257,8 @@ export function DashboardHtmlImportModal({
   };
 
   const handleRemoveSourceFile = (filename: string) => {
+    // Removing a file changes the draft's table layout, so invalidate.
+    void invalidateDraftIfOwned();
     setSourceFiles((prev) => prev.filter((f) => f.name !== filename));
     setSourcePreviews((prev) => {
       const next = { ...prev };
@@ -256,20 +307,30 @@ export function DashboardHtmlImportModal({
         excelFile: sourceMode === 'upload_excel' && sourceFiles.length === 1 ? sourceFiles[0] : null,
         excelFiles: sourceMode === 'upload_excel' && sourceFiles.length > 1 ? sourceFiles : undefined,
       });
+      const resolvedBuildName = buildName.trim() || result.suggested_dashboard_name;
       setAnalysis(result);
       setIncludedBlockIds(result.chart_plans.map((plan) => plan.block_id));
-      setBuildName((current) => current.trim() || result.suggested_dashboard_name);
+      setBuildName(resolvedBuildName);
       setValidationResults({});
       setValidationRan(false);
       setSelectedFixBlockIds(new Set());
       setStep('preview');
 
-      // Auto-validate when a dataset_id is available
-      if (sourceMode === 'existing_dataset' && selectedDatasetId) {
+      let validationDatasetId: number | null = sourceMode === 'existing_dataset' ? selectedDatasetId : null;
+      if (sourceMode === 'upload_excel') {
+        const draft = await ensureDraft({
+          dashboardName: resolvedBuildName,
+          silent: true,
+        });
+        if (draft) validationDatasetId = draft.datasetId;
+      }
+
+      // Auto-validate when a dataset context is available.
+      if (validationDatasetId) {
         try {
           const valResp = await validateMutation.mutateAsync({
             analysis: result,
-            datasetId: selectedDatasetId,
+            datasetId: validationDatasetId,
           });
           const map: Record<string, DashboardHtmlImportValidationResult> = {};
           for (const r of valResp.results) map[r.block_id] = r;
@@ -292,11 +353,11 @@ export function DashboardHtmlImportModal({
   };
 
   const handleValidate = async () => {
-    if (!analysis || !selectedDatasetId) return;
+    if (!analysis || !effectiveDatasetId) return;
     try {
       const valResp = await validateMutation.mutateAsync({
         analysis,
-        datasetId: selectedDatasetId,
+        datasetId: effectiveDatasetId,
       });
       const map: Record<string, DashboardHtmlImportValidationResult> = {};
       for (const r of valResp.results) map[r.block_id] = r;
@@ -320,6 +381,222 @@ export function DashboardHtmlImportModal({
     await handleBatchFix(new Set([plan.block_id]));
   };
 
+  /**
+   * Merge a manual chart edit back into the analysis, mark the plan as edited,
+   * and kick off a silent re-validation so the user can continue straight to
+   * build if the edited query is now sound.
+   */
+  const handleApplyManualEdit = async (edit: HtmlImportChartEditResult) => {
+    if (!analysis) return;
+    const mergedPlan = (current: DashboardHtmlImportChartPlan): DashboardHtmlImportChartPlan => ({
+      ...current,
+      final_chart_type: edit.final_chart_type,
+      role_config: edit.role_config,
+      custom_role_config: edit.custom_role_config,
+      query_mode: edit.query_mode,
+      custom_sql: edit.custom_sql,
+      base_filters: edit.base_filters,
+      style_config: edit.style_config,
+      chart_name: edit.chart_name,
+      chart_description: edit.chart_description,
+      source_key: edit.source_key ?? current.source_key,
+      dataset_table_id_override: edit.dataset_table_id_override,
+      manually_edited: true,
+      // Clear any stale AI-fix note now that the user hand-edited the plan
+      fix_note: null,
+      fix_validated: false,
+    } as DashboardHtmlImportChartPlan);
+
+    const nextAnalysis: DashboardHtmlImportAnalyzeResponse = {
+      ...analysis,
+      chart_plans: analysis.chart_plans.map((p) => (p.block_id === edit.block_id ? mergedPlan(p) : p)),
+    };
+    setAnalysis(nextAnalysis);
+    // Drop any previous validation verdict for this plan so the UI no longer
+    // shows the old error before the re-validation round-trips.
+    setValidationResults((prev) => {
+      const next = { ...prev };
+      delete next[edit.block_id];
+      return next;
+    });
+    setEditingBlockId(null);
+    toast.success('Chart updated');
+
+    // Re-validate if we have a real dataset context (selected or prepared draft).
+    if (effectiveDatasetId) {
+      try {
+        const valResp = await validateMutation.mutateAsync({
+          analysis: nextAnalysis,
+          datasetId: effectiveDatasetId,
+        });
+        const map: Record<string, DashboardHtmlImportValidationResult> = {};
+        for (const r of valResp.results) map[r.block_id] = r;
+        setValidationResults(map);
+        setValidationRan(true);
+      } catch (error) {
+        toast.error(getApiErrorMessage(error, 'Could not re-validate after manual edit.'));
+      }
+    }
+  };
+
+  const tableIdByDisplayName = useMemo<Record<string, number>>(() => {
+    const map: Record<string, number> = {};
+    for (const t of tables) map[t.display_name] = t.id;
+    return map;
+  }, [tables]);
+
+  const tableIdBySourceKey = useMemo<Record<string, number>>(() => ({
+    ...draftTableIdMap,
+  }), [draftTableIdMap]);
+
+  const sourceKeyByTableId = useMemo<Record<number, string>>(() => {
+    const map: Record<number, string> = {};
+    for (const [sourceKey, tableId] of Object.entries(draftTableIdMap)) {
+      if (typeof tableId === 'number' && tableId > 0) {
+        map[tableId] = sourceKey;
+      }
+    }
+    for (const table of tables) {
+      if (!map[table.id]) {
+        map[table.id] = table.display_name;
+      }
+    }
+    return map;
+  }, [draftTableIdMap, tables]);
+
+  const editingPlan = useMemo<DashboardHtmlImportChartPlan | null>(() => {
+    if (!editingBlockId || !analysis) return null;
+    return analysis.chart_plans.find((p) => p.block_id === editingBlockId) ?? null;
+  }, [editingBlockId, analysis]);
+
+  /** Columns that calc-field editors can insert as tokens. Prefers the live
+   * draft/selected dataset schema when available (authoritative), falling
+   * back to the analyze-time source profile for pre-draft upload mode. */
+  const calculatedFieldsAvailableColumns = useMemo<Array<{ name: string; type?: string }>>(() => {
+    if (!analysis) return [];
+    // When we have a real dataset context (selected or prepared draft), read
+    // columns from dataset tables — this reflects any transforms the user
+    // applied in the dataset editor.
+    if (effectiveDatasetId && tables.length > 0) {
+      const seen = new Set<string>();
+      const out: Array<{ name: string; type?: string }> = [];
+      for (const table of tables) {
+        const raw = (table as any)?.columns_cache;
+        const cols: any[] = Array.isArray(raw)
+          ? raw
+          : (Array.isArray(raw?.columns) ? raw.columns : []);
+        for (const col of cols) {
+          const name = typeof col === 'string' ? col : col?.name;
+          const type = typeof col === 'string' ? undefined : (col?.type as string | undefined);
+          if (!name || seen.has(name)) continue;
+          seen.add(name);
+          out.push({ name, type });
+        }
+      }
+      if (out.length > 0) return out;
+    }
+    if (sourceMode === 'upload_excel') {
+      const profiles = analysis.all_source_profiles ?? null;
+      const active = analysis.source_profile;
+      const seen = new Set<string>();
+      const out: Array<{ name: string; type?: string }> = [];
+      const push = (name: string, type?: string) => {
+        if (!name || seen.has(name)) return;
+        seen.add(name);
+        out.push({ name, type });
+      };
+      (active?.columns || []).forEach((c) => push(c.name, c.type));
+      if (profiles) {
+        for (const profile of Object.values(profiles)) {
+          (profile?.columns || []).forEach((c) => push(c.name, c.type));
+        }
+      }
+      return out;
+    }
+    const seen = new Set<string>();
+    const out: Array<{ name: string; type?: string }> = [];
+    for (const table of tables) {
+      const raw = (table as any)?.columns_cache;
+      const cols: any[] = Array.isArray(raw)
+        ? raw
+        : (Array.isArray(raw?.columns) ? raw.columns : []);
+      for (const col of cols) {
+        const name = typeof col === 'string' ? col : col?.name;
+        const type = typeof col === 'string' ? undefined : (col?.type as string | undefined);
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        out.push({ name, type });
+      }
+    }
+    return out;
+  }, [analysis, sourceMode, tables]);
+
+  const calculatedFieldsSourceKeys = useMemo<string[]>(() => {
+    if (!analysis) return [];
+    if (sourceMode === 'upload_excel' && analysis.all_source_profiles) {
+      return Object.keys(analysis.all_source_profiles);
+    }
+    if (sourceMode === 'existing_dataset') {
+      return tables.map((t) => t.display_name).filter(Boolean);
+    }
+    return [];
+  }, [analysis, sourceMode, tables]);
+
+  /** Sample rows fed to AddColumnModal's live-preview pane. */
+  const calculatedFieldsPreviewRows = useMemo<Array<Record<string, any>>>(() => {
+    if (sourceMode === 'upload_excel') {
+      return (analysis?.source_profile?.sample_rows ?? []) as Array<Record<string, any>>;
+    }
+    return (tablePreviewQuery.data?.rows ?? []) as Array<Record<string, any>>;
+  }, [sourceMode, analysis, tablePreviewQuery.data]);
+
+  /** Replace calculated_fields in the analysis and re-validate once a dataset
+   * context is available. Validation tells us immediately whether a new or
+   * edited expression survives DuckDB. */
+  const handleCalculatedFieldsChange = async (
+    nextFields: DashboardHtmlImportCalculatedField[],
+  ) => {
+    if (!analysis) return;
+    const nextAnalysis: DashboardHtmlImportAnalyzeResponse = {
+      ...analysis,
+      calculated_fields: nextFields,
+    };
+    setAnalysis(nextAnalysis);
+    // Drop the cached validation so any chart that references a calc field
+    // is re-checked before the user builds.
+    setValidationResults({});
+    if (effectiveDatasetId) {
+      try {
+        const valResp = await validateMutation.mutateAsync({
+          analysis: nextAnalysis,
+          datasetId: effectiveDatasetId,
+        });
+        const map: Record<string, DashboardHtmlImportValidationResult> = {};
+        const nextFieldErrors: Record<string, string> = {};
+        for (const r of valResp.results) map[r.block_id] = r;
+        // Heuristic: pick up calc-field complaints from validation errors and
+        // surface them next to the offending field.
+        for (const r of valResp.results) {
+          if (r.status !== 'error' || !r.error) continue;
+          for (const field of nextFields) {
+            if (r.error.includes(field.name) && !nextFieldErrors[field.name]) {
+              nextFieldErrors[field.name] = r.error;
+            }
+          }
+        }
+        setValidationResults(map);
+        setValidationRan(true);
+        setCalculatedFieldsErrors(nextFieldErrors);
+      } catch (error) {
+        toast.error(getApiErrorMessage(error, 'Could not re-validate calculated fields.'));
+      }
+    } else {
+      // No live dataset — clear any stale error flags. Upload preview runs
+      // inside the editor itself via the preview-calculated endpoint.
+      setCalculatedFieldsErrors({});
+    }
+  };
+
   const handleBatchFix = async (blockIds?: Set<string>) => {
     if (!analysis) return;
     const idsToFix = blockIds ?? selectedFixBlockIds;
@@ -341,7 +618,7 @@ export function DashboardHtmlImportModal({
           errorMessage: validation?.error || 'Unknown error',
           sourceProfile: currentAnalysis.source_profile,
           allSourceProfiles: currentAnalysis.all_source_profiles,
-          datasetId: selectedDatasetId,
+          datasetId: effectiveDatasetId,
           calculatedFields: currentAnalysis.calculated_fields,
         });
         const fixedPlan = resp.fixed_plan;
@@ -381,11 +658,11 @@ export function DashboardHtmlImportModal({
     setSelectedFixBlockIds(new Set());
 
     // Re-validate with the UPDATED analysis (not the stale closure `analysis`)
-    if (selectedDatasetId) {
+    if (effectiveDatasetId) {
       try {
         const valResp = await validateMutation.mutateAsync({
           analysis: currentAnalysis,
-          datasetId: selectedDatasetId,
+          datasetId: effectiveDatasetId,
         });
         const map: Record<string, DashboardHtmlImportValidationResult> = {};
         for (const r of valResp.results) map[r.block_id] = r;
@@ -403,10 +680,157 @@ export function DashboardHtmlImportModal({
     }
   };
 
+  /** Ensure a dataset exists that the user can open for transformations.
+   *
+   * - existing_dataset: returns the selected dataset_id directly (no writes).
+   * - upload_excel: lazily creates a draft Dataset on the first Transform-table
+   *   click. Subsequent clicks reuse the same draft.
+   */
+  const ensureDraft = async (options?: {
+    dashboardName?: string;
+    silent?: boolean;
+  }): Promise<{
+    datasetId: number;
+    tableIdMap: Record<string, number>;
+  } | null> => {
+    if (draftDatasetId != null) {
+      return { datasetId: draftDatasetId, tableIdMap: draftTableIdMap };
+    }
+    if (sourceMode === 'existing_dataset') {
+      if (selectedDatasetId == null) {
+        toast.error('Select a dataset before transforming tables.');
+        return null;
+      }
+      try {
+        setPreparingDraft(true);
+        const resp = await prepareDraftMutation.mutateAsync({
+          sourceMode: 'existing_dataset',
+          datasetId: selectedDatasetId,
+          dashboardName: options?.dashboardName || buildName || analysis?.suggested_dashboard_name || null,
+        });
+        setDraftDatasetId(resp.dataset_id);
+        setDraftTableIdMap(resp.table_id_map || {});
+        setDraftIsOwned(resp.is_draft);
+        return { datasetId: resp.dataset_id, tableIdMap: resp.table_id_map || {} };
+      } catch (error) {
+        toast.error(getApiErrorMessage(error, 'Could not resolve the selected dataset.'));
+        return null;
+      } finally {
+        setPreparingDraft(false);
+      }
+    }
+    // upload_excel
+    if (sourceFiles.length === 0) {
+      toast.error('Upload at least one source file first.');
+      return null;
+    }
+    try {
+      setPreparingDraft(true);
+      const resp = await prepareDraftMutation.mutateAsync({
+        sourceMode: 'upload_excel',
+        dashboardName: options?.dashboardName || buildName || analysis?.suggested_dashboard_name || null,
+        excelFile: sourceFiles.length === 1 ? sourceFiles[0] : null,
+        excelFiles: sourceFiles.length > 1 ? sourceFiles : undefined,
+      });
+      setDraftDatasetId(resp.dataset_id);
+      setDraftTableIdMap(resp.table_id_map || {});
+      setDraftIsOwned(resp.is_draft);
+      if (!options?.silent) {
+        toast.success('Draft dataset prepared. Opening the dataset editor…');
+      }
+      return { datasetId: resp.dataset_id, tableIdMap: resp.table_id_map || {} };
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, 'Could not prepare a draft dataset.'));
+      return null;
+    } finally {
+      setPreparingDraft(false);
+    }
+  };
+
+  /** Open the dataset editor in a new tab so the user can apply the full
+   * transformation pipeline (Add Column, Filter, Rename, Cast, …) and return
+   * to the wizard. When they come back (window focus), we re-run validation
+   * because column names / calculated fields may have changed. */
+  const handleTransformTable = async () => {
+    const draft = await ensureDraft();
+    if (!draft) return;
+    if (typeof window !== 'undefined') {
+      window.open(`/datasets/${draft.datasetId}`, '_blank', 'noopener,noreferrer');
+    }
+  };
+
+  /** Re-validate chart plans once the user returns from the dataset editor. */
+  useEffect(() => {
+    if (!isOpen) return;
+    if (draftDatasetId == null) return;
+    if (!analysis) return;
+    const onFocus = () => {
+      validateMutation
+        .mutateAsync({ analysis, datasetId: draftDatasetId })
+        .then((resp) => {
+          const map: Record<string, DashboardHtmlImportValidationResult> = {};
+          for (const r of resp.results) map[r.block_id] = r;
+          setValidationResults(map);
+          setValidationRan(true);
+        })
+        .catch(() => undefined);
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, draftDatasetId, analysis]);
+
+  /** Best-effort cleanup when the browser tab is closed with an open draft. */
+  useEffect(() => {
+    if (!isOpen) return;
+    if (draftDatasetId == null || !draftIsOwned) return;
+    const onBeforeUnload = () => {
+      try {
+        const base = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
+        void fetch(`${base}/dashboards/import-html/drafts/${draftDatasetId}`, {
+          method: 'DELETE',
+          credentials: 'include',
+          keepalive: true,
+        });
+      } catch {
+        /* swallow */
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [isOpen, draftDatasetId, draftIsOwned]);
+
+  /** Wrapper around the parent-provided onClose that removes any draft the
+   * user created in this session so cancelled imports never leave orphans. */
+  const handleClose = async () => {
+    if (draftDatasetId != null && draftIsOwned) {
+      try {
+        await cancelDraftMutation.mutateAsync(draftDatasetId);
+      } catch {
+        // Swallow — backend will also expire via is_draft cleanup; do not
+        // block the user from closing the modal.
+      }
+    }
+    onClose();
+  };
+
+  // Block IDs that are both selected for build AND currently failing validation.
+  // Users must either fix these or uncheck them before building.
+  const selectedInvalidBlockIds = includedBlockIds.filter(
+    (id) => validationResults[id]?.status === 'error',
+  );
+  const hasBlockingErrors = validationRan && selectedInvalidBlockIds.length > 0;
+
   const handleBuild = async () => {
     if (!analysis) return;
     if (includedBlockIds.length === 0) {
       toast.error('Select at least one mapped chart block to build.');
+      return;
+    }
+    if (hasBlockingErrors) {
+      toast.error(
+        `Cannot build: ${selectedInvalidBlockIds.length} selected chart(s) still have errors. Fix them or uncheck to continue.`,
+      );
       return;
     }
 
@@ -418,10 +842,19 @@ export function DashboardHtmlImportModal({
         targetDashboardId,
         dashboardName: buildName.trim() || analysis.suggested_dashboard_name,
         datasetId: sourceMode === 'existing_dataset' ? selectedDatasetId : null,
+        // When the user transformed a draft dataset in the dataset editor we
+        // point build at that prepared dataset rather than re-creating one.
+        preparedDatasetId: draftDatasetId ?? null,
         selectedSheetName: sourceMode === 'upload_excel' && sourceFiles.length === 1 ? activeUploadSheetName : null,
         includedBlockIds,
-        excelFile: sourceMode === 'upload_excel' && sourceFiles.length === 1 ? sourceFiles[0] : null,
-        excelFiles: sourceMode === 'upload_excel' && sourceFiles.length > 1 ? sourceFiles : undefined,
+        excelFile:
+          draftDatasetId == null && sourceMode === 'upload_excel' && sourceFiles.length === 1
+            ? sourceFiles[0]
+            : null,
+        excelFiles:
+          draftDatasetId == null && sourceMode === 'upload_excel' && sourceFiles.length > 1
+            ? sourceFiles
+            : undefined,
       });
 
       const typeChangeCount = result.type_changes.length;
@@ -432,6 +865,11 @@ export function DashboardHtmlImportModal({
       }
 
       onBuilt?.(result);
+      // Build succeeded → the draft (if any) has been promoted to a real
+      // dataset server-side. Clear the owned-flag so handleClose does not
+      // try to DELETE it on subsequent close.
+      setDraftIsOwned(false);
+      setDraftDatasetId(null);
       onClose();
 
       if (targetMode === 'new_dashboard') {
@@ -460,9 +898,10 @@ export function DashboardHtmlImportModal({
   };
 
   return (
+    <>
     <Modal
       isOpen={isOpen}
-      onClose={onClose}
+      onClose={handleClose}
       title={targetMode === 'append_to_dashboard' ? 'Import HTML Into This Dashboard' : 'Import HTML Dashboard'}
       size="full"
       bodyClassName="overflow-hidden p-0"
@@ -474,7 +913,7 @@ export function DashboardHtmlImportModal({
               Back
             </Button>
           )}
-          <Button variant="ghost" size="sm" onClick={onClose} disabled={analyzeMutation.isPending || buildMutation.isPending}>
+          <Button variant="ghost" size="sm" onClick={handleClose} disabled={analyzeMutation.isPending || buildMutation.isPending}>
             Cancel
           </Button>
           {step === 'configure' ? (
@@ -487,14 +926,27 @@ export function DashboardHtmlImportModal({
               Analyze Import
             </Button>
           ) : (
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={handleBuild}
-              loading={buildMutation.isPending}
-            >
-              Build Dashboard
-            </Button>
+            <>
+              {hasBlockingErrors && (
+                <span className="text-xs text-red-600 dark:text-red-400 mr-2 self-center">
+                  {selectedInvalidBlockIds.length} selected chart(s) have errors — fix or uncheck to build.
+                </span>
+              )}
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleBuild}
+                loading={buildMutation.isPending}
+                disabled={hasBlockingErrors}
+                title={
+                  hasBlockingErrors
+                    ? `Uncheck or fix ${selectedInvalidBlockIds.length} chart(s) with errors before building.`
+                    : undefined
+                }
+              >
+                Build Dashboard
+              </Button>
+            </>
           )}
         </>
       }
@@ -568,7 +1020,10 @@ export function DashboardHtmlImportModal({
                   <input
                     type="radio"
                     checked={sourceMode === 'existing_dataset'}
-                    onChange={() => setSourceMode('existing_dataset')}
+                    onChange={() => {
+                      if (sourceMode !== 'existing_dataset') void invalidateDraftIfOwned();
+                      setSourceMode('existing_dataset');
+                    }}
                     className="mt-0.5"
                   />
                   <div>
@@ -580,7 +1035,10 @@ export function DashboardHtmlImportModal({
                   <input
                     type="radio"
                     checked={sourceMode === 'upload_excel'}
-                    onChange={() => setSourceMode('upload_excel')}
+                    onChange={() => {
+                      if (sourceMode !== 'upload_excel') void invalidateDraftIfOwned();
+                      setSourceMode('upload_excel');
+                    }}
                     className="mt-0.5"
                   />
                   <div>
@@ -595,7 +1053,11 @@ export function DashboardHtmlImportModal({
                   <FieldGroup label="Dataset">
                     <Select
                       value={selectedDatasetId ?? ''}
-                      onChange={(event) => setSelectedDatasetId(event.target.value ? Number(event.target.value) : null)}
+                      onChange={(event) => {
+                        const nextId = event.target.value ? Number(event.target.value) : null;
+                        if (nextId !== selectedDatasetId) void invalidateDraftIfOwned();
+                        setSelectedDatasetId(nextId);
+                      }}
                     >
                       <option value="">Select dataset</option>
                       {datasets.map((dataset) => (
@@ -939,29 +1401,42 @@ export function DashboardHtmlImportModal({
                       Columns: {analysis.source_profile.columns.length}
                     </p>
                   </div>
+                  <div className="mt-3 flex items-center gap-2">
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      leadingIcon={<Wand2 className="h-3 w-3" />}
+                      loading={preparingDraft}
+                      onClick={handleTransformTable}
+                    >
+                      {sourceMode === 'existing_dataset'
+                        ? 'Open Dataset Editor'
+                        : (draftDatasetId != null ? 'Open Draft Dataset' : 'Prepare Draft Dataset')}
+                    </Button>
+                  </div>
+                  {draftDatasetId != null && (
+                    <p className="mt-2 text-caption text-text-tertiary">
+                      {draftIsOwned
+                        ? `Draft dataset #${draftDatasetId} ready. Cancel will discard it; Build will promote it to a real dataset.`
+                        : `Editing dataset #${draftDatasetId}. Changes persist across the wizard.`}
+                    </p>
+                  )}
                 </div>
               </div>
 
-              {!!(analysis.calculated_fields?.length) && (
-                <div className="rounded-xl border border-brand/20 bg-brand/5 p-4">
-                  <p className="text-sm font-semibold text-text-primary">
-                    Calculated Fields ({analysis.calculated_fields.length})
-                  </p>
-                  <p className="text-caption text-text-secondary mt-1">
-                    AI-suggested computed columns that will be added to the data model.
-                  </p>
-                  <div className="mt-3 space-y-2">
-                    {analysis.calculated_fields.map((cf) => (
-                      <div key={cf.name} className="rounded-lg border border-brand/20 bg-surface-1 px-3 py-2">
-                        <p className="text-sm font-semibold text-text-primary">{cf.label || cf.name}</p>
-                        <p className="text-caption text-text-tertiary font-mono mt-1">{cf.name} = {cf.expression}</p>
-                        {cf.source_key && (
-                          <p className="text-caption text-brand/80 mt-1">Source: {cf.source_key}</p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
+              {(
+                <CalculatedFieldsPanel
+                  fields={analysis.calculated_fields ?? []}
+                  onChange={handleCalculatedFieldsChange}
+                  availableColumns={calculatedFieldsAvailableColumns}
+                  previewRows={calculatedFieldsPreviewRows}
+                  sourceKeys={calculatedFieldsSourceKeys}
+                  fieldErrors={calculatedFieldsErrors}
+                  title="Derived columns (build-time)"
+                  subtitle={sourceMode === 'upload_excel'
+                    ? 'Formula-based columns injected during validation and build. For SQL-derived tables, use Edit chart -> Calculated table or open the draft dataset.'
+                    : 'Formula-based columns injected during validation and build. For SQL-derived tables, use Edit chart -> Calculated table or open the dataset editor.'}
+                />
               )}
 
               <div className="space-y-3">
@@ -975,7 +1450,7 @@ export function DashboardHtmlImportModal({
                     <div className="flex items-center gap-2 text-sm">
                       {Object.values(validationResults).some((r) => r.status === 'error') ? (
                         <>
-                          <AlertCircle className="h-4 w-4 text-danger" />
+                          <AlertTriangle className="h-4 w-4 text-danger" />
                           <span className="text-danger font-medium">
                             {Object.values(validationResults).filter((r) => r.status === 'error').length} chart(s) failed query validation
                           </span>
@@ -1024,7 +1499,7 @@ export function DashboardHtmlImportModal({
                     </div>
                   </div>
                 )}
-                {!validationRan && sourceMode === 'existing_dataset' && selectedDatasetId && (
+                {!validationRan && effectiveDatasetId && (
                   <div className="flex items-center justify-between rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 p-3">
                     <p className="text-caption text-text-tertiary">
                       Run validation to test each chart query against the data source before building.
@@ -1084,13 +1559,31 @@ export function DashboardHtmlImportModal({
                                 </span>
                               ) : (
                                 <span className="inline-flex items-center gap-1 rounded-full bg-danger/10 px-2 py-0.5 text-[11px] font-semibold text-danger">
-                                  <AlertCircle className="h-3 w-3" /> Error
+                                  <AlertTriangle className="h-3 w-3" /> Error
                                 </span>
                               )
                             )}
                             {validateMutation.isPending && !validation && (
                               <Loader2 className="h-3 w-3 animate-spin text-text-tertiary" />
                             )}
+                            {plan.manually_edited && (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-brand/10 px-2 py-0.5 text-[11px] font-semibold text-brand">
+                                <Pencil className="h-3 w-3" /> Edited
+                              </span>
+                            )}
+                            <span className="ml-auto" />
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              leadingIcon={<Pencil className="h-3 w-3" />}
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                setEditingBlockId(plan.block_id);
+                              }}
+                            >
+                              Edit
+                            </Button>
                           </div>
 
                           {!!plan.source_fields_used.length && (
@@ -1213,5 +1706,31 @@ export function DashboardHtmlImportModal({
         </div>
       )}
     </Modal>
+    {effectiveDatasetId != null ? (
+      <HtmlImportChartEditor
+        isOpen={editingBlockId != null && !!editingPlan}
+        plan={editingPlan}
+        datasetId={effectiveDatasetId}
+        tableIdByDisplayName={tableIdByDisplayName}
+        tableIdBySourceKey={tableIdBySourceKey}
+        sourceKeyByTableId={sourceKeyByTableId}
+        calculatedFields={analysis?.calculated_fields ?? []}
+        onCalculatedFieldsChange={handleCalculatedFieldsChange}
+        onClose={() => setEditingBlockId(null)}
+        onSave={handleApplyManualEdit}
+      />
+    ) : (
+      <HtmlImportUploadChartEditor
+        isOpen={editingBlockId != null && !!editingPlan}
+        plan={editingPlan}
+        sourceProfile={analysis?.source_profile ?? null}
+        allSourceProfiles={analysis?.all_source_profiles ?? null}
+        calculatedFields={analysis?.calculated_fields ?? []}
+        onCalculatedFieldsChange={handleCalculatedFieldsChange}
+        onClose={() => setEditingBlockId(null)}
+        onSave={handleApplyManualEdit}
+      />
+    )}
+    </>
   );
 }

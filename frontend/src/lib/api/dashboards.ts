@@ -16,6 +16,10 @@ import type {
   DashboardHtmlImportBuildResponse,
   DashboardHtmlImportFixChartInput,
   DashboardHtmlImportFixChartResponse,
+  DashboardHtmlImportPrepareDraftInput,
+  DashboardHtmlImportPrepareDraftResponse,
+  DashboardHtmlImportPreviewCalculatedInput,
+  DashboardHtmlImportPreviewCalculatedResponse,
   DashboardHtmlImportSourcePreviewResponse,
   DashboardHtmlImportValidateInput,
   DashboardHtmlImportValidateResponse,
@@ -123,6 +127,9 @@ export const dashboardApi = {
     if (input.datasetTableId != null) {
       formData.append('dataset_table_id', String(input.datasetTableId));
     }
+    if (input.preparedDatasetId != null) {
+      formData.append('prepared_dataset_id', String(input.preparedDatasetId));
+    }
     if (input.selectedSheetName?.trim()) {
       formData.append('selected_sheet_name', input.selectedSheetName.trim());
     }
@@ -183,6 +190,54 @@ export const dashboardApi = {
     const response = await apiClient.post('/dashboards/import-html/fix-chart-plan', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
+    return response.data;
+  },
+
+  prepareHtmlImportDraft: async (
+    input: DashboardHtmlImportPrepareDraftInput,
+  ): Promise<DashboardHtmlImportPrepareDraftResponse> => {
+    const formData = new FormData();
+    formData.append('source_mode', input.sourceMode);
+    if (input.dashboardName?.trim()) {
+      formData.append('dashboard_name', input.dashboardName.trim());
+    }
+    if (input.datasetId != null) {
+      formData.append('dataset_id', String(input.datasetId));
+    }
+    if (input.excelFiles && input.excelFiles.length > 0) {
+      for (const file of input.excelFiles) {
+        formData.append('excel_files', file);
+      }
+    } else if (input.excelFile) {
+      formData.append('excel_file', input.excelFile);
+    }
+    const response = await apiClient.post(
+      '/dashboards/import-html/prepare-draft',
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    );
+    return response.data;
+  },
+
+  cancelHtmlImportDraft: async (datasetId: number): Promise<void> => {
+    await apiClient.delete(`/dashboards/import-html/drafts/${datasetId}`);
+  },
+
+  previewHtmlImportCalculatedFields: async (
+    input: DashboardHtmlImportPreviewCalculatedInput,
+  ): Promise<DashboardHtmlImportPreviewCalculatedResponse> => {
+    const formData = new FormData();
+    formData.append('sample_rows_json', JSON.stringify(input.sampleRows || []));
+    formData.append('columns_json', JSON.stringify(input.columns || []));
+    formData.append('calculated_fields_json', JSON.stringify(input.calculatedFields || []));
+    if (typeof input.rowLimit === 'number') {
+      formData.append('row_limit', String(input.rowLimit));
+    }
+    const response = await apiClient.post(
+      '/dashboards/import-html/preview-calculated',
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    );
     return response.data;
   },
 

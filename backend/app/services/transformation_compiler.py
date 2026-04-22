@@ -258,9 +258,20 @@ class TransformationCompiler:
         - Functions: IF, ROUND, COALESCE
         - Safe numeric helpers: SAFE_INT(expr[, default]), SAFE_FLOAT(expr[, default]), SAFE_NUMBER(expr[, default])
         - Comparisons: =, !=, >, >=, <, <=
-        - Field references
+        - Field references (bare ``col`` or Excel-style ``[col name]``)
         """
         expr = expression.strip()
+
+        # Extract Excel-style column references ([col]) into numbered placeholders
+        # BEFORE the string-literal rewrite so the later `"` → `'` pass cannot
+        # collide with quoted identifiers we add back at the end.
+        col_refs: List[str] = []
+
+        def _collect_col_ref(match: "re.Match[str]") -> str:
+            col_refs.append(match.group(1).strip())
+            return f"__CF_COLREF_{len(col_refs) - 1}__"
+
+        expr = re.sub(r"\[([^\[\]]+)\]", _collect_col_ref, expr)
 
         # Convert spreadsheet-style string literals ("value") into SQL literals ('value').
         expr = re.sub(
@@ -275,6 +286,14 @@ class TransformationCompiler:
             expr = _replace_function_calls(expr, "IF", _compile_if_expression)
         expr = _rewrite_safe_numeric_helpers(expr, dialect)
         expr = expr.replace("!=", "<>")
+
+        # Restore extracted column references as properly quoted identifiers so
+        # columns with spaces or unusual casing survive DuckDB/BigQuery parsing.
+        for idx, col_name in enumerate(col_refs):
+            expr = expr.replace(
+                f"__CF_COLREF_{idx}__",
+                _quote_identifier(col_name, dialect),
+            )
         return expr
 
     @staticmethod

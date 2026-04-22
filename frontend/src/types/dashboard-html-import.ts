@@ -71,6 +71,19 @@ export interface DashboardHtmlImportChartPlan {
     w: number;
     h: number;
   };
+  // ── Manual-edit extensions (written by HtmlImportChartEditor) ────────────
+  // These propagate to _build_chart_config and validate_chart_plans.
+  query_mode?: 'generated' | 'custom' | null;
+  custom_sql?: string | null;
+  custom_role_config?: Record<string, any> | null;
+  base_filters?: Array<Record<string, any>> | null;
+  chart_name?: string | null;
+  chart_description?: string | null;
+  // Absolute dataset_table_id override when user switched tables inside
+  // the editor (only valid inside the active dataset).
+  dataset_table_id_override?: number | null;
+  // UI hint — set when user has manually edited this plan so we can show a badge.
+  manually_edited?: boolean;
 }
 
 export interface DashboardHtmlImportCalculatedField {
@@ -131,11 +144,26 @@ export interface DashboardHtmlImportBuildInput {
   dashboardName?: string;
   datasetId?: number | null;
   datasetTableId?: number | null;
+  preparedDatasetId?: number | null;
   selectedSheetName?: string | null;
   targetDashboardId?: number | null;
   includedBlockIds: string[];
   excelFile?: File | null;
   excelFiles?: File[];
+}
+
+export interface DashboardHtmlImportPrepareDraftInput {
+  sourceMode: DashboardHtmlImportSourceMode;
+  dashboardName?: string | null;
+  datasetId?: number | null;
+  excelFile?: File | null;
+  excelFiles?: File[];
+}
+
+export interface DashboardHtmlImportPrepareDraftResponse {
+  dataset_id: number;
+  is_draft: boolean;
+  table_id_map: Record<string, number>;
 }
 
 export interface DashboardHtmlSummaryBlock {
@@ -189,6 +217,24 @@ export interface DashboardHtmlImportFixChartsInput {
 
 export interface DashboardHtmlImportFixChartResponse {
   fixed_plan: DashboardHtmlImportChartPlan & { fix_note?: string };
+}
+
+export interface DashboardHtmlImportCalculatedFieldError {
+  name: string;
+  error: string;
+}
+
+export interface DashboardHtmlImportPreviewCalculatedInput {
+  sampleRows: Array<Record<string, unknown>>;
+  columns: Array<{ name: string; type: string }>;
+  calculatedFields: DashboardHtmlImportCalculatedField[];
+  rowLimit?: number;
+}
+
+export interface DashboardHtmlImportPreviewCalculatedResponse {
+  columns: Array<{ name: string; type: string }>;
+  rows: Array<Record<string, unknown>>;
+  errors: DashboardHtmlImportCalculatedFieldError[];
 }
 
 export interface DashboardHtmlSummary {

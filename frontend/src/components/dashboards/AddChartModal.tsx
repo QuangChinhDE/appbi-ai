@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { BarChart3, Plus, Search, Sparkles } from 'lucide-react';
 
-import { ExploreEditor } from '@/components/explore/ExploreEditor';
+import { ChartEditorWithTabs } from '@/components/explore/ChartEditorWithTabs';
 import { Modal } from '@/components/common/Modal';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
@@ -695,7 +695,7 @@ export function AddChartModal({
         ) : (
           <div className="flex h-full min-h-0 flex-col overflow-hidden">
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ExploreEditor
+              <ChartEditorWithTabs
                 embedded
                 embeddedVariant="dashboard-modal"
                 chartId={null}
