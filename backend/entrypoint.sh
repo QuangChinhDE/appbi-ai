@@ -1,10 +1,48 @@
 #!/bin/bash
 set -e
 
-echo "==> Waiting for PostgreSQL to be ready..."
+if [ -n "${DATABASE_URL:-}" ]; then
+  eval "$({
+    python - <<'PYEOF'
+import os
+import shlex
+from urllib.parse import urlparse, unquote
 
-# Wait until pg_isready succeeds (uses DB_HOST / POSTGRES_USER / POSTGRES_DB)
-until pg_isready -h "${DB_HOST:-appbi-db}" -U "${POSTGRES_USER:-appbi}" -d "${POSTGRES_DB:-appbi}" -q; do
+url = os.environ.get("DATABASE_URL", "").strip()
+if not url:
+    raise SystemExit(0)
+
+parsed = urlparse(url)
+derived = {
+    "DB_HOST": parsed.hostname,
+    "DB_PORT": str(parsed.port) if parsed.port else None,
+    "DB_USER": unquote(parsed.username) if parsed.username else None,
+    "DB_PASSWORD": unquote(parsed.password) if parsed.password else None,
+    "DB_NAME": parsed.path.lstrip("/") or None,
+}
+
+for key, value in derived.items():
+    if value:
+        print(f"export {key}={shlex.quote(value)}")
+PYEOF
+  })"
+fi
+
+: "${DB_HOST:=appbi-db}"
+: "${DB_PORT:=5432}"
+: "${DB_USER:=appbi}"
+: "${DB_PASSWORD:=appbi}"
+: "${DB_NAME:=appbi}"
+
+if [ -z "${DATABASE_URL:-}" ]; then
+  export DATABASE_URL="postgresql+psycopg2://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+fi
+
+echo "==> Waiting for PostgreSQL to be ready..."
+echo "==> Metadata DB target: ${DB_HOST}:${DB_PORT}/${DB_NAME}"
+
+# Wait until pg_isready succeeds (uses DB_HOST / DB_PORT / DB_USER / DB_NAME)
+until pg_isready -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -q; do
   >&2 echo "    PostgreSQL is unavailable — retrying in 2s"
   sleep 2
 done

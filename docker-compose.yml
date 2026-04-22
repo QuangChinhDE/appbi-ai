@@ -12,6 +12,7 @@
 
 services:
   db:
+    profiles: ["local-db"]
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
@@ -39,11 +40,13 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://${DB_USER:-appbi}:${DB_PASSWORD:-appbi}@appbi-db:5432/${DB_NAME:-appbi}
-      DB_HOST: appbi-db
-      POSTGRES_USER: ${DB_USER:-appbi}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-appbi}
-      POSTGRES_DB: ${DB_NAME:-appbi}
+      # Optional full override for external PostgreSQL (SSL params, managed URIs).
+      DATABASE_URL: ${DATABASE_URL:-}
+      DB_HOST: ${DB_HOST:-appbi-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${DB_USER:-appbi}
+      DB_PASSWORD: ${DB_PASSWORD:-appbi}
+      DB_NAME: ${DB_NAME:-appbi}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001,http://frontend:3000}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
@@ -86,9 +89,6 @@ services:
       # Bind to 127.0.0.1 so the backend is reachable only via nginx,
       # not directly from the public internet.
       - "127.0.0.1:8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
     networks:
       - appbi-net
     healthcheck:

@@ -14,24 +14,27 @@
 
 services:
   db:
+    profiles: ["local-db"]
     image: pgvector/pgvector:pg16
     container_name: appbi-db-dev
     environment:
-      POSTGRES_USER: appbi
-      POSTGRES_PASSWORD: appbi
-      POSTGRES_DB: appbi
+      POSTGRES_USER: ${DB_USER:-appbi}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-appbi}
+      POSTGRES_DB: ${DB_NAME:-appbi}
     volumes:
       - db_data_dev:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U appbi"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-appbi} -d ${DB_NAME:-appbi}"]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: unless-stopped
     networks:
-      - appbi-net
+      appbi-net:
+        aliases:
+          - appbi-db
 
   backend:
     build:
@@ -45,11 +48,13 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://appbi:appbi@db:5432/appbi
-      DB_HOST: db
-      POSTGRES_USER: appbi
-      POSTGRES_PASSWORD: appbi
-      POSTGRES_DB: appbi
+      # Optional full override for external PostgreSQL (SSL params, managed URIs).
+      DATABASE_URL: ${DATABASE_URL:-}
+      DB_HOST: ${DB_HOST:-appbi-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${DB_USER:-appbi}
+      DB_PASSWORD: ${DB_PASSWORD:-appbi}
+      DB_NAME: ${DB_NAME:-appbi}
       API_HOST: 0.0.0.0
       API_PORT: 8000
       CORS_ORIGINS: http://localhost:3000,http://frontend:3000
@@ -78,9 +83,6 @@ services:
       OPENROUTER_EMBEDDING_DIMENSIONS: ${OPENROUTER_EMBEDDING_DIMENSIONS:-768}
     ports:
       - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
     command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
     restart: unless-stopped
     networks:
