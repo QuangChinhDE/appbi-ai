@@ -181,6 +181,9 @@ export const dashboardApi = {
     if (input.allSourceProfiles) {
       formData.append('all_source_profiles_json', JSON.stringify(input.allSourceProfiles));
     }
+    if (input.derivedTables) {
+      formData.append('derived_tables_json', JSON.stringify(input.derivedTables));
+    }
     if (input.datasetId) {
       formData.append('dataset_id', String(input.datasetId));
     }

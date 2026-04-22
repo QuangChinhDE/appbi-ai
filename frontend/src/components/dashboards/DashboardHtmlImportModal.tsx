@@ -86,6 +86,7 @@ export function DashboardHtmlImportModal({
   const router = useRouter();
   const htmlFileInputRef = useRef<HTMLInputElement | null>(null);
   const sourceFileInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingFocusRevalidationRef = useRef(false);
 
   const [step, setStep] = useState<'configure' | 'preview'>('configure');
   const [htmlInput, setHtmlInput] = useState('');
@@ -167,6 +168,7 @@ export function DashboardHtmlImportModal({
       setPreparingDraft(false);
       setDatasetPrepError(null);
       setValidationFailed(false);
+      pendingFocusRevalidationRef.current = false;
       analyzeMutation.reset();
       buildMutation.reset();
       previewSourceMutation.reset();
@@ -634,6 +636,7 @@ export function DashboardHtmlImportModal({
           errorMessage: validation?.error || 'Unknown error',
           sourceProfile: currentAnalysis.source_profile,
           allSourceProfiles: currentAnalysis.all_source_profiles,
+          derivedTables: currentAnalysis.derived_tables,
           datasetId: effectiveDatasetId,
           calculatedFields: currentAnalysis.calculated_fields,
         });
@@ -779,6 +782,7 @@ export function DashboardHtmlImportModal({
     const draft = await ensureDraft();
     if (!draft) return;
     if (typeof window !== 'undefined') {
+      pendingFocusRevalidationRef.current = true;
       window.open(`/datasets/${draft.datasetId}`, '_blank', 'noopener,noreferrer');
     }
   };
@@ -789,6 +793,8 @@ export function DashboardHtmlImportModal({
     if (draftDatasetId == null) return;
     if (!analysis) return;
     const onFocus = () => {
+      if (!pendingFocusRevalidationRef.current) return;
+      pendingFocusRevalidationRef.current = false;
       validateMutation
         .mutateAsync({ analysis, datasetId: draftDatasetId })
         .then((resp) => {

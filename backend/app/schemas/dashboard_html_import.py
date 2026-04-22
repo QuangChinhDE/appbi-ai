@@ -26,6 +26,14 @@ class DashboardHtmlImportAnalyzeResponse(BaseModel):
     source_profile: Dict[str, Any] = Field(default_factory=dict)
     chart_plans: List[Dict[str, Any]] = Field(default_factory=list)
     calculated_fields: List[DashboardHtmlImportCalculatedField] = Field(default_factory=list)
+    derived_tables: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Derived-table operations declared by the AppBI Import Plan v1 "
+            "(``dataset_ops[op='derived_table']``). Materialized at build time "
+            "as per-chart customSql bindings; not directly persisted."
+        ),
+    )
     ignored_blocks: List[Dict[str, Any]] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
     ai_meta: Dict[str, Any] = Field(default_factory=dict)

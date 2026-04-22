@@ -16,7 +16,7 @@ import re
 import secrets
 from difflib import SequenceMatcher
 from io import BytesIO
-from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Optional, Set, Tuple
 
 import openpyxl
 from sqlalchemy.orm import Session
@@ -78,6 +78,38 @@ def _normalize_text(value: Any, *, max_len: int | None = None) -> str:
     return text
 
 
+def _extract_gemini_text(response: Any) -> str:
+    text = getattr(response, "text", "") or ""
+    if text:
+        return text
+
+    for candidate in getattr(response, "candidates", []) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", []) or []:
+            part_text = getattr(part, "text", "") or ""
+            if part_text:
+                return part_text
+    return ""
+
+
+def _parse_ai_json(text: str) -> Dict[str, Any]:
+    raw = str(text or "").strip()
+    if not raw:
+        raise ValueError("empty AI response")
+
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"\s*```$", "", raw).strip()
+
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        raw = raw[start : end + 1]
+
+    raw = re.sub(r",\s*([}\]])", r"\1", raw)
+    return json.loads(raw)
+
+
 def _normalize_identifier(value: Any) -> str:
     lowered = _normalize_text(value).lower()
     return _SNAKE_RE.sub("_", lowered).strip("_")
@@ -85,6 +117,154 @@ def _normalize_identifier(value: Any) -> str:
 
 def _field_tokens(value: Any) -> set[str]:
     return set(_FIELD_TOKEN_RE.findall(_normalize_identifier(value)))
+
+
+# ── Column-name alias resolution ────────────────────────────────────────
+# Claude authors plans in snake_case (e.g. ``math_score``) while uploaded
+# CSVs frequently keep raw spaced headers (``math score``). The helpers below
+# build a lookup keyed by a space/punctuation/case-insensitive fingerprint so
+# plan identifiers can be rewritten to match the physical column names
+# (quoted with double-quotes when they contain whitespace).
+_IDENT_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_ALNUM_ONLY_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _column_fingerprint(value: Any) -> str:
+    """Collapse a name to lowercase alphanumerics only (e.g. ``Math Score`` → ``mathscore``)."""
+    return _ALNUM_ONLY_RE.sub("", str(value or "").lower())
+
+
+def _build_column_alias_map(columns: Iterable[Dict[str, Any]]) -> Dict[str, str]:
+    """Build ``fingerprint -> real column name`` for a list of column dicts.
+
+    When multiple real columns share the same fingerprint, the first one wins —
+    this is almost never an issue in practice because physical column names
+    inside a single table are unique.
+    """
+    mapping: Dict[str, str] = {}
+    for col in columns or []:
+        if not isinstance(col, dict):
+            continue
+        real = str(col.get("name") or "").strip()
+        if not real:
+            continue
+        key = _column_fingerprint(real)
+        if key and key not in mapping:
+            mapping[key] = real
+    return mapping
+
+
+def _quote_identifier_if_needed(name: str, *, style: str = "sql") -> str:
+    """Return ``name`` in a form that preserves non-identifier characters.
+
+    ``style="sql"`` wraps with double-quotes (DuckDB/ANSI identifier quoting).
+    ``style="expression"`` wraps with square brackets, matching
+    ``TransformationCompiler``'s spreadsheet-style ``[col name]`` reference —
+    double-quotes in calc-field expressions are rewritten into string literals
+    and would break the SQL.
+    """
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        return name
+    if style == "expression":
+        return "[" + name.replace("]", "]]") + "]"
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _resolve_column_name(name: Any, alias_map: Dict[str, str]) -> Optional[str]:
+    """Return the real column name matching *name* via fingerprint lookup."""
+    if name is None:
+        return None
+    txt = str(name).strip()
+    if not txt:
+        return None
+    fp = _column_fingerprint(txt)
+    if not fp:
+        return None
+    return alias_map.get(fp)
+
+
+def _rewrite_identifiers_in_expression(
+    expression: str,
+    alias_map: Dict[str, str],
+    *,
+    style: str = "sql",
+) -> str:
+    """Rewrite bare identifier tokens in a SQL-ish expression to real column names.
+
+    String literals (single quoted; also double quoted in ``style="sql"`` mode)
+    are preserved verbatim so values like ``'Male'`` are never mistakenly
+    renamed. When the resolved column name contains whitespace or punctuation,
+    it is emitted double-quoted (``style="sql"``) or bracket-wrapped
+    (``style="expression"``) to match the downstream parser.
+    """
+    if not expression or not alias_map:
+        return expression
+    out: List[str] = []
+    i = 0
+    n = len(expression)
+    while i < n:
+        c = expression[i]
+        if c == "'":
+            # Single-quoted string literal (standard SQL).
+            j = i + 1
+            while j < n:
+                if expression[j] == "'":
+                    if j + 1 < n and expression[j + 1] == "'":
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            out.append(expression[i:j])
+            i = j
+            continue
+        if c == '"' and style == "sql":
+            # Double-quoted identifier — keep as-is in SQL mode. In expression
+            # mode ``"x"`` is a string literal handled by the compiler, so we
+            # leave the raw character for the compiler to rewrite.
+            j = i + 1
+            while j < n:
+                if expression[j] == '"':
+                    if j + 1 < n and expression[j + 1] == '"':
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            out.append(expression[i:j])
+            i = j
+            continue
+        if c == "[" and style == "expression":
+            # Preserve pre-existing ``[col]`` references verbatim.
+            j = expression.find("]", i + 1)
+            if j == -1:
+                out.append(c)
+                i += 1
+                continue
+            out.append(expression[i : j + 1])
+            i = j + 1
+            continue
+        match = _IDENT_TOKEN_RE.match(expression, i)
+        if match:
+            tok = match.group(0)
+            end = match.end()
+            # Skip function calls: ``NAME(`` — even if a physical column happens
+            # to share the name (e.g. ``Count``, ``Date``), we must not rewrite
+            # the function keyword into a quoted identifier.
+            k = end
+            while k < n and expression[k] in " \t":
+                k += 1
+            is_function_call = k < n and expression[k] == "("
+            real = None if is_function_call else alias_map.get(_column_fingerprint(tok))
+            if real and real != tok:
+                out.append(_quote_identifier_if_needed(real, style=style))
+            else:
+                out.append(tok)
+            i = end
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def _parse_style_map(raw_style: Any) -> Dict[str, str]:
@@ -643,6 +823,87 @@ def _load_uploaded_multi_source_profiles(
     return all_profiles, resolved_primary
 
 
+def _build_ai_fix_source_profiles(
+    *,
+    source_profile: Dict[str, Any],
+    all_source_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
+    derived_tables: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Build the table schema map used by AI chart-fix prompts.
+
+    The fixer needs schemas for both physical tables and any v1 derived tables.
+    Without derived-table output columns in the prompt, AI may keep a derived
+    source_key but suggest fields that only exist on the physical source.
+    """
+
+    profiles: Dict[str, Dict[str, Any]] = {}
+
+    if isinstance(all_source_profiles, dict):
+        for key, profile in all_source_profiles.items():
+            if not key or not isinstance(profile, dict):
+                continue
+            copied = dict(profile)
+            copied.setdefault("source_key", key)
+            profiles[str(key)] = copied
+
+    primary_key = str(
+        source_profile.get("source_key")
+        or source_profile.get("dataset_table_name")
+        or source_profile.get("selected_sheet_name")
+        or ""
+    ).strip()
+    if primary_key and primary_key not in profiles:
+        copied = dict(source_profile)
+        copied.setdefault("source_key", primary_key)
+        profiles[primary_key] = copied
+
+    for table in derived_tables or []:
+        if not isinstance(table, dict):
+            continue
+        source_key = str(table.get("source_key") or "").strip()
+        output_columns = list(table.get("output_columns") or [])
+        if not source_key or not output_columns:
+            continue
+
+        normalized_columns: List[Dict[str, str]] = []
+        numeric_columns: List[str] = []
+        date_columns: List[str] = []
+        dimension_columns: List[str] = []
+
+        for raw_col in output_columns:
+            if not isinstance(raw_col, dict):
+                continue
+            col_name = str(raw_col.get("name") or "").strip()
+            col_type = str(raw_col.get("type") or "string").strip().lower()
+            if not col_name:
+                continue
+            normalized_columns.append({"name": col_name, "type": col_type})
+            if col_type in {"number", "numeric", "integer", "float", "double", "decimal"}:
+                numeric_columns.append(col_name)
+            elif col_type in {"date", "datetime", "timestamp"}:
+                date_columns.append(col_name)
+                dimension_columns.append(col_name)
+            else:
+                dimension_columns.append(col_name)
+
+        if not normalized_columns:
+            continue
+
+        profiles[source_key] = {
+            "source_key": source_key,
+            "dataset_table_name": source_key,
+            "dataset_name": source_profile.get("dataset_name"),
+            "columns": normalized_columns,
+            "numeric_columns": numeric_columns,
+            "date_columns": date_columns,
+            "dimension_columns": dimension_columns,
+            "sample_rows": [],
+            "row_count": None,
+        }
+
+    return profiles or None
+
+
 def _plan_quality_score(plan: Dict[str, Any]) -> Tuple[int, int, float, int]:
     """Score a finalized plan for multi-source selection.  Higher is better."""
     fields_count = len(plan.get("source_fields_used") or [])
@@ -861,8 +1122,33 @@ def _layout_dimensions(chart_type: str, size_hint: str) -> Tuple[int, int]:
 
 
 def _assign_layouts(plans: List[Dict[str, Any]]) -> None:
+    """Pack plans into a 12-column grid. Plans that already have a valid
+    ``layout`` (provided by v1 metadata) are honored — their occupied cells
+    become obstacles for newly-packed plans.
+    """
     heights = [0] * 12
+    # Seed the packing grid with plans that already supply a layout.
     for plan in plans:
+        layout = plan.get("layout")
+        if not isinstance(layout, dict):
+            continue
+        try:
+            x = int(layout.get("x"))
+            y = int(layout.get("y"))
+            w = max(1, min(12, int(layout.get("w"))))
+            h = max(1, int(layout.get("h")))
+        except (TypeError, ValueError):
+            plan["layout"] = None
+            continue
+        if x < 0 or y < 0 or (x + w) > 12:
+            plan["layout"] = None
+            continue
+        for index in range(x, x + w):
+            heights[index] = max(heights[index], y + h)
+
+    for plan in plans:
+        if isinstance(plan.get("layout"), dict):
+            continue
         chart_type = str(plan.get("final_chart_type") or "BAR")
         size_hint = str(plan.get("size_hint") or "half")
         width, height = _layout_dimensions(chart_type, size_hint)
@@ -1109,9 +1395,16 @@ def _complete_json_with_import_provider(
                         break
             if not text:
                 return None
-            return json.loads(text)
+            return _parse_ai_json(text)
         except Exception:
             logger.warning("Dashboard HTML import Gemini call failed", exc_info=True)
+            if settings.active_api_keys:
+                return LLMClient.complete_json(
+                    prompt,
+                    system=system_prompt,
+                    model=settings.template_import_openrouter_model,
+                    max_tokens=max_tokens,
+                )
             return None
 
     return LLMClient.complete_json(prompt, system=system_prompt, model=model, max_tokens=max_tokens)
@@ -1349,11 +1642,18 @@ _APPBI_META_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
+_APPBI_SOURCE_PLACEHOLDER_RE = re.compile(
+    r"\{\{\s*source\s*:\s*([^}]+?)\s*\}\}"
+)
+
+APPBI_IMPORT_PLAN_V1_VERSION = "appbi-import/v1"
+
 
 def _extract_embedded_metadata(html_text: str) -> Optional[Dict[str, Any]]:
     """Extract ``<script type="application/appbi-dashboard">`` JSON from HTML.
 
     Returns the parsed dict or *None* when no valid metadata block is found.
+    Accepts both the legacy shape and the AppBI Import Plan v1 shape.
     """
     match = _APPBI_META_RE.search(html_text)
     if not match:
@@ -1365,6 +1665,486 @@ def _extract_embedded_metadata(html_text: str) -> Optional[Dict[str, Any]]:
     except (json.JSONDecodeError, ValueError):
         logger.warning("Found appbi-dashboard script tag but JSON is invalid.")
     return None
+
+
+def _is_v1_metadata(embedded: Dict[str, Any]) -> bool:
+    return str(embedded.get("version") or "").strip().lower() == APPBI_IMPORT_PLAN_V1_VERSION
+
+
+def _finalize_plan_from_v1_metadata(
+    *,
+    raw: Dict[str, Any],
+    order: int,
+) -> Dict[str, Any]:
+    """Build a finalized chart plan from a v1 ``charts[]`` entry.
+
+    The v1 contract already uses the native runtime shape (``chart_type`` +
+    ``role_config`` + ``base_filters`` + ``layout``), so we only need to
+    normalize values and fall back to safe defaults where fields are absent.
+    """
+    chart_type_raw = str(raw.get("chart_type") or "TABLE").upper()
+    final_chart_type = chart_type_raw if chart_type_raw in _SUPPORTED_CHART_TYPES else "TABLE"
+    changed = final_chart_type != chart_type_raw
+    conversion_note_raw = _normalize_text(raw.get("conversion_note"), max_len=280) or None
+    if changed:
+        conversion_note_raw = conversion_note_raw or (
+            f"Requested {chart_type_raw}, imported as {final_chart_type}."
+        )
+
+    title = _normalize_text(raw.get("title"), max_len=160) or f"Imported {final_chart_type.title()}"
+    description = _normalize_text(raw.get("description"), max_len=400) or None
+
+    raw_role_config = raw.get("role_config") if isinstance(raw.get("role_config"), dict) else {}
+
+    def _clean_metric(m: Any) -> Optional[Dict[str, str]]:
+        if not isinstance(m, dict):
+            return None
+        field = str(m.get("field") or "").strip()
+        if not field:
+            return None
+        agg = str(m.get("agg") or "sum").lower()
+        if agg not in {"sum", "avg", "count", "min", "max", "count_distinct"}:
+            agg = "sum"
+        return {"field": field, "agg": agg}
+
+    metrics = [m for m in (
+        _clean_metric(m) for m in (raw_role_config.get("metrics") or [])
+    ) if m]
+
+    dimension = str(raw_role_config.get("dimension") or "").strip() or None
+    time_field = str(raw_role_config.get("timeField") or "").strip() or None
+    breakdown = str(raw_role_config.get("breakdown") or "").strip() or None
+    scatter_x = str(raw_role_config.get("scatterX") or "").strip() or None
+    scatter_y = str(raw_role_config.get("scatterY") or "").strip() or None
+    selected_columns = [
+        str(c).strip() for c in (raw_role_config.get("selectedColumns") or []) if str(c).strip()
+    ]
+    line_metric = _clean_metric(raw_role_config.get("lineMetric"))
+
+    role_config: Dict[str, Any] = {"metrics": metrics}
+    if dimension:
+        role_config["dimension"] = dimension
+    if breakdown:
+        role_config["breakdown"] = breakdown
+    if final_chart_type == "TIME_SERIES" and time_field:
+        role_config["timeField"] = time_field
+        if not role_config.get("dimension"):
+            role_config["dimension"] = time_field
+    elif time_field:
+        role_config["timeField"] = time_field
+    if final_chart_type == "BAR_LINE" and line_metric:
+        role_config["lineMetric"] = line_metric
+    if final_chart_type == "TABLE" and selected_columns:
+        role_config["selectedColumns"] = selected_columns
+    if final_chart_type == "SCATTER":
+        if scatter_x:
+            role_config["scatterX"] = scatter_x
+        if scatter_y:
+            role_config["scatterY"] = scatter_y
+
+    base_filters_raw = raw.get("base_filters") or []
+    base_filters: List[Dict[str, Any]] = []
+    for flt in base_filters_raw:
+        if not isinstance(flt, dict):
+            continue
+        field = str(flt.get("field") or "").strip()
+        op = str(flt.get("op") or flt.get("operator") or "eq").strip().lower()
+        if not field:
+            continue
+        filter_entry: Dict[str, Any] = {"field": field, "op": op}
+        if "value" in flt:
+            filter_entry["value"] = flt.get("value")
+        base_filters.append(filter_entry)
+
+    layout_raw = raw.get("layout") if isinstance(raw.get("layout"), dict) else {}
+    layout: Optional[Dict[str, int]] = None
+    try:
+        x = int(layout_raw.get("x"))
+        y = int(layout_raw.get("y"))
+        w = max(1, min(12, int(layout_raw.get("w"))))
+        h = max(1, int(layout_raw.get("h")))
+        if x >= 0 and y >= 0 and (x + w) <= 12:
+            layout = {"x": x, "y": y, "w": w, "h": h}
+    except (TypeError, ValueError):
+        layout = None
+
+    size_hint = str(raw.get("size_hint") or "").lower()
+    if size_hint not in {"full", "half", "third", "kpi"}:
+        if layout is not None:
+            lw = layout["w"]
+            size_hint = (
+                "kpi" if final_chart_type == "KPI" and lw <= 3
+                else "third" if lw <= 4
+                else "half" if lw <= 6
+                else "full"
+            )
+        else:
+            size_hint = (
+                "kpi" if final_chart_type == "KPI"
+                else "full" if final_chart_type == "TABLE"
+                else "half"
+            )
+
+    style_config = dict(raw.get("style_config") or {})
+    if "chartTitle" not in style_config:
+        style_config["chartTitle"] = title
+
+    source_fields_used = sorted({
+        *(([dimension] if dimension else [])),
+        *(([time_field] if time_field else [])),
+        *(([breakdown] if breakdown else [])),
+        *(([scatter_x] if scatter_x else [])),
+        *(([scatter_y] if scatter_y else [])),
+        *(m.get("field") for m in metrics if m.get("field")),
+        *(([line_metric["field"]] if line_metric and line_metric.get("field") else [])),
+        *(selected_columns or []),
+    })
+
+    try:
+        order_val = int(raw.get("order") or order)
+    except (TypeError, ValueError):
+        order_val = order
+
+    return {
+        "block_id": str(raw.get("block_id") or f"v1-{order}"),
+        "order": order_val,
+        "title": title,
+        "block_role": final_chart_type.lower() if final_chart_type in ("TABLE", "KPI") else "chart",
+        "source_excerpt": description,
+        "original_chart_type": chart_type_raw,
+        "requested_chart_type": chart_type_raw,
+        "final_chart_type": final_chart_type,
+        "changed_chart_type": changed,
+        "conversion_note": conversion_note_raw,
+        "rationale": description,
+        "confidence": 0.99,
+        "size_hint": size_hint,
+        "layout": layout,
+        "source_fields_used": source_fields_used,
+        "warnings": [],
+        "role_config": role_config,
+        "style_config": style_config,
+        "source_key": str(raw.get("source_key") or "").strip() or None,
+        "base_filters": base_filters,
+    }
+
+
+def _v1_dataset_ops_to_calc_fields_and_derived(
+    dataset_ops: List[Any],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
+    """Split v1 ``dataset_ops`` into legacy calc-fields and derived-tables lists."""
+    calc_fields: List[Dict[str, Any]] = []
+    derived_tables: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    for op in dataset_ops or []:
+        if not isinstance(op, dict):
+            continue
+        kind = str(op.get("op") or "").strip().lower()
+        if kind == "add_column":
+            name = str(op.get("name") or "").strip()
+            expression = str(op.get("expression") or "").strip()
+            if not name or not expression:
+                warnings.append("Skipped add_column op without name or expression.")
+                continue
+            calc_fields.append(
+                {
+                    "name": name,
+                    "label": str(op.get("label") or name),
+                    "expression": expression,
+                    "source_key": str(op.get("source_key") or "").strip() or None,
+                }
+            )
+        elif kind == "derived_table":
+            src = str(op.get("source_key") or "").strip()
+            sql_template = str(op.get("sql_template") or "").strip()
+            inputs = [str(x).strip() for x in (op.get("inputs") or []) if str(x).strip()]
+            if not src or not sql_template or not inputs:
+                warnings.append(
+                    f"Skipped derived_table '{src or '?'}' (missing source_key, sql_template, or inputs)."
+                )
+                continue
+            derived_tables.append(
+                {
+                    "op": "derived_table",
+                    "source_key": src,
+                    "display_name": str(op.get("display_name") or src),
+                    "inputs": inputs,
+                    "sql_template": sql_template,
+                    "output_columns": op.get("output_columns") or [],
+                }
+            )
+        else:
+            warnings.append(f"Unknown dataset op '{kind}' ignored.")
+    return calc_fields, derived_tables, warnings
+
+
+def _compare_source_contract(
+    *,
+    source_contract: Dict[str, Any],
+    source_profile: Dict[str, Any],
+    all_source_profiles: Optional[Dict[str, Dict[str, Any]]],
+    derived_source_keys: Iterable[str] = (),
+) -> List[str]:
+    """Compare ``source_contract.expected_source_keys`` to available profiles."""
+    expected_raw = source_contract.get("expected_source_keys") or []
+    expected = [str(k).strip() for k in expected_raw if str(k).strip()]
+    if not expected:
+        return []
+    available: set[str] = set()
+    if all_source_profiles:
+        available.update(str(k) for k in all_source_profiles.keys())
+    primary_key = (
+        str(source_profile.get("source_key") or "").strip()
+        or str(source_profile.get("display_name") or "").strip()
+        or str(source_profile.get("selected_sheet_name") or "").strip()
+    )
+    if primary_key:
+        available.add(primary_key)
+    missing = [k for k in expected if k not in available]
+    warnings: List[str] = []
+    if missing:
+        warnings.append(
+            "Source contract expected the following source keys that were not "
+            f"found in the uploaded data: {missing}. Re-upload the matching files or "
+            "pick an existing dataset that contains these tables."
+        )
+    # Derived source keys must not collide with physical table names.
+    collisions = [k for k in derived_source_keys if k in available]
+    if collisions:
+        warnings.append(
+            f"Derived-table source keys collide with physical table names: {collisions}. "
+            "The physical tables will take precedence; rename the derived keys to avoid confusion."
+        )
+    return warnings
+
+
+def _resolve_source_placeholders(
+    sql_template: str,
+    *,
+    source_key_to_alias: Dict[str, str],
+) -> Tuple[Optional[str], List[str]]:
+    missing: List[str] = []
+
+    def _repl(match: re.Match[str]) -> str:
+        key = match.group(1)
+        alias = source_key_to_alias.get(key)
+        if not alias:
+            missing.append(key)
+            return match.group(0)
+        return alias
+
+    resolved = _APPBI_SOURCE_PLACEHOLDER_RE.sub(_repl, sql_template)
+    if missing:
+        return None, sorted(set(missing))
+    return resolved, []
+
+
+def _build_source_key_alias_map(
+    *,
+    options: Iterable[Any],
+    table_id_map: Dict[str, int],
+) -> Dict[str, str]:
+    """Build a source-key -> SQL alias lookup for derived-table resolution."""
+    alias_by_table_id: Dict[int, str] = {}
+    alias_by_key: Dict[str, str] = {}
+
+    for opt in options:
+        table_id = getattr(opt, "table_id", None)
+        alias = str(getattr(opt, "alias", "") or "").strip()
+        display_name = str(getattr(opt, "display_name", "") or "").strip()
+        if not alias:
+            continue
+        if isinstance(table_id, int):
+            alias_by_table_id[table_id] = alias
+        if display_name:
+            alias_by_key[display_name] = alias
+
+    for source_key, table_id in (table_id_map or {}).items():
+        alias = alias_by_table_id.get(table_id)
+        normalized_source_key = str(source_key or "").strip()
+        if normalized_source_key and alias:
+            alias_by_key[normalized_source_key] = alias
+
+    return alias_by_key
+
+
+def _materialize_v1_derived_tables(
+    db: Session,
+    *,
+    derived_tables: List[Dict[str, Any]],
+    chart_plans: List[Dict[str, Any]],
+    dataset_id: Optional[int],
+    table_id_map: Dict[str, int],
+) -> List[str]:
+    """Rewrite chart plans bound to v1 derived tables to use ``queryMode=custom``.
+
+    For each ``derived_table`` op, the SQL template is compiled against the
+    physical-table alias namespace (``{{source:KEY}}`` → normalized alias) and
+    every chart whose ``source_key`` matches the derived key is converted to a
+    custom-SQL binding that produces the columns referenced in its role_config.
+    """
+    warnings: List[str] = []
+    if not derived_tables or not chart_plans or dataset_id is None:
+        if derived_tables and chart_plans and dataset_id is None:
+            warnings.append(
+                "Cannot materialize derived tables because no dataset is bound to this import."
+            )
+        return warnings
+
+    from app.services.dataset_table_sql_service import (
+        _indent_sql,
+        build_dataset_table_live_query,
+        get_dataset_table_reference_options,
+        validate_and_clean_derived_query,
+        DatasetTableSqlError,
+    )
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if dataset_obj is None:
+        warnings.append(
+            f"Cannot materialize derived tables because dataset {dataset_id} was not found."
+        )
+        return warnings
+
+    dataset_tables = (
+        db.query(DatasetTable)
+        .filter(
+            DatasetTable.dataset_id == dataset_id,
+            DatasetTable.source_kind != "generated_calendar",
+        )
+        .all()
+    )
+    table_by_id = {
+        int(table.id): table
+        for table in dataset_tables
+        if getattr(table, "id", None) is not None
+    }
+    table_id_by_display_name = _build_table_id_map_from_dataset_tables(dataset_tables)
+
+    options = get_dataset_table_reference_options(db, dataset_id)
+    source_key_to_alias = _build_source_key_alias_map(
+        options=options,
+        table_id_map=table_id_map,
+    )
+
+    resolved_by_key: Dict[str, Dict[str, Any]] = {}
+    for dt in derived_tables:
+        source_key = str(dt.get("source_key") or "").strip()
+        sql_template = str(dt.get("sql_template") or "").strip()
+        inputs = [str(x).strip() for x in (dt.get("inputs") or []) if str(x).strip()]
+        if not source_key or not sql_template or not inputs:
+            continue
+        missing_inputs = [k for k in inputs if k not in source_key_to_alias]
+        if missing_inputs:
+            warnings.append(
+                f"Derived table '{source_key}' references input tables that are not "
+                f"available in the dataset: {missing_inputs}. Charts bound to it "
+                "will be skipped."
+            )
+            continue
+
+        resolved_sql, missing_keys = _resolve_source_placeholders(
+            sql_template,
+            source_key_to_alias=source_key_to_alias,
+        )
+        if resolved_sql is None or missing_keys:
+            warnings.append(
+                f"Derived table '{source_key}' references unknown source keys in its SQL: "
+                f"{missing_keys}. Charts bound to it will be skipped."
+            )
+            continue
+
+        try:
+            cleaned_sql = validate_and_clean_derived_query(resolved_sql)
+        except DatasetTableSqlError as exc:
+            warnings.append(
+                f"Derived table '{source_key}' SQL failed validation: {exc}. "
+                "Charts bound to it will be skipped."
+            )
+            continue
+
+        ctes: List[str] = []
+        resolved_datasource_id: int | None = None
+        executable_sql = cleaned_sql
+        cte_failed = False
+        for input_key in inputs:
+            alias = source_key_to_alias.get(input_key)
+            if not alias:
+                warnings.append(
+                    f"Derived table '{source_key}' could not resolve a live alias for input '{input_key}'. "
+                    "Charts bound to it will be skipped."
+                )
+                cte_failed = True
+                break
+
+            resolved_table_id = None
+            if table_id_map:
+                resolved_table_id = table_id_map.get(input_key)
+            if resolved_table_id is None:
+                resolved_table_id = table_id_by_display_name.get(input_key)
+            if not isinstance(resolved_table_id, int):
+                warnings.append(
+                    f"Derived table '{source_key}' could not resolve dataset table for input '{input_key}'. "
+                    "Charts bound to it will be skipped."
+                )
+                cte_failed = True
+                break
+
+            dependency_table = table_by_id.get(int(resolved_table_id))
+            if dependency_table is None:
+                warnings.append(
+                    f"Derived table '{source_key}' references missing dataset table id {resolved_table_id} for input '{input_key}'. "
+                    "Charts bound to it will be skipped."
+                )
+                cte_failed = True
+                break
+
+            try:
+                live_datasource, live_sql = build_dataset_table_live_query(
+                    db,
+                    dataset_obj,
+                    dependency_table,
+                    required_datasource_id=resolved_datasource_id,
+                )
+            except DatasetTableSqlError as exc:
+                warnings.append(
+                    f"Derived table '{source_key}' could not build live SQL for input '{input_key}': {exc}. "
+                    "Charts bound to it will be skipped."
+                )
+                cte_failed = True
+                break
+
+            resolved_datasource_id = int(live_datasource.id)
+            ctes.append(f"{alias} AS (\n{_indent_sql(live_sql)}\n)")
+
+        if cte_failed:
+            continue
+
+        if ctes:
+            executable_sql = "WITH " + ",\n".join(ctes) + "\n" + cleaned_sql
+
+        resolved_by_key[source_key] = {
+            "sql": executable_sql,
+            "primary_input": inputs[0],
+        }
+
+    if not resolved_by_key:
+        return warnings
+
+    for plan in chart_plans:
+        plan_source_key = plan.get("source_key")
+        if not plan_source_key or plan_source_key not in resolved_by_key:
+            continue
+        bundle = resolved_by_key[plan_source_key]
+        # Rebind to the primary input so a real dataset_table_id can be resolved.
+        plan["source_key"] = bundle["primary_input"]
+        plan["query_mode"] = "custom"
+        plan["custom_sql"] = bundle["sql"]
+        # role_config already references the derived-table output columns,
+        # which is exactly what custom SQL will emit.
+        plan["custom_role_config"] = dict(plan.get("role_config") or {})
+
+    return warnings
 
 
 def _finalize_plan_from_metadata(
@@ -1468,9 +2248,26 @@ def _analyze_from_embedded_metadata(
     source_profile: Dict[str, Any],
     all_source_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Build the full analyze response from embedded ``application/appbi-dashboard`` metadata."""
-    from app.services.transformation_compiler import TransformationCompiler
+    """Build the full analyze response from embedded ``application/appbi-dashboard`` metadata.
 
+    Two shapes are supported:
+
+    * **AppBI Import Plan v1** (``version == "appbi-import/v1"``) — the
+      skill-generated native contract. Runtime-shaped ``role_config``,
+      ``dataset_ops`` (``add_column`` + ``derived_table``), ``base_filters``
+      and an explicit grid ``layout`` are trusted as-is.
+    * **Legacy** — the older ``field_mapping`` + ``calculated_fields`` shape
+      kept for backward compatibility with pre-skill dashboards.
+    """
+    if _is_v1_metadata(embedded):
+        return _analyze_from_v1_metadata(
+            embedded=embedded,
+            document_summary=document_summary,
+            source_profile=source_profile,
+            all_source_profiles=all_source_profiles,
+        )
+
+    # ── Legacy path (pre-v1 embedded metadata) ──────────────────────────
     raw_charts = embedded.get("charts") or []
     raw_calc_fields = embedded.get("calculated_fields") or []
 
@@ -1530,6 +2327,7 @@ def _analyze_from_embedded_metadata(
         "all_source_profiles": all_source_profiles,
         "chart_plans": finalized_plans,
         "calculated_fields": validated_calc_fields,
+        "derived_tables": [],
         "ignored_blocks": ignored,
         "warnings": warnings,
         "ai_meta": build_ai_assist_meta(
@@ -1539,6 +2337,358 @@ def _analyze_from_embedded_metadata(
             message="Chart plans loaded from embedded application/appbi-dashboard metadata. AI was not needed.",
         ),
     }
+
+
+def _analyze_from_v1_metadata(
+    *,
+    embedded: Dict[str, Any],
+    document_summary: Dict[str, Any],
+    source_profile: Dict[str, Any],
+    all_source_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Build an analyze response from an AppBI Import Plan v1 payload."""
+    dashboard_meta = embedded.get("dashboard") if isinstance(embedded.get("dashboard"), dict) else {}
+    source_contract = embedded.get("source_contract") if isinstance(embedded.get("source_contract"), dict) else {}
+    dataset_ops = embedded.get("dataset_ops") if isinstance(embedded.get("dataset_ops"), list) else []
+    raw_charts = embedded.get("charts") if isinstance(embedded.get("charts"), list) else []
+
+    # Per-source alias maps: source_key -> {fingerprint: real_column_name}.
+    alias_maps_by_source: Dict[str, Dict[str, str]] = {}
+    primary_alias_map = _build_column_alias_map(source_profile.get("columns") or [])
+    primary_source_key = (
+        str(source_profile.get("source_key") or "").strip()
+        or str(source_profile.get("display_name") or "").strip()
+        or str(source_profile.get("selected_sheet_name") or "").strip()
+    )
+    if primary_source_key:
+        alias_maps_by_source[primary_source_key] = primary_alias_map
+    if all_source_profiles:
+        for key, prof in all_source_profiles.items():
+            alias_maps_by_source[str(key)] = _build_column_alias_map(prof.get("columns") or [])
+
+    union_alias_map: Dict[str, str] = {}
+    fingerprint_sources: Dict[str, List[str]] = {}
+    for source_key, mapping in alias_maps_by_source.items():
+        for fp, real in mapping.items():
+            fingerprint_sources.setdefault(fp, []).append(f"{source_key}.{real}")
+            union_alias_map.setdefault(fp, real)
+    collisions = {
+        fp: refs for fp, refs in fingerprint_sources.items() if len(set(refs)) > 1
+    }
+    if collisions:
+        logger.debug(
+            "union_alias_map has %d fingerprint collisions across sources; charts "
+            "with unresolved source_key may bind to the wrong column. Sample "
+            "fingerprints: %s",
+            len(collisions),
+            list(collisions.keys())[:10],
+        )
+    if not union_alias_map:
+        union_alias_map = primary_alias_map
+
+    def _pick_alias_map(keys: Iterable[str]) -> Dict[str, str]:
+        merged: Dict[str, str] = {}
+        for key in keys:
+            mapping = alias_maps_by_source.get(str(key))
+            if mapping:
+                for fp, real in mapping.items():
+                    merged.setdefault(fp, real)
+        return merged or union_alias_map
+
+    calc_fields, derived_tables, op_warnings = _v1_dataset_ops_to_calc_fields_and_derived(dataset_ops)
+
+    # Rewrite calc_field expressions so Claude's snake_case identifiers bind
+    # to real column names. Calc-field expressions are consumed by
+    # TransformationCompiler which uses ``[col name]`` syntax for quoted idents.
+    for cf in calc_fields:
+        expr = str(cf.get("expression") or "")
+        if not expr:
+            continue
+        source_hint = cf.get("source_key")
+        mapping = _pick_alias_map([source_hint] if source_hint else []) or union_alias_map
+        cf["expression"] = _rewrite_identifiers_in_expression(expr, mapping, style="expression")
+
+    # Rewrite derived_table SQL templates with the inputs' alias maps so
+    # physical column references resolve against quoted real names.
+    for dt in derived_tables:
+        sql_template = str(dt.get("sql_template") or "")
+        if not sql_template:
+            continue
+        mapping = _pick_alias_map(dt.get("inputs") or [])
+        dt["sql_template"] = _rewrite_identifiers_in_expression(sql_template, mapping, style="sql")
+
+    # Validate add_column expressions against the union of columns + calc fields.
+    all_col_names: List[str] = [col.get("name") for col in (source_profile.get("columns") or [])]
+    if all_source_profiles:
+        for prof in all_source_profiles.values():
+            for col in (prof.get("columns") or []):
+                if col.get("name") not in all_col_names:
+                    all_col_names.append(col.get("name"))
+    validated_calc_fields = _validate_calculated_fields(calc_fields, all_col_names)
+
+    # Register calculated column fingerprints so charts bound to a derived_table
+    # whose role_config refers to those calc columns can still resolve.
+    for cf in validated_calc_fields:
+        fp = _column_fingerprint(cf.get("name") or "")
+        if fp and fp not in union_alias_map:
+            union_alias_map[fp] = cf["name"]
+
+    # Register derived_table output columns so plans binding to derived sources
+    # can use snake_case identifiers that match the SELECT aliases.
+    for dt in derived_tables:
+        mapping: Dict[str, str] = {}
+        for oc in dt.get("output_columns") or []:
+            if not isinstance(oc, dict):
+                continue
+            real = str(oc.get("name") or "").strip()
+            if not real:
+                continue
+            fp = _column_fingerprint(real)
+            if fp and fp not in mapping:
+                mapping[fp] = real
+        if mapping:
+            alias_maps_by_source[str(dt.get("source_key"))] = mapping
+
+    # Enrich profiles so downstream field checks see calculated columns.
+    def _enrich(profile: Dict[str, Any]) -> Dict[str, Any]:
+        if not validated_calc_fields:
+            return profile
+        enriched = dict(profile)
+        existing_cols = list(enriched.get("columns") or [])
+        existing_names = {col.get("name") for col in existing_cols}
+        for cf in validated_calc_fields:
+            if cf["name"] not in existing_names:
+                existing_cols.append({"name": cf["name"], "type": "number"})
+        enriched["columns"] = existing_cols
+        return enriched
+
+    _ = _enrich(source_profile)  # noqa: F841 (kept for symmetry with legacy path)
+
+    known_columns_by_source: Dict[str, Set[str]] = {}
+
+    def _register_known_columns(source_key: Any, columns: Iterable[Any]) -> None:
+        key = str(source_key or "").strip()
+        if not key:
+            return
+        bucket = known_columns_by_source.setdefault(key, set())
+        for col in columns or []:
+            if isinstance(col, dict):
+                name = str(col.get("name") or "").strip()
+            else:
+                name = str(col or "").strip()
+            if name:
+                bucket.add(name)
+
+    _register_known_columns(primary_source_key, source_profile.get("columns") or [])
+    if all_source_profiles:
+        for key, prof in all_source_profiles.items():
+            _register_known_columns(key, prof.get("columns") or [])
+    for cf in validated_calc_fields:
+        calc_source_key = str(cf.get("source_key") or primary_source_key or "").strip()
+        if calc_source_key:
+            known_columns_by_source.setdefault(calc_source_key, set()).add(cf["name"])
+    for dt in derived_tables:
+        _register_known_columns(dt.get("source_key"), dt.get("output_columns") or [])
+
+    finalized_plans: List[Dict[str, Any]] = []
+    for idx, raw in enumerate(raw_charts, start=1):
+        if not isinstance(raw, dict):
+            continue
+        finalized_plans.append(_finalize_plan_from_v1_metadata(raw=raw, order=idx))
+
+    # Rewrite role_config / base_filters field references to the real column
+    # names exposed by each chart's source (physical table OR derived_table).
+    for plan in finalized_plans:
+        plan_source_key = plan.get("source_key")
+        mapping = (
+            alias_maps_by_source.get(str(plan_source_key))
+            if plan_source_key
+            else None
+        ) or union_alias_map
+        _rewrite_plan_field_references(plan, mapping)
+
+    field_resolution_warnings: List[str] = []
+    for plan in finalized_plans:
+        plan_source_key = str(plan.get("source_key") or primary_source_key or "").strip()
+        known_columns = set(known_columns_by_source.get(plan_source_key) or set())
+        if not known_columns and primary_source_key:
+            known_columns = set(known_columns_by_source.get(primary_source_key) or set())
+        if not known_columns:
+            continue
+        unresolved = [
+            f"{label}: {value}"
+            for label, value in _iter_plan_field_references(plan)
+            if value not in known_columns
+        ]
+        if unresolved:
+            warning = (
+                f"Chart '{plan.get('block_id')}' references fields not found in source "
+                f"'{plan_source_key or 'unknown'}': {unresolved}. Chart may fail at runtime."
+            )
+            field_resolution_warnings.append(warning)
+            logger.warning(
+                "v1 import block_id=%s has unresolved fields %s (source_key=%s). "
+                "Chart may fail at runtime.",
+                plan.get("block_id"),
+                unresolved,
+                plan_source_key or None,
+            )
+
+    finalized_plans.sort(key=lambda p: (p.get("order", 0), p.get("block_id", "")))
+    _assign_layouts(finalized_plans)
+
+    dash_title = (
+        _normalize_text(dashboard_meta.get("title"), max_len=180)
+        or _normalize_text(embedded.get("dashboard_title"), max_len=180)
+        or _normalize_text(document_summary.get("title"), max_len=180)
+        or "Imported Dashboard"
+    )
+    dash_description = _normalize_text(dashboard_meta.get("description"), max_len=400) or None
+
+    _, ignored = _candidate_blocks(document_summary)
+
+    # Phase 3: source contract validation (warn-only — does not block import).
+    contract_warnings = _compare_source_contract(
+        source_contract=source_contract,
+        source_profile=source_profile,
+        all_source_profiles=all_source_profiles,
+        derived_source_keys=[dt["source_key"] for dt in derived_tables],
+    )
+
+    warnings: List[str] = []
+    warnings.extend(op_warnings)
+    warnings.extend(contract_warnings)
+    warnings.extend(field_resolution_warnings)
+    if not finalized_plans:
+        warnings.append("Embedded v1 metadata contained no valid chart plans.")
+    if any(p.get("changed_chart_type") for p in finalized_plans):
+        warnings.append(
+            "One or more chart types from the metadata were adapted to supported AppBI types."
+        )
+    if len(validated_calc_fields) != len(calc_fields):
+        warnings.append(
+            "Some add_column operations were rejected by the expression validator and "
+            "will be skipped."
+        )
+
+    ai_meta = build_ai_assist_meta(
+        requested=False,
+        applied=False,
+        status="skipped",
+        message=(
+            "Chart plans loaded from embedded application/appbi-dashboard "
+            "metadata (AppBI Import Plan v1). AI was not needed."
+        ),
+    )
+    ai_meta["plan_version"] = APPBI_IMPORT_PLAN_V1_VERSION
+    ai_meta["authoring_mode"] = str(embedded.get("authoring_mode") or "skill")
+    ai_meta["dashboard_description"] = dash_description
+    ai_meta["default_page_name"] = (
+        _normalize_text(dashboard_meta.get("default_page_name"), max_len=80) or None
+    )
+    ai_meta["source_contract"] = source_contract or {}
+    ai_meta["derived_table_count"] = len(derived_tables)
+
+    return {
+        "suggested_dashboard_name": dash_title,
+        "document_title": document_summary.get("title"),
+        "source_profile": source_profile,
+        "all_source_profiles": all_source_profiles,
+        "chart_plans": finalized_plans,
+        "calculated_fields": validated_calc_fields,
+        "derived_tables": derived_tables,
+        "ignored_blocks": ignored,
+        "warnings": warnings,
+        "ai_meta": ai_meta,
+    }
+
+
+def _rewrite_plan_field_references(plan: Dict[str, Any], alias_map: Dict[str, str]) -> None:
+    """In-place rewrite of all field identifiers in a chart plan's runtime config."""
+    if not alias_map:
+        return
+
+    def _resolve(name: Any) -> Any:
+        real = _resolve_column_name(name, alias_map)
+        return real if real else name
+
+    role_config = plan.get("role_config")
+    if isinstance(role_config, dict):
+        for key in ("dimension", "timeField", "breakdown", "scatterX", "scatterY"):
+            val = role_config.get(key)
+            if isinstance(val, str) and val:
+                role_config[key] = _resolve(val)
+        metrics = role_config.get("metrics")
+        if isinstance(metrics, list):
+            for metric in metrics:
+                if isinstance(metric, dict) and metric.get("field"):
+                    metric["field"] = _resolve(metric["field"])
+        line_metric = role_config.get("lineMetric")
+        if isinstance(line_metric, dict) and line_metric.get("field"):
+            line_metric["field"] = _resolve(line_metric["field"])
+        selected = role_config.get("selectedColumns")
+        if isinstance(selected, list):
+            role_config["selectedColumns"] = [_resolve(c) for c in selected if c]
+
+    base_filters = plan.get("base_filters")
+    if isinstance(base_filters, list):
+        for flt in base_filters:
+            if isinstance(flt, dict) and flt.get("field"):
+                flt["field"] = _resolve(flt["field"])
+
+    fields_used = plan.get("source_fields_used")
+    if isinstance(fields_used, list):
+        plan["source_fields_used"] = sorted({_resolve(f) for f in fields_used if f})
+
+
+def _iter_plan_field_references(plan: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """Return labeled field references used by a chart plan."""
+    refs: List[Tuple[str, str]] = []
+    role_config = plan.get("role_config")
+    if isinstance(role_config, dict):
+        for key in ("dimension", "timeField", "breakdown", "scatterX", "scatterY"):
+            value = role_config.get(key)
+            if isinstance(value, str) and value:
+                refs.append((f"role_config.{key}", value))
+        metrics = role_config.get("metrics")
+        if isinstance(metrics, list):
+            for index, metric in enumerate(metrics):
+                if isinstance(metric, dict):
+                    field = str(metric.get("field") or "").strip()
+                    if field:
+                        refs.append((f"role_config.metrics[{index}]", field))
+        line_metric = role_config.get("lineMetric")
+        if isinstance(line_metric, dict):
+            field = str(line_metric.get("field") or "").strip()
+            if field:
+                refs.append(("role_config.lineMetric", field))
+        selected = role_config.get("selectedColumns")
+        if isinstance(selected, list):
+            for index, value in enumerate(selected):
+                field = str(value or "").strip()
+                if field:
+                    refs.append((f"role_config.selectedColumns[{index}]", field))
+
+    base_filters = plan.get("base_filters")
+    if isinstance(base_filters, list):
+        for index, flt in enumerate(base_filters):
+            if isinstance(flt, dict):
+                field = str(flt.get("field") or "").strip()
+                if field:
+                    refs.append((f"base_filters[{index}]", field))
+
+    return refs
+
+
+def _build_table_id_map_from_dataset_tables(dataset_tables: Iterable[Any]) -> Dict[str, int]:
+    mapping: Dict[str, int] = {}
+    for dataset_table in dataset_tables:
+        display_name = str(getattr(dataset_table, "display_name", "") or "").strip()
+        table_id = getattr(dataset_table, "id", None)
+        if display_name and isinstance(table_id, int):
+            mapping[display_name] = table_id
+    return mapping
+
 
 
 def analyze_dashboard_html_import(
@@ -1976,8 +3126,7 @@ def build_dashboard_from_import(
             )
             if not db_tables:
                 raise ValueError("Dataset has no data tables.")
-            for dt in db_tables:
-                table_id_map[dt.display_name] = dt.id
+            table_id_map = _build_table_id_map_from_dataset_tables(db_tables)
             resolved_dataset_table_id = db_tables[0].id
         elif resolved_dataset_table_id is not None:
             # Legacy single-table mode
@@ -2013,6 +3162,17 @@ def build_dashboard_from_import(
                 requested_name=dashboard_name or analysis.get("suggested_dashboard_name"),
                 selected_sheet_name=selected_sheet_name or analysis.get("source_profile", {}).get("selected_sheet_name"),
             )
+            if resolved_dataset_id is not None:
+                db_tables = (
+                    db.query(DatasetTable)
+                    .filter(
+                        DatasetTable.dataset_id == resolved_dataset_id,
+                        DatasetTable.source_kind != "generated_calendar",
+                    )
+                    .order_by(DatasetTable.id)
+                    .all()
+                )
+                table_id_map = _build_table_id_map_from_dataset_tables(db_tables)
         else:
             raise ValueError("Uploaded Excel source is no longer available. Please analyze again.")
 
@@ -2028,6 +3188,37 @@ def build_dashboard_from_import(
             table_id_map=table_id_map,
             default_table_id=resolved_dataset_table_id,
         )
+
+    # AppBI Import Plan v1: materialize derived_table ops into per-chart
+    # customSql bindings so charts can read pre-aggregated data without
+    # needing new DatasetTable rows.
+    derived_tables = analysis.get("derived_tables") or []
+    if derived_tables and isinstance(derived_tables, list):
+        derived_warnings = _materialize_v1_derived_tables(
+            db,
+            derived_tables=derived_tables,
+            chart_plans=chart_plans,
+            dataset_id=resolved_dataset_id,
+            table_id_map=table_id_map,
+        )
+        if derived_warnings:
+            logger.info(
+                "Derived-table materialization produced %d warnings for dashboard import.",
+                len(derived_warnings),
+            )
+
+    # Phase 3: validate that chart source_keys actually resolve to a table.
+    if table_id_map:
+        unresolved = sorted({
+            str(plan.get("source_key"))
+            for plan in chart_plans
+            if plan.get("source_key") and str(plan.get("source_key")) not in table_id_map
+        })
+        if unresolved:
+            logger.warning(
+                "Import contains charts referencing source_keys not in the dataset: %s",
+                unresolved,
+            )
 
     created_charts: List[Chart] = []
     type_changes: List[Dict[str, Any]] = []
@@ -2205,6 +3396,7 @@ def validate_chart_plans(
     dataset_id: int,
     chart_plans: List[Dict[str, Any]],
     calculated_fields: List[Dict[str, Any]],
+    derived_tables: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Dry-run each chart plan's query against DuckDB and return per-block results.
 
@@ -2240,6 +3432,21 @@ def validate_chart_plans(
 
     ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
 
+    prepared_plans: List[Dict[str, Any]] = [dict(plan) for plan in (chart_plans or [])]
+    if derived_tables:
+        derived_warnings = _materialize_v1_derived_tables(
+            db,
+            derived_tables=derived_tables,
+            chart_plans=prepared_plans,
+            dataset_id=dataset_id,
+            table_id_map=_build_table_id_map_from_dataset_tables(tables),
+        )
+        if derived_warnings:
+            logger.info(
+                "Validation materialized derived tables with %d warning(s).",
+                len(derived_warnings),
+            )
+
     # Group calculated fields by source_key so we inject them into the right table
     calc_by_source: Dict[str, List[Dict[str, Any]]] = {}
     for cf in calculated_fields or []:
@@ -2259,7 +3466,7 @@ def validate_chart_plans(
         ]
 
     results: List[Dict[str, Any]] = []
-    for plan in chart_plans:
+    for plan in prepared_plans:
         block_id = plan.get("block_id", "")
         try:
             source_key = plan.get("source_key")

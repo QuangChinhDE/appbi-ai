@@ -84,6 +84,7 @@ def _build_base_table_ref(
 ) -> str:
     """Build a fully-qualified table reference for the target database."""
     stn = source_table_name.strip().strip('"').strip("'")
+    qi = _quote_identifier
 
     if dialect == "bigquery":
         from app.core.crypto import decrypt_config
@@ -98,14 +99,28 @@ def _build_base_table_ref(
             dataset = decrypted.get("dataset", "")
             return f"`{project_id}.{dataset}.{stn}`"
 
+    # DuckDB-backed snapshot connectors treat the full source table name as a
+    # logical table identifier. Filenames commonly contain dots (for example
+    # ``country_summary.csv - country_summary``), which are not schema
+    # qualifiers and must not be split into ``schema.table`` here.
+    if ds_type == "manual":
+        if "." in stn:
+            schema, table = stn.split(".", 1)
+            if schema.strip('"').strip("'").lower() == "manual":
+                table = table.strip().strip('"').strip("'")
+                return f"{qi('manual', dialect)}.{qi(table, dialect)}"
+        return f"{qi('manual', dialect)}.{qi(stn, dialect)}"
+
+    if ds_type == "google_sheets":
+        return qi(stn, dialect)
+
     if "." in stn:
         schema, table = stn.split(".", 1)
         schema = schema.strip('"').strip("'")
         table = table.strip('"').strip("'")
-        qi = _quote_identifier
         return f"{qi(schema, dialect)}.{qi(table, dialect)}"
 
-    return _quote_identifier(stn, dialect)
+    return qi(stn, dialect)
 
 
 def _parse_bigquery_dataset_and_table(

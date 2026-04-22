@@ -98,6 +98,7 @@ export interface DashboardHtmlImportAnalyzeResponse {
   document_title?: string | null;
   source_profile: DashboardHtmlImportSourceProfile;
   all_source_profiles?: Record<string, DashboardHtmlImportSourceProfile> | null;
+  derived_tables?: Array<Record<string, any>> | null;
   chart_plans: DashboardHtmlImportChartPlan[];
   calculated_fields?: DashboardHtmlImportCalculatedField[];
   ignored_blocks: Array<Record<string, any>>;
@@ -204,6 +205,7 @@ export interface DashboardHtmlImportFixChartInput {
   errorMessage: string;
   sourceProfile: DashboardHtmlImportSourceProfile;
   allSourceProfiles?: Record<string, DashboardHtmlImportSourceProfile> | null;
+  derivedTables?: Array<Record<string, any>> | null;
   datasetId?: number | null;
   calculatedFields?: DashboardHtmlImportCalculatedField[] | null;
 }

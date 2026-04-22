@@ -62,3 +62,10 @@ README.md
 install-docker-and-run.sh
 *.xlsx
 *.csv
+
+# Release hygiene: local artifacts, sensitive backups, non-runtime references
+.artifacts/
+.env.bak.*
+Skill-AppBI/
+dashboard_example/
+UI_LINEAR_AUDIT_CHECKLIST.md

@@ -46,6 +46,7 @@ from app.schemas import (
 # from app.models.dashboard_filter import DashboardFilter
 from app.services import DashboardService
 from app.services.dashboard_html_import_service import (
+    _build_ai_fix_source_profiles,
     _load_existing_source_profile,
     _load_existing_dataset_profiles,
     _load_uploaded_excel_source_profile,
@@ -561,6 +562,7 @@ async def validate_html_import_plans(
 
     chart_plans = analysis.get("chart_plans") or []
     calculated_fields = analysis.get("calculated_fields") or []
+    derived_tables = analysis.get("derived_tables") or []
     if not chart_plans:
         return {"results": []}
 
@@ -571,6 +573,7 @@ async def validate_html_import_plans(
             dataset_id=dataset_id,
             chart_plans=chart_plans,
             calculated_fields=calculated_fields,
+            derived_tables=derived_tables,
         )
         return {"results": results}
     except HTTPException:
@@ -804,6 +807,7 @@ async def fix_html_import_chart_plan(
     error_message: str = Form(...),
     source_profile_json: str = Form(...),
     all_source_profiles_json: Optional[str] = Form(None),
+    derived_tables_json: Optional[str] = Form(None),
     dataset_id: Optional[int] = Form(None),
     calculated_fields_json: Optional[str] = Form(None),
     db: Session = Depends(get_db),
@@ -827,10 +831,18 @@ async def fix_html_import_chart_plan(
     calc_fields = _parse_optional_json_form_field(calculated_fields_json, "calculated_fields_json")
     if not isinstance(calc_fields, list):
         calc_fields = []
+    derived_tables = _parse_optional_json_form_field(derived_tables_json, "derived_tables_json")
+    if not isinstance(derived_tables, list):
+        derived_tables = []
 
     MAX_RETRIES = 3
     last_error = str(error_message or "")
     current_plan = dict(chart_plan)
+    effective_source_profiles = _build_ai_fix_source_profiles(
+        source_profile=source_profile,
+        all_source_profiles=all_source_profiles if isinstance(all_source_profiles, dict) else None,
+        derived_tables=derived_tables,
+    )
 
     try:
         for attempt in range(MAX_RETRIES):
@@ -838,7 +850,7 @@ async def fix_html_import_chart_plan(
                 chart_plan=current_plan,
                 error_message=last_error,
                 source_profile=source_profile,
-                all_source_profiles=all_source_profiles if isinstance(all_source_profiles, dict) else None,
+                all_source_profiles=effective_source_profiles,
             )
             if fixed is None:
                 raise HTTPException(status_code=422, detail="AI could not produce a fix for this chart plan.")
@@ -851,6 +863,7 @@ async def fix_html_import_chart_plan(
                     dataset_id=dataset_id,
                     chart_plans=[fixed],
                     calculated_fields=calc_fields,
+                    derived_tables=derived_tables,
                 )
                 if val_results and val_results[0].get("status") == "error":
                     new_error = val_results[0].get("error", "")
