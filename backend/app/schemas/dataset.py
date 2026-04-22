@@ -373,6 +373,15 @@ class QualityRuleResult(BaseModel):
     rows_checked: Optional[int] = None
     rows_failed: Optional[int] = None
     detail: Optional[str] = None
+    sql: Optional[str] = None
+    preview_sql: Optional[str] = None
+    preview_note: Optional[str] = None
+    preview_columns: List[str] = Field(default_factory=list)
+    preview_rows: List[Dict[str, Any]] = Field(default_factory=list)
+    log: List[str] = Field(default_factory=list)
+    elapsed_ms: Optional[int] = None
+    skipped: Optional[bool] = None
+    error: Optional[bool] = None
 
 
 class QualityRuleDuplicateRequest(BaseModel):

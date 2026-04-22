@@ -313,6 +313,13 @@ export interface QualityRuleResult {
   rows_checked?: number | null;
   rows_failed?: number | null;
   detail?: string | null;
+  sql?: string | null;
+  preview_sql?: string | null;
+  preview_note?: string | null;
+  preview_columns?: string[] | null;
+  preview_rows?: Array<Record<string, unknown>> | null;
+  log?: string[] | null;
+  elapsed_ms?: number | null;
   skipped?: boolean;
   error?: boolean;
 }

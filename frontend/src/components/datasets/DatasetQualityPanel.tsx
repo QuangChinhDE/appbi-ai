@@ -2653,6 +2653,10 @@ interface RuleLogEntry {
     rows_failed?: number | null;
     detail?: string | null;
     sql?: string | null;
+    preview_sql?: string | null;
+    preview_note?: string | null;
+    preview_columns?: string[] | null;
+    preview_rows?: Array<Record<string, unknown>> | null;
     log?: string[];
     elapsed_ms?: number;
   };
@@ -2666,6 +2670,17 @@ function formatMetricCount(value?: number | null): string {
 function formatMetricPercent(value?: number | null, digits = 1): string {
   if (value == null || Number.isNaN(value)) return '—';
   return `${value.toFixed(digits)}%`;
+}
+
+function formatPreviewCellValue(value: unknown): string {
+  if (value == null) return 'NULL';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function hasComparableRowCounts(ruleType: string): boolean {
@@ -2866,6 +2881,7 @@ function RuleLogModal({
   const [filter, setFilter] = useState<'all' | 'pass' | 'fail' | 'error' | 'skip'>('all');
   const [expandedId, setExpandedId] = useState<number | null>(initialExpandedId ?? null);
   const [searchText, setSearchText] = useState('');
+  const [detailTab, setDetailTab] = useState<'output' | 'technical'>('output');
 
   const filtered = useMemo(() => {
     let list = entries;
@@ -2882,6 +2898,7 @@ function RuleLogModal({
         e.tableName.toLowerCase().includes(q) ||
         (e.columnName || '').toLowerCase().includes(q) ||
         (e.result.detail || '').toLowerCase().includes(q) ||
+        (e.result.preview_note || '').toLowerCase().includes(q) ||
         (e.result.sql || '').toLowerCase().includes(q)
       );
     }
@@ -3012,7 +3029,10 @@ function RuleLogModal({
               return (
                 <div key={entry.ruleId}>
                   <button
-                    onClick={() => setExpandedId(isExpanded ? null : entry.ruleId)}
+                    onClick={() => {
+                      setExpandedId(isExpanded ? null : entry.ruleId);
+                      setDetailTab('output');
+                    }}
                     className="w-full flex items-center gap-3 px-5 py-2.5 text-left hover:bg-surface-2 transition-colors"
                   >
                     {isExpanded
@@ -3068,42 +3088,176 @@ function RuleLogModal({
                         </div>
 
                         <div className="space-y-2">
-                          <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
-                            <div>
-                              <p className="text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">Issue Summary</p>
-                              <p className="mt-1 text-sm text-text-primary">{remark.summary}</p>
-                            </div>
-
-                            <div className="mt-3 border-t border-[rgb(var(--border-line))] pt-3">
-                              <p className="text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">Interpretation</p>
-                              <p className="mt-1 text-sm text-text-secondary">{remark.interpretation}</p>
-                            </div>
-
-                            <div className="mt-3 border-t border-[rgb(var(--border-line))] pt-3">
-                              <p className="text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">Recommended Check</p>
-                              <p className="mt-1 text-sm text-text-secondary">{remark.followUp}</p>
-                            </div>
-
-                            {entry.result.detail && entry.result.detail !== remark.summary && (
-                              <div className="mt-3 rounded-lg border border-brand/20 bg-brand/10 p-3">
-                                <p className="text-[11px] font-semibold uppercase tracking-wide text-brand">System Note</p>
-                                <p className="mt-1 text-sm text-brand">{entry.result.detail}</p>
-                              </div>
-                            )}
+                          <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-1">
+                            <button
+                              type="button"
+                              onClick={() => setDetailTab('output')}
+                              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                                detailTab === 'output'
+                                  ? 'bg-brand/10 text-brand'
+                                  : 'text-text-tertiary hover:bg-surface-2 hover:text-text-secondary'
+                              }`}
+                            >
+                              Output
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDetailTab('technical')}
+                              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                                detailTab === 'technical'
+                                  ? 'bg-brand/10 text-brand'
+                                  : 'text-text-tertiary hover:bg-surface-2 hover:text-text-secondary'
+                              }`}
+                            >
+                              Technical log
+                            </button>
                           </div>
 
-                          {entry.result.sql && (
-                            <details className="group rounded-lg border border-[rgb(var(--border-line))] bg-surface-1" open>
-                              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium text-text-secondary">
-                                <span>SQL Query</span>
-                                <span className="text-[11px] text-text-quaternary">Click to expand/collapse</span>
-                              </summary>
-                              <div className="border-t border-[rgb(var(--border-line))] px-3 py-3">
-                                <pre className="max-h-56 overflow-auto rounded-lg bg-surface-inverse p-3 font-mono text-xs leading-relaxed text-success whitespace-pre-wrap break-all">
-                                  {entry.result.sql}
-                                </pre>
+                          {detailTab === 'output' ? (
+                            <>
+                              <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+                                <div>
+                                  <p className="text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">Issue Summary</p>
+                                  <p className="mt-1 text-sm text-text-primary">{remark.summary}</p>
+                                </div>
+
+                                <div className="mt-3 border-t border-[rgb(var(--border-line))] pt-3">
+                                  <p className="text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">Interpretation</p>
+                                  <p className="mt-1 text-sm text-text-secondary">{remark.interpretation}</p>
+                                </div>
+
+                                <div className="mt-3 border-t border-[rgb(var(--border-line))] pt-3">
+                                  <p className="text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">Recommended Check</p>
+                                  <p className="mt-1 text-sm text-text-secondary">{remark.followUp}</p>
+                                </div>
+
+                                {entry.result.detail && entry.result.detail !== remark.summary && (
+                                  <div className="mt-3 rounded-lg border border-brand/20 bg-brand/10 p-3">
+                                    <p className="text-[11px] font-semibold uppercase tracking-wide text-brand">System Note</p>
+                                    <p className="mt-1 text-sm text-brand">{entry.result.detail}</p>
+                                  </div>
+                                )}
                               </div>
-                            </details>
+
+                              <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div>
+                                    <p className="text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">Query Output</p>
+                                    <p className="mt-1 text-sm text-text-secondary">
+                                      {entry.result.preview_rows?.length
+                                        ? `Showing ${entry.result.preview_rows.length} preview row(s) from the failure output.`
+                                        : 'No preview rows are available for this rule yet.'}
+                                    </p>
+                                  </div>
+                                  {entry.result.preview_rows?.length ? (
+                                    <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[11px] font-medium text-brand">
+                                      first {entry.result.preview_rows.length} rows
+                                    </span>
+                                  ) : null}
+                                </div>
+
+                                {entry.result.preview_note && (
+                                  <div className="mt-3 rounded-lg border border-warning/20 bg-warning/10 p-3 text-sm text-text-secondary">
+                                    {entry.result.preview_note}
+                                  </div>
+                                )}
+
+                                {entry.result.preview_rows && entry.result.preview_rows.length > 0 ? (
+                                  <div className="mt-3 overflow-auto rounded-lg border border-[rgb(var(--border-line))]">
+                                    <table className="min-w-full divide-y divide-[rgb(var(--border-line))] text-left text-xs">
+                                      <thead className="bg-surface-2">
+                                        <tr>
+                                          {(entry.result.preview_columns && entry.result.preview_columns.length > 0
+                                            ? entry.result.preview_columns
+                                            : Object.keys(entry.result.preview_rows[0] ?? {})
+                                          ).map((column) => (
+                                            <th key={column} className="whitespace-nowrap px-3 py-2 font-semibold text-text-secondary">
+                                              {column}
+                                            </th>
+                                          ))}
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
+                                        {entry.result.preview_rows.map((row, rowIndex) => {
+                                          const columns = entry.result.preview_columns && entry.result.preview_columns.length > 0
+                                            ? entry.result.preview_columns
+                                            : Object.keys(row ?? {});
+                                          return (
+                                            <tr key={`${entry.ruleId}-${rowIndex}`}>
+                                              {columns.map((column) => (
+                                                <td key={`${entry.ruleId}-${rowIndex}-${column}`} className="max-w-[260px] whitespace-pre-wrap break-words px-3 py-2 align-top text-text-primary">
+                                                  {formatPreviewCellValue(row?.[column])}
+                                                </td>
+                                              ))}
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                ) : (
+                                  <div className="mt-3 rounded-lg border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-3 py-4 text-sm text-text-tertiary">
+                                    {entry.result.preview_note || 'This rule does not currently have preview rows to display.'}
+                                  </div>
+                                )}
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="grid gap-2 sm:grid-cols-2">
+                                <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+                                  <p className="text-[10px] uppercase tracking-wide text-text-quaternary">Rule Execution</p>
+                                  <p className="mt-1 text-sm font-semibold text-text-primary">
+                                    {entry.result.elapsed_ms != null ? `${entry.result.elapsed_ms} ms` : '—'}
+                                  </p>
+                                </div>
+                                <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+                                  <p className="text-[10px] uppercase tracking-wide text-text-quaternary">Preview Query</p>
+                                  <p className="mt-1 text-sm font-semibold text-text-primary">
+                                    {entry.result.preview_sql ? 'available' : 'not available'}
+                                  </p>
+                                </div>
+                              </div>
+
+                              {entry.result.sql && (
+                                <details className="group rounded-lg border border-[rgb(var(--border-line))] bg-surface-1" open>
+                                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium text-text-secondary">
+                                    <span>Check SQL</span>
+                                    <span className="text-[11px] text-text-quaternary">Click to expand/collapse</span>
+                                  </summary>
+                                  <div className="border-t border-[rgb(var(--border-line))] px-3 py-3">
+                                    <pre className="max-h-56 overflow-auto rounded-lg bg-surface-inverse p-3 font-mono text-xs leading-relaxed text-success whitespace-pre-wrap break-all">
+                                      {entry.result.sql}
+                                    </pre>
+                                  </div>
+                                </details>
+                              )}
+
+                              {entry.result.preview_sql && (
+                                <details className="group rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
+                                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium text-text-secondary">
+                                    <span>Output Query</span>
+                                    <span className="text-[11px] text-text-quaternary">Click to expand/collapse</span>
+                                  </summary>
+                                  <div className="border-t border-[rgb(var(--border-line))] px-3 py-3">
+                                    <pre className="max-h-56 overflow-auto rounded-lg bg-surface-inverse p-3 font-mono text-xs leading-relaxed text-success whitespace-pre-wrap break-all">
+                                      {entry.result.preview_sql}
+                                    </pre>
+                                  </div>
+                                </details>
+                              )}
+
+                              <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+                                <p className="text-[11px] font-semibold uppercase tracking-wide text-text-quaternary">Execution Log</p>
+                                {entry.result.log && entry.result.log.length > 0 ? (
+                                  <pre className="mt-3 max-h-64 overflow-auto rounded-lg bg-surface-inverse p-3 font-mono text-xs leading-relaxed text-text-secondary whitespace-pre-wrap break-all">
+                                    {entry.result.log.join('\n')}
+                                  </pre>
+                                ) : (
+                                  <p className="mt-2 text-sm text-text-tertiary">No execution log captured for this rule.</p>
+                                )}
+                              </div>
+                            </>
                           )}
                         </div>
                       </div>
@@ -3571,6 +3725,11 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
         result: runResultsMap[r.id],
       }));
   }, [allRules, runResultsMap, tables]);
+
+  const modalLogEntries = useMemo(() => {
+    if (logFocusRuleId == null) return logEntries;
+    return logEntries.filter((entry) => entry.ruleId === logFocusRuleId);
+  }, [logEntries, logFocusRuleId]);
 
   function handleViewLog(rule: QualityRule) {
     setLogFocusRuleId(rule.id);
@@ -4042,9 +4201,9 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
       )}
 
       {/* ── Rule Log Modal ── */}
-      {logModalOpen && logEntries.length > 0 && (
+      {logModalOpen && modalLogEntries.length > 0 && (
         <RuleLogModal
-          entries={logEntries}
+          entries={modalLogEntries}
           initialExpandedId={logFocusRuleId}
           onClose={() => { setLogModalOpen(false); setLogFocusRuleId(null); }}
         />

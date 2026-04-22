@@ -48,7 +48,8 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -119,6 +120,8 @@ _FORMAT_PATTERNS = {
     "datetime": r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}",
 }
 
+VIOLATION_PREVIEW_LIMIT = 20
+
 
 # ---------------------------------------------------------------------------
 # SQL builder helpers
@@ -155,6 +158,251 @@ def _numeric_cast_expr(expr: str, dialect: str) -> str:
 def _wrap_table_ref(table_ref: str, alias: str) -> str:
     """Give every table reference a predictable alias, even when it is already a subquery."""
     return f"(SELECT * FROM {table_ref}) AS {alias}"
+
+
+def _qualified_col(alias: str, col: str, dialect: str = "postgresql") -> str:
+    return f"{alias}.{_q(col, dialect)}"
+
+
+def _serialize_preview_value(value: Any) -> Any:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, dict):
+        return {str(key): _serialize_preview_value(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_serialize_preview_value(item) for item in value]
+    return value
+
+
+def _serialize_preview_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        {str(key): _serialize_preview_value(value) for key, value in row.items()}
+        for row in rows
+        if isinstance(row, dict)
+    ]
+
+
+def _build_violation_preview_sql(
+    table_ref: str,
+    rule_type: str,
+    col: Optional[str],
+    config: Dict[str, Any],
+    dialect: str = "postgresql",
+    secondary_table_ref: Optional[str] = None,
+    limit: int = VIOLATION_PREVIEW_LIMIT,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return a small preview query for offending values or aggregate failure context."""
+    qcol = _q(col, dialect) if col else None
+    src_ref = _wrap_table_ref(table_ref, "src")
+    src_col = _qualified_col("src", col, dialect) if col else None
+
+    if rule_type == "not_null":
+        if not src_col:
+            return None, None
+        return f"SELECT src.* FROM {src_ref} WHERE {src_col} IS NULL LIMIT {limit}", None
+
+    if rule_type == "not_blank":
+        if not src_col:
+            return None, None
+        cond = f"TRIM({_text_cast(src_col, dialect)}) = ''"
+        return f"SELECT src.* FROM {src_ref} WHERE {cond} LIMIT {limit}", None
+
+    if rule_type == "completeness_pct":
+        if not src_col:
+            return None, None
+        return (
+            f"SELECT src.* FROM {src_ref} WHERE {src_col} IS NULL LIMIT {limit}",
+            "Showing the rows contributing to the completeness failure.",
+        )
+
+    if rule_type == "accepted_values":
+        if not src_col:
+            return None, None
+        values: List[str] = config.get("values") or []
+        if not values:
+            return None, None
+        escaped = ", ".join("'" + value.replace("'", "''") + "'" for value in values)
+        cond = f"{src_col} IS NOT NULL AND {_text_cast(src_col, dialect)} NOT IN ({escaped})"
+        return f"SELECT src.* FROM {src_ref} WHERE {cond} LIMIT {limit}", None
+
+    if rule_type == "pattern_match":
+        if not src_col:
+            return None, None
+        pattern = str(config.get("pattern") or "").replace("'", "''")
+        if not pattern:
+            return None, None
+        flags = str(config.get("flags") or "").lower()
+        case_insensitive = "i" in flags
+        if dialect == "bigquery":
+            cond = f"NOT REGEXP_CONTAINS(CAST({src_col} AS STRING), r'(?{'i' if case_insensitive else ''}{pattern})')"
+        elif dialect == "mysql":
+            if case_insensitive:
+                cond = f"{_text_cast(src_col, dialect)} NOT REGEXP '{pattern}'"
+            else:
+                cond = f"BINARY {_text_cast(src_col, dialect)} NOT REGEXP '{pattern}'"
+        elif dialect == "duckdb":
+            options = ", 'i'" if case_insensitive else ""
+            cond = f"NOT regexp_matches({_text_cast(src_col, dialect)}, '{pattern}'{options})"
+        else:
+            op = "!~*" if case_insensitive else "!~"
+            cond = f"{_text_cast(src_col, dialect)} {op} '{pattern}'"
+        return (
+            f"SELECT src.* FROM {src_ref} "
+            f"WHERE {src_col} IS NOT NULL AND {cond} LIMIT {limit}",
+            None,
+        )
+
+    if rule_type == "range_check":
+        if not src_col:
+            return None, None
+        conditions = []
+        mn = config.get("min")
+        mx = config.get("max")
+        if mn is not None:
+            val = f"'{mn}'" if isinstance(mn, str) else str(mn)
+            conditions.append(f"{_numeric_cast_expr(src_col, dialect)} < {val}")
+        if mx is not None:
+            val = f"'{mx}'" if isinstance(mx, str) else str(mx)
+            conditions.append(f"{_numeric_cast_expr(src_col, dialect)} > {val}")
+        if not conditions:
+            return None, None
+        cond = " OR ".join(conditions)
+        return (
+            f"SELECT src.* FROM {src_ref} "
+            f"WHERE {src_col} IS NOT NULL AND ({cond}) LIMIT {limit}",
+            None,
+        )
+
+    if rule_type == "format_check":
+        if not src_col:
+            return None, None
+        fmt = str(config.get("format") or "").lower()
+        pattern = _FORMAT_PATTERNS.get(fmt)
+        if not pattern:
+            return None, None
+        escaped_pat = pattern.replace("'", "''")
+        if dialect == "bigquery":
+            cond = f"NOT REGEXP_CONTAINS({_text_cast(src_col, dialect)}, r'{escaped_pat}')"
+        elif dialect == "mysql":
+            cond = f"{_text_cast(src_col, dialect)} NOT REGEXP '{escaped_pat}'"
+        elif dialect == "duckdb":
+            cond = f"NOT regexp_matches({_text_cast(src_col, dialect)}, '{escaped_pat}')"
+        else:
+            cond = f"{_text_cast(src_col, dialect)} !~ '{escaped_pat}'"
+        return (
+            f"SELECT src.* FROM {src_ref} "
+            f"WHERE {src_col} IS NOT NULL AND {cond} LIMIT {limit}",
+            None,
+        )
+
+    if rule_type == "unique_column":
+        if not qcol:
+            return None, None
+        return (
+            f"SELECT {qcol} AS duplicate_value, COUNT(*) AS duplicate_count "
+            f"FROM {table_ref} "
+            f"GROUP BY {qcol} HAVING COUNT(*) > 1 "
+            f"ORDER BY duplicate_count DESC LIMIT {limit}",
+            "Showing duplicate values and how many times they appear.",
+        )
+
+    if rule_type == "unique_combo":
+        cols: List[str] = config.get("columns") or ([] if not col else [col])
+        if not cols:
+            return None, None
+        combo = ", ".join(_q(column, dialect) for column in cols)
+        return (
+            f"SELECT {combo}, COUNT(*) AS duplicate_count "
+            f"FROM {table_ref} "
+            f"GROUP BY {combo} HAVING COUNT(*) > 1 "
+            f"ORDER BY duplicate_count DESC LIMIT {limit}",
+            "Showing duplicate key combinations and their duplicate counts.",
+        )
+
+    if rule_type == "cross_column":
+        expr = str(config.get("expression") or "").strip()
+        if not expr:
+            return None, None
+        return f"SELECT src.* FROM {src_ref} WHERE NOT ({expr}) LIMIT {limit}", None
+
+    if rule_type == "cross_table":
+        expr = str(config.get("expression") or "").strip()
+        join_condition = str(config.get("join_condition") or "").strip()
+        if not expr or not join_condition or not secondary_table_ref:
+            return None, None
+        primary_ref = _wrap_table_ref(table_ref, "src")
+        related_ref = _wrap_table_ref(secondary_table_ref, "ref")
+        return (
+            f"SELECT src.* FROM {primary_ref} "
+            f"LEFT JOIN {related_ref} ON {join_condition} "
+            f"WHERE NOT ({expr}) LIMIT {limit}",
+            "Showing source-side rows that fail after evaluating the join rule.",
+        )
+
+    if rule_type == "freshness_days":
+        date_col = config.get("column") or col
+        if not date_col:
+            return None, None
+        qdate = _q(date_col, dialect)
+        src_date = _qualified_col("src", date_col, dialect)
+        max_days = int(config.get("max_days") or 1)
+        if dialect == "bigquery":
+            age_expr = f"DATE_DIFF(CURRENT_DATE(), CAST(MAX({src_date}) AS DATE), DAY)"
+        elif dialect == "mysql":
+            age_expr = f"DATEDIFF(CURDATE(), CAST(MAX({src_date}) AS DATE))"
+        elif dialect == "duckdb":
+            age_expr = f"date_diff('day', CAST(MAX({src_date}) AS DATE), CURRENT_DATE)"
+        else:
+            age_expr = f"EXTRACT(DAY FROM NOW() - CAST(MAX({src_date}) AS TIMESTAMPTZ))"
+        return (
+            f"SELECT MAX({qdate}) AS latest_value, {age_expr} AS current_age_days, {max_days} AS allowed_age_days "
+            f"FROM {src_ref}",
+            "Freshness is a table-level check, so the output shows the current age versus the allowed age.",
+        )
+
+    if rule_type == "row_count_range":
+        min_rows = config.get("min")
+        max_rows = config.get("max")
+        min_expr = "NULL" if min_rows is None else str(int(min_rows))
+        max_expr = "NULL" if max_rows is None else str(int(max_rows))
+        return (
+            f"SELECT COUNT(*) AS current_row_count, {min_expr} AS expected_min_rows, {max_expr} AS expected_max_rows "
+            f"FROM {src_ref}",
+            "Row-count range is a table-level check, so the output shows the measured count against the configured bounds.",
+        )
+
+    if rule_type == "statistical_range":
+        if not src_col:
+            return None, None
+        min_z = config.get("min_z")
+        max_z = config.get("max_z")
+        numeric_expr = _numeric_cast_expr(src_col, dialect)
+        stddev_fn = "STDDEV_SAMP" if dialect == "bigquery" else "STDDEV"
+        conditions = []
+        if min_z is not None:
+            conditions.append(f"({numeric_expr} - avg_val) / NULLIF(std_val, 0) < {min_z}")
+        if max_z is not None:
+            conditions.append(f"({numeric_expr} - avg_val) / NULLIF(std_val, 0) > {max_z}")
+        if not conditions:
+            return None, None
+        cond = " OR ".join(conditions)
+        return (
+            f"WITH stats AS ("
+            f"  SELECT AVG({numeric_expr}) AS avg_val, {stddev_fn}({numeric_expr}) AS std_val "
+            f"  FROM {src_ref}"
+            f") "
+            f"SELECT src.*, (({numeric_expr} - avg_val) / NULLIF(std_val, 0)) AS quality_z_score "
+            f"FROM {src_ref} CROSS JOIN stats "
+            f"WHERE {src_col} IS NOT NULL AND ({cond}) LIMIT {limit}",
+            "Showing rows whose z-score is outside the configured bounds.",
+        )
+
+    if rule_type == "custom_sql":
+        return None, "Preview output is unavailable for custom SQL rules. Add a separate detail query if needed."
+
+    return None, None
 
 
 def _build_check_sql(
@@ -1711,9 +1959,51 @@ class DatasetQualityService:
             detail = None if passed else f"{rows_failed} row(s) failed out of {rows_checked}"
             _log(f"{'PASS' if passed else 'FAIL'}: checked={rows_checked}, failed={rows_failed}")
 
+            preview_sql = None
+            preview_note = None
+            preview_columns: Optional[List[str]] = None
+            preview_rows: Optional[List[Dict[str, Any]]] = None
+            if not passed:
+                preview_sql, preview_note = _build_violation_preview_sql(
+                    table_ref=table_ref,
+                    rule_type=rule.rule_type,
+                    col=rule.column_name,
+                    config=config,
+                    dialect=dialect,
+                    secondary_table_ref=secondary_table_ref,
+                )
+                if preview_sql:
+                    _log("Loading preview output for failed rows…")
+                    try:
+                        preview_columns, preview_result_rows, preview_exec_ms = DataSourceConnectionService.execute_query(
+                            ds_type=ds_type,
+                            config=datasource.config if datasource else {},
+                            sql_query=preview_sql,
+                            limit=None,
+                            timeout_seconds=30,
+                        )
+                        preview_rows = _serialize_preview_rows(preview_result_rows)
+                        _log(
+                            "Preview loaded "
+                            f"in {round(preview_exec_ms)}ms — returned {len(preview_rows)} row(s)"
+                        )
+                    except Exception as preview_exc:
+                        preview_rows = None
+                        preview_columns = None
+                        preview_note = (
+                            f"{preview_note} " if preview_note else ""
+                        ) + f"Preview output unavailable: {str(preview_exc)[:200]}"
+                        _log(f"PREVIEW ERROR: {preview_exc}")
+                elif preview_note:
+                    _log(f"Preview note: {preview_note}")
+
             return _result({
                 "passed": passed, "rows_checked": rows_checked, "rows_failed": rows_failed,
                 "detail": detail, "sql": check_sql,
+                "preview_sql": preview_sql,
+                "preview_note": preview_note,
+                "preview_columns": preview_columns,
+                "preview_rows": preview_rows,
             })
 
         except Exception as exc:
