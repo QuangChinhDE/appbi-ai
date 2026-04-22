@@ -152,6 +152,24 @@ function Ensure-AbsolutePath([string]$baseDir, [string]$candidatePath) {
     return [System.IO.Path]::GetFullPath((Join-Path $baseDir $candidatePath))
 }
 
+function Wait-ForPostgresInContainer(
+    [string]$containerName,
+    [string]$dbUser,
+    [string]$dbName,
+    [int]$timeoutSeconds = 60
+) {
+    $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        & docker exec $containerName pg_isready -U $dbUser -d $dbName *> $null
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    throw "Timed out waiting for PostgreSQL in container '$containerName' to become ready."
+}
+
 function New-RestoreReadyDump([string]$sourceDumpPath) {
     $sourceLines = Get-Content $sourceDumpPath
     $filteredLines = New-Object System.Collections.Generic.List[string]
@@ -213,6 +231,11 @@ try {
     $SourceDbUser = Get-FirstNonEmpty @($SourceDbUser, $sourceEnv['POSTGRES_USER'], $sourceEnv['DB_USER'], 'appbi')
     $SourceDbPassword = Get-FirstNonEmpty @($SourceDbPassword, $sourceEnv['POSTGRES_PASSWORD'], $sourceEnv['DB_PASSWORD'])
     $SourceDbName = Get-FirstNonEmpty @($SourceDbName, $sourceEnv['POSTGRES_DB'], $sourceEnv['DB_NAME'], 'appbi')
+
+    if (-not $RestoreOnly) {
+        Write-Host "Waiting for PostgreSQL in '$SourceContainer' to become ready..." -ForegroundColor Cyan
+        Wait-ForPostgresInContainer -containerName $SourceContainer -dbUser $SourceDbUser -dbName $SourceDbName
+    }
 
     if (-not $RestoreOnly) {
         $tempDumpInContainer = "/tmp/appbi-metadata-migrate.sql"

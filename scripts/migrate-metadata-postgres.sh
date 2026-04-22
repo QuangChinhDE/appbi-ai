@@ -150,6 +150,23 @@ ensure_absolute_path() {
   printf '%s\n' "$base_dir/$candidate_path"
 }
 
+wait_for_postgres_in_container() {
+  local container_name="$1"
+  local db_user="$2"
+  local db_name="$3"
+  local timeout_seconds="${4:-60}"
+  local deadline=$((SECONDS + timeout_seconds))
+
+  while (( SECONDS < deadline )); do
+    if docker exec "$container_name" pg_isready -U "$db_user" -d "$db_name" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  die "Timed out waiting for PostgreSQL in container '$container_name' to become ready."
+}
+
 new_restore_ready_dump() {
   local source_dump_path="$1"
   local filter_regex='^(DROP EXTENSION IF EXISTS vector;|CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;|COMMENT ON EXTENSION vector IS )'
@@ -322,6 +339,9 @@ if [[ "$RESTORE_ONLY" != "true" ]]; then
   SOURCE_DB_USER="$(get_first_non_empty "$SOURCE_DB_USER" "$(lookup_key_from_lines "$SOURCE_ENV_LINES" POSTGRES_USER)" "$(lookup_key_from_lines "$SOURCE_ENV_LINES" DB_USER)" "appbi" || true)"
   SOURCE_DB_PASSWORD="$(get_first_non_empty "$SOURCE_DB_PASSWORD" "$(lookup_key_from_lines "$SOURCE_ENV_LINES" POSTGRES_PASSWORD)" "$(lookup_key_from_lines "$SOURCE_ENV_LINES" DB_PASSWORD)" || true)"
   SOURCE_DB_NAME="$(get_first_non_empty "$SOURCE_DB_NAME" "$(lookup_key_from_lines "$SOURCE_ENV_LINES" POSTGRES_DB)" "$(lookup_key_from_lines "$SOURCE_ENV_LINES" DB_NAME)" "appbi" || true)"
+
+  echo "Waiting for PostgreSQL in '$SOURCE_CONTAINER' to become ready..." >&2
+  wait_for_postgres_in_container "$SOURCE_CONTAINER" "$SOURCE_DB_USER" "$SOURCE_DB_NAME"
 
   TEMP_DUMP_IN_CONTAINER="/tmp/appbi-metadata-migrate.sql"
   echo "Dumping metadata from '$SOURCE_CONTAINER' ($SOURCE_DB_NAME)..." >&2
