@@ -323,6 +323,8 @@ export interface QualityRun {
   status: 'queued' | 'running' | 'completed' | 'failed';
   score?: number | null;
   results?: Record<string, QualityRuleResult> | null;
+  trigger_source?: 'manual' | 'schedule' | null;
+  schedule_id?: number | null;
   progress_done?: number | null;
   progress_total?: number | null;
   error_message?: string | null;
@@ -355,6 +357,41 @@ export interface QualitySummary {
   dimension_breakdown: QualityDimensionSummary[];
 }
 
+// ===== Quality Schedule / Automation =====
+
+export type QualityScheduleType = 'manual' | 'schedule';
+
+export interface QualitySchedule {
+  id?: number | null;
+  dataset_id: number;
+  enabled: boolean;
+  type: QualityScheduleType;
+  cron?: string | null;
+  timezone: string;
+  recipient_email?: string | null;
+  cc_emails: string[];
+  notify_on_success: boolean;
+  notify_on_failure: boolean;
+  last_run_at?: string | null;
+  last_run_status?: string | null;
+  last_error?: string | null;
+  next_run_at?: string | null;
+  created_by_id?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface QualityScheduleUpsert {
+  enabled: boolean;
+  type: QualityScheduleType;
+  cron?: string | null;
+  timezone: string;
+  recipient_email?: string | null;
+  cc_emails: string[];
+  notify_on_success: boolean;
+  notify_on_failure: boolean;
+}
+
 // ===== Query Keys =====
 
 export const datasetKeys = {
@@ -374,6 +411,8 @@ export const datasetKeys = {
   qualityRuns: (datasetId: number) => [...datasetKeys.detail(datasetId), 'quality', 'runs'] as const,
   qualityRun: (datasetId: number, runId: number) =>
     [...datasetKeys.detail(datasetId), 'quality', 'runs', runId] as const,
+  qualitySchedule: (datasetId: number) =>
+    [...datasetKeys.detail(datasetId), 'quality', 'schedule'] as const,
 };
 
 export const datasourceTableKeys = {
@@ -939,6 +978,39 @@ export function useQualityRunPoll(
     staleTime: 0,
     // Không retry khi poll bị lỗi tạm thời
     retry: false,
+  });
+}
+
+// ===== Quality Schedule Hooks =====
+
+export function useQualitySchedule(datasetId: number | null) {
+  return useQuery({
+    queryKey: datasetKeys.qualitySchedule(datasetId!),
+    queryFn: async () => {
+      const res = await api.get<QualitySchedule>(
+        `/datasets/${datasetId}/quality/schedule`
+      );
+      return res.data;
+    },
+    enabled: datasetId !== null,
+    staleTime: 30_000,
+  });
+}
+
+export function useUpsertQualitySchedule(datasetId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: QualityScheduleUpsert) => {
+      const res = await api.put<QualitySchedule>(
+        `/datasets/${datasetId}/quality/schedule`,
+        body
+      );
+      return res.data;
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(datasetKeys.qualitySchedule(datasetId), data);
+      queryClient.invalidateQueries({ queryKey: datasetKeys.qualitySchedule(datasetId) });
+    },
   });
 }
 

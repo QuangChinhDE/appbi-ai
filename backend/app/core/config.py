@@ -137,6 +137,28 @@ class Settings(BaseSettings):
     LIVE_QUERY_SHARED_CACHE_MAX_SIZE: int = 4096        # global shared-cache row cap
     ENABLE_DATASOURCE_SYNC: bool = False                # live-query-first mode
 
+    # ── SMTP / Email Notifications ──────────────────────────────────────
+    # Used by: dataset quality scheduled runs -> email PDF report.
+    # When SMTP_HOST is empty, the email delivery is skipped gracefully and
+    # an informational log entry is written (no error is raised).
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_USE_TLS: bool = True              # STARTTLS
+    SMTP_USE_SSL: bool = False             # Implicit SSL (port 465)
+    SMTP_FROM_EMAIL: str = ""              # Falls back to SMTP_USERNAME when empty
+    SMTP_FROM_NAME: str = "AppBI"
+    SMTP_TIMEOUT_SECONDS: int = 20
+
+    @property
+    def smtp_enabled(self) -> bool:
+        return bool(self.SMTP_HOST.strip())
+
+    @property
+    def smtp_from_email(self) -> str:
+        return (self.SMTP_FROM_EMAIL or self.SMTP_USERNAME or "").strip()
+
     @property
     def active_description_model(self) -> str:
         return self.active_dataset_docs_model

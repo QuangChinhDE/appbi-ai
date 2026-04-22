@@ -86,7 +86,7 @@ export function AppModalShell({
     >
       <div
         className={cn(
-          'flex w-full flex-col overflow-hidden rounded-xl',
+          'flex w-full min-h-0 max-h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-xl',
           'bg-surface-1 border border-[rgb(var(--border-strong))] shadow-linear-lg',
           'animate-slide-up',
           maxWidthClass,
@@ -97,7 +97,7 @@ export function AppModalShell({
         <div className="border-b border-[rgb(var(--border-line))] px-5 py-3.5">
           {headerInner}
         </div>
-        <div className={cn('flex-1 overflow-y-auto', bodyClassName)}>{children}</div>
+        <div className={cn('min-h-0 flex-1 overflow-y-auto', bodyClassName)}>{children}</div>
         {footer && (
           <div className="flex items-center justify-end gap-2 border-t border-[rgb(var(--border-line))] bg-surface-2 px-5 py-3">
             {footer}

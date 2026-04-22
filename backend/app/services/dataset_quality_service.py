@@ -1256,17 +1256,64 @@ class DatasetQualityService:
         db: Session,
         dataset_id: int,
         triggered_by_id: Optional[str] = None,
+        trigger_source: str = "manual",
+        schedule_id: Optional[int] = None,
     ) -> DatasetQualityRun:
         run = DatasetQualityRun(
             dataset_id=dataset_id,
             status="queued",
             triggered_by_id=triggered_by_id,
+            trigger_source=trigger_source,
+            schedule_id=schedule_id,
             created_at=datetime.utcnow(),
         )
         db.add(run)
         db.commit()
         db.refresh(run)
         return run
+
+    @staticmethod
+    def has_active_run(db: Session, dataset_id: int) -> bool:
+        """Return True if a run is currently queued or running for the dataset."""
+        return (
+            db.query(DatasetQualityRun.id)
+            .filter(
+                DatasetQualityRun.dataset_id == dataset_id,
+                DatasetQualityRun.status.in_(("queued", "running")),
+            )
+            .first()
+            is not None
+        )
+
+    @staticmethod
+    def trigger_run(
+        db: Session,
+        dataset_id: int,
+        triggered_by_id: Optional[str] = None,
+        trigger_source: str = "manual",
+        schedule_id: Optional[int] = None,
+        allow_overlap: bool = False,
+    ) -> Optional[DatasetQualityRun]:
+        """
+        Shared entry point that both the manual API and the scheduler use.
+
+        Returns the newly-created run, or None if `allow_overlap=False` and
+        another run is already active for this dataset.
+        """
+        if not allow_overlap and DatasetQualityService.has_active_run(db, dataset_id):
+            logger.info(
+                "[quality_run] Skipped trigger for dataset %s: another run is active",
+                dataset_id,
+            )
+            return None
+
+        return DatasetQualityService.create_run(
+            db,
+            dataset_id,
+            triggered_by_id=triggered_by_id,
+            trigger_source=trigger_source,
+            schedule_id=schedule_id,
+        )
 
     # ── Summary ────────────────────────────────────────────────────────────
 

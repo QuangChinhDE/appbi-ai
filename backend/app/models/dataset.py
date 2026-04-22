@@ -34,6 +34,12 @@ class Dataset(Base):
     tables = relationship("DatasetTable", back_populates="dataset", cascade="all, delete-orphan")
     quality_rules = relationship("DatasetQualityRule", back_populates="dataset", cascade="all, delete-orphan")
     quality_runs = relationship("DatasetQualityRun", back_populates="dataset", cascade="all, delete-orphan")
+    quality_schedule = relationship(
+        "DatasetQualitySchedule",
+        back_populates="dataset",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
 
 class DatasetTable(Base):
@@ -139,10 +145,56 @@ class DatasetQualityRun(Base):
     progress_total = Column(Integer, nullable=True)                 # total enabled rules
     error_message = Column(Text, nullable=True)
     triggered_by_id = Column(String(36), nullable=True)             # user UUID string
+    trigger_source = Column(String(20), nullable=False, default="manual")  # "manual" | "schedule"
+    schedule_id = Column(
+        Integer,
+        ForeignKey("dataset_quality_schedules.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
 
     # Relationships
     dataset = relationship("Dataset", back_populates="quality_runs")
+    schedule = relationship("DatasetQualitySchedule", back_populates="runs")
+
+
+class DatasetQualitySchedule(Base):
+    """
+    Automation configuration for dataset quality checks.
+
+    One schedule per dataset. When enabled with type="schedule", the in-process
+    APScheduler (see `dataset_quality_scheduler`) creates a cron job that
+    triggers a full quality run and emails a PDF report to `recipient_email`
+    (and any `cc_emails`) after each scheduled run.
+    """
+    __tablename__ = "dataset_quality_schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(
+        Integer,
+        ForeignKey("datasets.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    enabled = Column(Boolean, nullable=False, default=False, index=True)
+    type = Column(String(20), nullable=False, default="manual")   # "manual" | "schedule"
+    cron = Column(String(120), nullable=True)
+    timezone = Column(String(80), nullable=False, default="UTC")
+    recipient_email = Column(String(320), nullable=True)
+    cc_emails = Column(JSONB, nullable=True, default=list)
+    notify_on_success = Column(Boolean, nullable=False, default=True)
+    notify_on_failure = Column(Boolean, nullable=False, default=True)
+    last_run_at = Column(DateTime, nullable=True)
+    last_run_status = Column(String(20), nullable=True)
+    last_error = Column(Text, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+    created_by_id = Column(String(36), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
+
+    dataset = relationship("Dataset", back_populates="quality_schedule", uselist=False)
+    runs = relationship("DatasetQualityRun", back_populates="schedule")
 

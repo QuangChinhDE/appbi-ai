@@ -15,12 +15,13 @@
  *  - Cross-table consistency hint in editor
  *  - pass/fail badges per-rule from latest completed run
  *  - Run Now + live polling (toast on complete)
- *  - No run history / score report in this panel — setup only
+ *  - In-tab overview report for the latest quality run
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  CalendarClock,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -48,6 +49,8 @@ import {
 import { toast } from '@/lib/toast';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
 import { apiClient as api } from '@/lib/api-client';
+import { DatasetQualityReportModal } from '@/components/datasets/DatasetQualityReportModal';
+import { DatasetQualityScheduleModal } from '@/components/datasets/DatasetQualityScheduleModal';
 
 import {
   type DatasetTable,
@@ -3432,6 +3435,8 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
   const [togglingIds, setTogglingIds]           = useState<Set<number>>(new Set());
   const [logModalOpen, setLogModalOpen]         = useState(false);
   const [logFocusRuleId, setLogFocusRuleId]     = useState<number | null>(null);
+  const [reportModalOpen, setReportModalOpen]   = useState(false);
+  const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
 
   // Run state
   const [pollingRunId, setPollingRunId] = useState<number | null>(null);
@@ -3677,6 +3682,15 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
           {enabledRules}/{totalRules} enabled
         </span>
 
+        {/* Automate */}
+        <button
+          onClick={() => setScheduleModalOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-2 shrink-0"
+          title="Configure scheduled runs and email reports"
+        >
+          <CalendarClock className="h-3.5 w-3.5" /> Automate
+        </button>
+
         {/* Run now */}
         {canEdit && (
           <button
@@ -3848,15 +3862,27 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
               </div>
             )}
 
+            {/* ── Report button ── */}
+            {latestCompletedRun && (
+              <button
+                onClick={() => setReportModalOpen(true)}
+                className="inline-flex items-center gap-1 rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-[11px] font-medium text-text-tertiary hover:bg-surface-2 hover:border-[rgb(var(--border-strong))] transition-colors shrink-0"
+                title="View the latest quality report overview"
+              >
+                <Eye className="h-3 w-3" />
+                Report
+              </button>
+            )}
+
             {/* ── Logs button ── */}
             {logEntries.length > 0 && (
               <button
                 onClick={handleOpenAllLogs}
                 className="inline-flex items-center gap-1 rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-[11px] font-medium text-text-tertiary hover:bg-surface-2 hover:border-[rgb(var(--border-strong))] transition-colors shrink-0"
-                title="View quality summaries"
+                title="View per-rule result details"
               >
-                <Eye className="h-3 w-3" />
-                Review
+                <Search className="h-3 w-3" />
+                Rule details
               </button>
             )}
 
@@ -4023,6 +4049,25 @@ export function DatasetQualityPanel({ datasetId, tables, canEdit }: DatasetQuali
           onClose={() => { setLogModalOpen(false); setLogFocusRuleId(null); }}
         />
       )}
+
+      <DatasetQualityReportModal
+        datasetId={datasetId}
+        open={reportModalOpen}
+        onClose={() => setReportModalOpen(false)}
+        latestRun={latestCompletedRun}
+        recentRuns={runs}
+        rules={allRules}
+        tables={tables}
+        dimensionBreakdown={dimBreakdown}
+      />
+
+      {/* ── Schedule / Automation Modal ── */}
+      <DatasetQualityScheduleModal
+        datasetId={datasetId}
+        open={scheduleModalOpen}
+        canEdit={canEdit}
+        onClose={() => setScheduleModalOpen(false)}
+      />
     </div>
   );
 }

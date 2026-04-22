@@ -24,6 +24,7 @@ from app.models.dataset import (
     DatasetTable,
     DatasetQualityRule,
     DatasetQualityRun,
+    DatasetQualitySchedule,
 )
 from app.models.anomaly import (
     MonitoredMetric,
@@ -58,6 +59,7 @@ __all__ = [
     "DatasetTable",
     "DatasetQualityRule",
     "DatasetQualityRun",
+    "DatasetQualitySchedule",
     "SemanticExplore",
     "SyncJob",
     "MonitoredMetric",

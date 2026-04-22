@@ -42,6 +42,8 @@ services:
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic
       - appbi_data_dev:/app/.data
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+psycopg2://appbi:appbi@db:5432/appbi
       DB_HOST: db

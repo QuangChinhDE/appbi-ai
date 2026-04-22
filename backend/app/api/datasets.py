@@ -2500,6 +2500,101 @@ def get_quality_run(
     return run
 
 
+# ── Schedule / Automation ─────────────────────────────────────────────────
+
+from app.models.dataset import DatasetQualitySchedule
+from app.schemas.dataset import (
+    QualityScheduleResponse,
+    QualityScheduleUpsert,
+)
+
+
+def _schedule_to_response(
+    dataset_id: int,
+    schedule: Optional[DatasetQualitySchedule],
+) -> QualityScheduleResponse:
+    if schedule is None:
+        return QualityScheduleResponse(dataset_id=dataset_id)
+    return QualityScheduleResponse.model_validate(schedule)
+
+
+@router.get(
+    "/{dataset_id}/quality/schedule",
+    response_model=QualityScheduleResponse,
+)
+def get_quality_schedule(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Read the automation config for a dataset. Returns a default disabled
+    payload when no schedule has been configured yet."""
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_view_access(db, current_user, ds, "datasets")
+    schedule = (
+        db.query(DatasetQualitySchedule)
+        .filter(DatasetQualitySchedule.dataset_id == dataset_id)
+        .first()
+    )
+    return _schedule_to_response(dataset_id, schedule)
+
+
+@router.put(
+    "/{dataset_id}/quality/schedule",
+    response_model=QualityScheduleResponse,
+)
+def upsert_quality_schedule(
+    dataset_id: int,
+    body: QualityScheduleUpsert,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create or update the automation config for a dataset."""
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_edit_access(db, current_user, ds, "datasets")
+
+    schedule = (
+        db.query(DatasetQualitySchedule)
+        .filter(DatasetQualitySchedule.dataset_id == dataset_id)
+        .first()
+    )
+    is_new = schedule is None
+    if is_new:
+        schedule = DatasetQualitySchedule(
+            dataset_id=dataset_id,
+            created_by_id=str(current_user.id),
+        )
+        db.add(schedule)
+
+    schedule.enabled = bool(body.enabled)
+    schedule.type = body.type
+    schedule.cron = (body.cron or "").strip() or None
+    schedule.timezone = (body.timezone or "UTC").strip() or "UTC"
+    schedule.recipient_email = body.recipient_email
+    schedule.cc_emails = list(body.cc_emails or [])
+    schedule.notify_on_success = bool(body.notify_on_success)
+    schedule.notify_on_failure = bool(body.notify_on_failure)
+    if is_new is False:
+        schedule.created_by_id = schedule.created_by_id or str(current_user.id)
+
+    db.commit()
+    db.refresh(schedule)
+
+    # Sync the live APScheduler registry to match the DB.
+    try:
+        from app.services.dataset_quality_scheduler import sync_dataset_schedule
+        sync_dataset_schedule(dataset_id)
+        db.refresh(schedule)
+    except Exception as exc:  # noqa: BLE001
+        # Do not fail the API call — scheduler will rebuild on next startup.
+        import logging as _logging
+        _logging.getLogger(__name__).error(
+            "[quality/schedule] sync_dataset_schedule failed: %s", exc
+        )
+
+    return _schedule_to_response(dataset_id, schedule)
+
+
 # ── AI Rule Suggestion ────────────────────────────────────────────────────
 
 from app.schemas.dataset import (

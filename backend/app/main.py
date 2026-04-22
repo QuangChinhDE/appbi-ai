@@ -34,6 +34,10 @@ async def lifespan(app: FastAPI):
     from app.services.anomaly_scheduler import startup as anomaly_scheduler_startup
     anomaly_scheduler_startup()
 
+    # Dataset Quality automation scheduler
+    from app.services.dataset_quality_scheduler import startup as quality_scheduler_startup
+    quality_scheduler_startup()
+
     # Periodic cleanup of expired revoked tokens
     from app.services.token_cleanup import schedule_token_cleanup
     schedule_token_cleanup()
@@ -43,6 +47,9 @@ async def lifespan(app: FastAPI):
     # ── Shutdown ─────────────────────────────────────────────────────────────
     from app.services.anomaly_scheduler import shutdown as anomaly_scheduler_shutdown
     anomaly_scheduler_shutdown()
+
+    from app.services.dataset_quality_scheduler import shutdown as quality_scheduler_shutdown
+    quality_scheduler_shutdown()
 
 
 # Disable Swagger UI / ReDoc / OpenAPI schema in production to prevent

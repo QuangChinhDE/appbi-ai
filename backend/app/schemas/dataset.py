@@ -396,6 +396,8 @@ class QualityRunResponse(BaseModel):
     progress_total: Optional[int] = None
     error_message: Optional[str] = None
     triggered_by_id: Optional[str] = None
+    trigger_source: Optional[str] = None
+    schedule_id: Optional[int] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
@@ -456,3 +458,96 @@ class QualityAISuggestResponse(BaseModel):
     severity: str = "warning"
     name: str = ""
     explanation: str = ""
+
+
+# ── Quality Schedule / Automation ────────────────────────────────────────
+
+QualityScheduleType = Literal["manual", "schedule"]
+
+_EMAIL_REGEX = r"^[^\s@]+@[^\s@]+\.[^\s@]+$"
+
+
+class QualityScheduleUpsert(BaseModel):
+    """Payload to create/update the automation config for a dataset."""
+    enabled: bool = False
+    type: QualityScheduleType = "manual"
+    cron: Optional[str] = Field(default=None, max_length=120)
+    timezone: str = Field(default="UTC", max_length=80)
+    recipient_email: Optional[str] = Field(
+        default=None,
+        max_length=320,
+        pattern=_EMAIL_REGEX,
+    )
+    cc_emails: List[str] = Field(default_factory=list, max_length=20)
+    notify_on_success: bool = True
+    notify_on_failure: bool = True
+
+    @model_validator(mode="after")
+    def _validate(self) -> "QualityScheduleUpsert":
+        # Normalize email list
+        cleaned: List[str] = []
+        import re as _re
+        for email in self.cc_emails or []:
+            if not isinstance(email, str):
+                continue
+            e = email.strip().lower()
+            if not e:
+                continue
+            if not _re.match(_EMAIL_REGEX, e):
+                raise ValueError(f"Invalid CC email: {email!r}")
+            cleaned.append(e)
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        deduped: List[str] = []
+        for e in cleaned:
+            if e not in seen:
+                seen.add(e)
+                deduped.append(e)
+        self.cc_emails = deduped
+
+        if self.recipient_email:
+            self.recipient_email = self.recipient_email.strip().lower()
+
+        # Business rules when scheduled automation is on:
+        if self.enabled and self.type == "schedule":
+            if not self.cron or not self.cron.strip():
+                raise ValueError("cron expression is required when schedule automation is enabled")
+            # Lazy-import to keep schema module light.
+            try:
+                from apscheduler.triggers.cron import CronTrigger  # type: ignore
+                CronTrigger.from_crontab(self.cron.strip())
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(f"Invalid cron expression: {exc}") from exc
+
+            try:
+                from zoneinfo import ZoneInfo
+                ZoneInfo(self.timezone)
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(f"Invalid timezone: {self.timezone}") from exc
+
+            if not self.recipient_email:
+                raise ValueError("recipient_email is required when schedule automation is enabled")
+
+        return self
+
+
+class QualityScheduleResponse(BaseModel):
+    id: Optional[int] = None
+    dataset_id: int
+    enabled: bool = False
+    type: QualityScheduleType = "manual"
+    cron: Optional[str] = None
+    timezone: str = "UTC"
+    recipient_email: Optional[str] = None
+    cc_emails: List[str] = Field(default_factory=list)
+    notify_on_success: bool = True
+    notify_on_failure: bool = True
+    last_run_at: Optional[datetime] = None
+    last_run_status: Optional[str] = None
+    last_error: Optional[str] = None
+    next_run_at: Optional[datetime] = None
+    created_by_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}

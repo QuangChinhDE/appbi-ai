@@ -36,6 +36,8 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+psycopg2://${DB_USER:-appbi}:${DB_PASSWORD:-appbi}@appbi-db:5432/${DB_NAME:-appbi}
       DB_HOST: appbi-db
