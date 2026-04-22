@@ -116,6 +116,11 @@ export function DashboardHtmlImportModal({
   const [draftIsOwned, setDraftIsOwned] = useState(false);
   const [draftTableIdMap, setDraftTableIdMap] = useState<Record<string, number>>({});
   const [preparingDraft, setPreparingDraft] = useState(false);
+  /** Surfaces dataset-level failures (draft prepare crash, whole-batch
+   * validation failure) so the Build button can block with a clear reason —
+   * not just per-chart query errors. */
+  const [datasetPrepError, setDatasetPrepError] = useState<string | null>(null);
+  const [validationFailed, setValidationFailed] = useState(false);
 
   const effectiveDatasetId = draftDatasetId ?? selectedDatasetId;
 
@@ -160,6 +165,8 @@ export function DashboardHtmlImportModal({
       setDraftIsOwned(false);
       setDraftTableIdMap({});
       setPreparingDraft(false);
+      setDatasetPrepError(null);
+      setValidationFailed(false);
       analyzeMutation.reset();
       buildMutation.reset();
       previewSourceMutation.reset();
@@ -336,6 +343,7 @@ export function DashboardHtmlImportModal({
           for (const r of valResp.results) map[r.block_id] = r;
           setValidationResults(map);
           setValidationRan(true);
+          setValidationFailed(false);
           const errorCount = valResp.results.filter((r) => r.status === 'error').length;
           if (errorCount > 0) {
             toast.warning(`${errorCount} chart(s) have query issues. You can use AI to fix them.`);
@@ -344,7 +352,9 @@ export function DashboardHtmlImportModal({
             setSelectedFixBlockIds(new Set(errorBlockIds));
           }
         } catch {
-          // non-blocking — user can still build without validation
+          // Batch validation itself failed (dataset unreachable, 500, …).
+          // Flag it so the Build button blocks with a dataset-level reason.
+          setValidationFailed(true);
         }
       }
     } catch (error) {
@@ -363,6 +373,7 @@ export function DashboardHtmlImportModal({
       for (const r of valResp.results) map[r.block_id] = r;
       setValidationResults(map);
       setValidationRan(true);
+      setValidationFailed(false);
       const errorCount = valResp.results.filter((r) => r.status === 'error').length;
       if (errorCount === 0) {
         toast.success('All chart queries validated successfully.');
@@ -370,6 +381,7 @@ export function DashboardHtmlImportModal({
         toast.warning(`${errorCount} chart(s) have query issues.`);
       }
     } catch (error) {
+      setValidationFailed(true);
       toast.error(getApiErrorMessage(error, 'Validation failed.'));
     }
   };
@@ -433,7 +445,9 @@ export function DashboardHtmlImportModal({
         for (const r of valResp.results) map[r.block_id] = r;
         setValidationResults(map);
         setValidationRan(true);
+        setValidationFailed(false);
       } catch (error) {
+        setValidationFailed(true);
         toast.error(getApiErrorMessage(error, 'Could not re-validate after manual edit.'));
       }
     }
@@ -586,8 +600,10 @@ export function DashboardHtmlImportModal({
         }
         setValidationResults(map);
         setValidationRan(true);
+        setValidationFailed(false);
         setCalculatedFieldsErrors(nextFieldErrors);
       } catch (error) {
+        setValidationFailed(true);
         toast.error(getApiErrorMessage(error, 'Could not re-validate calculated fields.'));
       }
     } else {
@@ -668,6 +684,7 @@ export function DashboardHtmlImportModal({
         for (const r of valResp.results) map[r.block_id] = r;
         setValidationResults(map);
         setValidationRan(true);
+        setValidationFailed(false);
         const errorCount = valResp.results.filter((r) => r.status === 'error').length;
         if (errorCount === 0) {
           toast.success('All chart queries validated successfully after fix.');
@@ -675,6 +692,7 @@ export function DashboardHtmlImportModal({
           toast.warning(`${errorCount} chart(s) still have query issues.`);
         }
       } catch (error) {
+        setValidationFailed(true);
         toast.error(getApiErrorMessage(error, 'Re-validation failed.'));
       }
     }
@@ -711,9 +729,12 @@ export function DashboardHtmlImportModal({
         setDraftDatasetId(resp.dataset_id);
         setDraftTableIdMap(resp.table_id_map || {});
         setDraftIsOwned(resp.is_draft);
+        setDatasetPrepError(null);
         return { datasetId: resp.dataset_id, tableIdMap: resp.table_id_map || {} };
       } catch (error) {
-        toast.error(getApiErrorMessage(error, 'Could not resolve the selected dataset.'));
+        const msg = getApiErrorMessage(error, 'Could not resolve the selected dataset.');
+        toast.error(msg);
+        setDatasetPrepError(msg);
         return null;
       } finally {
         setPreparingDraft(false);
@@ -735,12 +756,15 @@ export function DashboardHtmlImportModal({
       setDraftDatasetId(resp.dataset_id);
       setDraftTableIdMap(resp.table_id_map || {});
       setDraftIsOwned(resp.is_draft);
+      setDatasetPrepError(null);
       if (!options?.silent) {
         toast.success('Draft dataset prepared. Opening the dataset editor…');
       }
       return { datasetId: resp.dataset_id, tableIdMap: resp.table_id_map || {} };
     } catch (error) {
-      toast.error(getApiErrorMessage(error, 'Could not prepare a draft dataset.'));
+      const msg = getApiErrorMessage(error, 'Could not prepare a draft dataset.');
+      toast.error(msg);
+      setDatasetPrepError(msg);
       return null;
     } finally {
       setPreparingDraft(false);
@@ -819,7 +843,26 @@ export function DashboardHtmlImportModal({
   const selectedInvalidBlockIds = includedBlockIds.filter(
     (id) => validationResults[id]?.status === 'error',
   );
-  const hasBlockingErrors = validationRan && selectedInvalidBlockIds.length > 0;
+
+  /** Single source of truth for "why Build is disabled". Covers both
+   * per-chart errors AND dataset-level problems (draft prep crash, whole
+   * validation batch failed, validation never ran with a dataset context). */
+  const buildBlockReason: string | null = (() => {
+    if (datasetPrepError) {
+      return `Dataset preparation failed: ${datasetPrepError}. Fix the source or pick a different dataset before building.`;
+    }
+    if (validationFailed) {
+      return 'Validation could not complete — the dataset may be unreachable or invalid. Resolve the dataset issue and re-validate before building.';
+    }
+    if (validationRan && selectedInvalidBlockIds.length > 0) {
+      return `${selectedInvalidBlockIds.length} selected chart(s) still have errors. Fix them or uncheck to continue.`;
+    }
+    if (analysis && effectiveDatasetId && !validationRan) {
+      return 'Run validation before building so dataset issues can be caught.';
+    }
+    return null;
+  })();
+  const hasBlockingErrors = buildBlockReason !== null;
 
   const handleBuild = async () => {
     if (!analysis) return;
@@ -828,9 +871,7 @@ export function DashboardHtmlImportModal({
       return;
     }
     if (hasBlockingErrors) {
-      toast.error(
-        `Cannot build: ${selectedInvalidBlockIds.length} selected chart(s) still have errors. Fix them or uncheck to continue.`,
-      );
+      toast.error(buildBlockReason || 'Resolve the errors above before building.');
       return;
     }
 
@@ -928,8 +969,8 @@ export function DashboardHtmlImportModal({
           ) : (
             <>
               {hasBlockingErrors && (
-                <span className="text-xs text-red-600 dark:text-red-400 mr-2 self-center">
-                  {selectedInvalidBlockIds.length} selected chart(s) have errors — fix or uncheck to build.
+                <span className="text-xs text-red-600 dark:text-red-400 mr-2 self-center max-w-md">
+                  {buildBlockReason}
                 </span>
               )}
               <Button
@@ -938,11 +979,7 @@ export function DashboardHtmlImportModal({
                 onClick={handleBuild}
                 loading={buildMutation.isPending}
                 disabled={hasBlockingErrors}
-                title={
-                  hasBlockingErrors
-                    ? `Uncheck or fix ${selectedInvalidBlockIds.length} chart(s) with errors before building.`
-                    : undefined
-                }
+                title={hasBlockingErrors ? buildBlockReason || undefined : undefined}
               >
                 Build Dashboard
               </Button>
