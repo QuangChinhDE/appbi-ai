@@ -356,7 +356,7 @@ if [[ "$RESTORE_ONLY" != "true" ]]; then
   TEMP_DUMP_IN_CONTAINER="/tmp/appbi-metadata-migrate.sql"
   echo "Dumping metadata from '$SOURCE_CONTAINER' ($SOURCE_DB_NAME)..." >&2
 
-  DUMP_ARGS=(exec -e "PGPASSWORD=$SOURCE_DB_PASSWORD" "$SOURCE_CONTAINER" pg_dump)
+  DUMP_ARGS=(docker exec -e "PGPASSWORD=$SOURCE_DB_PASSWORD" "$SOURCE_CONTAINER" pg_dump)
   if [[ "$SKIP_CLEAN" != "true" ]]; then
     DUMP_ARGS+=(--clean --if-exists)
   fi
@@ -416,7 +416,7 @@ RESTORE_DUMP_FILE="$(basename "$RESTORE_DUMP_PATH")"
 
 echo "Restoring dump into ${TARGET_HOST}:${TARGET_PORT}/${TARGET_DB_NAME} ..." >&2
 
-RESTORE_ARGS=(run --rm)
+RESTORE_ARGS=(docker run --rm)
 if [[ ${#NETWORK_ARGS[@]} -gt 0 ]]; then
   RESTORE_ARGS+=("${NETWORK_ARGS[@]}")
 fi
@@ -437,7 +437,7 @@ RESTORE_ARGS+=(
 )
 
 if [[ -n "${TARGET_SSLMODE//[[:space:]]/}" ]]; then
-  RESTORE_ARGS=(run --rm)
+  RESTORE_ARGS=(docker run --rm)
   if [[ ${#NETWORK_ARGS[@]} -gt 0 ]]; then
     RESTORE_ARGS+=("${NETWORK_ARGS[@]}")
   fi
