@@ -36,6 +36,7 @@ param(
     [string]$TargetDbUser,
     [string]$TargetDbPassword,
     [string]$TargetDatabaseUrl,
+    [string]$TargetSslMode,
     [string]$TargetNetwork = "appbi-net",
 
     [string]$DumpPath,
@@ -142,6 +143,10 @@ function Parse-DatabaseUrl([string]$rawUrl) {
     $result['User'] = $user
     $result['Password'] = $password
     $result['DbName'] = $uri.AbsolutePath.TrimStart('/')
+    $query = [System.Web.HttpUtility]::ParseQueryString($uri.Query)
+    if ($query['sslmode']) {
+        $result['SslMode'] = $query['sslmode']
+    }
     return $result
 }
 
@@ -286,6 +291,7 @@ try {
     $TargetDbUser = Get-FirstNonEmpty @($TargetDbUser, $targetUrlParts['User'], $envMap['DB_USER'], 'appbi')
     $TargetDbPassword = Get-FirstNonEmpty @($TargetDbPassword, $targetUrlParts['Password'], $envMap['DB_PASSWORD'])
     $TargetDbName = Get-FirstNonEmpty @($TargetDbName, $targetUrlParts['DbName'], $envMap['DB_NAME'], 'appbi')
+    $TargetSslMode = Get-FirstNonEmpty @($TargetSslMode, $targetUrlParts['SslMode'])
 
     if (-not $TargetHost -or -not $TargetDbUser -or -not $TargetDbName) {
         throw "Target connection is incomplete. Set DATABASE_URL in .env or pass -TargetHost/-TargetDbUser/-TargetDbName explicitly."
@@ -309,7 +315,12 @@ try {
 
     Write-Host "Restoring dump into ${TargetHost}:$TargetPort/$TargetDbName ..." -ForegroundColor Cyan
     $restoreArgs = @('run', '--rm') + $networkArgs + @(
-        '-e', "PGPASSWORD=$TargetDbPassword",
+        '-e', "PGPASSWORD=$TargetDbPassword"
+    )
+    if ($TargetSslMode) {
+        $restoreArgs += @('-e', "PGSSLMODE=$TargetSslMode")
+    }
+    $restoreArgs += @(
         '-v', "${resolvedDumpDir}:/work",
         'postgres:16',
         'psql',

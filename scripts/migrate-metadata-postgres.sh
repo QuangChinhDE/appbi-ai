@@ -46,6 +46,7 @@ Options:
   --target-db-user <name>          Override target database user.
   --target-db-password <password>  Override target database password.
   --target-database-url <url>      Override target DATABASE_URL.
+  --target-sslmode <mode>          Override target SSL mode (example: require).
   --target-network <name>          Docker network for restore client. Default: appbi-net
 
   --dump-path <path>               Dump file path. Defaults to .artifacts/appbi-metadata-<timestamp>.sql
@@ -124,6 +125,7 @@ if not raw_url:
 
 normalized = raw_url.replace("postgresql+psycopg2://", "postgresql://", 1)
 parsed = urlparse(normalized)
+query = dict(item.split("=", 1) for item in parsed.query.split("&") if "=" in item)
 
 if parsed.hostname:
     print(f"Host={parsed.hostname}")
@@ -133,6 +135,8 @@ if parsed.username is not None:
     print(f"User={unquote(parsed.username)}")
 if parsed.password is not None:
     print(f"Password={unquote(parsed.password)}")
+if query.get("sslmode"):
+  print(f"SslMode={query['sslmode']}")
 
 db_name = parsed.path.lstrip("/")
 if db_name:
@@ -200,6 +204,7 @@ TARGET_DB_NAME=""
 TARGET_DB_USER=""
 TARGET_DB_PASSWORD=""
 TARGET_DATABASE_URL=""
+TARGET_SSLMODE=""
 TARGET_NETWORK="appbi-net"
 DUMP_PATH=""
 DUMP_ONLY="false"
@@ -264,6 +269,11 @@ while [[ $# -gt 0 ]]; do
     --target-database-url)
       [[ $# -ge 2 ]] || die "Missing value for $1"
       TARGET_DATABASE_URL="$2"
+      shift 2
+      ;;
+    --target-sslmode)
+      [[ $# -ge 2 ]] || die "Missing value for $1"
+      TARGET_SSLMODE="$2"
       shift 2
       ;;
     --target-network)
@@ -377,6 +387,7 @@ fi
 TARGET_DB_USER="$(get_first_non_empty "$TARGET_DB_USER" "$(lookup_key_from_lines "$TARGET_URL_PARTS" User)" "$(read_env_file_value DB_USER "$ENV_FILE")" "appbi" || true)"
 TARGET_DB_PASSWORD="$(get_first_non_empty "$TARGET_DB_PASSWORD" "$(lookup_key_from_lines "$TARGET_URL_PARTS" Password)" "$(read_env_file_value DB_PASSWORD "$ENV_FILE")" || true)"
 TARGET_DB_NAME="$(get_first_non_empty "$TARGET_DB_NAME" "$(lookup_key_from_lines "$TARGET_URL_PARTS" DbName)" "$(read_env_file_value DB_NAME "$ENV_FILE")" "appbi" || true)"
+TARGET_SSLMODE="$(get_first_non_empty "$TARGET_SSLMODE" "$(lookup_key_from_lines "$TARGET_URL_PARTS" SslMode)" || true)"
 
 [[ -n "${TARGET_HOST//[[:space:]]/}" ]] || die "Target host could not be resolved. Set DATABASE_URL in .env or pass --target-host explicitly."
 [[ -n "${TARGET_DB_USER//[[:space:]]/}" ]] || die "Target DB user could not be resolved."
@@ -424,6 +435,29 @@ RESTORE_ARGS+=(
   -d "$TARGET_DB_NAME"
   -f "/work/$RESTORE_DUMP_FILE"
 )
+
+if [[ -n "${TARGET_SSLMODE//[[:space:]]/}" ]]; then
+  RESTORE_ARGS=(run --rm)
+  if [[ ${#NETWORK_ARGS[@]} -gt 0 ]]; then
+    RESTORE_ARGS+=("${NETWORK_ARGS[@]}")
+  fi
+  if [[ ${#EXTRA_DOCKER_ARGS[@]} -gt 0 ]]; then
+    RESTORE_ARGS+=("${EXTRA_DOCKER_ARGS[@]}")
+  fi
+  RESTORE_ARGS+=(
+    -e "PGPASSWORD=$TARGET_DB_PASSWORD"
+    -e "PGSSLMODE=$TARGET_SSLMODE"
+    -v "$RESTORE_DUMP_DIR:/work"
+    postgres:16
+    psql
+    -v ON_ERROR_STOP=1
+    -h "$DOCKER_TARGET_HOST"
+    -p "$TARGET_PORT"
+    -U "$TARGET_DB_USER"
+    -d "$TARGET_DB_NAME"
+    -f "/work/$RESTORE_DUMP_FILE"
+  )
+fi
 
 "${RESTORE_ARGS[@]}" || die "Restore failed."
 
