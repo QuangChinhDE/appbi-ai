@@ -63,12 +63,34 @@ Frontend / Backend -> AI Agent Service
 ```text
 frontend/                Next.js frontend
 backend/                 FastAPI backend
-ai-service/              AI chat service
-ai-agent-service/        AI agent service
+ai-chat/                 AI chat service
+ai-report/               AI agent service
 docker-compose.yml       base runtime
 docker-compose.dev.yml   local development stack
 docker-compose.ai.yml    AI services overlay
 ```
+
+## Runtime-Only Git Scope
+
+This repository is kept focused on the files required to build and run AppBI.
+
+Included in Git for runtime:
+
+- `frontend/`, `backend/`, `ai-chat/`, `ai-report/`
+- `docker-compose*.yml`, `nginx.conf`
+- `.env.example` and other safe environment templates
+- `scripts/` needed for metadata migration and environment setup
+- the root `README.md`
+
+Excluded from Git for runtime hygiene:
+
+- backend tests under `backend/tests/`
+- demo/example assets under `dashboard_example/`
+- internal design / audit / upgrade notes
+- local artifacts under `.artifacts/`
+- helper content under `Skill-AppBI/`
+
+These files may still exist locally on a developer machine, but they are not part of the runtime-focused Git payload.
 
 ## Quick Start
 
@@ -238,6 +260,78 @@ docker compose ps
 docker compose logs -f backend
 docker compose logs -f frontend
 ```
+
+## Run On Another VM
+
+Initial setup on a new VM:
+
+```bash
+git clone https://github.com/QuangChinhDE/appbi-ai.git
+cd appbi-ai
+cp .env.example .env
+```
+
+If the VM runs Windows PowerShell, use:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Then edit `.env` with the values for that VM, especially:
+
+- `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` or `DATABASE_URL`
+- `SECRET_KEY`
+- `DATASOURCE_ENCRYPTION_KEY`
+- `ADMIN_EMAIL`
+- `ADMIN_PASSWORD`
+
+Start the base runtime:
+
+```bash
+docker compose up -d --build backend frontend
+```
+
+If that VM should also run the bundled PostgreSQL:
+
+```bash
+docker compose --profile local-db up -d --build
+```
+
+If that VM should also run AI services:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ai.yml up -d --build backend frontend ai-chat-service ai-agent-service
+```
+
+## Get The Latest Updates On That VM
+
+If the VM has no local edits:
+
+```bash
+git pull --rebase origin master
+docker compose up -d --build backend frontend
+```
+
+If the VM also runs AI services, rebuild with the AI overlay again after pull:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ai.yml up -d --build backend frontend ai-chat-service ai-agent-service
+```
+
+If the VM has local edits that you want to keep temporarily:
+
+```bash
+git stash push -u
+git pull --rebase origin master
+git stash pop
+```
+
+Recommended update flow on every VM:
+
+1. `git pull --rebase origin master`
+2. `docker compose up -d --build ...` for the services used on that VM
+3. `docker compose ps`
+4. `docker compose logs -f backend`
 
 ## Notes
 

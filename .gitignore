@@ -58,7 +58,6 @@ _quarantine/
 # Local large data / one-off bootstrap helpers
 2019-Nov.csv
 _create_ds.py
-README.md
 install-docker-and-run.sh
 *.xlsx
 *.csv
@@ -69,3 +68,9 @@ install-docker-and-run.sh
 Skill-AppBI/
 dashboard_example/
 UI_LINEAR_AUDIT_CHECKLIST.md
+Design System Inspired by Linear.md
+ai-chat/AI_CHAT_SYSTEM_DOC.md
+ai-chat/UPGRADE_PLAN.md
+ai-chat/UPGRADE_PLAN_V2.md
+backend/README.md
+frontend/README.md
