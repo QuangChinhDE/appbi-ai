@@ -32,21 +32,21 @@ export function ModuleOverview({
         : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-3';
 
   return (
-    <div className="grid gap-2.5 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,2fr)]">
-      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
-        <div className="flex items-start gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand/10 text-brand">
-            <Icon className="h-4.5 w-4.5" />
+    <div className="grid gap-2 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1.85fr)]">
+      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+        <div className="flex items-start gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand/10 text-brand">
+            <Icon className="h-4 w-4" />
           </div>
           <div className="min-w-0">
-            <h2 className="text-small text-text-primary font-strong">{title}</h2>
-            <p className="mt-1.5 text-tiny leading-relaxed text-text-secondary">{description}</p>
+            <h2 className="text-label text-text-primary font-strong">{title}</h2>
+            <p className="mt-1 text-[11px] leading-relaxed text-text-secondary">{description}</p>
             {badges.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-1.5">
+              <div className="mt-2 flex flex-wrap gap-1">
                 {badges.map((badge) => (
                   <span
                     key={badge}
-                    className="rounded-full border border-brand/15 bg-brand/8 px-2 py-0.5 text-tiny font-emphasis text-brand"
+                    className="rounded-full border border-brand/15 bg-brand/8 px-1.5 py-px text-[10px] font-emphasis text-brand"
                   >
                     {badge}
                   </span>
@@ -57,12 +57,12 @@ export function ModuleOverview({
         </div>
       </div>
 
-      <div className={`grid gap-2.5 ${statsGridClassName}`}>
+      <div className={`grid gap-2 ${statsGridClassName}`}>
         {stats.map((stat) => (
-          <div key={stat.label} className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
-            <p className="text-tiny uppercase tracking-[0.14em] text-text-quaternary font-emphasis">{stat.label}</p>
-            <div className="mt-2.5 text-xl font-strong text-text-primary">{stat.value}</div>
-            <p className="mt-1 text-tiny text-text-tertiary">{stat.helper}</p>
+          <div key={stat.label} className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+            <p className="text-[10px] uppercase tracking-[0.12em] text-text-quaternary font-emphasis">{stat.label}</p>
+            <div className="mt-1.5 text-lg font-strong text-text-primary">{stat.value}</div>
+            <p className="mt-0.5 text-[11px] text-text-tertiary">{stat.helper}</p>
           </div>
         ))}
       </div>

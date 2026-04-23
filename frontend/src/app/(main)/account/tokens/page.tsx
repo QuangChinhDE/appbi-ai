@@ -55,6 +55,14 @@ type TokenFormState = {
   scopes: Record<string, string>;
 };
 
+type RevealedTokenState = {
+  token: string;
+  tokenId: string;
+  name: string;
+};
+
+const LAST_REVEALED_TOKEN_STORAGE_KEY = 'appbi:last-created-pat';
+
 function buildEmptyScopes(modules: ModuleKey[]): Record<string, string> {
   return Object.fromEntries(modules.map((module) => [module, 'none']));
 }
@@ -88,7 +96,8 @@ export default function PersonalAccessTokensPage() {
   const [expiry, setExpiry] = useState('90');
   const [scopes, setScopes] = useState<Record<string, string>>({});
   const [editForm, setEditForm] = useState<TokenFormState | null>(null);
-  const [revealedToken, setRevealedToken] = useState<string | null>(null);
+  const [revealedTokenState, setRevealedTokenState] = useState<RevealedTokenState | null>(null);
+  const [isRevealedTokenHidden, setIsRevealedTokenHidden] = useState(false);
 
   const { data: tokens = [], isLoading } = useQuery<PersonalAccessTokenRecord[]>({
     queryKey: ['personal-access-tokens'],
@@ -119,6 +128,21 @@ export default function PersonalAccessTokensPage() {
     });
   }, [availableModules]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const storedValue = window.sessionStorage.getItem(LAST_REVEALED_TOKEN_STORAGE_KEY);
+    if (!storedValue) return;
+
+    try {
+      const parsed = JSON.parse(storedValue) as RevealedTokenState;
+      if (parsed?.token && parsed?.tokenId) {
+        setRevealedTokenState(parsed);
+      }
+    } catch {
+      window.sessionStorage.removeItem(LAST_REVEALED_TOKEN_STORAGE_KEY);
+    }
+  }, []);
+
   const createMutation = useMutation({
     mutationFn: () => personalAccessTokensApi.create({
       name,
@@ -126,7 +150,19 @@ export default function PersonalAccessTokensPage() {
       expires_in_days: expiry === 'never' ? null : Number(expiry),
     }),
     onSuccess: (data) => {
-      setRevealedToken(data.token);
+      const nextRevealedTokenState = {
+        token: data.token,
+        tokenId: data.item.id,
+        name: data.item.name,
+      };
+      setRevealedTokenState(nextRevealedTokenState);
+      setIsRevealedTokenHidden(false);
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem(
+          LAST_REVEALED_TOKEN_STORAGE_KEY,
+          JSON.stringify(nextRevealedTokenState),
+        );
+      }
       setName('');
       setExpiry('90');
       setScopes(buildEmptyScopes(availableModules));
@@ -183,9 +219,25 @@ export default function PersonalAccessTokensPage() {
   const editScopeCount = Object.values(editForm?.scopes ?? {}).filter((level) => level && level !== 'none').length;
 
   async function copyRevealedToken() {
-    if (!revealedToken) return;
-    await navigator.clipboard.writeText(revealedToken);
+    if (!revealedTokenState?.token) return;
+    await navigator.clipboard.writeText(revealedTokenState.token);
     toast.success('Token copied');
+  }
+
+  function hideRevealedToken() {
+    setIsRevealedTokenHidden(true);
+  }
+
+  function showRevealedToken() {
+    setIsRevealedTokenHidden(false);
+  }
+
+  function forgetRevealedToken() {
+    setRevealedTokenState(null);
+    setIsRevealedTokenHidden(false);
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.removeItem(LAST_REVEALED_TOKEN_STORAGE_KEY);
+    }
   }
 
   function startEditing(token: PersonalAccessTokenRecord) {
@@ -289,18 +341,33 @@ export default function PersonalAccessTokensPage() {
             </Button>
           </div>
 
-          {revealedToken && (
+          {revealedTokenState && !isRevealedTokenHidden && (
             <div className="mt-5 rounded-lg border border-brand/30 bg-brand/8 p-4">
               <p className="text-label font-emphasis text-text-primary">Copy this token now</p>
               <p className="mt-1 text-caption text-text-tertiary">
-                This secret will not be shown again after you leave this page.
+                This secret stays available in this browser session until you explicitly forget it.
               </p>
               <div className="mt-3 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-3 font-mono text-caption text-text-primary break-all">
-                {revealedToken}
+                {revealedTokenState.token}
               </div>
               <div className="mt-3 flex gap-2">
                 <Button variant="primary" size="sm" onClick={copyRevealedToken}>Copy token</Button>
-                <Button variant="secondary" size="sm" onClick={() => setRevealedToken(null)}>Hide</Button>
+                <Button variant="secondary" size="sm" onClick={hideRevealedToken}>Hide</Button>
+                <Button variant="secondary" size="sm" onClick={forgetRevealedToken}>Forget token</Button>
+              </div>
+            </div>
+          )}
+
+          {revealedTokenState && isRevealedTokenHidden && (
+            <div className="mt-5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-4">
+              <p className="text-label font-emphasis text-text-primary">Last created token is still available</p>
+              <p className="mt-1 text-caption text-text-tertiary">
+                {revealedTokenState.name} is hidden right now, but you can show it again and copy it without creating a new token.
+              </p>
+              <div className="mt-3 flex gap-2">
+                <Button variant="primary" size="sm" onClick={showRevealedToken}>Show token again</Button>
+                <Button variant="secondary" size="sm" onClick={copyRevealedToken}>Copy again</Button>
+                <Button variant="secondary" size="sm" onClick={forgetRevealedToken}>Forget token</Button>
               </div>
             </div>
           )}

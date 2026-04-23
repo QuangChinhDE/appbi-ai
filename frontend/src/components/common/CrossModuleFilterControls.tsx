@@ -67,13 +67,7 @@ export function CrossModuleFilterControls({
   }
 
   return (
-    <div
-      ref={rootRef}
-      className={cn(
-        'flex min-w-0 items-center gap-2 overflow-x-auto whitespace-nowrap pb-1',
-        '[scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden',
-      )}
-    >
+    <div ref={rootRef} className="flex min-w-max items-center gap-2 pb-1">
       {configs.map((config) => {
         const currentValue = filters[config.key];
         const currentLabel = currentValue
@@ -96,7 +90,7 @@ export function CrossModuleFilterControls({
           : matchedOptions;
 
         return (
-          <div key={config.key} className="relative min-w-[180px] max-w-[240px] flex-[0_0_220px]">
+          <div key={config.key} className="relative min-w-[176px] max-w-[220px] flex-[0_0_200px]">
             <button
               type="button"
               aria-label={config.label}

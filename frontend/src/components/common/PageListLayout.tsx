@@ -91,9 +91,9 @@ export function PageListLayout({
       {overview && <div className="mb-4">{overview}</div>}
 
       {showToolbar && (
-        <div className="mb-4 space-y-2.5">
+        <div className="relative z-20 mb-4">
           <div className="flex flex-col gap-2.5 xl:flex-row xl:items-center">
-            <div className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden">
+            <div className="flex min-w-0 flex-1 flex-col gap-2.5 lg:flex-row lg:items-center">
               {searchable && (
                 <div className="min-w-[240px] max-w-xl flex-[0_0_320px]">
                   <Input
@@ -105,9 +105,27 @@ export function PageListLayout({
                   />
                 </div>
               )}
-              {toolbarExtraContent && (
-                <div className="min-w-0 flex-1 overflow-hidden">
-                  {toolbarExtraContent}
+
+              {(toolbarExtraContent || activeFiltersContent) && (
+                <div className="flex min-w-0 flex-1 items-center gap-2.5 lg:min-w-[320px]">
+                  {toolbarExtraContent && (
+                    <div className="relative z-30 flex-shrink-0">
+                      {toolbarExtraContent}
+                    </div>
+                  )}
+
+                  {activeFiltersContent && (
+                    <div
+                      className={cn(
+                        'min-w-0 flex-1 overflow-x-auto whitespace-nowrap',
+                        '[scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden',
+                      )}
+                    >
+                      <div className="flex min-w-max items-center gap-2 pr-1">
+                        {activeFiltersContent}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -145,17 +163,6 @@ export function PageListLayout({
               </div>
             )}
           </div>
-
-          {activeFiltersContent && (
-            <div
-              className={cn(
-                'flex min-w-0 items-center gap-2 overflow-x-auto whitespace-nowrap',
-                '[scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden',
-              )}
-            >
-              {activeFiltersContent}
-            </div>
-          )}
         </div>
       )}
 
