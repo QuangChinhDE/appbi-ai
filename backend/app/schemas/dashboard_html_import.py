@@ -39,6 +39,23 @@ class DashboardHtmlImportAnalyzeResponse(BaseModel):
     ai_meta: Dict[str, Any] = Field(default_factory=dict)
 
 
+class DashboardHtmlImportBatchAnalyzeDocumentResponse(BaseModel):
+    """Analyze result for one HTML document in a batch import."""
+
+    document_id: str
+    filename: Optional[str] = None
+    page_name: str
+    analysis: DashboardHtmlImportAnalyzeResponse
+
+
+class DashboardHtmlImportBatchAnalyzeResponse(BaseModel):
+    """Preview payload returned after analyzing multiple imported HTML documents."""
+
+    suggested_dashboard_name: str
+    document_count: int
+    documents: List[DashboardHtmlImportBatchAnalyzeDocumentResponse] = Field(default_factory=list)
+
+
 class DashboardHtmlImportTypeChange(BaseModel):
     """Tracks when HTML visuals are converted to a supported native chart type."""
 
@@ -60,6 +77,32 @@ class DashboardHtmlImportBuildResponse(BaseModel):
     type_changes: List[DashboardHtmlImportTypeChange] = Field(default_factory=list)
     page_id: str
     page_name: str
+    dataset_id: Optional[int] = None
+    dataset_table_id: Optional[int] = None
+    dataset_table_ids: Optional[Dict[str, int]] = Field(
+        default=None,
+        description="Mapping of source_key to dataset_table_id for multi-file imports.",
+    )
+
+
+class DashboardHtmlImportBatchBuildPageResponse(BaseModel):
+    """Build result for one HTML document/page in a batch import."""
+
+    document_id: str
+    filename: Optional[str] = None
+    page_id: str
+    page_name: str
+    created_chart_count: int
+    type_changes: List[DashboardHtmlImportTypeChange] = Field(default_factory=list)
+
+
+class DashboardHtmlImportBatchBuildResponse(BaseModel):
+    """Result payload after materializing multiple imported HTML documents."""
+
+    dashboard: DashboardResponse
+    dashboard_id: int
+    created_chart_count: int
+    pages: List[DashboardHtmlImportBatchBuildPageResponse] = Field(default_factory=list)
     dataset_id: Optional[int] = None
     dataset_table_id: Optional[int] = None
     dataset_table_ids: Optional[Dict[str, int]] = Field(

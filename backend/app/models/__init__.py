@@ -32,6 +32,7 @@ from app.models.anomaly import (
 )
 from app.models.ai_feedback import AIFeedback
 from app.models.agent_report import AgentReportSpec, AgentReportRun
+from app.models.personal_access_token import PersonalAccessToken
 from app.models.revoked_token import RevokedToken
 from app.models.audit_log import AuditLog, AuditAction, AuditSeverity
 from app.models.report_template import ReportTemplate
@@ -67,6 +68,7 @@ __all__ = [
     "AIFeedback",
     "AgentReportSpec",
     "AgentReportRun",
+    "PersonalAccessToken",
     "RevokedToken",
     "AuditLog",
     "AuditAction",

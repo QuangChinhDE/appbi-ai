@@ -3,6 +3,7 @@ import type { DashboardHtmlSummary, DashboardHtmlSummaryBlock } from '@/types/da
 const BLOCK_KEYWORD_RE = /\b(chart|graph|plot|viz|visual|trend|timeseries|time series|share|mix|breakdown|composition|rank|kpi|metric|summary|table)\b/i;
 const KPI_KEYWORD_RE = /\b(kpi|metric|score|total|avg|average|growth|rate|summary)\b/i;
 const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'meta', 'link', 'head']);
+const APPBI_METADATA_RE = /<script[^>]+type\s*=\s*["']application\/appbi-dashboard["'][^>]*>([\s\S]*?)<\/script>/i;
 
 function normalizeText(value: string | null | undefined, maxLen = 900): string {
   const normalized = String(value ?? '')
@@ -120,6 +121,48 @@ function collectBlocks(root: Element, depth = 0, blocks: HTMLElement[] = []): HT
     }
   });
   return blocks;
+}
+
+function extractEmbeddedAppbiMetadata(html: string): Record<string, any> | null {
+  const match = APPBI_METADATA_RE.exec(String(html ?? ''));
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1]);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, any>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function detectEmbeddedMultiPageImportHtml(html: string): {
+  isMultiPage: boolean;
+  pageCount: number;
+  pageNames: string[];
+} {
+  const embedded = extractEmbeddedAppbiMetadata(html);
+  if (!embedded || String(embedded.version ?? '').trim().toLowerCase() !== 'appbi-import/v2') {
+    return {
+      isMultiPage: false,
+      pageCount: 0,
+      pageNames: [],
+    };
+  }
+
+  const pages = Array.isArray(embedded.pages) ? embedded.pages : [];
+  const pageNames = pages
+    .map((page, index) => {
+      if (!page || typeof page !== 'object') return `Page ${index + 1}`;
+      const title = String((page as Record<string, unknown>).title ?? (page as Record<string, unknown>).name ?? '').trim();
+      return title || `Page ${index + 1}`;
+    });
+
+  return {
+    isMultiPage: pageNames.length > 1,
+    pageCount: pageNames.length,
+    pageNames,
+  };
 }
 
 export function summarizeImportedDashboardHtml(html: string): DashboardHtmlSummary {

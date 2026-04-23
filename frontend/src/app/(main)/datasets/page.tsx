@@ -3,7 +3,7 @@
  */
 'use client';
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Plus,
@@ -16,9 +16,13 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
+import { CrossModuleFilterControls } from '@/components/common/CrossModuleFilterControls';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { Modal } from '@/components/common/Modal';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
+import { useCharts } from '@/hooks/use-charts';
+import { useDashboards } from '@/hooks/use-dashboards';
+import { useDataSources } from '@/hooks/use-datasources';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
@@ -36,19 +40,45 @@ import {
   useDeleteDataset,
   type CreateDatasetInput,
 } from '@/hooks/use-datasets';
+import {
+  buildCatalogRelationIndex,
+  getRelatedFilterLabel,
+  matchesRelatedFilters,
+} from '@/lib/module-relations';
+
+type DatasetListFilters = {
+  docs?: string;
+  access?: string;
+  owner?: string;
+  dashboard?: string;
+  chart?: string;
+  source?: string;
+};
 
 export default function DatasetsPage() {
   const router = useRouter();
   const { t, locale } = useI18n();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [listFilters, setListFilters] = useState<{ docs?: string; access?: string; owner?: string }>({});
+  const [listFilters, setListFilters] = useState<DatasetListFilters>({});
 
   const { data: datasets, isLoading, error } = useDatasets();
+  const { data: dashboards = [] } = useDashboards();
+  const { data: charts = [] } = useCharts({ limit: 500, sort: 'updated_desc' });
+  const { data: dataSources = [] } = useDataSources();
   const { data: permData } = usePermissions();
   const canEdit = hasPermission(permData?.permissions, 'datasets', 'edit');
   const createMutation = useCreateDataset();
   const deleteMutation = useDeleteDataset();
   const datasetItems = datasets ?? [];
+  const relationIndex = useMemo(
+    () => buildCatalogRelationIndex({
+      dashboards,
+      charts,
+      datasets: datasetItems,
+      datasources: dataSources,
+    }),
+    [dashboards, charts, datasetItems, dataSources],
+  );
   const documentedDatasets = datasetItems.filter((dataset) => Boolean(dataset.description?.trim())).length;
   const updatedThisWeek = datasetItems.filter((dataset) => {
     const updatedAt = new Date(dataset.updated_at).getTime();
@@ -62,7 +92,14 @@ export default function DatasetsPage() {
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const activeListFilterCount = Object.values(listFilters).filter(Boolean).length;
 
-  const toggleListFilter = (key: 'docs' | 'access' | 'owner', value: string) => {
+  const setListFilter = (key: keyof DatasetListFilters, value?: string) => {
+    setListFilters((current) => ({
+      ...current,
+      [key]: value || undefined,
+    }));
+  };
+
+  const toggleListFilter = (key: keyof DatasetListFilters, value: string) => {
     setListFilters((current) => ({
       ...current,
       [key]: current[key] === value ? undefined : value,
@@ -206,6 +243,22 @@ export default function DatasetsPage() {
         loadingText={t('common.loading')}
         searchPlaceholder={t('common.search')}
         defaultView="list"
+        toolbarExtra={(
+          <CrossModuleFilterControls
+            index={relationIndex}
+            configs={[
+              { key: 'dashboard', label: 'Dashboard', placeholder: 'All dashboards' },
+              { key: 'chart', label: 'Chart', placeholder: 'All charts' },
+              { key: 'source', label: 'Source', placeholder: 'All sources' },
+            ]}
+            filters={{
+              dashboard: listFilters.dashboard,
+              chart: listFilters.chart,
+              source: listFilters.source,
+            }}
+            onChange={(key, value) => setListFilter(key as keyof DatasetListFilters, value)}
+          />
+        )}
         activeFilters={activeListFilterCount > 0 ? (
           <>
             {listFilters.docs && (
@@ -233,6 +286,21 @@ export default function DatasetsPage() {
                 Owner: {listFilters.owner.split('@')[0]}
               </FilterTag>
             )}
+            {listFilters.dashboard && (
+              <FilterTag tone="brand" active onClick={() => setListFilter('dashboard')}>
+                Dashboard: {getRelatedFilterLabel(relationIndex, 'dashboard', listFilters.dashboard)}
+              </FilterTag>
+            )}
+            {listFilters.chart && (
+              <FilterTag tone="brand" active onClick={() => setListFilter('chart')}>
+                Chart: {getRelatedFilterLabel(relationIndex, 'chart', listFilters.chart)}
+              </FilterTag>
+            )}
+            {listFilters.source && (
+              <FilterTag tone="brand" active onClick={() => setListFilter('source')}>
+                Source: {getRelatedFilterLabel(relationIndex, 'source', listFilters.source)}
+              </FilterTag>
+            )}
             <Button variant="ghost" size="xs" onClick={clearListFilters}>
               Clear filters
             </Button>
@@ -243,6 +311,7 @@ export default function DatasetsPage() {
           const needle = filterText.trim().toLowerCase();
           const filtered = (datasets ?? []).filter((dataset: any) => {
             const docState = dataset.description?.trim() ? 'documented' : 'undocumented';
+            const relations = relationIndex.datasetRelationsById.get(dataset.id);
             const matchesSearch =
               needle.length === 0 ||
               dataset.name.toLowerCase().includes(needle) ||
@@ -253,7 +322,12 @@ export default function DatasetsPage() {
               matchesSearch &&
               (!listFilters.docs || docState === listFilters.docs) &&
               (!listFilters.access || (dataset.user_permission ?? 'none') === listFilters.access) &&
-              (!listFilters.owner || dataset.owner_email === listFilters.owner)
+              (!listFilters.owner || dataset.owner_email === listFilters.owner) &&
+              matchesRelatedFilters(relations, {
+                dashboard: listFilters.dashboard,
+                chart: listFilters.chart,
+                source: listFilters.source,
+              })
             );
           });
 

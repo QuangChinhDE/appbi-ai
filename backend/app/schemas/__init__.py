@@ -94,8 +94,18 @@ from app.schemas.agent_report import (
     AgentReportRunUpdate,
     AgentReportRunResponse,
 )
+from app.schemas.personal_access_token import (
+    PersonalAccessTokenCreate,
+    PersonalAccessTokenCreateResponse,
+    PersonalAccessTokenResponse,
+    PersonalAccessTokenUpdate,
+)
 from app.schemas.dashboard_html_import import (
     DashboardHtmlImportAnalyzeResponse,
+    DashboardHtmlImportBatchAnalyzeDocumentResponse,
+    DashboardHtmlImportBatchAnalyzeResponse,
+    DashboardHtmlImportBatchBuildPageResponse,
+    DashboardHtmlImportBatchBuildResponse,
     DashboardHtmlImportBuildResponse,
     DashboardHtmlImportTypeChange,
 )
@@ -192,4 +202,19 @@ __all__ = [
     "AgentReportRunCreate",
     "AgentReportRunUpdate",
     "AgentReportRunResponse",
+
+    # Personal access tokens
+    "PersonalAccessTokenCreate",
+    "PersonalAccessTokenCreateResponse",
+    "PersonalAccessTokenResponse",
+    "PersonalAccessTokenUpdate",
+
+    # Dashboard HTML import
+    "DashboardHtmlImportAnalyzeResponse",
+    "DashboardHtmlImportBatchAnalyzeDocumentResponse",
+    "DashboardHtmlImportBatchAnalyzeResponse",
+    "DashboardHtmlImportBatchBuildPageResponse",
+    "DashboardHtmlImportBatchBuildResponse",
+    "DashboardHtmlImportBuildResponse",
+    "DashboardHtmlImportTypeChange",
 ]

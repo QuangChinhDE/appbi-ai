@@ -9,6 +9,7 @@ Token is extracted from:
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Sequence, Tuple
 
 from fastapi import Depends, HTTPException, Request, status
@@ -18,6 +19,12 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.personal_access_tokens import (
+    PAT_TOKEN_PREFIX,
+    parse_personal_access_token,
+    verify_personal_access_token_secret,
+)
+from app.models.personal_access_token import PersonalAccessToken
 from app.models.user import User, UserStatus
 from app.models.resource_share import ResourceShare, ResourceType
 from app.models.revoked_token import RevokedToken
@@ -28,6 +35,20 @@ _dep_logger = _logging.getLogger(__name__)
 _bearer = HTTPBearer(auto_error=False)
 
 ALGORITHM = "HS256"
+AUTH_TOKEN_KIND_ATTR = "_auth_token_kind"
+PERSONAL_ACCESS_TOKEN_ID_ATTR = "_personal_access_token_id"
+PERSONAL_ACCESS_TOKEN_NAME_ATTR = "_personal_access_token_name"
+TOKEN_PERMISSION_CAPS_ATTR = "_permission_caps"
+MODULE_KEYS = (
+    "data_sources",
+    "datasets",
+    "explore_charts",
+    "dashboards",
+    "report_templates",
+    "ai_chat",
+    "ai_agent",
+    "settings",
+)
 
 
 def _extract_token(
@@ -35,6 +56,12 @@ def _extract_token(
     credentials: HTTPAuthorizationCredentials | None,
 ) -> str | None:
     """Extract JWT from cookie or Authorization header."""
+    if (
+        credentials
+        and credentials.scheme.lower() == "bearer"
+        and credentials.credentials.startswith(PAT_TOKEN_PREFIX)
+    ):
+        return credentials.credentials
     # 1. httpOnly cookie (preferred for browser clients)
     token = request.cookies.get("access_token")
     if token:
@@ -43,6 +70,71 @@ def _extract_token(
     if credentials and credentials.scheme.lower() == "bearer":
         return credentials.credentials
     return None
+
+
+def _stamp_auth_context(
+    user: User,
+    *,
+    token_kind: str,
+    permission_caps: dict[str, str] | None = None,
+    token_id: uuid.UUID | None = None,
+    token_name: str | None = None,
+) -> User:
+    setattr(user, AUTH_TOKEN_KIND_ATTR, token_kind)
+    if permission_caps:
+        setattr(user, TOKEN_PERMISSION_CAPS_ATTR, permission_caps)
+    if token_id is not None:
+        setattr(user, PERSONAL_ACCESS_TOKEN_ID_ATTR, token_id)
+    if token_name:
+        setattr(user, PERSONAL_ACCESS_TOKEN_NAME_ATTR, token_name)
+    return user
+
+
+def _authenticate_personal_access_token(token: str, db: Session) -> User:
+    parsed = parse_personal_access_token(token)
+    if not parsed:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token_id, secret = parsed
+    pat = db.query(PersonalAccessToken).filter(PersonalAccessToken.id == token_id).first()
+    now = datetime.now(timezone.utc)
+
+    if not pat or pat.revoked_at or (pat.expires_at and pat.expires_at <= now):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not verify_personal_access_token_secret(secret, pat.secret_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if pat.last_used_at is None or (now - pat.last_used_at).total_seconds() >= 60:
+        pat.last_used_at = now
+        db.commit()
+
+    user = db.query(User).filter(User.id == pat.owner_id).first()
+    if not user or user.status != UserStatus.ACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or deactivated",
+        )
+
+    return _stamp_auth_context(
+        user,
+        token_kind="personal_access_token",
+        permission_caps=pat.scopes or {},
+        token_id=pat.id,
+        token_name=pat.name,
+    )
 
 
 async def get_current_user(
@@ -58,6 +150,8 @@ async def get_current_user(
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if token.startswith(PAT_TOKEN_PREFIX):
+        return _authenticate_personal_access_token(token, db)
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str | None = payload.get("sub")
@@ -82,7 +176,7 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or deactivated",
         )
-    return user
+    return _stamp_auth_context(user, token_kind="session")
 
 
 # Module permission levels — order matters for comparison
@@ -109,7 +203,46 @@ def _normalize_permissions(user: User) -> dict:
     if "report_templates" not in normalized:
         normalized["report_templates"] = normalized.get("dashboards", "none")
 
+    caps = _get_permission_caps(user)
+    if caps:
+        for module in MODULE_KEYS:
+            normalized[module] = _min_permission_level(
+                normalized.get(module, "none"),
+                caps.get(module, "none"),
+            )
+
     return normalized
+
+
+def _sanitize_permission_level(level: str | None) -> str:
+    text = str(level or "none").strip().lower()
+    return text if text in LEVEL_ORDER else "none"
+
+
+def _min_permission_level(left: str | None, right: str | None) -> str:
+    left_level = _sanitize_permission_level(left)
+    right_level = _sanitize_permission_level(right)
+    if LEVEL_ORDER[left_level] <= LEVEL_ORDER[right_level]:
+        return left_level
+    return right_level
+
+
+def _get_permission_caps(user: User) -> dict[str, str]:
+    caps = getattr(user, TOKEN_PERMISSION_CAPS_ATTR, None)
+    if not isinstance(caps, dict):
+        return {}
+    return {
+        module: _sanitize_permission_level(level)
+        for module, level in caps.items()
+        if isinstance(module, str)
+    }
+
+
+def _cap_effective_permission(user: User, module: str, level: str) -> str:
+    caps = _get_permission_caps(user)
+    if not caps:
+        return _sanitize_permission_level(level)
+    return _min_permission_level(level, caps.get(module, "none"))
 
 
 def require_permission(module: str, min_level: str = "view"):
@@ -174,12 +307,12 @@ def get_effective_permission(db: Session, user: User, resource, module: str) -> 
     if module_level == "none":
         return "none"
     if module_level == "full":
-        return "full"
+        return _cap_effective_permission(user, module, "full")
 
     # Owner check
     owner_id = getattr(resource, "owner_id", None)
     if owner_id is not None and str(owner_id) == str(user.id):
-        return "full"
+        return _cap_effective_permission(user, module, "full")
 
     # Share check
     class_name = type(resource).__name__
@@ -198,8 +331,8 @@ def get_effective_permission(db: Session, user: User, resource, module: str) -> 
             share_level = share.permission.value  # "view" or "edit"
             # Effective = min(module_level, share_level)
             if LEVEL_ORDER.get(share_level, 0) <= LEVEL_ORDER.get(module_level, 0):
-                return share_level
-            return module_level
+                return _cap_effective_permission(user, module, share_level)
+            return _cap_effective_permission(user, module, module_level)
 
     # Module access alone is not enough for object-level reads.
     # List endpoints must opt into broader visibility explicitly.
@@ -228,7 +361,10 @@ def batch_effective_permissions(
     if module_level == "full":
         for r in resources:
             result[r.id] = "full"
-        return result
+        return {
+            resource_id: _cap_effective_permission(user, module, level)
+            for resource_id, level in result.items()
+        }
 
     # Pre-fetch all shares for these resources in one query
     if not resources:
@@ -254,15 +390,15 @@ def batch_effective_permissions(
     for r in resources:
         owner_id = getattr(r, "owner_id", None)
         if owner_id is not None and str(owner_id) == str(user.id):
-            result[r.id] = "full"
+            result[r.id] = _cap_effective_permission(user, module, "full")
             continue
 
         share_level = share_lookup.get(str(r.id))
         if share_level:
             if LEVEL_ORDER.get(share_level, 0) <= LEVEL_ORDER.get(module_level, 0):
-                result[r.id] = share_level
+                result[r.id] = _cap_effective_permission(user, module, share_level)
             else:
-                result[r.id] = module_level
+                result[r.id] = _cap_effective_permission(user, module, module_level)
             continue
 
         result[r.id] = "none"

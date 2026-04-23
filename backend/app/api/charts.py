@@ -140,6 +140,7 @@ def _stamp_chart_catalog_fields(current_user: User, items: list[Chart]) -> None:
         item.dataset_id = getattr(dataset_obj, "id", None)
         item.dataset_name = getattr(dataset_obj, "name", None)
         item.dataset_table_name = getattr(dataset_table, "display_name", None)
+        item.datasource_id = getattr(dataset_table, "datasource_id", None)
         item.is_owned_by_current_user = is_owned
         item.is_shared = not is_owned
 

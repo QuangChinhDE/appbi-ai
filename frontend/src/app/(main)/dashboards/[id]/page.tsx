@@ -1306,6 +1306,13 @@ export default function DashboardDetailPage() {
             targetDashboardId={dashboardId}
             targetDashboardName={dashboard.name}
             onBuilt={(result) => {
+              if ('pages' in result) {
+                const lastPage = result.pages[result.pages.length - 1];
+                if (lastPage?.page_id) {
+                  setCurrentPageId(lastPage.page_id);
+                }
+                return;
+              }
               setCurrentPageId(result.page_id);
             }}
           />

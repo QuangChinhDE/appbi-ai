@@ -178,6 +178,54 @@ export const authApi = {
   },
 };
 
+export interface PersonalAccessTokenRecord {
+  id: string;
+  name: string;
+  token_hint: string;
+  scopes: Record<string, string>;
+  last_used_at: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PersonalAccessTokenCreateResponse {
+  token: string;
+  item: PersonalAccessTokenRecord;
+}
+
+export interface PersonalAccessTokenUpsertPayload {
+  name: string;
+  scopes: Record<string, string>;
+  expires_in_days?: number | null;
+}
+
+export const personalAccessTokensApi = {
+  list: async (): Promise<PersonalAccessTokenRecord[]> => {
+    const response = await apiClient.get('/auth/personal-access-tokens/');
+    return response.data;
+  },
+
+  create: async (payload: PersonalAccessTokenUpsertPayload): Promise<PersonalAccessTokenCreateResponse> => {
+    const response = await apiClient.post('/auth/personal-access-tokens/', payload);
+    return response.data;
+  },
+
+  update: async (tokenId: string, payload: PersonalAccessTokenUpsertPayload): Promise<PersonalAccessTokenRecord> => {
+    const response = await apiClient.put(`/auth/personal-access-tokens/${tokenId}`, payload);
+    return response.data;
+  },
+
+  revoke: async (tokenId: string) => {
+    await apiClient.delete(`/auth/personal-access-tokens/${tokenId}`);
+  },
+
+  deletePermanently: async (tokenId: string) => {
+    await apiClient.delete(`/auth/personal-access-tokens/${tokenId}/permanent`);
+  },
+};
+
 // Permissions API
 export const permissionsApi = {
   getMatrix: async () => {

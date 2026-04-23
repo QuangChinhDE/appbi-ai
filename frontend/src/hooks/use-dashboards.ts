@@ -9,6 +9,8 @@ import { sortByUpdatedAtDesc } from '@/lib/sort';
 import { Dashboard, DashboardCreate, DashboardUpdate, DashboardChartLayout } from '@/types/api';
 import type {
   DashboardHtmlImportAnalyzeInput,
+  DashboardHtmlImportBatchAnalyzeInput,
+  DashboardHtmlImportBatchBuildInput,
   DashboardHtmlImportBuildInput,
   DashboardHtmlImportFixChartInput,
   DashboardHtmlImportPreviewCalculatedInput,
@@ -139,11 +141,29 @@ export const useAnalyzeDashboardHtmlImport = () => {
   });
 };
 
+export const useAnalyzeDashboardHtmlImportBatch = () => {
+  return useMutation({
+    mutationFn: (input: DashboardHtmlImportBatchAnalyzeInput) => dashboardApi.analyzeHtmlImportBatch(input),
+  });
+};
+
 export const useBuildDashboardHtmlImport = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (input: DashboardHtmlImportBuildInput) => dashboardApi.buildHtmlImport(input),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['dashboards'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboards', result.dashboard_id] });
+    },
+  });
+};
+
+export const useBuildDashboardHtmlImportBatch = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: DashboardHtmlImportBatchBuildInput) => dashboardApi.buildHtmlImportBatch(input),
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['dashboards'] });
       queryClient.invalidateQueries({ queryKey: ['dashboards', result.dashboard_id] });

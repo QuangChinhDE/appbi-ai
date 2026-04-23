@@ -21,8 +21,9 @@ from app.services.dataset_calendar_service import (
     remove_calendar_table,
 )
 from app.services.dataset_table_sql_service import (
+    build_dataset_table_alias_base_from_values,
+    build_physical_table_default_display_name,
     build_dataset_table_reference_alias_map,
-    normalize_dataset_table_sql_alias,
     rewrite_dataset_table_aliases_in_sql,
 )
 from app.services.dataset_dictionary_service import normalize_dictionary_payload
@@ -108,13 +109,19 @@ def _validate_unique_table_display_name(
     *,
     dataset_id: int,
     display_name: str,
+    source_kind: str | None = None,
+    source_table_name: str | None = None,
     exclude_table_id: int | None = None,
 ) -> str:
     normalized_name = _normalize_table_display_name(display_name)
     if not normalized_name:
         raise ValueError("Table name cannot be empty.")
 
-    candidate_alias = normalize_dataset_table_sql_alias(normalized_name, fallback="table")
+    candidate_alias = build_dataset_table_alias_base_from_values(
+        display_name=normalized_name,
+        source_kind=source_kind,
+        source_table_name=source_table_name,
+    )
     sibling_tables = (
         db.query(DatasetTable)
         .filter(DatasetTable.dataset_id == dataset_id)
@@ -131,9 +138,11 @@ def _validate_unique_table_display_name(
         if sibling_name.casefold() == normalized_name.casefold():
             raise ValueError(f"Table name '{normalized_name}' already exists in this dataset.")
 
-        sibling_alias = normalize_dataset_table_sql_alias(
-            sibling_name,
-            fallback=f"table_{sibling.id}",
+        sibling_alias = build_dataset_table_alias_base_from_values(
+            display_name=sibling_name,
+            source_kind=getattr(sibling, "source_kind", None),
+            source_table_name=getattr(sibling, "source_table_name", None),
+            table_id=getattr(sibling, "id", None),
         )
         if sibling_alias == candidate_alias:
             raise ValueError(
@@ -436,16 +445,16 @@ class DatasetCRUDService:
         # Create display name if not provided
         display_name = table.display_name
         if not display_name:
-            # Extract table name from source (e.g., "public.orders" -> "Orders")
-            if table.source_table_name:
-                table_name = table.source_table_name.split('.')[-1]
-                display_name = table_name.replace('_', ' ').title()
+            if table.source_kind == "physical_table" and table.source_table_name:
+                display_name = build_physical_table_default_display_name(table.source_table_name)
             else:
                 display_name = "Untitled Table"
         display_name = _validate_unique_table_display_name(
             db,
             dataset_id=dataset_id,
             display_name=display_name,
+            source_kind=table.source_kind,
+            source_table_name=table.source_table_name,
         )
 
         db_table = DatasetTable(
@@ -496,6 +505,8 @@ class DatasetCRUDService:
                 db,
                 dataset_id=db_table.dataset_id,
                 display_name=update_data.get("display_name"),
+                source_kind=db_table.source_kind,
+                source_table_name=db_table.source_table_name,
                 exclude_table_id=table_id,
             )
         display_name_changed = (

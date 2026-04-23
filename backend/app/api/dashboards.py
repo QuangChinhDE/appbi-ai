@@ -6,7 +6,7 @@ import secrets
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -35,6 +35,8 @@ from app.schemas import (
     PublicLinkUpdate,
     PublicLinkResponse,
     DashboardHtmlImportAnalyzeResponse,
+    DashboardHtmlImportBatchAnalyzeResponse,
+    DashboardHtmlImportBatchBuildResponse,
     DashboardHtmlImportBuildResponse,
 )
 # Commented out - using hybrid approach with filters_config JSON field instead
@@ -53,7 +55,9 @@ from app.services.dashboard_html_import_service import (
     _load_uploaded_multi_source_profiles,
     ai_fix_chart_plan,
     analyze_dashboard_html_import,
+    analyze_dashboard_html_import_batch,
     build_dashboard_from_import as build_dashboard_from_html_import_service,
+    build_dashboard_from_import_batch,
     create_manual_dataset_from_excel_source,
     create_manual_dataset_from_multi_excel_source,
     parse_uploaded_source_sheets,
@@ -97,6 +101,71 @@ def _normalize_import_target_mode(raw_value: str) -> str:
     if normalized not in {"new_dashboard", "append_to_dashboard"}:
         raise HTTPException(status_code=400, detail="target_mode must be new_dashboard or append_to_dashboard.")
     return normalized
+
+
+def _normalize_batch_html_documents(raw_value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw_value, list) or not raw_value:
+        raise HTTPException(status_code=400, detail="html_documents_json must decode to a non-empty array.")
+
+    normalized_documents: List[Dict[str, Any]] = []
+    for index, raw_document in enumerate(raw_value, start=1):
+        if not isinstance(raw_document, dict):
+            raise HTTPException(status_code=400, detail=f"html_documents_json[{index - 1}] must be an object.")
+
+        document_id = str(raw_document.get("document_id") or f"document-{index}").strip()
+        html_content = str(raw_document.get("html_content") or "").strip()
+        if not html_content:
+            raise HTTPException(status_code=400, detail=f"html_documents_json[{index - 1}].html_content is required.")
+        if len(html_content.encode("utf-8")) > MAX_HTML_IMPORT_SIZE:
+            raise HTTPException(status_code=400, detail=f"HTML document '{document_id}' is too large (max 2 MB).")
+
+        html_summary = raw_document.get("html_summary")
+        if html_summary is not None and not isinstance(html_summary, dict):
+            raise HTTPException(status_code=400, detail=f"html_documents_json[{index - 1}].html_summary must be an object.")
+
+        normalized_documents.append(
+            {
+                "document_id": document_id,
+                "filename": str(raw_document.get("filename") or "").strip() or None,
+                "page_name": str(raw_document.get("page_name") or "").strip() or None,
+                "html_text": html_content,
+                "html_summary": html_summary,
+            }
+        )
+
+    return normalized_documents
+
+
+def _normalize_batch_build_documents(raw_value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw_value, list) or not raw_value:
+        raise HTTPException(status_code=400, detail="analyses_json must decode to a non-empty array.")
+
+    normalized_documents: List[Dict[str, Any]] = []
+    for index, raw_document in enumerate(raw_value, start=1):
+        if not isinstance(raw_document, dict):
+            raise HTTPException(status_code=400, detail=f"analyses_json[{index - 1}] must be an object.")
+
+        analysis = raw_document.get("analysis")
+        if not isinstance(analysis, dict):
+            raise HTTPException(status_code=400, detail=f"analyses_json[{index - 1}].analysis must be an object.")
+
+        included_block_ids = raw_document.get("included_block_ids")
+        if included_block_ids is None:
+            included_block_ids = []
+        if not isinstance(included_block_ids, list) or any(not isinstance(item, str) for item in included_block_ids):
+            raise HTTPException(status_code=400, detail=f"analyses_json[{index - 1}].included_block_ids must be a string array.")
+
+        normalized_documents.append(
+            {
+                "document_id": str(raw_document.get("document_id") or f"document-{index}").strip(),
+                "filename": str(raw_document.get("filename") or "").strip() or None,
+                "page_name": str(raw_document.get("page_name") or "").strip() or None,
+                "analysis": analysis,
+                "included_block_ids": included_block_ids,
+            }
+        )
+
+    return normalized_documents
 
 
 @router.get("/", response_model=List[DashboardResponse])
@@ -228,6 +297,97 @@ async def analyze_html_dashboard_import(
         raise HTTPException(status_code=500, detail=f"Failed to analyze HTML import: {exc}") from exc
 
 
+@router.post("/import-html/analyze-batch", response_model=DashboardHtmlImportBatchAnalyzeResponse)
+async def analyze_html_dashboard_import_batch_route(
+    html_documents_json: str = Form(...),
+    source_mode: str = Form(...),
+    dataset_id: Optional[int] = Form(None),
+    dataset_table_id: Optional[int] = Form(None),
+    selected_sheet_name: Optional[str] = Form(None),
+    selected_source_key: Optional[str] = Form(None),
+    excel_file: Optional[UploadFile] = File(None),
+    excel_files: List[UploadFile] = File(default=[]),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("dashboards", "edit")),
+):
+    """Analyze multiple imported HTML documents and map each to a dashboard page."""
+    parsed_documents = _parse_optional_json_form_field(html_documents_json, "html_documents_json")
+    normalized_documents = _normalize_batch_html_documents(parsed_documents)
+    normalized_source_mode = _normalize_import_source_mode(source_mode)
+
+    try:
+        if normalized_source_mode == "existing_dataset":
+            if dataset_id is not None:
+                primary_profile, all_profiles = _load_existing_dataset_profiles(
+                    db, current_user=current_user, dataset_id=dataset_id,
+                )
+                if len(all_profiles) == 1:
+                    return analyze_dashboard_html_import_batch(
+                        documents=normalized_documents,
+                        source_profile=primary_profile,
+                    )
+                return analyze_dashboard_html_import_batch(
+                    documents=normalized_documents,
+                    source_profile=primary_profile,
+                    all_source_profiles=all_profiles,
+                )
+            if dataset_table_id is not None:
+                source_profile = _load_existing_source_profile(
+                    db,
+                    current_user=current_user,
+                    dataset_table_id=dataset_table_id,
+                )
+                return analyze_dashboard_html_import_batch(
+                    documents=normalized_documents,
+                    source_profile=source_profile,
+                )
+            raise HTTPException(status_code=400, detail="dataset_id or dataset_table_id is required for existing_dataset.")
+
+        uploaded_files: List[UploadFile] = [f for f in excel_files if f and f.filename]
+        if not uploaded_files and excel_file is not None:
+            uploaded_files = [excel_file]
+        if not uploaded_files:
+            raise HTTPException(status_code=400, detail="excel_file(s) required for upload_excel.")
+
+        file_pairs: List[tuple] = []
+        for uf in uploaded_files:
+            file_bytes = await uf.read()
+            if len(file_bytes) == 0:
+                raise HTTPException(status_code=400, detail=f"Uploaded file '{uf.filename}' is empty.")
+            if len(file_bytes) > MAX_SOURCE_UPLOAD_SIZE:
+                raise HTTPException(status_code=400, detail=f"File '{uf.filename}' is too large (max 10 MB).")
+            file_pairs.append((file_bytes, uf.filename))
+
+        if len(file_pairs) == 1:
+            source_profile = _load_uploaded_excel_source_profile(
+                file_bytes=file_pairs[0][0],
+                filename=file_pairs[0][1],
+                sheet_name=selected_sheet_name,
+            )
+            return analyze_dashboard_html_import_batch(
+                documents=normalized_documents,
+                source_profile=source_profile,
+            )
+
+        all_profiles, primary_key = _load_uploaded_multi_source_profiles(
+            files=file_pairs,
+            primary_source_key=selected_source_key or None,
+        )
+        primary_profile = all_profiles.get(primary_key, next(iter(all_profiles.values())))
+        return analyze_dashboard_html_import_batch(
+            documents=normalized_documents,
+            source_profile=primary_profile,
+            all_source_profiles=all_profiles,
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to analyze batch HTML dashboard import")
+        raise HTTPException(status_code=500, detail=f"Failed to analyze HTML batch import: {exc}") from exc
+
+
 @router.post(
     "/import-html/build",
     response_model=DashboardHtmlImportBuildResponse,
@@ -332,6 +492,97 @@ async def build_html_dashboard_import(
     except Exception as exc:
         logger.exception("Failed to build HTML dashboard import")
         raise HTTPException(status_code=500, detail=f"Failed to build dashboard import: {exc}") from exc
+
+
+@router.post(
+    "/import-html/build-batch",
+    response_model=DashboardHtmlImportBatchBuildResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def build_html_dashboard_import_batch_route(
+    analyses_json: str = Form(...),
+    source_mode: str = Form(...),
+    target_mode: str = Form(...),
+    dashboard_name: Optional[str] = Form(None),
+    dataset_id: Optional[int] = Form(None),
+    dataset_table_id: Optional[int] = Form(None),
+    prepared_dataset_id: Optional[int] = Form(None),
+    selected_sheet_name: Optional[str] = Form(None),
+    target_dashboard_id: Optional[int] = Form(None),
+    excel_file: Optional[UploadFile] = File(None),
+    excel_files: List[UploadFile] = File(default=[]),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("dashboards", "edit")),
+):
+    """Materialize multiple analyzed HTML documents into multiple dashboard pages."""
+    parsed_documents = _parse_optional_json_form_field(analyses_json, "analyses_json")
+    normalized_documents = _normalize_batch_build_documents(parsed_documents)
+    normalized_source_mode = _normalize_import_source_mode(source_mode)
+    normalized_target_mode = _normalize_import_target_mode(target_mode)
+
+    effective_source_mode = normalized_source_mode
+    effective_dataset_id = dataset_id
+    if prepared_dataset_id is not None:
+        effective_source_mode = "existing_dataset"
+        effective_dataset_id = prepared_dataset_id
+
+    source_bytes: bytes | None = None
+    source_filename: str | None = None
+    source_file_pairs: List[tuple] | None = None
+
+    if effective_source_mode == "upload_excel":
+        uploaded_files: List[UploadFile] = [f for f in excel_files if f and f.filename]
+        if not uploaded_files and excel_file is not None:
+            uploaded_files = [excel_file]
+        if not uploaded_files:
+            raise HTTPException(status_code=400, detail="excel_file(s) required for upload_excel.")
+
+        if len(uploaded_files) == 1:
+            source_bytes = await uploaded_files[0].read()
+            source_filename = uploaded_files[0].filename
+            if len(source_bytes) == 0:
+                raise HTTPException(status_code=400, detail="Uploaded source file is empty.")
+            if len(source_bytes) > MAX_SOURCE_UPLOAD_SIZE:
+                raise HTTPException(status_code=400, detail="Source file is too large (max 10 MB).")
+        else:
+            source_file_pairs = []
+            for uf in uploaded_files:
+                file_bytes = await uf.read()
+                if len(file_bytes) == 0:
+                    raise HTTPException(status_code=400, detail=f"Uploaded file '{uf.filename}' is empty.")
+                if len(file_bytes) > MAX_SOURCE_UPLOAD_SIZE:
+                    raise HTTPException(status_code=400, detail=f"File '{uf.filename}' is too large (max 10 MB).")
+                source_file_pairs.append((file_bytes, uf.filename))
+
+    try:
+        result = build_dashboard_from_import_batch(
+            db,
+            current_user=current_user,
+            documents=normalized_documents,
+            source_mode=effective_source_mode,
+            dataset_table_id=dataset_table_id,
+            dataset_id=effective_dataset_id,
+            source_bytes=source_bytes,
+            source_filename=source_filename,
+            source_files=source_file_pairs,
+            selected_sheet_name=selected_sheet_name,
+            dashboard_name=dashboard_name,
+            target_mode=normalized_target_mode,
+            target_dashboard_id=target_dashboard_id,
+        )
+        if prepared_dataset_id is not None:
+            draft_row = db.query(Dataset).filter(Dataset.id == prepared_dataset_id).first()
+            if draft_row is not None and bool(getattr(draft_row, "is_draft", False)):
+                draft_row.is_draft = False
+                db.commit()
+        return result
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to build batch HTML dashboard import")
+        raise HTTPException(status_code=500, detail=f"Failed to build dashboard batch import: {exc}") from exc
 
 
 @router.post("/import-html/source-preview")
@@ -526,7 +777,7 @@ def cancel_html_import_draft(
             ds_row = db.query(DataSource).filter(DataSource.id == ds_id).first()
             if not ds_row:
                 continue
-            if ds_row.type != DataSourceType.manual:
+            if ds_row.type != DataSourceType.MANUAL:
                 continue
             if not str(ds_row.name or "").startswith("[Dashboard Import]"):
                 continue

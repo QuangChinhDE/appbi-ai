@@ -106,6 +106,19 @@ export interface DashboardHtmlImportAnalyzeResponse {
   ai_meta: DashboardHtmlImportAiMeta;
 }
 
+export interface DashboardHtmlImportBatchAnalyzeDocument {
+  document_id: string;
+  filename?: string | null;
+  page_name: string;
+  analysis: DashboardHtmlImportAnalyzeResponse;
+}
+
+export interface DashboardHtmlImportBatchAnalyzeResponse {
+  suggested_dashboard_name: string;
+  document_count: number;
+  documents: DashboardHtmlImportBatchAnalyzeDocument[];
+}
+
 export interface DashboardHtmlImportTypeChange {
   block_id?: string | null;
   title?: string | null;
@@ -126,9 +139,45 @@ export interface DashboardHtmlImportBuildResponse {
   dataset_table_ids?: Record<string, number> | null;
 }
 
+export interface DashboardHtmlImportBatchBuildPage {
+  document_id: string;
+  filename?: string | null;
+  page_id: string;
+  page_name: string;
+  created_chart_count: number;
+  type_changes: DashboardHtmlImportTypeChange[];
+}
+
+export interface DashboardHtmlImportBatchBuildResponse {
+  dashboard: Dashboard;
+  dashboard_id: number;
+  created_chart_count: number;
+  pages: DashboardHtmlImportBatchBuildPage[];
+  dataset_id?: number | null;
+  dataset_table_id?: number | null;
+  dataset_table_ids?: Record<string, number> | null;
+}
+
 export interface DashboardHtmlImportAnalyzeInput {
   htmlContent: string;
   htmlSummary: Record<string, any>;
+  sourceMode: DashboardHtmlImportSourceMode;
+  datasetId?: number | null;
+  datasetTableId?: number | null;
+  selectedSheetName?: string | null;
+  selectedSourceKey?: string | null;
+  excelFile?: File | null;
+  excelFiles?: File[];
+}
+
+export interface DashboardHtmlImportBatchAnalyzeInput {
+  documents: Array<{
+    documentId?: string;
+    filename?: string | null;
+    pageName?: string | null;
+    htmlContent: string;
+    htmlSummary: Record<string, any>;
+  }>;
   sourceMode: DashboardHtmlImportSourceMode;
   datasetId?: number | null;
   datasetTableId?: number | null;
@@ -149,6 +198,26 @@ export interface DashboardHtmlImportBuildInput {
   selectedSheetName?: string | null;
   targetDashboardId?: number | null;
   includedBlockIds: string[];
+  excelFile?: File | null;
+  excelFiles?: File[];
+}
+
+export interface DashboardHtmlImportBatchBuildInput {
+  documents: Array<{
+    documentId: string;
+    filename?: string | null;
+    pageName?: string | null;
+    analysis: DashboardHtmlImportAnalyzeResponse;
+    includedBlockIds: string[];
+  }>;
+  sourceMode: DashboardHtmlImportSourceMode;
+  targetMode: DashboardHtmlImportTargetMode;
+  dashboardName?: string;
+  datasetId?: number | null;
+  datasetTableId?: number | null;
+  preparedDatasetId?: number | null;
+  selectedSheetName?: string | null;
+  targetDashboardId?: number | null;
   excelFile?: File | null;
   excelFiles?: File[];
 }

@@ -3,10 +3,11 @@
  */
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Plus, Database, Edit, TestTube, Trash2, Clock, Search, Share2 } from 'lucide-react';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
+import { CrossModuleFilterControls } from '@/components/common/CrossModuleFilterControls';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { ShareDialog } from '@/components/common/ShareDialog';
@@ -19,6 +20,8 @@ import { FilterTag } from '@/components/ui/FilterTag';
 import { useI18n } from '@/providers/LanguageProvider';
 import { toast } from '@/lib/toast';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
+import { useCharts } from '@/hooks/use-charts';
+import { useDashboards } from '@/hooks/use-dashboards';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import {
   useDataSources,
@@ -26,8 +29,14 @@ import {
   useTestDataSource,
   useExecuteQuery,
 } from '@/hooks/use-datasources';
+import { useDatasets } from '@/hooks/use-datasets';
 import DataSourceList from '@/components/datasources/DataSourceList';
 import QueryRunner from '@/components/datasources/QueryRunner';
+import {
+  buildCatalogRelationIndex,
+  getRelatedFilterLabel,
+  matchesRelatedFilters,
+} from '@/lib/module-relations';
 import type { DataSource, QueryExecuteResponse } from '@/types/api';
 
 const DS_TYPE_LABEL: Record<string, string> = {
@@ -36,6 +45,15 @@ const DS_TYPE_LABEL: Record<string, string> = {
 };
 
 type View = 'list' | 'query';
+
+type DataSourceListFilters = {
+  type?: string;
+  access?: string;
+  owner?: string;
+  dashboard?: string;
+  dataset?: string;
+  chart?: string;
+};
 
 function extractQueryErrorMessage(error: any, fallback = 'Failed to run query'): string {
   const detail = error?.response?.data?.detail;
@@ -48,7 +66,7 @@ export default function DataSourcesPage() {
   const router = useRouter();
   const { t } = useI18n();
   const [currentView, setCurrentView] = useState<View>('list');
-  const [listFilters, setListFilters] = useState<{ type?: string; access?: string; owner?: string }>({});
+  const [listFilters, setListFilters] = useState<DataSourceListFilters>({});
   const [sourceToDelete, setSourceToDelete] = useState<DataSource | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingSource, setIsDeletingSource] = useState(false);
@@ -63,15 +81,34 @@ export default function DataSourcesPage() {
   const canShare = hasPermission(permData?.permissions, 'data_sources', 'full');
 
   const { data: dataSources = [], isLoading } = useDataSources();
+  const { data: dashboards = [] } = useDashboards();
+  const { data: charts = [] } = useCharts({ limit: 500, sort: 'updated_desc' });
+  const { data: datasets = [] } = useDatasets();
   const deleteMutation = useDeleteDataSource();
   const testMutation = useTestDataSource();
   const executeMutation = useExecuteQuery();
+  const relationIndex = useMemo(
+    () => buildCatalogRelationIndex({
+      dashboards,
+      charts,
+      datasets,
+      datasources: dataSources,
+    }),
+    [dashboards, charts, datasets, dataSources],
+  );
   const distinctSourceTypes = new Set(dataSources.map((source) => source.type)).size;
   const googleSheetsSources = dataSources.filter((source) => source.type === 'google_sheets').length;
   const manualSources = dataSources.filter((source) => source.type === 'manual').length;
   const activeListFilterCount = Object.values(listFilters).filter(Boolean).length;
 
-  const toggleListFilter = (key: 'type' | 'access' | 'owner', value: string) => {
+  const setListFilter = (key: keyof DataSourceListFilters, value?: string) => {
+    setListFilters((current) => ({
+      ...current,
+      [key]: value || undefined,
+    }));
+  };
+
+  const toggleListFilter = (key: keyof DataSourceListFilters, value: string) => {
     setListFilters((current) => ({
       ...current,
       [key]: current[key] === value ? undefined : value,
@@ -250,6 +287,22 @@ export default function DataSourcesPage() {
         loadingText={t('common.loading')}
         searchPlaceholder={t('common.search')}
         defaultView="list"
+        toolbarExtra={(
+          <CrossModuleFilterControls
+            index={relationIndex}
+            configs={[
+              { key: 'dashboard', label: 'Dashboard', placeholder: 'All dashboards' },
+              { key: 'dataset', label: 'Dataset', placeholder: 'All datasets' },
+              { key: 'chart', label: 'Chart', placeholder: 'All charts' },
+            ]}
+            filters={{
+              dashboard: listFilters.dashboard,
+              dataset: listFilters.dataset,
+              chart: listFilters.chart,
+            }}
+            onChange={(key, value) => setListFilter(key as keyof DataSourceListFilters, value)}
+          />
+        )}
         activeFilters={activeListFilterCount > 0 ? (
           <>
             {listFilters.type && (
@@ -273,6 +326,21 @@ export default function DataSourcesPage() {
                 Owner: {listFilters.owner.split('@')[0]}
               </FilterTag>
             )}
+            {listFilters.dashboard && (
+              <FilterTag tone="brand" active onClick={() => setListFilter('dashboard')}>
+                Dashboard: {getRelatedFilterLabel(relationIndex, 'dashboard', listFilters.dashboard)}
+              </FilterTag>
+            )}
+            {listFilters.dataset && (
+              <FilterTag tone="brand" active onClick={() => setListFilter('dataset')}>
+                Dataset: {getRelatedFilterLabel(relationIndex, 'dataset', listFilters.dataset)}
+              </FilterTag>
+            )}
+            {listFilters.chart && (
+              <FilterTag tone="brand" active onClick={() => setListFilter('chart')}>
+                Chart: {getRelatedFilterLabel(relationIndex, 'chart', listFilters.chart)}
+              </FilterTag>
+            )}
             <Button variant="ghost" size="xs" onClick={clearListFilters}>
               Clear filters
             </Button>
@@ -282,6 +350,7 @@ export default function DataSourcesPage() {
         {({ viewMode, filterText }) => {
           const needle = filterText.trim().toLowerCase();
           const filtered = dataSources.filter((source) => {
+            const relations = relationIndex.sourceRelationsById.get(source.id);
             const matchesSearch =
               needle.length === 0 ||
               source.name.toLowerCase().includes(needle) ||
@@ -293,7 +362,12 @@ export default function DataSourcesPage() {
               matchesSearch &&
               (!listFilters.type || source.type === listFilters.type) &&
               (!listFilters.access || (source.user_permission ?? 'none') === listFilters.access) &&
-              (!listFilters.owner || source.owner_email === listFilters.owner)
+              (!listFilters.owner || source.owner_email === listFilters.owner) &&
+              matchesRelatedFilters(relations, {
+                dashboard: listFilters.dashboard,
+                dataset: listFilters.dataset,
+                chart: listFilters.chart,
+              })
             );
           });
 
@@ -336,7 +410,7 @@ export default function DataSourcesPage() {
                       onShare={canShare ? (ds) => setShareSource(ds) : undefined}
                       isDeleting={deleteMutation.isPending ? deleteMutation.variables : null}
                       activeFilters={listFilters}
-                      onFilterClick={(key, value) => toggleListFilter(key as 'type' | 'access' | 'owner', value)}
+                      onFilterClick={(key, value) => toggleListFilter(key as keyof DataSourceListFilters, value)}
                       selectedIds={canEdit ? selectedIds : undefined}
                       onToggleSelect={canEdit ? toggleSelect : undefined}
                       onToggleSelectAll={canEdit ? toggleSelectAll : undefined}

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Plus, LayoutDashboard, Clock, Eye, Trash2, Search, Globe, Share2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
@@ -9,6 +9,7 @@ import { useDashboards, useCreateDashboard, useDeleteDashboard } from '@/hooks/u
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { DashboardList } from '@/components/dashboards/DashboardList';
+import { CrossModuleFilterControls } from '@/components/common/CrossModuleFilterControls';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
@@ -23,14 +24,31 @@ import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlI
 import { Button, IconButton } from '@/components/ui/Button';
 import { FilterTag } from '@/components/ui/FilterTag';
 import { Input, Textarea, FieldGroup } from '@/components/ui/Input';
+import { useCharts } from '@/hooks/use-charts';
+import { useDataSources } from '@/hooks/use-datasources';
+import { useDatasets } from '@/hooks/use-datasets';
+import {
+  buildCatalogRelationIndex,
+  getRelatedFilterLabel,
+  matchesRelatedFilters,
+} from '@/lib/module-relations';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { Dashboard } from '@/types/api';
+
+type DashboardListFilters = {
+  state?: string;
+  access?: string;
+  owner?: string;
+  dataset?: string;
+  chart?: string;
+  source?: string;
+};
 
 export default function DashboardsPage() {
   const router = useRouter();
   const { t, locale } = useI18n();
   const [isCreating, setIsCreating] = useState(false);
-  const [listFilters, setListFilters] = useState<{ state?: string; access?: string; owner?: string }>({});
+  const [listFilters, setListFilters] = useState<DashboardListFilters>({});
   const [newDashboardName, setNewDashboardName] = useState('');
   const [newDashboardDescription, setNewDashboardDescription] = useState('');
   const [dashboardToDelete, setDashboardToDelete] = useState<{ id: number; name: string } | null>(null);
@@ -43,11 +61,23 @@ export default function DashboardsPage() {
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   const { data: dashboards, isLoading } = useDashboards();
+  const { data: charts = [] } = useCharts({ limit: 500, sort: 'updated_desc' });
+  const { data: datasets = [] } = useDatasets();
+  const { data: dataSources = [] } = useDataSources();
   const { data: permData } = usePermissions();
   const canEdit = hasPermission(permData?.permissions, 'dashboards', 'edit');
   const createMutation = useCreateDashboard();
   const deleteMutation = useDeleteDashboard();
   const dashboardItems = dashboards ?? [];
+  const relationIndex = useMemo(
+    () => buildCatalogRelationIndex({
+      dashboards: dashboardItems,
+      charts,
+      datasets,
+      datasources: dataSources,
+    }),
+    [dashboardItems, charts, datasets, dataSources],
+  );
   const totalChartLinks = dashboardItems.reduce(
     (sum, dashboard) => sum + (dashboard.dashboard_charts?.length || 0),
     0,
@@ -58,7 +88,14 @@ export default function DashboardsPage() {
     return Number.isFinite(updatedAt) && Date.now() - updatedAt <= 7 * 24 * 60 * 60 * 1000;
   }).length;
 
-  const toggleListFilter = (key: 'state' | 'access' | 'owner', value: string) => {
+  const setListFilter = (key: keyof DashboardListFilters, value?: string) => {
+    setListFilters((current) => ({
+      ...current,
+      [key]: value || undefined,
+    }));
+  };
+
+  const toggleListFilter = (key: keyof DashboardListFilters, value: string) => {
     setListFilters((current) => ({
       ...current,
       [key]: current[key] === value ? undefined : value,
@@ -191,6 +228,22 @@ export default function DashboardsPage() {
         loadingText={t('common.loading')}
         searchPlaceholder={t('common.search')}
         defaultView="list"
+        toolbarExtra={(
+          <CrossModuleFilterControls
+            index={relationIndex}
+            configs={[
+              { key: 'dataset', label: 'Dataset', placeholder: 'All datasets' },
+              { key: 'chart', label: 'Chart', placeholder: 'All charts' },
+              { key: 'source', label: 'Source', placeholder: 'All sources' },
+            ]}
+            filters={{
+              dataset: listFilters.dataset,
+              chart: listFilters.chart,
+              source: listFilters.source,
+            }}
+            onChange={(key, value) => setListFilter(key as keyof DashboardListFilters, value)}
+          />
+        )}
         activeFilters={activeListFilterCount > 0 ? (
           <>
             {listFilters.state && (
@@ -218,6 +271,21 @@ export default function DashboardsPage() {
                 Owner: {listFilters.owner.split('@')[0]}
               </FilterTag>
             )}
+            {listFilters.dataset && (
+              <FilterTag tone="brand" active onClick={() => setListFilter('dataset')}>
+                Dataset: {getRelatedFilterLabel(relationIndex, 'dataset', listFilters.dataset)}
+              </FilterTag>
+            )}
+            {listFilters.chart && (
+              <FilterTag tone="brand" active onClick={() => setListFilter('chart')}>
+                Chart: {getRelatedFilterLabel(relationIndex, 'chart', listFilters.chart)}
+              </FilterTag>
+            )}
+            {listFilters.source && (
+              <FilterTag tone="brand" active onClick={() => setListFilter('source')}>
+                Source: {getRelatedFilterLabel(relationIndex, 'source', listFilters.source)}
+              </FilterTag>
+            )}
             <Button variant="ghost" size="xs" onClick={clearListFilters}>
               Clear filters
             </Button>
@@ -229,6 +297,7 @@ export default function DashboardsPage() {
           const filtered = (dashboards ?? []).filter((dashboard) => {
             const chartState = (dashboard.dashboard_charts?.length || 0) > 0 ? 'linked' : 'empty';
             const accessState = dashboard.user_permission ?? 'none';
+            const relations = relationIndex.dashboardRelationsById.get(dashboard.id);
             const matchesSearch =
               needle.length === 0 ||
               dashboard.name.toLowerCase().includes(needle) ||
@@ -239,7 +308,12 @@ export default function DashboardsPage() {
               matchesSearch &&
               (!listFilters.state || chartState === listFilters.state) &&
               (!listFilters.access || accessState === listFilters.access) &&
-              (!listFilters.owner || dashboard.owner_email === listFilters.owner)
+              (!listFilters.owner || dashboard.owner_email === listFilters.owner) &&
+              matchesRelatedFilters(relations, {
+                dataset: listFilters.dataset,
+                chart: listFilters.chart,
+                source: listFilters.source,
+              })
             );
           });
 
@@ -347,7 +421,7 @@ export default function DashboardsPage() {
                       onShare={(dashboard) => setShareDash(dashboard)}
                       deletingId={isDeletingDashboard ? dashboardToDelete?.id : undefined}
                       activeFilters={listFilters}
-                      onFilterClick={(key, value) => toggleListFilter(key as 'state' | 'access' | 'owner', value)}
+                      onFilterClick={(key, value) => toggleListFilter(key as keyof DashboardListFilters, value)}
                       selectedIds={canEdit ? selectedIds : undefined}
                       onToggleSelect={canEdit ? toggleSelect : undefined}
                       onToggleSelectAll={canEdit ? toggleSelectAll : undefined}

@@ -29,7 +29,9 @@ import { Button } from '@/components/ui/Button';
 import { FieldGroup, Input, Select, Textarea } from '@/components/ui/Input';
 import {
   useAnalyzeDashboardHtmlImport,
+  useAnalyzeDashboardHtmlImportBatch,
   useBuildDashboardHtmlImport,
+  useBuildDashboardHtmlImportBatch,
   useCancelDashboardHtmlImportDraft,
   useFixDashboardHtmlImportChartPlan,
   usePrepareDashboardHtmlImportDraft,
@@ -37,10 +39,12 @@ import {
   useValidateDashboardHtmlImportPlans,
 } from '@/hooks/use-dashboards';
 import { useDatasets, useDatasetTables, useTablePreview } from '@/hooks/use-datasets';
-import { summarizeImportedDashboardHtml } from '@/lib/dashboard-html-import';
+import { detectEmbeddedMultiPageImportHtml, summarizeImportedDashboardHtml } from '@/lib/dashboard-html-import';
 import { toast } from '@/lib/toast';
 import type {
   DashboardHtmlImportAnalyzeResponse,
+  DashboardHtmlImportBatchAnalyzeResponse,
+  DashboardHtmlImportBatchBuildResponse,
   DashboardHtmlImportBuildResponse,
   DashboardHtmlImportCalculatedField,
   DashboardHtmlImportChartPlan,
@@ -50,13 +54,22 @@ import type {
   DashboardHtmlImportValidationResult,
 } from '@/types/dashboard-html-import';
 
+type DashboardHtmlImportBuiltResult = DashboardHtmlImportBuildResponse | DashboardHtmlImportBatchBuildResponse;
+
+type HtmlImportBatchDocumentInput = {
+  documentId: string;
+  filename: string;
+  pageName: string;
+  htmlContent: string;
+};
+
 interface DashboardHtmlImportModalProps {
   isOpen: boolean;
   onClose: () => void;
   targetMode: DashboardHtmlImportTargetMode;
   targetDashboardId?: number;
   targetDashboardName?: string;
-  onBuilt?: (result: DashboardHtmlImportBuildResponse) => void;
+  onBuilt?: (result: DashboardHtmlImportBuiltResult) => void;
 }
 
 function getApiErrorMessage(error: unknown, fallback: string): string {
@@ -75,6 +88,10 @@ function ChartTypeBadge({ value }: { value: string }) {
   );
 }
 
+function stripHtmlExtension(filename: string): string {
+  return filename.replace(/\.(html?|xhtml)$/i, '').trim();
+}
+
 export function DashboardHtmlImportModal({
   isOpen,
   onClose,
@@ -91,6 +108,7 @@ export function DashboardHtmlImportModal({
   const [step, setStep] = useState<'configure' | 'preview'>('configure');
   const [htmlInput, setHtmlInput] = useState('');
   const [htmlFilename, setHtmlFilename] = useState('');
+  const [htmlDocuments, setHtmlDocuments] = useState<HtmlImportBatchDocumentInput[]>([]);
   const [sourceMode, setSourceMode] = useState<DashboardHtmlImportSourceMode>('existing_dataset');
   const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(null);
   const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
@@ -100,6 +118,8 @@ export function DashboardHtmlImportModal({
   const [activeUploadSheetName, setActiveUploadSheetName] = useState('');
   const [buildName, setBuildName] = useState('');
   const [analysis, setAnalysis] = useState<DashboardHtmlImportAnalyzeResponse | null>(null);
+  const [batchAnalysis, setBatchAnalysis] = useState<DashboardHtmlImportBatchAnalyzeResponse | null>(null);
+  const [activeBatchDocumentId, setActiveBatchDocumentId] = useState('');
   const [includedBlockIds, setIncludedBlockIds] = useState<string[]>([]);
   const [validationResults, setValidationResults] = useState<Record<string, DashboardHtmlImportValidationResult>>({});
   const [validationRan, setValidationRan] = useState(false);
@@ -134,7 +154,9 @@ export function DashboardHtmlImportModal({
     { enabled: isOpen && effectiveDatasetId !== null && selectedTableId !== null },
   );
   const analyzeMutation = useAnalyzeDashboardHtmlImport();
+  const analyzeBatchMutation = useAnalyzeDashboardHtmlImportBatch();
   const buildMutation = useBuildDashboardHtmlImport();
+  const buildBatchMutation = useBuildDashboardHtmlImportBatch();
   const previewSourceMutation = usePreviewDashboardHtmlImportSource();
   const validateMutation = useValidateDashboardHtmlImportPlans();
   const fixChartMutation = useFixDashboardHtmlImportChartPlan();
@@ -146,6 +168,7 @@ export function DashboardHtmlImportModal({
       setStep('configure');
       setHtmlInput('');
       setHtmlFilename('');
+      setHtmlDocuments([]);
       setSourceMode('existing_dataset');
       setSelectedDatasetId(null);
       setSelectedTableId(null);
@@ -155,6 +178,8 @@ export function DashboardHtmlImportModal({
       setActiveUploadSheetName('');
       setBuildName('');
       setAnalysis(null);
+      setBatchAnalysis(null);
+      setActiveBatchDocumentId('');
       setIncludedBlockIds([]);
       setValidationResults({});
       setValidationRan(false);
@@ -170,12 +195,14 @@ export function DashboardHtmlImportModal({
       setValidationFailed(false);
       pendingFocusRevalidationRef.current = false;
       analyzeMutation.reset();
+      analyzeBatchMutation.reset();
       buildMutation.reset();
+      buildBatchMutation.reset();
       previewSourceMutation.reset();
       validateMutation.reset();
       fixChartMutation.reset();
     }
-  }, [analyzeMutation, buildMutation, isOpen, previewSourceMutation, validateMutation, fixChartMutation]);
+  }, [analyzeBatchMutation, analyzeMutation, buildBatchMutation, buildMutation, isOpen, previewSourceMutation, validateMutation, fixChartMutation]);
 
   useEffect(() => {
     if (!effectiveDatasetId) {
@@ -199,6 +226,13 @@ export function DashboardHtmlImportModal({
   );
   const selectedPlanCount = includedBlockIds.length;
   const totalPlanCount = analysis?.chart_plans.length ?? 0;
+  const isBatchInputMode = htmlDocuments.length > 1;
+  const activeBatchDocument = useMemo(
+    () => batchAnalysis?.documents.find((document) => document.document_id === activeBatchDocumentId)
+      ?? batchAnalysis?.documents[0]
+      ?? null,
+    [activeBatchDocumentId, batchAnalysis],
+  );
   const activePreview = sourcePreviews[activePreviewFilename] ?? null;
   const sourcePreviewFilenames = useMemo(
     () => Object.keys(sourcePreviews),
@@ -217,16 +251,70 @@ export function DashboardHtmlImportModal({
     return `${activePreviewFilename}::${activeUploadSheetName}`;
   }, [activePreviewFilename, activeUploadSheetName]);
 
-  const handleHtmlFileChange = async (file: File | null) => {
-    if (!file) return;
+  const handleHtmlFilesChange = async (files: File[]) => {
+    if (files.length === 0) return;
     try {
-      const text = await file.text();
-      setHtmlInput(text);
-      setHtmlFilename(file.name);
-      toast.success(`Loaded HTML from ${file.name}`);
+      if (files.length === 1) {
+        const [file] = files;
+        const text = await file.text();
+        setHtmlInput(text);
+        setHtmlFilename(file.name);
+        setHtmlDocuments([]);
+        setBatchAnalysis(null);
+        setActiveBatchDocumentId('');
+        toast.success(`Loaded HTML from ${file.name}`);
+        return;
+      }
+
+      const loadedDocuments = await Promise.all(files.map(async (file, index) => ({
+        documentId: `html-${Date.now()}-${index + 1}`,
+        filename: file.name,
+        pageName: stripHtmlExtension(file.name) || `Imported Page ${index + 1}`,
+        htmlContent: await file.text(),
+      })));
+      setHtmlDocuments(loadedDocuments);
+      setHtmlInput('');
+      setHtmlFilename(`${loadedDocuments.length} HTML files`);
+      setBatchAnalysis(null);
+      setActiveBatchDocumentId('');
+      toast.success(`Loaded ${loadedDocuments.length} HTML files for batch import.`);
     } catch {
-      toast.error('Could not read HTML file.');
+      toast.error('Could not read one or more HTML files.');
     }
+  };
+
+  const handleRemoveHtmlDocument = (documentId: string) => {
+    setHtmlDocuments((current) => {
+      const next = current.filter((document) => document.documentId !== documentId);
+      if (next.length === 1) {
+        setHtmlInput(next[0].htmlContent);
+        setHtmlFilename(next[0].filename);
+        setBatchAnalysis(null);
+        setActiveBatchDocumentId('');
+        return [];
+      }
+      if (next.length === 0) {
+        setHtmlInput('');
+        setHtmlFilename('');
+        setBatchAnalysis(null);
+        setActiveBatchDocumentId('');
+      }
+      return next;
+    });
+  };
+
+  const handleUpdateBatchPageName = (documentId: string, pageName: string) => {
+    setBatchAnalysis((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        documents: current.documents.map((document) => (
+          document.document_id === documentId
+            ? { ...document, page_name: pageName }
+            : document
+        )),
+      };
+    });
   };
 
   /** If we already prepared a draft for the previous source-file set, drop it
@@ -289,17 +377,70 @@ export function DashboardHtmlImportModal({
   };
 
   const handleAnalyze = async () => {
-    const trimmedHtml = htmlInput.trim();
-    if (!trimmedHtml) {
-      toast.error('HTML import content is required.');
-      return;
-    }
     if (sourceMode === 'existing_dataset' && !selectedDatasetId) {
       toast.error('Select a dataset to map the HTML into native charts.');
       return;
     }
     if (sourceMode === 'upload_excel' && sourceFiles.length === 0) {
       toast.error('Upload at least one Excel or CSV source file for this import.');
+      return;
+    }
+
+    const trimmedHtml = htmlInput.trim();
+    const embeddedMultiPage = !isBatchInputMode && trimmedHtml
+      ? detectEmbeddedMultiPageImportHtml(trimmedHtml)
+      : { isMultiPage: false, pageCount: 0, pageNames: [] };
+    const shouldUseBatchAnalyze = isBatchInputMode || embeddedMultiPage.isMultiPage;
+
+    if (shouldUseBatchAnalyze) {
+      if (!isBatchInputMode && !trimmedHtml) {
+        toast.error('HTML import content is required.');
+        return;
+      }
+
+      const batchDocuments = isBatchInputMode
+        ? htmlDocuments.map((document) => ({
+          documentId: document.documentId,
+          filename: document.filename,
+          pageName: document.pageName,
+          htmlContent: document.htmlContent,
+          htmlSummary: summarizeImportedDashboardHtml(document.htmlContent),
+        }))
+        : [{
+          documentId: 'html-1',
+          filename: htmlFilename || null,
+          pageName: embeddedMultiPage.pageNames[0] || stripHtmlExtension(htmlFilename) || 'Imported Page 1',
+          htmlContent: trimmedHtml,
+          htmlSummary: summarizeImportedDashboardHtml(trimmedHtml),
+        }];
+
+      try {
+        const result = await analyzeBatchMutation.mutateAsync({
+          documents: batchDocuments,
+          sourceMode,
+          datasetId: sourceMode === 'existing_dataset' ? selectedDatasetId : null,
+          selectedSheetName: sourceMode === 'upload_excel' && sourceFiles.length === 1 ? activeUploadSheetName : null,
+          selectedSourceKey: sourceMode === 'upload_excel' && sourceFiles.length > 1 ? activeSourceKey : null,
+          excelFile: sourceMode === 'upload_excel' && sourceFiles.length === 1 ? sourceFiles[0] : null,
+          excelFiles: sourceMode === 'upload_excel' && sourceFiles.length > 1 ? sourceFiles : undefined,
+        });
+        const resolvedBuildName = buildName.trim() || result.suggested_dashboard_name;
+        setBatchAnalysis(result);
+        setActiveBatchDocumentId(result.documents[0]?.document_id ?? '');
+        setBuildName(resolvedBuildName);
+        setAnalysis(null);
+        setValidationResults({});
+        setValidationRan(false);
+        setSelectedFixBlockIds(new Set());
+        setStep('preview');
+      } catch (error) {
+        toast.error(getApiErrorMessage(error, 'Could not analyze imported HTML files.'));
+      }
+      return;
+    }
+
+    if (!trimmedHtml) {
+      toast.error('HTML import content is required.');
       return;
     }
 
@@ -727,7 +868,7 @@ export function DashboardHtmlImportModal({
         const resp = await prepareDraftMutation.mutateAsync({
           sourceMode: 'existing_dataset',
           datasetId: selectedDatasetId,
-          dashboardName: options?.dashboardName || buildName || analysis?.suggested_dashboard_name || null,
+          dashboardName: options?.dashboardName || buildName || analysis?.suggested_dashboard_name || batchAnalysis?.suggested_dashboard_name || null,
         });
         setDraftDatasetId(resp.dataset_id);
         setDraftTableIdMap(resp.table_id_map || {});
@@ -752,7 +893,7 @@ export function DashboardHtmlImportModal({
       setPreparingDraft(true);
       const resp = await prepareDraftMutation.mutateAsync({
         sourceMode: 'upload_excel',
-        dashboardName: options?.dashboardName || buildName || analysis?.suggested_dashboard_name || null,
+        dashboardName: options?.dashboardName || buildName || analysis?.suggested_dashboard_name || batchAnalysis?.suggested_dashboard_name || null,
         excelFile: sourceFiles.length === 1 ? sourceFiles[0] : null,
         excelFiles: sourceFiles.length > 1 ? sourceFiles : undefined,
       });
@@ -854,6 +995,9 @@ export function DashboardHtmlImportModal({
    * per-chart errors AND dataset-level problems (draft prep crash, whole
    * validation batch failed, validation never ran with a dataset context). */
   const buildBlockReason: string | null = (() => {
+    if (batchAnalysis) {
+      return null;
+    }
     if (datasetPrepError) {
       return `Dataset preparation failed: ${datasetPrepError}. Fix the source or pick a different dataset before building.`;
     }
@@ -871,6 +1015,57 @@ export function DashboardHtmlImportModal({
   const hasBlockingErrors = buildBlockReason !== null;
 
   const handleBuild = async () => {
+    if (batchAnalysis) {
+      const buildDocuments = batchAnalysis.documents
+        .filter((document) => document.analysis.chart_plans.length > 0)
+        .map((document) => ({
+          documentId: document.document_id,
+          filename: document.filename ?? null,
+          pageName: document.page_name,
+          analysis: document.analysis,
+          includedBlockIds: document.analysis.chart_plans.map((plan) => plan.block_id),
+        }));
+
+      if (buildDocuments.length === 0) {
+        toast.error('No chart blocks were detected across the selected HTML files.');
+        return;
+      }
+
+      try {
+        const result = await buildBatchMutation.mutateAsync({
+          documents: buildDocuments,
+          sourceMode,
+          targetMode,
+          targetDashboardId,
+          dashboardName: buildName.trim() || batchAnalysis.suggested_dashboard_name,
+          datasetId: sourceMode === 'existing_dataset' ? selectedDatasetId : null,
+          preparedDatasetId: draftDatasetId ?? null,
+          selectedSheetName: sourceMode === 'upload_excel' && sourceFiles.length === 1 ? activeUploadSheetName : null,
+          excelFile:
+            draftDatasetId == null && sourceMode === 'upload_excel' && sourceFiles.length === 1
+              ? sourceFiles[0]
+              : null,
+          excelFiles:
+            draftDatasetId == null && sourceMode === 'upload_excel' && sourceFiles.length > 1
+              ? sourceFiles
+              : undefined,
+        });
+
+        toast.success(`Imported ${result.pages.length} page(s) and ${result.created_chart_count} chart(s) successfully.`);
+        onBuilt?.(result);
+        setDraftIsOwned(false);
+        setDraftDatasetId(null);
+        onClose();
+
+        if (targetMode === 'new_dashboard') {
+          router.push(`/dashboards/${result.dashboard_id}`);
+        }
+      } catch (error) {
+        toast.error(getApiErrorMessage(error, 'Could not build dashboard from the imported HTML files.'));
+      }
+      return;
+    }
+
     if (!analysis) return;
     if (includedBlockIds.length === 0) {
       toast.error('Select at least one mapped chart block to build.');
@@ -956,11 +1151,11 @@ export function DashboardHtmlImportModal({
       footer={
         <>
           {step === 'preview' && (
-            <Button variant="ghost" size="sm" onClick={() => { setStep('configure'); setAnalysis(null); setValidationResults({}); setValidationRan(false); setSelectedFixBlockIds(new Set()); }} disabled={buildMutation.isPending}>
+            <Button variant="ghost" size="sm" onClick={() => { setStep('configure'); setAnalysis(null); setBatchAnalysis(null); setValidationResults({}); setValidationRan(false); setSelectedFixBlockIds(new Set()); }} disabled={buildMutation.isPending || buildBatchMutation.isPending}>
               Back
             </Button>
           )}
-          <Button variant="ghost" size="sm" onClick={handleClose} disabled={analyzeMutation.isPending || buildMutation.isPending}>
+          <Button variant="ghost" size="sm" onClick={handleClose} disabled={analyzeMutation.isPending || analyzeBatchMutation.isPending || buildMutation.isPending || buildBatchMutation.isPending}>
             Cancel
           </Button>
           {step === 'configure' ? (
@@ -968,7 +1163,7 @@ export function DashboardHtmlImportModal({
               variant="primary"
               size="sm"
               onClick={handleAnalyze}
-              loading={analyzeMutation.isPending}
+              loading={analyzeMutation.isPending || analyzeBatchMutation.isPending}
             >
               Analyze Import
             </Button>
@@ -983,9 +1178,9 @@ export function DashboardHtmlImportModal({
                 variant="primary"
                 size="sm"
                 onClick={handleBuild}
-                loading={buildMutation.isPending}
-                disabled={hasBlockingErrors}
-                title={hasBlockingErrors ? buildBlockReason || undefined : undefined}
+                loading={buildMutation.isPending || buildBatchMutation.isPending}
+                disabled={!batchAnalysis && hasBlockingErrors}
+                title={!batchAnalysis && hasBlockingErrors ? buildBlockReason || undefined : undefined}
               >
                 Build Dashboard
               </Button>
@@ -1016,14 +1211,40 @@ export function DashboardHtmlImportModal({
           <FieldGroup
             label="Dashboard HTML"
             required
-            description="Paste Claude HTML here, or load a .html file and let the importer summarize the page into chart blocks."
+            description={isBatchInputMode
+              ? 'Batch mode imports multiple pages into one dashboard. You can load 2+ single-page HTML files, or switch back to one file for detailed chart editing.'
+              : 'Paste Claude HTML here, or load a .html file. Single-page v1 stays in detailed editor mode; embedded v2 pages[] will automatically switch to multi-page import.'}
           >
-            <Textarea
-              value={htmlInput}
-              onChange={(event) => setHtmlInput(event.target.value)}
-              rows={12}
-              placeholder="<html>...</html>"
-            />
+            {isBatchInputMode ? (
+              <div className="space-y-3 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+                {htmlDocuments.map((document) => (
+                  <div key={document.documentId} className="flex items-center gap-2 rounded-lg border border-brand/20 bg-brand/10 px-3 py-2 text-caption text-text-primary">
+                    <FileCode2 className="h-3.5 w-3.5 flex-shrink-0 text-brand" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-medium">{document.filename}</p>
+                      <p className="truncate text-text-tertiary">Default page name: {document.pageName}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveHtmlDocument(document.documentId)}
+                      className="rounded p-0.5 text-text-tertiary hover:bg-brand/10 hover:text-brand"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+                <p className="text-caption text-text-tertiary">
+                  Multi-page import is streamlined: page-level import only. Use single-file mode when you need chart-by-chart validation and manual edits before build.
+                </p>
+              </div>
+            ) : (
+              <Textarea
+                value={htmlInput}
+                onChange={(event) => setHtmlInput(event.target.value)}
+                rows={12}
+                placeholder="<html>...</html>"
+              />
+            )}
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 variant="secondary"
@@ -1031,7 +1252,7 @@ export function DashboardHtmlImportModal({
                 leadingIcon={<FileCode2 className="h-3.5 w-3.5" />}
                 onClick={() => htmlFileInputRef.current?.click()}
               >
-                Load HTML File
+                Load HTML File(s)
               </Button>
               {htmlFilename && (
                 <span className="text-caption text-text-tertiary">
@@ -1042,13 +1263,28 @@ export function DashboardHtmlImportModal({
                 ref={htmlFileInputRef}
                 type="file"
                 accept=".html,.htm,text/html"
+                multiple
                 className="hidden"
                 onChange={(event) => {
-                  const file = event.target.files?.[0] ?? null;
-                  void handleHtmlFileChange(file);
+                  const files = Array.from(event.target.files ?? []);
+                  void handleHtmlFilesChange(files);
                   event.currentTarget.value = '';
                 }}
               />
+              {isBatchInputMode && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setHtmlDocuments([]);
+                    setHtmlFilename('');
+                    setBatchAnalysis(null);
+                    setActiveBatchDocumentId('');
+                  }}
+                >
+                  Clear HTML Batch
+                </Button>
+              )}
             </div>
           </FieldGroup>
 
@@ -1381,7 +1617,193 @@ export function DashboardHtmlImportModal({
         </div>
       ) : (
         <div className="space-y-5">
-          {analysis && (
+          {batchAnalysis ? (
+            <>
+              <div className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
+                <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
+                  <p className="text-sm font-semibold text-text-primary">
+                    {buildName.trim() || batchAnalysis.suggested_dashboard_name}
+                  </p>
+                  <p className="mt-1 text-caption text-text-tertiary">
+                    {batchAnalysis.document_count} page import unit(s) analyzed. This can come from multiple HTML files or one embedded v2 HTML with pages[].
+                  </p>
+                  <div className="mt-4 rounded-lg border border-brand/20 bg-brand/10 px-3 py-2 text-caption text-brand">
+                    Batch mode is additive only: the single-file editor, validation, and AI fix flow remain unchanged for the legacy path.
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
+                  {targetMode === 'new_dashboard' ? (
+                    <FieldGroup
+                      label="Dashboard Name"
+                      description="All imported pages will be created inside this new dashboard."
+                    >
+                      <Input
+                        value={buildName}
+                        onChange={(event) => setBuildName(event.target.value)}
+                        placeholder="Imported dashboard name"
+                      />
+                    </FieldGroup>
+                  ) : (
+                    <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3 text-caption text-text-tertiary">
+                      The import will append {batchAnalysis.document_count} page(s) into {targetDashboardName ?? 'the current dashboard'}.
+                    </div>
+                  )}
+                  <div className="mt-3 flex items-center gap-2">
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      leadingIcon={<Wand2 className="h-3 w-3" />}
+                      loading={preparingDraft}
+                      onClick={handleTransformTable}
+                    >
+                      {sourceMode === 'existing_dataset'
+                        ? 'Open Dataset Editor'
+                        : (draftDatasetId != null ? 'Open Draft Dataset' : 'Prepare Draft Dataset')}
+                    </Button>
+                  </div>
+                  {draftDatasetId != null && (
+                    <p className="mt-2 text-caption text-text-tertiary">
+                      {draftIsOwned
+                        ? `Draft dataset #${draftDatasetId} ready. Cancel will discard it; Build will promote it to a real dataset.`
+                        : `Editing dataset #${draftDatasetId}. Changes persist across the wizard.`}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+                <div className="space-y-3">
+                  {batchAnalysis.documents.map((document) => {
+                    const chartCount = document.analysis.chart_plans.length;
+                    const warningCount = document.analysis.warnings.length;
+                    const ignoredCount = document.analysis.ignored_blocks.length;
+                    const isActive = activeBatchDocument?.document_id === document.document_id;
+                    return (
+                      <div
+                        key={document.document_id}
+                        className={`rounded-xl border p-4 ${isActive ? 'border-brand/40 bg-brand/10' : 'border-[rgb(var(--border-line))] bg-surface-1'}`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-semibold text-text-primary">
+                              {document.filename || document.analysis.document_title || document.page_name}
+                            </p>
+                            <p className="mt-1 text-caption text-text-tertiary">
+                              {chartCount} chart block(s)
+                              {warningCount > 0 ? ` • ${warningCount} warning(s)` : ''}
+                              {ignoredCount > 0 ? ` • ${ignoredCount} ignored block(s)` : ''}
+                              {chartCount === 0 ? ' • will be skipped' : ''}
+                            </p>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            onClick={() => setActiveBatchDocumentId(document.document_id)}
+                          >
+                            Inspect
+                          </Button>
+                        </div>
+                        <div className="mt-3">
+                          <FieldGroup label="Page Name">
+                            <Input
+                              value={document.page_name}
+                              onChange={(event) => handleUpdateBatchPageName(document.document_id, event.target.value)}
+                              placeholder="Imported page name"
+                            />
+                          </FieldGroup>
+                        </div>
+                        {warningCount > 0 && (
+                          <div className="mt-3 space-y-2">
+                            {document.analysis.warnings.slice(0, 2).map((warning) => (
+                              <div key={warning} className="rounded-lg border border-warning/20 bg-warning/10 px-3 py-2 text-caption text-warning">
+                                {warning}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
+                  {activeBatchDocument ? (
+                    <>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-text-primary">{activeBatchDocument.page_name}</p>
+                          <p className="mt-1 text-caption text-text-tertiary">
+                            {activeBatchDocument.analysis.document_title || activeBatchDocument.filename || 'Imported HTML document'}
+                          </p>
+                        </div>
+                        <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-text-tertiary">
+                          {activeBatchDocument.analysis.chart_plans.length} chart(s)
+                        </span>
+                      </div>
+
+                      {!!activeBatchDocument.analysis.warnings.length && (
+                        <div className="mt-4 space-y-2">
+                          {activeBatchDocument.analysis.warnings.map((warning) => (
+                            <div key={warning} className="flex items-start gap-2 rounded-lg border border-warning/20 bg-warning/10 px-3 py-2 text-caption text-warning">
+                              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                              <span>{warning}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="mt-4 space-y-3">
+                        {activeBatchDocument.analysis.chart_plans.length > 0 ? (
+                          activeBatchDocument.analysis.chart_plans.map((plan) => (
+                            <div key={plan.block_id} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="text-caption font-semibold text-text-primary">{plan.title}</p>
+                                <ChartTypeBadge value={plan.final_chart_type} />
+                                {plan.source_key && (sourceFiles.length > 1 || sourceMode === 'existing_dataset') && (
+                                  <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[11px] font-semibold text-brand">
+                                    {plan.source_key}
+                                  </span>
+                                )}
+                              </div>
+                              {!!plan.source_fields_used.length && (
+                                <p className="mt-2 text-caption text-text-tertiary">
+                                  Fields: {plan.source_fields_used.join(', ')}
+                                </p>
+                              )}
+                            </div>
+                          ))
+                        ) : (
+                          <div className="rounded-lg border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 px-4 py-6 text-center text-caption text-text-tertiary">
+                            No chart blocks were detected for this HTML file. This page will be skipped during build.
+                          </div>
+                        )}
+                      </div>
+
+                      {!!activeBatchDocument.analysis.ignored_blocks.length && (
+                        <div className="mt-4 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
+                          <p className="text-caption font-semibold text-text-primary">Ignored blocks</p>
+                          <div className="mt-2 space-y-2">
+                            {activeBatchDocument.analysis.ignored_blocks.slice(0, 6).map((block, index) => (
+                              <div key={`${block.block_id ?? index}-${index}`} className="text-caption text-text-tertiary">
+                                <span className="font-semibold text-text-secondary">{block.block_id ?? `block-${index + 1}`}</span>
+                                {' '}
+                                {block.reason ?? 'Skipped during chart-first import'}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 px-4 py-8 text-center text-caption text-text-tertiary">
+                      Select an HTML document to inspect its mapped page.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          ) : analysis && (
             <>
               <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
                 <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
@@ -1730,7 +2152,7 @@ export function DashboardHtmlImportModal({
       )}
       </div>
 
-      {(previewSourceMutation.isPending || analyzeMutation.isPending || buildMutation.isPending || validateMutation.isPending) && (
+      {(previewSourceMutation.isPending || analyzeMutation.isPending || analyzeBatchMutation.isPending || buildMutation.isPending || buildBatchMutation.isPending || validateMutation.isPending) && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-overlay/45 backdrop-blur-[1px]">
           <div className="rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 px-5 py-4 shadow-linear-lg">
             <div className="flex items-center gap-3">
@@ -1738,7 +2160,7 @@ export function DashboardHtmlImportModal({
               <span className="text-sm text-text-primary">
                 {previewSourceMutation.isPending
                   ? 'Parsing uploaded source file...'
-                  : analyzeMutation.isPending
+                  : (analyzeMutation.isPending || analyzeBatchMutation.isPending)
                     ? 'Analyzing imported HTML...'
                     : validateMutation.isPending
                       ? 'Validating chart queries...'
@@ -1749,7 +2171,7 @@ export function DashboardHtmlImportModal({
         </div>
       )}
     </Modal>
-    {effectiveDatasetId != null ? (
+    {effectiveDatasetId != null && analysis != null ? (
       <HtmlImportChartEditor
         isOpen={editingBlockId != null && !!editingPlan}
         plan={editingPlan}

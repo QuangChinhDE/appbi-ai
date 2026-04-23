@@ -15,8 +15,7 @@ interface PhysicalTableTabProps {
 }
 
 function buildDefaultDisplayName(tableName: string): string {
-  const shortName = tableName.split('.').pop() || tableName;
-  return shortName.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return tableName.trim();
 }
 
 export function PhysicalTableTab({ onAddTable, isLoading }: PhysicalTableTabProps) {

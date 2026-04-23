@@ -91,44 +91,35 @@ export function PageListLayout({
       {overview && <div className="mb-4">{overview}</div>}
 
       {showToolbar && (
-        <div className="mb-4 flex flex-wrap items-center gap-2.5">
-          <div className="flex min-w-0 flex-1 items-center gap-2.5">
-            {searchable && (
-              <div className="min-w-[240px] max-w-xl flex-[0_1_320px]">
-                <Input
-                  size="sm"
-                  value={filterText}
-                  onChange={(event) => setFilterText(event.target.value)}
-                  placeholder={searchPlaceholder ?? t('common.search')}
-                  leadingIcon={<Search />}
-                />
-              </div>
-            )}
-            {activeFiltersContent && (
-              <div
-                className={cn(
-                  'flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap',
-                  '[scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden',
-                )}
-              >
-                {activeFiltersContent}
-              </div>
-            )}
-          </div>
-          {(toolbarExtraContent || viewToggle) && (
-            <div className="ml-auto flex items-center gap-2">
+        <div className="mb-4 space-y-2.5">
+          <div className="flex flex-col gap-2.5 xl:flex-row xl:items-center">
+            <div className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden">
+              {searchable && (
+                <div className="min-w-[240px] max-w-xl flex-[0_0_320px]">
+                  <Input
+                    size="sm"
+                    value={filterText}
+                    onChange={(event) => setFilterText(event.target.value)}
+                    placeholder={searchPlaceholder ?? t('common.search')}
+                    leadingIcon={<Search />}
+                  />
+                </div>
+              )}
               {toolbarExtraContent && (
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="min-w-0 flex-1 overflow-hidden">
                   {toolbarExtraContent}
                 </div>
               )}
-              {viewToggle && (
+            </div>
+
+            {viewToggle && (
+              <div className="flex items-center xl:justify-end">
                 <div className="inline-flex items-center overflow-hidden rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 p-0.5">
                   <button
                     type="button"
                     onClick={() => setViewMode('grid')}
                     className={cn(
-                      'inline-flex items-center justify-center h-7 w-7 rounded-sm transition-colors',
+                      'inline-flex h-7 w-7 items-center justify-center rounded-sm transition-colors',
                       viewMode === 'grid'
                         ? 'bg-surface-3 text-text-primary'
                         : 'text-text-tertiary hover:text-text-primary',
@@ -141,7 +132,7 @@ export function PageListLayout({
                     type="button"
                     onClick={() => setViewMode('list')}
                     className={cn(
-                      'inline-flex items-center justify-center h-7 w-7 rounded-sm transition-colors',
+                      'inline-flex h-7 w-7 items-center justify-center rounded-sm transition-colors',
                       viewMode === 'list'
                         ? 'bg-surface-3 text-text-primary'
                         : 'text-text-tertiary hover:text-text-primary',
@@ -151,7 +142,18 @@ export function PageListLayout({
                     <ListIcon className="h-3.5 w-3.5" />
                   </button>
                 </div>
+              </div>
+            )}
+          </div>
+
+          {activeFiltersContent && (
+            <div
+              className={cn(
+                'flex min-w-0 items-center gap-2 overflow-x-auto whitespace-nowrap',
+                '[scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden',
               )}
+            >
+              {activeFiltersContent}
             </div>
           )}
         </div>

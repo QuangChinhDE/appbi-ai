@@ -302,6 +302,7 @@ export interface Chart {
   dataset_id?: number | null;
   dataset_name?: string | null;
   dataset_table_name?: string | null;
+  datasource_id?: number | null;
   chart_type: ChartType;
   config: ChartConfig;
   owner_id?: string;

@@ -3,11 +3,12 @@
  */
 'use client';
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Plus, Trash2, BarChart3, Clock, Layers, Search, Share2 } from 'lucide-react';
 import { useCharts, useDeleteChart } from '@/hooks/use-charts';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
+import { CrossModuleFilterControls } from '@/components/common/CrossModuleFilterControls';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
@@ -20,11 +21,28 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { FilterTag, filterTagBaseClass } from '@/components/ui/FilterTag';
 import { useI18n } from '@/providers/LanguageProvider';
 import { toast } from '@/lib/toast';
+import { useDashboards } from '@/hooks/use-dashboards';
+import { useDataSources } from '@/hooks/use-datasources';
+import { useDatasets } from '@/hooks/use-datasets';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { ChartType } from '@/types/api';
 import type { Chart } from '@/types/api';
 import { getActiveChartRoleConfig } from '@/lib/chart-config';
+import {
+  buildCatalogRelationIndex,
+  getRelatedFilterLabel,
+  matchesRelatedFilters,
+} from '@/lib/module-relations';
+
+type ExploreListFilters = {
+  type?: string;
+  scope?: string;
+  owner?: string;
+  dashboard?: string;
+  dataset?: string;
+  source?: string;
+};
 
 const CHART_TYPE_LABELS: Record<string, string> = {
   BAR: 'Bar',
@@ -71,7 +89,7 @@ export default function ExplorePage() {
   const deleteChart = useDeleteChart();
 
   const [searchText, setSearchText] = useState('');
-  const [listFilters, setListFilters] = useState<{ type?: string; scope?: string; owner?: string }>({});
+  const [listFilters, setListFilters] = useState<ExploreListFilters>({});
   const [chartToDelete, setChartToDelete] = useState<Chart | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingChart, setIsDeletingChart] = useState(false);
@@ -81,6 +99,18 @@ export default function ExplorePage() {
   const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
 
   const { data: allCharts = [], isLoading } = useCharts({ limit: 500, sort: 'updated_desc' });
+  const { data: dashboards = [] } = useDashboards();
+  const { data: datasets = [] } = useDatasets();
+  const { data: dataSources = [] } = useDataSources();
+  const relationIndex = useMemo(
+    () => buildCatalogRelationIndex({
+      dashboards,
+      charts: allCharts,
+      datasets,
+      datasources: dataSources,
+    }),
+    [dashboards, allCharts, datasets, dataSources],
+  );
 
   const chartTypesUsed = new Set(allCharts.map((chart) => chart.chart_type)).size;
   const updatedThisWeek = allCharts.filter((chart) => {
@@ -89,7 +119,14 @@ export default function ExplorePage() {
   }).length;
   const activeListFilterCount = Object.values(listFilters).filter(Boolean).length;
 
-  const toggleListFilter = (key: 'type' | 'scope' | 'owner', value: string) => {
+  const setListFilter = (key: keyof ExploreListFilters, value?: string) => {
+    setListFilters((current) => ({
+      ...current,
+      [key]: value || undefined,
+    }));
+  };
+
+  const toggleListFilter = (key: keyof ExploreListFilters, value: string) => {
     setListFilters((current) => ({
       ...current,
       [key]: current[key] === value ? undefined : value,
@@ -104,6 +141,7 @@ export default function ExplorePage() {
     const config = chart.config as any;
     const activeRoleConfig = getActiveChartRoleConfig(config);
     const scopeValue = chart.is_owned_by_current_user ? 'mine' : 'shared';
+    const relations = relationIndex.chartRelationsById.get(chart.id);
     const matchesSearch =
       needle.length === 0 ||
       chart.name.toLowerCase().includes(needle) ||
@@ -117,7 +155,12 @@ export default function ExplorePage() {
       matchesSearch &&
       (!listFilters.type || chart.chart_type === listFilters.type) &&
       (!listFilters.scope || scopeValue === listFilters.scope) &&
-      (!listFilters.owner || chart.owner_email === listFilters.owner)
+      (!listFilters.owner || chart.owner_email === listFilters.owner) &&
+      matchesRelatedFilters(relations, {
+        dashboard: listFilters.dashboard,
+        dataset: listFilters.dataset,
+        source: listFilters.source,
+      })
     );
   });
 
@@ -226,6 +269,22 @@ export default function ExplorePage() {
         searchValue={searchText}
         onSearchValueChange={setSearchText}
         defaultView="list"
+        toolbarExtra={(
+          <CrossModuleFilterControls
+            index={relationIndex}
+            configs={[
+              { key: 'dashboard', label: 'Dashboard', placeholder: 'All dashboards' },
+              { key: 'dataset', label: 'Dataset', placeholder: 'All datasets' },
+              { key: 'source', label: 'Source', placeholder: 'All sources' },
+            ]}
+            filters={{
+              dashboard: listFilters.dashboard,
+              dataset: listFilters.dataset,
+              source: listFilters.source,
+            }}
+            onChange={(key, value) => setListFilter(key as keyof ExploreListFilters, value)}
+          />
+        )}
         activeFilters={activeListFilterCount > 0 ? (
           <>
             {listFilters.type && (
@@ -245,6 +304,21 @@ export default function ExplorePage() {
             {listFilters.owner && (
               <FilterTag active onClick={() => toggleListFilter('owner', listFilters.owner!)}>
                 Owner: {listFilters.owner.split('@')[0]}
+              </FilterTag>
+            )}
+            {listFilters.dashboard && (
+              <FilterTag tone="brand" active onClick={() => setListFilter('dashboard')}>
+                Dashboard: {getRelatedFilterLabel(relationIndex, 'dashboard', listFilters.dashboard)}
+              </FilterTag>
+            )}
+            {listFilters.dataset && (
+              <FilterTag tone="brand" active onClick={() => setListFilter('dataset')}>
+                Dataset: {getRelatedFilterLabel(relationIndex, 'dataset', listFilters.dataset)}
+              </FilterTag>
+            )}
+            {listFilters.source && (
+              <FilterTag tone="brand" active onClick={() => setListFilter('source')}>
+                Source: {getRelatedFilterLabel(relationIndex, 'source', listFilters.source)}
               </FilterTag>
             )}
             <Button variant="ghost" size="xs" onClick={clearListFilters}>

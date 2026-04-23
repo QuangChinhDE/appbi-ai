@@ -547,6 +547,66 @@ def _unique_chart_name(db: Session, owner_id: Any, requested_name: str) -> str:
         suffix += 1
 
 
+def _looks_generic_import_page_name(value: Any) -> bool:
+    normalized = _normalize_text(value, max_len=80).lower()
+    if not normalized:
+        return True
+    if normalized in {"imported dashboard", "imported page"}:
+        return True
+    return bool(re.fullmatch(r"imported page \d+", normalized))
+
+
+def _page_name_from_filename(filename: Any) -> str:
+    raw_filename = str(filename or "").strip()
+    if not raw_filename:
+        return ""
+    basename = re.split(r"[\\/]", raw_filename)[-1]
+    stem = basename.rsplit(".", 1)[0]
+    normalized = _normalize_text(re.sub(r"[_-]+", " ", stem), max_len=80)
+    if not normalized:
+        return ""
+    return normalized[:1].upper() + normalized[1:]
+
+
+def _resolve_batch_page_name(
+    *,
+    explicit_name: Any = None,
+    document_title: Any = None,
+    suggested_dashboard_name: Any = None,
+    filename: Any = None,
+    fallback_index: int,
+) -> str:
+    explicit = _normalize_text(explicit_name, max_len=80)
+    if explicit:
+        return explicit
+
+    document_title_normalized = _normalize_text(document_title, max_len=80)
+    suggested_name_normalized = _normalize_text(suggested_dashboard_name, max_len=80)
+    for candidate in (document_title_normalized, suggested_name_normalized):
+        if candidate and not _looks_generic_import_page_name(candidate):
+            return candidate
+
+    filename_name = _page_name_from_filename(filename)
+    if filename_name:
+        return filename_name
+
+    return document_title_normalized or suggested_name_normalized or f"Imported Page {fallback_index}"
+
+
+def _unique_page_name(requested_name: Any, used_names: Set[str]) -> str:
+    base_name = _normalize_text(requested_name, max_len=80) or "Imported Page"
+    candidate = base_name
+    suffix = 2
+    while candidate.lower() in used_names:
+        suffix_text = f" ({suffix})"
+        max_base_len = max(1, 80 - len(suffix_text))
+        trimmed_base = base_name if len(base_name) <= max_base_len else base_name[:max_base_len].rstrip()
+        candidate = f"{trimmed_base}{suffix_text}"
+        suffix += 1
+    used_names.add(candidate.lower())
+    return candidate
+
+
 def _generate_page_id() -> str:
     return f"page-import-{secrets.token_hex(4)}"
 
@@ -1647,6 +1707,7 @@ _APPBI_SOURCE_PLACEHOLDER_RE = re.compile(
 )
 
 APPBI_IMPORT_PLAN_V1_VERSION = "appbi-import/v1"
+APPBI_IMPORT_PLAN_V2_VERSION = "appbi-import/v2"
 
 
 def _extract_embedded_metadata(html_text: str) -> Optional[Dict[str, Any]]:
@@ -1660,7 +1721,10 @@ def _extract_embedded_metadata(html_text: str) -> Optional[Dict[str, Any]]:
         return None
     try:
         payload = json.loads(match.group(1))
-        if isinstance(payload, dict) and isinstance(payload.get("charts"), list):
+        if isinstance(payload, dict) and (
+            isinstance(payload.get("charts"), list)
+            or isinstance(payload.get("pages"), list)
+        ):
             return payload
     except (json.JSONDecodeError, ValueError):
         logger.warning("Found appbi-dashboard script tag but JSON is invalid.")
@@ -1669,6 +1733,99 @@ def _extract_embedded_metadata(html_text: str) -> Optional[Dict[str, Any]]:
 
 def _is_v1_metadata(embedded: Dict[str, Any]) -> bool:
     return str(embedded.get("version") or "").strip().lower() == APPBI_IMPORT_PLAN_V1_VERSION
+
+
+def _is_v2_metadata(embedded: Dict[str, Any]) -> bool:
+    return str(embedded.get("version") or "").strip().lower() == APPBI_IMPORT_PLAN_V2_VERSION
+
+
+def _normalize_v2_pages(embedded: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw_pages = embedded.get("pages") if isinstance(embedded.get("pages"), list) else []
+    normalized_pages: List[Dict[str, Any]] = []
+    for index, raw_page in enumerate(raw_pages, start=1):
+        if not isinstance(raw_page, dict):
+            continue
+        charts = raw_page.get("charts") if isinstance(raw_page.get("charts"), list) else []
+        page_key = _normalize_text(raw_page.get("page_key") or raw_page.get("id"), max_len=120) or f"page-{index}"
+        title = _normalize_text(raw_page.get("title") or raw_page.get("name"), max_len=80) or f"Page {index}"
+        normalized_pages.append(
+            {
+                "page_key": page_key,
+                "title": title,
+                "description": _normalize_text(raw_page.get("description"), max_len=400) or None,
+                "charts": charts,
+                "order": int(raw_page.get("order") or index),
+            }
+        )
+    normalized_pages.sort(key=lambda item: (item.get("order", 0), item.get("page_key", "")))
+    return normalized_pages
+
+
+def _pick_default_v2_page(embedded: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    pages = _normalize_v2_pages(embedded)
+    if not pages:
+        return None
+
+    dashboard_meta = embedded.get("dashboard") if isinstance(embedded.get("dashboard"), dict) else {}
+    default_page_key = _normalize_text(dashboard_meta.get("default_page_key"), max_len=120)
+    if default_page_key:
+        for page in pages:
+            if page.get("page_key") == default_page_key:
+                return page
+    return pages[0]
+
+
+def _coerce_v2_page_to_v1_like_payload(
+    *,
+    embedded: Dict[str, Any],
+    page: Dict[str, Any],
+) -> Dict[str, Any]:
+    dashboard_meta = dict(embedded.get("dashboard") or {})
+    page_title = _normalize_text(page.get("title"), max_len=80) or "Imported Page"
+    dashboard_meta["default_page_name"] = page_title
+    return {
+        "version": APPBI_IMPORT_PLAN_V2_VERSION,
+        "strict": bool(embedded.get("strict", True)),
+        "authoring_mode": str(embedded.get("authoring_mode") or "skill"),
+        "dashboard": dashboard_meta,
+        "source_contract": embedded.get("source_contract") if isinstance(embedded.get("source_contract"), dict) else {},
+        "dataset_ops": embedded.get("dataset_ops") if isinstance(embedded.get("dataset_ops"), list) else [],
+        "charts": list(page.get("charts") or []),
+        "page_key": page.get("page_key"),
+        "page_title": page_title,
+        "page_description": page.get("description"),
+        "page_count": len(_normalize_v2_pages(embedded)),
+    }
+
+
+def _analyze_from_v2_metadata_page(
+    *,
+    embedded: Dict[str, Any],
+    page: Dict[str, Any],
+    document_summary: Dict[str, Any],
+    source_profile: Dict[str, Any],
+    all_source_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    page_payload = _coerce_v2_page_to_v1_like_payload(embedded=embedded, page=page)
+    page_title = _normalize_text(page.get("title"), max_len=80) or document_summary.get("title") or "Imported Page"
+    page_summary = dict(document_summary)
+    page_summary["title"] = page_title
+
+    result = _analyze_from_v1_metadata(
+        embedded=page_payload,
+        document_summary=page_summary,
+        source_profile=source_profile,
+        all_source_profiles=all_source_profiles,
+    )
+    result["document_title"] = page_title
+    ai_meta = dict(result.get("ai_meta") or {})
+    ai_meta["plan_version"] = APPBI_IMPORT_PLAN_V2_VERSION
+    ai_meta["page_key"] = page.get("page_key")
+    ai_meta["page_title"] = page_title
+    ai_meta["page_count"] = page_payload.get("page_count")
+    ai_meta["default_page_name"] = page_title
+    result["ai_meta"] = ai_meta
+    return result
 
 
 def _finalize_plan_from_v1_metadata(
@@ -2267,6 +2424,34 @@ def _analyze_from_embedded_metadata(
             all_source_profiles=all_source_profiles,
         )
 
+    if _is_v2_metadata(embedded):
+        default_page = _pick_default_v2_page(embedded)
+        if default_page is None:
+            return {
+                "suggested_dashboard_name": _normalize_text(document_summary.get("title"), max_len=180) or "Imported Dashboard",
+                "document_title": document_summary.get("title"),
+                "source_profile": source_profile,
+                "all_source_profiles": all_source_profiles,
+                "chart_plans": [],
+                "calculated_fields": [],
+                "derived_tables": [],
+                "ignored_blocks": [],
+                "warnings": ["Embedded v2 metadata contained no importable pages."],
+                "ai_meta": build_ai_assist_meta(
+                    requested=False,
+                    applied=False,
+                    status="skipped",
+                    message="Embedded application/appbi-dashboard v2 metadata contained no pages.",
+                ),
+            }
+        return _analyze_from_v2_metadata_page(
+            embedded=embedded,
+            page=default_page,
+            document_summary=document_summary,
+            source_profile=source_profile,
+            all_source_profiles=all_source_profiles,
+        )
+
     # ── Legacy path (pre-v1 embedded metadata) ──────────────────────────
     raw_charts = embedded.get("charts") or []
     raw_calc_fields = embedded.get("calculated_fields") or []
@@ -2792,6 +2977,110 @@ def analyze_dashboard_html_import(
         "ignored_blocks": ignored,
         "warnings": warnings,
         "ai_meta": ai_meta,
+    }
+
+
+def analyze_dashboard_html_import_batch(
+    *,
+    documents: List[Dict[str, Any]],
+    source_profile: Dict[str, Any],
+    all_source_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Analyze multiple HTML documents without changing the single-document contract.
+
+    Each input document normally maps to one output page, but embedded
+    ``appbi-import/v2`` metadata may expand one HTML file into multiple page
+    analyses inside the batch envelope.
+    """
+    analyzed_documents: List[Dict[str, Any]] = []
+    used_page_names: Set[str] = set()
+
+    for index, raw_document in enumerate(documents or [], start=1):
+        if not isinstance(raw_document, dict):
+            raise ValueError(f"documents[{index - 1}] must be an object.")
+
+        document_id = _normalize_text(raw_document.get("document_id"), max_len=120) or f"document-{index}"
+        html_text = str(raw_document.get("html_text") or "").strip()
+        if not html_text:
+            raise ValueError(f"documents[{index - 1}].html_text is required.")
+
+        html_summary = raw_document.get("html_summary")
+        if html_summary is not None and not isinstance(html_summary, dict):
+            raise ValueError(f"documents[{index - 1}].html_summary must be an object when provided.")
+
+        embedded = _extract_embedded_metadata(html_text)
+        if embedded and _is_v2_metadata(embedded):
+            base_filename = _normalize_text(raw_document.get("filename"), max_len=260) or None
+            base_page_name = _normalize_text(raw_document.get("page_name"), max_len=80)
+            document_summary = _build_document_summary(
+                html_text=html_text,
+                html_summary=html_summary if isinstance(html_summary, dict) else None,
+            )
+            pages = _normalize_v2_pages(embedded)
+            if not pages:
+                raise ValueError(f"documents[{index - 1}] contains appbi-import/v2 metadata but no pages[].")
+
+            for page_index, page in enumerate(pages, start=1):
+                page_analysis = _analyze_from_v2_metadata_page(
+                    embedded=embedded,
+                    page=page,
+                    document_summary=document_summary,
+                    source_profile=source_profile,
+                    all_source_profiles=all_source_profiles,
+                )
+                page_name = _unique_page_name(
+                    _resolve_batch_page_name(
+                        explicit_name=_normalize_text(page.get("title"), max_len=80) or base_page_name,
+                        document_title=page_analysis.get("document_title"),
+                        suggested_dashboard_name=page_analysis.get("suggested_dashboard_name"),
+                        filename=base_filename,
+                        fallback_index=len(analyzed_documents) + 1,
+                    ),
+                    used_page_names,
+                )
+                analyzed_documents.append(
+                    {
+                        "document_id": f"{document_id}::{_normalize_text(page.get('page_key'), max_len=120) or page_index}",
+                        "filename": base_filename,
+                        "page_name": page_name,
+                        "analysis": page_analysis,
+                    }
+                )
+            continue
+
+        analysis = analyze_dashboard_html_import(
+            html_text=html_text,
+            html_summary=html_summary,
+            source_profile=source_profile,
+            all_source_profiles=all_source_profiles,
+        )
+        suggested_page_name = _unique_page_name(
+            _resolve_batch_page_name(
+                explicit_name=raw_document.get("page_name"),
+                document_title=analysis.get("document_title"),
+                suggested_dashboard_name=analysis.get("suggested_dashboard_name"),
+                filename=raw_document.get("filename"),
+                fallback_index=index,
+            ),
+            used_page_names,
+        )
+        analyzed_documents.append(
+            {
+                "document_id": document_id,
+                "filename": _normalize_text(raw_document.get("filename"), max_len=260) or None,
+                "page_name": suggested_page_name,
+                "analysis": analysis,
+            }
+        )
+
+    if not analyzed_documents:
+        raise ValueError("At least one HTML document is required for batch analyze.")
+
+    first_analysis = analyzed_documents[0]["analysis"]
+    return {
+        "suggested_dashboard_name": first_analysis.get("suggested_dashboard_name") or "Imported Dashboard",
+        "document_count": len(analyzed_documents),
+        "documents": analyzed_documents,
     }
 
 
@@ -3370,6 +3659,134 @@ def build_dashboard_from_import(
         "dataset_id": resolved_dataset_id,
         "dataset_table_id": resolved_dataset_table_id,
         "dataset_table_ids": table_id_map if table_id_map else None,
+    }
+
+
+def build_dashboard_from_import_batch(
+    db: Session,
+    *,
+    current_user: User,
+    documents: List[Dict[str, Any]],
+    source_mode: SourceMode,
+    dataset_table_id: Optional[int],
+    dataset_id: Optional[int] = None,
+    source_bytes: Optional[bytes],
+    source_filename: Optional[str],
+    source_files: Optional[List[Tuple[bytes, Optional[str]]]] = None,
+    selected_sheet_name: Optional[str],
+    dashboard_name: Optional[str],
+    target_mode: TargetMode,
+    target_dashboard_id: Optional[int],
+) -> Dict[str, Any]:
+    """Build multiple HTML analyses into multiple dashboard pages.
+
+    The first document uses the existing single-document build flow unchanged.
+    Subsequent documents append pages into the dashboard created or targeted by
+    the first document, preserving the legacy contract and behavior.
+    """
+    normalized_documents = [item for item in (documents or []) if isinstance(item, dict)]
+    if not normalized_documents:
+        raise ValueError("At least one analyzed document is required for batch build.")
+
+    page_results: List[Dict[str, Any]] = []
+    current_target_mode: TargetMode = target_mode
+    current_target_dashboard_id = target_dashboard_id
+    effective_source_mode: SourceMode = source_mode
+    effective_dataset_id = dataset_id
+    effective_dataset_table_id = dataset_table_id
+    effective_source_bytes = source_bytes
+    effective_source_filename = source_filename
+    effective_source_files = source_files
+    final_result: Optional[Dict[str, Any]] = None
+    used_page_names: Set[str] = set()
+
+    for index, raw_document in enumerate(normalized_documents, start=1):
+        analysis = raw_document.get("analysis")
+        if not isinstance(analysis, dict):
+            raise ValueError(f"documents[{index - 1}].analysis must be an object.")
+
+        document_id = _normalize_text(raw_document.get("document_id"), max_len=120) or f"document-{index}"
+        page_name = _unique_page_name(
+            _resolve_batch_page_name(
+                explicit_name=raw_document.get("page_name"),
+                document_title=analysis.get("document_title"),
+                suggested_dashboard_name=analysis.get("suggested_dashboard_name"),
+                filename=raw_document.get("filename"),
+                fallback_index=index,
+            ),
+            used_page_names,
+        )
+        included_block_ids = raw_document.get("included_block_ids") or []
+        if not isinstance(included_block_ids, list) or any(not isinstance(item, str) for item in included_block_ids):
+            raise ValueError(f"documents[{index - 1}].included_block_ids must be a string array when provided.")
+
+        available_plans = [plan for plan in (analysis.get("chart_plans") or []) if isinstance(plan, dict)]
+        if not available_plans:
+            logger.info(
+                "Skipping batch HTML document %s because it contains no chart_plans.",
+                document_id,
+            )
+            continue
+        if included_block_ids:
+            selected_ids = {str(item) for item in included_block_ids}
+            if not any(str(plan.get("block_id")) in selected_ids for plan in available_plans):
+                logger.info(
+                    "Skipping batch HTML document %s because no selected blocks remain after filtering.",
+                    document_id,
+                )
+                continue
+
+        per_document_analysis = dict(analysis)
+        per_document_analysis["document_title"] = page_name
+
+        build_result = build_dashboard_from_import(
+            db,
+            current_user=current_user,
+            analysis=per_document_analysis,
+            source_mode=effective_source_mode,
+            dataset_table_id=effective_dataset_table_id,
+            dataset_id=effective_dataset_id,
+            source_bytes=effective_source_bytes,
+            source_filename=effective_source_filename,
+            source_files=effective_source_files,
+            selected_sheet_name=selected_sheet_name,
+            dashboard_name=dashboard_name if index == 1 else page_name,
+            target_mode=current_target_mode,
+            target_dashboard_id=current_target_dashboard_id,
+            included_block_ids=included_block_ids,
+        )
+        final_result = build_result
+        current_target_mode = "append_to_dashboard"
+        current_target_dashboard_id = build_result["dashboard_id"]
+        effective_source_mode = "existing_dataset"
+        effective_dataset_id = build_result.get("dataset_id")
+        effective_dataset_table_id = build_result.get("dataset_table_id")
+        effective_source_bytes = None
+        effective_source_filename = None
+        effective_source_files = None
+
+        page_results.append(
+            {
+                "document_id": document_id,
+                "filename": _normalize_text(raw_document.get("filename"), max_len=260) or None,
+                "page_id": build_result["page_id"],
+                "page_name": build_result["page_name"],
+                "created_chart_count": build_result["created_chart_count"],
+                "type_changes": build_result.get("type_changes") or [],
+            }
+        )
+
+    if final_result is None:
+        raise ValueError("No batch document produced any chart plans to build.")
+    total_chart_count = sum(int(item.get("created_chart_count") or 0) for item in page_results)
+    return {
+        "dashboard": final_result["dashboard"],
+        "dashboard_id": final_result["dashboard_id"],
+        "created_chart_count": total_chart_count,
+        "pages": page_results,
+        "dataset_id": final_result.get("dataset_id"),
+        "dataset_table_id": final_result.get("dataset_table_id"),
+        "dataset_table_ids": final_result.get("dataset_table_ids"),
     }
 
 

@@ -196,6 +196,7 @@ class ChartResponse(ChartBase):
     dataset_id: Optional[int] = None
     dataset_name: Optional[str] = None
     dataset_table_name: Optional[str] = None
+    datasource_id: Optional[int] = None
     is_owned_by_current_user: Optional[bool] = None
     is_shared: Optional[bool] = None
     created_at: datetime

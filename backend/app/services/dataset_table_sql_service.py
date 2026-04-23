@@ -92,15 +92,68 @@ def normalize_dataset_table_sql_alias(value: str | None, *, fallback: str = "tab
     return alias
 
 
-def build_dataset_table_sql_alias_base(table: DatasetTable | Any) -> str:
-    table_id = getattr(table, "id", None)
+def normalize_physical_table_source_name(source_table_name: str | None) -> str:
+    text = str(source_table_name or "").strip().strip('"').strip("'").strip("`")
+    if not text:
+        return ""
+
+    parts: List[str] = []
+    for segment in text.split("."):
+        cleaned = segment.strip().strip('"').strip("'").strip("`")
+        if cleaned:
+            parts.append(cleaned)
+    return ".".join(parts)
+
+
+def build_physical_table_default_display_name(source_table_name: str | None) -> str:
+    return normalize_physical_table_source_name(source_table_name)
+
+
+def normalize_physical_table_sql_alias(source_table_name: str | None, *, fallback: str = "table") -> str:
+    text = normalize_physical_table_source_name(source_table_name)
+    if not text:
+        return fallback
+
+    text = text.replace(".", "_")
+    text = text.replace("\u0110", "D").replace("\u0111", "d")
+
+    ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    alias = re.sub(r"[^a-zA-Z0-9_]+", "_", ascii_text).lower()
+    alias = re.sub(r"_+", "_", alias)
+    if not alias or not re.search(r"[a-zA-Z0-9]", alias):
+        alias = fallback
+    if alias[:1].isdigit():
+        alias = f"table_{alias}"
+    if alias in _SQL_ALIAS_RESERVED_WORDS:
+        alias = f"{alias}_table"
+    return alias
+
+
+def build_dataset_table_alias_base_from_values(
+    *,
+    display_name: str | None = None,
+    source_kind: str | None = None,
+    source_table_name: str | None = None,
+    table_id: int | None = None,
+) -> str:
     fallback = f"table_{table_id}" if table_id is not None else "table"
-    raw_label = (
-        getattr(table, "display_name", None)
-        or getattr(table, "source_table_name", None)
-        or fallback
-    )
+    normalized_source_name = normalize_physical_table_source_name(source_table_name)
+    kind = str(source_kind or "").strip().lower()
+
+    if kind == "physical_table" and normalized_source_name:
+        return normalize_physical_table_sql_alias(normalized_source_name, fallback=fallback)
+
+    raw_label = display_name or normalized_source_name or fallback
     return normalize_dataset_table_sql_alias(str(raw_label), fallback=fallback)
+
+
+def build_dataset_table_sql_alias_base(table: DatasetTable | Any) -> str:
+    return build_dataset_table_alias_base_from_values(
+        display_name=getattr(table, "display_name", None),
+        source_kind=getattr(table, "source_kind", None),
+        source_table_name=getattr(table, "source_table_name", None),
+        table_id=getattr(table, "id", None),
+    )
 
 
 def build_dataset_table_reference_alias_map(

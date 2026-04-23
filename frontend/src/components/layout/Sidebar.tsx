@@ -278,6 +278,16 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
 
                 <button
                   onClick={() => {
+                    router.push('/account/tokens');
+                    setShowUserMenu(false);
+                  }}
+                  className="flex w-full items-center gap-2 border-t border-[rgb(var(--border-line))] px-3 py-2 text-caption text-text-secondary hover:bg-surface-2"
+                >
+                  <KeyRound className="h-3.5 w-3.5 text-text-tertiary" />
+                  <span>{language === 'vi' ? 'Token API' : 'API tokens'}</span>
+                </button>
+                <button
+                  onClick={() => {
                     setShowGuide(true);
                     setShowUserMenu(false);
                   }}

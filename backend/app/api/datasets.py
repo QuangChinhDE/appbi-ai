@@ -5,7 +5,7 @@ import re
 from types import SimpleNamespace
 from datetime import datetime, date
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.database import get_db
 from app.core.dependencies import (
@@ -84,6 +84,16 @@ from app.services.type_override_service import (
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+def _stamp_dataset_catalog_fields(items: list[Dataset]) -> None:
+    for item in items:
+        datasource_ids: list[int] = []
+        for table in getattr(item, "tables", []) or []:
+            datasource_id = getattr(table, "datasource_id", None)
+            if isinstance(datasource_id, int) and datasource_id not in datasource_ids:
+                datasource_ids.append(datasource_id)
+        item.datasource_ids = datasource_ids
 
 
 LOOKUP_TABLE_IDENTIFIER_PREFIX = "dataset-table://"
@@ -608,6 +618,9 @@ def list_datasets(
     """List datasets visible to the current user."""
     items = (
         _owned_or_shared(db, Dataset, ResourceType.DATASET, current_user)
+        .options(
+            selectinload(Dataset.tables),
+        )
         .filter(Dataset.is_draft.is_(False))
         .offset(skip)
         .limit(limit)
@@ -615,6 +628,7 @@ def list_datasets(
     )
     for item in items:
         item.user_permission = get_effective_permission(db, current_user, item, "datasets")
+    _stamp_dataset_catalog_fields(items)
     stamp_owner_emails(db, items)
     return items
 

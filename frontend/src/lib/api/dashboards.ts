@@ -12,6 +12,10 @@ import {
 import type {
   DashboardHtmlImportAnalyzeInput,
   DashboardHtmlImportAnalyzeResponse,
+  DashboardHtmlImportBatchAnalyzeInput,
+  DashboardHtmlImportBatchAnalyzeResponse,
+  DashboardHtmlImportBatchBuildInput,
+  DashboardHtmlImportBatchBuildResponse,
   DashboardHtmlImportBuildInput,
   DashboardHtmlImportBuildResponse,
   DashboardHtmlImportFixChartInput,
@@ -112,6 +116,44 @@ export const dashboardApi = {
     return response.data;
   },
 
+  analyzeHtmlImportBatch: async (input: DashboardHtmlImportBatchAnalyzeInput): Promise<DashboardHtmlImportBatchAnalyzeResponse> => {
+    const formData = new FormData();
+    formData.append('html_documents_json', JSON.stringify((input.documents ?? []).map((document, index) => ({
+      document_id: document.documentId || `document-${index + 1}`,
+      filename: document.filename ?? null,
+      page_name: document.pageName ?? null,
+      html_content: document.htmlContent,
+      html_summary: document.htmlSummary ?? {},
+    }))));
+    formData.append('source_mode', input.sourceMode);
+    if (input.datasetId != null) {
+      formData.append('dataset_id', String(input.datasetId));
+    }
+    if (input.datasetTableId != null) {
+      formData.append('dataset_table_id', String(input.datasetTableId));
+    }
+    if (input.selectedSheetName?.trim()) {
+      formData.append('selected_sheet_name', input.selectedSheetName.trim());
+    }
+    if (input.selectedSourceKey?.trim()) {
+      formData.append('selected_source_key', input.selectedSourceKey.trim());
+    }
+    if (input.excelFiles && input.excelFiles.length > 0) {
+      for (const file of input.excelFiles) {
+        formData.append('excel_files', file);
+      }
+    } else if (input.excelFile) {
+      formData.append('excel_file', input.excelFile);
+    }
+
+    const response = await apiClient.post('/dashboards/import-html/analyze-batch', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  },
+
   buildHtmlImport: async (input: DashboardHtmlImportBuildInput): Promise<DashboardHtmlImportBuildResponse> => {
     const formData = new FormData();
     formData.append('analysis_json', JSON.stringify(input.analysis));
@@ -145,6 +187,51 @@ export const dashboardApi = {
     }
 
     const response = await apiClient.post('/dashboards/import-html/build', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  },
+
+  buildHtmlImportBatch: async (input: DashboardHtmlImportBatchBuildInput): Promise<DashboardHtmlImportBatchBuildResponse> => {
+    const formData = new FormData();
+    formData.append('analyses_json', JSON.stringify((input.documents ?? []).map((document) => ({
+      document_id: document.documentId,
+      filename: document.filename ?? null,
+      page_name: document.pageName ?? null,
+      analysis: document.analysis,
+      included_block_ids: document.includedBlockIds ?? [],
+    }))));
+    formData.append('source_mode', input.sourceMode);
+    formData.append('target_mode', input.targetMode);
+    if (input.dashboardName?.trim()) {
+      formData.append('dashboard_name', input.dashboardName.trim());
+    }
+    if (input.datasetId != null) {
+      formData.append('dataset_id', String(input.datasetId));
+    }
+    if (input.datasetTableId != null) {
+      formData.append('dataset_table_id', String(input.datasetTableId));
+    }
+    if (input.preparedDatasetId != null) {
+      formData.append('prepared_dataset_id', String(input.preparedDatasetId));
+    }
+    if (input.selectedSheetName?.trim()) {
+      formData.append('selected_sheet_name', input.selectedSheetName.trim());
+    }
+    if (input.targetDashboardId != null) {
+      formData.append('target_dashboard_id', String(input.targetDashboardId));
+    }
+    if (input.excelFiles && input.excelFiles.length > 0) {
+      for (const file of input.excelFiles) {
+        formData.append('excel_files', file);
+      }
+    } else if (input.excelFile) {
+      formData.append('excel_file', input.excelFile);
+    }
+
+    const response = await apiClient.post('/dashboards/import-html/build-batch', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },

@@ -113,6 +113,7 @@ class DatasetResponse(DatasetBase):
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
+    datasource_ids: List[int] = Field(default_factory=list)
     dictionary_updated_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
