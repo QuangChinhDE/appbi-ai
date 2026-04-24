@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import require_permission
+from app.core.dependencies import get_current_user, require_permission
 from app.models.user import AuthProvider, User, UserStatus
 from app.schemas.auth import UserCreate, UserResponse, UserUpdate
 
@@ -31,9 +31,9 @@ class ShareableUser(BaseModel):
 @router.get("/shareable", response_model=List[ShareableUser])
 def list_shareable_users(
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("settings", "view")),
+    _: User = Depends(get_current_user),
 ):
-    """List active users (id, email, full_name) for sharing dialogs. Editor+Admin."""
+    """List active users (id, email, full_name) for sharing dialogs."""
     return (
         db.query(User)
         .filter(User.status == UserStatus.ACTIVE)

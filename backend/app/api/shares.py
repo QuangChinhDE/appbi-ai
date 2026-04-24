@@ -9,6 +9,7 @@ import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -197,6 +198,23 @@ def _check_share_ownership(db: Session, current_user: User, resource_type: Resou
     require_full_access(db, current_user, resource, module)
 
 
+def _resolve_share_target_user(db: Session, body: ShareCreate) -> User:
+    if body.user_id is not None:
+        target_user = db.query(User).filter(User.id == body.user_id).first()
+    else:
+        normalized_email = str(body.email).strip().lower()
+        target_user = (
+            db.query(User)
+            .filter(func.lower(User.email) == normalized_email)
+            .first()
+        )
+
+    if not target_user or target_user.status != UserStatus.ACTIVE:
+        raise HTTPException(status_code=404, detail="Target user not found")
+
+    return target_user
+
+
 # ── CRUD Endpoints ────────────────────────────────────────────────────────────
 
 @router.get("/{resource_type}/{resource_id}", response_model=List[ShareResponse])
@@ -234,25 +252,24 @@ def add_share(
     """
     _check_share_ownership(db, current_user, resource_type, resource_id)
 
-    target_user = db.query(User).filter(User.id == body.user_id).first()
-    if not target_user:
-        raise HTTPException(status_code=404, detail="Target user not found")
+    target_user = _resolve_share_target_user(db, body)
+    target_user_id = target_user.id
 
     if resource_type == ResourceType.DASHBOARD:
         _require_dashboard_cascade_access(db, current_user, int(resource_id))
-        cascade_share_dashboard(db, int(resource_id), body.user_id, body.permission, current_user.id)
+        cascade_share_dashboard(db, int(resource_id), target_user_id, body.permission, current_user.id)
         share = db.query(ResourceShare).filter(
             ResourceShare.resource_type == ResourceType.DASHBOARD,
             ResourceShare.resource_id == resource_id,
-            ResourceShare.user_id == body.user_id,
+            ResourceShare.user_id == target_user_id,
         ).first()
     else:
-        _upsert_share(db, resource_type, resource_id, body.user_id, body.permission, current_user.id)
+        _upsert_share(db, resource_type, resource_id, target_user_id, body.permission, current_user.id)
         db.commit()
         share = db.query(ResourceShare).filter(
             ResourceShare.resource_type == resource_type,
             ResourceShare.resource_id == resource_id,
-            ResourceShare.user_id == body.user_id,
+            ResourceShare.user_id == target_user_id,
         ).first()
 
     return share

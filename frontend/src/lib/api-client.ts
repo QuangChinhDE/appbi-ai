@@ -298,7 +298,11 @@ export const sharesApi = {
     return response.data;
   },
 
-  share: async (resourceType: string, resourceId: number | string, payload: { user_id: string; permission: string }) => {
+  share: async (
+    resourceType: string,
+    resourceId: number | string,
+    payload: { user_id?: string; email?: string; permission: string },
+  ) => {
     const response = await apiClient.post(`/shares/${resourceType}/${resourceId}`, payload);
     return response.data;
   },

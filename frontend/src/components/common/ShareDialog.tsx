@@ -47,6 +47,10 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
   const [loadingShares, setLoadingShares] = useState(true);
   const [error, setError] = useState('');
   const [allTeamLoading, setAllTeamLoading] = useState(false);
+  const normalizedSearch = search.trim().toLowerCase();
+  const typedEmail = !selectedUser && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedSearch)
+    ? normalizedSearch
+    : '';
 
   // Load existing shares and all users
   useEffect(() => {
@@ -81,17 +85,27 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
     return u.email.toLowerCase().includes(q) || u.full_name.toLowerCase().includes(q);
   });
 
+  const matchedUser = selectedUser ?? filteredUsers.find((u) => u.email.toLowerCase() === normalizedSearch) ?? null;
+  const sharePayload = selectedUser
+    ? { user_id: selectedUser.id, email: selectedUser.email, permission }
+    : typedEmail
+      ? { email: typedEmail, permission }
+      : null;
+
   const handleShare = async () => {
-    if (!selectedUser) return;
+    if (!sharePayload) {
+      setError('Choose a listed user, or enter a valid AppBI user email.');
+      return;
+    }
     setLoading(true);
     setError('');
     try {
-      await sharesApi.share(resourceType, resourceId, { user_id: selectedUser.id, permission });
+      await sharesApi.share(resourceType, resourceId, sharePayload);
       // Refresh shares
       const newShares = await sharesApi.getShares(resourceType, resourceId);
       setShares(newShares);
       toast.success('Access shared', {
-        description: `${selectedUser.full_name} • ${resourceName}`,
+        description: `${matchedUser?.full_name || matchedUser?.email || typedEmail} • ${resourceName}`,
       });
       setSelectedUser(null);
       setSearch('');
@@ -223,12 +237,21 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
             <Button
               variant="primary"
               onClick={handleShare}
-              disabled={!selectedUser || loading}
+              disabled={!sharePayload || loading}
               loading={loading}
             >
               {loading ? 'Sharing…' : 'Share'}
             </Button>
           </div>
+          {!selectedUser && normalizedSearch && (
+            <p className="mt-2 text-tiny text-text-quaternary">
+              {matchedUser
+                ? `Matched ${matchedUser.email}. Click Share to grant access.`
+                : typedEmail
+                  ? `Share will look up ${typedEmail} in AppBI even if you do not pick it from the list.`
+                  : 'Keep typing a name, or enter a full email address.'}
+            </p>
+          )}
         </div>
 
         {/* Share with all team */}

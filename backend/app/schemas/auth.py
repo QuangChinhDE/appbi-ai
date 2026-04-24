@@ -129,8 +129,15 @@ class UserPreferencesUpdate(BaseModel):
 # ── Shares ────────────────────────────────────────────────────────────────────
 
 class ShareCreate(BaseModel):
-    user_id: uuid.UUID
+    user_id: Optional[uuid.UUID] = None
+    email: Optional[EmailStr] = None
     permission: SharePermission = SharePermission.VIEW
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "ShareCreate":
+        if self.user_id is None and self.email is None:
+            raise ValueError("Either user_id or email is required")
+        return self
 
 
 class ShareUpdate(BaseModel):
