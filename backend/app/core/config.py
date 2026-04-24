@@ -183,22 +183,30 @@ class Settings(BaseSettings):
         )
 
     @property
-    def active_quality_model(self) -> str:
-        """Model for quality rule suggestions."""
-        if self.GEMINI_API_KEY.strip():
-            return _first_non_empty(
-                self.BACKEND_AI_QUALITY_RULE_GEMINI_MODEL,
-                self.GEMINI_QUALITY_MODEL,
-                self.BACKEND_AI_TEMPLATE_IMPORT_GEMINI_MODEL,
-                self.GEMINI_IMPORT_MODEL,
-                "gemini-2.5-flash-lite",
-            )
+    def quality_gemini_model(self) -> str:
+        return _first_non_empty(
+            self.BACKEND_AI_QUALITY_RULE_GEMINI_MODEL,
+            self.GEMINI_QUALITY_MODEL,
+            self.BACKEND_AI_TEMPLATE_IMPORT_GEMINI_MODEL,
+            self.GEMINI_IMPORT_MODEL,
+            "gemini-2.5-flash",
+        )
+
+    @property
+    def quality_openrouter_model(self) -> str:
         return _first_non_empty(
             self.BACKEND_AI_QUALITY_RULE_OPENROUTER_MODEL,
             self.BACKEND_AI_DEFAULT_MODEL,
             self.AI_DESCRIPTION_MODEL,
-            "google/gemini-2.5-flash-lite",
+            "google/gemini-2.5-flash",
         )
+
+    @property
+    def active_quality_model(self) -> str:
+        """Model for quality rule suggestions."""
+        if self.GEMINI_API_KEY.strip():
+            return self.quality_gemini_model
+        return self.quality_openrouter_model
 
     @property
     def template_import_gemini_model(self) -> str:
@@ -254,8 +262,9 @@ class Settings(BaseSettings):
             self.OPENROUTER_API_KEY_5,
         ]
         keys = [k.strip() for k in numbered if k.strip()]
-        if not keys and self.OPENROUTER_API_KEY.strip():
-            keys = [self.OPENROUTER_API_KEY.strip()]
+        default_key = self.OPENROUTER_API_KEY.strip()
+        if default_key and default_key not in keys:
+            keys.append(default_key)
         return keys
 
     @property

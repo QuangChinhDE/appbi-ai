@@ -5,6 +5,7 @@ falls back to bare OPENROUTER_API_KEY, stops and logs when all keys are exhauste
 """
 import json
 import logging
+import re
 from typing import Optional
 
 import httpx
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _TIMEOUT = 45.0  # seconds
+_MAX_JSON_RETRIES_PER_KEY = 1
 
 _KEY_EXHAUSTED_STATUSES = {401, 402, 403, 429}
 
@@ -25,6 +27,28 @@ def _is_key_exhausted(exc: Exception) -> bool:
         return exc.response.status_code in _KEY_EXHAUSTED_STATUSES
     msg = str(exc).lower()
     return any(kw in msg for kw in ("401", "402", "403", "429", "rate limit", "quota", "insufficient credits", "invalid api key"))
+
+
+def _parse_json_object(content: str) -> Optional[dict]:
+    text = (content or "").strip()
+    if not text:
+        return None
+
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return None
+
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        return None
 
 
 class LLMClient:
@@ -57,7 +81,10 @@ class LLMClient:
         )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
-        return json.loads(content)
+        parsed = _parse_json_object(content)
+        if parsed is not None:
+            return parsed
+        raise json.JSONDecodeError("OpenRouter returned invalid JSON", content or "", 0)
 
     @staticmethod
     def complete_json(
@@ -80,19 +107,30 @@ class LLMClient:
         effective_model = model or settings.active_description_model
 
         for key_index, api_key in enumerate(api_keys, start=1):
-            try:
-                result = LLMClient._call_with_key(api_key, prompt, system, effective_model, max_tokens)
-                if result is not None:
-                    return result
-            except Exception as exc:
-                if _is_key_exhausted(exc):
-                    logger.warning(
-                        "LLMClient: API key #%d exhausted (model=%s): %s — trying next key",
-                        key_index, effective_model, exc,
-                    )
-                    continue
-                logger.warning("LLMClient: OpenRouter failed with key #%d — %s", key_index, exc)
-                return None  # non-quota error — don't rotate
+            for attempt in range(1, _MAX_JSON_RETRIES_PER_KEY + 1):
+                try:
+                    result = LLMClient._call_with_key(api_key, prompt, system, effective_model, max_tokens)
+                    if result is not None:
+                        return result
+                except Exception as exc:
+                    if _is_key_exhausted(exc):
+                        logger.warning(
+                            "LLMClient: API key #%d exhausted (model=%s): %s — trying next key",
+                            key_index, effective_model, exc,
+                        )
+                        break
+                    if isinstance(exc, json.JSONDecodeError):
+                        logger.warning(
+                            "LLMClient: invalid JSON from key #%d attempt %d/%d (model=%s): %s",
+                            key_index,
+                            attempt,
+                            _MAX_JSON_RETRIES_PER_KEY,
+                            effective_model,
+                            exc,
+                        )
+                        continue
+                    logger.warning("LLMClient: OpenRouter failed with key #%d — %s", key_index, exc)
+                    break
 
         logger.error(
             "LLMClient: all %d OpenRouter API key(s) exhausted. "

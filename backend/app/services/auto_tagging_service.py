@@ -17,6 +17,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.services.llm_client import LLMClient
 
 logger = logging.getLogger(__name__)
