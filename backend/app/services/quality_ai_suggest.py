@@ -66,6 +66,168 @@ Respond ONLY with a JSON object (no markdown, no explanation outside JSON):
 """
 
 
+def _clean_identifier(value: str) -> str:
+    text = value.strip()
+    if text[:1] in {'"', "'", '`', '['} and text[-1:] in {'"', "'", '`', ']'}:
+        text = text[1:-1].strip()
+    return text
+
+
+def _resolve_column_name(candidate: str, columns: List[Dict[str, str]]) -> str:
+    cleaned = _clean_identifier(candidate)
+    if not columns:
+        return cleaned
+
+    lowered = cleaned.lower()
+    for column in columns:
+        name = str(column.get("name") or "").strip()
+        if name.lower() == lowered:
+            return name
+    return cleaned
+
+
+def _parse_numeric_literal(value: str) -> int | float:
+    number = float(value)
+    return int(number) if number.is_integer() else number
+
+
+def _build_heuristic_result(
+    *,
+    rule_type: str,
+    dimension: str,
+    column_name: Optional[str],
+    config: Dict[str, Any],
+    severity: str,
+    name: str,
+    explanation: str,
+) -> Dict[str, Any]:
+    return {
+        "rule_type": rule_type,
+        "dimension": dimension,
+        "column_name": column_name,
+        "config": config,
+        "severity": severity,
+        "name": name,
+        "explanation": explanation,
+    }
+
+
+def _heuristic_rule_from_description(
+    description: str,
+    columns: List[Dict[str, str]],
+) -> Optional[Dict[str, Any]]:
+    """Handle compact expression-like prompts without needing an LLM roundtrip."""
+    text = description.strip()
+    if not text:
+        return None
+
+    not_null = re.fullmatch(
+        r"(?i)([\[\]`\"'A-Za-z_][\w.\[\]`\"']*)\s+(?:is\s+)?not\s+null",
+        text,
+    )
+    if not_null:
+        column_name = _resolve_column_name(not_null.group(1), columns)
+        return _build_heuristic_result(
+            rule_type="not_null",
+            dimension="completeness",
+            column_name=column_name,
+            config={},
+            severity="error",
+            name=f"{column_name} Not Null",
+            explanation=f"Ensures that {column_name} always has a value and never contains NULL.",
+        )
+
+    nullable_min = re.fullmatch(
+        r"(?i)([\[\]`\"'A-Za-z_][\w.\[\]`\"']*)\s+(?:is\s+)?null\s+or\s+([\[\]`\"'A-Za-z_][\w.\[\]`\"']*)\s*>=\s*(-?\d+(?:\.\d+)?)",
+        text,
+    )
+    if nullable_min and _clean_identifier(nullable_min.group(1)).lower() == _clean_identifier(nullable_min.group(2)).lower():
+        column_name = _resolve_column_name(nullable_min.group(1), columns)
+        min_value = _parse_numeric_literal(nullable_min.group(3))
+        return _build_heuristic_result(
+            rule_type="range_check",
+            dimension="validity",
+            column_name=column_name,
+            config={"min": min_value},
+            severity="warning",
+            name=f"{column_name} >= {min_value} (NULL allowed)",
+            explanation=f"Allows NULL values, but requires every non-null value in {column_name} to be at least {min_value}.",
+        )
+
+    min_only = re.fullmatch(
+        r"(?i)([\[\]`\"'A-Za-z_][\w.\[\]`\"']*)\s*>=\s*(-?\d+(?:\.\d+)?)",
+        text,
+    )
+    if min_only:
+        column_name = _resolve_column_name(min_only.group(1), columns)
+        min_value = _parse_numeric_literal(min_only.group(2))
+        return _build_heuristic_result(
+            rule_type="range_check",
+            dimension="validity",
+            column_name=column_name,
+            config={"min": min_value},
+            severity="warning",
+            name=f"{column_name} >= {min_value}",
+            explanation=f"Requires every non-null value in {column_name} to be at least {min_value}.",
+        )
+
+    max_only = re.fullmatch(
+        r"(?i)([\[\]`\"'A-Za-z_][\w.\[\]`\"']*)\s*<=\s*(-?\d+(?:\.\d+)?)",
+        text,
+    )
+    if max_only:
+        column_name = _resolve_column_name(max_only.group(1), columns)
+        max_value = _parse_numeric_literal(max_only.group(2))
+        return _build_heuristic_result(
+            rule_type="range_check",
+            dimension="validity",
+            column_name=column_name,
+            config={"max": max_value},
+            severity="warning",
+            name=f"{column_name} <= {max_value}",
+            explanation=f"Requires every non-null value in {column_name} to be at most {max_value}.",
+        )
+
+    between = re.fullmatch(
+        r"(?i)([\[\]`\"'A-Za-z_][\w.\[\]`\"']*)\s+between\s+(-?\d+(?:\.\d+)?)\s+and\s+(-?\d+(?:\.\d+)?)",
+        text,
+    )
+    if between:
+        column_name = _resolve_column_name(between.group(1), columns)
+        min_value = _parse_numeric_literal(between.group(2))
+        max_value = _parse_numeric_literal(between.group(3))
+        return _build_heuristic_result(
+            rule_type="range_check",
+            dimension="validity",
+            column_name=column_name,
+            config={"min": min_value, "max": max_value},
+            severity="warning",
+            name=f"{column_name} between {min_value} and {max_value}",
+            explanation=f"Requires every non-null value in {column_name} to stay between {min_value} and {max_value}.",
+        )
+
+    accepted_values = re.fullmatch(
+        r"(?i)([\[\]`\"'A-Za-z_][\w.\[\]`\"']*)\s+in\s*\(([^)]*)\)",
+        text,
+    )
+    if accepted_values:
+        column_name = _resolve_column_name(accepted_values.group(1), columns)
+        raw_values = [item.strip().strip("\"'") for item in accepted_values.group(2).split(",")]
+        values = [item for item in raw_values if item]
+        if values:
+            return _build_heuristic_result(
+                rule_type="accepted_values",
+                dimension="validity",
+                column_name=column_name,
+                config={"values": values},
+                severity="warning",
+                name=f"{column_name} accepted values",
+                explanation=f"Allows only the configured value list for non-null values in {column_name}.",
+            )
+
+    return None
+
+
 def _build_user_prompt(
     description: str,
     table_name: str,
@@ -187,6 +349,10 @@ async def suggest_quality_rule(
     columns: List[Dict[str, str]],
 ) -> Dict[str, Any]:
     """Main entry point: generate a quality rule suggestion from natural language."""
+    heuristic = _heuristic_rule_from_description(description, columns)
+    if heuristic is not None:
+        return heuristic
+
     user_prompt = _build_user_prompt(description, table_name, columns)
 
     result = None
