@@ -2600,6 +2600,19 @@ function RuleEditorDrawer({
 
             <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_400px] xl:items-start">
               <div className="min-w-0 space-y-3">
+                {!isEdit && showIntentCards && (
+                  <IntentCardsGrid onSelect={handleIntentSelect} />
+                )}
+
+                {!isEdit && showAiAssistant && (
+                  <AIRuleAssistant
+                    datasetId={datasetId}
+                    tableId={tableId}
+                    tables={tables}
+                    onApply={handleAIApply}
+                  />
+                )}
+
                 <div className="space-y-2 rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 p-3 shadow-linear-sm">
                   <SectionHeader title="Rule logic" helpText="Scope and parameters for pass/fail evaluation." />
                   {rtDef?.hint && (
