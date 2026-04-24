@@ -13,10 +13,10 @@ from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.core.share_access import require_share_access
 from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_full_access
-from app.models.models import Chart, Dashboard, DashboardChart, DataSource
-from app.models.chat_session import ChatSession
+from app.models.models import Chart, Dashboard, DashboardChart
 from app.models.dataset import Dataset, DatasetTable
 from app.models.resource_share import ResourceShare, ResourceType, SharePermission
 from app.models.user import User, UserStatus
@@ -168,36 +168,6 @@ def _revoke_cascade(
     db.commit()
 
 
-# ── Resource lookup for ownership check ───────────────────────────────────────
-
-_RESOURCE_MODEL_MAP = {
-    ResourceType.DASHBOARD: (Dashboard, "dashboards", "id"),
-    ResourceType.CHART: (Chart, "explore_charts", "id"),
-    ResourceType.DATASOURCE: (DataSource, "data_sources", "id"),
-    ResourceType.DATASET: (Dataset, "datasets", "id"),
-    ResourceType.CHAT_SESSION: (ChatSession, "ai_chat", "session_id"),
-}
-
-
-def _check_share_ownership(db: Session, current_user: User, resource_type: ResourceType, resource_id: str):
-    """Verify the current user owns the resource or has full module access before allowing share operations."""
-    model_info = _RESOURCE_MODEL_MAP.get(resource_type)
-    if not model_info:
-        raise HTTPException(status_code=400, detail="Unsupported resource type")
-    model, module, lookup_field = model_info
-    if lookup_field == "session_id":
-        lookup_value = resource_id
-    else:
-        try:
-            lookup_value = int(resource_id)
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=404, detail="Resource not found")
-    resource = db.query(model).filter(getattr(model, lookup_field) == lookup_value).first()
-    if not resource:
-        raise HTTPException(status_code=404, detail="Resource not found")
-    require_full_access(db, current_user, resource, module)
-
-
 def _resolve_share_target_user(db: Session, body: ShareCreate) -> User:
     if body.user_id is not None:
         target_user = db.query(User).filter(User.id == body.user_id).first()
@@ -225,7 +195,7 @@ def list_shares(
     current_user: User = Depends(get_current_user),
 ):
     """List all shares for a resource. Only owner or admin can list."""
-    _check_share_ownership(db, current_user, resource_type, resource_id)
+    require_share_access(db, current_user, resource_type, resource_id)
     shares = (
         db.query(ResourceShare)
         .filter(
@@ -250,7 +220,7 @@ def add_share(
     Share a resource with a user.
     Dashboards trigger cascade-share of charts + datasets.
     """
-    _check_share_ownership(db, current_user, resource_type, resource_id)
+    require_share_access(db, current_user, resource_type, resource_id)
 
     target_user = _resolve_share_target_user(db, body)
     target_user_id = target_user.id
@@ -285,7 +255,7 @@ def update_share(
     current_user: User = Depends(get_current_user),
 ):
     """Update permission on an existing share."""
-    _check_share_ownership(db, current_user, resource_type, resource_id)
+    require_share_access(db, current_user, resource_type, resource_id)
 
     share = db.query(ResourceShare).filter(
         ResourceShare.resource_type == resource_type,
@@ -321,7 +291,7 @@ def revoke_share(
     current_user: User = Depends(get_current_user),
 ):
     """Revoke access. For dashboards, also revokes cascaded chart/dataset shares."""
-    _check_share_ownership(db, current_user, resource_type, resource_id)
+    require_share_access(db, current_user, resource_type, resource_id)
 
     if resource_type == ResourceType.DASHBOARD:
         _revoke_cascade(db, int(resource_id), user_id)

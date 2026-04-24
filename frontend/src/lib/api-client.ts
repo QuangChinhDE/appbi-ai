@@ -261,8 +261,13 @@ export const usersApi = {
     return response.data;
   },
 
-  getShareable: async () => {
-    const response = await apiClient.get('/users/shareable');
+  getShareable: async (resourceType: string, resourceId: number | string) => {
+    const response = await apiClient.get('/users/shareable', {
+      params: {
+        resource_type: resourceType,
+        resource_id: String(resourceId),
+      },
+    });
     return response.data;
   },
 

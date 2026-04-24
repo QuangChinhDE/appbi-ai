@@ -59,7 +59,7 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
       try {
         const [sharesData, usersData] = await Promise.all([
           sharesApi.getShares(resourceType, resourceId),
-          usersApi.getShareable(),
+          usersApi.getShareable(resourceType, resourceId),
         ]);
         setShares(Array.isArray(sharesData) ? sharesData : []);
         setUsers(Array.isArray(usersData) ? usersData : []);

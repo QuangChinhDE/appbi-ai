@@ -5,12 +5,14 @@ User management endpoints.
 import uuid
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.share_access import require_share_access
 from app.core.dependencies import get_current_user, require_permission
+from app.models.resource_share import ResourceType
 from app.models.user import AuthProvider, User, UserStatus
 from app.schemas.auth import UserCreate, UserResponse, UserUpdate
 
@@ -30,10 +32,13 @@ class ShareableUser(BaseModel):
 
 @router.get("/shareable", response_model=List[ShareableUser])
 def list_shareable_users(
+    resource_type: ResourceType = Query(...),
+    resource_id: str = Query(..., min_length=1),
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    """List active users (id, email, full_name) for sharing dialogs."""
+    """List active users (id, email, full_name) for an authorized sharing dialog."""
+    require_share_access(db, current_user, resource_type, resource_id)
     return (
         db.query(User)
         .filter(User.status == UserStatus.ACTIVE)
