@@ -21,6 +21,7 @@ import {
   BookOpen,
   Loader2,
   RefreshCw,
+  Minus,
   ChevronDown,
   ChevronRight,
   Hash,
@@ -43,7 +44,7 @@ import {
   type DatasetModelView,
   type DatasetModelExplore,
 } from '@/hooks/use-dataset-model';
-import { RelationshipDialog } from './RelationshipDialog';
+import { RelationshipDialog, type RelationshipDialogValue } from './RelationshipDialog';
 import { DatasetDictionaryPanel } from './DatasetDictionaryPanel';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { toast } from '@/lib/toast';
@@ -55,6 +56,9 @@ const CARD_GAP_X   = 220;   // horizontal breathing between columns
 const CARD_GAP_Y   = 56;    // vertical breathing between rows
 const CANVAS_PAD   = 56;
 const ROW_HEIGHT   = 360;   // initial card height estimate for auto-layout
+const ZOOM_MIN = 0.7;
+const ZOOM_MAX = 1.6;
+const ZOOM_STEP = 0.1;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -195,9 +199,19 @@ interface ViewCardProps {
   isSelected?: boolean;
   relationshipCols?: Set<string>;
   calendarCols?: Set<string>;
+  relationDraftTarget?: string | null;
+  onStartRelationshipDrag?: (columnName: string, event: React.PointerEvent<HTMLButtonElement>) => void;
 }
 
-function ViewCard({ view, onEdit, isSelected, relationshipCols, calendarCols }: ViewCardProps) {
+function ViewCard({
+  view,
+  onEdit,
+  isSelected,
+  relationshipCols,
+  calendarCols,
+  relationDraftTarget,
+  onStartRelationshipDrag,
+}: ViewCardProps) {
   const [dimsOpen, setDimsOpen] = useState(true);
   const [msrOpen,  setMsrOpen]  = useState(false);
   const emphasizedCols = useMemo(
@@ -256,19 +270,24 @@ function ViewCard({ view, onEdit, isSelected, relationshipCols, calendarCols }: 
           {dimsOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
         </button>
         {dimsOpen && (
-          <div className="px-1.5 pb-1.5 space-y-0.5 max-h-48 overflow-y-auto">
+          <div className="px-1.5 pb-1.5 space-y-0.5 max-h-64 overflow-y-auto">
             {vis.map((d) => {
               const isRelationship = relationshipCols?.has(d.name) ?? false;
               const isCalendarJoin = calendarCols?.has(d.name) ?? false;
+              const isDropTarget = relationDraftTarget === d.name;
+              const canCreateRelationship = !view.system_managed && !isCalendarJoin;
               return (
                 <div
                   key={d.name}
+                  data-view-id={view.id}
                   data-col-name={d.name}
-                  className={`flex items-center gap-1.5 px-2 py-1 rounded text-[11px]${
+                  className={`group flex items-center gap-1.5 px-2 py-1 rounded text-[11px]${
                     isRelationship
                       ? ' bg-brand/10 border-l-2 border-brand/30 pl-1.5 font-medium'
                       : isCalendarJoin
                         ? ' bg-success/10 border-l-2 border-success/60 pl-1.5'
+                      : isDropTarget
+                        ? ' bg-brand/10 ring-1 ring-brand/40'
                       : ' hover:bg-surface-2'
                   }`}
                   title={d.sql || d.name}
@@ -286,8 +305,18 @@ function ViewCard({ view, onEdit, isSelected, relationshipCols, calendarCols }: 
                   {d.hidden && !isRelationship && !isCalendarJoin && (
                     <span className="ml-auto text-[9px] uppercase tracking-wide text-warning">hidden</span>
                   )}
-                  {isRelationship && (
-                    <Link2 className="w-2.5 h-2.5 text-brand ml-auto shrink-0" />
+                  {canCreateRelationship && (
+                    <button
+                      type="button"
+                      data-nodrag
+                      onPointerDown={(event) => onStartRelationshipDrag?.(d.name, event)}
+                      className={`ml-auto rounded p-0.5 text-brand transition-opacity hover:bg-brand/10 ${
+                        isRelationship || isDropTarget ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                      }`}
+                      title={`Drag from ${d.name} to create a relationship`}
+                    >
+                      <Link2 className="h-2.5 w-2.5 shrink-0" />
+                    </button>
                   )}
                   {!isRelationship && isCalendarJoin && (
                     <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-success/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-success">
@@ -319,7 +348,7 @@ function ViewCard({ view, onEdit, isSelected, relationshipCols, calendarCols }: 
           {msrOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
         </button>
         {msrOpen && (
-          <div className="px-1.5 pb-1.5 space-y-0.5 max-h-32 overflow-y-auto">
+          <div className="px-1.5 pb-1.5 space-y-0.5 max-h-40 overflow-y-auto">
             {visM.map((m) => (
               <div
                 key={m.name}
@@ -669,6 +698,19 @@ export function DataModelCanvas({
   const removeJoin    = useRemoveJoin();
   const [showCalendarLayer, setShowCalendarLayer] = useState(false);
   const [dictModalOpen, setDictModalOpen] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [dialogInitialValue, setDialogInitialValue] = useState<Partial<RelationshipDialogValue> | undefined>(undefined);
+  const [relationshipDrag, setRelationshipDrag] = useState<{
+    fromViewId: number;
+    fromColumn: string;
+    pointerX: number;
+    pointerY: number;
+    hoverTarget: { viewId: number; columnName: string } | null;
+  } | null>(null);
+  const relationshipDragRef = useRef(relationshipDrag);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => { relationshipDragRef.current = relationshipDrag; }, [relationshipDrag]);
   const calendarPresentationView = useMemo(
     () => (model?.views ?? []).find((view) => view.view_role === 'calendar_dimension') ?? null,
     [model?.views],
@@ -763,8 +805,8 @@ export function DataModelCanvas({
   const onCardDragMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const d = dragRef.current;
     if (!d) return;
-    const dx = e.clientX - d.startClientX;
-    const dy = e.clientY - d.startClientY;
+    const dx = (e.clientX - d.startClientX) / zoom;
+    const dy = (e.clientY - d.startClientY) / zoom;
     if (!d.moved && Math.hypot(dx, dy) < 4) return;   // click threshold
     d.moved = true;
     const nx = Math.max(0, Math.round(d.originX + dx));
@@ -774,7 +816,7 @@ export function DataModelCanvas({
       if (curr && curr.x === nx && curr.y === ny) return prev;
       return { ...prev, [d.id]: { x: nx, y: ny } };
     });
-  }, []);
+  }, [zoom]);
 
   const endCardDrag = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const d = dragRef.current;
@@ -792,6 +834,18 @@ export function DataModelCanvas({
       try { window.localStorage.removeItem(storageKey); } catch { /* ignore */ }
     }
   }, [storageKey]);
+
+  const handleZoomOut = useCallback(() => {
+    setZoom((current) => Math.max(ZOOM_MIN, Number((current - ZOOM_STEP).toFixed(2))));
+  }, []);
+
+  const handleZoomIn = useCallback(() => {
+    setZoom((current) => Math.min(ZOOM_MAX, Number((current + ZOOM_STEP).toFixed(2))));
+  }, []);
+
+  const handleResetZoom = useCallback(() => {
+    setZoom(1);
+  }, []);
 
   const hasUserLayout = Object.keys(userPositions).length > 0;
 
@@ -986,6 +1040,91 @@ export function DataModelCanvas({
     }
   };
 
+  const clientPointToCanvas = useCallback((clientX: number, clientY: number) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    return {
+      x: (clientX - rect.left) / zoom,
+      y: (clientY - rect.top) / zoom,
+    };
+  }, [zoom]);
+
+  const findColumnDropTarget = useCallback((clientX: number, clientY: number) => {
+    if (typeof document === 'undefined') return null;
+    const target = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('[data-col-name][data-view-id]');
+    if (!target) return null;
+    const viewId = Number(target.dataset.viewId);
+    const columnName = target.dataset.colName ?? '';
+    if (!viewId || !columnName) return null;
+    const targetView = visibleViews.find((view) => view.id === viewId);
+    if (!targetView || targetView.system_managed) return null;
+    return { viewId, columnName };
+  }, [visibleViews]);
+
+  const startRelationshipDrag = useCallback((fromViewId: number, fromColumn: string, event: React.PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const point = clientPointToCanvas(event.clientX, event.clientY);
+    if (!point) return;
+    setRelationshipDrag({
+      fromViewId,
+      fromColumn,
+      pointerX: point.x,
+      pointerY: point.y,
+      hoverTarget: null,
+    });
+  }, [clientPointToCanvas]);
+
+  useEffect(() => {
+    if (!relationshipDrag) return;
+
+    const updateRelationshipDrag = (clientX: number, clientY: number) => {
+      const point = clientPointToCanvas(clientX, clientY);
+      const target = findColumnDropTarget(clientX, clientY);
+      setRelationshipDrag((current) => {
+        if (!current || !point) return current;
+        const nextTarget = target && !(target.viewId === current.fromViewId && target.columnName === current.fromColumn)
+          ? target
+          : null;
+        return {
+          ...current,
+          pointerX: point.x,
+          pointerY: point.y,
+          hoverTarget: nextTarget,
+        };
+      });
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      updateRelationshipDrag(event.clientX, event.clientY);
+    };
+
+    const finalizeRelationshipDrag = (event: PointerEvent) => {
+      const current = relationshipDragRef.current;
+      if (!current) return;
+      const target = findColumnDropTarget(event.clientX, event.clientY);
+      setRelationshipDrag(null);
+      if (!target || (target.viewId === current.fromViewId && target.columnName === current.fromColumn)) return;
+      setSelectedRelKey(null);
+      setDialogInitialValue({
+        fromViewId: current.fromViewId,
+        toViewId: target.viewId,
+        fromColumn: current.fromColumn,
+        toColumn: target.columnName,
+      });
+      setDialogOpen(true);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', finalizeRelationshipDrag);
+    window.addEventListener('pointercancel', finalizeRelationshipDrag);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', finalizeRelationshipDrag);
+      window.removeEventListener('pointercancel', finalizeRelationshipDrag);
+    };
+  }, [clientPointToCanvas, findColumnDropTarget, relationshipDrag]);
+
   // ── Build SVG line endpoints (must be before early returns — Rules of Hooks) ──
 
   /**
@@ -1031,6 +1170,49 @@ export function DataModelCanvas({
       return [{ rel, sx, sy, sDir, tx, ty, tDir }];
     });
   }, [relationships, effectivePositions, viewByName, columnAnchorY]);
+
+  const relationshipDraftLine = useMemo(() => {
+    if (!relationshipDrag) return null;
+    const fromPos = effectivePositions[relationshipDrag.fromViewId];
+    if (!fromPos) return null;
+
+    const HEADER_CY = 22;
+    const fromOff = columnAnchorY[relationshipDrag.fromViewId]?.[relationshipDrag.fromColumn];
+    const sourceCenterX = fromPos.x + CARD_WIDTH / 2;
+
+    const targetView = relationshipDrag.hoverTarget
+      ? visibleViews.find((view) => view.id === relationshipDrag.hoverTarget!.viewId)
+      : null;
+    const targetPos = targetView ? effectivePositions[targetView.id] : null;
+    const targetCenterX = targetPos ? targetPos.x + CARD_WIDTH / 2 : relationshipDrag.pointerX;
+
+    const sDir: 1 | -1 = targetCenterX >= sourceCenterX ? 1 : -1;
+    const tDir: 1 | -1 = targetCenterX >= sourceCenterX ? -1 : 1;
+
+    const sx = sDir > 0 ? fromPos.x + CARD_WIDTH : fromPos.x;
+    const sy = fromPos.y + (fromOff != null ? fromOff : HEADER_CY);
+
+    if (targetPos && relationshipDrag.hoverTarget) {
+      const toOff = columnAnchorY[targetView!.id]?.[relationshipDrag.hoverTarget.columnName];
+      return {
+        sx,
+        sy,
+        sDir,
+        tx: tDir > 0 ? targetPos.x + CARD_WIDTH : targetPos.x,
+        ty: targetPos.y + (toOff != null ? toOff : HEADER_CY),
+        tDir,
+      };
+    }
+
+    return {
+      sx,
+      sy,
+      sDir,
+      tx: relationshipDrag.pointerX,
+      ty: relationshipDrag.pointerY,
+      tDir,
+    };
+  }, [columnAnchorY, effectivePositions, relationshipDrag, visibleViews]);
 
   // ── Render guards (after all hooks) ──────────────────────────────────────
 
@@ -1130,6 +1312,34 @@ export function DataModelCanvas({
               {selectedRelationship?.origin === 'auto_calendar' ? 'Remove date link' : 'Delete'}
             </button>
           )}
+          <div className="flex items-center gap-1 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-1 py-1">
+            <button
+              type="button"
+              onClick={handleZoomOut}
+              disabled={zoom <= ZOOM_MIN}
+              className="rounded p-1 text-text-secondary hover:bg-surface-2 disabled:opacity-40"
+              title="Zoom out"
+            >
+              <Minus className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={handleResetZoom}
+              className="min-w-[52px] rounded px-2 py-1 text-[11px] font-medium text-text-secondary hover:bg-surface-2"
+              title="Reset zoom"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              type="button"
+              onClick={handleZoomIn}
+              disabled={zoom >= ZOOM_MAX}
+              className="rounded p-1 text-text-secondary hover:bg-surface-2 disabled:opacity-40"
+              title="Zoom in"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+          </div>
           {/* Dictionary modal button */}
           <button
             onClick={() => setDictModalOpen(true)}
@@ -1153,7 +1363,11 @@ export function DataModelCanvas({
           )}
           {canEdit && (
             <button
-              onClick={() => { setSelectedRelKey(null); setDialogOpen(true); }}
+              onClick={() => {
+                setSelectedRelKey(null);
+                setDialogInitialValue(undefined);
+                setDialogOpen(true);
+              }}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-brand
                 border border-brand/40 bg-brand/10 rounded-md hover:bg-brand/15 transition-colors"
             >
@@ -1188,6 +1402,7 @@ export function DataModelCanvas({
 
       {/* Canvas */}
       <div
+        ref={viewportRef}
         className="flex-1 overflow-auto bg-[#f8f9fc]"
         onClick={() => setSelectedRelKey(null)}
         style={{
@@ -1198,77 +1413,109 @@ export function DataModelCanvas({
         <div
           style={{
             position: 'relative',
-            width: canvasSize.width,
-            height: canvasSize.height,
+            width: canvasSize.width * zoom,
+            height: canvasSize.height * zoom,
             minWidth: '100%',
             minHeight: '100%',
           }}
         >
-          {/* SVG lines — below cards */}
-          <svg
+          <div
+            ref={canvasRef}
             style={{
               position: 'absolute',
               inset: 0,
-              width: '100%',
-              height: '100%',
-              overflow: 'visible',
+              width: canvasSize.width,
+              height: canvasSize.height,
+              transform: `scale(${zoom})`,
+              transformOrigin: 'top left',
             }}
           >
-            {lineEndpoints.map(({ rel, sx, sy, sDir, tx, ty, tDir }) => (
-              <RelLine
-                key={rel.key}
-                sx={sx} sy={sy}
-                tx={tx} ty={ty}
-                sDir={sDir} tDir={tDir}
-                fromCol={rel.fromCol}
-                toCol={rel.toCol}
-                relationship={rel.relationship}
-                joinType={rel.joinType}
-                isSelected={selectedRelKey === rel.key}
-                onClick={() => setSelectedRelKey(selectedRelKey === rel.key ? null : rel.key)}
-              />
-            ))}
-          </svg>
-
-          {/* Table cards — draggable; auto layout with per-view overrides */}
-          {visibleViews.map((view) => {
-            const pos = effectivePositions[view.id];
-            if (!pos) return null;
-            const isDragging = draggingId === view.id;
-            return (
-              <div
-                key={view.id}
-                ref={(el) => { cardRefs.current[view.id] = el; }}
-                onPointerDown={(e) => startCardDrag(view.id, e)}
-                onPointerMove={onCardDragMove}
-                onPointerUp={endCardDrag}
-                onPointerCancel={endCardDrag}
-                style={{
-                  position: 'absolute',
-                  left: pos.x,
-                  top: pos.y,
-                  width: CARD_WIDTH,
-                  zIndex: isDragging ? 10 : 1,
-                  cursor: isDragging ? 'grabbing' : 'grab',
-                  touchAction: 'none',
-                  transition: isDragging ? 'none' : 'box-shadow 0.15s',
-                  boxShadow: isDragging ? '0 8px 24px rgba(15, 23, 42, 0.18)' : undefined,
-                }}
-              >
-                <ViewCard
-                  view={view}
-                  onEdit={
-                    onSelectView && !view.system_managed
-                      ? () => onSelectView(view)
-                      : undefined
-                  }
-                  isSelected={selectedViewId === view.id}
-                  relationshipCols={relationshipHighlights[view.id]}
-                  calendarCols={calendarHighlights[view.id]}
+            {/* SVG lines — below cards */}
+            <svg
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                overflow: 'visible',
+              }}
+            >
+              {lineEndpoints.map(({ rel, sx, sy, sDir, tx, ty, tDir }) => (
+                <RelLine
+                  key={rel.key}
+                  sx={sx} sy={sy}
+                  tx={tx} ty={ty}
+                  sDir={sDir} tDir={tDir}
+                  fromCol={rel.fromCol}
+                  toCol={rel.toCol}
+                  relationship={rel.relationship}
+                  joinType={rel.joinType}
+                  isSelected={selectedRelKey === rel.key}
+                  onClick={() => setSelectedRelKey(selectedRelKey === rel.key ? null : rel.key)}
                 />
-              </div>
-            );
-          })}
+              ))}
+              {relationshipDraftLine && (
+                <path
+                  d={makeBezierPath(
+                    relationshipDraftLine.sx,
+                    relationshipDraftLine.sy,
+                    relationshipDraftLine.sDir,
+                    relationshipDraftLine.tx,
+                    relationshipDraftLine.ty,
+                    relationshipDraftLine.tDir,
+                  )}
+                  fill="none"
+                  stroke="#2563eb"
+                  strokeWidth={2}
+                  strokeDasharray="7 5"
+                  opacity={0.9}
+                  style={{ pointerEvents: 'none' }}
+                />
+              )}
+            </svg>
+
+            {/* Table cards — draggable; auto layout with per-view overrides */}
+            {visibleViews.map((view) => {
+              const pos = effectivePositions[view.id];
+              if (!pos) return null;
+              const isDragging = draggingId === view.id;
+              return (
+                <div
+                  key={view.id}
+                  ref={(el) => { cardRefs.current[view.id] = el; }}
+                  onPointerDown={(e) => startCardDrag(view.id, e)}
+                  onPointerMove={onCardDragMove}
+                  onPointerUp={endCardDrag}
+                  onPointerCancel={endCardDrag}
+                  style={{
+                    position: 'absolute',
+                    left: pos.x,
+                    top: pos.y,
+                    width: CARD_WIDTH,
+                    zIndex: isDragging ? 10 : 1,
+                    cursor: isDragging ? 'grabbing' : 'grab',
+                    touchAction: 'none',
+                    transition: isDragging ? 'none' : 'box-shadow 0.15s',
+                    boxShadow: isDragging ? '0 8px 24px rgba(15, 23, 42, 0.18)' : undefined,
+                  }}
+                >
+                  <ViewCard
+                    view={view}
+                    onEdit={
+                      onSelectView && !view.system_managed
+                        ? () => onSelectView(view)
+                        : undefined
+                    }
+                    isSelected={selectedViewId === view.id}
+                    relationshipCols={relationshipHighlights[view.id]}
+                    calendarCols={calendarHighlights[view.id]}
+                    relationDraftTarget={relationshipDrag?.hoverTarget?.viewId === view.id ? relationshipDrag.hoverTarget.columnName : null}
+                    onStartRelationshipDrag={(columnName, event) => startRelationshipDrag(view.id, columnName, event)}
+                  />
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
 
@@ -1278,6 +1525,7 @@ export function DataModelCanvas({
         onClose={() => setDialogOpen(false)}
         onSave={handleAddJoin}
         views={joinableViews}
+        initialValue={dialogInitialValue}
         isSaving={addJoin.isPending}
       />
 

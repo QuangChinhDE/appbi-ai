@@ -23,9 +23,9 @@ class ReportTemplate(Base):
     page_size = Column(String(20), nullable=False, default="A4")       # A4, A3, Letter
     orientation = Column(String(20), nullable=False, default="portrait")  # portrait, landscape
 
-    # Blocks stored as JSON array
-    # Each block: {"id": "uuid", "type": "title|table|signature|text|spacer|image",
-    #              "layout": {"x":0,"y":0,"w":12,"h":4}, "config": {...}}
+    # Canonical template design payload stored as JSON.
+    # Legacy templates use the historic table-centric shape.
+    # New templates use the clean document engine payload.
     blocks = Column(JSON, nullable=False, default=list)
 
     # User-defined filters (array of filter definitions)

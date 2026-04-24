@@ -43,6 +43,7 @@ from app.services import (
     EmbeddingService,
     DatasetQualityService,
 )
+from app.services.dataset_quality_service import QualityRuleConflictError
 from app.services import query_cache
 from app.services.chart_contracts import normalize_filter_conditions
 from app.services.dataset_calendar_service import (
@@ -2358,6 +2359,9 @@ def create_quality_rule(
 
     try:
         return DatasetQualityService.create_rule(db, dataset_id, body)
+    except QualityRuleConflictError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2388,6 +2392,9 @@ def create_quality_rules_bulk(
 
     try:
         return DatasetQualityService.create_rules_bulk(db, dataset_id, body.rules)
+    except QualityRuleConflictError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2414,6 +2421,9 @@ def update_quality_rule(
 
     try:
         return DatasetQualityService.update_rule(db, rule, body)
+    except QualityRuleConflictError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2475,6 +2485,9 @@ def duplicate_quality_rule(
             target_table_id=body.target_table_id,
             name_suffix=body.name_suffix,
         )
+    except QualityRuleConflictError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc

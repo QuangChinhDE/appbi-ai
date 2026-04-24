@@ -233,6 +233,11 @@ export const permissionsApi = {
     return response.data;
   },
 
+  getTeams: async () => {
+    const response = await apiClient.get('/permissions/teams');
+    return response.data;
+  },
+
   getMyPermissions: async () => {
     const response = await apiClient.get('/permissions/me');
     return response.data;
@@ -250,6 +255,32 @@ export const permissionsApi = {
 
   applyPreset: async (userId: string, preset: string) => {
     const response = await apiClient.put(`/permissions/${userId}/preset`, { preset });
+    return response.data;
+  },
+
+  createTeam: async (payload: { name: string; description?: string; member_ids: string[] }) => {
+    const response = await apiClient.post('/permissions/teams', payload);
+    return response.data;
+  },
+
+  updateTeam: async (teamId: string, payload: { name: string; description?: string; member_ids: string[] }) => {
+    const response = await apiClient.put(`/permissions/teams/${teamId}`, payload);
+    return response.data;
+  },
+
+  deleteTeam: async (teamId: string) => {
+    await apiClient.delete(`/permissions/teams/${teamId}`);
+  },
+};
+
+export const teamsApi = {
+  getShareable: async (resourceType: string, resourceId: number | string) => {
+    const response = await apiClient.get('/teams/shareable', {
+      params: {
+        resource_type: resourceType,
+        resource_id: String(resourceId),
+      },
+    });
     return response.data;
   },
 };
@@ -281,12 +312,13 @@ export const usersApi = {
     full_name: string;
     auth_provider: 'password' | 'google';
     password?: string;
+    team_ids?: string[];
   }) => {
     const response = await apiClient.post('/users/', payload);
     return response.data;
   },
 
-  update: async (id: string, payload: { status?: string }) => {
+  update: async (id: string, payload: { status?: string; team_ids?: string[] }) => {
     const response = await apiClient.put(`/users/${id}`, payload);
     return response.data;
   },
@@ -306,10 +338,19 @@ export const sharesApi = {
   share: async (
     resourceType: string,
     resourceId: number | string,
-    payload: { user_id?: string; email?: string; permission: string },
+    payload: { user_id?: string; email?: string; team_id?: string; permission: string },
   ) => {
     const response = await apiClient.post(`/shares/${resourceType}/${resourceId}`, payload);
     return response.data;
+  },
+
+  updateShareEntry: async (resourceType: string, resourceId: number | string, shareId: number, payload: { permission: string }) => {
+    const response = await apiClient.put(`/shares/${resourceType}/${resourceId}/entries/${shareId}`, payload);
+    return response.data;
+  },
+
+  revokeShareEntry: async (resourceType: string, resourceId: number | string, shareId: number) => {
+    await apiClient.delete(`/shares/${resourceType}/${resourceId}/entries/${shareId}`);
   },
 
   updateShare: async (resourceType: string, resourceId: number | string, userId: string, payload: { permission: string }) => {

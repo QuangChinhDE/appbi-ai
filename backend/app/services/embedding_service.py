@@ -303,12 +303,24 @@ class EmbeddingService:
                         1 - (re.embedding <=> '{qemb_lit}'::vector) AS similarity
                     FROM resource_embeddings re
                     JOIN charts c ON c.id = re.resource_id
-                    LEFT JOIN resource_shares rs
-                        ON rs.resource_type = 'chart'
-                        AND rs.resource_id = CAST(c.id AS varchar)
-                        AND rs.user_id = CAST(:uid AS uuid)
                     WHERE re.resource_type = :rtype
-                      AND (c.owner_id = CAST(:uid AS uuid) OR rs.id IS NOT NULL)
+                                            AND (
+                                                c.owner_id = CAST(:uid AS uuid)
+                                                OR EXISTS (
+                                                    SELECT 1
+                                                    FROM resource_shares rs
+                                                    WHERE rs.resource_type = 'chart'
+                                                        AND rs.resource_id = CAST(c.id AS varchar)
+                                                        AND (
+                                                            rs.user_id = CAST(:uid AS uuid)
+                                                            OR rs.team_id IN (
+                                                                SELECT tm.team_id
+                                                                FROM team_memberships tm
+                                                                WHERE tm.user_id = CAST(:uid AS uuid)
+                                                            )
+                                                        )
+                                                )
+                                            )
                     ORDER BY re.embedding <=> '{qemb_lit}'::vector
                     LIMIT :lim
                 """

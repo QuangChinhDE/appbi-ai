@@ -4,8 +4,12 @@
 import apiClient from '@/lib/api-client';
 import type {
   ReportTemplate,
+  TemplateBlocks,
   ReportTemplateCreate,
   ReportTemplateUpdate,
+  TemplateActiveFilterValue,
+  TemplateDefinition,
+  TemplateFilter,
 } from '@/types/template';
 import type {
   AnalysisResponse,
@@ -40,12 +44,20 @@ export const reportTemplateApi = {
 
   exportExcel: async (
     id: number,
-    activeFilters: Array<{ filterId: string; value: any }>,
+    activeFilters: TemplateActiveFilterValue[],
     templateName?: string,
+    overrides?: {
+      blocks?: TemplateBlocks;
+      filters?: TemplateFilter[];
+    },
   ): Promise<void> => {
     const response = await apiClient.post(
       `/report-templates/${id}/export-excel`,
-      { active_filters: activeFilters },
+      {
+        active_filters: activeFilters,
+        blocks: overrides?.blocks,
+        filters: overrides?.filters,
+      },
       { responseType: 'arraybuffer' },
     );
     const blob = new Blob([response.data], {
@@ -61,6 +73,18 @@ export const reportTemplateApi = {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  },
+
+  saveManualData: async (
+    id: number,
+    rows: Record<string, any>[],
+    blocks?: TemplateDefinition,
+  ): Promise<{ rows_saved: number }> => {
+    const response = await apiClient.post(`/report-templates/${id}/manual-writeback`, {
+      rows,
+      blocks,
+    });
+    return response.data;
   },
 
   importAnalyze: async (file: File, sheetName?: string, aiEnhance: boolean = false): Promise<AnalysisResponse> => {

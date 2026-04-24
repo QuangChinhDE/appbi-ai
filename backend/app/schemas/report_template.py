@@ -31,7 +31,7 @@ class ReportTemplateBase(BaseModel):
 
 class ReportTemplateCreate(ReportTemplateBase):
     """Request body for creating a template."""
-    blocks: Any = Field(default_factory=_default_template_definition, description="TemplateDefinition v3")
+    blocks: Any = Field(default_factory=_default_template_definition, description="Legacy table definition or document engine payload")
     filters: List[Dict[str, Any]] = Field(default_factory=list)
 
 
@@ -41,14 +41,14 @@ class ReportTemplateUpdate(BaseModel):
     description: Optional[str] = None
     page_size: Optional[str] = None
     orientation: Optional[str] = None
-    blocks: Optional[Any] = Field(None, description="TemplateDefinition v3")
+    blocks: Optional[Any] = Field(None, description="Legacy table definition or document engine payload")
     filters: Optional[List[Dict[str, Any]]] = None
 
 
 class ReportTemplateResponse(ReportTemplateBase):
     """JSON sent back to the client."""
     id: int
-    blocks: Any = Field(default_factory=_default_template_definition, description="TemplateDefinition v3")
+    blocks: Any = Field(default_factory=_default_template_definition, description="Legacy table definition or document engine payload")
     filters: List[Dict[str, Any]] = Field(default_factory=list)
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Search, Users, Trash2 } from 'lucide-react';
-import { usersApi, sharesApi } from '@/lib/api-client';
+import { teamsApi, usersApi, sharesApi } from '@/lib/api-client';
 import { extractApiError } from '@/lib/api-errors';
 import { toast } from '@/lib/toast';
 import { Modal } from '@/components/common/Modal';
@@ -18,9 +18,13 @@ interface ShareUser {
 }
 
 interface ShareEntry {
-  user_id: string;
+  id: number;
+  target_type: 'user' | 'team';
+  user_id?: string | null;
+  team_id?: string | null;
   permission: Permission;
   user?: ShareUser;
+  team?: ShareTeam;
 }
 
 interface UserOption {
@@ -28,6 +32,20 @@ interface UserOption {
   email: string;
   full_name: string;
   role: string;
+}
+
+interface ShareTeam {
+  id: string;
+  name: string;
+  description?: string | null;
+  member_count?: number;
+}
+
+interface TeamOption {
+  id: string;
+  name: string;
+  description?: string | null;
+  member_count: number;
 }
 
 interface ShareDialogProps {
@@ -40,29 +58,47 @@ interface ShareDialogProps {
 export function ShareDialog({ resourceType, resourceId, resourceName, onClose }: ShareDialogProps) {
   const [shares, setShares] = useState<ShareEntry[]>([]);
   const [users, setUsers] = useState<UserOption[]>([]);
+  const [teams, setTeams] = useState<TeamOption[]>([]);
   const [search, setSearch] = useState('');
   const [selectedUser, setSelectedUser] = useState<UserOption | null>(null);
+  const [selectedTeamId, setSelectedTeamId] = useState('');
   const [permission, setPermission] = useState<Permission>('view');
-  const [loading, setLoading] = useState(false);
+  const [userShareLoading, setUserShareLoading] = useState(false);
+  const [teamShareLoading, setTeamShareLoading] = useState(false);
   const [loadingShares, setLoadingShares] = useState(true);
   const [error, setError] = useState('');
-  const [allTeamLoading, setAllTeamLoading] = useState(false);
   const normalizedSearch = search.trim().toLowerCase();
   const typedEmail = !selectedUser && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedSearch)
     ? normalizedSearch
     : '';
 
-  // Load existing shares and all users
+  const getShareTargetLabel = (share: ShareEntry) => {
+    if (share.target_type === 'team') {
+      return share.team?.name || 'Team';
+    }
+    return share.user?.full_name || share.user?.email || share.user_id || 'User';
+  };
+
+  const getShareTargetDescription = (share: ShareEntry) => {
+    if (share.target_type === 'team') {
+      return share.team?.description || 'Applies to current and future members of this team.';
+    }
+    return share.user?.email || 'Direct user access';
+  };
+
+  // Load existing shares, users, and shareable teams
   useEffect(() => {
     const load = async () => {
       setLoadingShares(true);
       try {
-        const [sharesData, usersData] = await Promise.all([
+        const [sharesData, usersData, teamsData] = await Promise.all([
           sharesApi.getShares(resourceType, resourceId),
           usersApi.getShareable(resourceType, resourceId),
+          teamsApi.getShareable(resourceType, resourceId),
         ]);
         setShares(Array.isArray(sharesData) ? sharesData : []);
         setUsers(Array.isArray(usersData) ? usersData : []);
+        setTeams(Array.isArray(teamsData) ? teamsData : []);
       } catch {
         const message = 'Failed to load sharing information.';
         setError(message);
@@ -71,6 +107,7 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
         });
         setShares([]);
         setUsers([]);
+        setTeams([]);
       } finally {
         setLoadingShares(false);
       }
@@ -78,16 +115,27 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
     load();
   }, [resourceType, resourceId]);
 
+  const directUserShareIds = new Set(
+    shares
+      .filter((share) => share.target_type === 'user' && share.user_id)
+      .map((share) => share.user_id as string),
+  );
+
   const filteredUsers = (users || []).filter((u) => {
-    const alreadyShared = shares.some((s) => s.user_id === u.id);
+    const alreadyShared = directUserShareIds.has(u.id);
     if (alreadyShared) return false;
     const q = search.toLowerCase();
     return u.email.toLowerCase().includes(q) || u.full_name.toLowerCase().includes(q);
   });
 
+  const availableTeams = teams.filter(
+    (team) => !shares.some((share) => share.target_type === 'team' && share.team_id === team.id),
+  );
+  const selectedTeam = availableTeams.find((team) => team.id === selectedTeamId) ?? null;
+
   const matchedUser = selectedUser ?? filteredUsers.find((u) => u.email.toLowerCase() === normalizedSearch) ?? null;
   const sharePayload = selectedUser
-    ? { user_id: selectedUser.id, email: selectedUser.email, permission }
+    ? { user_id: selectedUser.id, permission }
     : typedEmail
       ? { email: typedEmail, permission }
       : null;
@@ -97,7 +145,7 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
       setError('Choose a listed user, or enter a valid AppBI user email.');
       return;
     }
-    setLoading(true);
+    setUserShareLoading(true);
     setError('');
     try {
       await sharesApi.share(resourceType, resourceId, sharePayload);
@@ -116,20 +164,46 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
         description: resourceName,
       });
     } finally {
-      setLoading(false);
+      setUserShareLoading(false);
     }
   };
 
-  const handleUpdatePermission = async (userId: string, newPermission: Permission) => {
-    const sharedUser = shares.find((share) => share.user_id === userId)?.user;
+  const handleShareTeam = async () => {
+    if (!selectedTeam) {
+      setError('Choose a configured team to share with.');
+      return;
+    }
+    setTeamShareLoading(true);
     setError('');
     try {
-      await sharesApi.updateShare(resourceType, resourceId, userId, { permission: newPermission });
+      await sharesApi.share(resourceType, resourceId, { team_id: selectedTeam.id, permission });
+      const newShares = await sharesApi.getShares(resourceType, resourceId);
+      setShares(newShares);
+      toast.success('Team access shared', {
+        description: `${selectedTeam.name} • ${resourceName}`,
+      });
+      setSelectedTeamId('');
+    } catch (err: unknown) {
+      const message = extractApiError(err, 'Failed to share with team.');
+      setError(message);
+      toast.error(message, {
+        description: resourceName,
+      });
+    } finally {
+      setTeamShareLoading(false);
+    }
+  };
+
+  const handleUpdatePermission = async (shareId: number, newPermission: Permission) => {
+    const sharedTarget = shares.find((share) => share.id === shareId);
+    setError('');
+    try {
+      await sharesApi.updateShareEntry(resourceType, resourceId, shareId, { permission: newPermission });
       setShares((prev) =>
-        prev.map((s) => (s.user_id === userId ? { ...s, permission: newPermission } : s))
+        prev.map((s) => (s.id === shareId ? { ...s, permission: newPermission } : s))
       );
       toast.success('Permission updated', {
-        description: `${sharedUser?.full_name || sharedUser?.email || userId} • ${resourceName}`,
+        description: `${sharedTarget ? getShareTargetLabel(sharedTarget) : shareId} • ${resourceName}`,
       });
     } catch {
       const message = 'Failed to update permission.';
@@ -140,14 +214,14 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
     }
   };
 
-  const handleRevoke = async (userId: string) => {
-    const sharedUser = shares.find((share) => share.user_id === userId)?.user;
+  const handleRevoke = async (shareId: number) => {
+    const sharedTarget = shares.find((share) => share.id === shareId);
     setError('');
     try {
-      await sharesApi.revokeShare(resourceType, resourceId, userId);
-      setShares((prev) => prev.filter((s) => s.user_id !== userId));
+      await sharesApi.revokeShareEntry(resourceType, resourceId, shareId);
+      setShares((prev) => prev.filter((s) => s.id !== shareId));
       toast.success('Access revoked', {
-        description: `${sharedUser?.full_name || sharedUser?.email || userId} • ${resourceName}`,
+        description: `${sharedTarget ? getShareTargetLabel(sharedTarget) : shareId} • ${resourceName}`,
       });
     } catch {
       const message = 'Failed to revoke access.';
@@ -155,27 +229,6 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
       toast.error(message, {
         description: resourceName,
       });
-    }
-  };
-
-  const handleShareAllTeam = async () => {
-    setAllTeamLoading(true);
-    setError('');
-    try {
-      await sharesApi.shareAllTeam(resourceType, resourceId, { permission });
-      const newShares = await sharesApi.getShares(resourceType, resourceId);
-      setShares(newShares);
-      toast.success('Shared with team', {
-        description: `${resourceName} • ${permission}`,
-      });
-    } catch (err: unknown) {
-      const message = extractApiError(err, 'Failed to share with team.');
-      setError(message);
-      toast.error(message, {
-        description: resourceName,
-      });
-    } finally {
-      setAllTeamLoading(false);
     }
   };
 
@@ -237,10 +290,10 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
             <Button
               variant="primary"
               onClick={handleShare}
-              disabled={!sharePayload || loading}
-              loading={loading}
+              disabled={!sharePayload || userShareLoading}
+              loading={userShareLoading}
             >
-              {loading ? 'Sharing…' : 'Share'}
+              {userShareLoading ? 'Sharing…' : 'Share'}
             </Button>
           </div>
           {!selectedUser && normalizedSearch && (
@@ -254,25 +307,48 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
           )}
         </div>
 
-        {/* Share with all team */}
-        <div className="flex items-center justify-between py-3 border-t border-[rgb(var(--border-line))]">
-          <div className="flex items-center gap-2">
-            <Users className="h-4 w-4 text-text-quaternary" />
-            <span className="text-caption text-text-secondary">Share with entire team</span>
+        {/* Add team section */}
+        <div className="border-t border-[rgb(var(--border-line))] pt-4">
+          <label className="block text-label font-emphasis text-text-secondary mb-2">Add team</label>
+          <div className="flex gap-2">
+            <Select
+              className="flex-1"
+              value={selectedTeamId}
+              onChange={(e) => setSelectedTeamId(e.target.value)}
+            >
+              <option value="">Select a configured team…</option>
+              {availableTeams.map((team) => (
+                <option key={team.id} value={team.id}>
+                  {team.name} ({team.member_count})
+                </option>
+              ))}
+            </Select>
+            <Select
+              className="w-auto"
+              value={permission}
+              onChange={(e) => setPermission(e.target.value as Permission)}
+            >
+              <option value="view">Viewer</option>
+              <option value="edit">Editor</option>
+            </Select>
+            <Button
+              variant="primary"
+              onClick={handleShareTeam}
+              disabled={!selectedTeam || teamShareLoading}
+              loading={teamShareLoading}
+            >
+              {teamShareLoading ? 'Sharing…' : 'Share'}
+            </Button>
           </div>
-          <Button
-            variant="link"
-            onClick={handleShareAllTeam}
-            disabled={allTeamLoading}
-          >
-            {allTeamLoading ? 'Sharing…' : `Share as ${permission}`}
-          </Button>
+          <p className="mt-2 text-tiny text-text-quaternary">
+            Team shares follow the team setup in Settings, so future members inherit access automatically.
+          </p>
         </div>
 
         {/* Existing shares */}
         <div>
           <h3 className="text-label font-emphasis text-text-secondary mb-2">
-            People with access {shares.length > 0 && <span className="text-text-quaternary">({shares.length})</span>}
+            People and teams with access {shares.length > 0 && <span className="text-text-quaternary">({shares.length})</span>}
           </h3>
           {loadingShares ? (
             <p className="text-caption text-text-quaternary">Loading…</p>
@@ -282,21 +358,27 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
             <ul className="space-y-2">
               {shares.map((s) => (
                 <li
-                  key={s.user_id}
+                  key={s.id}
                   className="bg-surface-1 border border-[rgb(var(--border-line))] rounded-lg p-3 flex items-center gap-3"
                 >
-                  <div className="h-9 w-9 rounded-full flex items-center justify-center bg-brand text-text-inverse text-tiny font-strong flex-shrink-0">
-                    {(s.user?.full_name || s.user?.email || '??').slice(0, 2).toUpperCase()}
-                  </div>
+                  {s.target_type === 'team' ? (
+                    <div className="h-9 w-9 rounded-full flex items-center justify-center bg-surface-2 text-text-secondary flex-shrink-0">
+                      <Users className="h-4 w-4" />
+                    </div>
+                  ) : (
+                    <div className="h-9 w-9 rounded-full flex items-center justify-center bg-brand text-text-inverse text-tiny font-strong flex-shrink-0">
+                      {(s.user?.full_name || s.user?.email || '??').slice(0, 2).toUpperCase()}
+                    </div>
+                  )}
                   <div className="min-w-0 flex-1">
-                    <p className="text-caption font-emphasis text-text-primary truncate">{s.user?.full_name}</p>
-                    <p className="text-tiny text-text-tertiary truncate">{s.user?.email}</p>
+                    <p className="text-caption font-emphasis text-text-primary truncate">{getShareTargetLabel(s)}</p>
+                    <p className="text-tiny text-text-tertiary truncate">{getShareTargetDescription(s)}</p>
                   </div>
                   <Select
                     className="w-auto"
                     size="sm"
                     value={s.permission}
-                    onChange={(e) => handleUpdatePermission(s.user_id, e.target.value as Permission)}
+                    onChange={(e) => handleUpdatePermission(s.id, e.target.value as Permission)}
                   >
                     <option value="view">Viewer</option>
                     <option value="edit">Editor</option>
@@ -305,7 +387,7 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
                     aria-label="Remove access"
                     variant="ghost"
                     size="sm"
-                    onClick={() => handleRevoke(s.user_id)}
+                    onClick={() => handleRevoke(s.id)}
                     className="hover:text-danger"
                   >
                     <Trash2 className="h-4 w-4" />

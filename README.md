@@ -22,9 +22,14 @@ Core services:
 
 - `frontend/`: Next.js application for datasets, explore, dashboards, auth, and admin UI
 - `backend/`: FastAPI API for auth, permissions, datasets, charts, dashboards, and datasource logic
-- `ai-service/`: AI chat service
-- `ai-agent-service/`: AI agent/report service
-- `db/`: PostgreSQL container for system metadata (optional when backend points to external PostgreSQL)
+- `ai-chat/`: AI chat service source, built by `docker-compose.ai.yml` or `docker-compose.chat.yml`
+- `ai-report/`: AI agent/report service source, built by `docker-compose.ai.yml` or `docker-compose.agent.yml`
+- `docker-compose*.yml`: runtime entrypoints for `backend`, `frontend`, optional AI services, and the optional bundled PostgreSQL container
+
+Notes:
+
+- There is no `db/` source directory in this repo; PostgreSQL is provided by the `pgvector/pgvector:pg16` image declared in compose.
+- The minimum runtime is `backend` + `frontend`, with `db` enabled only when you choose the `local-db` profile.
 
 Typical runtime:
 
@@ -86,7 +91,9 @@ Excluded from Git for runtime hygiene:
 
 - backend tests under `backend/tests/`
 - demo/example assets under `dashboard_example/`
-- internal design / audit / upgrade notes
+- internal design / audit notes such as `Design System Inspired by Linear.md` and `UI_LINEAR_AUDIT_CHECKLIST.md`
+- service planning notes such as `ai-chat/AI_CHAT_SYSTEM_DOC.md`, `ai-chat/UPGRADE_PLAN.md`, and `ai-chat/UPGRADE_PLAN_V2.md`
+- local service-specific readmes not required to run the stack, such as `backend/README.md` and `frontend/README.md`
 - local artifacts under `.artifacts/`
 - helper content under `Skill-AppBI/`
 

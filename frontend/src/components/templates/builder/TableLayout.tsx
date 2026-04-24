@@ -6,6 +6,13 @@ import { DEFAULT_THEME } from '@/types/template';
 import type { TablePreviewResponse } from '@/hooks/use-datasets';
 import { evaluateFormula, formatValue } from '@/hooks/use-template-data';
 
+interface GroupHeaderCell {
+  label: string;
+  span: number;
+  isGroup: boolean;
+  width: number;
+}
+
 /* ── Column header bg by type — fallback classes only ─────── */
 
 const COL_CELL_CLASSES: Record<string, string> = {
@@ -54,7 +61,7 @@ function computeSubtotals(
       let total = 0;
       for (const row of rows) {
         if (col.expression) {
-          const val = evaluateFormula(col.expression, row, columns);
+          const val = row[col.key] != null ? Number(row[col.key]) : evaluateFormula(col.expression, row, columns);
           total += val ?? 0;
         } else {
           const v = row[sourceCol];
@@ -75,13 +82,70 @@ function resolveCell(
   columns: TemplateColumn[],
 ): string {
   if (col.expression) {
-    const val = evaluateFormula(col.expression, row, columns);
+    const val = row[col.key] != null ? row[col.key] : evaluateFormula(col.expression, row, columns);
     return formatValue(val, col.format, col.suffix);
   }
 
   const sourceCol = col.sourceColumn ?? col.key;
   const raw = row[sourceCol];
   return formatValue(raw, col.format, col.suffix);
+}
+
+function buildGroupHeaderRows(
+  visibleCols: TemplateColumn[],
+  columnGroups: ColumnGroup[] | undefined,
+): GroupHeaderCell[][] | null {
+  if (!columnGroups || columnGroups.length === 0) return null;
+
+  const normalizedGroups = columnGroups.map((group) => ({
+    ...group,
+    level: Math.max(1, Number(group.level ?? 1) || 1),
+  }));
+  const levels = Array.from(new Set(normalizedGroups.map((group) => group.level))).sort((a, b) => a - b);
+  const rows = levels
+    .map((level) => {
+      const groupsAtLevel = normalizedGroups.filter((group) => group.level === level);
+      const colGroupMap = new Map<string, ColumnGroup>();
+      for (const group of groupsAtLevel) {
+        for (const columnId of group.columnIds) {
+          colGroupMap.set(columnId, group);
+        }
+      }
+
+      const cells: GroupHeaderCell[] = [];
+      let index = 0;
+      let hasGroup = false;
+
+      while (index < visibleCols.length) {
+        const col = visibleCols[index];
+        const group = colGroupMap.get(col.id);
+        if (group) {
+          const groupColumnIds = new Set(group.columnIds);
+          let span = 0;
+          let totalWidth = 0;
+          while (index + span < visibleCols.length && groupColumnIds.has(visibleCols[index + span].id)) {
+            totalWidth += visibleCols[index + span].width ?? 100;
+            span += 1;
+          }
+          cells.push({
+            label: group.label,
+            span: Math.max(1, span),
+            isGroup: true,
+            width: totalWidth || (col.width ?? 100),
+          });
+          hasGroup = true;
+          index += Math.max(1, span);
+        } else {
+          cells.push({ label: '', span: 1, isGroup: false, width: col.width ?? 100 });
+          index += 1;
+        }
+      }
+
+      return hasGroup ? cells : null;
+    })
+    .filter((row): row is GroupHeaderCell[] => row !== null);
+
+  return rows.length > 0 ? rows : null;
 }
 
 /* ── Component ──────────────────────────────────────────────── */
@@ -111,40 +175,10 @@ export function TableLayout({
     [rows, groupBy, columns],
   );
 
-  // Build merged header cells from columnGroups
-  const groupHeaderCells = useMemo(() => {
-    if (!columnGroups || columnGroups.length === 0) return null;
-
-    // Map column id -> group
-    const colGroupMap = new Map<string, ColumnGroup>();
-    for (const g of columnGroups) {
-      for (const cid of g.columnIds) {
-        colGroupMap.set(cid, g);
-      }
-    }
-
-    const cells: Array<{ label: string; span: number; isGroup: boolean; width: number }> = [];
-    let i = 0;
-    while (i < visibleCols.length) {
-      const col = visibleCols[i];
-      const group = colGroupMap.get(col.id);
-      if (group) {
-        // Count consecutive columns in this group
-        let span = 0;
-        let totalWidth = 0;
-        while (i + span < visibleCols.length && group.columnIds.includes(visibleCols[i + span].id)) {
-          totalWidth += visibleCols[i + span].width ?? 100;
-          span++;
-        }
-        cells.push({ label: group.label, span, isGroup: true, width: totalWidth });
-        i += span;
-      } else {
-        cells.push({ label: '', span: 1, isGroup: false, width: col.width ?? 100 });
-        i++;
-      }
-    }
-    return cells;
-  }, [visibleCols, columnGroups]);
+  const groupHeaderRows = useMemo(
+    () => buildGroupHeaderRows(visibleCols, columnGroups),
+    [visibleCols, columnGroups],
+  );
 
   if (visibleCols.length === 0) return null;
 
@@ -165,11 +199,15 @@ export function TableLayout({
             </div>
           )}
 
-          {/* Merged group header row */}
-          {groupHeaderCells && (
-            <div className="flex" style={{ background: theme.headerBg, opacity: 0.85 }}>
+          {/* Merged group header rows */}
+          {groupHeaderRows?.map((headerRow, headerRowIndex) => (
+            <div
+              key={`group-row-${headerRowIndex}`}
+              className="flex"
+              style={{ background: theme.headerBg, opacity: 0.72 + (headerRowIndex * 0.12) }}
+            >
               <div className="px-2.5 py-1 w-8 min-w-[32px] shrink-0 border-r" style={{ borderColor: 'rgba(255,255,255,0.15)' }} />
-              {groupHeaderCells.map((cell, ci) => (
+              {headerRow.map((cell, ci) => (
                 <div
                   key={ci}
                   className="px-2.5 py-1 text-[10px] font-semibold tracking-wide border-r text-center truncate shrink-0"
@@ -184,7 +222,7 @@ export function TableLayout({
                 </div>
               ))}
             </div>
-          )}
+          ))}
 
           {/* Column headers */}
           <div className="flex" style={{ background: theme.headerBg }}>

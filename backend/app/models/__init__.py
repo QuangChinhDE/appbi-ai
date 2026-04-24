@@ -36,6 +36,7 @@ from app.models.personal_access_token import PersonalAccessToken
 from app.models.revoked_token import RevokedToken
 from app.models.audit_log import AuditLog, AuditAction, AuditSeverity
 from app.models.report_template import ReportTemplate
+from app.models.team import Team, TeamMembership
 # Commented out - using hybrid approach with filters_config JSON field instead
 # from app.models.dashboard_filter import DashboardFilter
 
@@ -74,4 +75,6 @@ __all__ = [
     "AuditAction",
     "AuditSeverity",
     "ReportTemplate",
+    "Team",
+    "TeamMembership",
 ]

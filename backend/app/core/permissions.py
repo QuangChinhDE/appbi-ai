@@ -17,9 +17,10 @@ from __future__ import annotations
 
 from typing import Dict, Type, TypeVar
 
-from sqlalchemy import cast, or_, String
+from sqlalchemy import cast, or_, select, String
 from sqlalchemy.orm import Session, Query
 
+from app.core.resource_shares import share_target_filter_for_user
 from app.models.resource_share import ResourceShare, ResourceType
 from app.models.user import User
 
@@ -82,13 +83,9 @@ def _owned_or_shared(
         return q
 
     shared_ids_subq = (
-        db.query(ResourceShare.resource_id)
-        .filter(
-            ResourceShare.resource_type == resource_type,
-            ResourceShare.user_id == user.id,
-        )
-        .subquery()
-        .select()
+        select(ResourceShare.resource_id)
+        .where(ResourceShare.resource_type == resource_type)
+        .where(share_target_filter_for_user(user))
     )
 
     return q.filter(

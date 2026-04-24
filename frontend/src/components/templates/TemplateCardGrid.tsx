@@ -4,7 +4,13 @@ import React from 'react';
 import { useRouter } from 'next/navigation';
 import { FileText, Trash2, Loader2, Database, Table2 } from 'lucide-react';
 import type { ReportTemplate } from '@/types/template';
-import { isTemplateDefinition } from '@/types/template';
+import { isTemplateDefinition, isTemplateDocumentDefinition } from '@/types/template';
+
+function countDocumentBlocks(block: any): number {
+  if (!block || typeof block !== 'object') return 0;
+  const children: any[] = Array.isArray(block.children) ? block.children : [];
+  return 1 + children.reduce((total: number, child: any) => total + countDocumentBlocks(child), 0);
+}
 
 interface TemplateCardGridProps {
   templates: ReportTemplate[];
@@ -16,6 +22,7 @@ const LAYOUT_ICON: Record<string, string> = {
   table: '⊞',
   card: '⊟',
   'cross-tab': '╪',
+  document: '◫',
 };
 
 export function TemplateCardGrid({ templates, onDelete, deletingId }: TemplateCardGridProps) {
@@ -35,10 +42,12 @@ export function TemplateCardGrid({ templates, onDelete, deletingId }: TemplateCa
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       {templates.map((tpl) => {
         const def = isTemplateDefinition(tpl.blocks) ? tpl.blocks : null;
-        const dsName = def?.dataSource?.datasetName;
+        const documentDefinition = isTemplateDocumentDefinition(tpl.blocks) ? tpl.blocks : null;
+        const dsName = def?.dataSource?.datasetName ?? documentDefinition?.dataSources[0]?.name;
         const tableName = def?.dataSource?.tableName;
-        const layout = def?.layout;
+        const layout = def?.layout ?? (documentDefinition ? 'document' : undefined);
         const colCount = def?.columns?.length ?? 0;
+        const blockCount = documentDefinition ? countDocumentBlocks(documentDefinition.root) : 0;
         const layoutIcon = layout ? (LAYOUT_ICON[layout] ?? '⊞') : '⊞';
 
         return (
@@ -76,6 +85,11 @@ export function TemplateCardGrid({ templates, onDelete, deletingId }: TemplateCa
               {colCount > 0 && (
                 <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] text-text-quaternary">
                   {colCount} cột
+                </span>
+              )}
+              {!colCount && blockCount > 0 && (
+                <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] text-text-quaternary">
+                  {blockCount} blocks
                 </span>
               )}
             </div>

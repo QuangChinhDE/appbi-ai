@@ -63,6 +63,7 @@ class UserCreate(BaseModel):
     full_name: str = Field(..., min_length=1, max_length=255)
     auth_provider: Literal["password", "google"] | None = None
     password: Optional[str] = Field(None, min_length=8)
+    team_ids: list[uuid.UUID] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_auth_provider(self) -> "UserCreate":
@@ -86,6 +87,15 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = Field(None, min_length=1, max_length=255)
     status: Optional[UserStatus] = None
     preferred_language: Optional[Literal["en", "vi"]] = None
+    team_ids: Optional[list[uuid.UUID]] = None
+
+
+class UserTeamSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    description: Optional[str] = None
 
 
 class UserResponse(BaseModel):
@@ -101,6 +111,7 @@ class UserResponse(BaseModel):
     preferred_language: Literal["en", "vi"] = "en"
     status: UserStatus
     permissions: Dict[str, str] = {}
+    teams: list[UserTeamSummary] = []
     last_login_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
@@ -131,17 +142,28 @@ class UserPreferencesUpdate(BaseModel):
 class ShareCreate(BaseModel):
     user_id: Optional[uuid.UUID] = None
     email: Optional[EmailStr] = None
+    team_id: Optional[uuid.UUID] = None
     permission: SharePermission = SharePermission.VIEW
 
     @model_validator(mode="after")
     def validate_target(self) -> "ShareCreate":
-        if self.user_id is None and self.email is None:
-            raise ValueError("Either user_id or email is required")
+        has_user_target = self.user_id is not None or self.email is not None
+        has_team_target = self.team_id is not None
+        if has_user_target == has_team_target:
+            raise ValueError("Provide either a user target or a team target")
         return self
 
 
 class ShareUpdate(BaseModel):
     permission: SharePermission
+
+
+class ShareTeamSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    description: Optional[str] = None
 
 
 class ShareResponse(BaseModel):
@@ -150,11 +172,14 @@ class ShareResponse(BaseModel):
     id: int
     resource_type: ResourceType
     resource_id: str
-    user_id: uuid.UUID
+    target_type: Literal["user", "team"]
+    user_id: Optional[uuid.UUID] = None
+    team_id: Optional[uuid.UUID] = None
     permission: SharePermission
     shared_by: uuid.UUID
     created_at: datetime
     user: Optional[UserResponse] = None
+    team: Optional[ShareTeamSummary] = None
 
 
 class ShareAllTeamRequest(BaseModel):

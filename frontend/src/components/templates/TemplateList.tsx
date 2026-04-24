@@ -4,10 +4,16 @@ import React from 'react';
 import { useRouter } from 'next/navigation';
 import { Trash2, FileText, Loader2, Database } from 'lucide-react';
 import type { ReportTemplate } from '@/types/template';
-import { isTemplateDefinition } from '@/types/template';
+import { isTemplateDefinition, isTemplateDocumentDefinition } from '@/types/template';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { FilterTag, type FilterTagTone } from '@/components/ui/FilterTag';
 import { IconButton } from '@/components/ui/Button';
+
+function countDocumentBlocks(block: any): number {
+  if (!block || typeof block !== 'object') return 0;
+  const children: any[] = Array.isArray(block.children) ? block.children : [];
+  return 1 + children.reduce((total: number, child: any) => total + countDocumentBlocks(child), 0);
+}
 
 interface TemplateListProps {
   templates: ReportTemplate[];
@@ -34,6 +40,8 @@ export function TemplateList({
         return { label: 'Card', tone: 'info', value: 'card' };
       case 'cross-tab':
         return { label: 'Cross-tab', tone: 'success', value: 'cross-tab' };
+      case 'document':
+        return { label: 'Document', tone: 'info', value: 'document' };
       default:
         return { label: 'Custom', tone: 'neutral', value: 'custom' };
     }
@@ -74,10 +82,12 @@ export function TemplateList({
         <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
           {templates.map((tpl) => {
             const def = isTemplateDefinition(tpl.blocks) ? tpl.blocks : null;
-            const dsName = def?.dataSource?.datasetName;
+            const documentDefinition = isTemplateDocumentDefinition(tpl.blocks) ? tpl.blocks : null;
+            const dsName = def?.dataSource?.datasetName ?? documentDefinition?.dataSources[0]?.name;
             const tableName = def?.dataSource?.tableName;
-            const layout = def?.layout;
+            const layout = def?.layout ?? (documentDefinition ? 'document' : undefined);
             const colCount = def?.columns?.length ?? 0;
+            const blockCount = documentDefinition ? countDocumentBlocks(documentDefinition.root) : 0;
             const layoutMeta = getLayoutMeta(layout);
             const bindingValue = dsName ? 'bound' : 'unbound';
             const bindingTone: FilterTagTone = dsName ? 'success' : 'warning';
@@ -137,6 +147,11 @@ export function TemplateList({
                     {colCount > 0 && (
                       <FilterTag className="cursor-default" disabled>
                         {colCount} cột
+                      </FilterTag>
+                    )}
+                    {!colCount && blockCount > 0 && (
+                      <FilterTag className="cursor-default" disabled>
+                        {blockCount} blocks
                       </FilterTag>
                     )}
                   </div>

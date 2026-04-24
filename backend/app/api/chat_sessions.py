@@ -22,8 +22,9 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
+from app.core.resource_shares import get_highest_share_for_resource, get_shared_resource_ids_query
 from app.models.chat_session import ChatSession, ChatMessage
-from app.models.resource_share import ResourceShare, ResourceType
+from app.models.resource_share import ResourceType
 from app.models.user import User
 
 router = APIRouter(prefix="/chat-sessions", tags=["chat-sessions"])
@@ -76,15 +77,7 @@ def _get_session_or_403(
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Check resource_shares
-    share = (
-        db.query(ResourceShare)
-        .filter(
-            ResourceShare.resource_type == ResourceType.CHAT_SESSION,
-            ResourceShare.resource_id == session_id,
-            ResourceShare.user_id == current_user.id,
-        )
-        .first()
-    )
+    share = get_highest_share_for_resource(db, current_user, ResourceType.CHAT_SESSION, session_id)
     if not share:
         raise HTTPException(status_code=403, detail="Access denied")
     return s
@@ -105,14 +98,7 @@ def list_sessions(
         .all()
     )
     # Shared sessions
-    shared_ids = (
-        db.query(ResourceShare.resource_id)
-        .filter(
-            ResourceShare.resource_type == ResourceType.CHAT_SESSION,
-            ResourceShare.user_id == current_user.id,
-        )
-        .all()
-    )
+    shared_ids = get_shared_resource_ids_query(db, current_user, ResourceType.CHAT_SESSION).all()
     shared_session_ids = [r[0] for r in shared_ids]
     shared = []
     if shared_session_ids:

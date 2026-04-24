@@ -73,6 +73,16 @@ export interface ColumnGroup {
   id: string;
   label: string;
   columnIds: string[];           // IDs of columns this group spans
+  level?: number;                // optional merged-header depth, defaults to 1
+}
+
+export interface TemplateAppendixSection {
+  id: string;
+  title: string;
+  description?: string;
+  columnKeys: string[];
+  groupBy?: string;
+  showSubtotals?: boolean;
 }
 
 export interface TemplateFooter {
@@ -146,10 +156,95 @@ export interface TemplateDefinition {
   };
   footer?: TemplateFooter;
   columnGroups?: ColumnGroup[];  // merged header row groups
+  appendixSections?: TemplateAppendixSection[];
   crossTabConfig?: CrossTabConfig;
   cardConfig?: CardConfig;
   variables?: Record<string, string>;
 }
+
+export interface TemplateDocumentPage {
+  size: 'A4' | 'A3' | 'Letter';
+  orientation: 'portrait' | 'landscape';
+  margin: {
+    top: number;
+    right: number;
+    bottom: number;
+    left: number;
+  };
+}
+
+export interface TemplateDocumentTheme {
+  palette: Record<string, string>;
+  typography: Record<string, string>;
+  spacing: Record<string, number>;
+}
+
+export interface TemplateDocumentModes {
+  default: 'design' | 'bind' | 'entry' | 'preview' | 'publish' | 'share';
+  available: Array<'design' | 'bind' | 'entry' | 'preview' | 'publish' | 'share'>;
+}
+
+export interface TemplateDocumentDataSource {
+  id: string;
+  kind: 'dataset_table' | 'query' | 'manual';
+  datasetId?: number;
+  tableId?: number;
+  name?: string;
+  config?: Record<string, any>;
+}
+
+export interface TemplateDocumentBlock {
+  id: string;
+  type: string;
+  name?: string;
+  children?: TemplateDocumentBlock[];
+  [key: string]: any;
+}
+
+export interface TemplateDocumentDefinition {
+  engine: 'document';
+  schemaVersion: number;
+  page: TemplateDocumentPage;
+  theme: TemplateDocumentTheme;
+  modes: TemplateDocumentModes;
+  dataSources: TemplateDocumentDataSource[];
+  root: TemplateDocumentBlock;
+}
+
+export interface TemplateDocumentRuntimeSourcePreview {
+  sourceId: string;
+  datasetId?: number;
+  tableId?: number;
+  columns: Array<{
+    name: string;
+    type?: string;
+    nullable?: boolean;
+  }>;
+  rows: Record<string, any>[];
+  total: number;
+}
+
+export interface TemplateDocumentRuntimeBlockPreview {
+  blockId: string;
+  blockType: string;
+  kind: 'table' | 'metric' | 'input' | 'repeater';
+  sourceId?: string;
+  columns?: string[];
+  rows?: Record<string, any>[];
+  value?: any;
+  items?: any[];
+  total?: number;
+  field?: string | null;
+  warnings?: string[];
+}
+
+export interface TemplateDocumentRuntimePreviewResponse {
+  sources: Record<string, TemplateDocumentRuntimeSourcePreview>;
+  blocks: Record<string, TemplateDocumentRuntimeBlockPreview>;
+  warnings: string[];
+}
+
+export type TemplateBlocks = TemplateDefinition | TemplateDocumentDefinition;
 
 /* ── Filter ────────────────────────────────────────────────── */
 
@@ -163,6 +258,11 @@ export interface TemplateFilter {
   defaultValue?: string;
 }
 
+export interface TemplateActiveFilterValue {
+  filterId: string;
+  value: any;
+}
+
 /* ── API types (match backend schemas) ─────────────────────── */
 
 export interface ReportTemplate {
@@ -171,7 +271,7 @@ export interface ReportTemplate {
   description?: string;
   page_size: string;
   orientation: string;
-  blocks: TemplateDefinition | Record<string, any>;
+  blocks: TemplateBlocks | Record<string, any>;
   filters?: TemplateFilter[];
   owner_id?: string;
   owner_email?: string;
@@ -185,7 +285,7 @@ export interface ReportTemplateCreate {
   description?: string;
   page_size?: string;
   orientation?: string;
-  blocks?: TemplateDefinition;
+  blocks?: TemplateBlocks;
   filters?: TemplateFilter[];
 }
 
@@ -194,7 +294,7 @@ export interface ReportTemplateUpdate {
   description?: string;
   page_size?: string;
   orientation?: string;
-  blocks?: TemplateDefinition;
+  blocks?: TemplateBlocks;
   filters?: TemplateFilter[];
 }
 
@@ -204,11 +304,62 @@ export function isTemplateDefinition(data: unknown): data is TemplateDefinition 
   return !!data && typeof data === 'object' && (data as any).version === 3;
 }
 
+export function isTemplateDocumentDefinition(data: unknown): data is TemplateDocumentDefinition {
+  return !!data
+    && typeof data === 'object'
+    && (data as any).engine === 'document'
+    && typeof (data as any).root === 'object';
+}
+
 export function createDefaultDefinition(): TemplateDefinition {
   return {
     version: 3,
     layout: 'table',
     columns: [],
     header: { title: '' },
+  };
+}
+
+export function createDefaultDocumentDefinition(): TemplateDocumentDefinition {
+  return {
+    engine: 'document',
+    schemaVersion: 1,
+    page: {
+      size: 'A4',
+      orientation: 'portrait',
+      margin: { top: 24, right: 24, bottom: 24, left: 24 },
+    },
+    theme: {
+      palette: {
+        primary: '#0f172a',
+        accent: '#2563eb',
+        surface: '#ffffff',
+        muted: '#e2e8f0',
+        text: '#0f172a',
+        subtleText: '#475569',
+      },
+      typography: {
+        headingFont: 'var(--font-sans)',
+        bodyFont: 'var(--font-sans)',
+      },
+      spacing: {
+        blockGap: 16,
+        sectionGap: 24,
+      },
+    },
+    modes: {
+      default: 'design',
+      available: ['design', 'bind', 'entry', 'preview', 'publish', 'share'],
+    },
+    dataSources: [],
+    root: {
+      id: 'root',
+      type: 'page',
+      name: 'Document Root',
+      children: [
+        { id: 'section-header', type: 'section', name: 'Header', children: [] },
+        { id: 'section-body', type: 'section', name: 'Body', children: [] },
+      ],
+    },
   };
 }

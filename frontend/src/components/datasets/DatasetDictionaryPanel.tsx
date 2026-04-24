@@ -33,7 +33,6 @@ import {
   tableColumnsMeta,
   TableNotesBar,
   tableLabel,
-  trimList,
 } from './dataset-catalog-shared';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -49,11 +48,7 @@ const fmtTime = (value?: string | null) =>
   value && !Number.isNaN(new Date(value).getTime()) ? new Date(value).toLocaleString() : null;
 
 const hasColumnDictionaryContent = (note?: DatasetDictionaryColumnNote | null) => Boolean(
-  note && (
-    note.business_name?.trim()
-    || note.description?.trim()
-    || (note.examples ?? []).length > 0
-  ),
+  note?.description?.trim(),
 );
 
 const cloneColumnNote = (note: DatasetDictionaryColumnNote): DatasetDictionaryColumnNote => ({
@@ -141,13 +136,6 @@ function DictionaryCatalog({
     });
   }, [patchTableNote]);
 
-  const removeColumnNote = useCallback((tableId: number, columnName: string) => {
-    patchTableNote(tableId, (tableNote) => ({
-      ...tableNote,
-      column_notes: tableNote.column_notes.filter((columnNote) => columnNote.column_name !== columnName),
-    }));
-  }, [patchTableNote]);
-
   const grouped = useMemo(() => {
     const query = search.trim().toLowerCase();
 
@@ -182,9 +170,7 @@ function DictionaryCatalog({
             return [
               row.columnName,
               row.columnType ?? '',
-              row.note?.business_name ?? '',
               row.note?.description ?? '',
-              ...(row.note?.examples ?? []),
             ].join(' ').toLowerCase().includes(query);
           });
 
@@ -231,7 +217,7 @@ function DictionaryCatalog({
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search table, column, business name, description…"
+            placeholder="Search table, column, description…"
             className="w-full rounded-md border border-[rgb(var(--border-line))] py-1.5 pl-8 pr-3 text-xs focus:outline-none focus:ring-2 focus:ring-brand"
           />
         </div>
@@ -285,18 +271,12 @@ function DictionaryCatalog({
                         <tr>
                           <th className="w-[220px] px-5 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">Column</th>
                           <th className="w-[120px] px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">Type</th>
-                          <th className="w-[220px] px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">Business Name</th>
                           <th className="px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">Description</th>
-                          <th className="w-[220px] px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">Examples</th>
-                          {canEdit && (
-                            <th className="w-[88px] px-3 py-1.5 text-right text-[10px] font-semibold uppercase tracking-wide text-text-quaternary">Action</th>
-                          )}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
                         {group.rows.map((row) => {
                           const isDocumented = hasColumnDictionaryContent(row.note);
-                          const examplesValue = (row.note?.examples ?? []).join(', ');
 
                           return (
                             <tr key={`${row.tableId}-${row.columnName}`} className="align-top hover:bg-brand/15/20 transition-colors">
@@ -310,24 +290,6 @@ function DictionaryCatalog({
                               </td>
                               <td className="px-3 py-3">
                                 <DataTypeBadge type={row.columnType} />
-                              </td>
-                              <td className="px-3 py-3">
-                                {canEdit ? (
-                                  <input
-                                    value={row.note?.business_name ?? ''}
-                                    onChange={(event) => patchColumnNote(row.tableId, row.columnName, (current) => ({
-                                      ...current,
-                                      business_name: event.target.value,
-                                    }))}
-                                    disabled={isSaving}
-                                    placeholder="Friendly business label"
-                                    className="w-full rounded-md border border-[rgb(var(--border-line))] px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
-                                  />
-                                ) : row.note?.business_name ? (
-                                  <span className="text-xs text-text-secondary">{row.note.business_name}</span>
-                                ) : (
-                                  <span className="text-[11px] text-text-quaternary">—</span>
-                                )}
                               </td>
                               <td className="px-3 py-3">
                                 {canEdit ? (
@@ -348,42 +310,6 @@ function DictionaryCatalog({
                                   <span className="text-[11px] text-text-quaternary">—</span>
                                 )}
                               </td>
-                              <td className="px-3 py-3">
-                                {canEdit ? (
-                                  <input
-                                    value={examplesValue}
-                                    onChange={(event) => patchColumnNote(row.tableId, row.columnName, (current) => ({
-                                      ...current,
-                                      examples: trimList(event.target.value.split(',')),
-                                    }))}
-                                    disabled={isSaving}
-                                    placeholder="Comma-separated examples"
-                                    className="w-full rounded-md border border-[rgb(var(--border-line))] px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-brand disabled:bg-surface-2"
-                                  />
-                                ) : (row.note?.examples?.length ?? 0) > 0 ? (
-                                  <div className="flex flex-wrap gap-1.5">
-                                    {row.note!.examples.map((example) => (
-                                      <span key={example} className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-secondary">
-                                        {example}
-                                      </span>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <span className="text-[11px] text-text-quaternary">—</span>
-                                )}
-                              </td>
-                              {canEdit && (
-                                <td className="px-3 py-3 text-right">
-                                  <button
-                                    type="button"
-                                    onClick={() => removeColumnNote(row.tableId, row.columnName)}
-                                    disabled={isSaving || !row.note}
-                                    className="rounded-md border border-[rgb(var(--border-line))] px-2.5 py-1.5 text-[11px] font-medium text-text-tertiary transition-colors hover:border-danger/30 hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
-                                  >
-                                    Clear
-                                  </button>
-                                </td>
-                              )}
                             </tr>
                           );
                         })}
@@ -405,15 +331,71 @@ function DictionaryCatalog({
 export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit }: Props) {
   const { data, isLoading, error } = useDatasetDictionary(datasetId);
   const update = useUpdateDatasetDictionary(datasetId);
+  const visibleTables = useMemo(
+    () => tables.filter((table) => table.source_kind !== 'generated_calendar'),
+    [tables],
+  );
+  const draftStorageKey = `appbi:dataset-dictionary-draft:${datasetId}`;
+  const serverDictionary = useMemo(() => normalizeDictionary(data?.dictionary), [data?.dictionary]);
 
   // Draft state
   const [draft, setDraft] = useState<DatasetDictionary>(() => normalizeDictionary(null));
   const [isDirty, setIsDirty] = useState(false);
+  const [didAttemptRestore, setDidAttemptRestore] = useState(false);
+  const [restoredLocalDraft, setRestoredLocalDraft] = useState(false);
+
+  useEffect(() => {
+    if (isLoading || didAttemptRestore) return;
+    const samePayload = (left: DatasetDictionary, right: DatasetDictionary) => (
+      JSON.stringify(buildPayload(left)) === JSON.stringify(buildPayload(right))
+    );
+
+    if (typeof window === 'undefined') {
+      setDraft(serverDictionary);
+      setDidAttemptRestore(true);
+      return;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(draftStorageKey);
+      if (!raw) {
+        setDraft(serverDictionary);
+      } else {
+        const restored = normalizeDictionary(JSON.parse(raw));
+        if (samePayload(restored, serverDictionary)) {
+          window.localStorage.removeItem(draftStorageKey);
+          setDraft(serverDictionary);
+        } else {
+          setDraft(restored);
+          setIsDirty(true);
+          setRestoredLocalDraft(true);
+        }
+      }
+    } catch {
+      setDraft(serverDictionary);
+    } finally {
+      setDidAttemptRestore(true);
+    }
+  }, [didAttemptRestore, draftStorageKey, isLoading, serverDictionary]);
 
   // Sync draft from server (only when not dirty)
   useEffect(() => {
-    if (!isDirty) setDraft(normalizeDictionary(data?.dictionary));
-  }, [data?.dictionary, isDirty]);
+    if (!didAttemptRestore) return;
+    if (!isDirty) setDraft(serverDictionary);
+  }, [didAttemptRestore, isDirty, serverDictionary]);
+
+  useEffect(() => {
+    if (!didAttemptRestore || !canEdit || typeof window === 'undefined') return;
+    try {
+      if (!isDirty) {
+        window.localStorage.removeItem(draftStorageKey);
+        return;
+      }
+      window.localStorage.setItem(draftStorageKey, JSON.stringify(draft));
+    } catch {
+      // Ignore storage quota / browser privacy failures.
+    }
+  }, [canEdit, didAttemptRestore, draft, draftStorageKey, isDirty]);
 
   // Patch helper
   const patch = (updater: (current: DatasetDictionary) => DatasetDictionary) => {
@@ -421,11 +403,24 @@ export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit
     setIsDirty(true);
   };
 
+  const discardDraft = () => {
+    setDraft(serverDictionary);
+    setIsDirty(false);
+    setRestoredLocalDraft(false);
+    try {
+      if (typeof window !== 'undefined') window.localStorage.removeItem(draftStorageKey);
+    } catch {
+      // Ignore storage failures when discarding local drafts.
+    }
+    toast.success('Local draft discarded.');
+  };
+
   // Save
   const save = async () => {
     try {
       await update.mutateAsync(buildPayload(draft));
       setIsDirty(false);
+      setRestoredLocalDraft(false);
       toast.success('Dictionary saved.');
     } catch {
       toast.error('Failed to save dictionary.');
@@ -471,6 +466,16 @@ export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit
         <span className="text-xs text-text-quaternary">
           {updatedAt ? `Saved ${updatedAt}` : datasetName}
         </span>
+        {canEdit && isDirty && (
+          <button
+            type="button"
+            onClick={discardDraft}
+            disabled={update.isPending}
+            className="inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-3 py-2 text-sm font-medium text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Discard draft
+          </button>
+        )}
         {canEdit && (
           <button
             type="button"
@@ -486,7 +491,7 @@ export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit
 
       <DictionaryCatalog
         draft={draft}
-        tables={tables}
+        tables={visibleTables}
         canEdit={canEdit}
         isSaving={update.isPending}
         onPatch={patch}
@@ -494,7 +499,13 @@ export function DatasetDictionaryPanel({ datasetId, datasetName, tables, canEdit
 
       {/* Status bar */}
       <div className="shrink-0 border-t border-[rgb(var(--border-line))] px-5 py-2 text-xs text-text-quaternary">
-        {canEdit ? (isDirty ? 'Unsaved changes — click Save to persist.' : 'All changes saved.') : 'View only'}
+        {canEdit
+          ? (isDirty
+            ? (restoredLocalDraft
+              ? 'Local browser draft restored — click Save to persist or Discard draft to revert.'
+              : 'Unsaved changes are stored in this browser until you save or discard them.')
+            : 'All changes saved.')
+          : 'View only'}
       </div>
     </div>
   );

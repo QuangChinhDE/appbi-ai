@@ -23,16 +23,28 @@ from app.models.report_template import ReportTemplate
 from app.models import DataSource, Dataset
 from app.models.resource_share import ResourceType
 from app.models.user import User
+from app.schemas.dataset import ColumnMetadata, FilterCondition, TablePreviewResponse
 from app.schemas.report_template import (
     ReportTemplateCreate,
     ReportTemplateUpdate,
     ReportTemplateResponse,
 )
 from app.services.report_template_service import ReportTemplateService
+from app.services.dataset_crud import DatasetCRUDService
+from app.services.dataset_table_sql_service import (
+    DatasetTableSqlError,
+    build_live_proxy_table_for_dataset_table,
+    is_derived_table,
+)
+from app.services.dataset_calendar_service import is_generated_calendar_table
+from app.services.live_query_service import LiveQueryService
 from app.services.template_import_ai_service import (
     build_ai_assist_meta,
     refine_import_analysis_with_ai,
 )
+from app.services.template_document_runtime_service import build_template_document_runtime_preview
+from app.services.template_document_schema import is_template_document_definition, normalize_template_document
+from app.services.template_runtime_service import build_template_preview_table_proxy
 
 # ── In-memory file cache for import workflow ─────────────────────────
 _file_cache: Dict[str, Tuple[bytes, float]] = {}
@@ -120,6 +132,239 @@ def _normalize_title_style(style: Any) -> Dict[str, Any]:
     return normalized
 
 router = APIRouter(prefix="/report-templates", tags=["report-templates"])
+
+
+class TemplatePreviewDataSourceRequest(BaseModel):
+    datasetId: int = Field(..., gt=0)
+    tableId: int = Field(..., gt=0)
+
+
+class TemplatePreviewColumnRequest(BaseModel):
+    key: str = Field(..., min_length=1)
+    type: Optional[str] = None
+    sourceColumn: Optional[str] = None
+    expression: Optional[str] = None
+
+
+class TemplatePreviewActiveFilterRequest(BaseModel):
+    filterId: str = Field(..., min_length=1)
+    value: Any = None
+
+
+class TemplatePreviewRequest(BaseModel):
+    templateId: Optional[int] = Field(default=None, gt=0)
+    dataSource: TemplatePreviewDataSourceRequest
+    columns: List[TemplatePreviewColumnRequest] = Field(default_factory=list)
+    templateFilters: List[Dict[str, Any]] = Field(default_factory=list)
+    filters: List[FilterCondition] = Field(default_factory=list)
+    activeFilters: List[TemplatePreviewActiveFilterRequest] = Field(default_factory=list)
+    limit: int = Field(default=100, ge=1, le=1000)
+    offset: int = Field(default=0, ge=0)
+
+
+class TemplateDocumentRuntimePreviewRequest(BaseModel):
+    blocks: Optional[Dict[str, Any]] = None
+    limit: int = Field(default=8, ge=1, le=50)
+
+
+class TemplateDocumentRuntimePreviewResponse(BaseModel):
+    sources: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    blocks: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    warnings: List[str] = Field(default_factory=list)
+
+
+@router.post("/preview-data", response_model=TablePreviewResponse)
+def preview_template_data(
+    payload: TemplatePreviewRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Preview template data with server-side formula evaluation."""
+    dataset_id = payload.dataSource.datasetId
+    table_id = payload.dataSource.tableId
+    template_obj: Optional[ReportTemplate] = None
+
+    if payload.templateId is not None:
+        template_obj = ReportTemplateService.get_by_id(db, payload.templateId)
+        if not template_obj:
+            raise HTTPException(status_code=404, detail="Report template not found")
+
+        template_perm = get_effective_permission(db, current_user, template_obj, "report_templates")
+        if template_perm == "none":
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
+    if perm == "none":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    db_table = DatasetCRUDService.get_table_by_id(db, table_id)
+    if not db_table or db_table.dataset_id != dataset_id:
+        raise HTTPException(status_code=404, detail="Table not found in this dataset")
+
+    datasource: Optional[DataSource] = None
+    target_table = db_table
+
+    if is_generated_calendar_table(db_table) or is_derived_table(db_table):
+        try:
+            datasource, target_table = build_live_proxy_table_for_dataset_table(
+                db,
+                dataset_obj,
+                db_table,
+            )
+        except DatasetTableSqlError as exc:
+            if getattr(exc, "code", "") == "NOT_SYNCED":
+                raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)})
+            raise HTTPException(status_code=400, detail=str(exc))
+    else:
+        datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+        if not datasource:
+            raise HTTPException(status_code=404, detail="Datasource not found")
+
+    preview_table, formula_errors = build_template_preview_table_proxy(
+        target_table,
+        [column.model_dump(exclude_none=True) for column in payload.columns],
+    )
+    if formula_errors:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Some template formulas are invalid.",
+                "column_errors": formula_errors,
+            },
+        )
+
+    runtime_filters = [item.model_dump() for item in payload.filters] if payload.filters else []
+    if template_obj is not None or payload.templateFilters:
+        from app.services.template_runtime_service import resolve_template_runtime_filters
+
+        filter_definitions = payload.templateFilters or (template_obj.filters if template_obj is not None else []) or []
+        runtime_filters.extend(
+            resolve_template_runtime_filters(
+                filter_definitions,
+                [item.model_dump() for item in payload.activeFilters],
+                dataset_id=dataset_id,
+                table_id=table_id,
+            )
+        )
+
+    result = LiveQueryService.execute_preview_query(
+        datasource=datasource,
+        db_table=preview_table,
+        limit=payload.limit,
+        offset=payload.offset,
+        filters=runtime_filters or None,
+    )
+
+    rows = result.get("rows", [])
+    columns = result.get("columns", [])
+    total_rows = len(rows)
+    serialized_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        if isinstance(row, dict):
+            serialized_rows.append(row)
+        else:
+            serialized_rows.append({str(columns[idx]): row[idx] for idx in range(len(columns))})
+
+    column_meta = [
+        ColumnMetadata(name=str(column), type="string", nullable=True)
+        for column in columns
+    ]
+    for meta in column_meta:
+        values = [r.get(meta.name) for r in serialized_rows if isinstance(r, dict)]
+        for value in values:
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                meta.type = "boolean"
+                break
+            if isinstance(value, (int, float)):
+                meta.type = "number"
+                break
+            meta.type = "string"
+            break
+
+    return TablePreviewResponse(
+        columns=column_meta,
+        rows=serialized_rows,
+        total=total_rows,
+        has_more=total_rows >= payload.limit,
+    )
+
+
+@router.post("/{template_id}/document-runtime-preview", response_model=TemplateDocumentRuntimePreviewResponse)
+def preview_template_document_runtime(
+    template_id: int,
+    payload: TemplateDocumentRuntimePreviewRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Build block-level runtime preview payloads for the clean document engine."""
+    tpl = ReportTemplateService.get_by_id(db, template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Report template not found")
+
+    perm = get_effective_permission(db, current_user, tpl, "report_templates")
+    if perm == "none":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    raw_blocks = payload.blocks if payload.blocks is not None else tpl.blocks
+    if payload.blocks is not None:
+        raw_blocks = ReportTemplateService._serialize_blocks(payload.blocks)
+
+    if not is_template_document_definition(raw_blocks):
+        raise HTTPException(status_code=400, detail="Document runtime preview is only available for document-engine templates.")
+
+    definition = normalize_template_document(raw_blocks)
+    source_previews: Dict[str, Dict[str, Any]] = {}
+    warnings: List[str] = []
+
+    for raw_source in definition.get("dataSources") or []:
+        if not isinstance(raw_source, dict):
+            continue
+
+        source_id = str(raw_source.get("id") or "").strip()
+        source_kind = str(raw_source.get("kind") or "").strip().lower()
+        if not source_id:
+            continue
+        if source_kind != "dataset_table":
+            warnings.append(f"Source '{source_id}' uses unsupported kind '{source_kind or 'unknown'}' for runtime preview.")
+            continue
+
+        dataset_id = raw_source.get("datasetId")
+        table_id = raw_source.get("tableId")
+        try:
+            dataset_id = int(dataset_id)
+            table_id = int(table_id)
+        except (TypeError, ValueError):
+            warnings.append(f"Source '{source_id}' is missing a valid dataset/table binding.")
+            continue
+
+        preview = preview_template_data(
+            TemplatePreviewRequest(
+                dataSource=TemplatePreviewDataSourceRequest(datasetId=dataset_id, tableId=table_id),
+                columns=[],
+                limit=payload.limit,
+                offset=0,
+            ),
+            db=db,
+            current_user=current_user,
+        )
+        source_previews[source_id] = {
+            "sourceId": source_id,
+            "datasetId": dataset_id,
+            "tableId": table_id,
+            "columns": [column.model_dump() for column in preview.columns],
+            "rows": preview.rows,
+            "total": preview.total,
+        }
+
+    runtime_preview = build_template_document_runtime_preview(definition, source_previews)
+    runtime_preview["warnings"] = [*warnings, *(runtime_preview.get("warnings") or [])]
+    return TemplateDocumentRuntimePreviewResponse(**runtime_preview)
 
 
 @router.get("/", response_model=List[ReportTemplateResponse])
@@ -220,6 +465,17 @@ def delete_template(
 
 class ExportExcelRequest(BaseModel):
     active_filters: List[Dict[str, Any]] = Field(default_factory=list)
+    blocks: Optional[Dict[str, Any]] = None
+    filters: Optional[List[Dict[str, Any]]] = None
+
+
+class TemplateManualWritebackRequest(BaseModel):
+    blocks: Optional[Dict[str, Any]] = None
+    rows: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class TemplateManualWritebackResponse(BaseModel):
+    rows_saved: int
 
 
 @router.post("/{template_id}/export-excel")
@@ -243,9 +499,17 @@ def export_template_excel(
         raise HTTPException(status_code=403, detail="Access denied")
 
     try:
-        from app.services.excel_export_service import export_template_to_excel
+        from app.services.template_excel_export_service import export_template_to_excel
 
-        xlsx_bytes = export_template_to_excel(db, tpl, payload.active_filters)
+        xlsx_bytes = export_template_to_excel(
+            db,
+            tpl,
+            payload.active_filters,
+            definition_override=payload.blocks,
+            filter_definitions=payload.filters,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(
             status_code=500,
@@ -259,6 +523,67 @@ def export_template_excel(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/{template_id}/manual-writeback", response_model=TemplateManualWritebackResponse)
+def save_template_manual_rows(
+    template_id: int,
+    payload: TemplateManualWritebackRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Persist full-row manual datasource edits for a template-bound table."""
+    tpl = ReportTemplateService.get_by_id(db, template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Report template not found")
+    require_edit_access(db, current_user, tpl, "report_templates")
+
+    definition = ReportTemplateService._serialize_blocks(payload.blocks if payload.blocks is not None else tpl.blocks)
+    data_source = definition.get("dataSource") or {}
+    dataset_id = int(data_source.get("datasetId") or 0)
+    table_id = int(data_source.get("tableId") or 0)
+    if dataset_id <= 0 or table_id <= 0:
+        raise HTTPException(status_code=400, detail="Template must be bound to a dataset table before saving data.")
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, dataset_obj, "datasets")
+
+    db_table = DatasetCRUDService.get_table_by_id(db, table_id)
+    if not db_table or db_table.dataset_id != dataset_id:
+        raise HTTPException(status_code=404, detail="Table not found in this dataset")
+
+    datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+    if not datasource:
+        raise HTTPException(status_code=404, detail="Datasource not found")
+
+    datasource_type = datasource.type.value if hasattr(datasource.type, "value") else str(datasource.type)
+    if datasource_type != "manual":
+        raise HTTPException(status_code=400, detail="Template writeback is only supported for manual datasources.")
+    if db_table.source_kind != "physical_table":
+        raise HTTPException(status_code=400, detail="Template writeback currently requires a physical manual table.")
+
+    from app.core.crypto import decrypt_config
+    from app.schemas import DataSourceUpdate
+    from app.services.datasource_crud_service import DataSourceCRUDService
+    from app.services.template_runtime_service import build_template_manual_writeback_config
+
+    next_config = build_template_manual_writeback_config(
+        decrypt_config(dict(datasource.config or {})),
+        str(db_table.source_table_name or db_table.display_name or "manual_data"),
+        payload.rows,
+        list(definition.get("columns") or []),
+    )
+    updated_datasource = DataSourceCRUDService.update(
+        db,
+        datasource.id,
+        DataSourceUpdate(config=next_config),
+    )
+    if not updated_datasource:
+        raise HTTPException(status_code=500, detail="Failed to update manual datasource.")
+
+    return TemplateManualWritebackResponse(rows_saved=len(payload.rows))
 
 
 # ── Smart import ───────────────────────────────────────────────────────

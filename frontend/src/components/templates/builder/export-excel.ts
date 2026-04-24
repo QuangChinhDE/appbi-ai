@@ -32,7 +32,7 @@ export function exportToExcel(
   /* ── Group + data rows ── */
   const resolveCell = (col: TemplateColumn, row: Record<string, any>): string | number => {
     if (col.expression) {
-      const val = evaluateFormula(col.expression, row, columns);
+      const val = row[col.key] != null ? row[col.key] : evaluateFormula(col.expression, row, columns);
       return val ?? '';
     }
     const raw = row[col.sourceColumn ?? col.key];

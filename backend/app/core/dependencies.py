@@ -24,9 +24,11 @@ from app.core.personal_access_tokens import (
     parse_personal_access_token,
     verify_personal_access_token_secret,
 )
+from app.core.resource_shares import get_highest_share_for_resource, get_highest_share_permissions
 from app.models.personal_access_token import PersonalAccessToken
+from app.models.report_template import ReportTemplate
 from app.models.user import User, UserStatus
-from app.models.resource_share import ResourceShare, ResourceType
+from app.models.resource_share import ResourceType
 from app.models.revoked_token import RevokedToken
 
 import logging as _logging
@@ -277,6 +279,7 @@ _MODEL_TO_RESOURCE_TYPE = {
     "Chart": ResourceType.CHART,
     "Dashboard": ResourceType.DASHBOARD,
     "Dataset": ResourceType.DATASET,
+    "ReportTemplate": ResourceType.REPORT_TEMPLATE,
 }
 
 _MODEL_TO_MODULE = {
@@ -284,6 +287,7 @@ _MODEL_TO_MODULE = {
     "Chart": "explore_charts",
     "Dashboard": "dashboards",
     "Dataset": "datasets",
+    "ReportTemplate": "report_templates",
 }
 
 
@@ -318,15 +322,7 @@ def get_effective_permission(db: Session, user: User, resource, module: str) -> 
     class_name = type(resource).__name__
     rt = _MODEL_TO_RESOURCE_TYPE.get(class_name)
     if rt:
-        share = (
-            db.query(ResourceShare)
-            .filter(
-                ResourceShare.resource_type == rt,
-                ResourceShare.resource_id == str(resource.id),
-                ResourceShare.user_id == user.id,
-            )
-            .first()
-        )
+        share = get_highest_share_for_resource(db, user, rt, str(resource.id))
         if share:
             share_level = share.permission.value  # "view" or "edit"
             # Effective = min(module_level, share_level)
@@ -376,16 +372,7 @@ def batch_effective_permissions(
 
     if rt:
         resource_ids = [str(r.id) for r in resources]
-        shares = (
-            db.query(ResourceShare.resource_id, ResourceShare.permission)
-            .filter(
-                ResourceShare.resource_type == rt,
-                ResourceShare.resource_id.in_(resource_ids),
-                ResourceShare.user_id == user.id,
-            )
-            .all()
-        )
-        share_lookup = {s.resource_id: s.permission.value for s in shares}
+        share_lookup = get_highest_share_permissions(db, user, rt, resource_ids)
 
     for r in resources:
         owner_id = getattr(r, "owner_id", None)

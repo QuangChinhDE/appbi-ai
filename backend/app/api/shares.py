@@ -1,9 +1,4 @@
-"""
-Sharing endpoints + cascade share logic.
-
-Cascade share when sharing a dashboard:
-  Dashboard → Charts → (dataset_table_id → dataset)
-"""
+"""Sharing endpoints + cascade share logic for users and teams."""
 
 import uuid
 from typing import List
@@ -11,14 +6,15 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
-from app.core.share_access import require_share_access
 from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_full_access
-from app.models.models import Chart, Dashboard, DashboardChart
+from app.core.share_access import require_share_access
 from app.models.dataset import Dataset, DatasetTable
+from app.models.models import Chart, Dashboard, DashboardChart
 from app.models.resource_share import ResourceShare, ResourceType, SharePermission
+from app.models.team import Team
 from app.models.user import User, UserStatus
 from app.schemas.auth import ShareAllTeamRequest, ShareCreate, ShareResponse, ShareUpdate
 
@@ -31,39 +27,109 @@ def _upsert_share(
     db: Session,
     resource_type: ResourceType,
     resource_id: int | str,
-    user_id: uuid.UUID,
     permission: SharePermission,
     shared_by: uuid.UUID,
+    *,
+    user_id: uuid.UUID | None = None,
+    team_id: uuid.UUID | None = None,
 ) -> None:
     """Insert share; update permission if a share already exists."""
+    if (user_id is None) == (team_id is None):
+        raise ValueError("Exactly one share target must be provided")
+
+    target_values = {"user_id": user_id, "team_id": team_id}
+    conflict_name = "uq_resource_shares_user" if user_id is not None else "uq_resource_shares_team"
     stmt = (
         pg_insert(ResourceShare)
         .values(
             resource_type=resource_type,
             resource_id=str(resource_id),
-            user_id=user_id,
             permission=permission,
             shared_by=shared_by,
+            **target_values,
         )
         .on_conflict_do_update(
-            constraint="uq_resource_shares",
+            constraint=conflict_name,
             set_={"permission": permission, "shared_by": shared_by},
         )
     )
     db.execute(stmt)
 
 
+def _share_target_filters(*, user_id: uuid.UUID | None = None, team_id: uuid.UUID | None = None):
+    if user_id is not None and team_id is None:
+        return [ResourceShare.user_id == user_id, ResourceShare.team_id.is_(None)]
+    if team_id is not None and user_id is None:
+        return [ResourceShare.team_id == team_id, ResourceShare.user_id.is_(None)]
+    raise ValueError("Exactly one share target must be provided")
+
+
+def _load_share_or_404(
+    db: Session,
+    resource_type: ResourceType,
+    resource_id: str,
+    share_id: int,
+) -> ResourceShare:
+    share = (
+        db.query(ResourceShare)
+        .options(joinedload(ResourceShare.user), joinedload(ResourceShare.team))
+        .filter(
+            ResourceShare.id == share_id,
+            ResourceShare.resource_type == resource_type,
+            ResourceShare.resource_id == str(resource_id),
+        )
+        .first()
+    )
+    if not share:
+        raise HTTPException(status_code=404, detail="Share not found")
+    return share
+
+
+def _get_share_for_target(
+    db: Session,
+    resource_type: ResourceType,
+    resource_id: str,
+    *,
+    user_id: uuid.UUID | None = None,
+    team_id: uuid.UUID | None = None,
+) -> ResourceShare:
+    filters = _share_target_filters(user_id=user_id, team_id=team_id)
+    share = (
+        db.query(ResourceShare)
+        .options(joinedload(ResourceShare.user), joinedload(ResourceShare.team))
+        .filter(
+            ResourceShare.resource_type == resource_type,
+            ResourceShare.resource_id == str(resource_id),
+            *filters,
+        )
+        .first()
+    )
+    if not share:
+        raise HTTPException(status_code=404, detail="Share not found")
+    return share
+
+
 def cascade_share_dashboard(
     db: Session,
     dashboard_id: int,
-    user_id: uuid.UUID,
     permission: SharePermission,
     shared_by: uuid.UUID,
+    *,
+    user_id: uuid.UUID | None = None,
+    team_id: uuid.UUID | None = None,
 ) -> None:
     """
     Share a dashboard and cascade-share all its charts + their datasets.
     """
-    _upsert_share(db, ResourceType.DASHBOARD, dashboard_id, user_id, permission, shared_by)
+    _upsert_share(
+        db,
+        ResourceType.DASHBOARD,
+        dashboard_id,
+        permission,
+        shared_by,
+        user_id=user_id,
+        team_id=team_id,
+    )
 
     dataset_ids: set[int] = set()
 
@@ -76,7 +142,15 @@ def cascade_share_dashboard(
         chart: Chart | None = db.query(Chart).filter(Chart.id == dc.chart_id).first()
         if not chart:
             continue
-        _upsert_share(db, ResourceType.CHART, chart.id, user_id, permission, shared_by)
+        _upsert_share(
+            db,
+            ResourceType.CHART,
+            chart.id,
+            permission,
+            shared_by,
+            user_id=user_id,
+            team_id=team_id,
+        )
 
         if chart.dataset_table_id:
             wt = db.query(DatasetTable).filter(
@@ -86,7 +160,15 @@ def cascade_share_dashboard(
                 dataset_ids.add(wt.dataset_id)
 
     for wid in dataset_ids:
-        _upsert_share(db, ResourceType.DATASET, wid, user_id, permission, shared_by)
+        _upsert_share(
+            db,
+            ResourceType.DATASET,
+            wid,
+            permission,
+            shared_by,
+            user_id=user_id,
+            team_id=team_id,
+        )
 
     db.commit()
 
@@ -120,7 +202,9 @@ def _require_dashboard_cascade_access(db: Session, current_user: User, dashboard
 def _revoke_cascade(
     db: Session,
     dashboard_id: int,
-    user_id: uuid.UUID,
+    *,
+    user_id: uuid.UUID | None = None,
+    team_id: uuid.UUID | None = None,
 ) -> None:
     """
     Revoke dashboard share and cascade-revoke charts/datasets that
@@ -151,18 +235,19 @@ def _revoke_cascade(
         child_records.append((ResourceType.DATASET, wid))
 
     # Delete cascade shares
+    filters = _share_target_filters(user_id=user_id, team_id=team_id)
     for rtype, rid in child_records:
         db.query(ResourceShare).filter(
             ResourceShare.resource_type == rtype,
             ResourceShare.resource_id == str(rid),
-            ResourceShare.user_id == user_id,
+            *filters,
         ).delete()
 
     # Delete dashboard share itself
     db.query(ResourceShare).filter(
         ResourceShare.resource_type == ResourceType.DASHBOARD,
         ResourceShare.resource_id == str(dashboard_id),
-        ResourceShare.user_id == user_id,
+        *filters,
     ).delete()
 
     db.commit()
@@ -185,6 +270,13 @@ def _resolve_share_target_user(db: Session, body: ShareCreate) -> User:
     return target_user
 
 
+def _resolve_share_target_team(db: Session, team_id: uuid.UUID) -> Team:
+    target_team = db.query(Team).filter(Team.id == team_id).first()
+    if not target_team:
+        raise HTTPException(status_code=404, detail="Target team not found")
+    return target_team
+
+
 # ── CRUD Endpoints ────────────────────────────────────────────────────────────
 
 @router.get("/{resource_type}/{resource_id}", response_model=List[ShareResponse])
@@ -198,10 +290,12 @@ def list_shares(
     require_share_access(db, current_user, resource_type, resource_id)
     shares = (
         db.query(ResourceShare)
+        .options(joinedload(ResourceShare.user), joinedload(ResourceShare.team))
         .filter(
             ResourceShare.resource_type == resource_type,
             ResourceShare.resource_id == resource_id,
         )
+        .order_by(ResourceShare.created_at.asc(), ResourceShare.id.asc())
         .all()
     )
     return shares
@@ -222,26 +316,72 @@ def add_share(
     """
     require_share_access(db, current_user, resource_type, resource_id)
 
-    target_user = _resolve_share_target_user(db, body)
-    target_user_id = target_user.id
+    target_user_id: uuid.UUID | None = None
+    target_team_id: uuid.UUID | None = None
+    if body.team_id is not None:
+        target_team_id = _resolve_share_target_team(db, body.team_id).id
+    else:
+        target_user_id = _resolve_share_target_user(db, body).id
 
     if resource_type == ResourceType.DASHBOARD:
         _require_dashboard_cascade_access(db, current_user, int(resource_id))
-        cascade_share_dashboard(db, int(resource_id), target_user_id, body.permission, current_user.id)
-        share = db.query(ResourceShare).filter(
-            ResourceShare.resource_type == ResourceType.DASHBOARD,
-            ResourceShare.resource_id == resource_id,
-            ResourceShare.user_id == target_user_id,
-        ).first()
+        cascade_share_dashboard(
+            db,
+            int(resource_id),
+            body.permission,
+            current_user.id,
+            user_id=target_user_id,
+            team_id=target_team_id,
+        )
     else:
-        _upsert_share(db, resource_type, resource_id, target_user_id, body.permission, current_user.id)
+        _upsert_share(
+            db,
+            resource_type,
+            resource_id,
+            body.permission,
+            current_user.id,
+            user_id=target_user_id,
+            team_id=target_team_id,
+        )
         db.commit()
-        share = db.query(ResourceShare).filter(
-            ResourceShare.resource_type == resource_type,
-            ResourceShare.resource_id == resource_id,
-            ResourceShare.user_id == target_user_id,
-        ).first()
 
+    return _get_share_for_target(
+        db,
+        resource_type,
+        resource_id,
+        user_id=target_user_id,
+        team_id=target_team_id,
+    )
+
+
+@router.put("/{resource_type}/{resource_id}/entries/{share_id}", response_model=ShareResponse)
+def update_share_entry(
+    resource_type: ResourceType,
+    resource_id: str,
+    share_id: int,
+    body: ShareUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update permission on an existing direct user share or team share."""
+    require_share_access(db, current_user, resource_type, resource_id)
+
+    share = _load_share_or_404(db, resource_type, resource_id, share_id)
+    if resource_type == ResourceType.DASHBOARD:
+        _require_dashboard_cascade_access(db, current_user, int(resource_id))
+        cascade_share_dashboard(
+            db,
+            int(resource_id),
+            body.permission,
+            current_user.id,
+            user_id=share.user_id,
+            team_id=share.team_id,
+        )
+        return _load_share_or_404(db, resource_type, resource_id, share_id)
+
+    share.permission = body.permission
+    db.commit()
+    db.refresh(share)
     return share
 
 
@@ -254,31 +394,10 @@ def update_share(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Update permission on an existing share."""
+    """Backward-compatible update for direct user shares."""
     require_share_access(db, current_user, resource_type, resource_id)
-
-    share = db.query(ResourceShare).filter(
-        ResourceShare.resource_type == resource_type,
-        ResourceShare.resource_id == resource_id,
-        ResourceShare.user_id == user_id,
-    ).first()
-    if not share:
-        raise HTTPException(status_code=404, detail="Share not found")
-
-    if resource_type == ResourceType.DASHBOARD:
-        _require_dashboard_cascade_access(db, current_user, int(resource_id))
-        cascade_share_dashboard(db, int(resource_id), user_id, body.permission, current_user.id)
-        share = db.query(ResourceShare).filter(
-            ResourceShare.resource_type == resource_type,
-            ResourceShare.resource_id == resource_id,
-            ResourceShare.user_id == user_id,
-        ).first()
-        return share
-
-    share.permission = body.permission
-    db.commit()
-    db.refresh(share)
-    return share
+    share = _get_share_for_target(db, resource_type, resource_id, user_id=user_id)
+    return update_share_entry(resource_type, resource_id, share.id, body, db, current_user)
 
 
 @router.delete("/{resource_type}/{resource_id}/{user_id}",
@@ -290,25 +409,39 @@ def revoke_share(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Revoke access. For dashboards, also revokes cascaded chart/dataset shares."""
+    """Backward-compatible revoke for direct user shares."""
+    require_share_access(db, current_user, resource_type, resource_id)
+    share = _get_share_for_target(db, resource_type, resource_id, user_id=user_id)
+    revoke_share_entry(resource_type, resource_id, share.id, db, current_user)
+
+
+@router.delete("/{resource_type}/{resource_id}/entries/{share_id}", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_share_entry(
+    resource_type: ResourceType,
+    resource_id: str,
+    share_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Revoke direct user shares or team shares by share entry id."""
     require_share_access(db, current_user, resource_type, resource_id)
 
+    share = _load_share_or_404(db, resource_type, resource_id, share_id)
     if resource_type == ResourceType.DASHBOARD:
-        _revoke_cascade(db, int(resource_id), user_id)
+        _revoke_cascade(
+            db,
+            int(resource_id),
+            user_id=share.user_id,
+            team_id=share.team_id,
+        )
         return
 
-    deleted = db.query(ResourceShare).filter(
-        ResourceShare.resource_type == resource_type,
-        ResourceShare.resource_id == resource_id,
-        ResourceShare.user_id == user_id,
-    ).delete()
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Share not found")
+    db.delete(share)
     db.commit()
 
 
 @router.post("/{resource_type}/{resource_id}/all-team",
-             status_code=status.HTTP_204_NO_CONTENT)
+             status_code=status.HTTP_410_GONE)
 def share_all_team(
     resource_type: ResourceType,
     resource_id: str,
@@ -316,21 +449,8 @@ def share_all_team(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Share a resource with ALL active users (except the current user)."""
-    _check_share_ownership(db, current_user, resource_type, resource_id)
-    if resource_type == ResourceType.DASHBOARD:
-        _require_dashboard_cascade_access(db, current_user, int(resource_id))
-
-    active_users = (
-        db.query(User)
-        .filter(User.status == UserStatus.ACTIVE, User.id != current_user.id)
-        .all()
+    """Deprecated: team sharing is now limited to configured teams only."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Deprecated. Share with a configured team instead.",
     )
-    for user in active_users:
-        if resource_type == ResourceType.DASHBOARD:
-            cascade_share_dashboard(db, int(resource_id), user.id, body.permission, current_user.id)
-        else:
-            _upsert_share(db, resource_type, resource_id, user.id, body.permission, current_user.id)
-
-    if resource_type != ResourceType.DASHBOARD:
-        db.commit()

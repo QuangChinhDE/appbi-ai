@@ -1,8 +1,10 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import type {
+  ColumnGroup,
+  TemplateAppendixSection,
   TemplateDefinition,
   LayoutType,
   HeaderLine,
@@ -44,6 +46,42 @@ const LAYOUT_OPTIONS: { value: LayoutType; label: string; icon: string }[] = [
   { value: 'cross-tab', label: 'Cross-tab', icon: '╪' },
 ];
 
+function buildAppendixDefinition(
+  definition: TemplateDefinition,
+  section: TemplateAppendixSection,
+): TemplateDefinition | null {
+  const columnByKey = new Map(definition.columns.map((column) => [column.key, column]));
+  const columns = section.columnKeys.reduce<TemplateDefinition['columns']>((accumulator, columnKey) => {
+      const column = columnByKey.get(columnKey);
+      if (column) {
+        accumulator.push({ ...column, visible: true });
+      }
+      return accumulator;
+    }, []);
+
+  if (columns.length === 0) {
+    return null;
+  }
+
+  const visibleColumnIds = new Set(columns.map((column) => column.id));
+  const sectionColumnGroups = (definition.columnGroups ?? [])
+    .map((group) => ({
+      ...group,
+      columnIds: group.columnIds.filter((columnId) => visibleColumnIds.has(columnId)),
+    }))
+    .filter((group): group is ColumnGroup => group.columnIds.length > 0);
+
+  return {
+    ...definition,
+    layout: 'table',
+    columns,
+    groupBy: section.groupBy,
+    showSubtotals: section.showSubtotals ?? false,
+    columnGroups: sectionColumnGroups.length > 0 ? sectionColumnGroups : undefined,
+    appendixSections: undefined,
+  };
+}
+
 export function BuilderCanvas({
   definition,
   selectedColumnId,
@@ -69,6 +107,12 @@ export function BuilderCanvas({
   const titleAlign = definition.header?.titleAlign ?? 'left';
   const titleFontCls = FONT_SIZE_MAP[definition.header?.titleFontSize ?? 'base'] ?? 'text-sm';
   const titleWeightCls = definition.header?.titleBold === false ? 'font-medium' : 'font-bold';
+  const appendixSections = useMemo(
+    () => (definition.appendixSections ?? [])
+      .map((section) => ({ section, appendixDefinition: buildAppendixDefinition(definition, section) }))
+      .filter((item): item is { section: TemplateAppendixSection; appendixDefinition: TemplateDefinition } => item.appendixDefinition !== null),
+    [definition],
+  );
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden bg-surface-2">
@@ -239,6 +283,40 @@ export function BuilderCanvas({
               previewData={previewData}
               isLoading={isLoadingData}
             />
+          )}
+
+          {appendixSections.length > 0 && (
+            <div className="border-t border-[rgb(var(--border-line))] bg-[rgba(15,23,42,0.02)]">
+              {appendixSections.map(({ section, appendixDefinition }) => (
+                <section key={section.id} className="border-t border-[rgb(var(--border-line))] first:border-t-0">
+                  <div
+                    className="px-5 py-4"
+                    style={{
+                      background: isPreview ? undefined : theme.sectionBg ?? theme.groupBg,
+                      color: isPreview ? undefined : theme.sectionText ?? theme.groupText,
+                    }}
+                  >
+                    <p className={`text-[11px] font-semibold uppercase tracking-[0.2em] ${isPreview ? 'text-text-quaternary' : ''}`}>
+                      Appendix section
+                    </p>
+                    <h3 className={`mt-1 text-sm font-semibold ${isPreview ? 'text-text-primary' : ''}`}>{section.title}</h3>
+                    {section.description && (
+                      <p className={`mt-1 text-xs leading-5 ${isPreview ? 'text-text-tertiary' : ''}`}>
+                        {section.description}
+                      </p>
+                    )}
+                  </div>
+
+                  <TableLayout
+                    definition={appendixDefinition}
+                    selectedColumnId={isPreview ? null : selectedColumnId}
+                    onSelectColumn={isPreview ? () => {} : onSelectColumn}
+                    previewData={previewData}
+                    isLoading={isLoadingData}
+                  />
+                </section>
+              ))}
+            </div>
           )}
 
           {/* ── Add column prompt (when no columns but has datasource) ── */}

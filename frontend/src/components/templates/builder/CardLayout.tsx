@@ -32,7 +32,7 @@ export function CardLayout({ definition, previewData, isLoading }: CardLayoutPro
 
   function resolveCell(col: TemplateColumn, row: Record<string, any>): string {
     if (col.expression) {
-      const val = evaluateFormula(col.expression, row, columns);
+      const val = row[col.key] != null ? row[col.key] : evaluateFormula(col.expression, row, columns);
       return formatValue(val, col.format, col.suffix);
     }
     const sourceCol = col.sourceColumn ?? col.key;

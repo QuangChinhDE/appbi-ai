@@ -17,7 +17,13 @@ import { useI18n } from '@/providers/LanguageProvider';
 import { Button } from '@/components/ui/Button';
 import { FilterTag } from '@/components/ui/FilterTag';
 import { Input } from '@/components/ui/Input';
-import { isTemplateDefinition } from '@/types/template';
+import { createDefaultDocumentDefinition, isTemplateDefinition, isTemplateDocumentDefinition } from '@/types/template';
+
+function countDocumentBlocks(block: any): number {
+  if (!block || typeof block !== 'object') return 0;
+  const children: any[] = Array.isArray(block.children) ? block.children : [];
+  return 1 + children.reduce((total: number, child: any) => total + countDocumentBlocks(child), 0);
+}
 
 export default function TemplatesPage() {
   const router = useRouter();
@@ -58,7 +64,10 @@ export default function TemplatesPage() {
     e.preventDefault();
     if (!newName.trim()) return;
     try {
-      const tpl = await createMutation.mutateAsync({ name: newName.trim() });
+      const tpl = await createMutation.mutateAsync({
+        name: newName.trim(),
+        blocks: createDefaultDocumentDefinition(),
+      });
       setNewName('');
       setIsCreating(false);
       router.push(`/templates/${tpl.id}`);
@@ -105,7 +114,15 @@ export default function TemplatesPage() {
             },
             {
               label: t('overview.templates.blocks'),
-              value: templateItems.reduce((s, t) => s + (Array.isArray(t.blocks) ? t.blocks.length : 1), 0),
+              value: templateItems.reduce((sum, item) => {
+                if (isTemplateDefinition(item.blocks)) {
+                  return sum + item.blocks.columns.length;
+                }
+                if (isTemplateDocumentDefinition(item.blocks)) {
+                  return sum + countDocumentBlocks(item.blocks.root);
+                }
+                return sum + 1;
+              }, 0),
               helper: t('overview.templates.blocksHelper'),
             },
             {
@@ -207,14 +224,17 @@ export default function TemplatesPage() {
         const needle = filterText.trim().toLowerCase();
         const filtered = templateItems.filter((tpl) => {
           const definition = isTemplateDefinition(tpl.blocks) ? tpl.blocks : null;
-          const layout = definition?.layout ?? 'custom';
-          const binding = definition?.dataSource?.datasetName ? 'bound' : 'unbound';
+          const documentDefinition = isTemplateDocumentDefinition(tpl.blocks) ? tpl.blocks : null;
+          const layout = definition?.layout ?? (documentDefinition ? 'document' : 'custom');
+          const sourceNames = documentDefinition?.dataSources.map((source) => source.name || source.id).join(' ') ?? '';
+          const binding = definition?.dataSource?.datasetName || (documentDefinition?.dataSources.length ?? 0) > 0 ? 'bound' : 'unbound';
           const matchesSearch =
             needle.length === 0 ||
             tpl.name.toLowerCase().includes(needle) ||
             (tpl.description ?? '').toLowerCase().includes(needle) ||
             definition?.dataSource?.datasetName?.toLowerCase().includes(needle) ||
             definition?.dataSource?.tableName?.toLowerCase().includes(needle) ||
+            sourceNames.toLowerCase().includes(needle) ||
             (tpl.owner_email ?? '').toLowerCase().includes(needle);
 
           return (
@@ -225,53 +245,55 @@ export default function TemplatesPage() {
           );
         });
 
-        if (templateItems.length === 0) {
-          return viewMode === 'grid' ? (
-            <TemplateCardGrid templates={[]} onDelete={canEdit ? handleDelete : undefined} deletingId={deletingId} />
-          ) : (
-            <TemplateList
-              templates={[]}
-              onDelete={canEdit ? handleDelete : undefined}
-              deletingId={deletingId}
-              activeFilters={listFilters}
-              onFilterClick={(key, value) => toggleListFilter(key as 'layout' | 'binding' | 'owner', value)}
-            />
-          );
-        }
-
         return (
-          <PaginatedCollection
-            items={filtered}
-            viewMode={viewMode}
-            resetKey={JSON.stringify({ filterText, viewMode, listFilters })}
-          >
-            {({ pageItems, pagination }) => (
-              filtered.length === 0 ? (
-                <div className="flex h-48 flex-col items-center justify-center text-center">
-                  <Search className="mb-2 h-7 w-7 text-text-quaternary" />
-                  <p className="text-caption text-text-tertiary">
-                    No templates matching &ldquo;<strong className="text-text-primary">{filterText}</strong>&rdquo;
-                  </p>
-                </div>
+          <div className="space-y-8">
+            {templateItems.length === 0 ? (
+              viewMode === 'grid' ? (
+                <TemplateCardGrid templates={[]} onDelete={canEdit ? handleDelete : undefined} deletingId={deletingId} />
               ) : (
-                <div className="space-y-6">
-                  {viewMode === 'grid' ? (
-                    <TemplateCardGrid templates={pageItems} onDelete={canEdit ? handleDelete : undefined} deletingId={deletingId} />
-                  ) : (
-                    <TemplateList
-                      templates={pageItems}
-                      onDelete={canEdit ? handleDelete : undefined}
-                      deletingId={deletingId}
-                      activeFilters={listFilters}
-                      onFilterClick={(key, value) => toggleListFilter(key as 'layout' | 'binding' | 'owner', value)}
-                    />
-                  )}
-
-                  {pagination}
-                </div>
+                <TemplateList
+                  templates={[]}
+                  onDelete={canEdit ? handleDelete : undefined}
+                  deletingId={deletingId}
+                  activeFilters={listFilters}
+                  onFilterClick={(key, value) => toggleListFilter(key as 'layout' | 'binding' | 'owner', value)}
+                />
               )
+            ) : (
+              <PaginatedCollection
+                items={filtered}
+                viewMode={viewMode}
+                resetKey={JSON.stringify({ filterText, viewMode, listFilters })}
+              >
+                {({ pageItems, pagination }) => (
+                  filtered.length === 0 ? (
+                    <div className="flex h-48 flex-col items-center justify-center text-center">
+                      <Search className="mb-2 h-7 w-7 text-text-quaternary" />
+                      <p className="text-caption text-text-tertiary">
+                        No templates matching &ldquo;<strong className="text-text-primary">{filterText}</strong>&rdquo;
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-6">
+                      {viewMode === 'grid' ? (
+                        <TemplateCardGrid templates={pageItems} onDelete={canEdit ? handleDelete : undefined} deletingId={deletingId} />
+                      ) : (
+                        <TemplateList
+                          templates={pageItems}
+                          onDelete={canEdit ? handleDelete : undefined}
+                          deletingId={deletingId}
+                          activeFilters={listFilters}
+                          onFilterClick={(key, value) => toggleListFilter(key as 'layout' | 'binding' | 'owner', value)}
+                        />
+                      )}
+
+                      {pagination}
+                    </div>
+                  )
+                )}
+              </PaginatedCollection>
             )}
-          </PaginatedCollection>
+          </div>
         );
       }}
     </PageListLayout>

@@ -673,12 +673,12 @@ export function TableNotesBar({
         )}
         {tableNote.owner_note && (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-3 py-1 text-xs text-warning">
-            Note
+            PIC
           </span>
         )}
         {tableNote.join_hint && (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-brand/30 bg-brand/10 px-3 py-1 text-xs text-brand">
-            Join hint
+            Source
           </span>
         )}
         <div className="flex-1" />
@@ -738,8 +738,8 @@ export function TableNotesBar({
           </div>
           <div className="mt-3 grid gap-3 lg:grid-cols-2">
             {[
-              { field: 'owner_note' as const, label: 'Owner note', placeholder: 'What is this table used for and when should it be trusted?' },
-              { field: 'join_hint' as const, label: 'Join / usage hint', placeholder: 'Preferred joins, common filters, or caveats.' },
+              { field: 'owner_note' as const, label: 'PIC', placeholder: 'Who owns this table and who should be contacted?' },
+              { field: 'join_hint' as const, label: 'Source', placeholder: 'Source system, upstream table, or lineage note.' },
             ].map(({ field, label, placeholder }) => (
               <div key={field}>
                 <label className="mb-1 block text-xs font-medium text-text-tertiary">{label}</label>

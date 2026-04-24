@@ -5,6 +5,7 @@ from app.core.dependencies import require_full_access
 from app.models.chat_session import ChatSession
 from app.models.dataset import Dataset
 from app.models.models import Chart, Dashboard, DataSource
+from app.models.report_template import ReportTemplate
 from app.models.resource_share import ResourceType
 from app.models.user import User
 
@@ -15,6 +16,7 @@ _RESOURCE_MODEL_MAP = {
     ResourceType.DATASOURCE: (DataSource, "data_sources", "id"),
     ResourceType.DATASET: (Dataset, "datasets", "id"),
     ResourceType.CHAT_SESSION: (ChatSession, "ai_chat", "session_id"),
+    ResourceType.REPORT_TEMPLATE: (ReportTemplate, "report_templates", "id"),
 }
 
 

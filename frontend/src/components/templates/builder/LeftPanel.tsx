@@ -17,6 +17,7 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 import type {
   TemplateDefinition,
+  TemplateFilter,
   TemplateColumn,
   TemplateDataSource,
   TemplateFooter,
@@ -26,12 +27,16 @@ import type {
   ColumnType,
 } from '@/types/template';
 import type { TablePreviewResponse } from '@/hooks/use-datasets';
+import type { TemplatePreviewFormulaError } from '@/hooks/use-template-data';
 
 interface LeftPanelProps {
   definition: TemplateDefinition;
+  templateFilters: TemplateFilter[];
   selectedColumn: TemplateColumn | null;
   availableColumns?: Array<{ name: string; type: string; nullable?: boolean }>;
   previewData?: TablePreviewResponse;
+  formulaErrors: TemplatePreviewFormulaError[];
+  previewErrorMessage?: string | null;
   isLoadingData: boolean;
   rowCount: number;
   totalRows: number;
@@ -47,17 +52,21 @@ interface LeftPanelProps {
   onHeaderTitleChange: (title: string, meta?: string) => void;
   onFooterChange: (footer: TemplateFooter) => void;
   onColumnGroupsChange: (groups: ColumnGroup[]) => void;
+  onTemplateFiltersChange: (filters: TemplateFilter[]) => void;
   onExportExcel: () => void;
   onExportPDF: () => void;
 }
 
-type SectionKey = 'columns' | 'structure' | 'export';
+type SectionKey = 'columns' | 'filters' | 'structure' | 'export';
 
 export function LeftPanel({
   definition,
+  templateFilters,
   selectedColumn,
   availableColumns,
   previewData,
+  formulaErrors,
+  previewErrorMessage,
   isLoadingData,
   rowCount,
   totalRows,
@@ -73,14 +82,19 @@ export function LeftPanel({
   onHeaderTitleChange,
   onFooterChange,
   onColumnGroupsChange,
+  onTemplateFiltersChange,
   onExportExcel,
   onExportPDF,
 }: LeftPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [openSections, setOpenSections] = useState<Set<SectionKey>>(
-    new Set(['columns', 'structure']),
+    new Set(['columns', 'filters', 'structure']),
   );
   const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const formulaErrorByKey = useMemo(
+    () => new Map(formulaErrors.map((item) => [item.key, item.error])),
+    [formulaErrors],
+  );
 
   const toggleSection = (key: SectionKey) => {
     setOpenSections((prev) => {
@@ -99,6 +113,42 @@ export function LeftPanel({
   const groupableColumns = definition.columns.filter(
     (c) => c.type === 'raw' || c.type === 'input',
   );
+  const filterableColumns = availableColumns ?? [];
+
+  const addTemplateFilter = () => {
+    if (!definition.dataSource) return;
+    onTemplateFiltersChange([
+      ...templateFilters,
+      {
+        id: uuidv4(),
+        label: `Bộ lọc ${templateFilters.length + 1}`,
+        datasetId: definition.dataSource.datasetId,
+        tableId: definition.dataSource.tableId,
+        column: filterableColumns[0]?.name ?? '',
+        operator: 'eq',
+        defaultValue: '',
+      },
+    ]);
+  };
+
+  const updateTemplateFilter = (filterId: string, patch: Partial<TemplateFilter>) => {
+    onTemplateFiltersChange(
+      templateFilters.map((filter) =>
+        filter.id === filterId
+          ? {
+              ...filter,
+              ...patch,
+              datasetId: definition.dataSource?.datasetId ?? filter.datasetId,
+              tableId: definition.dataSource?.tableId ?? filter.tableId,
+            }
+          : filter,
+      ),
+    );
+  };
+
+  const removeTemplateFilter = (filterId: string) => {
+    onTemplateFiltersChange(templateFilters.filter((filter) => filter.id !== filterId));
+  };
 
   /* ── Column Groups helpers ── */
   const columnGroups = definition.columnGroups ?? [];
@@ -215,6 +265,25 @@ export function LeftPanel({
           {isLoadingData && (
             <p className="mt-1 text-[10px] text-text-quaternary">Đang tải dữ liệu…</p>
           )}
+          {previewErrorMessage && (
+            <div className="mt-2 rounded-md border border-danger/30 bg-danger/10 px-2.5 py-2">
+              <p className="text-[10px] font-semibold text-danger">{previewErrorMessage}</p>
+              {formulaErrors.length > 0 && (
+                <div className="mt-1 space-y-1">
+                  {formulaErrors.slice(0, 3).map((item) => (
+                    <p key={`${item.key}-${item.error}`} className="text-[10px] text-danger/90">
+                      {item.key}: {item.error}
+                    </p>
+                  ))}
+                  {formulaErrors.length > 3 && (
+                    <p className="text-[10px] text-danger/80">
+                      +{formulaErrors.length - 3} lỗi công thức khác
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* ── COLUMNS SECTION ── */}
@@ -256,6 +325,7 @@ export function LeftPanel({
                   const isSelected = col.id === selectedColumn?.id;
                   const isFormula = col.type === 'formula' || col.type === 'subtotal';
                   const isInput = col.type === 'input';
+                  const hasFormulaError = formulaErrorByKey.has(col.key);
                   return (
                     <div
                       key={col.id}
@@ -269,10 +339,14 @@ export function LeftPanel({
                         setDragIdx(null);
                       }}
                       onClick={() => onSelectColumn(isSelected ? null : col.id)}
-                      className={`group flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 text-xs transition-colors mb-0.5 ${
-                        isSelected
-                          ? 'bg-brand/10 text-brand'
-                          : 'text-text-secondary hover:bg-surface-2'
+                      className={`group mb-0.5 flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1.5 text-xs transition-colors ${
+                        hasFormulaError
+                          ? isSelected
+                            ? 'bg-danger/10 text-danger'
+                            : 'text-danger hover:bg-danger/5'
+                          : isSelected
+                            ? 'bg-brand/10 text-brand'
+                            : 'text-text-secondary hover:bg-surface-2'
                       }`}
                     >
                       {canEdit && (
@@ -280,10 +354,15 @@ export function LeftPanel({
                       )}
                       <span
                         className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                          isFormula ? 'bg-warning' : isInput ? 'bg-brand/60' : 'bg-surface-3'
+                          hasFormulaError ? 'bg-danger' : isFormula ? 'bg-warning' : isInput ? 'bg-brand/60' : 'bg-surface-3'
                         }`}
                       />
                       <span className="flex-1 truncate font-medium">{col.label}</span>
+                      {hasFormulaError && (
+                        <span className="shrink-0 rounded bg-danger/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-danger">
+                          Lỗi
+                        </span>
+                      )}
                       <span className={`shrink-0 text-[9px] font-mono ${isFormula ? 'text-warning' : 'text-text-quaternary'}`}>
                         {col.type === 'formula' ? 'ƒ' : col.type === 'subtotal' ? 'Σ' : col.type === 'input' ? '✎' : ''}
                       </span>
@@ -308,11 +387,115 @@ export function LeftPanel({
                 column={selectedColumn}
                 columns={definition.columns}
                 availableColumns={availableColumns}
+                formulaError={formulaErrorByKey.get(selectedColumn.key)}
                 canEdit={canEdit}
                 onUpdate={(patch) => onColumnChange({ ...selectedColumn, ...patch })}
                 onRemove={() => onRemoveColumn(selectedColumn.id)}
               />
             )}
+          </div>
+        )}
+
+        {/* ── FILTERS SECTION ── */}
+        <SectionHeader
+          label="Bộ lọc runtime"
+          open={openSections.has('filters')}
+          onToggle={() => toggleSection('filters')}
+          action={
+            canEdit ? (
+              <button
+                onClick={addTemplateFilter}
+                disabled={!definition.dataSource}
+                className="rounded p-0.5 text-text-quaternary hover:bg-surface-2 hover:text-brand transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                title="Thêm bộ lọc"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            ) : null
+          }
+        />
+        {openSections.has('filters') && (
+          <div className="border-b border-[rgb(var(--border-line))] px-3 py-2 space-y-2">
+            {!definition.dataSource && (
+              <p className="text-[10px] text-text-quaternary">
+                Chọn nguồn dữ liệu trước khi cấu hình bộ lọc runtime.
+              </p>
+            )}
+            {definition.dataSource && templateFilters.length === 0 && (
+              <p className="text-[10px] text-text-quaternary">
+                Chưa có bộ lọc nào. Thêm bộ lọc để preview và export chạy theo tham số runtime.
+              </p>
+            )}
+            {templateFilters.map((filter) => (
+              <div key={filter.id} className="rounded-md border border-[rgb(var(--border-line))] p-2 space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <input
+                    className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
+                    value={filter.label}
+                    onChange={(e) => updateTemplateFilter(filter.id, { label: e.target.value })}
+                    disabled={!canEdit}
+                    placeholder="Tên hiển thị"
+                  />
+                  {canEdit && (
+                    <button
+                      onClick={() => removeTemplateFilter(filter.id)}
+                      className="rounded p-0.5 text-text-quaternary hover:text-danger transition-colors"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+                {filterableColumns.length > 0 ? (
+                  <select
+                    value={filter.column}
+                    onChange={(e) => updateTemplateFilter(filter.id, { column: e.target.value })}
+                    disabled={!canEdit}
+                    className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
+                  >
+                    {filterableColumns.map((column) => (
+                      <option key={column.name} value={column.name}>
+                        {column.name} ({column.type})
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
+                    value={filter.column}
+                    onChange={(e) => updateTemplateFilter(filter.id, { column: e.target.value })}
+                    disabled={!canEdit}
+                    placeholder="Tên cột"
+                  />
+                )}
+                <div className="flex gap-2">
+                  <select
+                    value={filter.operator}
+                    onChange={(e) => updateTemplateFilter(filter.id, { operator: e.target.value as TemplateFilter['operator'] })}
+                    disabled={!canEdit}
+                    className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
+                  >
+                    <option value="eq">=</option>
+                    <option value="neq">!=</option>
+                    <option value="gt">&gt;</option>
+                    <option value="gte">&gt;=</option>
+                    <option value="lt">&lt;</option>
+                    <option value="lte">&lt;=</option>
+                    <option value="contains">contains</option>
+                    <option value="like">like</option>
+                    <option value="in">in</option>
+                    <option value="not_in">not in</option>
+                    <option value="between">between</option>
+                  </select>
+                  <input
+                    className="flex-1 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-brand"
+                    value={filter.defaultValue ?? ''}
+                    onChange={(e) => updateTemplateFilter(filter.id, { defaultValue: e.target.value })}
+                    disabled={!canEdit}
+                    placeholder="Giá trị mặc định"
+                  />
+                </div>
+              </div>
+            ))}
           </div>
         )}
 
@@ -599,6 +782,7 @@ function ColumnInlineProps({
   column,
   columns,
   availableColumns,
+  formulaError,
   canEdit,
   onUpdate,
   onRemove,
@@ -606,6 +790,7 @@ function ColumnInlineProps({
   column: TemplateColumn;
   columns: TemplateColumn[];
   availableColumns?: Array<{ name: string; type: string; nullable?: boolean }>;
+  formulaError?: string;
   canEdit: boolean;
   onUpdate: (patch: Partial<TemplateColumn>) => void;
   onRemove: () => void;
@@ -655,18 +840,27 @@ function ColumnInlineProps({
 
       {/* Công thức tính */}
       <Field label="Công thức tính (tuỳ chọn)">
-        <input
-          className="w-full rounded border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 focus:ring-brand"
-          value={column.expression ?? ''}
-          onChange={(e) =>
-            onUpdate({
-              expression: e.target.value || undefined,
-              type: e.target.value ? 'formula' : (column.sourceColumn ? 'raw' : 'raw'),
-            })
-          }
-          disabled={!canEdit}
-          placeholder="VD: col_a * col_b + col_c"
-        />
+        <div>
+          <input
+            className={`w-full rounded border bg-surface-1 px-2 py-1.5 text-xs font-mono outline-none focus:ring-2 ${
+              formulaError
+                ? 'border-danger/50 text-danger focus:ring-danger'
+                : 'border-[rgb(var(--border-strong))] focus:ring-brand'
+            }`}
+            value={column.expression ?? ''}
+            onChange={(e) =>
+              onUpdate({
+                expression: e.target.value || undefined,
+                type: e.target.value ? 'formula' : (column.sourceColumn ? 'raw' : 'raw'),
+              })
+            }
+            disabled={!canEdit}
+            placeholder="VD: col_a * col_b + col_c"
+          />
+          {formulaError && (
+            <p className="mt-1 text-[10px] text-danger">{formulaError}</p>
+          )}
+        </div>
       </Field>
 
       {/* Định dạng + Suffix */}

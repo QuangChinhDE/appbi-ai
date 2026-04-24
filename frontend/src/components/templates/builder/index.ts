@@ -4,6 +4,7 @@ export { LeftPanel } from './LeftPanel';
 export { TableLayout } from './TableLayout';
 export { CardLayout } from './CardLayout';
 export { CrossTabLayout } from './CrossTabLayout';
+export { TemplateEntryGrid } from './TemplateEntryGrid';
 export { ColumnProperties } from './ColumnProperties';
 export { DataSourcePicker } from './DataSourcePicker';
 export { Tooltip } from './Tooltip';

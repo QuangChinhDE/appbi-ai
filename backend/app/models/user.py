@@ -59,6 +59,20 @@ class User(Base):
                                    cascade="all, delete-orphan")
     shares_given = relationship("ResourceShare", back_populates="shared_by_user",
                                 foreign_keys="ResourceShare.shared_by")
+    team_memberships = relationship(
+        "TeamMembership",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        foreign_keys="TeamMembership.user_id",
+        overlaps="teams,users,memberships,team",
+    )
+    teams = relationship(
+        "Team",
+        secondary="team_memberships",
+        viewonly=True,
+        order_by="Team.name",
+        overlaps="team_memberships,memberships,user,team,users",
+    )
 
     @property
     def has_password(self) -> bool:

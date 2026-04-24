@@ -46,6 +46,7 @@ Accuracy:
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 from datetime import date, datetime, timezone
@@ -65,6 +66,12 @@ from app.schemas.dataset import (
 )
 
 logger = get_logger(__name__)
+
+
+class QualityRuleConflictError(ValueError):
+    def __init__(self, message: str, *, existing_rule_id: Optional[int] = None):
+        super().__init__(message)
+        self.existing_rule_id = existing_rule_id
 
 
 # ---------------------------------------------------------------------------
@@ -1034,6 +1041,61 @@ def _normalize_quality_rule_fields(
     }
 
 
+def _canonicalize_rule_identity_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _canonicalize_rule_identity_value(val)
+            for key, val in sorted(value.items(), key=lambda item: item[0])
+        }
+    if isinstance(value, list):
+        normalized = [_canonicalize_rule_identity_value(item) for item in value]
+        return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True, default=str))
+    return value
+
+
+def _find_duplicate_rule(
+    db: Session,
+    *,
+    dataset_id: int,
+    table_id: int,
+    column_name: Optional[str],
+    rule_type: str,
+    config: Dict[str, Any],
+    exclude_rule_id: Optional[int] = None,
+) -> Optional[DatasetQualityRule]:
+    candidates = (
+        db.query(DatasetQualityRule)
+        .filter(DatasetQualityRule.dataset_id == dataset_id)
+        .order_by(DatasetQualityRule.id.asc())
+        .all()
+    )
+
+    identity_config = _canonicalize_rule_identity_value(config or {})
+    normalized_column_name = _clean_optional_str(column_name)
+
+    for candidate in candidates:
+        if exclude_rule_id is not None and candidate.id == exclude_rule_id:
+            continue
+        if candidate.dataset_id != dataset_id:
+            continue
+        if candidate.table_id != table_id:
+            continue
+        if _clean_optional_str(candidate.column_name) != normalized_column_name:
+            continue
+        if (_clean_optional_str(candidate.rule_type) or "").lower() != rule_type:
+            continue
+        if _canonicalize_rule_identity_value(candidate.config or {}) == identity_config:
+            return candidate
+    return None
+
+
+def _raise_duplicate_rule_conflict(rule: DatasetQualityRule) -> None:
+    raise QualityRuleConflictError(
+        f"An equivalent quality rule already exists: #{rule.id} '{rule.name}'",
+        existing_rule_id=rule.id,
+    )
+
+
 def _validate_cross_table_rule_config(
     db: Session,
     dataset_id: int,
@@ -1430,6 +1492,16 @@ class DatasetQualityService:
             severity=data.severity,
         )
         _validate_cross_table_rule_config(db, dataset_id, normalized["rule_type"], normalized["config"])
+        duplicate = _find_duplicate_rule(
+            db,
+            dataset_id=dataset_id,
+            table_id=data.table_id,
+            column_name=normalized["column_name"],
+            rule_type=normalized["rule_type"],
+            config=normalized["config"],
+        )
+        if duplicate:
+            _raise_duplicate_rule_conflict(duplicate)
         rule = DatasetQualityRule(
             dataset_id=dataset_id,
             table_id=data.table_id,
@@ -1484,6 +1556,16 @@ class DatasetQualityService:
                     severity=data.severity,
                 )
                 _validate_cross_table_rule_config(db, dataset_id, normalized["rule_type"], normalized["config"])
+                duplicate = _find_duplicate_rule(
+                    db,
+                    dataset_id=dataset_id,
+                    table_id=data.table_id,
+                    column_name=normalized["column_name"],
+                    rule_type=normalized["rule_type"],
+                    config=normalized["config"],
+                )
+                if duplicate:
+                    _raise_duplicate_rule_conflict(duplicate)
                 rule = DatasetQualityRule(
                     dataset_id=dataset_id,
                     table_id=data.table_id,
@@ -1557,6 +1639,18 @@ class DatasetQualityService:
             payload["config"] = normalized["config"]
             payload["severity"] = normalized["severity"]
 
+            duplicate = _find_duplicate_rule(
+                db,
+                dataset_id=rule.dataset_id,
+                table_id=rule.table_id,
+                column_name=payload["column_name"],
+                rule_type=payload["rule_type"],
+                config=payload["config"],
+                exclude_rule_id=rule.id,
+            )
+            if duplicate:
+                _raise_duplicate_rule_conflict(duplicate)
+
         for field, value in payload.items():
             setattr(rule, field, value)
 
@@ -1594,6 +1688,16 @@ class DatasetQualityService:
             severity=rule.severity,
         )
         _validate_cross_table_rule_config(db, rule.dataset_id, normalized["rule_type"], normalized["config"])
+        duplicate = _find_duplicate_rule(
+            db,
+            dataset_id=rule.dataset_id,
+            table_id=destination_table_id,
+            column_name=normalized["column_name"],
+            rule_type=normalized["rule_type"],
+            config=normalized["config"],
+        )
+        if duplicate:
+            _raise_duplicate_rule_conflict(duplicate)
 
         copied_name = _clean_optional_str(f"{rule.name}{name_suffix}")
         if not copied_name:

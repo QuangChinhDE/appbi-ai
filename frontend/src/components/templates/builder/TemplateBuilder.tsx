@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import { ArrowLeft, Loader2, PencilLine, LayoutTemplate } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import type {
+  TemplateActiveFilterValue,
   TemplateDefinition,
   TemplateColumn,
   TemplateDataSource,
@@ -14,18 +15,23 @@ import type {
   TemplateFooter,
   ColumnGroup,
   TemplateTheme,
+  TemplateFilter,
 } from '@/types/template';
 import { useTemplateData } from '@/hooks/use-template-data';
 import { useDataset } from '@/hooks/use-datasets';
+import { reportTemplateApi } from '@/lib/api/report-templates';
+import { toast } from '@/lib/toast';
 import { BuilderCanvas } from './BuilderCanvas';
 import { LeftPanel } from './LeftPanel';
 import { DataSourcePicker } from './DataSourcePicker';
-import { exportToExcel } from './export-excel';
+import { TemplateEntryGrid } from './TemplateEntryGrid';
 
 interface TemplateBuilderProps {
   template: ReportTemplate;
   definition: TemplateDefinition;
+  templateFilters: TemplateFilter[];
   onDefinitionChange: (def: TemplateDefinition) => void;
+  onTemplateFiltersChange: (filters: TemplateFilter[]) => void;
   onSave: () => void;
   isSaving: boolean;
   hasChanges: boolean;
@@ -35,7 +41,9 @@ interface TemplateBuilderProps {
 export function TemplateBuilder({
   template,
   definition,
+  templateFilters,
   onDefinitionChange,
+  onTemplateFiltersChange,
   onSave,
   isSaving,
   hasChanges,
@@ -45,10 +53,40 @@ export function TemplateBuilder({
 
   const [selectedColumnId, setSelectedColumnId] = useState<string | null>(null);
   const [showDataSourcePicker, setShowDataSourcePicker] = useState(false);
+  const [workspaceMode, setWorkspaceMode] = useState<'design' | 'entry'>('design');
+  const [activeFilters, setActiveFilters] = useState<TemplateActiveFilterValue[]>([]);
+  const [entryRows, setEntryRows] = useState<Record<string, any>[]>([]);
+  const [isSavingEntry, setIsSavingEntry] = useState(false);
   const printRef = useRef<HTMLDivElement>(null);
 
-  const { data: previewData, isLoading: isLoadingData } = useTemplateData(definition.dataSource);
+  const {
+    data: previewData,
+    isLoading: isLoadingData,
+    formulaErrors,
+    previewErrorMessage,
+    refetch: refetchPreviewData,
+  } = useTemplateData({
+    templateId: template.id,
+    dataSource: definition.dataSource,
+    columns: definition.columns,
+    templateFilters,
+    activeFilters,
+  });
   const { data: datasetDetail } = useDataset(definition.dataSource?.datasetId ?? null);
+
+  useEffect(() => {
+    setActiveFilters((current) => {
+      const currentMap = new Map(current.map((item) => [item.filterId, item.value]));
+      return templateFilters.map((filter) => ({
+        filterId: filter.id,
+        value: currentMap.has(filter.id) ? currentMap.get(filter.id) : (filter.defaultValue ?? ''),
+      }));
+    });
+  }, [templateFilters]);
+
+  useEffect(() => {
+    setEntryRows(Array.isArray(previewData?.rows) ? previewData.rows.map((row) => ({ ...row })) : []);
+  }, [previewData]);
 
   const availableColumns = useMemo(() => {
     if (!datasetDetail?.tables || !definition.dataSource?.tableId) return undefined;
@@ -135,9 +173,38 @@ export function TemplateBuilder({
   const handleDataSourceChange = useCallback(
     (ds: TemplateDataSource) => {
       updateDef({ dataSource: ds });
+      onTemplateFiltersChange(
+        templateFilters.map((filter) => ({
+          ...filter,
+          datasetId: ds.datasetId,
+          tableId: ds.tableId,
+        })),
+      );
       setShowDataSourcePicker(false);
     },
-    [updateDef],
+    [onTemplateFiltersChange, templateFilters, updateDef],
+  );
+
+  const handleActiveFilterChange = useCallback((filterId: string, value: string) => {
+    setActiveFilters((current) => {
+      const found = current.some((item) => item.filterId === filterId);
+      if (!found) {
+        return [...current, { filterId, value }];
+      }
+      return current.map((item) => item.filterId === filterId ? { ...item, value } : item);
+    });
+  }, []);
+
+  const handleResetFilters = useCallback(() => {
+    setActiveFilters(templateFilters.map((filter) => ({
+      filterId: filter.id,
+      value: filter.defaultValue ?? '',
+    })));
+  }, [templateFilters]);
+
+  const getActiveFilterValue = useCallback(
+    (filterId: string) => activeFilters.find((item) => item.filterId === filterId)?.value ?? '',
+    [activeFilters],
   );
 
   const handleHeaderLinesChange = useCallback(
@@ -177,10 +244,16 @@ export function TemplateBuilder({
 
   /* ── Export handlers ────────────────────────────────────── */
 
-  const handleExportExcel = useCallback(() => {
-    if (!previewData?.rows) return;
-    exportToExcel(definition, previewData.rows, template.name);
-  }, [definition, previewData, template.name]);
+  const handleExportExcel = useCallback(async () => {
+    try {
+      await reportTemplateApi.exportExcel(template.id, activeFilters, template.name, {
+        blocks: definition,
+        filters: templateFilters,
+      });
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || error?.message || 'Failed to export template');
+    }
+  }, [activeFilters, definition, template.id, template.name, templateFilters]);
 
   const handleExportPDF = useCallback(() => {
     const el = printRef.current;
@@ -210,6 +283,31 @@ export function TemplateBuilder({
 
   const rowCount = previewData?.rows?.length ?? 0;
   const totalRows = previewData?.total ?? 0;
+  const runtimeFilters = useMemo(
+    () => templateFilters.filter(
+      (filter) =>
+        !definition.dataSource ||
+        ((filter.datasetId === definition.dataSource.datasetId) && (filter.tableId === definition.dataSource.tableId)),
+    ),
+    [definition.dataSource, templateFilters],
+  );
+  const hasActiveRuntimeFilters = useMemo(
+    () => runtimeFilters.some((filter) => String(getActiveFilterValue(filter.id) ?? '').trim() !== ''),
+    [getActiveFilterValue, runtimeFilters],
+  );
+
+  const handleSaveEntryRows = useCallback(async () => {
+    try {
+      setIsSavingEntry(true);
+      await reportTemplateApi.saveManualData(template.id, entryRows, definition);
+      toast.success('Template data saved');
+      await refetchPreviewData();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || error?.message || 'Failed to save template data');
+    } finally {
+      setIsSavingEntry(false);
+    }
+  }, [definition, entryRows, refetchPreviewData, template.id]);
 
   return (
     <div className="flex h-full flex-col bg-surface-2">
@@ -237,6 +335,31 @@ export function TemplateBuilder({
 
         <div className="flex-1" />
 
+        <div className="flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
+          <button
+            onClick={() => setWorkspaceMode('design')}
+            className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+              workspaceMode === 'design'
+                ? 'bg-surface-1 text-brand shadow-linear-sm'
+                : 'text-text-tertiary hover:text-text-secondary'
+            }`}
+          >
+            <LayoutTemplate className="h-3.5 w-3.5" />
+            Design
+          </button>
+          <button
+            onClick={() => setWorkspaceMode('entry')}
+            className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+              workspaceMode === 'entry'
+                ? 'bg-surface-1 text-brand shadow-linear-sm'
+                : 'text-text-tertiary hover:text-text-secondary'
+            }`}
+          >
+            <PencilLine className="h-3.5 w-3.5" />
+            Entry
+          </button>
+        </div>
+
         <button
           onClick={onSave}
           disabled={!hasChanges || isSaving || !canEdit}
@@ -253,14 +376,43 @@ export function TemplateBuilder({
         </button>
       </div>
 
+      {runtimeFilters.length > 0 && (
+        <div className="flex flex-wrap items-end gap-3 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3">
+          <div className="mr-2 min-w-[140px]">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">Runtime Filters</p>
+            <p className="text-[11px] text-text-quaternary">Use comma-separated values for `in`, `not_in`, and `between`.</p>
+          </div>
+          {runtimeFilters.map((filter) => (
+            <label key={filter.id} className="flex min-w-[180px] flex-col gap-1">
+              <span className="text-[11px] font-medium text-text-secondary">{filter.label || filter.column}</span>
+              <input
+                value={String(getActiveFilterValue(filter.id) ?? '')}
+                onChange={(e) => handleActiveFilterChange(filter.id, e.target.value)}
+                placeholder={filter.defaultValue || filter.column}
+                className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-2 px-2.5 py-1.5 text-xs text-text-secondary outline-none focus:ring-2 focus:ring-brand"
+              />
+            </label>
+          ))}
+          <button
+            onClick={handleResetFilters}
+            className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-3"
+          >
+            Reset filters
+          </button>
+        </div>
+      )}
+
       {/* ── Main layout: Left Panel + Canvas ── */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left Panel */}
         <LeftPanel
           definition={definition}
+          templateFilters={templateFilters}
           selectedColumn={selectedColumn}
           availableColumns={availableColumns}
           previewData={previewData}
+          formulaErrors={formulaErrors}
+          previewErrorMessage={previewErrorMessage}
           isLoadingData={isLoadingData}
           rowCount={rowCount}
           totalRows={totalRows}
@@ -276,26 +428,40 @@ export function TemplateBuilder({
           onHeaderTitleChange={handleHeaderTitleChange}
           onFooterChange={handleFooterChange}
           onColumnGroupsChange={handleColumnGroupsChange}
+          onTemplateFiltersChange={onTemplateFiltersChange}
           onExportExcel={handleExportExcel}
           onExportPDF={handleExportPDF}
         />
 
         {/* Canvas */}
-        <BuilderCanvas
-          definition={definition}
-          selectedColumnId={selectedColumnId}
-          onSelectColumn={setSelectedColumnId}
-          onLayoutChange={setLayout}
-          onThemeChange={handleThemeChange}
-          onHeaderLinesChange={handleHeaderLinesChange}
-          onHeaderTitleChange={handleHeaderTitleChange}
-          onFooterChange={handleFooterChange}
-          onAddColumn={addColumn}
-          previewData={previewData}
-          isLoadingData={isLoadingData}
-          canEdit={canEdit}
-          printRef={printRef}
-        />
+        {workspaceMode === 'entry' ? (
+          <TemplateEntryGrid
+            definition={definition}
+            rows={entryRows}
+            canEdit={canEdit}
+            hasActiveFilters={hasActiveRuntimeFilters}
+            hasMoreRows={Boolean(previewData?.has_more)}
+            isSaving={isSavingEntry}
+            onRowsChange={setEntryRows}
+            onSave={handleSaveEntryRows}
+          />
+        ) : (
+          <BuilderCanvas
+            definition={definition}
+            selectedColumnId={selectedColumnId}
+            onSelectColumn={setSelectedColumnId}
+            onLayoutChange={setLayout}
+            onThemeChange={handleThemeChange}
+            onHeaderLinesChange={handleHeaderLinesChange}
+            onHeaderTitleChange={handleHeaderTitleChange}
+            onFooterChange={handleFooterChange}
+            onAddColumn={addColumn}
+            previewData={previewData}
+            isLoadingData={isLoadingData}
+            canEdit={canEdit}
+            printRef={printRef}
+          />
+        )}
       </div>
 
       {/* ── Data Source Picker Modal ── */}

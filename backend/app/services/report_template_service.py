@@ -9,6 +9,10 @@ from app.schemas.report_template import (
     ReportTemplateUpdate,
 )
 from app.core.logging import get_logger
+from app.services.template_document_schema import (
+    is_template_document_definition,
+    normalize_template_document,
+)
 
 logger = get_logger(__name__)
 
@@ -41,19 +45,23 @@ class ReportTemplateService:
 
     @staticmethod
     def _serialize_blocks(blocks: Any) -> Dict[str, Any]:
-        """Persist only TemplateDefinition v3 payloads."""
+        """Persist either the legacy table payload or the clean document payload."""
         if blocks is None:
             return _default_template_definition()
 
         if isinstance(blocks, list):
             if len(blocks) == 0:
                 return _default_template_definition()
-            raise ValueError("Only TemplateDefinition v3 is supported for report templates.")
+            raise ValueError("Template blocks must be a structured object payload.")
 
         if not isinstance(blocks, dict):
-            raise ValueError("Template blocks must be a TemplateDefinition v3 object.")
+            raise ValueError("Template blocks must be an object payload.")
+
+        if is_template_document_definition(blocks):
+            return normalize_template_document(blocks)
+
         if blocks.get("version") != 3:
-            raise ValueError("Only TemplateDefinition v3 is supported for report templates.")
+            raise ValueError("Template blocks must be either a legacy table definition or a document payload.")
         columns = blocks.get("columns")
         if not isinstance(columns, list):
             raise ValueError("TemplateDefinition v3 requires a 'columns' list.")

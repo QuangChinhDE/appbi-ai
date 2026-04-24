@@ -43,7 +43,8 @@ _TYPE_MAP_DIMENSION = {
     "timestamp": "datetime",
 }
 
-_NUMERIC_TYPES = {"integer", "int", "float", "number", "numeric", "decimal", "bigint", "double"}
+_INTEGER_TYPES = {"integer", "int", "bigint", "smallint", "tinyint"}
+_NUMERIC_MEASURE_TYPES = {"float", "number", "numeric", "decimal", "double", "real"}
 
 # FK naming heuristics: columns ending with these suffixes are likely foreign keys
 _FK_SUFFIXES = ("_id", "_pk", "_fk", "_key")
@@ -61,6 +62,10 @@ def _singularize(name: str) -> str:
     if base.endswith("s") and not base.endswith("ss"):
         return base[:-1]
     return base
+
+
+def _default_field_label(column_name: str) -> str:
+    return str(column_name or "")
 
 
 def _classify_columns(columns_cache) -> Tuple[list, list]:
@@ -90,13 +95,22 @@ def _classify_columns(columns_cache) -> Tuple[list, list]:
         if not col_name:
             continue
 
-        if col_type in _NUMERIC_TYPES:
-            # Numeric → measure (default SUM)
+        if col_type in _INTEGER_TYPES:
+            dimensions.append({
+                "name": col_name,
+                "type": "number",
+                "sql": col_name,
+                "label": _default_field_label(col_name),
+                "description": None,
+                "hidden": False,
+            })
+        elif col_type in _NUMERIC_MEASURE_TYPES:
+            # Decimal / floating point numeric → measure (default SUM)
             measures.append({
                 "name": col_name,
                 "type": "sum",
                 "sql": col_name,
-                "label": col_name.replace("_", " ").title(),
+                "label": _default_field_label(col_name),
                 "description": None,
                 "hidden": False,
             })
@@ -105,7 +119,7 @@ def _classify_columns(columns_cache) -> Tuple[list, list]:
                 "name": col_name,
                 "type": "number",
                 "sql": col_name,
-                "label": col_name.replace("_", " ").title(),
+                "label": _default_field_label(col_name),
                 "description": None,
                 "hidden": True,  # Hidden by default since it's primarily a measure
             })
@@ -115,7 +129,7 @@ def _classify_columns(columns_cache) -> Tuple[list, list]:
                 "name": col_name,
                 "type": dim_type,
                 "sql": col_name,
-                "label": col_name.replace("_", " ").title(),
+                "label": _default_field_label(col_name),
                 "description": None,
                 "hidden": False,
             })
@@ -125,7 +139,7 @@ def _classify_columns(columns_cache) -> Tuple[list, list]:
                 "name": col_name,
                 "type": "string",
                 "sql": col_name,
-                "label": col_name.replace("_", " ").title(),
+                "label": _default_field_label(col_name),
                 "description": None,
                 "hidden": False,
             })
