@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "production"
     AUTH_PASSWORD_LOGIN_ENABLED: bool = True
     AUTH_GOOGLE_ENABLED: bool = False
+
+    # Workboard mini-app builder module — bundled with the core stack.
+    WORKBOARDS_ENABLED: bool = True
     AUTH_GOOGLE_CLIENT_ID: str = ""
     AUTH_GOOGLE_CLIENT_SECRET: str = ""
     AUTH_GOOGLE_DATA_REDIRECT_URI: str = ""
@@ -113,8 +116,8 @@ class Settings(BaseSettings):
     BACKEND_AI_CHART_DOCS_MODEL: str = ""
     BACKEND_AI_QUALITY_RULE_GEMINI_MODEL: str = ""
     BACKEND_AI_QUALITY_RULE_OPENROUTER_MODEL: str = ""
-    BACKEND_AI_TEMPLATE_IMPORT_GEMINI_MODEL: str = ""
-    BACKEND_AI_TEMPLATE_IMPORT_OPENROUTER_MODEL: str = ""
+    BACKEND_AI_HTML_IMPORT_GEMINI_MODEL: str = ""
+    BACKEND_AI_HTML_IMPORT_OPENROUTER_MODEL: str = ""
     BACKEND_AI_EMBEDDING_MODEL: str = ""
     BACKEND_AI_REPORT_SUMMARY_MODEL: str = ""
     AI_DESCRIPTION_MODEL: str = "google/gemini-2.5-flash-lite"
@@ -187,7 +190,7 @@ class Settings(BaseSettings):
         return _first_non_empty(
             self.BACKEND_AI_QUALITY_RULE_GEMINI_MODEL,
             self.GEMINI_QUALITY_MODEL,
-            self.BACKEND_AI_TEMPLATE_IMPORT_GEMINI_MODEL,
+            self.BACKEND_AI_HTML_IMPORT_GEMINI_MODEL,
             self.GEMINI_IMPORT_MODEL,
             "gemini-2.5-flash",
         )
@@ -209,24 +212,24 @@ class Settings(BaseSettings):
         return self.quality_openrouter_model
 
     @property
-    def template_import_gemini_model(self) -> str:
+    def html_import_gemini_model(self) -> str:
         return _first_non_empty(
-            self.BACKEND_AI_TEMPLATE_IMPORT_GEMINI_MODEL,
+            self.BACKEND_AI_HTML_IMPORT_GEMINI_MODEL,
             self.GEMINI_IMPORT_MODEL,
             "gemini-2.5-flash-lite",
         )
 
     @property
-    def template_import_openrouter_model(self) -> str:
+    def html_import_openrouter_model(self) -> str:
         return _first_non_empty(
-            self.BACKEND_AI_TEMPLATE_IMPORT_OPENROUTER_MODEL,
+            self.BACKEND_AI_HTML_IMPORT_OPENROUTER_MODEL,
             self.OPENROUTER_GEMINI_IMPORT_MODEL,
             self.BACKEND_AI_DEFAULT_MODEL,
             "google/gemini-2.5-flash-lite",
         )
 
     @property
-    def template_import_ai_provider(self) -> str:
+    def html_import_ai_provider(self) -> str:
         if self.GEMINI_API_KEY.strip():
             return "gemini"
         if self.active_api_keys:
@@ -234,14 +237,14 @@ class Settings(BaseSettings):
         return "unavailable"
 
     @property
-    def template_import_ai_available(self) -> bool:
-        return self.template_import_ai_provider != "unavailable"
+    def html_import_ai_available(self) -> bool:
+        return self.html_import_ai_provider != "unavailable"
 
     @property
-    def template_import_ai_model(self) -> str:
-        if self.template_import_ai_provider == "gemini":
-            return self.template_import_gemini_model
-        return self.template_import_openrouter_model
+    def html_import_ai_model(self) -> str:
+        if self.html_import_ai_provider == "gemini":
+            return self.html_import_gemini_model
+        return self.html_import_openrouter_model
 
     @property
     def active_embedding_model(self) -> str:

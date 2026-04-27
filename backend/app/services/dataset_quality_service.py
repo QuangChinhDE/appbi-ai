@@ -2276,3 +2276,165 @@ def _coerce_int(value) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+# ===========================================================================
+# Row-level evaluation (used by the Workboard module for in-form validation).
+# Pure-Python: no SQL, no DB. Cross-row rules (unique_*, freshness, etc.) are
+# intentionally skipped here -- the database constraints + the batch quality
+# run remain authoritative for those.
+# ===========================================================================
+
+# Rule types that can be evaluated against a single row in pure Python.
+_ROW_EVALUABLE_RULE_TYPES = {
+    "not_null",
+    "not_blank",
+    "accepted_values",
+    "pattern_match",
+    "range_check",
+    "format_check",
+}
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text.replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _row_violation(rule: DatasetQualityRule, message: str) -> Dict[str, Any]:
+    return {
+        "rule_id": rule.id,
+        "rule_type": rule.rule_type,
+        "dimension": rule.dimension,
+        "severity": (rule.severity or "warning"),
+        "column": rule.column_name,
+        "message": message,
+    }
+
+
+def _evaluate_single_rule(
+    rule: DatasetQualityRule, row: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    rule_type = rule.rule_type
+    if rule_type not in _ROW_EVALUABLE_RULE_TYPES:
+        return None
+
+    column = rule.column_name
+    if not column:
+        return None
+    if column not in row:
+        # The form did not touch this column on this submission; skip.
+        return None
+
+    value = row.get(column)
+    config: Dict[str, Any] = dict(rule.config or {})
+
+    if rule_type == "not_null":
+        if value is None:
+            return _row_violation(rule, f"'{column}' is required")
+        return None
+
+    if rule_type == "not_blank":
+        if value is None or str(value).strip() == "":
+            return _row_violation(rule, f"'{column}' must not be blank")
+        return None
+
+    if rule_type == "accepted_values":
+        if value is None:
+            return None
+        accepted = [str(item) for item in (config.get("values") or [])]
+        if accepted and str(value) not in accepted:
+            return _row_violation(
+                rule,
+                f"'{column}' = {value!r} is not one of the accepted values",
+            )
+        return None
+
+    if rule_type == "pattern_match":
+        if value is None:
+            return None
+        pattern = str(config.get("pattern") or "")
+        if not pattern:
+            return None
+        flags_text = str(config.get("flags") or "").lower()
+        flags = re.IGNORECASE if "i" in flags_text else 0
+        try:
+            if not re.search(pattern, str(value), flags=flags):
+                return _row_violation(
+                    rule,
+                    f"'{column}' does not match pattern {pattern!r}",
+                )
+        except re.error:
+            return None
+        return None
+
+    if rule_type == "range_check":
+        if value is None:
+            return None
+        number = _coerce_float(value)
+        if number is None:
+            return _row_violation(
+                rule, f"'{column}' must be a number for range_check"
+            )
+        mn = config.get("min")
+        mx = config.get("max")
+        mn_num = _coerce_float(mn) if mn is not None else None
+        mx_num = _coerce_float(mx) if mx is not None else None
+        if mn_num is not None and number < mn_num:
+            return _row_violation(rule, f"'{column}' must be >= {mn_num}")
+        if mx_num is not None and number > mx_num:
+            return _row_violation(rule, f"'{column}' must be <= {mx_num}")
+        return None
+
+    if rule_type == "format_check":
+        if value is None:
+            return None
+        fmt = str(config.get("format") or "").lower()
+        pattern = _FORMAT_PATTERNS.get(fmt)
+        if not pattern:
+            return None
+        if not re.search(pattern, str(value)):
+            return _row_violation(
+                rule, f"'{column}' does not match format '{fmt}'"
+            )
+        return None
+
+    return None
+
+
+def evaluate_row(
+    rules: List[DatasetQualityRule],
+    row: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Evaluate the column-level subset of *rules* against a single *row* dict.
+
+    Returns a list of violation dicts (possibly empty). Each violation has
+    ``severity`` of ``info``/``warning``/``error``. Callers decide whether
+    to block (severity=error) or merely warn the user.
+    """
+    if not rules or not row:
+        return []
+    violations: List[Dict[str, Any]] = []
+    for rule in rules:
+        if not getattr(rule, "enabled", True):
+            continue
+        try:
+            violation = _evaluate_single_rule(rule, row)
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("Failed to evaluate quality rule id=%s", getattr(rule, "id", None))
+            continue
+        if violation is not None:
+            violations.append(violation)
+    return violations

@@ -429,6 +429,56 @@ export const datasourceTableKeys = {
     [...datasourceTableKeys.all, datasourceId, search] as const,
 };
 
+function decodeContentDispositionFilename(header?: string | null): string | null {
+  if (!header) return null;
+
+  const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      return utf8Match[1];
+    }
+  }
+
+  const asciiMatch = header.match(/filename="?([^";]+)"?/i);
+  return asciiMatch?.[1] ?? null;
+}
+
+export interface DatasetTableExcelDownload {
+  blob: Blob;
+  filename: string;
+  truncated: boolean;
+  rowsWritten: number | null;
+}
+
+export async function downloadDatasetTableExcel(
+  datasetId: number,
+  tableId: number,
+  options?: { maxRows?: number }
+): Promise<DatasetTableExcelDownload> {
+  const response = await api.get<Blob>(
+    `/datasets/${datasetId}/tables/${tableId}/export/excel`,
+    {
+      responseType: 'blob',
+      params: options?.maxRows ? { max_rows: options.maxRows } : undefined,
+    }
+  );
+
+  const filename =
+    decodeContentDispositionFilename(response.headers['content-disposition'])
+    ?? `dataset-${datasetId}-table-${tableId}.xlsx`;
+  const rowsHeader = response.headers['x-appbi-export-rows'];
+  const rowsWritten = rowsHeader ? Number(rowsHeader) : null;
+
+  return {
+    blob: response.data,
+    filename,
+    truncated: response.headers['x-appbi-export-truncated'] === 'true',
+    rowsWritten: Number.isFinite(rowsWritten) ? rowsWritten : null,
+  };
+}
+
 // ===== Hooks =====
 
 /**

@@ -2,7 +2,7 @@
 set -e
 
 if [ -n "${DATABASE_URL:-}" ]; then
-  eval "$({
+  eval "$(
     python - <<'PYEOF'
 import os
 import shlex
@@ -13,6 +13,15 @@ if not url:
     raise SystemExit(0)
 
 parsed = urlparse(url)
+host = (parsed.hostname or "").strip().lower()
+explicit_db_host = os.environ.get("DB_HOST", "").strip().lower()
+local_hosts = {"localhost", "127.0.0.1", "::1"}
+
+if host in local_hosts and explicit_db_host and explicit_db_host not in local_hosts:
+    print("unset DATABASE_URL")
+    print("export APPBI_IGNORED_LOCAL_DATABASE_URL=1")
+    raise SystemExit(0)
+
 derived = {
     "DB_HOST": parsed.hostname,
     "DB_PORT": str(parsed.port) if parsed.port else None,
@@ -25,7 +34,12 @@ for key, value in derived.items():
     if value:
         print(f"export {key}={shlex.quote(value)}")
 PYEOF
-  })"
+  )"
+fi
+
+if [ "${APPBI_IGNORED_LOCAL_DATABASE_URL:-}" = "1" ]; then
+  echo "==> Ignoring localhost DATABASE_URL inside container; falling back to DB_HOST/DB_PORT settings"
+  unset APPBI_IGNORED_LOCAL_DATABASE_URL
 fi
 
 : "${DB_HOST:=appbi-db}"

@@ -32,6 +32,13 @@ class AuditAction(str, enum.Enum):
     SHARE_REVOKED = "share_revoked"
     DATASOURCE_CONNECTED = "datasource_connected"
     DATA_EXPORTED = "data_exported"
+    WORKBOARD_CREATED = "workboard_created"
+    WORKBOARD_UPDATED = "workboard_updated"
+    WORKBOARD_DELETED = "workboard_deleted"
+    WORKBOARD_PUBLISHED = "workboard_published"
+    WORKBOARD_ROW_INSERTED = "workboard_row_inserted"
+    WORKBOARD_ROW_UPDATED = "workboard_row_updated"
+    WORKBOARD_ROW_DELETED = "workboard_row_deleted"
 
 
 class AuditSeverity(str, enum.Enum):

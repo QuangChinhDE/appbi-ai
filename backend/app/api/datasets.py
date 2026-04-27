@@ -4,7 +4,8 @@ from decimal import Decimal
 import re
 from types import SimpleNamespace
 from datetime import datetime, date
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from urllib.parse import quote
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.database import get_db
@@ -70,6 +71,10 @@ from app.services.description_pipeline_service import (
     DescriptionPipelineService,
     resolve_session_factory,
 )
+from app.services.dataset_excel_export_service import (
+    EXCEL_MAX_DATA_ROWS,
+    export_dataset_table_to_excel,
+)
 from app.core.logging import get_logger
 from app.services.runtime_modes import datasource_sync_enabled
 from app.services.schema_inference import infer_schema_from_sql
@@ -110,6 +115,13 @@ _ISO_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
 def _build_lookup_table_identifier(table_id: int) -> str:
     return f"{LOOKUP_TABLE_IDENTIFIER_PREFIX}{table_id}"
+
+
+def _build_excel_export_filenames(dataset_name: Any, table_name: Any) -> tuple[str, str]:
+    base_name = f"{str(dataset_name or 'dataset').strip()}-{str(table_name or 'table').strip()}"
+    base_name = re.sub(r"\s+", " ", base_name).strip(" -") or "dataset-table"
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "_", base_name).strip("._-") or "dataset-table"
+    return f"{ascii_name}.xlsx", f"{base_name}.xlsx"
 
 
 def _dataset_table_lookup_tokens(table: DatasetTable) -> List[str]:
@@ -1596,6 +1608,85 @@ def preview_dataset_table(
             raise HTTPException(status_code=400, detail=error_msg or "Preview query failed.")
         logger.error("Failed to preview table: %s", e)
         raise HTTPException(status_code=500, detail="Failed to preview table.")
+
+
+@router.get("/{dataset_id}/tables/{table_id}/export/excel")
+def export_dataset_table_excel(
+    dataset_id: int,
+    table_id: int,
+    max_rows: int = Query(EXCEL_MAX_DATA_ROWS, ge=1, le=EXCEL_MAX_DATA_ROWS),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
+    if perm == "none":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    db_table = DatasetCRUDService.get_table_by_id(db, table_id)
+    if not db_table or db_table.dataset_id != dataset_id:
+        raise HTTPException(status_code=404, detail="Table not found in this dataset")
+
+    datasource: Optional[DataSource] = None
+    target_table = db_table
+
+    if is_generated_calendar_table(db_table) or is_derived_table(db_table):
+        try:
+            datasource, target_table = build_live_proxy_table_for_dataset_table(
+                db,
+                dataset_obj,
+                db_table,
+            )
+        except DatasetTableSqlError as exc:
+            if getattr(exc, "code", "") == "NOT_SYNCED":
+                raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)})
+            raise HTTPException(status_code=400, detail=str(exc))
+    else:
+        datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+        if not datasource:
+            raise HTTPException(status_code=404, detail="Datasource not found")
+
+    try:
+        export_result = export_dataset_table_to_excel(
+            lambda limit, offset: LiveQueryService.execute_preview_query(
+                datasource=datasource,
+                db_table=target_table,
+                limit=limit,
+                offset=offset,
+            ),
+            sheet_title=db_table.display_name or db_table.source_table_name or f"Table {table_id}",
+            max_rows=max_rows,
+        )
+        fallback_name, utf8_name = _build_excel_export_filenames(
+            dataset_obj.name,
+            db_table.display_name or db_table.source_table_name or f"table-{table_id}",
+        )
+        headers = {
+            "Content-Disposition": (
+                f"attachment; filename=\"{fallback_name}\"; filename*=UTF-8''{quote(utf8_name)}"
+            ),
+            "X-AppBI-Export-Rows": str(export_result.rows_written),
+        }
+        if export_result.truncated:
+            headers["X-AppBI-Export-Truncated"] = "true"
+        return Response(
+            content=export_result.content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers=headers,
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        error_msg = _normalize_preview_error_message(exc)
+        if _is_fixable_preview_error(exc):
+            logger.warning("Excel export error for table %d: %s", table_id, error_msg)
+            raise HTTPException(status_code=400, detail=error_msg or "Excel export failed.") from exc
+        logger.error("Failed to export dataset table %d to Excel: %s", table_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to export dataset table.") from exc
 
 
 @router.post(

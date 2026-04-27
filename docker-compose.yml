@@ -62,6 +62,8 @@ services:
       AUTH_GOOGLE_BOOTSTRAP_ADMIN_EMAIL: ${AUTH_GOOGLE_BOOTSTRAP_ADMIN_EMAIL:-}
       API_RELOAD: "false"
       SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
+      # Workboard module — bundled with the core stack.
+      WORKBOARDS_ENABLED: ${WORKBOARDS_ENABLED:-true}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@appbi.io}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-123456}
       ADMIN_NAME: ${ADMIN_NAME:-Admin}
@@ -112,6 +114,7 @@ services:
         # Local dev (no nginx): ws://localhost:8001/chat/ws
         # Production (with nginx): wss://yourdomain.com/chat/ws  (or leave empty)
         NEXT_PUBLIC_AI_CHAT_WS_URL: ${NEXT_PUBLIC_AI_CHAT_WS_URL:-}
+        NEXT_PUBLIC_WORKBOARDS_ENABLED: ${NEXT_PUBLIC_WORKBOARDS_ENABLED:-true}
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000/api/v1
@@ -122,6 +125,7 @@ services:
       NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED: ${NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED:-true}
       NEXT_PUBLIC_AUTH_GOOGLE_ENABLED: ${NEXT_PUBLIC_AUTH_GOOGLE_ENABLED:-false}
       NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
+      NEXT_PUBLIC_WORKBOARDS_ENABLED: ${NEXT_PUBLIC_WORKBOARDS_ENABLED:-true}
     ports:
       # Bind to 127.0.0.1 so the frontend is reachable only via nginx,
       # not directly from the public internet.

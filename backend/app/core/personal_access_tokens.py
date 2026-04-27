@@ -17,14 +17,14 @@ PAT_MODULES = (
     "datasets",
     "explore_charts",
     "dashboards",
-    "report_templates",
+    "workboards",
 )
 PAT_SCOPE_ALLOWED_LEVELS: dict[str, tuple[str, ...]] = {
     "data_sources": ("none", "view", "edit", "full"),
     "datasets": ("none", "view", "edit", "full"),
     "explore_charts": ("none", "view", "edit", "full"),
     "dashboards": ("none", "view", "edit", "full"),
-    "report_templates": ("none", "view", "edit", "full"),
+    "workboards": ("none", "view", "edit", "full"),
 }
 PAT_LEVEL_ORDER = {"none": 0, "view": 1, "edit": 2, "full": 3}
 

@@ -446,8 +446,7 @@ export function ExploreEditor({
   // isConfigOpen removed - chart config panel is always visible in right panel
   const [isFiltersOpen, setIsFiltersOpen] = useState(!isDashboardModal);
   const [isDescDrawerOpen, setIsDescDrawerOpen] = useState(false);
-  const [isSchemaSnapshotOpen, setIsSchemaSnapshotOpen] = useState(false);
-  // resultTab removed - new layout shows chart + table simultaneously, SQL via sqlMode toggle
+  const [previewPanelTab, setPreviewPanelTab] = useState<'chart' | 'table'>('chart');
   const [queryLimit, setQueryLimit] = useState(100);
   const [sqlMode, setSqlMode] = useState<QueryMode>('generated');
   const [customSqlDraft, setCustomSqlDraft] = useState('');
@@ -616,8 +615,9 @@ export function ExploreEditor({
     ),
     [previewError],
   );
-  const selectedTable = dataset?.tables?.find((t: any) => t.id === selectedTableId) ?? null;
-  const hasActiveTransforms = Boolean(selectedTable?.transformations?.some((step: any) => step.enabled));
+  const selectedTable = dataset?.tables?.find((table) => table.id === selectedTableId) ?? null;
+  const selectedTableDisplayName = selectedTable?.display_name || 'Selected table';
+  const hasActiveTransforms = Boolean(selectedTable?.transformations?.some((step) => step.enabled));
   const normalizedGeneratedRoleConfig = useMemo(
     () => normalizeRoleConfig(chartType, generatedRoleConfig),
     [generatedRoleConfig, chartType],
@@ -1255,6 +1255,9 @@ export function ExploreEditor({
   const modeDescription = isConfigBuilderMode
     ? 'Choose a source table, map fields directly from the left panel, and keep chart setup visible on the same screen. Generated queries can preview up to 10,000 rows.'
     : 'Write SQL once on the left, run it, and Explore will auto-bind chart roles from the SQL output when it can. Custom SQL previews are capped at 5,000 rows to keep runtime responsive.';
+  const selectedSourceFieldCount = sqlMode === 'custom'
+    ? (customQueryState?.columns?.length ?? 0)
+    : previewColumns.length;
 
   // Show loading skeleton while fetching existing chart
   if (!isNew && isChartLoading) {
@@ -1279,9 +1282,10 @@ export function ExploreEditor({
           </div>
         </div>
       )}
-      <div className="shrink-0 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2 min-w-0">
+      <div className="shrink-0 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          {/* Left: back + name */}
+          <div className="flex min-w-0 items-center gap-2">
             <button
               onClick={handleExit}
               className="flex shrink-0 items-center gap-1 text-xs text-text-quaternary hover:text-text-secondary"
@@ -1314,7 +1318,7 @@ export function ExploreEditor({
               </div>
             ) : (
               <div className="flex items-center gap-1.5 group/name">
-                <span className="max-w-xs truncate text-sm font-semibold text-text-primary">
+                <span className="max-w-[14rem] truncate text-sm font-semibold text-text-primary">
                   {chartNameInput || (chartId ? 'Chart' : 'New Chart')}
                 </span>
                 {resPerms.canEdit && (
@@ -1328,327 +1332,235 @@ export function ExploreEditor({
                 )}
               </div>
             )}
-            {selectedTable && (
-              <span className="shrink-0 truncate text-xs text-text-quaternary">
-                - {dataset?.name} / {(selectedTable as any).display_name || 'Table'}
-              </span>
-            )}
           </div>
 
-          <div className="flex shrink-0 items-center gap-2 pr-2">
-            {isDashboardModal ? (
+          <div className="hidden h-5 w-px bg-[rgb(var(--border-line))] md:block" />
+
+          {/* Middle: mode + source compact */}
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+            {!isDashboardModal && (
               <>
-                {isQueryDirty && (
-                  <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
-                    Run to refresh
-                  </span>
-                )}
-                {activeQueryState && (
-                  <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-xs text-text-tertiary">
-                    {activeQueryState.rows.length} row{activeQueryState.rows.length === 1 ? '' : 's'}
-                    {activeQueryState.executionTimeMs != null ? ` · ${activeQueryState.executionTimeMs}ms` : ''}
-                  </span>
-                )}
-                <label className="flex items-center gap-1 text-xs text-text-tertiary">
-                  Limit
-                  <select
-                    value={effectiveQueryLimit}
-                    onChange={(e) => setQueryLimit(Number(e.target.value))}
+                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Mode</span>
+                <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
+                  <button
+                    onClick={handleUseGeneratedQuery}
                     disabled={!resPerms.canEdit}
-                    className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-0.5 text-xs disabled:cursor-not-allowed disabled:opacity-60"
+                    className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                      isConfigBuilderMode
+                        ? 'bg-surface-1 text-brand shadow-linear-sm'
+                        : 'text-text-secondary hover:bg-surface-1'
+                    }`}
                   >
-                    {queryLimitOptions.map((value) => <option key={value} value={value}>{value}</option>)}
-                  </select>
-                </label>
-                <button
-                  onClick={() => void handleRunQuery()}
-                  disabled={!selectedTableId || isRunningQuery || (isConfigBuilderMode && isPreviewLoading)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {isRunningQuery
-                    ? <div className="h-3 w-3 animate-spin rounded-full border-2 border-text-secondary border-t-transparent" />
-                    : <Play className="h-3 w-3" />}
-                  {isRunningQuery ? 'Running...' : 'Run Preview'}
-                </button>
-                {resPerms.canEdit && (
-                  <button
-                    onClick={handleSaveLook}
-                    disabled={!selectedTableId}
-                    className="flex items-center gap-1.5 rounded-md border border-brand bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <Save className="h-3.5 w-3.5" />
-                    {saveButtonLabel ?? (chartId ? 'Update' : 'Save Chart')}
+                    <Database className="h-3 w-3" />
+                    Builder
                   </button>
-                )}
-              </>
-            ) : (
-              <>
-                {isEditingDesc ? (
-                  <input
-                    autoFocus
-                    type="text"
-                    value={chartDescInput}
-                    onChange={(e) => setChartDescInput(e.target.value)}
-                    onBlur={() => {
-                      setIsEditingDesc(false);
-                      if (chartId) updateChart.mutate({ id: chartId, data: { description: chartDescInput.trim() || null } });
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                      if (e.key === 'Escape') { setChartDescInput(chart?.description ?? ''); setIsEditingDesc(false); }
-                    }}
-                    placeholder="Add note..."
-                    className="w-52 border-b border-brand/50 bg-transparent px-0.5 text-xs text-text-secondary outline-none"
-                  />
-                ) : resPerms.canEdit ? (
-                  <div
-                    onClick={() => setIsEditingDesc(true)}
-                    className="group/desc mr-1 flex cursor-text items-center gap-1 rounded-md px-2 py-1 text-xs text-text-quaternary hover:bg-surface-2 hover:text-text-secondary"
-                  >
-                    {chartDescInput || <span className="italic">Add note...</span>}
-                    <Pencil className="h-3 w-3 opacity-0 transition-opacity group-hover/desc:opacity-100" />
-                  </div>
-                ) : chartDescInput ? (
-                  <span className="text-xs text-text-quaternary">{chartDescInput}</span>
-                ) : null}
-                {resPerms.canEdit && (
-                  <button
-                    onClick={handleSaveLook}
-                    disabled={!selectedTableId}
-                    className="flex items-center gap-1.5 rounded-md border border-brand bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <Save className="h-3.5 w-3.5" />
-                    {saveButtonLabel ?? (chartId ? 'Update' : 'Save Chart')}
-                  </button>
-                )}
+                  <span className="group/csql relative inline-flex">
+                    <button
+                      disabled
+                      className="inline-flex cursor-not-allowed items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-text-quaternary opacity-50"
+                    >
+                      <Code2 className="h-3 w-3" />
+                      SQL
+                    </button>
+                    <span className="pointer-events-none absolute left-0 top-full z-50 mt-1.5 hidden w-52 rounded-md bg-surface-inverse px-2.5 py-2 text-[11px] text-white shadow-lg group-hover/csql:block">
+                      Temporarily unavailable — will be re-enabled in a future update.
+                    </span>
+                  </span>
+                </div>
+                <div className="hidden h-5 w-px bg-[rgb(var(--border-line))] lg:block" />
               </>
             )}
-          </div>
-        </div>
-      </div>
-
-      {!isDashboardModal && (
-      <div className="shrink-0 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-1.5">
-        <div className="flex items-center justify-between gap-3">
-          {/* Left: Mode toggle + description */}
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Mode</span>
-            <div className="inline-flex rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
-              <button
-                onClick={handleUseGeneratedQuery}
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Source</span>
+            <div className="min-w-[16rem] max-w-[28rem] flex-1">
+              <ExploreSourceSelector
+                selectedDatasetId={selectedDatasetId}
+                selectedTableId={selectedTableId}
+                onDatasetChange={setSelectedDatasetId}
+                onTableChange={setSelectedTableId}
                 disabled={!resPerms.canEdit}
-                className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                  isConfigBuilderMode
-                    ? 'bg-surface-1 text-brand shadow-linear-sm'
-                    : 'text-text-secondary hover:bg-surface-1'
-                }`}
-              >
-                <Database className="h-3 w-3" />
-                Config Builder
-              </button>
-              <span className="group/csql relative inline-flex">
-                <button
-                  disabled
-                  className="inline-flex cursor-not-allowed items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-text-quaternary opacity-50"
-                >
-                  <Code2 className="h-3 w-3" />
-                  Custom SQL
-                </button>
-                <span className="pointer-events-none absolute left-0 top-full z-50 mt-1.5 hidden w-52 rounded-md bg-surface-inverse px-2.5 py-2 text-[11px] text-white shadow-lg group-hover/csql:block">
-                  Temporarily unavailable — will be re-enabled in a future update.
-                </span>
-              </span>
-            </div>
-            <div className="min-w-0 hidden sm:flex items-center gap-1">
-              <span className="truncate text-xs text-text-tertiary">
-                {isConfigBuilderMode ? 'Build from a table' : 'Shape the source with SQL'}
-              </span>
-              <HelpTooltip text={modeDescription} />
+                lockDataset={lockDatasetSelection}
+                variant="compact"
+              />
             </div>
           </div>
 
-          {/* Right: AI Description + status + limit + run */}
-          <div className="flex shrink-0 items-center gap-2">
-            {!isNew && chartId && (
-              <ChartDescriptionTrigger
-                chartId={chartId}
-                canEdit={resPerms.canEdit}
-                onClick={() => setIsDescDrawerOpen(true)}
-              />
-            )}
+          {/* Right: status + limit + run + save (+ desc note) */}
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
             {isQueryDirty && (
-              <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+              <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">
                 Run to refresh
               </span>
             )}
             {activeQueryState && (
-              <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-xs text-text-tertiary">
+              <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[11px] text-text-tertiary">
                 {activeQueryState.rows.length} row{activeQueryState.rows.length === 1 ? '' : 's'}
                 {activeQueryState.executionTimeMs != null ? ` · ${activeQueryState.executionTimeMs}ms` : ''}
               </span>
             )}
-            {effectiveQueryLimit > 1000 && (
-              <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs text-warning">
-                Large
-              </span>
-            )}
-            <label className="flex items-center gap-1 text-xs text-text-tertiary">
+            <label className="flex items-center gap-1 text-[11px] text-text-tertiary">
               Limit
               <select
                 value={effectiveQueryLimit}
                 onChange={(e) => setQueryLimit(Number(e.target.value))}
                 disabled={!resPerms.canEdit}
-                className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-0.5 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
+                className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-0.5 text-[11px] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {queryLimitOptions.map((value) => <option key={value} value={value}>{value}</option>)}
               </select>
             </label>
             <button
               onClick={() => void handleRunQuery()}
-              disabled={isRunningQuery || (isConfigBuilderMode && isPreviewLoading)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1 text-xs font-medium text-white hover:bg-brand-hover disabled:opacity-50"
+              disabled={!selectedTableId || isRunningQuery || (isConfigBuilderMode && isPreviewLoading)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-xs font-medium text-text-secondary hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isRunningQuery
-                ? <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                ? <div className="h-3 w-3 animate-spin rounded-full border-2 border-text-secondary border-t-transparent" />
                 : <Play className="h-3 w-3" />}
               {isRunningQuery ? 'Running...' : 'Run'}
             </button>
+            {!isDashboardModal && (
+              isEditingDesc ? (
+                <input
+                  autoFocus
+                  type="text"
+                  value={chartDescInput}
+                  onChange={(e) => setChartDescInput(e.target.value)}
+                  onBlur={() => {
+                    setIsEditingDesc(false);
+                    if (chartId) updateChart.mutate({ id: chartId, data: { description: chartDescInput.trim() || null } });
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                    if (e.key === 'Escape') { setChartDescInput(chart?.description ?? ''); setIsEditingDesc(false); }
+                  }}
+                  placeholder="Add note..."
+                  className="w-44 border-b border-brand/50 bg-transparent px-0.5 text-xs text-text-secondary outline-none"
+                />
+              ) : resPerms.canEdit ? (
+                <button
+                  type="button"
+                  onClick={() => setIsEditingDesc(true)}
+                  className="group/desc flex max-w-[12rem] cursor-text items-center gap-1 rounded-md px-2 py-1 text-[11px] text-text-quaternary hover:bg-surface-2 hover:text-text-secondary"
+                >
+                  <span className="truncate">{chartDescInput || <span className="italic">Add note...</span>}</span>
+                  <Pencil className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover/desc:opacity-100" />
+                </button>
+              ) : chartDescInput ? (
+                <span className="text-[11px] text-text-quaternary">{chartDescInput}</span>
+              ) : null
+            )}
+            {resPerms.canEdit && (
+              <button
+                onClick={handleSaveLook}
+                disabled={!selectedTableId}
+                className="flex items-center gap-1.5 rounded-md border border-brand bg-brand px-3 py-1 text-xs font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Save className="h-3.5 w-3.5" />
+                {saveButtonLabel ?? (chartId ? 'Update' : 'Save')}
+              </button>
+            )}
           </div>
         </div>
       </div>
-      )}
 
-      <div className="min-h-0 flex-1 overflow-auto">
-        {isDashboardModal ? (
-        <div className="flex h-full min-w-[1480px] gap-4 p-4">
-          <div className="flex w-[17.5rem] shrink-0 flex-col overflow-hidden rounded-[24px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
-            <div className="border-b border-[rgb(var(--border-line))] px-4 py-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Source</p>
-              <p className="mt-2 text-sm font-medium text-text-secondary">
-                {selectedTable ? ((selectedTable as any).display_name || 'Selected table') : 'Choose a source table'}
-              </p>
-              <p className="mt-1 text-xs text-text-tertiary">
-                {selectedTable && dataset?.name
-                  ? `${dataset.name} dataset`
-                  : 'Pick the dataset table that this chart should use.'}
-              </p>
-              <div className="mt-3">
-                <ExploreSourceSelector
-                  selectedDatasetId={selectedDatasetId}
-                  selectedTableId={selectedTableId}
-                  onDatasetChange={setSelectedDatasetId}
-                  onTableChange={setSelectedTableId}
-                  disabled={!resPerms.canEdit}
-                  lockDataset={lockDatasetSelection}
-                />
-              </div>
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto p-4">
-              {!selectedTableId ? (
-                <div className="flex h-full items-center justify-center px-2 text-center">
-                  <div>
-                    <Search className="mx-auto mb-3 h-10 w-10 text-text-quaternary" />
-                    <p className="text-sm font-medium text-text-secondary">Choose a table to load its fields</p>
-                    <p className="mt-1 text-xs text-text-quaternary">
-                      Those fields will immediately become available in Chart Setup.
-                    </p>
-                  </div>
-                </div>
-              ) : isPreviewLoading ? (
-                <div className="flex h-full items-center justify-center">
-                  <div className="text-center">
-                    <div className="mx-auto mb-3 inline-block h-7 w-7 animate-spin rounded-full border-4 border-brand border-t-transparent" />
-                    <p className="text-sm text-text-tertiary">Loading source schema...</p>
-                  </div>
-                </div>
-              ) : previewError ? (
-                <div className="flex h-full items-center justify-center px-6">
-                  <div className="max-w-xs text-center">
-                    <p className="text-sm font-medium text-danger">Could not load source schema</p>
-                    <p className="mt-1 text-xs text-danger/90">{previewErrorMessage}</p>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="flex flex-wrap gap-2">
-                    <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-secondary">
-                      {previewColumns.length} columns
-                    </span>
-                    <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-secondary">
-                      {configBuilderSourceStats.measureColumns.length} measures
-                    </span>
-                    <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-secondary">
-                      {configBuilderSourceStats.dimensionColumns.length} dimensions
-                    </span>
-                    <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-secondary">
-                      {configBuilderSourceStats.timeColumns.length} time fields
-                    </span>
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <div className="flex h-full flex-col gap-4 p-4 lg:flex-row">
+          <div className="flex min-h-[24rem] min-w-0 flex-1 flex-col overflow-hidden rounded-[20px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm lg:min-h-0">
+            <div className={`flex items-center justify-between gap-3 border-b border-[rgb(var(--border-line))] px-4 py-2.5 ${
+              sqlMode === 'custom' ? 'bg-warning/10' : 'bg-surface-2'
+            }`}>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Configure</span>
+                {selectedTableId && (
+                  <>
+                    <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-[11px] text-text-secondary">{chartType}</span>
                     {hasActiveTransforms && (
-                      <span className="rounded-full border border-warning/30 bg-warning/10 px-2.5 py-1 text-[11px] font-medium text-warning">
-                        Transforms on
-                      </span>
+                      <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] text-warning">transforms</span>
                     )}
-                  </div>
-
-                  <div className="overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2">
-                    <div className="border-b border-[rgb(var(--border-line))] px-4 py-3">
-                      <p className="text-sm font-medium text-text-primary">Available fields</p>
-                      <p className="mt-1 text-xs text-text-tertiary">
-                        Use these columns in the configuration panel.
-                      </p>
-                    </div>
-                    <div className="max-h-[34rem] overflow-y-auto">
-                      {previewColumns.map((column) => {
-                        const kind = isSourceTimeColumn(column)
-                          ? 'time'
-                          : column.type === 'number'
-                            ? 'measure'
-                            : 'dimension';
-                        return (
-                          <div
-                            key={column.name}
-                            className="flex items-center justify-between gap-3 border-b border-[rgb(var(--border-line))] px-4 py-2.5 last:border-b-0"
-                          >
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium text-text-secondary">{column.name}</p>
-                              <p className="text-[11px] text-text-quaternary">{column.type}</p>
-                            </div>
-                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                              kind === 'time'
-                                ? 'bg-success/10 text-success'
-                                : kind === 'measure'
-                                  ? 'bg-brand/10 text-brand'
-                                  : 'bg-surface-1 text-text-secondary'
-                            }`}>
-                              {kind}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
+                    {filters.length > 0 && (
+                      <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] text-warning">{filters.length} filter{filters.length === 1 ? '' : 's'}</span>
+                    )}
+                  </>
+                )}
+              </div>
+              {mappingSummary.length > 0 && (
+                <div className="flex max-w-[20rem] flex-wrap justify-end gap-1.5">
+                  {mappingSummary.slice(0, 4).map((item) => (
+                    <span
+                      key={`setup-${item.label}-${item.value}`}
+                      className="rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-[10px] text-text-secondary"
+                    >
+                      <span className="font-semibold">{item.label}:</span> {item.value}
+                    </span>
+                  ))}
                 </div>
               )}
-            </div>
-          </div>
-
-          <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[24px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
-            <div className="border-b border-[rgb(var(--border-line))] px-5 py-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Chart Setup</p>
-              <p className="mt-2 text-sm font-medium text-text-secondary">
-                Keep field mapping, style, and saved filters in one focused workspace.
-              </p>
-              <p className="mt-1 text-xs text-text-tertiary">
-                {selectedTableId
-                  ? 'This is the primary workspace for building the chart before you save it to the dashboard.'
-                  : 'Choose a source table on the left to unlock mapping and styling.'}
-              </p>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto">
               {selectedTableId ? (
                 <>
+                  {sqlMode === 'custom' && (
+                    <div className="border-b border-[rgb(var(--border-line))]">
+                      <div className="flex items-center justify-between px-5 py-3">
+                        <div className="flex items-center gap-1.5">
+                          <p className="text-sm font-medium text-text-secondary">Custom SQL</p>
+                          <HelpTooltip text="Run SQL to refresh the output columns used by Chart Setup." />
+                        </div>
+                        {resPerms.canEdit && (
+                          <button
+                            onClick={handleResetCustomSqlDraft}
+                            className="inline-flex items-center gap-1 rounded-lg border border-[rgb(var(--border-line))] px-2 py-1 text-xs text-text-secondary hover:bg-surface-2"
+                          >
+                            <RotateCcw className="h-3 w-3" />
+                            Reset
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="border-t border-[rgb(var(--border-line))] p-5">
+                        <textarea
+                          value={customSqlDraft}
+                          onChange={(e) => setCustomSqlDraft(e.target.value)}
+                          readOnly={!resPerms.canEdit}
+                          spellCheck={false}
+                          className={`h-56 w-full resize-none rounded-2xl border border-[rgb(var(--border-line))] bg-surface-inverse px-3 py-3 font-mono text-xs text-text-secondary outline-none transition focus:border-warning/40 focus:ring-2 focus:ring-warning${!resPerms.canEdit ? ' opacity-60 cursor-not-allowed' : ''}`}
+                        />
+
+                        <div className="mt-4 rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2 p-4">
+                          <p className="text-sm font-medium text-text-primary">Output columns</p>
+                          <p className="mt-1 text-xs text-text-tertiary">
+                            These columns only exist after the SQL runs. Chart Setup binds directly to them.
+                          </p>
+                        </div>
+
+                        <div className="mt-3 space-y-2">
+                          {customQueryState?.columns?.length ? (
+                            customQueryState.columns.map((column) => (
+                              <div
+                                key={column.name}
+                                className="flex items-center justify-between rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2"
+                              >
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-medium text-text-secondary">{column.name}</p>
+                                  <p className="text-xs text-text-quaternary">{column.type}</p>
+                                </div>
+                                <span className="rounded-full bg-surface-1 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-tertiary">
+                                  SQL
+                                </span>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="rounded-2xl border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-4 py-6 text-center">
+                              <Code2 className="mx-auto mb-3 h-8 w-8 text-warning" />
+                              <p className="text-sm font-medium text-text-secondary">Run SQL to load output columns</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <ExploreChartConfig
                     chartType={chartType}
                     roleConfig={activeRoleConfig}
@@ -1685,18 +1597,26 @@ export function ExploreEditor({
                     {isFiltersOpen && (
                       <div className="px-4 pb-4">
                         <p className="mb-2 text-[11px] text-text-tertiary">
-                          Saved with this chart and still applied after you add the chart to a dashboard.
+                          Saved with this chart and still applied after you add it to a dashboard.
                         </p>
                         <p className="mb-3 text-[10px] text-text-quaternary">
-                          These filters run before dashboard-level filters.
+                          {sqlMode === 'custom'
+                            ? 'These filters run against the columns returned by the custom SQL output.'
+                            : 'These filters run before dashboard-level filters.'}
                         </p>
-                        <FilterBuilder
-                          filters={filters}
-                          onChange={setFilters}
-                          columns={filterColumns}
-                          dataRows={filterRows}
-                          readOnly={!resPerms.canEdit}
-                        />
+                        {sqlMode === 'custom' && filterColumns.length === 0 ? (
+                          <p className="text-xs text-text-quaternary">
+                            Run the custom SQL once to load output columns for chart filters.
+                          </p>
+                        ) : (
+                          <FilterBuilder
+                            filters={filters}
+                            onChange={setFilters}
+                            columns={filterColumns}
+                            dataRows={filterRows}
+                            readOnly={!resPerms.canEdit}
+                          />
+                        )}
                       </div>
                     )}
                   </div>
@@ -1705,9 +1625,9 @@ export function ExploreEditor({
                 <div className="flex h-full min-h-[28rem] items-center justify-center p-8">
                   <div className="max-w-md text-center">
                     <Settings2 className="mx-auto mb-3 h-10 w-10 text-text-quaternary" />
-                    <p className="text-sm font-medium text-text-secondary">Source first, then configure the chart</p>
+                    <p className="text-sm font-medium text-text-secondary">Choose a source to unlock Configure</p>
                     <p className="mt-1 text-xs text-text-quaternary">
-                      After a table is selected, this panel expands into the full chart builder with mapping, styling, and saved filters.
+                      Pick the dataset and table in the header, then configure the chart here.
                     </p>
                   </div>
                 </div>
@@ -1715,300 +1635,35 @@ export function ExploreEditor({
             </div>
           </div>
 
-          <div className="flex w-[28rem] shrink-0 flex-col overflow-hidden rounded-[24px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
-            <div className="border-b border-[rgb(var(--border-line))] px-5 py-4">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Live Preview</p>
-                  <h2 className="mt-1 truncate text-base font-semibold text-text-primary">
-                    {chartNameInput || 'Untitled chart'}
-                  </h2>
-                  <p className="mt-1 text-xs text-text-tertiary">
-                    {selectedTableId
-                      ? 'Run after field changes to refresh this preview before saving.'
-                      : 'Pick a source table to unlock the chart preview.'}
-                  </p>
-                </div>
-                <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-xs text-text-tertiary">
+          <div className="flex min-h-[24rem] min-w-0 flex-1 flex-col overflow-hidden rounded-[20px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm lg:min-h-0">
+            <div className="flex items-center justify-between gap-3 border-b border-[rgb(var(--border-line))] px-4 py-2.5">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Preview</span>
+                <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[11px] text-text-tertiary">
                   {displayedQueryState
                     ? `${displayedQueryState.rows.length} row${displayedQueryState.rows.length === 1 ? '' : 's'}`
                     : 'No run yet'}
                 </span>
               </div>
-            </div>
-
-            {queryError && (
-              <div className="border-b border-danger/30 bg-danger/10 px-5 py-2 text-xs text-danger">
-                {queryError}
-              </div>
-            )}
-
-            <div className="min-h-0 flex-1 p-5">
-              {!selectedTableId ? (
-                <div className="flex h-full items-center justify-center">
-                  <div className="max-w-sm text-center">
-                    <Search className="mx-auto mb-3 h-12 w-12 text-text-quaternary" />
-                    <p className="text-sm font-medium text-text-secondary">Choose a dataset table to start</p>
-                    <p className="mt-1 text-xs text-text-quaternary">The source selector defines what this chart can use.</p>
-                  </div>
-                </div>
-              ) : !displayedQueryState ? (
-                <div className="flex h-full items-center justify-center">
-                  <div className="max-w-sm text-center">
-                    <Database className="mx-auto mb-3 h-10 w-10 text-text-quaternary" />
-                    <p className="text-sm font-medium text-text-secondary">Run the query to preview the chart</p>
-                    <p className="mt-1 text-xs text-text-quaternary">
-                      Configure fields in Chart Setup, then run once to populate the preview.
-                    </p>
-                  </div>
-                </div>
-              ) : customRunMessage ? (
-                <div className="flex h-full items-center justify-center">
-                  <div className="max-w-sm text-center">
-                    <Settings2 className="mx-auto mb-3 h-10 w-10 text-warning" />
-                    <p className="text-sm font-medium text-text-secondary">Finish the chart roles in Chart Setup</p>
-                    <p className="mt-1 text-xs text-text-quaternary">{customRunMessage}</p>
-                  </div>
-                </div>
-              ) : (
-                <ExploreChart
-                  type={chartType}
-                  data={displayedQueryState.chartRows}
-                  roleConfig={normalizedRoleConfig}
-                  styleConfig={chartStyleConfig}
-                  onStyleConfigChange={setChartStyleConfig}
-                  preAggregated={displayedQueryState.chartPreAggregated}
-                />
-              )}
-            </div>
-          </div>
-        </div>
-        ) : (
-        <div className="flex h-full min-w-[1320px] gap-4 p-4">
-          <div className={`flex shrink-0 flex-col overflow-hidden rounded-[24px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm ${
-            isConfigBuilderMode ? 'w-72' : 'w-[25rem]'
-          }`}>
-            <div className="border-b border-[rgb(var(--border-line))] px-4 py-4">
-              <div className="flex items-center gap-1">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">
-                  {isConfigBuilderMode ? 'Source' : 'SQL / Output'}
-                </p>
-                <HelpTooltip text={isConfigBuilderMode
-                  ? 'Choose the dataset and table here. Open schema only when you need to confirm field types before mapping on the right.'
-                  : 'The SQL result becomes the chart source after each run.'} />
-              </div>
-              <div className="mt-3">
-                <ExploreSourceSelector
-                  selectedDatasetId={selectedDatasetId}
-                  selectedTableId={selectedTableId}
-                  onDatasetChange={setSelectedDatasetId}
-                  onTableChange={setSelectedTableId}
-                  disabled={!resPerms.canEdit}
-                  lockDataset={lockDatasetSelection}
-                />
-              </div>
-
-            </div>
-
-            {isConfigBuilderMode ? (
-              <div className="min-h-0 flex-1 overflow-y-auto p-4">
-                {!selectedTableId ? (
-                  <div className="flex h-full items-center justify-center px-2 text-center">
-                    <div>
-                      <Search className="mx-auto mb-3 h-10 w-10 text-text-quaternary" />
-                      <p className="text-sm font-medium text-text-secondary">Choose a table to load its schema</p>
-                      <p className="mt-1 text-xs text-text-quaternary">Chart Setup on the right will use this source as the only field universe.</p>
-                    </div>
-                  </div>
-                ) : isPreviewLoading ? (
-                  <div className="flex h-full items-center justify-center">
-                    <div className="text-center">
-                      <div className="mx-auto mb-3 inline-block h-7 w-7 animate-spin rounded-full border-4 border-brand border-t-transparent" />
-                      <p className="text-sm text-text-tertiary">Loading source schema...</p>
-                    </div>
-                  </div>
-                ) : previewError ? (
-                  <div className="flex h-full items-center justify-center px-6">
-                    <div className="max-w-xs text-center">
-                      <p className="text-sm font-medium text-danger">Could not load source schema</p>
-                      <p className="mt-1 text-xs text-danger/90">{previewErrorMessage}</p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    <div className="rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2 p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-text-primary">
-                            {(selectedTable as any)?.display_name || 'Selected table'}
-                          </p>
-                          <p className="mt-1 text-xs text-text-tertiary">
-                            {dataset?.name ? `${dataset.name} dataset` : 'Source table'}
-                          </p>
-                        </div>
-                        {hasActiveTransforms && (
-                          <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[10px] font-medium text-warning">
-                            transforms on
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="mt-4 grid grid-cols-2 gap-2">
-                        <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
-                          <p className="text-[11px] uppercase tracking-wide text-text-quaternary">Columns</p>
-                          <p className="mt-1 text-sm font-semibold text-text-primary">{previewColumns.length}</p>
-                        </div>
-                        <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
-                          <p className="text-[11px] uppercase tracking-wide text-text-quaternary">Measures</p>
-                          <p className="mt-1 text-sm font-semibold text-text-primary">{configBuilderSourceStats.measureColumns.length}</p>
-                        </div>
-                        <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
-                          <p className="text-[11px] uppercase tracking-wide text-text-quaternary">Dimensions</p>
-                          <p className="mt-1 text-sm font-semibold text-text-primary">{configBuilderSourceStats.dimensionColumns.length}</p>
-                        </div>
-                        <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
-                          <p className="text-[11px] uppercase tracking-wide text-text-quaternary">Time Fields</p>
-                          <p className="mt-1 text-sm font-semibold text-text-primary">{configBuilderSourceStats.timeColumns.length}</p>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1">
-                      <button
-                        type="button"
-                        onClick={() => setIsSchemaSnapshotOpen((open) => !open)}
-                        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-2"
-                      >
-                        <div>
-                          <p className="text-sm font-medium text-text-primary">Schema Snapshot</p>
-                          <p className="mt-1 text-xs text-text-tertiary">
-                            Open only when you want to confirm column types before binding fields in Chart Setup.
-                          </p>
-                        </div>
-                        {isSchemaSnapshotOpen
-                          ? <ChevronDown className="h-4 w-4 text-text-quaternary" />
-                          : <ChevronRight className="h-4 w-4 text-text-quaternary" />}
-                      </button>
-
-                      {isSchemaSnapshotOpen && (
-                        <>
-                          <div className="max-h-72 overflow-y-auto border-t border-[rgb(var(--border-line))]">
-                            {previewColumns.slice(0, 14).map((column) => {
-                              const kind = isSourceTimeColumn(column)
-                                ? 'time'
-                                : column.type === 'number'
-                                  ? 'measure'
-                                  : 'dimension';
-                              return (
-                                <div
-                                  key={column.name}
-                                  className="flex items-center justify-between gap-3 border-b border-[rgb(var(--border-line))] px-4 py-3 last:border-b-0"
-                                >
-                                  <div className="min-w-0">
-                                    <p className="truncate text-sm font-medium text-text-secondary">{column.name}</p>
-                                    <p className="text-xs text-text-quaternary">{column.type}</p>
-                                  </div>
-                                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                                    kind === 'time'
-                                      ? 'bg-success/10 text-success'
-                                      : kind === 'measure'
-                                        ? 'bg-brand/10 text-brand'
-                                        : 'bg-surface-2 text-text-secondary'
-                                  }`}>
-                                    {kind}
-                                  </span>
-                                </div>
-                              );
-                            })}
-                          </div>
-                          {previewColumns.length > 14 && (
-                            <div className="border-t border-[rgb(var(--border-line))] bg-surface-2 px-4 py-2 text-xs text-text-tertiary">
-                              + {previewColumns.length - 14} more columns available in this source
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="flex min-h-0 flex-1 flex-col">
-                <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-4 py-3">
-                  <div className="flex items-center gap-1.5">
-                    <p className="text-sm font-medium text-text-secondary">Custom SQL</p>
-                    <HelpTooltip text="Run SQL to refresh the output columns used by Chart Setup." />
-                  </div>
-                  {resPerms.canEdit && (
+              <div className="flex items-center gap-2">
+                <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
+                  {[
+                    { key: 'chart', label: 'Chart' },
+                    { key: 'table', label: 'Table' },
+                  ].map((tab) => (
                     <button
-                      onClick={handleResetCustomSqlDraft}
-                      className="inline-flex items-center gap-1 rounded-lg border border-[rgb(var(--border-line))] px-2 py-1 text-xs text-text-secondary hover:bg-surface-2"
+                      key={tab.key}
+                      type="button"
+                      onClick={() => setPreviewPanelTab(tab.key as 'chart' | 'table')}
+                      className={`rounded-md px-2 py-0.5 text-xs font-medium transition-colors ${
+                        previewPanelTab === tab.key
+                          ? 'bg-surface-1 text-text-primary shadow-linear-sm'
+                          : 'text-text-secondary hover:bg-surface-1'
+                      }`}
                     >
-                      <RotateCcw className="h-3 w-3" />
-                      Reset
+                      {tab.label}
                     </button>
-                  )}
-                </div>
-
-                <div className="border-b border-[rgb(var(--border-line))] p-4">
-                  <textarea
-                    value={customSqlDraft}
-                    onChange={(e) => setCustomSqlDraft(e.target.value)}
-                    readOnly={!resPerms.canEdit}
-                    spellCheck={false}
-                    className={`h-64 w-full resize-none rounded-2xl border border-[rgb(var(--border-line))] bg-surface-inverse px-3 py-3 font-mono text-xs text-text-secondary outline-none transition focus:border-warning/40 focus:ring-2 focus:ring-warning${!resPerms.canEdit ? ' opacity-60 cursor-not-allowed' : ''}`}
-                  />
-                </div>
-
-                <div className="min-h-0 flex-1 overflow-hidden">
-                  <div className="border-b border-[rgb(var(--border-line))] px-4 py-3">
-                    <p className="text-sm font-medium text-text-secondary">Output Columns</p>
-                  </div>
-                  <div className="min-h-0 space-y-2 overflow-y-auto px-4 py-4">
-                    {customQueryState?.columns?.length ? (
-                      customQueryState.columns.map((column) => (
-                        <div
-                          key={column.name}
-                          className="flex items-center justify-between rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2"
-                        >
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-text-secondary">{column.name}</p>
-                            <p className="text-xs text-text-quaternary">{column.type}</p>
-                          </div>
-                          <span className="rounded-full bg-surface-1 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-tertiary">
-                            SQL
-                          </span>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="rounded-2xl border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-4 py-6 text-center">
-                        <Code2 className="mx-auto mb-3 h-8 w-8 text-warning" />
-                        <p className="text-sm font-medium text-text-secondary">Run SQL to load output columns</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="flex min-w-0 flex-1 flex-col gap-4">
-
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[24px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
-            <div className="border-b border-[rgb(var(--border-line))] px-5 py-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">Chart Preview</p>
-                  <h2 className="mt-1 truncate text-lg font-semibold text-text-primary">
-                    {chartNameInput || 'Untitled chart'}
-                  </h2>
-                </div>
-                <div className="flex flex-wrap justify-end gap-2">
-                  <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
-                    isConfigBuilderMode ? 'bg-brand/10 text-brand' : 'bg-warning/10 text-warning'
-                  }`}>
-                    {isConfigBuilderMode ? 'Config Builder' : 'Custom SQL'}
-                  </span>
+                  ))}
                 </div>
               </div>
             </div>
@@ -2019,13 +1674,13 @@ export function ExploreEditor({
               </div>
             )}
 
-            <div className="min-h-0 flex-1 p-5">
+            <div className="min-h-0 flex-1 overflow-hidden p-5">
               {!selectedTableId ? (
                 <div className="flex h-full items-center justify-center">
                   <div className="max-w-sm text-center">
                     <Search className="mx-auto mb-3 h-12 w-12 text-text-quaternary" />
                     <p className="text-sm font-medium text-text-secondary">Choose a dataset table to start</p>
-                    <p className="mt-1 text-xs text-text-quaternary">The source selector on the left defines what this chart can use.</p>
+                    <p className="mt-1 text-xs text-text-quaternary">The source selector lives in the header now.</p>
                   </div>
                 </div>
               ) : !displayedQueryState ? (
@@ -2034,11 +1689,9 @@ export function ExploreEditor({
                     {isConfigBuilderMode
                       ? <Database className="mx-auto mb-3 h-10 w-10 text-text-quaternary" />
                       : <Code2 className="mx-auto mb-3 h-10 w-10 text-warning" />}
-                    <p className="text-sm font-medium text-text-secondary">Run the query to preview the chart</p>
+                    <p className="text-sm font-medium text-text-secondary">Run once to generate the preview</p>
                     <p className="mt-1 text-xs text-text-quaternary">
-                      {isConfigBuilderMode
-                        ? 'Choose fields in Chart Setup, then run once to populate the preview.'
-                        : 'Run the SQL on the left so the chart can bind to the returned columns.'}
+                      Configure the chart on the left, then run to see both the visual and table result here.
                     </p>
                   </div>
                 </div>
@@ -2046,186 +1699,31 @@ export function ExploreEditor({
                 <div className="flex h-full items-center justify-center">
                   <div className="max-w-sm text-center">
                     <Settings2 className="mx-auto mb-3 h-10 w-10 text-warning" />
-                    <p className="text-sm font-medium text-text-secondary">Finish the chart roles in Chart Setup</p>
+                    <p className="text-sm font-medium text-text-secondary">Finish the chart roles in Configure</p>
                     <p className="mt-1 text-xs text-text-quaternary">{customRunMessage}</p>
                   </div>
                 </div>
-              ) : (
-                <ExploreChart
-                  type={chartType}
-                  data={displayedQueryState.chartRows}
-                  roleConfig={normalizedRoleConfig}
-                  styleConfig={chartStyleConfig}
-                  onStyleConfigChange={setChartStyleConfig}
-                  preAggregated={displayedQueryState.chartPreAggregated}
-                />
-              )}
-            </div>
-          </div>
-
-            <div className="flex h-[22rem] shrink-0 flex-col overflow-hidden rounded-[24px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
-              <div className="border-b border-[rgb(var(--border-line))] px-5 py-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">
-                      {isConfigBuilderMode ? 'SQL + Data Preview' : 'SQL Output Sample'}
-                    </p>
-                    <p className="mt-1 text-xs text-text-tertiary">
-                      {isConfigBuilderMode
-                        ? 'Keep the generated SQL and result rows in view while you tweak the chart.'
-                        : 'These sample rows come from the latest SQL run and feed the chart setup on the right.'}
-                    </p>
-                  </div>
-                  {displayedQueryState && (
-                    <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-xs text-text-tertiary">
-                      {displayedQueryState.rows.length} row{displayedQueryState.rows.length === 1 ? '' : 's'}
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              {isConfigBuilderMode && (
-                <div className="border-b border-[rgb(var(--border-line))] bg-surface-2 px-5 py-3">
-                  <div className="mb-1 flex items-center justify-between">
-                    <span className="text-xs font-medium text-text-secondary">
-                      SQL Preview{hasActiveTransforms && ' (transforms applied server-side)'}
-                    </span>
-                  </div>
-                  <pre className="max-h-24 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-text-secondary">
-                    {generatedSql}
-                  </pre>
-                </div>
-              )}
-
-              {displayedQueryState ? (
-                <>
-                  {!isConfigBuilderMode && (
-                    <div className="border-b border-warning/20 bg-warning/10 px-5 py-2 text-[10px] text-warning">
-                      The rows below are sampled from the SQL output. The chart preview above uses these output columns together with your chart mapping and filters.
-                    </div>
-                  )}
-                  <div className="min-h-0 flex-1 overflow-hidden">
-                    <DatasetTableGrid columns={displayedQueryState.columns} rows={displayedQueryState.rows} />
-                  </div>
-                </>
-              ) : (
-                <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center">
-                  <div className="max-w-sm">
-                    {isConfigBuilderMode
-                      ? <Database className="mx-auto mb-3 h-8 w-8 text-text-quaternary" />
-                      : <Code2 className="mx-auto mb-3 h-8 w-8 text-warning" />}
-                    <p className="text-sm font-medium text-text-secondary">
-                      {isConfigBuilderMode ? 'Run to inspect result rows' : 'Run SQL to inspect sampled rows'}
-                    </p>
-                    <p className="mt-1 text-xs text-text-quaternary">
-                      {isConfigBuilderMode
-                        ? 'The generated SQL stays visible here so you can compare structure and output without leaving the editor.'
-                        : 'After a successful run, this panel will show the SQL output columns and sample data on the same screen.'}
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-        {/* RIGHT PANEL: Chart Config + Metadata + Parameters */}
-        {selectedTableId && (
-          <div className="flex w-[25rem] shrink-0 flex-col overflow-y-auto rounded-[24px] border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
-            <div className={`border-b border-[rgb(var(--border-line))] px-5 py-4 ${
-              sqlMode === 'custom' ? 'bg-warning/10/70' : 'bg-surface-2'
-            }`}>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">
-                Chart Setup
-              </p>
-              <p className={`mt-2 text-sm font-medium ${
-                sqlMode === 'custom' ? 'text-warning' : 'text-text-secondary'
-              }`}>
-                {sqlMode === 'custom' ? 'Map directly from SQL output columns' : 'Keep mapping and styling in one place'}
-              </p>
-              {sqlMode === 'custom' && (
-                <p className="mt-1 text-[11px] text-warning">
-                  Save uses the latest SQL you ran together with the chart options below.
-                </p>
-              )}
-              {mappingSummary.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {mappingSummary.map((item) => (
-                    <span
-                      key={`setup-${item.label}-${item.value}`}
-                      className="rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1 text-[11px] text-text-secondary"
-                    >
-                      <span className="font-semibold text-text-secondary">{item.label}:</span> {item.value}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Chart type + field mapping + styling */}
-            <ExploreChartConfig
-              chartType={chartType}
-              roleConfig={activeRoleConfig}
-              styleConfig={chartStyleConfig}
-              availableColumns={configColumns}
-              sortLimitColumns={sortLimitColumns}
-              tableDisplayColumns={tableDisplayColumns}
-              queryMode={sqlMode}
-              validationMessage={activeValidationMessage}
-              readOnly={!resPerms.canEdit}
-              onChartTypeChange={handleChartTypeChange}
-              onRoleConfigChange={sqlMode === 'custom' ? setCustomRoleConfig : setGeneratedRoleConfig}
-              onStyleConfigChange={setChartStyleConfig}
-            />
-
-            <div className="border-t">
-              <button
-                onClick={() => setIsFiltersOpen((open) => !open)}
-                className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-surface-2 transition-colors"
-              >
-                <div className="flex items-center gap-2">
-                  <Settings2 className="w-3.5 h-3.5 text-text-quaternary" />
-                  <span className="text-xs font-semibold text-text-secondary">Chart Filters</span>
-                  {filters.length > 0 && (
-                    <span className="px-1.5 py-0.5 text-[10px] bg-warning/15 text-warning rounded-full font-medium">
-                      {filters.length}
-                    </span>
-                  )}
-                </div>
-                {isFiltersOpen
-                  ? <ChevronDown className="w-3.5 h-3.5 text-text-quaternary" />
-                  : <ChevronRight className="w-3.5 h-3.5 text-text-quaternary" />}
-              </button>
-              {isFiltersOpen && (
-                <div className="px-4 pb-4">
-                  <p className="mb-2 text-[11px] text-text-tertiary">
-                    Saved with this chart and still applied after you add the chart to a dashboard.
-                  </p>
-                  <p className="mb-3 text-[10px] text-text-quaternary">
-                    {sqlMode === 'custom'
-                      ? 'These filters run against the columns returned by the custom SQL output.'
-                      : 'These filters run before dashboard-level filters.'}
-                  </p>
-                  {sqlMode === 'custom' && filterColumns.length === 0 ? (
-                    <p className="text-xs text-text-quaternary">
-                      Run the custom SQL once to load output columns for chart filters.
-                    </p>
-                  ) : (
-                    <FilterBuilder
-                      filters={filters}
-                      onChange={setFilters}
-                      columns={filterColumns}
-                      dataRows={filterRows}
-                      readOnly={!resPerms.canEdit}
+              ) : previewPanelTab === 'chart' ? (
+                <div className="h-full overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2 p-3">
+                  <div className="h-full overflow-hidden rounded-[20px] bg-surface-1 p-3">
+                    <ExploreChart
+                      type={chartType}
+                      data={displayedQueryState.chartRows}
+                      roleConfig={normalizedRoleConfig}
+                      styleConfig={chartStyleConfig}
+                      onStyleConfigChange={setChartStyleConfig}
+                      preAggregated={displayedQueryState.chartPreAggregated}
                     />
-                  )}
+                  </div>
+                </div>
+              ) : (
+                <div className="h-full overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2">
+                  <DatasetTableGrid columns={displayedQueryState.columns} rows={displayedQueryState.rows} />
                 </div>
               )}
             </div>
-
           </div>
-        )}
-      </div>
-        )}
+        </div>
       </div>
 
       {/* AI Description drawer — opened from MODE bar */}

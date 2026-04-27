@@ -1,7 +1,7 @@
 """add progress columns to dataset_quality_runs
 
 Revision ID: 20260414_0003
-Revises: 20260414_0002_add_filters_to_report_templates
+Revises: 20260414_0002
 Create Date: 2026-04-14
 """
 from alembic import op

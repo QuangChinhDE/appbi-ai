@@ -14,6 +14,7 @@ interface ExploreSourceSelectorProps {
   onDatasetChange: (datasetId: number | null) => void;
   onTableChange: (tableId: number | null) => void;
   disabled?: boolean;
+  variant?: 'stacked' | 'compact';
   /**
    * When true, the dataset dropdown is locked but the table dropdown stays
    * interactive. Useful in wizard flows that have already committed to a
@@ -28,6 +29,7 @@ export function ExploreSourceSelector({
   onDatasetChange,
   onTableChange,
   disabled,
+  variant = 'stacked',
   lockDataset = false,
 }: ExploreSourceSelectorProps) {
   const { data: datasets = [], isLoading: loadingDatasets } = useDatasets();
@@ -43,6 +45,46 @@ export function ExploreSourceSelector({
     const id = tableId ? Number(tableId) : null;
     onTableChange(id);
   };
+
+  if (variant === 'compact') {
+    return (
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <div className="min-w-[11rem] flex-1 sm:w-48 sm:flex-none">
+          <Select
+            size="sm"
+            value={selectedDatasetId || ''}
+            onChange={(e) => handleDatasetChange(e.target.value)}
+            disabled={disabled || lockDataset || loadingDatasets}
+          >
+            <option value="">Select dataset...</option>
+            {datasets.map((ws: any) => (
+              <option key={ws.id} value={ws.id}>
+                {ws.name}
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        {selectedDatasetId && (
+          <div className="min-w-[12rem] flex-1 sm:w-56 sm:flex-none">
+            <Select
+              size="sm"
+              value={selectedTableId || ''}
+              onChange={(e) => handleTableChange(e.target.value)}
+              disabled={disabled || !dataset?.tables?.length}
+            >
+              <option value="">Select table...</option>
+              {dataset?.tables?.map((table: any) => (
+                <option key={table.id} value={table.id}>
+                  {table.display_name || table.source_table_name}
+                </option>
+              ))}
+            </Select>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">

@@ -35,8 +35,16 @@ from app.models.agent_report import AgentReportSpec, AgentReportRun
 from app.models.personal_access_token import PersonalAccessToken
 from app.models.revoked_token import RevokedToken
 from app.models.audit_log import AuditLog, AuditAction, AuditSeverity
-from app.models.report_template import ReportTemplate
 from app.models.team import Team, TeamMembership
+# Workboard models live under app.modules.workboards but are re-exported here
+# so SQLAlchemy metadata + alembic autogenerate always see them, regardless of
+# whether the workboards module router is enabled at runtime.
+from app.modules.workboards.models import (
+    Workboard,
+    WorkboardSubmission,
+    WorkboardWorkspace,
+    WorkboardAppLoginAttempt,
+)
 # Commented out - using hybrid approach with filters_config JSON field instead
 # from app.models.dashboard_filter import DashboardFilter
 
@@ -74,7 +82,10 @@ __all__ = [
     "AuditLog",
     "AuditAction",
     "AuditSeverity",
-    "ReportTemplate",
     "Team",
     "TeamMembership",
+    "Workboard",
+    "WorkboardSubmission",
+    "WorkboardWorkspace",
+    "WorkboardAppLoginAttempt",
 ]

@@ -33,6 +33,8 @@ ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
 # or wss://yourdomain.com/chat/ws for production with nginx.
 ARG NEXT_PUBLIC_AI_CHAT_WS_URL=
 ENV NEXT_PUBLIC_AI_CHAT_WS_URL=$NEXT_PUBLIC_AI_CHAT_WS_URL
+ARG NEXT_PUBLIC_WORKBOARDS_ENABLED=false
+ENV NEXT_PUBLIC_WORKBOARDS_ENABLED=$NEXT_PUBLIC_WORKBOARDS_ENABLED
 
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules

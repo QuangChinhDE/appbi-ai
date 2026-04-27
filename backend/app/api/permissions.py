@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_permission
 from app.models.team import Team, TeamMembership
@@ -26,27 +27,45 @@ router = APIRouter(prefix="/permissions", tags=["permissions"])
 
 # ── Module definitions ────────────────────────────────────────────────────────
 
-MODULES = [
+# Optional / feature-flagged modules: included only when the corresponding
+# overlay is active. Keeps the FE sidebar and admin matrix in sync with what
+# the API actually serves.
+_OPTIONAL_MODULES = {
+    "workboards": settings.WORKBOARDS_ENABLED,
+}
+
+
+def _module_enabled(name: str) -> bool:
+    return _OPTIONAL_MODULES.get(name, True)
+
+
+_ALL_MODULES = [
     "data_sources",
     "datasets",
     "explore_charts",
     "dashboards",
-    "report_templates",
+    "workboards",
     "ai_chat",
     "ai_agent",
     "settings",
 ]
 
+MODULES = [m for m in _ALL_MODULES if _module_enabled(m)]
+
 # Per-module allowed levels (enforces business rules)
-MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
+_ALL_MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
     "data_sources":      ["none", "view", "edit", "full"],
     "datasets":          ["none", "view", "edit", "full"],
     "explore_charts":    ["none", "view", "edit", "full"],
     "dashboards":        ["none", "view", "edit", "full"],
-    "report_templates":  ["none", "view", "edit", "full"],
+    "workboards":        ["none", "view", "edit", "full"],
     "ai_chat":           ["none", "view", "edit", "full"],
     "ai_agent":          ["none", "view", "edit", "full"],
     "settings":          ["none", "full"],
+}
+
+MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
+    k: v for k, v in _ALL_MODULE_ALLOWED_LEVELS.items() if _module_enabled(k)
 }
 
 LEVEL_ORDER = {"none": 0, "view": 1, "edit": 2, "full": 3}
@@ -59,7 +78,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "full",
         "explore_charts": "full",
         "dashboards": "full",
-        "report_templates": "full",
+        "workboards": "full",
         "ai_chat": "full",
         "ai_agent": "full",
         "settings": "full",
@@ -69,7 +88,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "edit",
         "explore_charts": "edit",
         "dashboards": "edit",
-        "report_templates": "edit",
+        "workboards": "edit",
         "ai_chat": "edit",
         "ai_agent": "edit",
         "settings": "none",
@@ -79,7 +98,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "view",
         "explore_charts": "view",
         "dashboards": "view",
-        "report_templates": "view",
+        "workboards": "view",
         "ai_chat": "view",
         "ai_agent": "none",
         "settings": "none",
@@ -89,11 +108,18 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "none",
         "explore_charts": "none",
         "dashboards": "view",
-        "report_templates": "none",
+        "workboards": "none",
         "ai_chat": "none",
         "ai_agent": "none",
         "settings": "none",
     },
+}
+
+# Strip disabled modules from presets so /presets and apply-preset never
+# return values that would fail _validate_permissions.
+PRESETS = {
+    name: {k: v for k, v in spec.items() if _module_enabled(k)}
+    for name, spec in PRESETS.items()
 }
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -189,8 +215,6 @@ def _get_user_permissions(user: User) -> Dict[str, str]:
     base.update({k: v for k, v in stored.items() if k in MODULES})
     if "ai_agent" not in stored:
         base["ai_agent"] = _infer_legacy_ai_agent_level(base)
-    if "report_templates" not in stored:
-        base["report_templates"] = stored.get("dashboards", "none")
     return base
 
 

@@ -32,16 +32,17 @@ docs/
 
 # Demo/test scripts (local only)
 seed_demo.py
-seed_demo_templates.sql
 scope-foodball-demo.xlsx
 verify-docker.sh
 verify-docker.ps1
-template_demo.html
 
 # Test & debug scripts (local only — not for repo)
 test_*.py
+*_test.py
 **/test_*.py
+**/*_test.py
 backend/tests/
+tests/
 seed_test_users.py
 
 # Exploratory / one-off scripts (local only)
@@ -54,6 +55,11 @@ run.py
 _tmp/
 tmp_build_vi_ai_report.py
 _quarantine/
+scripts/_wb*_bundle.json
+scripts/audit_workboard.py
+scripts/production_demo_*
+scripts/seed_*workboard.sql
+scripts/verify_*workboard.py
 
 # Local large data / one-off bootstrap helpers
 2019-Nov.csv
@@ -72,5 +78,6 @@ Design System Inspired by Linear.md
 ai-chat/AI_CHAT_SYSTEM_DOC.md
 ai-chat/UPGRADE_PLAN.md
 ai-chat/UPGRADE_PLAN_V2.md
+ai-chat/WORKBOARDS_END_TO_END_DESIGN.md
 backend/README.md
 frontend/README.md

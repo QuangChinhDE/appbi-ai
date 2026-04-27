@@ -12,7 +12,7 @@ Send them via the X-Public-Session request header.
 import json
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
@@ -29,6 +29,32 @@ from app.services.dataset_model_service import get_dataset_model, get_distinct_f
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+
+if settings.WORKBOARDS_ENABLED:
+    from app.modules.workboards.models import WorkboardWorkspace
+    from app.modules.workboards.services import app_user_service
+    from app.modules.workboards.services.public_links import WorkboardPublicLinkService
+    from app.modules.workboards.services.rls_service import (
+        identity_from_app_user,
+    )
+    from app.modules.workboards.services.runtime_service import WorkboardRuntimeService
+    from app.modules.workboards.services.write_service import (
+        WorkboardValidationError,
+        WorkboardWriteError,
+        WorkboardWriteService,
+    )
+    from app.modules.workboards.workspace_schemas import (
+        WorkspaceAppUserPublic,
+        WorkspaceBranding,
+        WorkspaceLoginRequest,
+        WorkspaceLoginResponse,
+        WorkspaceMenuItem,
+        WorkspaceMenuItemPublic,
+        WorkspaceMenuResponse,
+        WorkspaceMetaPublic,
+        WorkspaceMetaResponse,
+    )
+    from app.modules.workboards.models import Workboard as _WorkboardModel
 
 router = APIRouter(prefix="/public", tags=["public"])
 _limiter = Limiter(key_func=get_remote_address)
@@ -354,6 +380,744 @@ def get_public_dashboard(
     dash.public_link_name = link_name
     dash.public_link_appearance = appearance_config or {}
     return dash
+
+
+if settings.WORKBOARDS_ENABLED:
+    def _get_workboard_by_token(
+        token: str,
+        db: Session,
+        session_token: str | None = None,
+        *,
+        track_access: bool = True,
+    ):
+        workboard, link = WorkboardPublicLinkService.find_by_token(db, token)
+        if not workboard or not link:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Shared workboard not found or link has been revoked.",
+            )
+        if not bool(link.get("is_active", True)):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Shared workboard not found or link has been revoked.",
+            )
+        if link.get("password_hash"):
+            if not session_token or not _verify_public_session(session_token, token):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="This shared link requires a password.",
+                    headers={"X-Link-Password-Required": "true"},
+                )
+        if track_access:
+            touched = WorkboardPublicLinkService.touch_access(db, workboard, str(link.get("id")))
+            if touched:
+                link = touched
+        return workboard, link
+
+
+    @router.post("/workboards/{token}/auth")
+    @_limiter.limit("10/minute")
+    def auth_public_workboard_link(
+        token: str,
+        body: _PasswordBody,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        workboard, link = WorkboardPublicLinkService.find_by_token(db, token)
+        if not workboard or not link or not bool(link.get("is_active", True)):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Shared workboard not found or link has been revoked.",
+            )
+        if not link.get("password_hash"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This link does not require a password.")
+        if not WorkboardPublicLinkService.verify_password(link, body.password):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Incorrect password.")
+        return {"session_token": _create_public_session(token), "expires_in": PUBLIC_SESSION_SECONDS}
+
+
+    @router.get("/workboards/{token}")
+    @_limiter.limit("30/minute")
+    def get_public_workboard(
+        token: str,
+        request: Request,
+        db: Session = Depends(get_db),
+        x_public_session: str | None = Header(default=None),
+    ):
+        workboard, link = _get_workboard_by_token(
+            token,
+            db,
+            session_token=x_public_session,
+        )
+        mode = "view" if link.get("mode") == "view" else "form"
+        payload = {
+            "workboard": {
+                "id": workboard.id,
+                "name": workboard.name,
+                "description": workboard.description,
+            },
+            "link": {
+                "id": str(link.get("id")),
+                "name": str(link.get("name") or workboard.name),
+                "token": token,
+                "mode": mode,
+                "view_id": link.get("view_id"),
+                "is_active": bool(link.get("is_active", True)),
+                "has_password": bool(link.get("password_hash")),
+                "access_count": int(link.get("access_count") or 0),
+                "last_accessed_at": link.get("last_accessed_at"),
+                "created_at": link.get("created_at"),
+                "updated_at": link.get("updated_at"),
+            },
+            "mode": mode,
+        }
+        if mode == "form":
+            payload["form"] = WorkboardRuntimeService.render_form(db, workboard)
+        else:
+            view_id = str(link.get("view_id") or "")
+            if not view_id:
+                raise HTTPException(status_code=400, detail="Shared workboard view is not configured.")
+            rendered = WorkboardRuntimeService.render_view(
+                db,
+                workboard,
+                view_id,
+                page=1,
+                page_size=50,
+                filters=[],
+            )
+            if rendered.get("missing"):
+                raise HTTPException(status_code=404, detail="Shared workboard view not found.")
+            payload["rendered_view"] = rendered
+        return payload
+
+
+    @router.post("/workboards/{token}/submit")
+    @_limiter.limit("30/minute")
+    def submit_public_workboard_form(
+        token: str,
+        body: dict,
+        request: Request,
+        db: Session = Depends(get_db),
+        x_public_session: str | None = Header(default=None),
+    ):
+        workboard, link = _get_workboard_by_token(
+            token,
+            db,
+            session_token=x_public_session,
+            track_access=False,
+        )
+        if link.get("mode") == "view":
+            raise HTTPException(status_code=400, detail="This shared workboard link is read-only.")
+        values = body.get("values") if isinstance(body, dict) else None
+        if not isinstance(values, dict):
+            raise HTTPException(status_code=400, detail="values is required.")
+        try:
+            result = WorkboardWriteService.insert_row(db, workboard, values, None)
+        except WorkboardValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": str(exc), "violations": exc.violations},
+            ) from exc
+        except WorkboardWriteError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return {
+            "action": "insert",
+            **result,
+        }
+
+
+    # ── Workspace public endpoints ────────────────────────────────────────
+    #
+    # Workspaces are the public face of a project's mini-app. End-users
+    # (workers, foremen, drivers) authenticate against the project's own
+    # employee table via `app_user_service.authenticate`, then drive a
+    # role-filtered menu of workboards. Cookie name is namespaced to the
+    # workspace token so multiple workspaces on the same domain don't
+    # clobber each other's sessions.
+
+    _WORKSPACE_COOKIE_PREFIX = "wbws_"  # final cookie: wbws_<short-hash-of-token>
+
+    def _workspace_cookie_name(workspace_token: str) -> str:
+        import hashlib
+        digest = hashlib.sha256(workspace_token.encode("utf-8")).hexdigest()[:12]
+        return f"{_WORKSPACE_COOKIE_PREFIX}{digest}"
+
+    def _workspace_branding(workspace) -> WorkspaceBranding | None:
+        raw = workspace.branding or None
+        if not raw:
+            return None
+        try:
+            return WorkspaceBranding.model_validate(raw)
+        except Exception:
+            return None
+
+    def _workspace_meta_public(workspace) -> WorkspaceMetaPublic:
+        cfg = app_user_service.parse_app_users_config(workspace)
+        return WorkspaceMetaPublic(
+            name=workspace.name,
+            description=workspace.description,
+            branding=_workspace_branding(workspace),
+            requires_login=cfg is not None,
+        )
+
+    def _load_workspace_or_404(db: Session, token: str):
+        ws = app_user_service.get_workspace_by_token(db, token)
+        if ws is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workspace not found or has been disabled.",
+            )
+        return ws
+
+    def _read_app_user_from_request(
+        request: Request,
+        workspace,
+    ) -> dict | None:
+        cookie_name = _workspace_cookie_name(workspace.token)
+        token = request.cookies.get(cookie_name)
+        if not token:
+            auth = request.headers.get("X-Workspace-Session")
+            if auth:
+                token = auth
+        if not token:
+            return None
+        data = app_user_service.decode_session_token(token, workspace.token)
+        if not data:
+            return None
+        return data.get("app_user") or {}
+
+
+    @router.get("/workspaces/{token}", response_model=WorkspaceMetaResponse)
+    @_limiter.limit("60/minute")
+    def get_public_workspace_meta(
+        token: str,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        ws = _load_workspace_or_404(db, token)
+        return WorkspaceMetaResponse(workspace=_workspace_meta_public(ws))
+
+
+    @router.post("/workspaces/{token}/login", response_model=WorkspaceLoginResponse)
+    @_limiter.limit("10/minute")
+    def workspace_login(
+        token: str,
+        body: WorkspaceLoginRequest,
+        request: Request,
+        response: Response,
+        db: Session = Depends(get_db),
+    ):
+        ws = _load_workspace_or_404(db, token)
+        client_ip = (request.client.host if request.client else None) or None
+        app_user_payload = app_user_service.authenticate(
+            db, ws, body.username.strip(), body.pin, ip=client_ip
+        )
+        cfg = app_user_service.parse_app_users_config(ws)
+        # Re-fetch the row to get fresh full_name / context — authenticate()
+        # already validated so this is safe and uses the LiveQuery cache.
+        row = app_user_service._fetch_user_row(db, cfg, body.username.strip()) or {}
+        session_token, ttl = app_user_service.create_session_token(
+            ws, body.username.strip(), cfg, row
+        )
+
+        # Cookie is httpOnly so JS cannot read it (XSS-resistant). SameSite=lax
+        # so navigations from /w/{token}/... pages keep the cookie attached.
+        response.set_cookie(
+            key=_workspace_cookie_name(token),
+            value=session_token,
+            max_age=ttl,
+            httponly=True,
+            secure=settings.COOKIE_SECURE,
+            samesite="lax",
+            path="/",
+        )
+        full_name = None
+        for candidate in ("full_name", "name", "display_name", "ho_ten"):
+            if candidate in row and row[candidate]:
+                full_name = str(row[candidate])
+                break
+        return WorkspaceLoginResponse(
+            session_token=session_token,
+            expires_in=ttl,
+            app_user=WorkspaceAppUserPublic(
+                username=app_user_payload.get("username") or body.username,
+                role=app_user_payload.get("role"),
+                full_name=full_name,
+                context={
+                    k: v
+                    for k, v in app_user_payload.items()
+                    if k not in {"username", "role"}
+                },
+            ),
+        )
+
+
+    @router.post("/workspaces/{token}/logout")
+    def workspace_logout(token: str, response: Response, db: Session = Depends(get_db)):
+        # Don't 404 here — let users clear their cookie even if the
+        # workspace was deleted, otherwise they'd be stuck.
+        response.delete_cookie(
+            key=_workspace_cookie_name(token),
+            path="/",
+        )
+        return {"ok": True}
+
+
+    @router.get("/workspaces/{token}/menu", response_model=WorkspaceMenuResponse)
+    def workspace_menu(
+        token: str,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        ws = _load_workspace_or_404(db, token)
+        app_user = _read_app_user_from_request(request, ws)
+        if app_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Sign in to access this workspace.",
+            )
+
+        # Resolve menu items: keep only items whose roles[] contains the
+        # caller's role (or that omit roles[], meaning "everyone").
+        role = (app_user.get("role") or "").strip().lower()
+        configured_items: list[WorkspaceMenuItem] = []
+        for raw in ws.menu_config or []:
+            try:
+                configured_items.append(WorkspaceMenuItem.model_validate(raw))
+            except Exception:
+                continue
+        slug_set = [i.workboard_slug for i in configured_items]
+        wb_rows = (
+            db.query(_WorkboardModel)
+            .filter(_WorkboardModel.slug.in_(slug_set))
+            .all()
+            if slug_set
+            else []
+        )
+        wb_by_slug = {wb.slug: wb for wb in wb_rows}
+
+        out_items: list[WorkspaceMenuItemPublic] = []
+        for item in configured_items:
+            wb = wb_by_slug.get(item.workboard_slug)
+            if wb is None:
+                continue
+            allowed_roles = [r.strip().lower() for r in item.roles or []]
+            if allowed_roles and role not in allowed_roles:
+                continue
+            out_items.append(
+                WorkspaceMenuItemPublic(
+                    workboard_id=wb.id,
+                    workboard_slug=wb.slug or "",
+                    label=item.label,
+                    description=item.description or wb.description,
+                    icon=item.icon or wb.icon,
+                    view_id=item.view_id,
+                )
+            )
+
+        full_name = None
+        return WorkspaceMenuResponse(
+            workspace=_workspace_meta_public(ws),
+            app_user=WorkspaceAppUserPublic(
+                username=str(app_user.get("username") or ""),
+                role=app_user.get("role"),
+                full_name=full_name,
+                context={
+                    k: v
+                    for k, v in app_user.items()
+                    if k not in {"username", "role"}
+                },
+            ),
+            menu=out_items,
+        )
+
+
+    def _require_workspace_app_user(
+        request: Request,
+        workspace,
+    ) -> dict:
+        app_user = _read_app_user_from_request(request, workspace)
+        if app_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Sign in to use this workspace.",
+            )
+        return app_user
+
+    def _resolve_workboard_for_workspace(
+        db: Session,
+        workspace,
+        workboard_id: int,
+    ):
+        """Make sure the requested workboard is part of the workspace's menu.
+
+        Otherwise an authenticated app user could brute-force IDs to read
+        any workboard on the deployment.
+        """
+        configured_slugs = {
+            (item.get("workboard_slug") or "")
+            for item in (workspace.menu_config or [])
+            if isinstance(item, dict)
+        }
+        wb = db.query(_WorkboardModel).filter(_WorkboardModel.id == workboard_id).first()
+        if wb is None or (wb.slug or "") not in configured_slugs:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workboard not found in this workspace.",
+            )
+        return wb
+
+
+    @router.get("/workspaces/{token}/workboards/{workboard_id}/form")
+    def workspace_get_form(
+        token: str,
+        workboard_id: int,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        ws = _load_workspace_or_404(db, token)
+        _require_workspace_app_user(request, ws)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        return WorkboardRuntimeService.render_form(db, wb)
+
+
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/rows/list")
+    def workspace_list_rows(
+        token: str,
+        workboard_id: int,
+        body: dict | None,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        body = body or {}
+        identity = identity_from_app_user(app_user)
+        return WorkboardRuntimeService.list_rows(
+            db,
+            wb,
+            page=int(body.get("page") or 1),
+            page_size=int(body.get("page_size") or 50),
+            filters=body.get("filters") or [],
+            identity=identity,
+        )
+
+
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/rows")
+    def workspace_insert_row(
+        token: str,
+        workboard_id: int,
+        body: dict,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        from app.modules.workboards.services.rls_service import enforce_write_access
+        from app.modules.workboards.schemas import LayoutJson as _Layout
+
+        try:
+            layout = _Layout.model_validate(wb.layout_json or {})
+        except Exception:
+            layout = _Layout()
+        identity = identity_from_app_user(app_user)
+        values = enforce_write_access(
+            layout.rls,
+            identity,
+            op="insert",
+            row_values=body.get("values") if isinstance(body, dict) else None,
+        )
+        if not isinstance(values, dict):
+            raise HTTPException(status_code=400, detail="values is required.")
+        try:
+            result = WorkboardWriteService.insert_row(db, wb, values, None)
+        except WorkboardValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": str(exc), "violations": exc.violations},
+            ) from exc
+        except WorkboardWriteError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return {"action": "insert", **result}
+
+
+    @router.patch("/workspaces/{token}/workboards/{workboard_id}/rows")
+    def workspace_update_row(
+        token: str,
+        workboard_id: int,
+        body: dict,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+
+        from app.modules.workboards.services.rls_service import (
+            build_rls_filter,
+            enforce_write_access,
+        )
+        from app.modules.workboards.schemas import LayoutJson as _Layout
+
+        try:
+            layout = _Layout.model_validate(wb.layout_json or {})
+        except Exception:
+            layout = _Layout()
+        identity = identity_from_app_user(app_user)
+
+        pk = body.get("pk") if isinstance(body, dict) else None
+        values = enforce_write_access(
+            layout.rls,
+            identity,
+            op="update",
+            row_values=body.get("values") if isinstance(body, dict) else None,
+        )
+
+        # Make sure the targeted row is one this app_user is allowed to see;
+        # otherwise a worker could update someone else's row by guessing PKs.
+        rls_filters, allowed = build_rls_filter(layout.rls, identity)
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to that row.",
+            )
+        if rls_filters:
+            existing = WorkboardRuntimeService.list_rows(
+                db,
+                wb,
+                page=1,
+                page_size=1,
+                filters=[
+                    *(
+                        [
+                            {"field": k, "operator": "eq", "value": v}
+                            for k, v in (pk or {}).items()
+                        ]
+                    ),
+                    *rls_filters,
+                ],
+                identity=identity,
+            )
+            if not (existing.get("rows") or []):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You don't have access to that row.",
+                )
+
+        try:
+            result = WorkboardWriteService.update_row(
+                db, wb, pk or {}, values, None,
+            )
+        except WorkboardValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": str(exc), "violations": exc.violations},
+            ) from exc
+        except WorkboardWriteError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return {"action": "update", **result}
+
+
+    @router.get("/workspaces/{token}/workboards/{workboard_id}/doc/{view_id}")
+    def workspace_render_doc(
+        token: str,
+        workboard_id: int,
+        view_id: str,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        identity = identity_from_app_user(app_user)
+        rendered = WorkboardRuntimeService.render_doc(
+            db,
+            wb,
+            view_id=view_id,
+            user=None,
+            view_filters=None,
+            identity=identity,
+            app_user_payload=app_user,
+        )
+        if rendered.get("missing"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Doc view '{view_id}' not found",
+            )
+        return rendered
+
+
+    # ── Mini-app screen-based endpoints ───────────────────────────────────
+    #
+    # The "screens" model is the modern public runtime: instead of one form
+    # + one list per workboard, the workboard holds N screens (form/list/
+    # doc/dashboard) wired together by ``after_submit.go_to_screen``. These
+    # endpoints serve a single-page-app shell on top of that contract.
+
+    from app.modules.workboards.services import screen_runtime  # noqa: E402
+
+    @router.get("/workspaces/{token}/workboards/{workboard_id}/app")
+    def workspace_app_shell(
+        token: str,
+        workboard_id: int,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        identity = identity_from_app_user(app_user)
+        return screen_runtime.render_app_shell(wb, identity)
+
+
+    @router.get("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}")
+    def workspace_get_screen(
+        token: str,
+        workboard_id: int,
+        screen_id: str,
+        request: Request,
+        db: Session = Depends(get_db),
+        shared: str | None = Query(default=None, description="JSON-encoded shared_context"),
+    ):
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        identity = identity_from_app_user(app_user)
+        layout = screen_runtime.parse_layout(wb)
+        screen = screen_runtime.get_screen(layout, screen_id)
+        if not screen_runtime.is_screen_visible_for(screen, identity):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to that screen.",
+            )
+        shared_context: dict | None = None
+        if shared:
+            try:
+                shared_context = json.loads(shared)
+                if not isinstance(shared_context, dict):
+                    shared_context = None
+            except Exception:
+                shared_context = None
+        if screen.kind == "form":
+            return screen_runtime.render_form_screen(
+                db, wb, screen, identity=identity, shared_context=shared_context
+            )
+        if screen.kind == "list":
+            return {
+                **screen_runtime.render_list_screen(
+                    db, wb, screen, identity=identity
+                ),
+                "screen_id": screen.id,
+                "kind": "list",
+                "title": screen.title,
+                "icon": screen.icon,
+                "description": screen.description,
+            }
+        if screen.kind == "doc":
+            return screen_runtime.render_doc_screen(
+                db, wb, screen, identity=identity, app_user_payload=app_user
+            )
+        raise HTTPException(status_code=400, detail=f"Unsupported screen kind '{screen.kind}'.")
+
+
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/list")
+    def workspace_screen_list_rows(
+        token: str,
+        workboard_id: int,
+        screen_id: str,
+        body: dict | None,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        identity = identity_from_app_user(app_user)
+        layout = screen_runtime.parse_layout(wb)
+        screen = screen_runtime.get_screen(layout, screen_id)
+        if not screen_runtime.is_screen_visible_for(screen, identity):
+            raise HTTPException(status_code=403, detail="You don't have access to that screen.")
+        body = body or {}
+        return screen_runtime.render_list_screen(
+            db,
+            wb,
+            screen,
+            identity=identity,
+            page=int(body.get("page") or 1),
+            page_size=int(body.get("page_size") or 50),
+            extra_filters=body.get("filters") or [],
+        )
+
+
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/rows")
+    def workspace_screen_insert(
+        token: str,
+        workboard_id: int,
+        screen_id: str,
+        body: dict,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        identity = identity_from_app_user(app_user)
+        layout = screen_runtime.parse_layout(wb)
+        screen = screen_runtime.get_screen(layout, screen_id)
+        if not screen_runtime.is_screen_visible_for(screen, identity):
+            raise HTTPException(status_code=403, detail="You don't have access to that screen.")
+        values = body.get("values") if isinstance(body, dict) else None
+        if not isinstance(values, dict):
+            raise HTTPException(status_code=400, detail="values is required.")
+        try:
+            result = screen_runtime.insert_screen_row(
+                db, wb, screen, values, identity=identity
+            )
+        except WorkboardValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": str(exc), "violations": exc.violations},
+            ) from exc
+        except WorkboardWriteError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return {"action": "insert", **result}
+
+
+    @router.patch("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/rows")
+    def workspace_screen_update(
+        token: str,
+        workboard_id: int,
+        screen_id: str,
+        body: dict,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        identity = identity_from_app_user(app_user)
+        layout = screen_runtime.parse_layout(wb)
+        screen = screen_runtime.get_screen(layout, screen_id)
+        if not screen_runtime.is_screen_visible_for(screen, identity):
+            raise HTTPException(status_code=403, detail="You don't have access to that screen.")
+        pk = body.get("pk") if isinstance(body, dict) else None
+        values = body.get("values") if isinstance(body, dict) else None
+        if not isinstance(values, dict):
+            raise HTTPException(status_code=400, detail="values is required.")
+        try:
+            result = screen_runtime.update_screen_row(
+                db, wb, screen, pk or {}, values, identity=identity
+            )
+        except WorkboardValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": str(exc), "violations": exc.violations},
+            ) from exc
+        except WorkboardWriteError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return {"action": "update", **result}
 
 
 @router.get("/dashboards/{token}/filters/distinct-values")

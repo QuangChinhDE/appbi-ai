@@ -64,6 +64,7 @@ _ADMIN_PERMISSIONS = {
     "datasets": "full",
     "explore_charts": "full",
     "dashboards": "full",
+    "workboards": "full",
     "ai_chat": "full",
     "ai_agent": "full",
     "settings": "full",

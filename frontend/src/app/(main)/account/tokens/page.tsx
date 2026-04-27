@@ -19,7 +19,7 @@ const MODULE_LABELS: Record<ModuleKey, string> = {
   datasets: 'Datasets',
   explore_charts: 'Explore + charts',
   dashboards: 'Dashboards',
-  report_templates: 'Report templates',
+  workboards: 'Workboards',
   ai_chat: 'AI chat',
   ai_agent: 'AI agent',
   settings: 'Settings',
@@ -30,7 +30,7 @@ const PAT_ENABLED_MODULES: ModuleKey[] = [
   'datasets',
   'explore_charts',
   'dashboards',
-  'report_templates',
+  'workboards',
 ];
 
 const LEVEL_ORDER: Record<PermissionLevel, number> = {

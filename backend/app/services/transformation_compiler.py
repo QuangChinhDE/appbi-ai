@@ -112,6 +112,139 @@ def _rewrite_safe_numeric_helpers(expr: str, dialect: str) -> str:
     return rewritten
 
 
+_SQL_EXPR_CONTROL_KEYWORDS = {
+    "AND",
+    "OR",
+    "NOT",
+    "NULL",
+    "TRUE",
+    "FALSE",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "AS",
+    "IS",
+    "IN",
+    "LIKE",
+    "BETWEEN",
+    "ESCAPE",
+}
+
+_SQL_CAST_TARGET_TYPES = {
+    "INT",
+    "INTEGER",
+    "BIGINT",
+    "SMALLINT",
+    "TINYINT",
+    "UBIGINT",
+    "USMALLINT",
+    "UTINYINT",
+    "FLOAT",
+    "DOUBLE",
+    "REAL",
+    "DECIMAL",
+    "NUMERIC",
+    "VARCHAR",
+    "CHAR",
+    "TEXT",
+    "STRING",
+    "BOOLEAN",
+    "BOOL",
+    "DATE",
+    "TIME",
+    "TIMESTAMP",
+    "DATETIME",
+}
+
+
+def _quote_bare_identifiers(expr: str, dialect: str) -> str:
+    """Quote bare field references while preserving functions and SQL control keywords."""
+    result: List[str] = []
+    index = 0
+    length = len(expr)
+
+    while index < length:
+        current = expr[index]
+
+        if current == "'":
+            end = index + 1
+            while end < length:
+                if expr[end] == "'" and end + 1 < length and expr[end + 1] == "'":
+                    end += 2
+                elif expr[end] == "'":
+                    end += 1
+                    break
+                else:
+                    end += 1
+            result.append(expr[index:end])
+            index = end
+            continue
+
+        if current in {'"', '`'}:
+            quote_char = current
+            end = index + 1
+            while end < length:
+                if expr[end] == quote_char and end + 1 < length and expr[end + 1] == quote_char:
+                    end += 2
+                elif expr[end] == quote_char:
+                    end += 1
+                    break
+                else:
+                    end += 1
+            result.append(expr[index:end])
+            index = end
+            continue
+
+        if current.isalpha() or current == "_":
+            end = index + 1
+            while end < length and (expr[end].isalnum() or expr[end] == "_"):
+                end += 1
+
+            token = expr[index:end]
+            upper_token = token.upper()
+
+            next_index = end
+            while next_index < length and expr[next_index].isspace():
+                next_index += 1
+
+            previous_index = index - 1
+            while previous_index >= 0 and expr[previous_index].isspace():
+                previous_index -= 1
+            previous_char = expr[previous_index] if previous_index >= 0 else ""
+
+            if (
+                token.startswith("__CF_COLREF_")
+                or upper_token in _SQL_EXPR_CONTROL_KEYWORDS
+                or (next_index < length and expr[next_index] == "(")
+                or previous_char == "."
+            ):
+                result.append(token)
+            else:
+                result.append(_quote_identifier(token, dialect))
+
+            index = end
+            continue
+
+        result.append(current)
+        index += 1
+
+    return "".join(result)
+
+
+def _restore_cast_type_names(expr: str) -> str:
+    """Undo identifier quoting for CAST target types after bare-field rewriting."""
+
+    def _replace(match: "re.Match[str]") -> str:
+        token = match.group(2)
+        if token.upper() in _SQL_CAST_TARGET_TYPES:
+            return f"AS {token}"
+        return match.group(0)
+
+    return re.sub(r"\bAS\s+([`\"])([A-Za-z_][A-Za-z0-9_]*)\1", _replace, expr, flags=re.IGNORECASE)
+
+
 def _compile_safe_numeric_helper(args: List[str], target_type: str, dialect: str) -> str:
     if not args:
         raise ValueError("SAFE numeric helper requires at least one argument")
@@ -286,6 +419,8 @@ class TransformationCompiler:
             expr = _replace_function_calls(expr, "IF", _compile_if_expression)
         expr = _rewrite_safe_numeric_helpers(expr, dialect)
         expr = expr.replace("!=", "<>")
+        expr = _quote_bare_identifiers(expr, dialect)
+        expr = _restore_cast_type_names(expr)
 
         # Restore extracted column references as properly quoted identifiers so
         # columns with spaces or unusual casing survive DuckDB/BigQuery parsing.

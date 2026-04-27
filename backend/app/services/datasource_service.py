@@ -356,7 +356,213 @@ class DataSourceConnectionService:
         except Exception as e:
             logger.error(f"Query execution failed: {str(e)}")
             raise
-    
+
+    @staticmethod
+    def execute_write(
+        ds_type: str,
+        config: Dict[str, Any],
+        sql_query: str,
+        query_params: list = None,
+        timeout_seconds: int = 30,
+    ) -> Tuple[List[str], List[Dict[str, Any]], int, float]:
+        """
+        Execute a write statement (INSERT/UPDATE/DELETE) against a data source.
+
+        Unlike :meth:`execute_query`, this path does NOT pass through
+        ``validate_select_only`` — write SQL is built by trusted internal
+        callers (see ``workboard_write_service``) using parameterised queries.
+        Callers MUST use parameter placeholders (``%s``) for every value;
+        never interpolate user input into the SQL string.
+
+        Currently supported on PostgreSQL and MySQL only. Other datasource
+        types (Google Sheets, BigQuery) need to use :meth:`execute_write_op`
+        instead — see workboard write service for the row-level abstraction.
+
+        Returns:
+            (columns, rows, rowcount, execution_time_ms)
+
+            ``columns`` and ``rows`` are populated when the SQL ends with a
+            ``RETURNING`` clause (PostgreSQL) — empty lists otherwise.
+        """
+        from app.core.crypto import decrypt_config
+        config = decrypt_config(config)
+
+        start_time = time.time()
+        if ds_type == DataSourceType.POSTGRESQL.value:
+            columns, rows, rowcount = DataSourceConnectionService._execute_postgresql_write(
+                config, sql_query, query_params, timeout_seconds
+            )
+        elif ds_type == DataSourceType.MYSQL.value:
+            columns, rows, rowcount = DataSourceConnectionService._execute_mysql_write(
+                config, sql_query, query_params, timeout_seconds
+            )
+        else:
+            raise ValueError(
+                f"Write operations are not supported on datasource type '{ds_type}'."
+            )
+
+        execution_time_ms = (time.time() - start_time) * 1000
+        return columns, rows, rowcount, execution_time_ms
+
+    @staticmethod
+    def execute_write_op(
+        ds_type: str,
+        config: Dict[str, Any],
+        op: str,                      # "insert" | "update" | "delete"
+        table_name: str,
+        values: Dict[str, Any] | None = None,
+        pk: Dict[str, Any] | None = None,
+    ) -> Tuple[Dict[str, Any], int, float]:
+        """Row-level write that doesn't require SQL strings.
+
+        Designed for datasources that don't speak SQL (Google Sheets) or
+        where the workboard layer prefers a high-level operation over
+        building SQL. Returns ``(row_values, rowcount, ms)``:
+
+          * ``row_values`` echoes the inserted/updated row as a dict;
+          * ``rowcount`` is 1 when the op succeeds, else 0.
+
+        SQL-speaking datasources can still go through this helper —
+        internally it builds the equivalent INSERT/UPDATE/DELETE and routes
+        to :meth:`execute_write`.
+        """
+        from app.core.crypto import decrypt_config
+        cfg = decrypt_config(config)
+
+        start = time.time()
+
+        if ds_type == DataSourceType.GOOGLE_SHEETS.value:
+            from app.services.google_sheets_connector import (
+                create_google_sheets_connector,
+            )
+            connector = create_google_sheets_connector(cfg)
+            spreadsheet_id = cfg.get("spreadsheet_id")
+            if not spreadsheet_id:
+                raise ValueError("Google Sheets datasource missing spreadsheet_id.")
+            # ``table_name`` is the sheet name for Sheets datasources.
+            sheet_name = table_name
+            if op == "insert":
+                row = connector.append_row(spreadsheet_id, sheet_name, values or {})
+                ms = (time.time() - start) * 1000
+                return row, 1, ms
+            if op == "update":
+                if not pk:
+                    raise ValueError("update requires a primary-key dict.")
+                row = connector.update_row_by_pk(
+                    spreadsheet_id, sheet_name, pk, values or {}
+                )
+                ms = (time.time() - start) * 1000
+                return row, 1, ms
+            if op == "delete":
+                if not pk:
+                    raise ValueError("delete requires a primary-key dict.")
+                connector.delete_row_by_pk(spreadsheet_id, sheet_name, pk)
+                ms = (time.time() - start) * 1000
+                return {}, 1, ms
+            raise ValueError(f"Unsupported op '{op}'.")
+
+        # Fall through: build SQL and re-use execute_write for SQL backends.
+        if ds_type not in (
+            DataSourceType.POSTGRESQL.value,
+            DataSourceType.MYSQL.value,
+        ):
+            raise ValueError(
+                f"Write operations are not supported on datasource type '{ds_type}'."
+            )
+
+        # The legacy WorkboardWriteService still builds SQL itself; this
+        # branch exists so future callers can hand off ops directly.
+        raise NotImplementedError(
+            "SQL-backed write_op routing is intentionally not implemented yet — "
+            "callers should keep using execute_write for Postgres/MySQL."
+        )
+
+    @staticmethod
+    def _execute_postgresql_write(
+        config: Dict[str, Any],
+        sql_query: str,
+        query_params: list,
+        timeout_seconds: int,
+    ) -> Tuple[List[str], List[Dict[str, Any]], int]:
+        conn = None
+        cursor = None
+        try:
+            conn = psycopg2.connect(
+                host=config.get("host"),
+                port=config.get("port", 5432),
+                database=config.get("database"),
+                user=config.get("username"),
+                password=config.get("password"),
+                connect_timeout=min(timeout_seconds, 10),
+            )
+            cursor = conn.cursor()
+            cursor.execute(f"SET statement_timeout = {timeout_seconds * 1000}")
+            schema = config.get("schema_name") or config.get("schema")
+            if schema:
+                cursor.execute(f"SET search_path TO {schema}")
+            cursor.execute(sql_query, query_params)
+            rowcount = cursor.rowcount or 0
+            columns: List[str] = []
+            rows: List[Dict[str, Any]] = []
+            if cursor.description:
+                columns = [desc[0] for desc in cursor.description]
+                fetched = cursor.fetchall()
+                rows = [dict(zip(columns, row)) for row in fetched]
+            conn.commit()
+            return columns, rows, rowcount
+        except Exception:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+
+    @staticmethod
+    def _execute_mysql_write(
+        config: Dict[str, Any],
+        sql_query: str,
+        query_params: list,
+        timeout_seconds: int,
+    ) -> Tuple[List[str], List[Dict[str, Any]], int]:
+        conn = None
+        cursor = None
+        try:
+            conn = pymysql.connect(
+                host=config.get("host"),
+                port=config.get("port", 3306),
+                database=config.get("database"),
+                user=config.get("username"),
+                password=config.get("password"),
+                connect_timeout=min(timeout_seconds, 10),
+                read_timeout=timeout_seconds,
+                write_timeout=timeout_seconds,
+                autocommit=False,
+            )
+            cursor = conn.cursor()
+            cursor.execute(sql_query, query_params)
+            rowcount = cursor.rowcount or 0
+            conn.commit()
+            # MySQL does not support RETURNING; callers must SELECT separately.
+            return [], [], rowcount
+        except Exception:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+
     @staticmethod
     def fetch_table_data(
         ds_type: str,

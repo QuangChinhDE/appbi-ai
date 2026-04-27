@@ -26,7 +26,6 @@ from app.core.personal_access_tokens import (
 )
 from app.core.resource_shares import get_highest_share_for_resource, get_highest_share_permissions
 from app.models.personal_access_token import PersonalAccessToken
-from app.models.report_template import ReportTemplate
 from app.models.user import User, UserStatus
 from app.models.resource_share import ResourceType
 from app.models.revoked_token import RevokedToken
@@ -46,7 +45,7 @@ MODULE_KEYS = (
     "datasets",
     "explore_charts",
     "dashboards",
-    "report_templates",
+    "workboards",
     "ai_chat",
     "ai_agent",
     "settings",
@@ -202,9 +201,6 @@ def _normalize_permissions(user: User) -> dict:
         else:
             normalized["ai_agent"] = "none"
 
-    if "report_templates" not in normalized:
-        normalized["report_templates"] = normalized.get("dashboards", "none")
-
     caps = _get_permission_caps(user)
     if caps:
         for module in MODULE_KEYS:
@@ -279,7 +275,7 @@ _MODEL_TO_RESOURCE_TYPE = {
     "Chart": ResourceType.CHART,
     "Dashboard": ResourceType.DASHBOARD,
     "Dataset": ResourceType.DATASET,
-    "ReportTemplate": ResourceType.REPORT_TEMPLATE,
+    "Workboard": ResourceType.WORKBOARD,
 }
 
 _MODEL_TO_MODULE = {
@@ -287,7 +283,7 @@ _MODEL_TO_MODULE = {
     "Chart": "explore_charts",
     "Dashboard": "dashboards",
     "Dataset": "datasets",
-    "ReportTemplate": "report_templates",
+    "Workboard": "workboards",
 }
 
 

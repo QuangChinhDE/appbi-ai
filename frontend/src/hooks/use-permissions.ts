@@ -8,7 +8,7 @@ export type ModuleKey =
   | 'datasets'
   | 'explore_charts'
   | 'dashboards'
-  | 'report_templates'
+  | 'workboards'
   | 'ai_chat'
   | 'ai_agent'
   | 'settings';

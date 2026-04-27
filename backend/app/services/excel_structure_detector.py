@@ -275,6 +275,137 @@ def _extract_explicit_title(row_text: str) -> Optional[str]:
     return None
 
 
+def _effective_row_width(row_infos: Dict[int, _RowInfo]) -> int:
+    non_empty_counts = sorted(
+        info.non_empty_count
+        for info in row_infos.values()
+        if not info.is_empty and info.non_empty_count > 0
+    )
+    if not non_empty_counts:
+        return 0
+    return max(non_empty_counts[len(non_empty_counts) // 2], non_empty_counts[-1] // 2, 4)
+
+
+def _header_min_cells(row_infos: Dict[int, _RowInfo], num_cols: int) -> int:
+    effective_width = _effective_row_width(row_infos)
+    baseline = effective_width if effective_width > 0 else max(num_cols, 4)
+    return max(3, min(14, int(round(baseline * 0.45))))
+
+
+def _data_min_cells(row_infos: Dict[int, _RowInfo], num_cols: int) -> int:
+    effective_width = _effective_row_width(row_infos)
+    baseline = effective_width if effective_width > 0 else max(num_cols, 4)
+    return max(4, min(18, int(round(baseline * 0.45))))
+
+
+def _looks_like_data_anchor(info: _RowInfo, min_cells: int) -> bool:
+    if info.is_empty or info.non_empty_count < min_cells:
+        return False
+    if info.numeric_ratio >= 0.45:
+        return True
+    return info.numeric_count >= max(2, min_cells // 2) and info.non_empty_count >= min_cells
+
+
+def _looks_like_header_candidate(info: _RowInfo, min_cells: int) -> bool:
+    if info.is_empty or info.non_empty_count < min_cells:
+        return False
+    if info.numeric_ratio >= 0.45 or info.max_text_len > 80:
+        return False
+    return True
+
+
+def _best_effort_header_row(
+    row_infos: Dict[int, _RowInfo],
+    min_row: int,
+    max_row: int,
+    num_cols: int,
+) -> Optional[int]:
+    rows = [r for r in sorted(row_infos.keys()) if min_row <= r <= max_row and not row_infos[r].is_empty]
+    if not rows:
+        return None
+
+    header_min = _header_min_cells(row_infos, num_cols)
+    data_min = _data_min_cells(row_infos, num_cols)
+
+    for anchor_index, row_idx in enumerate(rows):
+        anchor_info = row_infos[row_idx]
+        if not _looks_like_data_anchor(anchor_info, data_min):
+            continue
+
+        scored_candidates: List[Tuple[int, int]] = []
+        for prev_index in range(max(0, anchor_index - 4), anchor_index):
+            candidate_row = rows[prev_index]
+            candidate_info = row_infos[candidate_row]
+            if not _looks_like_header_candidate(candidate_info, header_min):
+                continue
+
+            distance = anchor_index - prev_index
+            score = candidate_info.non_empty_count * 4
+            score += candidate_row
+            score -= min(candidate_info.max_merge_span, 12) * 2
+            score -= int(candidate_info.numeric_ratio * 20)
+            score -= max(distance - 1, 0) * 3
+            if candidate_info.max_merge_span <= 2:
+                score += 8
+            if distance == 1:
+                score += 12
+            scored_candidates.append((score, candidate_row))
+
+        if scored_candidates:
+            scored_candidates.sort()
+            return scored_candidates[-1][1]
+
+    top_rows = rows[: min(12, len(rows))]
+    fallback_candidates = [
+        row_idx
+        for row_idx in top_rows
+        if _looks_like_header_candidate(row_infos[row_idx], max(2, header_min - 2))
+    ]
+    if not fallback_candidates:
+        return None
+
+    return max(
+        fallback_candidates,
+        key=lambda row_idx: (
+            row_infos[row_idx].non_empty_count,
+            -row_infos[row_idx].max_merge_span,
+            row_idx,
+        ),
+    )
+
+
+def _best_effort_title_row(
+    row_infos: Dict[int, _RowInfo],
+    min_row: int,
+    max_row: int,
+) -> Optional[int]:
+    candidate_rows = [
+        row_idx
+        for row_idx in range(min_row, max_row + 1)
+        if row_idx in row_infos and not row_infos[row_idx].is_empty
+    ]
+    if not candidate_rows:
+        return None
+
+    explicit_rows = []
+    for row_idx in candidate_rows:
+        row_text = _joined_row_text(row_infos[row_idx])
+        if _extract_explicit_title(row_text):
+            explicit_rows.append(row_idx)
+    if explicit_rows:
+        return explicit_rows[0]
+
+    return max(
+        candidate_rows,
+        key=lambda row_idx: (
+            row_infos[row_idx].max_merge_span * 2 + (1 if row_infos[row_idx].all_bold else 0),
+            -row_infos[row_idx].numeric_ratio,
+            -row_infos[row_idx].non_empty_count,
+            -row_idx,
+        ),
+    )
+
+
 # ── Main analyzer ─────────────────────────────────────────────────────
 
 def analyze_excel_structure(
@@ -328,7 +459,7 @@ def analyze_excel_structure(
 
     # ── Phase 4: Columns from data header row ────────────────────────
     columns, col_indices = _detect_columns(
-        ws, data_header_row, min_col, max_col, anchor_map, hidden_set,
+        ws, data_header_row, min_col, max_col, anchor_map, hidden_set, row_infos,
     )
 
     # ── Phase 5: Data zone + subtotals ───────────────────────────────
@@ -405,34 +536,38 @@ def _find_data_header_row(
     max_row: int,
     num_cols: int,
 ) -> Optional[int]:
-    """Find the data header row — the row where column names live."""
+    """Find the row where the leaf-level column labels live."""
     rows = sorted(row_infos.keys())
+    header_min = _header_min_cells(row_infos, num_cols)
+    data_min = _data_min_cells(row_infos, num_cols)
+
+    anchored_candidate = _best_effort_header_row(row_infos, min_row, max_row, num_cols)
+    if anchored_candidate is not None:
+        return anchored_candidate
 
     for i, r in enumerate(rows):
         info = row_infos[r]
         if info.is_empty:
             continue
 
-        # Candidate: many non-empty short-text cells, few merges, low numeric ratio
         if (
-            info.non_empty_count >= max(3, num_cols * 0.3)
-            and info.max_text_len <= 50
+            info.non_empty_count >= header_min
+            and info.max_text_len <= 80
             and info.numeric_ratio < 0.35
-            and info.max_merge_span <= 2
         ):
-            # Verify: next non-empty row should have higher numeric ratio
             for j in range(i + 1, min(i + 4, len(rows))):
                 next_info = row_infos[rows[j]]
                 if next_info.is_empty:
                     continue
-                if next_info.numeric_ratio > 0.25 or next_info.non_empty_count >= info.non_empty_count * 0.5:
+                if _looks_like_data_anchor(next_info, data_min):
                     return r
+                if _looks_like_header_candidate(next_info, max(2, header_min - 2)):
+                    break
                 break
 
-    # Fallback: first row with many cells
     for r in rows:
         info = row_infos[r]
-        if info.non_empty_count >= max(3, num_cols * 0.4) and not info.is_empty:
+        if info.non_empty_count >= header_min and info.numeric_ratio < 0.45 and not info.is_empty:
             return r
     return None
 
@@ -580,6 +715,26 @@ def _detect_header_zone(
     return header_lines, report_title, report_meta, column_groups_raw
 
 
+def _resolve_header_cell_text(
+    ws: Worksheet,
+    row_idx: int,
+    col_idx: int,
+    anchor_map: Dict,
+) -> str:
+    cell = ws.cell(row=row_idx, column=col_idx)
+    if cell.value not in (None, ""):
+        return str(cell.value).strip()
+
+    for (anchor_row, anchor_col), (_, col_span) in anchor_map.items():
+        if anchor_row != row_idx:
+            continue
+        if anchor_col <= col_idx <= anchor_col + col_span - 1:
+            anchor_cell = ws.cell(row=anchor_row, column=anchor_col)
+            if anchor_cell.value not in (None, ""):
+                return str(anchor_cell.value).strip()
+    return ""
+
+
 # ── Phase 4: Column detection ────────────────────────────────────────
 
 def _detect_columns(
@@ -589,20 +744,40 @@ def _detect_columns(
     max_col: int,
     anchor_map: Dict,
     hidden_set: set,
+    row_infos: Optional[Dict[int, _RowInfo]] = None,
 ) -> Tuple[List[Dict], List[int]]:
     """Extract column definitions from the data header row."""
     columns: List[Dict] = []
     col_indices: List[int] = []  # 1-based Excel column indices
 
     for c in range(min_col, max_col + 1):
-        if (data_header_row, c) in hidden_set:
-            continue
-        cell = ws.cell(row=data_header_row, column=c)
-        text = str(cell.value).strip() if cell.value is not None else ""
-        if not text:
+        header_parts: List[str] = []
+        for header_row in range(max(1, data_header_row - 3), data_header_row + 1):
+            if row_infos is not None:
+                row_info = row_infos.get(header_row)
+                if row_info is None or row_info.is_empty or row_info.numeric_ratio >= 0.45:
+                    continue
+                if header_row < data_header_row and row_info.non_empty_count <= 2 and row_info.max_merge_span >= 4:
+                    continue
+
+            text = _resolve_header_cell_text(ws, header_row, c, anchor_map).strip()
+            if not text or _is_numeric_text(text):
+                continue
+            if not header_parts or header_parts[-1] != text:
+                header_parts.append(text)
+
+        if not header_parts and (data_header_row, c) in hidden_set:
             continue
 
-        key = _to_snake_case(text)
+        display_label = header_parts[-1] if header_parts else ""
+        if not display_label:
+            cell = ws.cell(row=data_header_row, column=c)
+            display_label = str(cell.value).strip() if cell.value is not None else ""
+        if not display_label:
+            continue
+
+        key_source = " / ".join(header_parts) if header_parts else display_label
+        key = _to_snake_case(key_source)
         # Ensure unique keys
         existing_keys = [col["key"] for col in columns]
         if key in existing_keys:
@@ -613,7 +788,7 @@ def _detect_columns(
         width = _col_width_px(ws, c)
 
         columns.append({
-            "label": text,
+            "label": display_label,
             "key": key,
             "inferred_type": "text",
             "width_px": round(width, 1),
@@ -1409,7 +1584,7 @@ def extract_excel_import_sheet_data(
         if data_header_row is None:
             return sheet_name, {"columns": [], "rows": []}
 
-        columns, col_indices = _detect_columns(ws, data_header_row, min_col, max_col, anchor_map, hidden_set)
+        columns, col_indices = _detect_columns(ws, data_header_row, min_col, max_col, anchor_map, hidden_set, row_infos)
         data_start = data_header_row + 1
         data_end, _, _, _ = _detect_data_zone(ws, row_infos, data_start, max_row, columns, min_col)
         _enrich_columns_with_data(ws, columns, col_indices, data_start, data_end)
@@ -1548,30 +1723,75 @@ def _minimal_result(
     num_cols: int,
 ) -> Dict[str, Any]:
     """Return a minimal result when structure detection fails."""
-    # Use first non-empty row as columns
-    columns = []
-    col_indices = []
-    for r in range(min_row, max_row + 1):
-        info = row_infos.get(r)
-        if info and not info.is_empty:
-            for c in range(min_col, max_col + 1):
-                cell = ws.cell(row=r, column=c)
-                text = str(cell.value).strip() if cell.value is not None else ""
-                if text:
-                    key = _to_snake_case(text) or f"col_{len(columns)+1}"
-                    columns.append({
-                        "label": text, "key": key, "inferred_type": "text",
-                        "width_px": 120, "align": "left", "format": "text",
-                        "suffix": None, "bold": False, "highlight_negative": False,
-                        "source_col_idx": c,
-                    })
-                    col_indices.append(c)
-            break
+    anchor_map, hidden_set = _build_merge_map(ws)
+    header_row = _best_effort_header_row(row_infos, min_row, max_row, num_cols)
+    columns: List[Dict[str, Any]] = []
+    col_indices: List[int] = []
+    header_lines: List[Dict[str, Any]] = []
+    report_title = ""
+    report_meta: Optional[str] = None
+    data_preview: List[Dict[str, Any]] = []
+    total_data_rows = 0
+
+    if header_row is not None:
+        columns, col_indices = _detect_columns(ws, header_row, min_col, max_col, anchor_map, hidden_set, row_infos)
+        if columns:
+            data_start = header_row + 1
+            data_end, _, _, _ = _detect_data_zone(ws, row_infos, data_start, max_row, columns, min_col)
+            _enrich_columns_with_data(ws, columns, col_indices, data_start, data_end)
+            data_preview = _extract_data_preview(ws, columns, col_indices, data_start, min(data_start + 4, data_end))
+            total_data_rows = max(0, data_end - data_start + 1)
+
+        title_row = _best_effort_title_row(row_infos, min_row, header_row - 1) if header_row > min_row else None
+        if title_row is not None:
+            title_text = _joined_row_text(row_infos[title_row])
+            report_title = _extract_explicit_title(title_text) or title_text
+
+        for r in range(min_row, header_row):
+            info = row_infos.get(r)
+            if info is None or info.is_empty or info.numeric_ratio >= 0.45:
+                continue
+
+            row_text = _joined_row_text(info)
+            if not row_text:
+                continue
+            if title_row is not None and r == title_row:
+                continue
+
+            if report_meta is None and _contains_keyword(info.texts, _META_KEYWORDS):
+                report_meta = row_text
+                continue
+
+            header_lines.append({
+                "text": row_text,
+                "right_text": None,
+                "align": "left",
+                "bold": info.all_bold,
+                "font_size": "sm" if info.non_empty_count <= 2 else "base",
+            })
+
+    if not columns:
+        for r in range(min_row, max_row + 1):
+            info = row_infos.get(r)
+            if info and not info.is_empty:
+                for c in range(min_col, max_col + 1):
+                    cell = ws.cell(row=r, column=c)
+                    text = str(cell.value).strip() if cell.value is not None else ""
+                    if text:
+                        key = _to_snake_case(text) or f"col_{len(columns)+1}"
+                        columns.append({
+                            "label": text, "key": key, "inferred_type": "text",
+                            "width_px": 120, "align": "left", "format": "text",
+                            "suffix": None, "bold": False, "highlight_negative": False,
+                            "source_col_idx": c,
+                        })
+                        col_indices.append(c)
+                break
 
     return {
-        "header_lines": [],
-        "report_title": "",
-        "report_meta": None,
+        "header_lines": header_lines,
+        "report_title": report_title,
+        "report_meta": report_meta,
         "column_groups": [],
         "columns": columns,
         "group_by_column": None,
@@ -1584,12 +1804,16 @@ def _minimal_result(
                   "subtotal_bg": "#dbeafe", "subtotal_text": "#1e40af",
                   "accent_color": "#073763"},
         "recommended_table_schema": [
-            {"name": c["key"], "display_name": c["label"], "type": "string"}
+            {
+                "name": c["key"],
+                "display_name": c["label"],
+                "type": "number" if c["format"] in ("integer", "decimal", "percentage") else "string",
+            }
             for c in columns
         ],
-        "data_preview": [],
-        "total_data_rows": 0,
-        "confidence": 0.1,
+        "data_preview": data_preview,
+        "total_data_rows": total_data_rows,
+        "confidence": 0.25 if columns else 0.1,
         "sheet_names": all_sheet_names,
         "analyzed_sheet": sheet_name,
     }

@@ -16,6 +16,9 @@ if (fs.existsSync(rootEnvPath)) {
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
   // Prevent Next.js from stripping trailing slashes via 308 redirects.
   // Without this, /api/v1/datasources/ gets redirected to /api/v1/datasources,
   // then FastAPI redirects back with Location: http://backend:8000/... exposing

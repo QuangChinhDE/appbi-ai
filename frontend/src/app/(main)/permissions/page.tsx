@@ -71,7 +71,7 @@ const MODULE_LABELS: Record<string, string> = {
   datasets:          'Datasets',
   explore_charts:    'Explore + charts',
   dashboards:        'Dashboards',
-  report_templates:  'Report templates',
+  workboards:        'Workboards',
   ai_chat:           'AI chat',
   ai_agent:          'AI agent',
   settings:          'Settings',

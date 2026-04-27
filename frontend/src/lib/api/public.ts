@@ -12,6 +12,10 @@
 import axios from 'axios';
 import type { Dashboard } from '@/types/api';
 import type { BaseFilter } from '@/lib/filters';
+import type {
+  WorkboardPublicPayload,
+  WorkboardWriteResult,
+} from '@/lib/api/workboards';
 
 // NEXT_PUBLIC_API_URL is baked as '/api/v1' (relative) so it works on any domain.
 // Next.js rewrites or nginx proxy the requests to the backend.
@@ -81,6 +85,36 @@ export const publicDashboardApi = {
   },
 };
 
+export const publicWorkboardApi = {
+  auth: async (
+    token: string,
+    password: string,
+  ): Promise<{ session_token: string; expires_in: number }> => {
+    const res = await publicClient.post(`/public/workboards/${token}/auth`, { password });
+    return res.data;
+  },
+
+  get: async (token: string, sessionToken?: string): Promise<WorkboardPublicPayload> => {
+    const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
+    const res = await publicClient.get(`/public/workboards/${token}`, { headers });
+    return res.data;
+  },
+
+  submit: async (
+    token: string,
+    values: Record<string, unknown>,
+    sessionToken?: string,
+  ): Promise<WorkboardWriteResult> => {
+    const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
+    const res = await publicClient.post(
+      `/public/workboards/${token}/submit`,
+      { values },
+      { headers },
+    );
+    return res.data;
+  },
+};
+
 // ── Session storage helpers ──────────────────────────────────────────────────
 // Sessions are stored per-link in sessionStorage so they are scoped to the tab
 // and automatically cleared when the browser tab is closed.
@@ -139,4 +173,3 @@ export function publicSessionRemainingSeconds(linkToken: string): number {
     return 0;
   }
 }
-

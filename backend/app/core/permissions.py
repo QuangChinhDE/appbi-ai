@@ -35,15 +35,13 @@ _RESOURCE_TO_MODULE: Dict[str, str] = {
     "dataset": "datasets",
     "datasource": "data_sources",
     "chat_session": "ai_chat",
-    "report_template": "report_templates",
+    "workboard": "workboards",
 }
 
 
 def get_user_module_permission(user: User, module: str) -> str:
     """Return effective permission level string for a user on a module."""
     perms: dict = user.permissions or {}
-    if module == "report_templates" and "report_templates" not in perms:
-        return perms.get("dashboards", "none")
     return perms.get(module, "none")
 
 

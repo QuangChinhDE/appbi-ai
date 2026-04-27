@@ -35,7 +35,6 @@ from app.services.dashboard_service import DEFAULT_DASHBOARD_PAGE
 from app.services.dataset_crud import DatasetCRUDService
 from app.services.datasource_crud_service import DataSourceCRUDService
 from app.services.llm_client import LLMClient
-from app.services.template_import_ai_service import build_ai_assist_meta
 
 logger = get_logger(__name__)
 
@@ -69,6 +68,25 @@ _STYLE_PAIR_RE = re.compile(r"\s*([^:]+)\s*:\s*([^;]+)")
 _SNAKE_RE = re.compile(r"[^a-z0-9]+")
 _WHITESPACE_RE = re.compile(r"\s+")
 _FIELD_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def build_ai_assist_meta(
+    *,
+    requested: bool,
+    applied: bool,
+    status: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    message: Optional[str] = None,
+) -> Dict[str, Any]:
+    return {
+        "requested": requested,
+        "applied": applied,
+        "status": status,
+        "provider": provider,
+        "model": model,
+        "message": message,
+    }
 
 
 def _normalize_text(value: Any, *, max_len: int | None = None) -> str:
@@ -1422,8 +1440,8 @@ def _complete_json_with_import_provider(
     system_prompt: str,
     max_tokens: int = 1800,
 ) -> Optional[Dict[str, Any]]:
-    provider = settings.template_import_ai_provider
-    model = settings.template_import_ai_model
+    provider = settings.html_import_ai_provider
+    model = settings.html_import_ai_model
     if provider == "unavailable":
         return None
 
@@ -1462,7 +1480,7 @@ def _complete_json_with_import_provider(
                 return LLMClient.complete_json(
                     prompt,
                     system=system_prompt,
-                    model=settings.template_import_openrouter_model,
+                    model=settings.html_import_openrouter_model,
                     max_tokens=max_tokens,
                 )
             return None
@@ -1513,7 +1531,7 @@ def _ai_chart_plans(
     all_source_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Tuple[Optional[List[Dict[str, Any]]], List[Dict[str, Any]], Dict[str, Any]]:
     """Return ``(charts, calculated_fields, ai_meta)``."""
-    if settings.template_import_ai_provider == "unavailable":
+    if settings.html_import_ai_provider == "unavailable":
         return None, [], build_ai_assist_meta(
             requested=True,
             applied=False,
@@ -1666,8 +1684,8 @@ def _ai_chart_plans(
             requested=True,
             applied=False,
             status="failed",
-            provider=settings.template_import_ai_provider,
-            model=settings.template_import_ai_model,
+            provider=settings.html_import_ai_provider,
+            model=settings.html_import_ai_model,
             message="AI provider did not return a usable chart plan payload.",
         )
 
@@ -1677,8 +1695,8 @@ def _ai_chart_plans(
             requested=True,
             applied=False,
             status="failed",
-            provider=settings.template_import_ai_provider,
-            model=settings.template_import_ai_model,
+            provider=settings.html_import_ai_provider,
+            model=settings.html_import_ai_model,
             message="AI payload did not include a charts array.",
         )
 
@@ -1691,8 +1709,8 @@ def _ai_chart_plans(
         requested=True,
         applied=True,
         status="applied",
-        provider=settings.template_import_ai_provider,
-        model=settings.template_import_ai_model,
+        provider=settings.html_import_ai_provider,
+        model=settings.html_import_ai_model,
         message="AI refined HTML block classification, field mapping, and calculated fields inside the native dashboard/chart contract.",
     )
 
@@ -3594,7 +3612,17 @@ def build_dashboard_from_import(
             )
         )
 
-    import_page_name = _normalize_text(analysis.get("document_title") or dashboard_name or analysis.get("suggested_dashboard_name"), max_len=80) or "Imported Page"
+    ai_meta = analysis.get("ai_meta") if isinstance(analysis.get("ai_meta"), dict) else {}
+    import_page_name = (
+        _normalize_text(ai_meta.get("default_page_name"), max_len=80)
+        or _normalize_text(
+            analysis.get("document_title")
+            or dashboard_name
+            or analysis.get("suggested_dashboard_name"),
+            max_len=80,
+        )
+        or "Imported Page"
+    )
     dashboard_obj: Dashboard
     page_id: str
 
@@ -3815,13 +3843,17 @@ def validate_chart_plans(
     calculated_fields: List[Dict[str, Any]],
     derived_tables: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
-    """Dry-run each chart plan's query against DuckDB and return per-block results.
+    """Dry-run each chart plan's query against the dataset datasource and return per-block results.
 
     Returns a list of ``{"block_id": str, "status": "ok"|"error", "error": str|None}``.
     """
     from app.models.models import DataSource
     from app.services.datasource_service import DataSourceConnectionService
-    from app.services.live_query_service import build_live_agg_query, build_live_base_query_plan
+    from app.services.live_query_service import (
+        _dialect_for_ds_type,
+        build_live_agg_query,
+        build_live_base_query_plan,
+    )
 
     tables = (
         db.query(DatasetTable)
@@ -3848,6 +3880,7 @@ def validate_chart_plans(
         ]
 
     ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+    dialect = _dialect_for_ds_type(ds_type)
 
     prepared_plans: List[Dict[str, Any]] = [dict(plan) for plan in (chart_plans or [])]
     if derived_tables:
@@ -3913,7 +3946,7 @@ def validate_chart_plans(
                 base_table = f"({custom_sql.rstrip(';').strip()}) AS _appbi_live"
                 active_role_config = custom_role_config or role_config
                 agg_sql, _ = build_live_agg_query(
-                    base_table, chart_type, active_role_config, [], "duckdb", limit_override=5,
+                    base_table, chart_type, active_role_config, [], dialect, limit_override=5,
                 )
                 logger.info(
                     "validate_chart_plan (custom SQL) block_id=%s table=%s agg_sql=%s",
@@ -3924,7 +3957,7 @@ def validate_chart_plans(
                 base_plan = build_live_base_query_plan(datasource, virtual)
                 base_table = f"({base_plan.sql}) AS _appbi_live"
                 agg_sql, _ = build_live_agg_query(
-                    base_table, chart_type, role_config, [], "duckdb", limit_override=5,
+                    base_table, chart_type, role_config, [], dialect, limit_override=5,
                 )
                 logger.info(
                     "validate_chart_plan block_id=%s source_key=%s table=%s base_sql=%s agg_sql=%s",
@@ -3956,7 +3989,7 @@ def ai_fix_chart_plan(
 
     Returns the corrected plan dict (same shape) or ``None`` on failure.
     """
-    if settings.template_import_ai_provider == "unavailable":
+    if settings.html_import_ai_provider == "unavailable":
         return None
 
     # Build column inventory — include ALL tables so AI can reassign source_key

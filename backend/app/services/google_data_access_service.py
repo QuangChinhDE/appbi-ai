@@ -30,7 +30,9 @@ GOOGLE_DATA_ACCESS_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/bigquery",
-    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    # Read+write scope so workboard mini-apps can append/update/delete rows
+    # in Google Sheets, not just read them.
+    "https://www.googleapis.com/auth/spreadsheets",
 ]
 
 _GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"

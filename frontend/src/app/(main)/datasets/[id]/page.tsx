@@ -10,6 +10,7 @@ import {
   Search,
   Calendar,
   Database,
+  Download,
   RefreshCw,
   ChevronLeft,
   ChevronDown,
@@ -30,6 +31,7 @@ import {
   useUpdateDataset,
   useUpdateTable,
   useRemoveTable,
+  downloadDatasetTableExcel,
   type CalendarDimensionSettings,
   type DatasetTable,
 } from '@/hooks/use-datasets';
@@ -440,6 +442,7 @@ export default function DatasetDetailPage() {
   const [isDeletingTable, setIsDeletingTable] = useState(false);
   const [selectedView, setSelectedView] = useState<DatasetModelView | null>(null);
   const [activeTab, setActiveTabState] = useState<DatasetDetailTab>(() => resolveDatasetDetailTab(paramTab));
+  const [isExportingExcel, setIsExportingExcel] = useState(false);
 
   // Tab routing via searchParam — ?tab=tables|quality|model
   // backward compat: ?tab=catalog → quality
@@ -732,6 +735,36 @@ export default function DatasetDetailPage() {
   const selectedTableIsGenerated = isGeneratedCalendarTable(selectedTable as DatasetTable | undefined);
   const selectedTableTitle = getTablePrimaryName(selectedTable);
   const selectedTableSubtitle = getTableSecondaryName(selectedTable);
+
+  const handleExportExcel = async () => {
+    if (!datasetId || !selectedTableId || !selectedTable) return;
+
+    setIsExportingExcel(true);
+    try {
+      const result = await downloadDatasetTableExcel(datasetId, selectedTableId);
+      const objectUrl = window.URL.createObjectURL(result.blob);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = result.filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(objectUrl);
+
+      if (result.truncated) {
+        const rowsLabel = typeof result.rowsWritten === 'number'
+          ? result.rowsWritten.toLocaleString()
+          : 'the available';
+        toast.success(`Exported ${rowsLabel} rows to Excel. File stopped at the Excel row limit.`);
+      } else {
+        toast.success(`Exported ${selectedTableTitle || 'table'} to Excel.`);
+      }
+    } catch (error: any) {
+      toast.error(extractDatasetErrorMessage(error, 'Cannot export table to Excel'));
+    } finally {
+      setIsExportingExcel(false);
+    }
+  };
 
   const openCalendarModal = () => {
     if (!calendarEnabled && !canCreateCalendarDimension) {
@@ -1036,9 +1069,20 @@ export default function DatasetDetailPage() {
         <div className="flex-1" />
 
         {/* Table-level actions — chỉ hiện ở tab Tables khi có table được chọn */}
-        {activeTab === 'tables' && selectedTable && !selectedTableIsGenerated && (
+        {activeTab === 'tables' && selectedTable && (
           <div className="flex items-center gap-1">
-            {resPerms.canEdit && (
+            <button
+              onClick={handleExportExcel}
+              disabled={isExportingExcel}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2 rounded transition-colors disabled:opacity-40"
+            >
+              {isExportingExcel ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+              Export Excel
+            </button>
+            {resPerms.canEdit && !selectedTableIsGenerated && (
+              <div className="w-px h-4 bg-surface-3 mx-1" />
+            )}
+            {resPerms.canEdit && !selectedTableIsGenerated && (
               <button
                 onClick={() => setIsManageColumnsOpen(true)}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2 rounded transition-colors"
@@ -1047,7 +1091,7 @@ export default function DatasetDetailPage() {
                 Columns
               </button>
             )}
-            {resPerms.canEdit && (
+            {resPerms.canEdit && !selectedTableIsGenerated && (
               <button
                 onClick={() => setIsAddColumnModalOpen(true)}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-white bg-brand hover:bg-brand-hover rounded transition-colors"
