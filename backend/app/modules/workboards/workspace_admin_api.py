@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.dependencies import require_permission
 from app.models.user import User
-from app.modules.workboards.models import WorkboardWorkspace
+from app.modules.workboards.models import Workboard, WorkboardWorkspace
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
@@ -176,6 +176,7 @@ def rotate_token(
 class PreviewSessionRequest(BaseModel):
     username: Optional[str] = Field(default=None, max_length=255)
     role: Optional[str] = Field(default=None, max_length=64)
+    workboard_id: Optional[int] = Field(default=None, gt=0)
 
 
 class PreviewSessionResponse(BaseModel):
@@ -246,7 +247,24 @@ def preview_session(
         row = match
         username = str(row.get(cfg.username_column))
 
-    token, ttl = app_user_service.create_session_token(ws, username, cfg, row)
+    extra_claims: Dict[str, Any] = {}
+    if body.workboard_id is not None:
+        exists = (
+            db.query(Workboard.id)
+            .filter(Workboard.id == body.workboard_id)
+            .first()
+        )
+        if exists is None:
+            raise HTTPException(status_code=404, detail="Workboard not found.")
+        extra_claims["preview_workboard_id"] = body.workboard_id
+
+    token, ttl = app_user_service.create_session_token(
+        ws,
+        username,
+        cfg,
+        row,
+        extra_claims=extra_claims or None,
+    )
     import hashlib
 
     cookie_name = (
@@ -263,7 +281,11 @@ def preview_session(
     )
     return PreviewSessionResponse(
         ok=True,
-        preview_url=f"/ws/{ws.token}/workboards/{workspace_id}",
+        preview_url=(
+            f"/ws/{ws.token}/workboards/{body.workboard_id}"
+            if body.workboard_id is not None
+            else f"/ws/{ws.token}"
+        ),
         workspace_token=ws.token,
         cookie_name=cookie_name,
         expires_in=ttl,

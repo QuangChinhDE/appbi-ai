@@ -19,7 +19,6 @@ import {
   CheckCircle2,
   ExternalLink,
   Loader2,
-  RefreshCw,
   Smartphone,
   Tablet,
   Laptop,
@@ -36,7 +35,30 @@ interface WorkspaceLite {
   slug: string;
   name: string;
   token: string;
+  app_users_config?: Record<string, unknown> | null;
   menu_config: Array<{ workboard_slug: string }>;
+}
+
+function isWorkboardLinked(ws: WorkspaceLite, slug: string) {
+  return (ws.menu_config || []).some((m) => m.workboard_slug === slug);
+}
+
+function hasAppUsersConfig(ws: WorkspaceLite) {
+  return Boolean(ws.app_users_config && Object.keys(ws.app_users_config).length > 0);
+}
+
+function sortPreviewWorkspaces(data: WorkspaceLite[], slug: string) {
+  return [...data].sort((a, b) => {
+    const score = (ws: WorkspaceLite) =>
+      (hasAppUsersConfig(ws) ? 4 : 0) + (isWorkboardLinked(ws, slug) ? 1 : 0);
+    return score(b) - score(a);
+  });
+}
+
+function getApiErrorMessage(error: unknown, fallback: string) {
+  const maybeApiError = error as { response?: { data?: { detail?: unknown } } };
+  const detail = maybeApiError.response?.data?.detail;
+  return typeof detail === 'string' ? detail : fallback;
 }
 
 const DEMO_ACCOUNTS = [
@@ -87,8 +109,9 @@ export default function BuilderLivePreview({
   const [iframeKey, setIframeKey] = useState(0);
   const [loadingWs, setLoadingWs] = useState(true);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const workboardSlug = workboard.slug ?? '';
 
-  // ── Resolve which workspace bundles this workboard ────────────────
+  // ── Resolve which workspace can host this preview ────────────────
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -96,13 +119,10 @@ export default function BuilderLivePreview({
         const r = await apiClient.get<WorkspaceLite[]>('/workspaces');
         const data = r.data || [];
         if (!alive) return;
-        const matched = data.filter((ws) =>
-          (ws.menu_config || []).some(
-            (m) => m.workboard_slug === workboard.slug,
-          ),
-        );
-        setWorkspaces(matched);
-        if (matched.length > 0) setActiveWs(matched[0]);
+        const ordered = sortPreviewWorkspaces(data, workboardSlug);
+        setWorkspaces(ordered);
+        setActiveWs(ordered[0] ?? null);
+        setSessionReady(false);
       } catch {
         // non-fatal
       } finally {
@@ -112,7 +132,7 @@ export default function BuilderLivePreview({
     return () => {
       alive = false;
     };
-  }, [workboard.slug]);
+  }, [workboard.id, workboardSlug]);
 
   // ── Mint preview-session cookie ──────────────────────────────────
   const startSession = async () => {
@@ -122,11 +142,12 @@ export default function BuilderLivePreview({
     try {
       await apiClient.post(`/workspaces/${activeWs.id}/preview-session`, {
         username: previewUser,
+        workboard_id: workboard.id,
       });
       setSessionReady(true);
       setIframeKey((k) => k + 1);
-    } catch (err: any) {
-      setSessionError(err?.response?.data?.detail || 'Không tạo được phiên preview.');
+    } catch (err: unknown) {
+      setSessionError(getApiErrorMessage(err, 'Không tạo được phiên preview.'));
     } finally {
       setSessionLoading(false);
     }
@@ -223,6 +244,27 @@ export default function BuilderLivePreview({
               </option>
             ))}
           </select>
+          {workspaces.length > 1 && (
+            <select
+              value={activeWs?.id ?? ''}
+              onChange={(e) => {
+                const next = workspaces.find((ws) => ws.id === Number(e.target.value));
+                if (next) {
+                  setActiveWs(next);
+                  setSessionReady(false);
+                }
+              }}
+              className="max-w-[180px] rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny"
+              title="Workspace preview"
+            >
+              {workspaces.map((ws) => (
+                <option key={ws.id} value={ws.id}>
+                  {ws.name}
+                  {isWorkboardLinked(ws, workboardSlug) ? '' : ' (preview)'}
+                </option>
+              ))}
+            </select>
+          )}
           <div className="flex items-center gap-0.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-0.5">
             {(['mobile', 'tablet', 'desktop'] as DeviceFrame[]).map((d) => {
               const Icon = d === 'mobile' ? Smartphone : d === 'tablet' ? Tablet : Laptop;
@@ -273,9 +315,8 @@ export default function BuilderLivePreview({
         ) : workspaces.length === 0 ? (
           <Centered>
             <div className="max-w-xs rounded-md border border-warning/30 bg-warning/10 p-3 text-tiny text-warning">
-              Workboard này chưa được gắn vào workspace nào. Tạo workspace
-              + thêm slug <code className="bg-surface-2 px-1">{workboard.slug}</code>{' '}
-              vào menu_config để xem live preview.
+              Chưa có workspace public nào để chạy live preview. Tạo workspace
+              có app_users_config rồi mở lại preview.
             </div>
           </Centered>
         ) : sessionError ? (

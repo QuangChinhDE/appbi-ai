@@ -1,7 +1,7 @@
 /**
  * WorkboardPreview — split-screen iframe preview of the public mini-app.
  *
- * Picks any workspace that bundles this workboard, asks the backend to
+ * Picks a workspace that can host this workboard preview, asks the backend to
  * mint a "preview session" cookie under a chosen role/username, then
  * embeds the public ``/ws/{token}/workboards/{id}`` URL in an iframe.
  *
@@ -27,7 +27,30 @@ interface WorkspaceLite {
   slug: string;
   name: string;
   token: string;
-  app_users_config: { role_column?: string | null; table_id?: number | null };
+  app_users_config?: Record<string, unknown> | null;
+  menu_config: Array<{ workboard_slug: string }>;
+}
+
+function isWorkboardLinked(ws: WorkspaceLite, slug: string) {
+  return (ws.menu_config || []).some((m) => m.workboard_slug === slug);
+}
+
+function hasAppUsersConfig(ws: WorkspaceLite) {
+  return Boolean(ws.app_users_config && Object.keys(ws.app_users_config).length > 0);
+}
+
+function sortPreviewWorkspaces(data: WorkspaceLite[], slug: string) {
+  return [...data].sort((a, b) => {
+    const score = (ws: WorkspaceLite) =>
+      (hasAppUsersConfig(ws) ? 4 : 0) + (isWorkboardLinked(ws, slug) ? 1 : 0);
+    return score(b) - score(a);
+  });
+}
+
+function getApiErrorMessage(error: unknown, fallback: string) {
+  const maybeApiError = error as { response?: { data?: { detail?: unknown } } };
+  const detail = maybeApiError.response?.data?.detail;
+  return typeof detail === 'string' ? detail : fallback;
 }
 
 const DEMO_ACCOUNTS: Array<{ u: string; p: string; r: string; t: string }> = [
@@ -49,6 +72,7 @@ export default function WorkboardPreview({ workboard }: Props) {
   const [sessionLoading, setSessionLoading] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const workboardSlug = workboard.slug ?? '';
 
   useEffect(() => {
     let alive = true;
@@ -57,14 +81,12 @@ export default function WorkboardPreview({ workboard }: Props) {
         const r = await apiClient.get<WorkspaceLite[]>('/workspaces');
         const data = r.data || [];
         if (!alive) return;
-        const slug = workboard.slug;
-        const matched = data.filter((w: any) =>
-          (w.menu_config || []).some((m: any) => m.workboard_slug === slug),
-        );
-        setWorkspaces(matched);
-        if (matched.length > 0) setActiveWorkspace(matched[0]);
-      } catch (e: any) {
-        setError(e?.response?.data?.detail || 'Không tải được workspaces.');
+        const ordered = sortPreviewWorkspaces(data, workboardSlug);
+        setWorkspaces(ordered);
+        setActiveWorkspace(ordered[0] ?? null);
+        setSessionReady(false);
+      } catch (e: unknown) {
+        setError(getApiErrorMessage(e, 'Không tải được workspaces.'));
       } finally {
         if (alive) setLoading(false);
       }
@@ -72,7 +94,7 @@ export default function WorkboardPreview({ workboard }: Props) {
     return () => {
       alive = false;
     };
-  }, [workboard.slug]);
+  }, [workboard.id, workboardSlug]);
 
   const startPreview = useCallback(async () => {
     if (!activeWorkspace) return;
@@ -81,16 +103,16 @@ export default function WorkboardPreview({ workboard }: Props) {
     try {
       await apiClient.post(
         `/workspaces/${activeWorkspace.id}/preview-session`,
-        { username: previewUsername },
+        { username: previewUsername, workboard_id: workboard.id },
       );
       setSessionReady(true);
       setIframeKey((k) => k + 1);
-    } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Không tạo được preview session.');
+    } catch (e: unknown) {
+      setError(getApiErrorMessage(e, 'Không tạo được preview session.'));
     } finally {
       setSessionLoading(false);
     }
-  }, [activeWorkspace, previewUsername]);
+  }, [activeWorkspace, previewUsername, workboard.id]);
 
   const previewUrl = useMemo(() => {
     if (!activeWorkspace) return null;
@@ -110,13 +132,10 @@ export default function WorkboardPreview({ workboard }: Props) {
       <div className="mx-auto max-w-2xl p-8">
         <div className="rounded-xl border border-warning/30 bg-warning/10 p-5 text-caption text-warning">
           <h2 className="mb-1 text-body font-emphasis">
-            Workboard này chưa được gắn vào workspace nào
+            Chưa có workspace public để chạy preview
           </h2>
           <p>
-            Tạo 1 workspace public + thêm slug{' '}
-            <code className="bg-surface-2 px-1">{workboard.slug}</code> vào
-            <code className="mx-1 bg-surface-2 px-1">menu_config</code> để
-            preview live.
+            Tạo workspace có app_users_config rồi mở lại preview.
           </p>
         </div>
       </div>
@@ -143,6 +162,7 @@ export default function WorkboardPreview({ workboard }: Props) {
           {workspaces.map((w) => (
             <option key={w.id} value={w.id}>
               {w.name}
+              {isWorkboardLinked(w, workboardSlug) ? '' : ' (preview)'}
             </option>
           ))}
         </select>
@@ -229,7 +249,7 @@ export default function WorkboardPreview({ workboard }: Props) {
             <div>
               <UserCheck className="mx-auto mb-3 h-8 w-8 text-text-tertiary" />
               <p className="text-body text-text-secondary">
-                Chọn user + bấm "Bắt đầu preview" để mở mini-app trong iframe
+                Chọn user + bấm Bắt đầu preview để mở mini-app trong iframe
               </p>
             </div>
           </div>

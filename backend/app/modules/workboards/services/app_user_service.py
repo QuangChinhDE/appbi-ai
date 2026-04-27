@@ -226,6 +226,8 @@ def create_session_token(
     username: str,
     cfg: AppUsersConfig,
     row: Dict[str, Any],
+    *,
+    extra_claims: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, int]:
     ttl = max(int(workspace.session_ttl_seconds or 28800), 60)
     now = datetime.now(timezone.utc)
@@ -237,6 +239,10 @@ def create_session_token(
         "iat": now,
         "app_user": _build_app_user_payload(username, cfg, row),
     }
+    if extra_claims:
+        for key, value in extra_claims.items():
+            if key not in payload:
+                payload[key] = value
     token = jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
     return token, ttl
 

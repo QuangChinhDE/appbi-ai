@@ -569,7 +569,7 @@ if settings.WORKBOARDS_ENABLED:
             )
         return ws
 
-    def _read_app_user_from_request(
+    def _read_workspace_session_from_request(
         request: Request,
         workspace,
     ) -> dict | None:
@@ -582,6 +582,16 @@ if settings.WORKBOARDS_ENABLED:
         if not token:
             return None
         data = app_user_service.decode_session_token(token, workspace.token)
+        if not data:
+            return None
+        return data
+
+
+    def _read_app_user_from_request(
+        request: Request,
+        workspace,
+    ) -> dict | None:
+        data = _read_workspace_session_from_request(request, workspace)
         if not data:
             return None
         return data.get("app_user") or {}
@@ -748,11 +758,15 @@ if settings.WORKBOARDS_ENABLED:
         db: Session,
         workspace,
         workboard_id: int,
+        *,
+        request: Request | None = None,
     ):
-        """Make sure the requested workboard is part of the workspace's menu.
+        """Make sure the requested workboard is visible in this workspace.
 
         Otherwise an authenticated app user could brute-force IDs to read
-        any workboard on the deployment.
+        any workboard on the deployment. Admin preview sessions may carry a
+        one-workboard bypass so newly imported mini-apps can be previewed
+        before they are published into the workspace menu.
         """
         configured_slugs = {
             (item.get("workboard_slug") or "")
@@ -760,12 +774,30 @@ if settings.WORKBOARDS_ENABLED:
             if isinstance(item, dict)
         }
         wb = db.query(_WorkboardModel).filter(_WorkboardModel.id == workboard_id).first()
-        if wb is None or (wb.slug or "") not in configured_slugs:
+        if wb is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Workboard not found in this workspace.",
             )
-        return wb
+        if (wb.slug or "") in configured_slugs:
+            return wb
+
+        preview_workboard_id: int | None = None
+        if request is not None:
+            session_data = _read_workspace_session_from_request(request, workspace)
+            try:
+                preview_workboard_id = int(
+                    (session_data or {}).get("preview_workboard_id") or 0
+                )
+            except (TypeError, ValueError):
+                preview_workboard_id = None
+        if preview_workboard_id == workboard_id:
+            return wb
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workboard not found in this workspace.",
+        )
 
 
     @router.get("/workspaces/{token}/workboards/{workboard_id}/form")
@@ -777,7 +809,7 @@ if settings.WORKBOARDS_ENABLED:
     ):
         ws = _load_workspace_or_404(db, token)
         _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
         return WorkboardRuntimeService.render_form(db, wb)
 
 
@@ -791,7 +823,7 @@ if settings.WORKBOARDS_ENABLED:
     ):
         ws = _load_workspace_or_404(db, token)
         app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
         body = body or {}
         identity = identity_from_app_user(app_user)
         return WorkboardRuntimeService.list_rows(
@@ -814,7 +846,7 @@ if settings.WORKBOARDS_ENABLED:
     ):
         ws = _load_workspace_or_404(db, token)
         app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
         from app.modules.workboards.services.rls_service import enforce_write_access
         from app.modules.workboards.schemas import LayoutJson as _Layout
 
@@ -853,7 +885,7 @@ if settings.WORKBOARDS_ENABLED:
     ):
         ws = _load_workspace_or_404(db, token)
         app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
 
         from app.modules.workboards.services.rls_service import (
             build_rls_filter,
@@ -930,7 +962,7 @@ if settings.WORKBOARDS_ENABLED:
     ):
         ws = _load_workspace_or_404(db, token)
         app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
         identity = identity_from_app_user(app_user)
         rendered = WorkboardRuntimeService.render_doc(
             db,
@@ -967,7 +999,7 @@ if settings.WORKBOARDS_ENABLED:
     ):
         ws = _load_workspace_or_404(db, token)
         app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
         identity = identity_from_app_user(app_user)
         return screen_runtime.render_app_shell(wb, identity)
 
@@ -983,7 +1015,7 @@ if settings.WORKBOARDS_ENABLED:
     ):
         ws = _load_workspace_or_404(db, token)
         app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
@@ -1033,7 +1065,7 @@ if settings.WORKBOARDS_ENABLED:
     ):
         ws = _load_workspace_or_404(db, token)
         app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
@@ -1062,7 +1094,7 @@ if settings.WORKBOARDS_ENABLED:
     ):
         ws = _load_workspace_or_404(db, token)
         app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
@@ -1096,7 +1128,7 @@ if settings.WORKBOARDS_ENABLED:
     ):
         ws = _load_workspace_or_404(db, token)
         app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id)
+        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
