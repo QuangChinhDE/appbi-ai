@@ -630,6 +630,8 @@ class _ImportTemplatePayload(__import__("pydantic").BaseModel):
     bundle: dict
     target_dataset_id: int
     target_name: Optional[str] = None
+    table_mapping: Optional[Dict[str, Optional[int]]] = None
+    column_mapping: Optional[Dict[str, Dict[str, str]]] = None
 
 
 @router.post("/_import_template")
@@ -651,6 +653,8 @@ def import_workboard_template(
             payload.bundle,
             target_dataset_id=payload.target_dataset_id,
             target_name=payload.target_name,
+            table_mapping=payload.table_mapping,
+            column_mapping=payload.column_mapping,
             owner_id=current_user.id,
         )
     except ValueError as exc:

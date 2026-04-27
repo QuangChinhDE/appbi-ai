@@ -8,6 +8,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Workboard,
   WorkboardCreateInput,
+  WorkboardImportInput,
+  WorkboardImportResponse,
   WorkboardRenderViewRequest,
   WorkboardRowsRequest,
   WorkboardUpdateInput,
@@ -49,6 +51,21 @@ export function useCreateWorkboard() {
       qc.setQueryData<Workboard[]>(KEYS.all, (old) =>
         old ? [created, ...old] : [created],
       );
+    },
+  });
+}
+
+export function useImportWorkboard() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: WorkboardImportInput) => workboardApi.importTemplate(input),
+    onSuccess: (created: WorkboardImportResponse) => {
+      qc.setQueryData<Workboard[]>(KEYS.all, (old) => {
+        const current = old ?? [];
+        const withoutDuplicate = current.filter((item) => item.id !== created.id);
+        return [created, ...withoutDuplicate];
+      });
+      qc.invalidateQueries({ queryKey: KEYS.all });
     },
   });
 }

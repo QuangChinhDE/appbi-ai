@@ -567,6 +567,67 @@ def _prepare_schema_defaults(
     return primary_key_columns, lookup_tables, layout_json
 
 
+def _pick_first_physical_table(db: Session, dataset_id: int) -> int:
+    first_physical = (
+        db.query(DatasetTable)
+        .filter(
+            DatasetTable.dataset_id == dataset_id,
+            DatasetTable.source_kind == "physical_table",
+        )
+        .order_by(DatasetTable.id.asc())
+        .first()
+    )
+    if not first_physical:
+        raise ValueError(
+            "Dataset has no physical tables - workboards need at least one "
+            "physical table to anchor the layout. Add a table to the dataset first."
+        )
+    return int(first_physical.id)
+
+
+def _dataset_table_ids(db: Session, dataset_id: int) -> set[int]:
+    rows = db.query(DatasetTable.id).filter(DatasetTable.dataset_id == dataset_id).all()
+    return {int(row[0]) for row in rows}
+
+
+def _clear_layout_table_refs_not_in_dataset(
+    raw_layout: Any,
+    valid_table_ids: set[int],
+) -> Dict[str, Any]:
+    """Clear stale table ids after rebinding a workboard to another dataset."""
+    if raw_layout is None:
+        layout: Dict[str, Any] = {}
+    elif isinstance(raw_layout, LayoutJson):
+        layout = raw_layout.model_dump(mode="json")
+    elif isinstance(raw_layout, dict):
+        layout = copy.deepcopy(raw_layout)
+    else:
+        layout = LayoutJson.model_validate(raw_layout).model_dump(mode="json")
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key in list(node.keys()):
+                value = node[key]
+                if key == "table_id" and isinstance(value, int):
+                    if value not in valid_table_ids:
+                        node[key] = None
+                elif key == "source" and isinstance(value, str) and value.startswith("lookup:"):
+                    try:
+                        ref_table_id = int(value.split(":", 1)[1])
+                    except ValueError:
+                        continue
+                    if ref_table_id not in valid_table_ids:
+                        node[key] = "primary"
+                else:
+                    _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(layout)
+    return layout
+
+
 class WorkboardService:
     """Service layer for Workboard CRUD. All methods are static."""
 
@@ -620,22 +681,7 @@ class WorkboardService:
         # satisfy the FK + legacy v1 form code paths.
         primary_table_id = payload.primary_table_id
         if primary_table_id is None:
-            from app.models.dataset import DatasetTable
-            first_physical = (
-                db.query(DatasetTable)
-                .filter(
-                    DatasetTable.dataset_id == payload.dataset_id,
-                    DatasetTable.source_kind == "physical_table",
-                )
-                .order_by(DatasetTable.id.asc())
-                .first()
-            )
-            if not first_physical:
-                raise ValueError(
-                    "Dataset has no physical tables — workboards need at least one "
-                    "physical table to anchor the layout. Add a table to the dataset first."
-                )
-            primary_table_id = first_physical.id
+            primary_table_id = _pick_first_physical_table(db, payload.dataset_id)
 
         (
             primary_key_columns,
@@ -699,18 +745,43 @@ class WorkboardService:
             ):
                 raise ValueError(f"Workboard slug '{new_slug}' already exists")
 
-        if "layout_json" in update_data and update_data["layout_json"] is not None:
+        schema_binding_changed = (
+            "dataset_id" in update_data or "primary_table_id" in update_data
+        )
+        target_dataset_id = int(update_data.get("dataset_id") or db_obj.dataset_id)
+        target_primary_table_id = update_data.get("primary_table_id")
+        if schema_binding_changed and target_primary_table_id is None:
+            target_primary_table_id = _pick_first_physical_table(db, target_dataset_id)
+        if target_primary_table_id is None:
+            target_primary_table_id = db_obj.primary_table_id
+        target_primary_table_id = int(target_primary_table_id)
+
+        should_refresh_schema = (
+            ("layout_json" in update_data and update_data["layout_json"] is not None)
+            or schema_binding_changed
+        )
+        if should_refresh_schema:
+            raw_layout = update_data.get("layout_json")
+            if raw_layout is None:
+                raw_layout = db_obj.layout_json or {}
+            if schema_binding_changed:
+                raw_layout = _clear_layout_table_refs_not_in_dataset(
+                    raw_layout,
+                    _dataset_table_ids(db, target_dataset_id),
+                )
             (
                 refreshed_pk,
                 refreshed_lookups,
                 refreshed_layout,
             ) = _prepare_schema_defaults(
                 db,
-                dataset_id=db_obj.dataset_id,
-                primary_table_id=db_obj.primary_table_id,
+                dataset_id=target_dataset_id,
+                primary_table_id=target_primary_table_id,
                 requested_pk_columns=list(db_obj.primary_key_columns or []),
-                raw_layout=update_data["layout_json"],
+                raw_layout=raw_layout,
             )
+            update_data["dataset_id"] = target_dataset_id
+            update_data["primary_table_id"] = target_primary_table_id
             update_data["layout_json"] = refreshed_layout
             update_data["primary_key_columns"] = refreshed_pk
             update_data["lookup_tables"] = refreshed_lookups

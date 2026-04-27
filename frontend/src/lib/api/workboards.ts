@@ -328,11 +328,47 @@ export interface WorkboardUpdateInput {
   slug?: string;
   description?: string;
   icon?: string;
+  dataset_id?: number;
+  primary_table_id?: number;
   layout_json?: Partial<WorkboardLayoutJson>;
   optimistic_lock_column?: string;
   is_published?: boolean;
   settings?: Record<string, unknown>;
 }
+
+export interface WorkboardImportReport {
+  matched_tables: Array<{
+    old_table_id: number;
+    source_table_name: string | null;
+    display_name: string | null;
+    new_table_id: number | null;
+    mapping_source?: 'manual' | 'auto' | 'missing' | 'unmapped';
+  }>;
+  missing_tables: Array<{
+    old_table_id: number;
+    source_table_name: string | null;
+    display_name: string | null;
+    new_table_id?: number | null;
+    mapping_source?: 'manual' | 'auto' | 'missing' | 'unmapped';
+  }>;
+  missing_columns: Array<{
+    screen: string;
+    where: string;
+    column: string;
+  }>;
+}
+
+export interface WorkboardImportInput {
+  bundle: Record<string, unknown>;
+  target_dataset_id: number;
+  target_name?: string;
+  table_mapping?: Record<string, number | null>;
+  column_mapping?: Record<string, Record<string, string>>;
+}
+
+export type WorkboardImportResponse = Workboard & {
+  _import_report?: WorkboardImportReport;
+};
 
 // ---------------------------------------------------------------------------
 // Runtime payloads
@@ -426,6 +462,13 @@ export const workboardApi = {
 
   create: async (payload: WorkboardCreateInput): Promise<Workboard> => {
     const { data } = await apiClient.post('/workboards/', payload);
+    return data;
+  },
+
+  importTemplate: async (
+    payload: WorkboardImportInput,
+  ): Promise<WorkboardImportResponse> => {
+    const { data } = await apiClient.post('/workboards/_import_template', payload);
     return data;
   },
 

@@ -3,23 +3,39 @@
  */
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 
 import type { MiniAppLayoutSpec } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
+import type { Dataset } from '@/hooks/use-datasets';
 
 export default function AppSettingsEditor({
   layout,
+  currentDatasetId,
+  datasets,
+  datasetChangePending,
   onChange,
+  onDatasetChange,
   onClose,
 }: {
   layout: MiniAppLayoutSpec;
+  currentDatasetId: number;
+  datasets: Dataset[];
+  datasetChangePending?: boolean;
   onChange: (next: MiniAppLayoutSpec) => void;
+  onDatasetChange: (datasetId: number) => Promise<void> | void;
   onClose: () => void;
 }) {
   const branding = layout.branding || {};
   const nav = layout.mini_app_nav;
+  const [selectedDatasetId, setSelectedDatasetId] = useState(currentDatasetId);
+
+  useEffect(() => {
+    setSelectedDatasetId(currentDatasetId);
+  }, [currentDatasetId]);
+
+  const datasetChanged = selectedDatasetId !== currentDatasetId;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay/84 backdrop-blur-sm">
@@ -34,6 +50,40 @@ export default function AppSettingsEditor({
           </button>
         </div>
         <div className="space-y-4 px-5 py-4">
+          <section>
+            <h3 className="mb-2 text-caption font-emphasis uppercase tracking-wider text-text-quaternary">
+              Dataset
+            </h3>
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
+              <Lbl label="Dataset đang dùng">
+                <select
+                  value={selectedDatasetId}
+                  onChange={(e) => setSelectedDatasetId(Number(e.target.value))}
+                  className={INPUT}
+                >
+                  {datasets.map((dataset) => (
+                    <option key={dataset.id} value={dataset.id}>
+                      {dataset.name}
+                    </option>
+                  ))}
+                </select>
+              </Lbl>
+              <button
+                type="button"
+                disabled={!datasetChanged || datasetChangePending}
+                onClick={() => onDatasetChange(selectedDatasetId)}
+                className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-1.5 text-caption font-emphasis text-text-secondary hover:border-brand hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {datasetChangePending ? 'Đang đổi...' : 'Đổi dataset'}
+              </button>
+            </div>
+            {datasetChanged && (
+              <p className="mt-2 text-tiny text-warning">
+                Các screen đang trỏ vào bảng không thuộc dataset mới sẽ được bỏ trống để bạn map lại.
+              </p>
+            )}
+          </section>
+
           <section>
             <h3 className="mb-2 text-caption font-emphasis uppercase tracking-wider text-text-quaternary">
               Branding

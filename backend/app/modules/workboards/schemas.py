@@ -748,6 +748,8 @@ class WorkboardUpdate(BaseModel):
     )
     description: Optional[str] = None
     icon: Optional[str] = Field(default=None, max_length=64)
+    dataset_id: Optional[int] = Field(default=None, gt=0)
+    primary_table_id: Optional[int] = Field(default=None, gt=0)
     layout_json: Optional[LayoutJson] = None
     optimistic_lock_column: Optional[str] = Field(default=None, max_length=120)
     is_published: Optional[bool] = None

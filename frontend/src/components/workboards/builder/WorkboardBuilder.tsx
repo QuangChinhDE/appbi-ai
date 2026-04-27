@@ -25,11 +25,8 @@ import {
   AlertCircle,
   ArrowDown,
   ArrowUp,
-  ChevronRight,
-  ChevronLeft,
   CheckCircle2,
   ClipboardEdit,
-  ClipboardList,
   FileText,
   HelpCircle,
   LayoutDashboard,
@@ -40,14 +37,15 @@ import {
   Plus,
   Save,
   Settings,
-  Shield,
   Sparkles,
   Trash2,
 } from 'lucide-react';
 
 import type { Workboard } from '@/lib/api/workboards';
-import { workboardApi } from '@/lib/api/workboards';
 import { apiClient } from '@/lib/api-client';
+import { useDatasets } from '@/hooks/use-datasets';
+import { useUpdateWorkboard } from '@/hooks/use-workboards';
+import { toast } from '@/lib/toast';
 import {
   ensureLayout,
   MiniAppLayoutSpec,
@@ -65,6 +63,38 @@ interface DatasetTableInfo {
   display_name: string;
   source_table_name: string;
   columns: { name: string; type?: string }[];
+}
+
+interface DatasetTableApi {
+  id: number;
+  display_name: string;
+  source_table_name: string;
+  columns_cache?: unknown;
+}
+
+interface ApiErrorShape {
+  response?: {
+    data?: {
+      detail?: string;
+    };
+  };
+}
+
+function columnsFromCache(cache: unknown): { name: string; type?: string }[] {
+  const arr: unknown[] = Array.isArray(cache)
+    ? cache
+    : cache && typeof cache === 'object' && Array.isArray((cache as { columns?: unknown }).columns)
+      ? (cache as { columns: unknown[] }).columns
+      : [];
+  return arr
+    .filter((c): c is { name: unknown; type?: unknown } =>
+      Boolean(c && typeof c === 'object' && 'name' in c),
+    )
+    .map((c) => ({ name: String(c.name), type: c.type ? String(c.type) : undefined }));
+}
+
+function getApiErrorMessage(err: unknown, fallback: string): string {
+  return (err as ApiErrorShape)?.response?.data?.detail || fallback;
 }
 
 interface Props {
@@ -107,6 +137,9 @@ const KIND_LABEL: Record<ScreenKind, string> = {
 
 
 export default function WorkboardBuilder({ workboard }: Props) {
+  const { data: datasets = [] } = useDatasets();
+  const updateWorkboard = useUpdateWorkboard();
+  const [boundDatasetId, setBoundDatasetId] = useState(workboard.dataset_id);
   const [layout, setLayout] = useState<MiniAppLayoutSpec>(() =>
     ensureLayout(workboard.layout_json),
   );
@@ -118,6 +151,10 @@ export default function WorkboardBuilder({ workboard }: Props) {
   const [showAppSettings, setShowAppSettings] = useState(false);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [previewCollapsed, setPreviewCollapsed] = useState(false);
+
+  useEffect(() => {
+    setBoundDatasetId(workboard.dataset_id);
+  }, [workboard.id, workboard.dataset_id]);
 
   // The RLS panel and Live Preview both eat horizontal space; on a 1080p
   // monitor opening both leaves the editor too narrow to be usable. We
@@ -142,24 +179,45 @@ export default function WorkboardBuilder({ workboard }: Props) {
   // save lands (no Save button click needed).
   const autosave = useDebouncedAutosave(workboard.id, layout, true);
 
+  const handleDatasetChange = async (nextDatasetId: number) => {
+    if (!nextDatasetId || nextDatasetId === boundDatasetId) return;
+    try {
+      await autosave.flush();
+      const updated = await updateWorkboard.mutateAsync({
+        id: workboard.id,
+        data: { dataset_id: nextDatasetId },
+      });
+      const nextLayout = ensureLayout(updated.layout_json);
+      setBoundDatasetId(updated.dataset_id);
+      setLayout(nextLayout);
+      setActiveScreenId((current) =>
+        current && nextLayout.screens.some((screen) => screen.id === current)
+          ? current
+          : nextLayout.screens[0]?.id || null,
+      );
+      toast.success('Đã đổi dataset cho Mini App');
+    } catch (err: unknown) {
+      toast.error(getApiErrorMessage(err, 'Không đổi được dataset.'));
+    }
+  };
+
   // Load dataset tables once so editors can show column dropdowns.
   useEffect(() => {
     let alive = true;
+    setTables([]);
+    setTablesLoading(true);
     (async () => {
       try {
-        const r = await apiClient.get(`/datasets/${workboard.dataset_id}/tables`);
-        const arr = Array.isArray(r.data) ? r.data : [];
-        const ts = arr.map((t: any) => ({
+        const r = await apiClient.get(`/datasets/${boundDatasetId}/tables`);
+        const arr = Array.isArray(r.data) ? (r.data as DatasetTableApi[]) : [];
+        const ts = arr.map((t) => ({
           id: t.id,
           display_name: t.display_name,
           source_table_name: t.source_table_name,
-          columns: ((t.columns_cache as any[]) || []).map((c) => ({
-            name: c.name,
-            type: c.type,
-          })),
+          columns: columnsFromCache(t.columns_cache),
         }));
         if (alive) setTables(ts);
-      } catch (err) {
+      } catch {
         // Non-fatal — editors fall back to free-text input when columns are missing.
       } finally {
         if (alive) setTablesLoading(false);
@@ -168,7 +226,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
     return () => {
       alive = false;
     };
-  }, [workboard.dataset_id]);
+  }, [boundDatasetId]);
 
   const activeScreen = useMemo(
     () => layout.screens.find((s) => s.id === activeScreenId) || null,
@@ -388,7 +446,11 @@ export default function WorkboardBuilder({ workboard }: Props) {
       {showAppSettings && (
         <AppSettingsEditor
           layout={layout}
+          currentDatasetId={boundDatasetId}
+          datasets={datasets}
+          datasetChangePending={updateWorkboard.isPending}
           onChange={setLayout}
+          onDatasetChange={handleDatasetChange}
           onClose={() => setShowAppSettings(false)}
         />
       )}
@@ -469,7 +531,7 @@ function WelcomeEmptyState({
         </div>
         <p className="mb-5 text-caption text-text-secondary">
           Mini-app gồm các <strong>screens</strong> (form nhập, danh sách, báo cáo) liên kết với nhau.
-          Bắt đầu bằng một trong các screens dưới đây — sau đó bấm "Lưu thay đổi"
+          Bắt đầu bằng một trong các screens dưới đây — sau đó bấm &quot;Lưu thay đổi&quot;
           rồi vào tab <strong>Preview</strong> để dùng thử.
         </p>
 
