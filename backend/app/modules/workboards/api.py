@@ -14,19 +14,21 @@ from sqlalchemy.orm import Session
 
 from app.core import get_db
 from app.core.dependencies import (
+    LEVEL_ORDER,
     get_current_user,
     get_effective_permission,
     require_edit_access,
     require_full_access,
     require_permission,
     require_view_access,
+    _normalize_permissions,
 )
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.core.logging import get_logger
 from app.models.audit_log import AuditAction
 from app.models.resource_share import ResourceType
 from app.models.user import User
-from app.modules.workboards.models import Workboard
+from app.modules.workboards.models import Workboard, WorkboardWorkspace
 from app.modules.workboards.schemas import (
     WorkboardCreate,
     WorkboardPublicLinkCreate,
@@ -630,8 +632,59 @@ class _ImportTemplatePayload(__import__("pydantic").BaseModel):
     bundle: dict
     target_dataset_id: int
     target_name: Optional[str] = None
+    target_workspace_id: Optional[int] = None
     table_mapping: Optional[Dict[str, Optional[int]]] = None
     column_mapping: Optional[Dict[str, Dict[str, str]]] = None
+
+
+def _ensure_can_attach_workspace(user: User) -> None:
+    perms = _normalize_permissions(user)
+    if LEVEL_ORDER.get(perms.get("settings", "none"), 0) < LEVEL_ORDER["full"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Requires 'full' permission on module 'settings' to update workspace menu_config.",
+        )
+
+
+def _attach_workboard_to_workspace_menu(
+    db: Session,
+    *,
+    workspace: WorkboardWorkspace,
+    workboard: Workboard,
+) -> Dict[str, Any]:
+    slug = (workboard.slug or "").strip()
+    if not slug:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Imported workboard has no slug to attach to workspace menu_config.",
+        )
+
+    menu: List[Dict[str, Any]] = [
+        dict(item)
+        for item in (workspace.menu_config or [])
+        if isinstance(item, dict)
+    ]
+    already_linked = any((item.get("workboard_slug") or "") == slug for item in menu)
+    if not already_linked:
+        menu.append(
+            {
+                "workboard_slug": slug,
+                "label": workboard.name or slug,
+                "description": workboard.description,
+                "icon": workboard.icon,
+                "roles": [],
+            }
+        )
+        workspace.menu_config = menu
+        db.commit()
+        db.refresh(workspace)
+
+    return {
+        "workspace_id": workspace.id,
+        "workspace_name": workspace.name,
+        "workboard_slug": slug,
+        "attached": not already_linked,
+    }
 
 
 @router.post("/_import_template")
@@ -647,6 +700,20 @@ def import_workboard_template(
     describing which tables/columns matched, so the FE can show a clear
     "imported, but X table needs wiring" notification.
     """
+    target_workspace: WorkboardWorkspace | None = None
+    if payload.target_workspace_id is not None:
+        _ensure_can_attach_workspace(current_user)
+        target_workspace = (
+            db.query(WorkboardWorkspace)
+            .filter(WorkboardWorkspace.id == payload.target_workspace_id)
+            .first()
+        )
+        if target_workspace is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Target workspace not found.",
+            )
+
     try:
         wb, report = _template_svc.import_workboard(
             db,
@@ -659,6 +726,15 @@ def import_workboard_template(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    workspace_attach_report: Dict[str, Any] | None = None
+    if target_workspace is not None:
+        workspace_attach_report = _attach_workboard_to_workspace_menu(
+            db,
+            workspace=target_workspace,
+            workboard=wb,
+        )
+
     # Snapshot the response BEFORE the audit call: import_workboard already
     # committed the new workboard, but if the subsequent audit insert fails
     # SQLAlchemy poisons the session and any later attribute load on ``wb``
@@ -666,6 +742,8 @@ def import_workboard_template(
     # never shadow a successful import.
     response = WorkboardResponse.model_validate(wb).model_dump(mode="json")
     response["_import_report"] = report.to_dict()
+    if workspace_attach_report is not None:
+        response["_workspace_attach_report"] = workspace_attach_report
     try:
         audit(
             db,
@@ -679,6 +757,7 @@ def import_workboard_template(
                 "imported": True,
                 "matched_tables": len(report.matched_tables),
                 "missing_tables": len(report.missing_tables),
+                "workspace_attach": workspace_attach_report,
             },
         )
     except Exception:

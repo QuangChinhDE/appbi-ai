@@ -542,6 +542,16 @@ if settings.WORKBOARDS_ENABLED:
         digest = hashlib.sha256(workspace_token.encode("utf-8")).hexdigest()[:12]
         return f"{_WORKSPACE_COOKIE_PREFIX}{digest}"
 
+    def _secure_cookie_for_request(request: Request) -> bool:
+        if not settings.COOKIE_SECURE:
+            return False
+        proto = (
+            request.headers.get("x-forwarded-proto")
+            or request.url.scheme
+            or ""
+        ).split(",")[0].strip().lower()
+        return proto == "https"
+
     def _workspace_branding(workspace) -> WorkspaceBranding | None:
         raw = workspace.branding or None
         if not raw:
@@ -637,7 +647,7 @@ if settings.WORKBOARDS_ENABLED:
             value=session_token,
             max_age=ttl,
             httponly=True,
-            secure=settings.COOKIE_SECURE,
+            secure=_secure_cookie_for_request(request),
             samesite="lax",
             path="/",
         )

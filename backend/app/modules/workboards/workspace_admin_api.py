@@ -10,7 +10,7 @@ from __future__ import annotations
 import secrets
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -190,10 +190,22 @@ class PreviewSessionResponse(BaseModel):
 from fastapi import Response as FastApiResponse  # noqa: E402
 
 
+def _secure_cookie_for_request(request: Request, cookie_secure: bool) -> bool:
+    if not cookie_secure:
+        return False
+    proto = (
+        request.headers.get("x-forwarded-proto")
+        or request.url.scheme
+        or ""
+    ).split(",")[0].strip().lower()
+    return proto == "https"
+
+
 @router.post("/{workspace_id}/preview-session", response_model=PreviewSessionResponse)
 def preview_session(
     workspace_id: int,
     body: PreviewSessionRequest,
+    request: Request,
     response: FastApiResponse,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("workboards", "edit")),
@@ -275,7 +287,7 @@ def preview_session(
         value=token,
         max_age=ttl,
         httponly=True,
-        secure=app_settings.COOKIE_SECURE,
+        secure=_secure_cookie_for_request(request, app_settings.COOKIE_SECURE),
         samesite="lax",
         path="/",
     )

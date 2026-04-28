@@ -362,12 +362,19 @@ export interface WorkboardImportInput {
   bundle: Record<string, unknown>;
   target_dataset_id: number;
   target_name?: string;
+  target_workspace_id?: number | null;
   table_mapping?: Record<string, number | null>;
   column_mapping?: Record<string, Record<string, string>>;
 }
 
 export type WorkboardImportResponse = Workboard & {
   _import_report?: WorkboardImportReport;
+  _workspace_attach_report?: {
+    workspace_id: number;
+    workspace_name: string;
+    workboard_slug: string;
+    attached: boolean;
+  };
 };
 
 // ---------------------------------------------------------------------------

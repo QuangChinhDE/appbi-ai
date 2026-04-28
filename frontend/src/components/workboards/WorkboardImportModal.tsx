@@ -14,6 +14,7 @@ import { useImportWorkboard } from '@/hooks/use-workboards';
 import { Button } from '@/components/ui/Button';
 import { FieldGroup, Input } from '@/components/ui/Input';
 import { Modal } from '@/components/common/Modal';
+import { apiClient } from '@/lib/api-client';
 import { toast } from '@/lib/toast';
 import type { DatasetTable } from '@/hooks/use-datasets';
 import type { WorkboardImportReport } from '@/lib/api/workboards';
@@ -63,6 +64,20 @@ interface ApiErrorShape {
   };
 }
 
+interface WorkspaceOption {
+  id: number;
+  name: string;
+  app_users_config?: Record<string, unknown> | null;
+  menu_config?: Array<{ workboard_slug?: string | null }>;
+}
+
+interface WorkspaceAttachReport {
+  workspace_id: number;
+  workspace_name: string;
+  workboard_slug: string;
+  attached: boolean;
+}
+
 export default function WorkboardImportModal({ onClose }: { onClose: () => void }) {
   const router = useRouter();
   const { data: datasets = [] } = useDatasets();
@@ -73,12 +88,39 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
   const { data: datasetTables = [], isLoading: tablesLoading } = useDatasetTables(datasetId);
   const [name, setName] = useState('');
   const [report, setReport] = useState<ImportReport | null>(null);
+  const [attachReport, setAttachReport] = useState<WorkspaceAttachReport | null>(null);
   const [createdId, setCreatedId] = useState<number | null>(null);
   const [tableMapping, setTableMapping] = useState<Record<string, number | ''>>({});
   const [columnMapping, setColumnMapping] = useState<Record<string, Record<string, string>>>({});
+  const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([]);
+  const [workspaceId, setWorkspaceId] = useState<number | null | undefined>(undefined);
 
   const sourceTables = useMemo(() => buildTemplateTables(bundle), [bundle]);
   const targetTables = useMemo(() => datasetTables.map(toTargetTable), [datasetTables]);
+  const attachableWorkspaces = useMemo(
+    () => workspaces.filter(hasAppUsersConfig),
+    [workspaces],
+  );
+
+  useEffect(() => {
+    let alive = true;
+    apiClient
+      .get<WorkspaceOption[]>('/workspaces')
+      .then((res) => {
+        if (alive) setWorkspaces(res.data || []);
+      })
+      .catch(() => {
+        if (alive) setWorkspaces([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (workspaceId !== undefined) return;
+    setWorkspaceId(attachableWorkspaces[0]?.id ?? null);
+  }, [attachableWorkspaces, workspaceId]);
 
   useEffect(() => {
     if (!bundle || !datasetId) {
@@ -110,6 +152,9 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
         return;
       }
       setBundle(parsed);
+      setReport(null);
+      setAttachReport(null);
+      setCreatedId(null);
       if (parsed.workboard?.name && !name) setName(`${parsed.workboard.name} (imported)`);
     } catch {
       setBundleError('Không đọc được file JSON.');
@@ -129,11 +174,13 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
         bundle: bundle as Record<string, unknown>,
         target_dataset_id: datasetId,
         target_name: name.trim() || undefined,
+        target_workspace_id: typeof workspaceId === 'number' ? workspaceId : undefined,
         table_mapping: mappingPayload.table_mapping,
         column_mapping: mappingPayload.column_mapping,
       });
       setCreatedId(data.id);
       setReport((data._import_report as ImportReport) || null);
+      setAttachReport((data._workspace_attach_report as WorkspaceAttachReport) || null);
       toast.success('Đã import workboard');
     } catch (err: unknown) {
       toast.error(getApiErrorMessage(err, 'Import thất bại.'));
@@ -183,7 +230,7 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
       }
     >
       {createdId && report ? (
-        <ImportSuccessReport report={report} />
+        <ImportSuccessReport report={report} attachReport={attachReport} />
       ) : (
         <div className="space-y-4">
           <FieldGroup
@@ -242,6 +289,35 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
                 </option>
               ))}
             </select>
+          </FieldGroup>
+
+          <FieldGroup
+            label="Workspace public"
+            description="Chọn workspace để import tự thêm slug Mini App vào menu_config. Nếu chỉ muốn draft trong Builder thì chọn không gắn menu."
+          >
+            <select
+              value={workspaceId ?? ''}
+              onChange={(e) => setWorkspaceId(e.target.value ? Number(e.target.value) : null)}
+              disabled={!bundle || workspaces.length === 0}
+              className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-body disabled:opacity-50"
+            >
+              <option value="">— Không gắn menu —</option>
+              {workspaces.map((workspace) => (
+                <option
+                  key={workspace.id}
+                  value={workspace.id}
+                  disabled={!hasAppUsersConfig(workspace)}
+                >
+                  {workspace.name}
+                  {hasAppUsersConfig(workspace) ? '' : ' (chưa có app_users_config)'}
+                </option>
+              ))}
+            </select>
+            {workspaces.length === 0 && (
+              <p className="mt-1 text-tiny text-text-tertiary">
+                Chưa tải được workspace hoặc tài khoản không có quyền settings:view.
+              </p>
+            )}
           </FieldGroup>
 
           {bundle && datasetId && (
@@ -389,7 +465,13 @@ function ImportMappingEditor({
 }
 
 
-function ImportSuccessReport({ report }: { report: ImportReport }) {
+function ImportSuccessReport({
+  report,
+  attachReport,
+}: {
+  report: ImportReport;
+  attachReport: WorkspaceAttachReport | null;
+}) {
   const matched = report.matched_tables.length;
   const missing = report.missing_tables.length;
   const colIssues = report.missing_columns.length;
@@ -405,6 +487,12 @@ function ImportSuccessReport({ report }: { report: ImportReport }) {
           {missing > 0 && ` ${missing} bảng chưa khớp.`}
           {colIssues > 0 && ` ${colIssues} cột không tồn tại — sẽ hiện trong Builder để bạn dọn.`}
         </div>
+        {attachReport && (
+          <div className="mt-1 text-text-secondary">
+            Đã gắn slug <code className="bg-surface-2 px-1">{attachReport.workboard_slug}</code>{' '}
+            vào workspace {attachReport.workspace_name}.
+          </div>
+        )}
       </div>
 
       {missing > 0 && (
@@ -432,6 +520,12 @@ function ImportSuccessReport({ report }: { report: ImportReport }) {
         </div>
       )}
     </div>
+  );
+}
+
+function hasAppUsersConfig(workspace: WorkspaceOption): boolean {
+  return Boolean(
+    workspace.app_users_config && Object.keys(workspace.app_users_config).length > 0,
   );
 }
 
