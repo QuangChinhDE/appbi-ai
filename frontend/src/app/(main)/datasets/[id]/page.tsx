@@ -131,6 +131,14 @@ function looksLikeDeletedSourceMessage(message: string): boolean {
   );
 }
 
+function isActionableSourceIssue(issue: Partial<DatasetTableSourceStatus> | null | undefined): boolean {
+  return (
+    issue?.status === 'missing' ||
+    issue?.code === 'SOURCE_TABLE_MISSING' ||
+    issue?.code === 'DATASOURCE_MISSING'
+  );
+}
+
 function extractDatasetErrorMessage(
   error: any,
   fallback: string,
@@ -799,7 +807,7 @@ export default function DatasetDetailPage() {
   const tableSourceIssueById = useMemo<Record<number, DatasetTableSourceStatus>>(() => {
     const map: Record<number, DatasetTableSourceStatus> = {};
     for (const status of tableSourceStatus?.tables ?? []) {
-      if (status.status !== 'ok') {
+      if (isActionableSourceIssue(status)) {
         map[status.table_id] = status;
       }
     }
@@ -808,8 +816,7 @@ export default function DatasetDetailPage() {
     const code = detail?.code;
     const sourceIssueCode =
       code === 'SOURCE_TABLE_MISSING' ||
-      code === 'DATASOURCE_MISSING' ||
-      code === 'SOURCE_CONNECTION_ERROR';
+      code === 'DATASOURCE_MISSING';
 
     if (selectedTableId && sourceIssueCode) {
       map[selectedTableId] = {

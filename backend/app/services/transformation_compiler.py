@@ -382,7 +382,74 @@ class TransformationCompiler:
         return compiled_query, result_columns
 
     @staticmethod
-    def _compile_expression(expression: str, dialect: str) -> str:
+    def resolve_column_reference(
+        ref: str,
+        available_columns: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """Translate a `[ref]` column reference into the canonical engine identifier.
+
+        `available_columns` is a list of column metadata dicts as returned by
+        DataSourceConnectionService.infer_column_types — each carrying `name`,
+        `display_name`, `safe_name`. Lookup order:
+        1. Exact match against `name` (back-compat for datasets that were created
+           with raw Vietnamese identifiers and are still queried that way).
+        2. Case-insensitive match against `safe_name`.
+        3. Case-insensitive match against `display_name`.
+        4. Match where `safe_name` equals `normalize_identifier(ref)` (this is what
+           lets users type `[Doanh Thu]` and have it land on `[doanh_thu]`).
+
+        If nothing matches we leave the input untouched so existing single-table flows
+        with no metadata keep working.
+        """
+        cleaned = (ref or "").strip()
+        if not cleaned or not available_columns:
+            return cleaned
+
+        for entry in available_columns:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("name") or "") == cleaned:
+                return cleaned
+
+        cleaned_lower = cleaned.lower()
+        for entry in available_columns:
+            if not isinstance(entry, dict):
+                continue
+            safe = str(entry.get("safe_name") or "")
+            if safe and safe.lower() == cleaned_lower:
+                return safe
+
+        for entry in available_columns:
+            if not isinstance(entry, dict):
+                continue
+            display = str(entry.get("display_name") or "")
+            if display and display.lower() == cleaned_lower:
+                target_safe = str(entry.get("safe_name") or "")
+                target_name = str(entry.get("name") or "")
+                return target_safe or target_name or cleaned
+
+        try:
+            from app.services.identifier_utils import normalize_identifier
+            normalized = normalize_identifier(cleaned)
+        except Exception:
+            normalized = None
+
+        if normalized:
+            for entry in available_columns:
+                if not isinstance(entry, dict):
+                    continue
+                safe = str(entry.get("safe_name") or "")
+                if safe and safe.lower() == normalized.lower():
+                    return safe
+
+        return cleaned
+
+    @staticmethod
+    def _compile_expression(
+        expression: str,
+        dialect: str,
+        available_columns: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
         """
         Compile a formula expression to SQL.
 
@@ -392,6 +459,11 @@ class TransformationCompiler:
         - Safe numeric helpers: SAFE_INT(expr[, default]), SAFE_FLOAT(expr[, default]), SAFE_NUMBER(expr[, default])
         - Comparisons: =, !=, >, >=, <, <=
         - Field references (bare ``col`` or Excel-style ``[col name]``)
+
+        When `available_columns` is provided, each `[ref]` is translated through
+        `resolve_column_reference` so users can type Vietnamese display names
+        (``[Doanh Thu]``) and still produce SQL bound to the canonical safe identifier
+        (``"doanh_thu"``).
         """
         expr = expression.strip()
 
@@ -425,9 +497,10 @@ class TransformationCompiler:
         # Restore extracted column references as properly quoted identifiers so
         # columns with spaces or unusual casing survive DuckDB/BigQuery parsing.
         for idx, col_name in enumerate(col_refs):
+            resolved = TransformationCompiler.resolve_column_reference(col_name, available_columns)
             expr = expr.replace(
                 f"__CF_COLREF_{idx}__",
-                _quote_identifier(col_name, dialect),
+                _quote_identifier(resolved, dialect),
             )
         return expr
 

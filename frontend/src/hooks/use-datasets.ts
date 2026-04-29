@@ -197,7 +197,7 @@ export interface TablePreviewResponse {
   has_more: boolean;
 }
 
-export type DatasetTableSourceStatusState = 'ok' | 'missing' | 'error';
+export type DatasetTableSourceStatusState = 'ok' | 'missing' | 'error' | 'unknown';
 
 export interface DatasetTableSourceStatus {
   table_id: number;
@@ -209,6 +209,7 @@ export interface DatasetTableSourceStatus {
   code?: string | null;
   message?: string | null;
   source_object?: 'sheet' | 'table' | string | null;
+  verified?: boolean | null;
   raw_error?: string | null;
 }
 

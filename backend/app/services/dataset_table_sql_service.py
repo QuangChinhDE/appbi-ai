@@ -75,21 +75,9 @@ def build_dataset_table_sql_alias(table_id: int) -> str:
 
 
 def normalize_dataset_table_sql_alias(value: str | None, *, fallback: str = "table") -> str:
-    text = str(value or "").strip()
-    if "." in text and not re.search(r"\s", text):
-        text = text.split(".")[-1]
-    text = text.replace("\u0110", "D").replace("\u0111", "d")
-
-    ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-    alias = re.sub(r"[^a-zA-Z0-9]+", "_", ascii_text).strip("_").lower()
-    alias = re.sub(r"_+", "_", alias)
-    if not alias:
-        alias = fallback
-    if alias[:1].isdigit():
-        alias = f"table_{alias}"
-    if alias in _SQL_ALIAS_RESERVED_WORDS:
-        alias = f"{alias}_table"
-    return alias
+    """Normalize a dataset-level SQL alias. Delegates to identifier_utils for consistency."""
+    from app.services.identifier_utils import normalize_table_alias
+    return normalize_table_alias(value, fallback=fallback)
 
 
 def normalize_physical_table_source_name(source_table_name: str | None) -> str:

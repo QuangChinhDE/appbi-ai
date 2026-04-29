@@ -1142,31 +1142,75 @@ class DataSourceConnectionService:
     ) -> List[Dict[str, str]]:
         """
         Infer column types from a query result.
-        
+
         Args:
             ds_type: Type of data source
             config: Connection configuration
             sql_query: SQL query
-            
+
         Returns:
-            List of column metadata dicts with 'name' and 'type'
+            List of column metadata dicts. Each entry has:
+            - `name`: original column name as returned by the engine (kept for back-compat
+              with consumers that still query by raw label, e.g. older datasets stored
+              with Vietnamese identifiers).
+            - `display_name`: user-facing label, identical to `name` here.
+            - `safe_name`: deterministic ASCII snake_case identifier suitable for
+              calculated-field references (`[safe_name]`) and any new SQL composition.
+              Always unique within the result set.
+            - `type`: inferred SQL type token.
         """
         try:
             if ds_type == DataSourceType.POSTGRESQL.value:
-                return DataSourceConnectionService._infer_postgresql_types(config, sql_query)
+                raw = DataSourceConnectionService._infer_postgresql_types(config, sql_query)
             elif ds_type == DataSourceType.MYSQL.value:
-                return DataSourceConnectionService._infer_mysql_types(config, sql_query)
+                raw = DataSourceConnectionService._infer_mysql_types(config, sql_query)
             elif ds_type == DataSourceType.BIGQUERY.value:
-                return DataSourceConnectionService._infer_bigquery_types(config, sql_query)
+                raw = DataSourceConnectionService._infer_bigquery_types(config, sql_query)
             elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
-                return DataSourceConnectionService._infer_google_sheets_types(config, sql_query)
+                raw = DataSourceConnectionService._infer_google_sheets_types(config, sql_query)
             elif ds_type == DataSourceType.MANUAL.value:
-                return DataSourceConnectionService._infer_manual_types(config, sql_query)
+                raw = DataSourceConnectionService._infer_manual_types(config, sql_query)
             else:
                 raise ValueError(f"Unsupported data source type: {ds_type}")
+            return DataSourceConnectionService._enrich_columns_with_safe_names(raw)
         except Exception as e:
             logger.error(f"Type inference failed: {str(e)}")
             raise
+
+    @staticmethod
+    def _enrich_columns_with_safe_names(columns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Attach `display_name` and `safe_name` to each column entry without mutating `name`.
+
+        Existing dataset rows still address columns via the original `name`; the new
+        `safe_name` is purely additive and is the canonical reference for new code paths
+        such as calculated-field formulas.
+        """
+        from app.services.identifier_utils import normalize_column_identifier
+
+        enriched: List[Dict[str, Any]] = []
+        used_safe_names: List[str] = []
+        for entry in columns or []:
+            if not isinstance(entry, dict):
+                continue
+            original_name = str(entry.get("name") or "")
+            existing_display = entry.get("display_name")
+            existing_safe = entry.get("safe_name")
+            display_name = str(existing_display) if existing_display else original_name
+            if existing_safe:
+                safe_name = str(existing_safe)
+            else:
+                safe_name = normalize_column_identifier(
+                    original_name or display_name,
+                    existing=used_safe_names,
+                    fallback="col",
+                )
+            used_safe_names.append(safe_name)
+            merged = dict(entry)
+            merged["name"] = original_name
+            merged["display_name"] = display_name
+            merged["safe_name"] = safe_name
+            enriched.append(merged)
+        return enriched
     
     @staticmethod
     def _infer_postgresql_types(config: Dict[str, Any], sql_query: str) -> List[Dict[str, str]]:

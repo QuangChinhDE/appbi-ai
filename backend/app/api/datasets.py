@@ -974,9 +974,10 @@ def get_dataset_table_source_status(
         if datasource.id in live_table_errors:
             statuses.append({
                 **base,
-                "status": "error",
-                "code": "SOURCE_CONNECTION_ERROR",
+                "status": "ok",
+                "code": "SOURCE_STATUS_UNVERIFIED",
                 "message": "Could not verify this table against the connected datasource.",
+                "verified": False,
                 "raw_error": live_table_errors[datasource.id],
             })
             continue

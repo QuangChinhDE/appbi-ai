@@ -208,15 +208,9 @@ def _infer_column_type(
 
 
 def _to_snake_case(label: str) -> str:
-    """Convert label to snake_case key, stripping diacritics."""
-    label = (label or "").replace("Đ", "D").replace("đ", "d")
-    # Normalize unicode → decompose diacritics
-    nfkd = unicodedata.normalize("NFKD", label)
-    ascii_only = nfkd.encode("ascii", "ignore").decode("ascii")
-    # Replace non-alnum with underscore
-    result = re.sub(r"[^a-zA-Z0-9]+", "_", ascii_only)
-    result = result.strip("_").lower()
-    return result or "col"
+    """Convert label to snake_case key. Delegates to identifier_utils for consistency."""
+    from app.services.identifier_utils import normalize_identifier
+    return normalize_identifier(label, fallback="col")
 
 
 def _luminance(hex_color: str) -> float:
