@@ -620,12 +620,17 @@ function FormScreen({
 }) {
   const buildInitial = useCallback(() => {
     const merged: Record<string, unknown> = {};
+    const allowedKeys = new Set<string>();
     for (const f of (spec.fields as Array<Record<string, unknown>>) || []) {
       const col = String(f.column);
+      allowedKeys.add(col);
       if (f.default !== undefined && f.default !== null) merged[col] = f.default;
     }
+    for (const col of spec.primary_key_columns || []) allowedKeys.add(String(col));
     Object.assign(merged, spec.initial_values || {});
-    Object.assign(merged, shared || {});
+    for (const [key, value] of Object.entries(shared || {})) {
+      if (allowedKeys.has(key)) merged[key] = value;
+    }
     return merged;
   }, [spec, shared]);
 
@@ -691,13 +696,34 @@ function FormScreen({
       // Strip placeholder strings (still wrapped in {{…}}); the backend RLS
       // engine forces these columns to the caller's identity anyway.
       const payload: Record<string, unknown> = {};
-      for (const k of Object.keys(values)) {
+      const fieldColumns = new Set(
+        ((spec.fields as Array<Record<string, unknown>>) || []).map((f) =>
+          String((f as any).column),
+        ),
+      );
+      const pkColumns = (spec.primary_key_columns || []).map(String);
+      const submitColumns = new Set([...fieldColumns, ...pkColumns]);
+      for (const k of submitColumns) {
         const v = values[k];
         if (typeof v === 'string' && v.startsWith('{{') && v.endsWith('}}')) continue;
         payload[k] = v;
       }
-      await workspaceApi.insertScreenRow(token, workboardId, spec.screen_id, payload);
-      setSuccess('Đã lưu.');
+      const pk: Record<string, unknown> = {};
+      const isEditing =
+        pkColumns.length > 0 &&
+        pkColumns.every((col) => {
+          const v = payload[col];
+          if (v === undefined || v === null || v === '') return false;
+          pk[col] = v;
+          return true;
+        });
+      for (const col of pkColumns) delete payload[col];
+      if (isEditing) {
+        await workspaceApi.updateScreenRow(token, workboardId, spec.screen_id, pk, payload);
+      } else {
+        await workspaceApi.insertScreenRow(token, workboardId, spec.screen_id, payload);
+      }
+      setSuccess(isEditing ? 'Đã cập nhật.' : 'Đã lưu.');
       const next = spec.after_submit?.go_to_screen || undefined;
       const carry: Record<string, unknown> = {};
       for (const col of spec.after_submit?.carry || []) {

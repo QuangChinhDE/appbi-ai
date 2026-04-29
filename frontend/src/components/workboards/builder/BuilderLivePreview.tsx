@@ -29,45 +29,18 @@ import {
 import type { Workboard } from '@/lib/api/workboards';
 import { apiClient } from '@/lib/api-client';
 import type { AutosaveStatus } from './useDebouncedAutosave';
-
-interface WorkspaceLite {
-  id: number;
-  slug: string;
-  name: string;
-  token: string;
-  app_users_config?: Record<string, unknown> | null;
-  menu_config: Array<{ workboard_slug: string }>;
-}
-
-function isWorkboardLinked(ws: WorkspaceLite, slug: string) {
-  return (ws.menu_config || []).some((m) => m.workboard_slug === slug);
-}
-
-function hasAppUsersConfig(ws: WorkspaceLite) {
-  return Boolean(ws.app_users_config && Object.keys(ws.app_users_config).length > 0);
-}
-
-function sortPreviewWorkspaces(data: WorkspaceLite[], slug: string) {
-  return [...data].sort((a, b) => {
-    const score = (ws: WorkspaceLite) =>
-      (hasAppUsersConfig(ws) ? 4 : 0) + (isWorkboardLinked(ws, slug) ? 1 : 0);
-    return score(b) - score(a);
-  });
-}
+import {
+  getAccessMode,
+  isWorkboardLinked,
+  sortPreviewWorkspaces,
+  type WorkspaceLite,
+} from './workspace-preview-utils';
 
 function getApiErrorMessage(error: unknown, fallback: string) {
   const maybeApiError = error as { response?: { data?: { detail?: unknown } } };
   const detail = maybeApiError.response?.data?.detail;
   return typeof detail === 'string' ? detail : fallback;
 }
-
-const DEMO_ACCOUNTS = [
-  { username: 'lead01', label: 'lead01 (team_lead)' },
-  { username: 'lead02', label: 'lead02 (team_lead)' },
-  { username: 'w001', label: 'w001 (worker)' },
-  { username: 'w002', label: 'w002 (worker)' },
-  { username: 'w004', label: 'w004 (worker)' },
-];
 
 type DeviceFrame = 'mobile' | 'tablet' | 'desktop';
 
@@ -101,7 +74,7 @@ export default function BuilderLivePreview({
 }: Props) {
   const [workspaces, setWorkspaces] = useState<WorkspaceLite[]>([]);
   const [activeWs, setActiveWs] = useState<WorkspaceLite | null>(null);
-  const [previewUser, setPreviewUser] = useState('lead01');
+  const [previewUsername, setPreviewUsername] = useState('');
   const [device, setDevice] = useState<DeviceFrame>('desktop');
   const [sessionReady, setSessionReady] = useState(false);
   const [sessionLoading, setSessionLoading] = useState(false);
@@ -134,16 +107,36 @@ export default function BuilderLivePreview({
     };
   }, [workboard.id, workboardSlug]);
 
+  const isInternal = activeWs ? getAccessMode(activeWs) === 'internal' : false;
+
+  // Track the (workspace, username) tuple we last tried so a failed mint
+  // doesn't spin into an infinite loop: without this, ``finally``'s
+  // ``setSessionLoading(false)`` re-armed the auto-mint effect and we
+  // hammered ``/preview-session`` ~10×/sec on a workspace with stale
+  // ``app_users_config`` until the user navigated away.
+  const lastAttemptRef = useRef<string | null>(null);
+
   // ── Mint preview-session cookie ──────────────────────────────────
   const startSession = async () => {
     if (!activeWs) return;
+    const attemptKey = `${activeWs.id}::${previewUsername.trim()}::${workboard.id}`;
+    lastAttemptRef.current = attemptKey;
     setSessionLoading(true);
     setSessionError(null);
     try {
-      await apiClient.post(`/workspaces/${activeWs.id}/preview-session`, {
-        username: previewUser,
+      const payload: { username?: string; workboard_id: number } = {
         workboard_id: workboard.id,
-      });
+      };
+      // Internal workspaces mint the session from the AppBI staff identity
+      // — the username field is ignored for them. For public workspaces an
+      // empty username asks the backend to pick the first active row from
+      // the configured app_users table, so the admin can preview without
+      // typing a real PIN-protected account.
+      if (!isInternal) {
+        const username = previewUsername.trim();
+        if (username) payload.username = username;
+      }
+      await apiClient.post(`/workspaces/${activeWs.id}/preview-session`, payload);
       setSessionReady(true);
       setIframeKey((k) => k + 1);
     } catch (err: unknown) {
@@ -153,13 +146,29 @@ export default function BuilderLivePreview({
     }
   };
 
-  // Auto-mint when workspace + user picked and we haven't started yet.
+  // Reset the "tried once" guard whenever the user changes the inputs that
+  // would meaningfully change the request — so retrying after picking a
+  // different workspace / username works without a manual refresh.
   useEffect(() => {
-    if (!collapsed && activeWs && !sessionReady && !sessionLoading) {
-      void startSession();
-    }
+    lastAttemptRef.current = null;
+  }, [activeWs?.id, previewUsername, workboard.id]);
+
+  // Auto-mint when workspace + user picked and we haven't started yet.
+  // Skip when we already attempted this exact combination — even if the
+  // attempt errored — so the effect doesn't loop forever on a 404/403.
+  useEffect(() => {
+    if (collapsed || !activeWs || sessionReady || sessionLoading) return;
+    const attemptKey = `${activeWs.id}::${previewUsername.trim()}::${workboard.id}`;
+    if (lastAttemptRef.current === attemptKey) return;
+    void startSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeWs, collapsed]);
+  }, [
+    activeWs,
+    collapsed,
+    isInternal ? null : previewUsername,
+    sessionReady,
+    sessionLoading,
+  ]);
 
   // ── Reload iframe when auto-save lands ───────────────────────────
   const lastSavedRef = useRef<Date | null>(null);
@@ -230,20 +239,26 @@ export default function BuilderLivePreview({
       {/* Toolbar — role + device + actions */}
       <div className="flex items-center justify-between gap-2 border-b border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
-          <select
-            value={previewUser}
-            onChange={(e) => {
-              setPreviewUser(e.target.value);
-              setSessionReady(false);
-            }}
-            className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny"
-          >
-            {DEMO_ACCOUNTS.map((a) => (
-              <option key={a.username} value={a.username}>
-                {a.label}
-              </option>
-            ))}
-          </select>
+          {!isInternal && (
+            <input
+              value={previewUsername}
+              onChange={(e) => {
+                setPreviewUsername(e.target.value);
+                setSessionReady(false);
+              }}
+              placeholder="Username preview (trống = user đầu tiên)"
+              className="w-56 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny"
+              title="Nhập một username thực trong bảng app_users của workspace, hoặc để trống để backend tự chọn user active đầu tiên."
+            />
+          )}
+          {isInternal && (
+            <span
+              className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny text-text-tertiary"
+              title="Workspace internal — chạy bằng tài khoản AppBI"
+            >
+              Internal · AppBI staff
+            </span>
+          )}
           {workspaces.length > 1 && (
             <select
               value={activeWs?.id ?? ''}
@@ -315,8 +330,9 @@ export default function BuilderLivePreview({
         ) : workspaces.length === 0 ? (
           <Centered>
             <div className="max-w-xs rounded-md border border-warning/30 bg-warning/10 p-3 text-tiny text-warning">
-              Chưa có workspace public nào để chạy live preview. Tạo workspace
-              có app_users_config rồi mở lại preview.
+              Chưa có workspace nào để chạy live preview. Tạo workspace ở
+              Settings → Workspaces — mặc định <code>public_app_users</code>{' '}
+              cần chọn bảng người dùng cho mini-app.
             </div>
           </Centered>
         ) : sessionError ? (

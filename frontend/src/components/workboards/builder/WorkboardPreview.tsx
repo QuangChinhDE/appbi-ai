@@ -17,34 +17,15 @@ import { ExternalLink, Loader2, RefreshCw, UserCheck } from 'lucide-react';
 
 import type { Workboard } from '@/lib/api/workboards';
 import { apiClient } from '@/lib/api-client';
+import {
+  getAccessMode,
+  isWorkboardLinked,
+  sortPreviewWorkspaces,
+  type WorkspaceLite,
+} from './workspace-preview-utils';
 
 interface Props {
   workboard: Workboard;
-}
-
-interface WorkspaceLite {
-  id: number;
-  slug: string;
-  name: string;
-  token: string;
-  app_users_config?: Record<string, unknown> | null;
-  menu_config: Array<{ workboard_slug: string }>;
-}
-
-function isWorkboardLinked(ws: WorkspaceLite, slug: string) {
-  return (ws.menu_config || []).some((m) => m.workboard_slug === slug);
-}
-
-function hasAppUsersConfig(ws: WorkspaceLite) {
-  return Boolean(ws.app_users_config && Object.keys(ws.app_users_config).length > 0);
-}
-
-function sortPreviewWorkspaces(data: WorkspaceLite[], slug: string) {
-  return [...data].sort((a, b) => {
-    const score = (ws: WorkspaceLite) =>
-      (hasAppUsersConfig(ws) ? 4 : 0) + (isWorkboardLinked(ws, slug) ? 1 : 0);
-    return score(b) - score(a);
-  });
 }
 
 function getApiErrorMessage(error: unknown, fallback: string) {
@@ -53,20 +34,10 @@ function getApiErrorMessage(error: unknown, fallback: string) {
   return typeof detail === 'string' ? detail : fallback;
 }
 
-const DEMO_ACCOUNTS: Array<{ u: string; p: string; r: string; t: string }> = [
-  { u: 'lead01', p: '111111', r: 'team_lead', t: 'A / 1' },
-  { u: 'lead02', p: '222222', r: 'team_lead', t: 'B / 2' },
-  { u: 'w001', p: '100001', r: 'worker', t: 'A / 1' },
-  { u: 'w002', p: '100002', r: 'worker', t: 'A / 1' },
-  { u: 'w003', p: '100003', r: 'worker', t: 'A / 1' },
-  { u: 'w004', p: '100004', r: 'worker', t: 'B / 2' },
-  { u: 'w005', p: '100005', r: 'worker', t: 'B / 2' },
-];
-
 export default function WorkboardPreview({ workboard }: Props) {
   const [workspaces, setWorkspaces] = useState<WorkspaceLite[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceLite | null>(null);
-  const [previewUsername, setPreviewUsername] = useState('lead01');
+  const [previewUsername, setPreviewUsername] = useState('');
   const [iframeKey, setIframeKey] = useState(0);
   const [loading, setLoading] = useState(true);
   const [sessionLoading, setSessionLoading] = useState(false);
@@ -101,9 +72,14 @@ export default function WorkboardPreview({ workboard }: Props) {
     setSessionLoading(true);
     setError(null);
     try {
+      const payload: { username?: string; workboard_id: number } = {
+        workboard_id: workboard.id,
+      };
+      const username = previewUsername.trim();
+      if (username) payload.username = username;
       await apiClient.post(
         `/workspaces/${activeWorkspace.id}/preview-session`,
-        { username: previewUsername, workboard_id: workboard.id },
+        payload,
       );
       setSessionReady(true);
       setIframeKey((k) => k + 1);
@@ -132,15 +108,19 @@ export default function WorkboardPreview({ workboard }: Props) {
       <div className="mx-auto max-w-2xl p-8">
         <div className="rounded-xl border border-warning/30 bg-warning/10 p-5 text-caption text-warning">
           <h2 className="mb-1 text-body font-emphasis">
-            Chưa có workspace public để chạy preview
+            Chưa có workspace nào để chạy preview
           </h2>
           <p>
-            Tạo workspace có app_users_config rồi mở lại preview.
+            Tạo workspace ở Settings → Workspaces. Mặc định là{' '}
+            <code className="rounded bg-warning/20 px-1">public_app_users</code>{' '}
+            (cần chọn bảng người dùng trong dataset cho mini-app).
           </p>
         </div>
       </div>
     );
   }
+
+  const isInternal = activeWorkspace ? getAccessMode(activeWorkspace) === 'internal' : false;
 
   return (
     <div className="flex h-full">
@@ -167,23 +147,31 @@ export default function WorkboardPreview({ workboard }: Props) {
           ))}
         </select>
 
-        <h3 className="mt-4 mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-          Đăng nhập giả lập
-        </h3>
-        <select
-          value={previewUsername}
-          onChange={(e) => {
-            setPreviewUsername(e.target.value);
-            setSessionReady(false);
-          }}
-          className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1.5 text-caption"
-        >
-          {DEMO_ACCOUNTS.map((a) => (
-            <option key={a.u} value={a.u}>
-              {a.u} ({a.r}) — {a.t}
-            </option>
-          ))}
-        </select>
+        {!isInternal ? (
+          <>
+            <h3 className="mt-4 mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+              App user preview
+            </h3>
+            <input
+              value={previewUsername}
+              onChange={(e) => {
+                setPreviewUsername(e.target.value);
+                setSessionReady(false);
+              }}
+              placeholder="Username preview"
+              className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1.5 text-caption"
+            />
+            <p className="mt-1 text-tiny text-text-tertiary">
+              Nhập một username thực trong bảng app_users của workspace, hoặc
+              để trống để backend tự chọn user active đầu tiên.
+            </p>
+          </>
+        ) : (
+          <p className="mt-4 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5 text-tiny text-text-tertiary">
+            Workspace internal — preview chạy bằng tài khoản AppBI của bạn,
+            không cần chọn user.
+          </p>
+        )}
 
         <button
           onClick={startPreview}
@@ -226,20 +214,8 @@ export default function WorkboardPreview({ workboard }: Props) {
           </p>
         )}
 
-        <div className="mt-5 border-t border-[rgb(var(--border-line))] pt-3">
-          <h4 className="mb-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-            Tài khoản demo
-          </h4>
-          <table className="w-full text-tiny">
-            <tbody>
-              {DEMO_ACCOUNTS.map((a) => (
-                <tr key={a.u} className="border-b border-[rgb(var(--border-line))] last:border-0">
-                  <td className="py-0.5 font-mono">{a.u}</td>
-                  <td className="py-0.5 font-mono">{a.p}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="mt-5 border-t border-[rgb(var(--border-line))] pt-3 text-tiny text-text-tertiary">
+          Preview dùng chính bảng app users của workspace đang chọn, nên không phụ thuộc vào tên user mẫu cố định.
         </div>
       </aside>
 

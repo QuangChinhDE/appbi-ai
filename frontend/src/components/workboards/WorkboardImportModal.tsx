@@ -7,17 +7,16 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { AlertTriangle, CheckCircle2, Upload } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Sparkles, Upload } from 'lucide-react';
 
 import { useDatasets, useDatasetTables } from '@/hooks/use-datasets';
 import { useImportWorkboard } from '@/hooks/use-workboards';
 import { Button } from '@/components/ui/Button';
 import { FieldGroup, Input } from '@/components/ui/Input';
 import { Modal } from '@/components/common/Modal';
-import { apiClient } from '@/lib/api-client';
 import { toast } from '@/lib/toast';
 import type { DatasetTable } from '@/hooks/use-datasets';
-import type { WorkboardImportReport } from '@/lib/api/workboards';
+import { workboardApi, type WorkboardImportReport } from '@/lib/api/workboards';
 
 type ImportReport = WorkboardImportReport;
 
@@ -64,63 +63,69 @@ interface ApiErrorShape {
   };
 }
 
-interface WorkspaceOption {
-  id: number;
-  name: string;
-  app_users_config?: Record<string, unknown> | null;
-  menu_config?: Array<{ workboard_slug?: string | null }>;
-}
-
-interface WorkspaceAttachReport {
-  workspace_id: number;
-  workspace_name: string;
-  workboard_slug: string;
-  attached: boolean;
-}
-
 export default function WorkboardImportModal({ onClose }: { onClose: () => void }) {
   const router = useRouter();
-  const { data: datasets = [] } = useDatasets();
+  const { data: datasets = [], isLoading: datasetsLoading, error: datasetsError } = useDatasets();
   const importMutation = useImportWorkboard();
   const [bundle, setBundle] = useState<WorkboardTemplateBundle | null>(null);
   const [bundleError, setBundleError] = useState<string | null>(null);
   const [datasetId, setDatasetId] = useState<number | null>(null);
   const { data: datasetTables = [], isLoading: tablesLoading } = useDatasetTables(datasetId);
+
   const [name, setName] = useState('');
   const [report, setReport] = useState<ImportReport | null>(null);
-  const [attachReport, setAttachReport] = useState<WorkspaceAttachReport | null>(null);
   const [createdId, setCreatedId] = useState<number | null>(null);
   const [tableMapping, setTableMapping] = useState<Record<string, number | ''>>({});
   const [columnMapping, setColumnMapping] = useState<Record<string, Record<string, string>>>({});
-  const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([]);
-  const [workspaceId, setWorkspaceId] = useState<number | null | undefined>(undefined);
+  const [autoMapping, setAutoMapping] = useState(false);
+  // ``pendingAiMap`` holds the AI's proposal until the admin reviews the
+  // diff and confirms. We never overwrite the live mapping silently —
+  // user complaint was "AI thêm/sửa/xoá kiểu gì tôi cũng không biết".
+  const [pendingAiMap, setPendingAiMap] = useState<{
+    table_mapping: Record<string, number | ''>;
+    column_mapping: Record<string, Record<string, string>>;
+    ai_used: boolean;
+  } | null>(null);
+
+  const handleAutoMap = async () => {
+    if (!bundle || !datasetId) return;
+    setAutoMapping(true);
+    try {
+      const r = await workboardApi.autoMapImport(
+        bundle as Record<string, unknown>,
+        datasetId,
+      );
+      const nextTable: Record<string, number | ''> = {};
+      for (const [k, v] of Object.entries(r.table_mapping || {})) {
+        nextTable[k] = typeof v === 'number' ? v : '';
+      }
+      setPendingAiMap({
+        table_mapping: nextTable,
+        column_mapping: r.column_mapping || {},
+        ai_used: r.ai_used,
+      });
+    } catch (err: unknown) {
+      toast.error(getApiErrorMessage(err, 'Auto-map thất bại.'));
+    } finally {
+      setAutoMapping(false);
+    }
+  };
+
+  const applyAiMap = () => {
+    if (!pendingAiMap) return;
+    setTableMapping(pendingAiMap.table_mapping);
+    setColumnMapping(pendingAiMap.column_mapping);
+    toast.success(
+      pendingAiMap.ai_used
+        ? 'AI đã áp mapping — bạn vẫn có thể chỉnh từng dòng trước khi Import.'
+        : 'Đã áp mapping theo tên cột (AI không khả dụng).',
+    );
+    setPendingAiMap(null);
+  };
 
   const sourceTables = useMemo(() => buildTemplateTables(bundle), [bundle]);
   const targetTables = useMemo(() => datasetTables.map(toTargetTable), [datasetTables]);
-  const attachableWorkspaces = useMemo(
-    () => workspaces.filter(hasAppUsersConfig),
-    [workspaces],
-  );
-
-  useEffect(() => {
-    let alive = true;
-    apiClient
-      .get<WorkspaceOption[]>('/workspaces')
-      .then((res) => {
-        if (alive) setWorkspaces(res.data || []);
-      })
-      .catch(() => {
-        if (alive) setWorkspaces([]);
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (workspaceId !== undefined) return;
-    setWorkspaceId(attachableWorkspaces[0]?.id ?? null);
-  }, [attachableWorkspaces, workspaceId]);
+  const targetDatasetHasNoTables = Boolean(datasetId && !tablesLoading && targetTables.length === 0);
 
   useEffect(() => {
     if (!bundle || !datasetId) {
@@ -130,15 +135,24 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
     }
     setTableMapping((current) => {
       const next: Record<string, number | ''> = {};
+      let changed = false;
       for (const source of sourceTables) {
         const currentValue = current[source.key];
         const stillValid =
           typeof currentValue === 'number' && targetTables.some((target) => target.id === currentValue);
-        next[source.key] = stillValid
+        const nextValue = stillValid
           ? currentValue
           : inferTargetTable(source, targetTables)?.id ?? '';
+        next[source.key] = nextValue;
+        if (current[source.key] !== nextValue) changed = true;
       }
-      return next;
+      // Skip the state update entirely when nothing actually moved — every
+      // re-render here closes the open native <select>, which is what users
+      // see as "vừa chọn xong nhảy mất". useDatasetTables refetch alone was
+      // enough to keep this effect ping-ponging.
+      return changed || Object.keys(next).length !== Object.keys(current).length
+        ? next
+        : current;
     });
   }, [bundle, datasetId, sourceTables, targetTables]);
 
@@ -153,7 +167,6 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
       }
       setBundle(parsed);
       setReport(null);
-      setAttachReport(null);
       setCreatedId(null);
       if (parsed.workboard?.name && !name) setName(`${parsed.workboard.name} (imported)`);
     } catch {
@@ -174,13 +187,30 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
         bundle: bundle as Record<string, unknown>,
         target_dataset_id: datasetId,
         target_name: name.trim() || undefined,
-        target_workspace_id: typeof workspaceId === 'number' ? workspaceId : undefined,
         table_mapping: mappingPayload.table_mapping,
         column_mapping: mappingPayload.column_mapping,
       });
       setCreatedId(data.id);
-      setReport((data._import_report as ImportReport) || null);
-      setAttachReport((data._workspace_attach_report as WorkspaceAttachReport) || null);
+      const importReport = (data._import_report as ImportReport) || null;
+      setReport(importReport);
+
+      // Open the workboard straight away when the import landed clean —
+      // no missing tables, no missing columns, no app-users that need a
+      // manual PIN reset. Anything sticky and we keep the success report
+      // so the admin can read what needs follow-up before navigating.
+      const cleanImport =
+        !importReport
+        || (
+          importReport.missing_tables.length === 0
+          && importReport.missing_columns.length === 0
+          && (importReport.app_users_needing_pin?.length ?? 0) === 0
+        );
+      if (cleanImport && data.id) {
+        toast.success('Đã import workboard — mở Builder');
+        onClose();
+        router.push(`/workboards/${data.id}`);
+        return;
+      }
       toast.success('Đã import workboard');
     } catch (err: unknown) {
       toast.error(getApiErrorMessage(err, 'Import thất bại.'));
@@ -220,7 +250,7 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
               size="sm"
               leadingIcon={<Upload className="h-3.5 w-3.5" />}
               onClick={handleSubmit}
-              disabled={!bundle || !datasetId || importMutation.isPending}
+              disabled={!bundle || !datasetId || targetDatasetHasNoTables || importMutation.isPending}
               loading={importMutation.isPending}
             >
               Import
@@ -230,7 +260,7 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
       }
     >
       {createdId && report ? (
-        <ImportSuccessReport report={report} attachReport={attachReport} />
+        <ImportSuccessReport report={report} />
       ) : (
         <div className="space-y-4">
           <FieldGroup
@@ -274,74 +304,98 @@ export default function WorkboardImportModal({ onClose }: { onClose: () => void 
           <FieldGroup
             label="Dataset đích"
             required
-            description="Chọn dataset rồi map lại bảng/cột nếu tên trên máy này khác template."
+            description="Chọn dataset chứa các bảng dữ liệu cho workboard. Sau khi upload bundle bạn sẽ map từng bảng/cột nếu tên khác template."
           >
             <select
               value={datasetId ?? ''}
               onChange={(e) => setDatasetId(e.target.value ? Number(e.target.value) : null)}
-              disabled={!bundle}
-              className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-body disabled:opacity-50"
+              className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-body"
             >
-              <option value="">— Chọn dataset —</option>
+              <option value="">
+                {datasetsLoading
+                  ? 'Đang tải danh sách dataset...'
+                  : datasets.length === 0
+                  ? '— Không có dataset nào —'
+                  : '— Chọn dataset —'}
+              </option>
               {datasets.map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.name}
                 </option>
               ))}
             </select>
-          </FieldGroup>
-
-          <FieldGroup
-            label="Workspace public"
-            description="Chọn workspace để import tự thêm slug Mini App vào menu_config. Nếu chỉ muốn draft trong Builder thì chọn không gắn menu."
-          >
-            <select
-              value={workspaceId ?? ''}
-              onChange={(e) => setWorkspaceId(e.target.value ? Number(e.target.value) : null)}
-              disabled={!bundle || workspaces.length === 0}
-              className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-body disabled:opacity-50"
-            >
-              <option value="">— Không gắn menu —</option>
-              {workspaces.map((workspace) => (
-                <option
-                  key={workspace.id}
-                  value={workspace.id}
-                  disabled={!hasAppUsersConfig(workspace)}
-                >
-                  {workspace.name}
-                  {hasAppUsersConfig(workspace) ? '' : ' (chưa có app_users_config)'}
-                </option>
-              ))}
-            </select>
-            {workspaces.length === 0 && (
-              <p className="mt-1 text-tiny text-text-tertiary">
-                Chưa tải được workspace hoặc tài khoản không có quyền settings:view.
+            {!datasetsLoading && datasets.length === 0 && (
+              <p className="mt-1 text-tiny text-warning">
+                {datasetsError
+                  ? 'Không tải được danh sách dataset — kiểm tra quyền truy cập hoặc kết nối.'
+                  : 'Bạn chưa có dataset nào. Vào trang Datasets tạo dataset trước khi import workboard.'}
+              </p>
+            )}
+            {targetDatasetHasNoTables && (
+              <p className="mt-1 text-tiny text-warning">
+                Dataset này chưa có bảng vật lý nào. Hãy thêm bảng vào dataset trước khi import.
               </p>
             )}
           </FieldGroup>
 
           {bundle && datasetId && (
-            <ImportMappingEditor
-              sourceTables={sourceTables}
-              targetTables={targetTables}
-              tableMapping={tableMapping}
-              columnMapping={columnMapping}
-              tablesLoading={tablesLoading}
-              onTableMappingChange={(sourceKey, targetId) => {
-                setTableMapping((current) => ({ ...current, [sourceKey]: targetId }));
-              }}
-              onColumnMappingChange={(sourceKey, sourceColumn, targetColumn) => {
-                setColumnMapping((current) => ({
-                  ...current,
-                  [sourceKey]: {
-                    ...(current[sourceKey] || {}),
-                    [sourceColumn]: targetColumn,
-                  },
-                }));
-              }}
-            />
+            <>
+              <div className="flex items-center justify-between rounded-md border border-brand/20 bg-brand/5 px-3 py-2">
+                <div className="text-caption text-text-secondary">
+                  <strong>AI auto-map</strong> đề xuất mapping bảng/cột dựa trên
+                  tên + kiểu dữ liệu. Bấm để xem trước những thay đổi rồi
+                  quyết định áp hay không — không có gì bị ghi đè trước khi
+                  bạn duyệt.
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  leadingIcon={<Sparkles className="h-3.5 w-3.5" />}
+                  loading={autoMapping}
+                  disabled={autoMapping || tablesLoading}
+                  onClick={handleAutoMap}
+                  title="Gọi AI để gợi ý mapping. Sau đó bạn sẽ thấy preview diff trước khi áp."
+                >
+                  Gợi ý mapping bằng AI
+                </Button>
+              </div>
+
+              <ImportMappingEditor
+                sourceTables={sourceTables}
+                targetTables={targetTables}
+                tableMapping={tableMapping}
+                columnMapping={columnMapping}
+                tablesLoading={tablesLoading}
+                onTableMappingChange={(sourceKey, targetId) => {
+                  setTableMapping((current) => ({ ...current, [sourceKey]: targetId }));
+                }}
+                onColumnMappingChange={(sourceKey, sourceColumn, targetColumn) => {
+                  setColumnMapping((current) => ({
+                    ...current,
+                    [sourceKey]: {
+                      ...(current[sourceKey] || {}),
+                      [sourceColumn]: targetColumn,
+                    },
+                  }));
+                }}
+              />
+            </>
           )}
         </div>
+      )}
+
+      {pendingAiMap && (
+        <AiMapPreviewModal
+          sourceTables={sourceTables}
+          targetTables={targetTables}
+          currentTableMapping={tableMapping}
+          currentColumnMapping={columnMapping}
+          proposedTableMapping={pendingAiMap.table_mapping}
+          proposedColumnMapping={pendingAiMap.column_mapping}
+          aiUsed={pendingAiMap.ai_used}
+          onCancel={() => setPendingAiMap(null)}
+          onApply={applyAiMap}
+        />
       )}
     </Modal>
   );
@@ -381,6 +435,14 @@ function ImportMappingEditor({
     return null;
   }
 
+  if (targetTables.length === 0) {
+    return (
+      <div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-caption text-warning">
+        Dataset đích chưa có bảng nào để map. Import sẽ bị chặn cho đến khi dataset có ít nhất một bảng.
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-2">
       <h4 className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
@@ -388,13 +450,28 @@ function ImportMappingEditor({
       </h4>
       <div className="max-h-[44vh] space-y-2 overflow-y-auto pr-1">
         {sourceTables.map((source) => {
-          const mappedTargetId = tableMapping[source.key] || '';
-          const target = targetTables.find((item) => item.id === mappedTargetId) || null;
+          // ``tableMapping`` stores either a number id or '' (no mapping).
+          // ``find`` does strict-equality, so coerce '' away before lookup
+          // — otherwise ``item.id === ''`` is always false and the column
+          // mapping editor below thinks no target is selected even when
+          // the user just picked one.
+          const mappedTargetId = tableMapping[source.key];
+          const mappedTargetIdNum =
+            typeof mappedTargetId === 'number' ? mappedTargetId : null;
+          const target =
+            mappedTargetIdNum === null
+              ? null
+              : targetTables.find((item) => item.id === mappedTargetIdNum) || null;
           const effectiveColumns = getEffectiveColumnMapping(
             source,
             target,
             columnMapping[source.key],
           );
+          const unmappedColumns = target
+            ? source.columns
+                .filter((column) => !effectiveColumns[column.name])
+                .map((column) => column.name)
+            : [];
           return (
             <div
               key={source.key}
@@ -410,7 +487,7 @@ function ImportMappingEditor({
                   </div>
                 </div>
                 <select
-                  value={mappedTargetId}
+                  value={mappedTargetIdNum ?? ''}
                   onChange={(e) =>
                     onTableMappingChange(
                       source.key,
@@ -429,32 +506,40 @@ function ImportMappingEditor({
               </div>
 
               {target && source.columns.length > 0 && (
-                <div className="mt-3 grid gap-1.5 md:grid-cols-2">
-                  {source.columns.map((column) => (
-                    <label
-                      key={column.name}
-                      className="grid grid-cols-[minmax(0,1fr)_minmax(130px,1fr)] items-center gap-2 text-tiny"
-                    >
-                      <span className="truncate text-text-secondary" title={column.name}>
-                        {column.name}
-                      </span>
-                      <select
-                        value={effectiveColumns[column.name] || ''}
-                        onChange={(e) =>
-                          onColumnMappingChange(source.key, column.name, e.target.value)
-                        }
-                        className="min-w-0 rounded border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1"
+                <>
+                  {unmappedColumns.length > 0 && (
+                    <p className="mt-2 rounded border border-warning/30 bg-warning/5 px-2 py-1 text-tiny text-warning">
+                      {unmappedColumns.length} cột chưa map: {unmappedColumns.slice(0, 6).join(', ')}
+                      {unmappedColumns.length > 6 ? '…' : ''}
+                    </p>
+                  )}
+                  <div className="mt-3 grid gap-1.5 md:grid-cols-2">
+                    {source.columns.map((column) => (
+                      <label
+                        key={column.name}
+                        className="grid grid-cols-[minmax(0,1fr)_minmax(130px,1fr)] items-center gap-2 text-tiny"
                       >
-                        <option value="">— bỏ qua —</option>
-                        {target.columns.map((targetColumn) => (
-                          <option key={targetColumn.name} value={targetColumn.name}>
-                            {targetColumn.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  ))}
-                </div>
+                        <span className="truncate text-text-secondary" title={column.name}>
+                          {column.name}
+                        </span>
+                        <select
+                          value={effectiveColumns[column.name] || ''}
+                          onChange={(e) =>
+                            onColumnMappingChange(source.key, column.name, e.target.value)
+                          }
+                          className="min-w-0 rounded border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1"
+                        >
+                          <option value="">— bỏ qua —</option>
+                          {target.columns.map((targetColumn) => (
+                            <option key={targetColumn.name} value={targetColumn.name}>
+                              {targetColumn.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+                </>
               )}
             </div>
           );
@@ -467,14 +552,14 @@ function ImportMappingEditor({
 
 function ImportSuccessReport({
   report,
-  attachReport,
 }: {
   report: ImportReport;
-  attachReport: WorkspaceAttachReport | null;
 }) {
   const matched = report.matched_tables.length;
   const missing = report.missing_tables.length;
   const colIssues = report.missing_columns.length;
+  const usersImported = report.app_users_imported ?? 0;
+  const usersNeedingPin = report.app_users_needing_pin ?? [];
   return (
     <div className="space-y-3">
       <div className="rounded-md border border-success/20 bg-success/5 p-3 text-caption">
@@ -486,14 +571,21 @@ function ImportSuccessReport({
           {matched} bảng map thành công.
           {missing > 0 && ` ${missing} bảng chưa khớp.`}
           {colIssues > 0 && ` ${colIssues} cột không tồn tại — sẽ hiện trong Builder để bạn dọn.`}
+          {usersImported > 0 && ` ${usersImported} app user đã import.`}
         </div>
-        {attachReport && (
-          <div className="mt-1 text-text-secondary">
-            Đã gắn slug <code className="bg-surface-2 px-1">{attachReport.workboard_slug}</code>{' '}
-            vào workspace {attachReport.workspace_name}.
-          </div>
-        )}
       </div>
+
+      {usersNeedingPin.length > 0 && (
+        <div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-caption text-warning">
+          <strong>{usersNeedingPin.length} user chưa có PIN</strong> (bundle export
+          không kèm credentials). Vào tab <strong>Users</strong> trong Builder
+          để đặt PIN cho:{' '}
+          <span className="text-text-secondary">
+            {usersNeedingPin.slice(0, 8).join(', ')}
+            {usersNeedingPin.length > 8 && ` +${usersNeedingPin.length - 8} khác`}
+          </span>
+        </div>
+      )}
 
       {missing > 0 && (
         <div>
@@ -519,16 +611,36 @@ function ImportSuccessReport({
           </div>
         </div>
       )}
+
+      {colIssues > 0 && (
+        <div>
+          <h4 className="mb-1 text-tiny font-emphasis uppercase tracking-wider text-warning">
+            <AlertTriangle className="mr-1 inline h-3 w-3" />
+            Cột chưa khớp ({colIssues})
+          </h4>
+          <div className="space-y-1">
+            {report.missing_columns.slice(0, 12).map((item, i) => (
+              <div
+                key={`${item.screen}-${item.where}-${item.column}-${i}`}
+                className="rounded-md border border-warning/30 bg-warning/5 p-2 text-caption"
+              >
+                <code className="bg-surface-2 px-1">{item.column}</code>
+                <span className="ml-2 text-tiny text-text-tertiary">
+                  {item.screen || 'screen'} · {item.where}
+                </span>
+              </div>
+            ))}
+            {report.missing_columns.length > 12 && (
+              <p className="text-tiny text-text-tertiary">
+                Và {report.missing_columns.length - 12} cột khác.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-
-function hasAppUsersConfig(workspace: WorkspaceOption): boolean {
-  return Boolean(
-    workspace.app_users_config && Object.keys(workspace.app_users_config).length > 0,
-  );
-}
-
 
 function buildTemplateTables(bundle: WorkboardTemplateBundle | null): TemplateTable[] {
   const tablesMeta = bundle?.tables_meta || {};
@@ -645,4 +757,306 @@ function buildMappingPayload(
 
 function getApiErrorMessage(err: unknown, fallback: string): string {
   return (err as ApiErrorShape)?.response?.data?.detail || fallback;
+}
+
+
+// ── AI map preview modal ────────────────────────────────────────────────
+
+interface TableDiffRow {
+  sourceKey: string;
+  sourceLabel: string;
+  before: string;
+  after: string;
+  changed: boolean;
+}
+
+interface ColumnDiffRow {
+  sourceKey: string;
+  sourceLabel: string;
+  sourceColumn: string;
+  before: string;
+  after: string;
+  status: 'unchanged' | 'added' | 'changed' | 'removed';
+}
+
+function AiMapPreviewModal({
+  sourceTables,
+  targetTables,
+  currentTableMapping,
+  currentColumnMapping,
+  proposedTableMapping,
+  proposedColumnMapping,
+  aiUsed,
+  onCancel,
+  onApply,
+}: {
+  sourceTables: TemplateTable[];
+  targetTables: TargetTable[];
+  currentTableMapping: Record<string, number | ''>;
+  currentColumnMapping: Record<string, Record<string, string>>;
+  proposedTableMapping: Record<string, number | ''>;
+  proposedColumnMapping: Record<string, Record<string, string>>;
+  aiUsed: boolean;
+  onCancel: () => void;
+  onApply: () => void;
+}) {
+  const targetById = useMemo(() => {
+    const map = new Map<number, TargetTable>();
+    for (const t of targetTables) map.set(t.id, t);
+    return map;
+  }, [targetTables]);
+
+  const tableDiffs = useMemo<TableDiffRow[]>(() => {
+    return sourceTables.map((s) => {
+      const before = currentTableMapping[s.key];
+      const after = proposedTableMapping[s.key] ?? '';
+      const labelOf = (id: number | '' | undefined) =>
+        typeof id === 'number'
+          ? (targetById.get(id)?.display_name
+              || targetById.get(id)?.source_table_name
+              || `#${id}`)
+          : '— chưa map —';
+      return {
+        sourceKey: s.key,
+        sourceLabel: s.display_name || s.source_table_name || `Table ${s.old_table_id}`,
+        before: labelOf(before),
+        after: labelOf(after),
+        changed: before !== after,
+      };
+    });
+  }, [sourceTables, currentTableMapping, proposedTableMapping, targetById]);
+
+  const columnDiffs = useMemo<ColumnDiffRow[]>(() => {
+    const out: ColumnDiffRow[] = [];
+    for (const s of sourceTables) {
+      const beforeCols = currentColumnMapping[s.key] || {};
+      const afterCols = proposedColumnMapping[s.key] || {};
+      const allCols = new Set<string>([
+        ...s.columns.map((c) => c.name),
+        ...Object.keys(beforeCols),
+        ...Object.keys(afterCols),
+      ]);
+      for (const col of allCols) {
+        const before = beforeCols[col] ?? '';
+        const after = afterCols[col] ?? '';
+        if (!before && !after) continue;
+        let status: ColumnDiffRow['status'];
+        if (before && !after) status = 'removed';
+        else if (!before && after) status = 'added';
+        else if (before === after) status = 'unchanged';
+        else status = 'changed';
+        out.push({
+          sourceKey: s.key,
+          sourceLabel: s.display_name || s.source_table_name || s.key,
+          sourceColumn: col,
+          before,
+          after,
+          status,
+        });
+      }
+    }
+    return out;
+  }, [sourceTables, currentColumnMapping, proposedColumnMapping]);
+
+  const tableChanged = tableDiffs.filter((r) => r.changed).length;
+  const colAdded = columnDiffs.filter((r) => r.status === 'added').length;
+  const colChanged = columnDiffs.filter((r) => r.status === 'changed').length;
+  const colRemoved = columnDiffs.filter((r) => r.status === 'removed').length;
+
+  return (
+    <Modal
+      isOpen
+      onClose={onCancel}
+      title={aiUsed ? 'AI đề xuất mapping' : 'Đề xuất mapping (heuristic)'}
+      size="xl"
+      footer={
+        <>
+          <Button variant="ghost" size="sm" onClick={onCancel}>
+            Huỷ — không thay đổi
+          </Button>
+          <Button variant="primary" size="sm" onClick={onApply}>
+            Áp dụng đề xuất
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <div className="rounded-md border border-info/20 bg-info/5 p-3 text-caption text-text-secondary">
+          {aiUsed ? (
+            <>
+              AI đã so sánh schema source (template) với schema target (dataset)
+              và đề xuất các thay đổi sau. <strong>Chưa có gì được áp dụng</strong> —
+              xem kỹ rồi bấm <em>Áp dụng đề xuất</em>, hoặc Huỷ để giữ mapping
+              hiện tại.
+            </>
+          ) : (
+            <>
+              AI không khả dụng (chưa cấu hình API key hoặc đã hết quota).
+              Hệ thống đã fallback sang khớp tên cột theo heuristic
+              (lowercase + bỏ ký tự đặc biệt). Xem các thay đổi rồi quyết định.
+            </>
+          )}
+        </div>
+
+        <div className="grid grid-cols-4 gap-2 text-center text-caption">
+          <DiffStat label="Bảng đổi" value={tableChanged} tone="info" />
+          <DiffStat label="Cột thêm" value={colAdded} tone="success" />
+          <DiffStat label="Cột đổi" value={colChanged} tone="warning" />
+          <DiffStat label="Cột bỏ" value={colRemoved} tone="danger" />
+        </div>
+
+        <div>
+          <h4 className="mb-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+            Mapping bảng
+          </h4>
+          {tableDiffs.length === 0 ? (
+            <p className="text-tiny text-text-tertiary">Không có bảng nào.</p>
+          ) : (
+            <div className="overflow-hidden rounded-md border border-[rgb(var(--border-line))]">
+              <table className="w-full text-caption">
+                <thead className="bg-surface-2 text-tiny text-text-tertiary">
+                  <tr>
+                    <th className="px-3 py-1.5 text-left font-medium">Source</th>
+                    <th className="px-3 py-1.5 text-left font-medium">Hiện tại</th>
+                    <th className="px-3 py-1.5 text-left font-medium">Đề xuất</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tableDiffs.map((row) => (
+                    <tr
+                      key={row.sourceKey}
+                      className={`border-t border-[rgb(var(--border-line))] ${
+                        row.changed ? 'bg-warning/5' : ''
+                      }`}
+                    >
+                      <td className="px-3 py-1.5 font-medium text-text-primary">
+                        {row.sourceLabel}
+                      </td>
+                      <td className="px-3 py-1.5 text-text-tertiary">{row.before}</td>
+                      <td className="px-3 py-1.5">
+                        <span
+                          className={
+                            row.changed
+                              ? 'font-medium text-warning'
+                              : 'text-text-secondary'
+                          }
+                        >
+                          {row.after}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <h4 className="mb-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+            Mapping cột
+          </h4>
+          {columnDiffs.length === 0 ? (
+            <p className="text-tiny text-text-tertiary">
+              Không có cột nào đề xuất thay đổi.
+            </p>
+          ) : (
+            <div className="max-h-[40vh] overflow-auto rounded-md border border-[rgb(var(--border-line))]">
+              <table className="w-full text-caption">
+                <thead className="sticky top-0 bg-surface-2 text-tiny text-text-tertiary">
+                  <tr>
+                    <th className="px-3 py-1.5 text-left font-medium">Bảng</th>
+                    <th className="px-3 py-1.5 text-left font-medium">Cột source</th>
+                    <th className="px-3 py-1.5 text-left font-medium">Hiện tại</th>
+                    <th className="px-3 py-1.5 text-left font-medium">Đề xuất</th>
+                    <th className="px-3 py-1.5 text-left font-medium">Trạng thái</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {columnDiffs.map((row, idx) => (
+                    <tr
+                      key={`${row.sourceKey}-${row.sourceColumn}-${idx}`}
+                      className="border-t border-[rgb(var(--border-line))]"
+                    >
+                      <td className="px-3 py-1 text-text-tertiary">{row.sourceLabel}</td>
+                      <td className="px-3 py-1 font-mono text-text-primary">
+                        {row.sourceColumn}
+                      </td>
+                      <td className="px-3 py-1 font-mono text-text-tertiary">
+                        {row.before || '—'}
+                      </td>
+                      <td className="px-3 py-1 font-mono">
+                        <span className={diffStatusToClass(row.status)}>
+                          {row.after || '—'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-1">
+                        <DiffStatusBadge status={row.status} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function DiffStat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: 'info' | 'success' | 'warning' | 'danger';
+}) {
+  const toneClass = {
+    info: 'text-info border-info/30 bg-info/5',
+    success: 'text-success border-success/30 bg-success/5',
+    warning: 'text-warning border-warning/30 bg-warning/5',
+    danger: 'text-danger border-danger/30 bg-danger/5',
+  }[tone];
+  return (
+    <div className={`rounded-md border ${toneClass} p-2`}>
+      <div className="text-h3 font-emphasis">{value}</div>
+      <div className="text-tiny opacity-70">{label}</div>
+    </div>
+  );
+}
+
+function diffStatusToClass(status: ColumnDiffRow['status']): string {
+  switch (status) {
+    case 'added':
+      return 'text-success';
+    case 'changed':
+      return 'text-warning';
+    case 'removed':
+      return 'text-danger line-through';
+    default:
+      return 'text-text-tertiary';
+  }
+}
+
+function DiffStatusBadge({ status }: { status: ColumnDiffRow['status'] }) {
+  const text = {
+    unchanged: 'không đổi',
+    added: 'thêm',
+    changed: 'đổi',
+    removed: 'bỏ',
+  }[status];
+  const cls = {
+    unchanged: 'bg-surface-2 text-text-tertiary',
+    added: 'bg-success/15 text-success',
+    changed: 'bg-warning/15 text-warning',
+    removed: 'bg-danger/15 text-danger',
+  }[status];
+  return (
+    <span className={`inline-flex rounded px-1.5 py-0.5 text-tiny ${cls}`}>
+      {text}
+    </span>
+  );
 }

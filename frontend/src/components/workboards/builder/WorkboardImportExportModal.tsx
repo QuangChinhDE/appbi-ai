@@ -30,6 +30,8 @@ interface ExportBundle {
   bundle_version?: number;
   tables_meta?: Record<string, ExportTableMeta>;
   layout_json?: { screens?: unknown[] };
+  app_users?: Array<{ username?: string; pin_hash?: string }>;
+  app_users_include_credentials?: boolean;
 }
 
 interface ExportTableMeta {
@@ -69,12 +71,17 @@ function ExportPanel({
 }) {
   const [loading, setLoading] = useState(true);
   const [bundle, setBundle] = useState<ExportBundle | null>(null);
+  const [includeCredentials, setIncludeCredentials] = useState(false);
 
   useEffect(() => {
     let alive = true;
+    setLoading(true);
     (async () => {
       try {
-        const r = await apiClient.get(`/workboards/${workboard.id}/export`);
+        const r = await apiClient.get(
+          `/workboards/${workboard.id}/export`,
+          { params: { include_credentials: includeCredentials } },
+        );
         if (alive) setBundle(r.data);
       } catch (err: unknown) {
         toast.error(getApiErrorMessage(err, 'Không export được.'));
@@ -85,7 +92,7 @@ function ExportPanel({
     return () => {
       alive = false;
     };
-  }, [workboard.id]);
+  }, [workboard.id, includeCredentials]);
 
   const handleDownload = () => {
     if (!bundle) return;
@@ -159,9 +166,29 @@ function ExportPanel({
             Khi import vào instance khác, AppBI sẽ cho map lại bảng/cột trước khi tạo.
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <label className="flex items-start gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3 text-caption">
+            <input
+              type="checkbox"
+              checked={includeCredentials}
+              onChange={(e) => setIncludeCredentials(e.target.checked)}
+              className="mt-0.5 h-3.5 w-3.5"
+            />
+            <div>
+              <div className="font-medium text-text-primary">
+                Kèm credentials (PIN hash) cho {bundle.app_users?.length ?? 0} app user
+              </div>
+              <div className="mt-0.5 text-tiny text-text-tertiary">
+                Default OFF — bảo vệ trường hợp file bị share. Bật khi cần
+                bundle dùng được ngay sau import (vd. demo hoặc seed dữ liệu).
+                Khi tắt, admin phải reset PIN cho từng user sau import.
+              </div>
+            </div>
+          </label>
+
+          <div className="grid grid-cols-4 gap-3">
             <Stat label="Screens" value={screens.length} />
             <Stat label="Bảng tham chiếu" value={tableCount} />
+            <Stat label="App users" value={bundle.app_users?.length ?? 0} />
             <Stat label="Bundle version" value={String(bundle.bundle_version ?? 1)} />
           </div>
 

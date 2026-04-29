@@ -10,38 +10,43 @@ runtime/layout layer does not accidentally break the public auth surface.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class AppUsersConfig(BaseModel):
-    """Tells the runtime which dataset table holds the workspace users.
+# Access modes the public link supports.
+#   - "internal": only AppBI staff can open the workspace; no app_users
+#     table required. Preview/runtime use the AppBI session.
+#   - "public_app_users": workers/foremen log in with PIN against a
+#     project-owned table inside the workspace's dataset.
+WorkspaceAccessMode = Literal["internal", "public_app_users"]
 
-    Each project chooses its own schema — AppBI just needs the column names
-    so it can fetch credentials, evaluate role-based menus, and feed RLS
-    expressions with ``{{app_user.*}}`` placeholders.
+
+class AppUserPayload(BaseModel):
+    """Shape of an app-user row inside an export bundle.
+
+    The bundle stores users next to the workboard so re-importing is
+    self-contained — no separate dataset wiring needed. ``pin_hash`` is
+    optional: bundles exported with credentials excluded omit it, and
+    admins set fresh PINs after import.
     """
 
-    table_id: int = Field(..., description="dataset_tables.id holding the user list")
-    username_column: str = Field(..., min_length=1, max_length=120)
-    credential_column: str = Field(..., min_length=1, max_length=120)
-    credential_kind: str = Field(
-        default="bcrypt",
-        description="How the credential column is hashed (bcrypt is the only supported value today)",
-    )
-    role_column: Optional[str] = Field(default=None, max_length=120)
-    active_column: Optional[str] = Field(default=None, max_length=120)
-    active_value: Any = Field(
+    username: str = Field(..., min_length=1, max_length=255)
+    pin_hash: Optional[str] = Field(
         default=None,
-        description="Value of active_column meaning 'enabled'. Defaults to truthy / 'ACTIVE' / true / 1.",
+        max_length=255,
+        description=(
+            "Bcrypt-hashed PIN. Omitted in bundles exported with "
+            "include_credentials=false; admin must set a PIN after import."
+        ),
     )
-    context_columns: List[str] = Field(
-        default_factory=list,
-        description="Extra columns to expose as {{app_user.<col>}} for RLS / lookup filters",
-    )
+    full_name: Optional[str] = Field(default=None, max_length=255)
+    role: Optional[str] = Field(default=None, max_length=64)
+    active: bool = Field(default=True)
+    context: Dict[str, Any] = Field(default_factory=dict)
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
 
 class WorkspaceMenuItem(BaseModel):
@@ -106,7 +111,11 @@ class WorkspaceMetaPublic(BaseModel):
     name: str
     description: Optional[str] = None
     branding: Optional[WorkspaceBranding] = None
-    requires_login: bool = True
+    access_mode: WorkspaceAccessMode = "internal"
+    # Mirrors access_mode == "public_app_users". Kept as an explicit field
+    # so older FE clients that only check ``requires_login`` keep working.
+    # Default tracks access_mode="internal" → no PIN login.
+    requires_login: bool = False
 
 
 class WorkspaceMenuResponse(BaseModel):

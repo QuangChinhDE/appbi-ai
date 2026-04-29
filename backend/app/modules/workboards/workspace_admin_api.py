@@ -17,7 +17,12 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.dependencies import require_permission
 from app.models.user import User
-from app.modules.workboards.models import Workboard, WorkboardWorkspace
+from app.modules.workboards.models import (
+    Workboard,
+    WorkboardAppUser,
+    WorkboardWorkspace,
+)
+from app.modules.workboards.workspace_schemas import WorkspaceAccessMode
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
@@ -42,8 +47,8 @@ class WorkspaceAdminResponse(BaseModel):
     token: str
     is_active: bool
     session_ttl_seconds: int
+    access_mode: WorkspaceAccessMode = "internal"
     branding: Optional[Dict[str, Any]] = None
-    app_users_config: Dict[str, Any] = Field(default_factory=dict)
     menu_config: List[Dict[str, Any]] = Field(default_factory=list)
 
 
@@ -52,7 +57,11 @@ class WorkspaceCreateRequest(BaseModel):
     slug: Optional[str] = Field(default=None, max_length=120)
     description: Optional[str] = None
     icon: Optional[str] = None
-    app_users_config: Dict[str, Any] = Field(default_factory=dict)
+    # Default to ``public_app_users`` because that's how mini-apps are
+    # actually used in the field. Identity now lives on each workboard,
+    # so creating a workspace no longer requires picking a users table —
+    # admins just attach workboards through ``menu_config``.
+    access_mode: WorkspaceAccessMode = "public_app_users"
     menu_config: List[Dict[str, Any]] = Field(default_factory=list)
     branding: Optional[Dict[str, Any]] = None
     session_ttl_seconds: int = Field(default=28800, ge=60, le=86400)
@@ -63,7 +72,7 @@ class WorkspaceUpdateRequest(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     is_active: Optional[bool] = None
-    app_users_config: Optional[Dict[str, Any]] = None
+    access_mode: Optional[WorkspaceAccessMode] = None
     menu_config: Optional[List[Dict[str, Any]]] = None
     branding: Optional[Dict[str, Any]] = None
     session_ttl_seconds: Optional[int] = Field(default=None, ge=60, le=86400)
@@ -79,8 +88,8 @@ def _serialise(ws: WorkboardWorkspace) -> WorkspaceAdminResponse:
         token=ws.token,
         is_active=ws.is_active,
         session_ttl_seconds=ws.session_ttl_seconds or 28800,
+        access_mode=(ws.access_mode or "internal"),
         branding=ws.branding,
-        app_users_config=ws.app_users_config or {},
         menu_config=ws.menu_config or [],
     )
 
@@ -115,7 +124,7 @@ def create_workspace(
         description=body.description,
         icon=body.icon,
         token=secrets.token_urlsafe(24),
-        app_users_config=body.app_users_config,
+        access_mode=body.access_mode,
         menu_config=body.menu_config,
         branding=body.branding,
         is_active=True,
@@ -223,59 +232,105 @@ def preview_session(
     ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
     if ws is None:
         raise HTTPException(status_code=404, detail="Workspace not found.")
-    cfg = app_user_service.parse_app_users_config(ws)
-    if cfg is None:
-        raise HTTPException(status_code=400, detail="Workspace has no app_users_config.")
 
-    # Pick a real app_user row matching the request — honours real RLS.
-    if body.username:
-        row = app_user_service._fetch_user_row(db, cfg, body.username.strip())
-        if row is None:
-            raise HTTPException(status_code=404, detail="App user not found.")
-        username = body.username.strip()
-    else:
-        # Pick the first active row whose role matches.
-        from app.models.dataset import DatasetTable
-        from app.models.models import DataSource
-        from app.services.live_query_service import LiveQueryService
+    access_mode = (ws.access_mode or "internal")
 
-        table = db.query(DatasetTable).filter(DatasetTable.id == cfg.table_id).first()
-        ds = db.query(DataSource).filter(DataSource.id == table.datasource_id).first() if table else None
-        if not table or not ds:
-            raise HTTPException(status_code=400, detail="App users table missing.")
-        result = LiveQueryService.execute_preview_query(
-            ds, table, limit=20, offset=0, filters=[]
+    # Internal-mode workspaces don't have an app_users table — mint the
+    # session directly from the AppBI staff identity so the iframe runtime
+    # gets a workspace cookie just like the public flow.
+    if access_mode == "internal":
+        extra_claims: Dict[str, Any] = {}
+        if body.workboard_id is not None:
+            exists = (
+                db.query(Workboard.id)
+                .filter(Workboard.id == body.workboard_id)
+                .first()
+            )
+            if exists is None:
+                raise HTTPException(status_code=404, detail="Workboard not found.")
+            extra_claims["preview_workboard_id"] = body.workboard_id
+        token, ttl = app_user_service.create_internal_session_token(
+            ws,
+            appbi_user=user,
+            extra_claims=extra_claims or None,
         )
-        rows = result.get("rows") or []
-        match = None
-        target_role = (body.role or "").strip().lower()
-        for r in rows:
-            r_role = str(r.get(cfg.role_column or "") or "").strip().lower()
-            if not target_role or r_role == target_role:
-                match = r
-                break
-        if match is None:
-            raise HTTPException(status_code=404, detail="No matching app user.")
-        row = match
-        username = str(row.get(cfg.username_column))
+        import hashlib
 
-    extra_claims: Dict[str, Any] = {}
-    if body.workboard_id is not None:
-        exists = (
-            db.query(Workboard.id)
-            .filter(Workboard.id == body.workboard_id)
-            .first()
+        cookie_name = (
+            "wbws_" + hashlib.sha256(ws.token.encode("utf-8")).hexdigest()[:12]
         )
-        if exists is None:
-            raise HTTPException(status_code=404, detail="Workboard not found.")
-        extra_claims["preview_workboard_id"] = body.workboard_id
+        response.set_cookie(
+            key=cookie_name,
+            value=token,
+            max_age=ttl,
+            httponly=True,
+            secure=_secure_cookie_for_request(request, app_settings.COOKIE_SECURE),
+            samesite="lax",
+            path="/",
+        )
+        return PreviewSessionResponse(
+            ok=True,
+            preview_url=(
+                f"/ws/{ws.token}/workboards/{body.workboard_id}"
+                if body.workboard_id is not None
+                else f"/ws/{ws.token}"
+            ),
+            workspace_token=ws.token,
+            cookie_name=cookie_name,
+            expires_in=ttl,
+        )
 
+    # Public-app-users mode: pick a real WorkboardAppUser row to preview as.
+    # Without ``body.workboard_id`` we don't know which workboard's user
+    # pool to draw from; ask the FE to specify which mini-app it's
+    # previewing — the BuilderLivePreview always passes this.
+    if body.workboard_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "preview-session cần workboard_id để chọn user trong bảng "
+                "users của workboard tương ứng."
+            ),
+        )
+    wb = db.query(Workboard).filter(Workboard.id == body.workboard_id).first()
+    if wb is None:
+        raise HTTPException(status_code=404, detail="Workboard not found.")
+
+    target_username = (body.username or "").strip()
+    target_role = (body.role or "").strip().lower()
+
+    user_query = db.query(WorkboardAppUser).filter(
+        WorkboardAppUser.workboard_id == wb.id,
+        WorkboardAppUser.active.is_(True),
+    )
+    if target_username:
+        user_query = user_query.filter(WorkboardAppUser.username == target_username)
+    if target_role:
+        user_query = user_query.filter(
+            WorkboardAppUser.role.ilike(target_role)
+        )
+
+    matched_user = user_query.order_by(WorkboardAppUser.id.asc()).first()
+    if matched_user is None:
+        if target_username:
+            raise HTTPException(
+                status_code=404,
+                detail=f"App user '{target_username}' không tồn tại hoặc đã bị tắt.",
+            )
+        # No filter at all → bảng users rỗng — admin chưa tạo user nào.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Workboard chưa có app user nào để preview. Vào tab 'Users' "
+                "trong Builder để tạo user trước."
+            ),
+        )
+
+    extra_claims: Dict[str, Any] = {"preview_workboard_id": wb.id}
     token, ttl = app_user_service.create_session_token(
         ws,
-        username,
-        cfg,
-        row,
-        extra_claims=extra_claims or None,
+        matched_user,
+        extra_claims=extra_claims,
     )
     import hashlib
 

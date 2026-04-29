@@ -562,12 +562,13 @@ if settings.WORKBOARDS_ENABLED:
             return None
 
     def _workspace_meta_public(workspace) -> WorkspaceMetaPublic:
-        cfg = app_user_service.parse_app_users_config(workspace)
+        access_mode = (workspace.access_mode or "internal")
         return WorkspaceMetaPublic(
             name=workspace.name,
             description=workspace.description,
             branding=_workspace_branding(workspace),
-            requires_login=cfg is not None,
+            access_mode=access_mode,
+            requires_login=access_mode == "public_app_users",
         )
 
     def _load_workspace_or_404(db: Session, token: str):
@@ -597,14 +598,70 @@ if settings.WORKBOARDS_ENABLED:
         return data
 
 
+    def _try_appbi_user_from_request(request: Request, db: Session):
+        """Decode the AppBI Bearer token if present; return the User row.
+
+        Used to let workspaces with ``access_mode='internal'`` accept staff
+        sessions instead of mandating a separate PIN-based app_user. Returns
+        ``None`` on any failure (no token, expired, revoked, etc.) so callers
+        can fall through to the workspace-cookie path or 401.
+        """
+        try:
+            from app.models.user import User, UserStatus
+            from app.models.revoked_token import RevokedToken
+        except Exception:  # pragma: no cover
+            return None
+        auth_header = request.headers.get("Authorization") or ""
+        token = ""
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header.split(" ", 1)[1].strip()
+        if not token:
+            return None
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+            user_id = payload.get("sub")
+            if not user_id:
+                return None
+            jti = payload.get("jti")
+            if jti and db.query(RevokedToken).filter(RevokedToken.jti == jti).first():
+                return None
+            import uuid as _uuid
+            user = db.query(User).filter(User.id == _uuid.UUID(str(user_id))).first()
+            if not user or getattr(user, "status", None) != UserStatus.ACTIVE:
+                return None
+            return user
+        except (JWTError, ValueError, TypeError):
+            return None
+
     def _read_app_user_from_request(
         request: Request,
         workspace,
+        *,
+        db: Session | None = None,
     ) -> dict | None:
+        """Resolve the active app_user dict for a workspace request.
+
+        Order:
+          1. Workspace-cookie session (the standard flow — set by /login or
+             by the admin preview-session endpoint).
+          2. For ``access_mode='internal'`` workspaces only: any valid AppBI
+             Bearer token in the Authorization header. The AppBI user is
+             surfaced as the app_user so RLS / write enforcement still has
+             a stable identity.
+        """
         data = _read_workspace_session_from_request(request, workspace)
-        if not data:
-            return None
-        return data.get("app_user") or {}
+        if data:
+            return data.get("app_user") or {}
+        if (workspace.access_mode or "internal") == "internal" and db is not None:
+            user = _try_appbi_user_from_request(request, db)
+            if user is not None:
+                return {
+                    "username": str(getattr(user, "email", "") or user.id),
+                    "role": "appbi_staff",
+                    "full_name": getattr(user, "full_name", None) or getattr(user, "email", ""),
+                    "_internal": True,
+                }
+        return None
 
 
     @router.get("/workspaces/{token}", response_model=WorkspaceMetaResponse)
@@ -629,15 +686,11 @@ if settings.WORKBOARDS_ENABLED:
     ):
         ws = _load_workspace_or_404(db, token)
         client_ip = (request.client.host if request.client else None) or None
-        app_user_payload = app_user_service.authenticate(
+        matched_user, _matched_wb = app_user_service.authenticate(
             db, ws, body.username.strip(), body.pin, ip=client_ip
         )
-        cfg = app_user_service.parse_app_users_config(ws)
-        # Re-fetch the row to get fresh full_name / context — authenticate()
-        # already validated so this is safe and uses the LiveQuery cache.
-        row = app_user_service._fetch_user_row(db, cfg, body.username.strip()) or {}
         session_token, ttl = app_user_service.create_session_token(
-            ws, body.username.strip(), cfg, row
+            ws, matched_user
         )
 
         # Cookie is httpOnly so JS cannot read it (XSS-resistant). SameSite=lax
@@ -651,23 +704,14 @@ if settings.WORKBOARDS_ENABLED:
             samesite="lax",
             path="/",
         )
-        full_name = None
-        for candidate in ("full_name", "name", "display_name", "ho_ten"):
-            if candidate in row and row[candidate]:
-                full_name = str(row[candidate])
-                break
         return WorkspaceLoginResponse(
             session_token=session_token,
             expires_in=ttl,
             app_user=WorkspaceAppUserPublic(
-                username=app_user_payload.get("username") or body.username,
-                role=app_user_payload.get("role"),
-                full_name=full_name,
-                context={
-                    k: v
-                    for k, v in app_user_payload.items()
-                    if k not in {"username", "role"}
-                },
+                username=matched_user.username,
+                role=matched_user.role,
+                full_name=matched_user.full_name,
+                context=dict(matched_user.context or {}),
             ),
         )
 
@@ -690,11 +734,19 @@ if settings.WORKBOARDS_ENABLED:
         db: Session = Depends(get_db),
     ):
         ws = _load_workspace_or_404(db, token)
-        app_user = _read_app_user_from_request(request, ws)
+        app_user = _read_app_user_from_request(request, ws, db=db)
         if app_user is None:
+            access_mode = (ws.access_mode or "internal")
+            if access_mode == "internal":
+                detail = (
+                    "Workspace này chỉ mở cho AppBI staff đã đăng nhập. "
+                    "Đăng nhập AppBI rồi mở lại."
+                )
+            else:
+                detail = "Sign in to access this workspace."
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Sign in to access this workspace.",
+                detail=detail,
             )
 
         # Resolve menu items: keep only items whose roles[] contains the
@@ -723,6 +775,15 @@ if settings.WORKBOARDS_ENABLED:
                 continue
             allowed_roles = [r.strip().lower() for r in item.roles or []]
             if allowed_roles and role not in allowed_roles:
+                continue
+            # Hide workboards the matched session isn't bound to. The JWT
+            # carries the workboard_id of the row that authenticated, so a
+            # nurse who logged in against Workboard A doesn't see (and
+            # can't poke at) Workboard B sitting in the same workspace
+            # menu.
+            if not app_user_service.can_app_user_access_workboard(
+                db, wb, app_user
+            ):
                 continue
             out_items.append(
                 WorkspaceMenuItemPublic(
@@ -755,12 +816,21 @@ if settings.WORKBOARDS_ENABLED:
     def _require_workspace_app_user(
         request: Request,
         workspace,
+        *,
+        db: Session | None = None,
     ) -> dict:
-        app_user = _read_app_user_from_request(request, workspace)
+        app_user = _read_app_user_from_request(request, workspace, db=db)
         if app_user is None:
+            access_mode = (workspace.access_mode or "internal")
+            if access_mode == "internal":
+                detail = (
+                    "Workspace này chỉ mở cho AppBI staff đã đăng nhập."
+                )
+            else:
+                detail = "Sign in to use this workspace."
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Sign in to use this workspace.",
+                detail=detail,
             )
         return app_user
 
@@ -770,6 +840,7 @@ if settings.WORKBOARDS_ENABLED:
         workboard_id: int,
         *,
         request: Request | None = None,
+        app_user: dict | None = None,
     ):
         """Make sure the requested workboard is visible in this workspace.
 
@@ -777,6 +848,11 @@ if settings.WORKBOARDS_ENABLED:
         any workboard on the deployment. Admin preview sessions may carry a
         one-workboard bypass so newly imported mini-apps can be previewed
         before they are published into the workspace menu.
+
+        When ``app_user`` is supplied and the workboard has a per-workboard
+        ``app_users_config`` override, callers from a different user table
+        are rejected with 403 — guards against an authenticated nurse
+        poking around a drivers-only mini-app by id.
         """
         configured_slugs = {
             (item.get("workboard_slug") or "")
@@ -789,8 +865,8 @@ if settings.WORKBOARDS_ENABLED:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Workboard not found in this workspace.",
             )
-        if (wb.slug or "") in configured_slugs:
-            return wb
+
+        in_menu = (wb.slug or "") in configured_slugs
 
         preview_workboard_id: int | None = None
         if request is not None:
@@ -801,13 +877,24 @@ if settings.WORKBOARDS_ENABLED:
                 )
             except (TypeError, ValueError):
                 preview_workboard_id = None
-        if preview_workboard_id == workboard_id:
-            return wb
 
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Workboard not found in this workspace.",
-        )
+        if not in_menu and preview_workboard_id != workboard_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workboard not found in this workspace.",
+            )
+
+        if app_user is not None and not app_user_service.can_app_user_access_workboard(
+            db, wb, app_user
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Tài khoản này thuộc bảng người dùng khác — không truy cập "
+                    "được mini-app này."
+                ),
+            )
+        return wb
 
 
     @router.get("/workspaces/{token}/workboards/{workboard_id}/form")
@@ -818,8 +905,10 @@ if settings.WORKBOARDS_ENABLED:
         db: Session = Depends(get_db),
     ):
         ws = _load_workspace_or_404(db, token)
-        _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
         return WorkboardRuntimeService.render_form(db, wb)
 
 
@@ -832,8 +921,10 @@ if settings.WORKBOARDS_ENABLED:
         db: Session = Depends(get_db),
     ):
         ws = _load_workspace_or_404(db, token)
-        app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
         body = body or {}
         identity = identity_from_app_user(app_user)
         return WorkboardRuntimeService.list_rows(
@@ -855,8 +946,10 @@ if settings.WORKBOARDS_ENABLED:
         db: Session = Depends(get_db),
     ):
         ws = _load_workspace_or_404(db, token)
-        app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
         from app.modules.workboards.services.rls_service import enforce_write_access
         from app.modules.workboards.schemas import LayoutJson as _Layout
 
@@ -894,8 +987,10 @@ if settings.WORKBOARDS_ENABLED:
         db: Session = Depends(get_db),
     ):
         ws = _load_workspace_or_404(db, token)
-        app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
 
         from app.modules.workboards.services.rls_service import (
             build_rls_filter,
@@ -971,8 +1066,10 @@ if settings.WORKBOARDS_ENABLED:
         db: Session = Depends(get_db),
     ):
         ws = _load_workspace_or_404(db, token)
-        app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
         identity = identity_from_app_user(app_user)
         rendered = WorkboardRuntimeService.render_doc(
             db,
@@ -1008,8 +1105,10 @@ if settings.WORKBOARDS_ENABLED:
         db: Session = Depends(get_db),
     ):
         ws = _load_workspace_or_404(db, token)
-        app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
         identity = identity_from_app_user(app_user)
         return screen_runtime.render_app_shell(wb, identity)
 
@@ -1024,8 +1123,10 @@ if settings.WORKBOARDS_ENABLED:
         shared: str | None = Query(default=None, description="JSON-encoded shared_context"),
     ):
         ws = _load_workspace_or_404(db, token)
-        app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
@@ -1074,8 +1175,10 @@ if settings.WORKBOARDS_ENABLED:
         db: Session = Depends(get_db),
     ):
         ws = _load_workspace_or_404(db, token)
-        app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
@@ -1103,8 +1206,10 @@ if settings.WORKBOARDS_ENABLED:
         db: Session = Depends(get_db),
     ):
         ws = _load_workspace_or_404(db, token)
-        app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
@@ -1137,8 +1242,10 @@ if settings.WORKBOARDS_ENABLED:
         db: Session = Depends(get_db),
     ):
         ws = _load_workspace_or_404(db, token)
-        app_user = _require_workspace_app_user(request, ws)
-        wb = _resolve_workboard_for_workspace(db, ws, workboard_id, request=request)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)

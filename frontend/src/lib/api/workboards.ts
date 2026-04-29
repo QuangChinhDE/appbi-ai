@@ -356,6 +356,8 @@ export interface WorkboardImportReport {
     where: string;
     column: string;
   }>;
+  app_users_imported?: number;
+  app_users_needing_pin?: string[];
 }
 
 export interface WorkboardImportInput {
@@ -622,4 +624,78 @@ export const workboardApi = {
   deletePublicLink: async (id: number, linkId: string): Promise<void> => {
     await apiClient.delete(`/workboards/${id}/public-links/${encodeURIComponent(linkId)}`);
   },
+
+  // ── App users (Builder "Users" tab) ─────────────────────────────────
+  listAppUsers: async (workboardId: number): Promise<WorkboardAppUserResponse[]> => {
+    const { data } = await apiClient.get(`/workboards/${workboardId}/app-users`);
+    return data;
+  },
+  createAppUser: async (
+    workboardId: number,
+    payload: WorkboardAppUserCreate,
+  ): Promise<WorkboardAppUserResponse> => {
+    const { data } = await apiClient.post(`/workboards/${workboardId}/app-users`, payload);
+    return data;
+  },
+  updateAppUser: async (
+    workboardId: number,
+    appUserId: number,
+    payload: WorkboardAppUserUpdate,
+  ): Promise<WorkboardAppUserResponse> => {
+    const { data } = await apiClient.patch(
+      `/workboards/${workboardId}/app-users/${appUserId}`,
+      payload,
+    );
+    return data;
+  },
+  deleteAppUser: async (workboardId: number, appUserId: number): Promise<void> => {
+    await apiClient.delete(`/workboards/${workboardId}/app-users/${appUserId}`);
+  },
+
+  // ── AI auto-map for import ─────────────────────────────────────────
+  autoMapImport: async (
+    bundle: Record<string, unknown>,
+    target_dataset_id: number,
+  ): Promise<{
+    table_mapping: Record<string, number | null>;
+    column_mapping: Record<string, Record<string, string>>;
+    ai_used: boolean;
+  }> => {
+    const { data } = await apiClient.post('/workboards/import-auto-map', {
+      bundle,
+      target_dataset_id,
+    });
+    return data;
+  },
 };
+
+export interface WorkboardAppUserResponse {
+  id: number;
+  workboard_id: number;
+  username: string;
+  full_name: string | null;
+  role: string | null;
+  active: boolean;
+  context: Record<string, unknown>;
+  has_pin: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkboardAppUserCreate {
+  username: string;
+  pin: string;
+  full_name?: string | null;
+  role?: string | null;
+  active?: boolean;
+  context?: Record<string, unknown>;
+}
+
+export interface WorkboardAppUserUpdate {
+  username?: string;
+  pin?: string;
+  full_name?: string | null;
+  role?: string | null;
+  active?: boolean;
+  context?: Record<string, unknown>;
+}

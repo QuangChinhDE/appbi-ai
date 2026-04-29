@@ -4,13 +4,12 @@ import React from 'react';
 import { useParams } from 'next/navigation';
 
 import { useWorkboard } from '@/hooks/use-workboards';
-import WorkboardBuilder from '@/components/workboards/builder/WorkboardBuilder';
+import WorkboardPreview from '@/components/workboards/builder/WorkboardPreview';
 
-export default function WorkboardBuilderPage() {
+export default function WorkboardPreviewPage() {
   const params = useParams<{ id: string }>();
   const id = Number(params.id);
-  // Layout already guarded loading/404; here we only render once data is in.
   const { data: workboard } = useWorkboard(id);
   if (!workboard) return null;
-  return <WorkboardBuilder workboard={workboard} />;
+  return <WorkboardPreview workboard={workboard} />;
 }

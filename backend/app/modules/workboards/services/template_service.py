@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
 from app.models.dataset import Dataset, DatasetTable
-from app.modules.workboards.models import Workboard
+from app.modules.workboards.models import Workboard, WorkboardAppUser
 
 logger = get_logger(__name__)
 
@@ -77,8 +77,20 @@ def _collect_table_ids_from_layout(layout: Dict[str, Any]) -> set[int]:
     return out
 
 
-def export_workboard(db: Session, workboard: Workboard) -> Dict[str, Any]:
-    """Build the export bundle dict for a workboard."""
+def export_workboard(
+    db: Session,
+    workboard: Workboard,
+    *,
+    include_credentials: bool = False,
+) -> Dict[str, Any]:
+    """Build the export bundle dict for a workboard.
+
+    ``include_credentials`` controls whether bcrypt hashes for app users
+    travel with the bundle. Default is False so a bundle accidentally
+    shared (Slack, email, public template gallery) cannot be used to
+    impersonate the workboard's users — admins set fresh PINs after
+    import. Demo / disposable templates can opt in.
+    """
     layout = workboard.layout_json or {}
 
     # Collect table ids that appear in the layout, plus the workboard's own
@@ -135,7 +147,41 @@ def export_workboard(db: Session, workboard: Workboard) -> Dict[str, Any]:
         "primary_table_id": workboard.primary_table_id,
         "tables_meta": tables_meta,
         "layout_json": layout,
+        "app_users": _export_app_users(
+            db, workboard, include_credentials=include_credentials
+        ),
+        # Echo the choice so the import side knows whether the bundle's
+        # ``app_users`` carry usable PINs or just the user list metadata.
+        "app_users_include_credentials": bool(include_credentials),
     }
+
+
+def _export_app_users(
+    db: Session,
+    workboard: Workboard,
+    *,
+    include_credentials: bool,
+) -> List[Dict[str, Any]]:
+    """Snapshot every WorkboardAppUser row for the bundle."""
+    rows = (
+        db.query(WorkboardAppUser)
+        .filter(WorkboardAppUser.workboard_id == workboard.id)
+        .order_by(WorkboardAppUser.username.asc())
+        .all()
+    )
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        item: Dict[str, Any] = {
+            "username": r.username,
+            "full_name": r.full_name,
+            "role": r.role,
+            "active": bool(r.active),
+            "context": r.context or {},
+        }
+        if include_credentials:
+            item["pin_hash"] = r.pin_hash
+        out.append(item)
+    return out
 
 
 # ── Import ────────────────────────────────────────────────────────────────
@@ -150,12 +196,17 @@ class ImportReport:
         # Columns referenced in form fields / list columns / doc tables that
         # don't exist in the resolved table; surfaced as warnings (not errors).
         self.missing_columns: List[Dict[str, Any]] = []
+        # App-user import bookkeeping (set by ``_import_app_users``):
+        self.app_users_imported: int = 0
+        self.app_users_needing_pin: List[str] = []
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "matched_tables": self.matched_tables,
             "missing_tables": self.missing_tables,
             "missing_columns": self.missing_columns,
+            "app_users_imported": self.app_users_imported,
+            "app_users_needing_pin": self.app_users_needing_pin,
         }
 
 
@@ -180,6 +231,74 @@ def _build_table_match_index(
     template libraries you'll wire later)."""
     rows = _target_dataset_tables(db, target_dataset_id)
     return {t.source_table_name: t.id for t in rows if t.source_table_name}
+
+
+def _normalise_name(value: Any) -> str:
+    import re
+
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[`\"\[\]]", "", text)
+    text = text.rsplit(".", 1)[-1]
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _table_name_candidates(
+    *,
+    source_table_name: Any,
+    display_name: Any,
+) -> List[str]:
+    out: List[str] = []
+    for value in (source_table_name, display_name):
+        text = str(value or "").strip()
+        if text and text not in out:
+            out.append(text)
+        if "." in text:
+            base = text.rsplit(".", 1)[-1]
+            if base and base not in out:
+                out.append(base)
+    return out
+
+
+def _build_table_match_indexes(
+    rows: List[DatasetTable],
+) -> Tuple[Dict[str, int], Dict[str, int]]:
+    """Build exact and normalized table-name indexes for import mapping."""
+    exact: Dict[str, int] = {}
+    normalized_candidates: Dict[str, set[int]] = {}
+    for table in rows:
+        for candidate in _table_name_candidates(
+            source_table_name=table.source_table_name,
+            display_name=table.display_name,
+        ):
+            exact.setdefault(candidate, table.id)
+            normalized = _normalise_name(candidate)
+            if normalized:
+                normalized_candidates.setdefault(normalized, set()).add(table.id)
+    normalized = {
+        name: next(iter(table_ids))
+        for name, table_ids in normalized_candidates.items()
+        if len(table_ids) == 1
+    }
+    return exact, normalized
+
+
+def _infer_target_table_id(
+    meta: Dict[str, Any],
+    exact_index: Dict[str, int],
+    normalized_index: Dict[str, int],
+) -> Optional[int]:
+    candidates = _table_name_candidates(
+        source_table_name=meta.get("source_table_name"),
+        display_name=meta.get("display_name"),
+    )
+    for candidate in candidates:
+        if candidate in exact_index:
+            return exact_index[candidate]
+    for candidate in candidates:
+        normalized = _normalise_name(candidate)
+        if normalized and normalized in normalized_index:
+            return normalized_index[normalized]
+    return None
 
 
 def _coerce_table_mapping(
@@ -603,7 +722,7 @@ def import_workboard(
     target_table_ids = {t.id for t in target_tables}
     explicit_table_map = _coerce_table_mapping(table_mapping, target_table_ids)
     explicit_column_map = _coerce_column_mapping(column_mapping)
-    match_index = _build_table_match_index(db, target_dataset_id)
+    exact_match_index, normalized_match_index = _build_table_match_indexes(target_tables)
     id_map: Dict[int, Optional[int]] = {}
     for old_id_str, meta in bundle_tables_meta.items():
         try:
@@ -615,7 +734,7 @@ def import_workboard(
             new_id = explicit_table_map[old_id]
             mapping_source = "manual" if new_id else "unmapped"
         else:
-            new_id = match_index.get(src) if src else None
+            new_id = _infer_target_table_id(meta, exact_match_index, normalized_match_index)
             mapping_source = "auto" if new_id else "missing"
         id_map[old_id] = new_id
         record = {
@@ -705,9 +824,79 @@ def import_workboard(
     )
     db.add(workboard)
     db.flush()
+
+    _import_app_users(db, workboard, bundle, report)
+
     db.commit()
     db.refresh(workboard)
     return workboard, report
+
+
+def _import_app_users(
+    db: Session,
+    workboard: Workboard,
+    bundle: Dict[str, Any],
+    report: ImportReport,
+) -> None:
+    """Recreate app users on the freshly-imported workboard.
+
+    Each ``bundle["app_users"]`` entry becomes a ``WorkboardAppUser``
+    bound to the new workboard id. Rows without ``pin_hash`` (bundle
+    exported with ``include_credentials=false``) get a placeholder hash
+    that won't verify — admins must reset the PIN via the Builder before
+    those users can log in. The placeholder approach keeps the row
+    visible (admin can see who needs a PIN) instead of dropping the row.
+    """
+    raw_users = bundle.get("app_users") or []
+    if not isinstance(raw_users, list) or not raw_users:
+        return
+
+    from app.modules.workboards.services import app_user_service
+
+    # Sentinel hash that no PIN can verify against — bcrypt of a long
+    # random string. Hashed once per import so we don't churn cycles.
+    placeholder_hash = app_user_service.hash_pin(
+        "__appbi_placeholder__set_via_admin__"
+    )
+
+    inserted = 0
+    needs_pin: List[str] = []
+    for raw in raw_users:
+        if not isinstance(raw, dict):
+            continue
+        username = str(raw.get("username") or "").strip()
+        if not username:
+            continue
+        pin_hash = raw.get("pin_hash") if isinstance(raw.get("pin_hash"), str) else None
+        if not pin_hash:
+            pin_hash = placeholder_hash
+            needs_pin.append(username)
+        try:
+            db.add(
+                WorkboardAppUser(
+                    workboard_id=workboard.id,
+                    username=username,
+                    pin_hash=pin_hash,
+                    full_name=raw.get("full_name") or None,
+                    role=raw.get("role") or None,
+                    active=bool(raw.get("active", True)),
+                    context=raw.get("context") or {},
+                )
+            )
+            inserted += 1
+        except Exception as exc:
+            logger.warning(
+                "import: failed to insert app user '%s' for workboard %s: %s",
+                username,
+                workboard.id,
+                exc,
+            )
+    if inserted:
+        db.flush()
+    # Surface the user-import outcome on the import report so the FE can
+    # show "Imported 12 users (3 need PIN reset)".
+    setattr(report, "app_users_imported", inserted)
+    setattr(report, "app_users_needing_pin", needs_pin)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────

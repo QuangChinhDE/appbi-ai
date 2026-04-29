@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useRef } from 'react';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { IconButton } from '@/components/ui/Button';
@@ -28,6 +28,13 @@ export function Modal({
   contentClassName,
   footerClassName,
 }: ModalProps) {
+  // Track where the press started so we only treat a backdrop click as
+  // "close" when both press AND release happened on the backdrop. Without
+  // this, dragging the cursor from a native <select> option (or a text
+  // selection inside the modal) onto the dim layer dismisses the modal —
+  // which users see as "I clicked an option and the dialog disappeared".
+  const pressOriginRef = useRef<EventTarget | null>(null);
+
   if (!isOpen) return null;
 
   const sizeClasses = {
@@ -43,8 +50,21 @@ export function Modal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in">
       <div
-        className="absolute inset-0 bg-overlay/84 backdrop-blur-[3px]"
-        onClick={onClose}
+        // No backdrop-filter here: Firefox 150 routes native <select>
+        // dropdown popups through a composite layer that gets clipped
+        // by any ancestor with `backdrop-filter`, so option clicks land
+        // on the backdrop instead of the option. Plain ``bg-overlay/84``
+        // already gives a strong dim effect across all themes, and the
+        // 3px blur was visually negligible.
+        className="absolute inset-0 bg-overlay/84"
+        onMouseDown={(e) => {
+          pressOriginRef.current = e.target;
+        }}
+        onMouseUp={(e) => {
+          const sameTarget = pressOriginRef.current === e.currentTarget;
+          pressOriginRef.current = null;
+          if (sameTarget && e.target === e.currentTarget) onClose();
+        }}
       />
       <div
         className={cn(

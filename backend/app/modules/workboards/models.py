@@ -199,9 +199,18 @@ class WorkboardWorkspace(Base):
     # Public access token — unguessable, opaque, used in /w/{token} URLs.
     token = Column(String(64), nullable=False, unique=True, index=True)
 
-    # App-user provider config: which dataset table to authenticate against
-    # and which columns to read. See AppUsersConfig pydantic schema.
-    app_users_config = Column(JSONB, nullable=False, server_default="{}")
+    # Access mode controls who can open the workspace's public link.
+    #   - "internal": no app_users table needed; only AppBI-authenticated
+    #     staff can open the workboards (admin/test path). app_users_config
+    #     stays empty.
+    #   - "public_app_users": end-users (workers, foremen) login via PIN
+    #     against a project-owned table inside the workspace's dataset.
+    #     app_users_config must be populated.
+    access_mode = Column(
+        String(32),
+        nullable=False,
+        server_default="internal",
+    )
 
     # Menu config: list of {workboard_slug, label, icon, roles[]}.
     menu_config = Column(JSONB, nullable=False, server_default="[]")
@@ -245,6 +254,58 @@ class WorkboardWorkspace(Base):
     __table_args__ = (
         UniqueConstraint("slug", name="uq_workboard_workspaces_slug"),
         UniqueConstraint("token", name="uq_workboard_workspaces_token"),
+    )
+
+
+class WorkboardAppUser(Base):
+    """End-user account scoped to a single workboard.
+
+    Identity for the public mini-app login flow lives here, not in any
+    project dataset. One row per (workboard, username); credentials are
+    bcrypt-hashed in AppBI's own DB so dataset re-imports never wipe or
+    leak them. ``context`` is a flexible bag the workboard's RLS rules
+    read via ``{{app_user.<key>}}`` placeholders — vertical-specific
+    fields (``nong_trai_id``, ``clinic_id``, ``dept_id`` …) live here
+    without forcing a schema migration each time a new vertical is added.
+    """
+
+    __tablename__ = "workboard_app_users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workboard_id = Column(
+        Integer,
+        ForeignKey("workboards.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    username = Column(String(255), nullable=False)
+    pin_hash = Column(String(255), nullable=False)
+    full_name = Column(String(255), nullable=True)
+    role = Column(String(64), nullable=True)
+    active = Column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default="true",
+    )
+    context = Column(JSONB, nullable=False, server_default="{}", default=dict)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workboard_id", "username", name="uq_wb_app_user"
+        ),
     )
 
 

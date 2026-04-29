@@ -73,6 +73,8 @@ install-docker-and-run.sh
 .env.bak.*
 Skill-AppBI/
 dashboard_example/
+demo_dataset/
+*.workboard.json
 UI_LINEAR_AUDIT_CHECKLIST.md
 Design System Inspired by Linear.md
 ai-chat/AI_CHAT_SYSTEM_DOC.md

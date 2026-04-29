@@ -808,6 +808,71 @@ class WorkboardRowDeletePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# ---------------------------------------------------------------------------
+# App-user CRUD (Builder "Users" tab)
+# ---------------------------------------------------------------------------
+
+
+class AppUserCreate(BaseModel):
+    """Admin payload for creating a workboard app-user.
+
+    PIN is sent in plain text and bcrypt-hashed before storage. Username
+    must be unique within the workboard *and* across all workboards
+    sharing a workspace menu — the latter is enforced server-side because
+    the public login form has no idea which workboard a username belongs
+    to until match time.
+    """
+
+    username: str = Field(..., min_length=1, max_length=255)
+    pin: str = Field(..., min_length=1, max_length=128)
+    full_name: Optional[str] = Field(default=None, max_length=255)
+    role: Optional[str] = Field(default=None, max_length=64)
+    active: bool = True
+    context: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class AppUserUpdate(BaseModel):
+    """All fields optional; PATCH semantics. Pass ``pin`` to reset PIN."""
+
+    username: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    pin: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    full_name: Optional[str] = Field(default=None, max_length=255)
+    role: Optional[str] = Field(default=None, max_length=64)
+    active: Optional[bool] = None
+    context: Optional[Dict[str, Any]] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class AppUserResponse(BaseModel):
+    id: int
+    workboard_id: int
+    username: str
+    full_name: Optional[str] = None
+    role: Optional[str] = None
+    active: bool
+    context: Dict[str, Any] = Field(default_factory=dict)
+    # Never echo pin_hash to the client — admins reset PIN via PATCH.
+    has_pin: bool = True
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AppUserBulkImport(BaseModel):
+    """Used by the import flow + the Users tab CSV uploader."""
+
+    users: List[Dict[str, Any]] = Field(default_factory=list)
+    # When true, skip rows whose username already exists in the workboard
+    # instead of failing the whole batch. Useful for idempotent re-imports.
+    skip_existing: bool = True
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class WorkboardWriteResult(BaseModel):
     """Standard envelope returned by row-write endpoints."""
 
