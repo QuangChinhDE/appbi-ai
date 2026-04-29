@@ -1158,7 +1158,9 @@ class DataSourceConnectionService:
                 return DataSourceConnectionService._infer_mysql_types(config, sql_query)
             elif ds_type == DataSourceType.BIGQUERY.value:
                 return DataSourceConnectionService._infer_bigquery_types(config, sql_query)
-            elif ds_type == DataSourceType.MANUAL.value or ds_type == DataSourceType.GOOGLE_SHEETS.value:
+            elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
+                return DataSourceConnectionService._infer_google_sheets_types(config, sql_query)
+            elif ds_type == DataSourceType.MANUAL.value:
                 return DataSourceConnectionService._infer_manual_types(config, sql_query)
             else:
                 raise ValueError(f"Unsupported data source type: {ds_type}")
@@ -1266,7 +1268,7 @@ class DataSourceConnectionService:
     
     @staticmethod
     def _infer_manual_types(config: Dict[str, Any], sql_query: str) -> List[Dict[str, str]]:
-        """Infer column types for Manual Table / Google Sheets datasources."""
+        """Infer column types for Manual Table datasources."""
         try:
             from app.services.manual_table_connector import create_manual_table_connector, extract_sheet_name_from_sql
             connector = create_manual_table_connector(config)
@@ -1275,6 +1277,23 @@ class DataSourceConnectionService:
             return [{"name": col["name"], "type": col.get("type", "string")} for col in data["columns"]]
         except Exception as e:
             logger.error(f"Manual type inference failed: {str(e)}")
+            raise
+
+    @staticmethod
+    def _infer_google_sheets_types(config: Dict[str, Any], sql_query: str) -> List[Dict[str, str]]:
+        """Infer column names from the live Google Sheets workbook."""
+        try:
+            from app.core.crypto import decrypt_config
+
+            live_config = decrypt_config(config)
+            columns, _ = DataSourceConnectionService._execute_google_sheets(
+                live_config,
+                sql_query,
+                limit=1,
+            )
+            return [{"name": str(column), "type": "string"} for column in columns]
+        except Exception as e:
+            logger.error(f"Google Sheets type inference failed: {str(e)}")
             raise
 
     @staticmethod
@@ -1533,28 +1552,11 @@ class DataSourceConnectionService:
         config: Dict[str, Any],
         search_query: str = None
     ) -> List[Dict[str, str]]:
-        """List sheets from Google Sheets.
-
-        Prefers the local snapshot in config['sheets'] so no live API call is
-        made after the first connection.  Falls back to a live API call when
-        the snapshot is absent (e.g. datasources created before this change).
-        """
+        """List sheets from the live Google Sheets workbook."""
         try:
-            spreadsheet_id = config.get('spreadsheet_id', '')
-
-            # --- use cached snapshot if available ---
-            cached_sheets = config.get('sheets')
-            if cached_sheets:
-                sheet_names = list(cached_sheets.keys())
-                logger.info(f"Google Sheets list from cache: {len(sheet_names)} sheets")
-            else:
-                # fallback: live API call
-                from app.services.google_sheets_connector import create_google_sheets_connector
-                if not spreadsheet_id:
-                    raise ValueError("spreadsheet_id is required")
-                connector = create_google_sheets_connector(config)
-                sheet_names = connector.list_sheets(spreadsheet_id)
-                logger.info(f"Google Sheets list via API: {len(sheet_names)} sheets")
+            spreadsheet_id, connector = DataSourceConnectionService._get_google_sheets_connector(config)
+            sheet_names = connector.list_sheets(spreadsheet_id)
+            logger.info(f"Google Sheets list via API: {len(sheet_names)} sheets")
 
             tables = []
             for sheet_name in sheet_names:
@@ -1571,6 +1573,15 @@ class DataSourceConnectionService:
         except Exception as e:
             logger.error(f"Google Sheets list failed: {str(e)}")
             raise
+
+    @staticmethod
+    def _get_google_sheets_connector(config: Dict[str, Any]):
+        from app.services.google_sheets_connector import create_google_sheets_connector
+
+        spreadsheet_id = str(config.get("spreadsheet_id") or "").strip()
+        if not spreadsheet_id:
+            raise ValueError("spreadsheet_id is required")
+        return spreadsheet_id, create_google_sheets_connector(config)
     
     @staticmethod
     def _list_manual_tables(
@@ -1602,31 +1613,19 @@ class DataSourceConnectionService:
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
         """Execute SQL query against Google Sheets using DuckDB.
 
-        Data resolution order:
-          1. Use local snapshot (config['sheets']) — no API call
-          2. Fall back to a live API call when the snapshot is missing
-
         All sheets are registered as DuckDB in-memory tables so any SQL
         (WHERE, GROUP BY, ORDER BY, JOINs, CTEs) is fully supported.
         """
         try:
-            # ── Collect all sheet data (snapshot or live API) ─────────────────
-            cached_sheets = config.get('sheets')
+            # ── Collect all sheet data from the live workbook ─────────────────
+            spreadsheet_id, connector = DataSourceConnectionService._get_google_sheets_connector(config)
 
-            if cached_sheets:
-                all_sheets = cached_sheets  # dict[sheet_name -> {columns, rows}]
-                logger.info(f"Google Sheets data from cache: {len(all_sheets)} sheets")
-            else:
-                # No snapshot — live API call for every sheet
-                from app.services.google_sheets_connector import create_google_sheets_connector
-                connector = create_google_sheets_connector(config)
-                spreadsheet_id = config.get('spreadsheet_id')
-                sheet_names = connector.list_sheets(spreadsheet_id)
-                all_sheets = {}
-                for sn in sheet_names:
-                    data = connector.get_sheet_data(spreadsheet_id, sheet_name=sn)
-                    all_sheets[sn] = data
-                logger.info(f"Google Sheets data via API: {len(all_sheets)} sheets")
+            sheet_names = connector.list_sheets(spreadsheet_id)
+            all_sheets = {}
+            for sn in sheet_names:
+                data = connector.get_sheet_data(spreadsheet_id, sheet_name=sn)
+                all_sheets[sn] = data
+            logger.info(f"Google Sheets data via API: {len(all_sheets)} sheets")
 
             # ── Try DuckDB first (full SQL support) ───────────────────────────
             try:
@@ -1675,6 +1674,8 @@ class DataSourceConnectionService:
 
             if sheet_name and sheet_name in all_sheets:
                 sheet_data = all_sheets[sheet_name]
+            elif sheet_name:
+                raise ValueError(f"Sheet '{sheet_name}' not found in spreadsheet.")
             elif all_sheets:
                 first = next(iter(all_sheets))
                 logger.warning(f"Sheet '{sheet_name}' not found; using '{first}' instead")
@@ -2074,7 +2075,9 @@ class DataSourceConnectionService:
             return DataSourceConnectionService._mysql_list_columns(config, schema or config.get("database", ""), tbl)
         elif ds_type == DataSourceType.BIGQUERY.value:
             return DataSourceConnectionService._bq_list_columns(config, table_name)
-        elif ds_type in (DataSourceType.GOOGLE_SHEETS.value, DataSourceType.MANUAL.value):
+        elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
+            return DataSourceConnectionService._google_sheets_list_columns(config, tbl)
+        elif ds_type == DataSourceType.MANUAL.value:
             return DataSourceConnectionService._sheets_list_columns(config, tbl)
         return []
 
@@ -2147,7 +2150,7 @@ class DataSourceConnectionService:
 
     @staticmethod
     def _sheets_list_columns(config: Dict[str, Any], sheet_name: str) -> List[Dict[str, str]]:
-        """Get column headers from Google Sheets / Manual (CSV/Excel) cached snapshot.
+        """Get column headers from a Manual (CSV/Excel) cached snapshot.
         Config format: {"sheets": {sheet_name: {"columns": [{name, type}], "rows": [...]}}}
         """
         try:
@@ -2171,5 +2174,28 @@ class DataSourceConnectionService:
                 if isinstance(headers, dict):
                     return [{"name": k, "type": "string"} for k in headers.keys()]
             return []
+        except Exception:
+            return []
+
+    @staticmethod
+    def _google_sheets_list_columns(config: Dict[str, Any], sheet_name: str) -> List[Dict[str, str]]:
+        """Get column headers from the live Google Sheets workbook."""
+        try:
+            spreadsheet_id, connector = DataSourceConnectionService._get_google_sheets_connector(config)
+            target_sheet = str(sheet_name or config.get("sheet_name") or "").strip()
+            if not target_sheet:
+                sheet_names = connector.list_sheets(spreadsheet_id)
+                target_sheet = sheet_names[0] if sheet_names else ""
+            if not target_sheet:
+                return []
+            data = connector.get_sheet_data(spreadsheet_id, sheet_name=target_sheet)
+            return [
+                {
+                    "name": col["name"] if isinstance(col, dict) else str(col),
+                    "type": col.get("type", "string") if isinstance(col, dict) else "string",
+                }
+                for col in data.get("columns", [])
+                if col
+            ]
         except Exception:
             return []

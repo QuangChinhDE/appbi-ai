@@ -76,6 +76,12 @@ def _dialect_for_ds_type(ds_type: str) -> str:
     }.get(ds_type_val, "postgresql")
 
 
+def _should_cache_live_query(ds_type: str) -> bool:
+    """Google Sheets is externally mutable, so source freshness beats TTL cache."""
+    ds_type_val = ds_type if isinstance(ds_type, str) else ds_type.value
+    return ds_type_val != "google_sheets"
+
+
 def _build_base_table_ref(
     ds_type: str,
     config: dict,
@@ -973,6 +979,7 @@ class LiveQueryService:
         """Preview dataset rows directly from the source with cache + cost guard."""
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
         dialect = "bigquery" if ds_type == "bigquery" else "postgresql"
+        cache_enabled = _should_cache_live_query(ds_type)
 
         from app.core.crypto import decrypt_config
         config = decrypt_config(datasource.config)
@@ -987,15 +994,16 @@ class LiveQueryService:
             "transformations": getattr(db_table, "transformations", None) or [],
             "type_overrides": normalize_type_overrides(getattr(db_table, "type_overrides", None)),
         }
-        cached = query_cache.get_cached(
-            datasource.id,
-            table_identifier,
-            "dataset_preview",
-            cache_payload,
-            [],
-        )
-        if cached is not None:
-            return cached
+        if cache_enabled:
+            cached = query_cache.get_cached(
+                datasource.id,
+                table_identifier,
+                "dataset_preview",
+                cache_payload,
+                [],
+            )
+            if cached is not None:
+                return cached
 
         from app.services.datasource_service import DataSourceConnectionService
 
@@ -1139,14 +1147,15 @@ class LiveQueryService:
                 "source_columns": plan.source_columns,
                 "output_columns": plan.output_columns,
             }
-        query_cache.set_cached(
-            datasource.id,
-            table_identifier,
-            "dataset_preview",
-            cache_payload,
-            [],
-            result,
-        )
+        if cache_enabled:
+            query_cache.set_cached(
+                datasource.id,
+                table_identifier,
+                "dataset_preview",
+                cache_payload,
+                [],
+                result,
+            )
         return result
 
     @staticmethod
@@ -1169,6 +1178,7 @@ class LiveQueryService:
         """
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
+        cache_enabled = _should_cache_live_query(ds_type)
 
         from app.core.crypto import decrypt_config
         config = decrypt_config(datasource.config)
@@ -1190,11 +1200,12 @@ class LiveQueryService:
         }
 
         # Check cache first
-        cached = query_cache.get_cached(
-            datasource.id, table_identifier, chart_type, cache_role_config, all_filters
-        )
-        if cached is not None:
-            return cached
+        if cache_enabled:
+            cached = query_cache.get_cached(
+                datasource.id, table_identifier, chart_type, cache_role_config, all_filters
+            )
+            if cached is not None:
+                return cached
 
         # Build aggregation SQL
         sql, pre_aggregated = build_live_agg_query(
@@ -1247,9 +1258,10 @@ class LiveQueryService:
         }
 
         # Store in cache
-        query_cache.set_cached(
-            datasource.id, table_identifier, chart_type, cache_role_config, all_filters, result
-        )
+        if cache_enabled:
+            query_cache.set_cached(
+                datasource.id, table_identifier, chart_type, cache_role_config, all_filters, result
+            )
 
         logger.info(
             "Live query executed: ds=%d, table=%s, chart_type=%s, rows=%d, time=%.0fms",
@@ -1279,6 +1291,7 @@ class LiveQueryService:
         """
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
+        cache_enabled = _should_cache_live_query(ds_type)
 
         from app.core.crypto import decrypt_config
         from app.services.datasource_service import DataSourceConnectionService
@@ -1306,15 +1319,16 @@ class LiveQueryService:
             "_source_sql": normalized_sql_query,
         }
 
-        cached = query_cache.get_cached(
-            datasource.id,
-            table_identifier,
-            chart_type,
-            cache_role_config,
-            all_filters,
-        )
-        if cached is not None:
-            return cached
+        if cache_enabled:
+            cached = query_cache.get_cached(
+                datasource.id,
+                table_identifier,
+                chart_type,
+                cache_role_config,
+                all_filters,
+            )
+            if cached is not None:
+                return cached
 
         base_table = f"({normalized_sql_query}) AS _appbi_live"
         sql, pre_aggregated = build_live_agg_query(
@@ -1362,14 +1376,15 @@ class LiveQueryService:
             "execution_time_ms": round(execution_time_ms, 1),
         }
 
-        query_cache.set_cached(
-            datasource.id,
-            table_identifier,
-            chart_type,
-            cache_role_config,
-            all_filters,
-            result,
-        )
+        if cache_enabled:
+            query_cache.set_cached(
+                datasource.id,
+                table_identifier,
+                chart_type,
+                cache_role_config,
+                all_filters,
+                result,
+            )
 
         logger.info(
             "Live custom chart query executed: ds=%d, chart_type=%s, rows=%d, time=%.0fms",
@@ -1394,6 +1409,7 @@ class LiveQueryService:
         """Execute dataset table query directly against the live source."""
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
+        cache_enabled = _should_cache_live_query(ds_type)
 
         from app.core.crypto import decrypt_config
         config = decrypt_config(datasource.config)
@@ -1410,15 +1426,16 @@ class LiveQueryService:
             "transformations": getattr(db_table, "transformations", None) or [],
             "type_overrides": normalize_type_overrides(getattr(db_table, "type_overrides", None)),
         }
-        cached = query_cache.get_cached(
-            datasource.id,
-            table_identifier,
-            "dataset_execute",
-            cache_payload,
-            normalized_filters,
-        )
-        if cached is not None:
-            return list(cached.get("rows") or [])
+        if cache_enabled:
+            cached = query_cache.get_cached(
+                datasource.id,
+                table_identifier,
+                "dataset_execute",
+                cache_payload,
+                normalized_filters,
+            )
+            if cached is not None:
+                return list(cached.get("rows") or [])
 
         sql = build_live_dataset_query(
             base_table=base_table,
@@ -1451,14 +1468,15 @@ class LiveQueryService:
             timeout_seconds=timeout,
             skip_bigquery_cost_check=True,
         )
-        query_cache.set_cached(
-            datasource.id,
-            table_identifier,
-            "dataset_execute",
-            cache_payload,
-            normalized_filters,
-            {"rows": rows},
-        )
+        if cache_enabled:
+            query_cache.set_cached(
+                datasource.id,
+                table_identifier,
+                "dataset_execute",
+                cache_payload,
+                normalized_filters,
+                {"rows": rows},
+            )
         return rows
 
     @staticmethod

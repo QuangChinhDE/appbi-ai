@@ -384,6 +384,98 @@ def _normalize_preview_error_message(exc: Exception) -> str:
     return " ".join(str(exc).split()).strip()
 
 
+def _normalize_source_table_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parts = [
+        part.strip().strip('"').strip("'").strip("`")
+        for part in text.split(".")
+    ]
+    return ".".join(part for part in parts if part)
+
+
+def _source_table_name_matches(expected: Any, actual: Any) -> bool:
+    expected_norm = _normalize_source_table_name(expected)
+    actual_norm = _normalize_source_table_name(actual)
+    if not expected_norm or not actual_norm:
+        return False
+    return expected_norm == actual_norm or expected_norm.lower() == actual_norm.lower()
+
+
+def _source_object_label(datasource: Optional[DataSource]) -> str:
+    ds_type = getattr(datasource, "type", None)
+    ds_type_value = ds_type.value if hasattr(ds_type, "value") else str(ds_type or "")
+    if ds_type_value == "google_sheets":
+        return "sheet"
+    return "table"
+
+
+def _build_datasource_missing_detail(db_table: DatasetTable) -> Dict[str, Any]:
+    return {
+        "code": "DATASOURCE_MISSING",
+        "message": "The datasource connected to this dataset table no longer exists or is not accessible.",
+        "table_id": getattr(db_table, "id", None),
+        "table_name": getattr(db_table, "display_name", None) or getattr(db_table, "source_table_name", None),
+        "source_table_name": getattr(db_table, "source_table_name", None),
+        "datasource_id": getattr(db_table, "datasource_id", None),
+    }
+
+
+def _build_source_table_missing_detail(
+    db_table: DatasetTable,
+    datasource: Optional[DataSource],
+    raw_error: str | None = None,
+) -> Dict[str, Any]:
+    label = _source_object_label(datasource)
+    source_name = getattr(db_table, "source_table_name", None)
+    message = (
+        f"The source {label} '{source_name}' is no longer available in the connected datasource. "
+        f"It may have been deleted or renamed."
+    )
+    return {
+        "code": "SOURCE_TABLE_MISSING",
+        "message": message,
+        "table_id": getattr(db_table, "id", None),
+        "table_name": getattr(db_table, "display_name", None) or source_name,
+        "source_table_name": source_name,
+        "source_object": label,
+        "datasource_id": getattr(db_table, "datasource_id", None),
+        "raw_error": raw_error,
+    }
+
+
+def _looks_like_missing_source_table_error(message: str) -> bool:
+    lower_msg = (message or "").lower()
+    return (
+        "not found in spreadsheet" in lower_msg
+        or "no such table" in lower_msg
+        or "not found: table" in lower_msg
+        or "table not found" in lower_msg
+        or "sheet not found" in lower_msg
+        or ("table with name" in lower_msg and "does not exist" in lower_msg)
+        or ("relation" in lower_msg and "does not exist" in lower_msg)
+        or ("sheet" in lower_msg and "not found" in lower_msg)
+    )
+
+
+def _build_preview_source_error_detail(
+    db_table: DatasetTable,
+    datasource: Optional[DataSource],
+    exc: Exception,
+) -> Optional[Dict[str, Any]]:
+    if (
+        getattr(db_table, "source_kind", None) != "physical_table"
+        or not getattr(db_table, "source_table_name", None)
+    ):
+        return None
+
+    error_msg = _normalize_preview_error_message(exc)
+    if _looks_like_missing_source_table_error(error_msg):
+        return _build_source_table_missing_detail(db_table, datasource, error_msg)
+    return None
+
+
 def _is_fixable_preview_error(exc: Exception) -> bool:
     if isinstance(exc, ValueError):
         return True
@@ -806,6 +898,106 @@ def list_dataset_tables(
 
     tables = DatasetCRUDService.get_dataset_tables(db, dataset_id)
     return tables
+
+
+@router.get("/{dataset_id}/tables/source-status")
+def get_dataset_table_source_status(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Check whether physical dataset tables still exist in their live datasource."""
+    dataset_obj = DatasetCRUDService.get_dataset_by_id(db, dataset_id)
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
+    if perm == "none":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    tables = DatasetCRUDService.get_dataset_tables(db, dataset_id)
+    datasource_ids = sorted(
+        {
+            int(table.datasource_id)
+            for table in tables
+            if getattr(table, "datasource_id", None) is not None
+        }
+    )
+    datasources = {
+        datasource.id: datasource
+        for datasource in (
+            db.query(DataSource)
+            .filter(DataSource.id.in_(datasource_ids))
+            .all()
+            if datasource_ids
+            else []
+        )
+    }
+    live_table_cache: Dict[int, List[Dict[str, Any]]] = {}
+    live_table_errors: Dict[int, str] = {}
+
+    def get_live_tables(datasource: DataSource) -> List[Dict[str, Any]]:
+        if datasource.id not in live_table_cache and datasource.id not in live_table_errors:
+            ds_type = datasource.type.value if hasattr(datasource.type, "value") else str(datasource.type)
+            try:
+                live_table_cache[datasource.id] = DataSourceConnectionService.list_tables(
+                    ds_type,
+                    datasource.config,
+                )
+            except Exception as exc:
+                live_table_errors[datasource.id] = _normalize_preview_error_message(exc)
+        return live_table_cache.get(datasource.id, [])
+
+    statuses: List[Dict[str, Any]] = []
+    for table in tables:
+        base = {
+            "table_id": table.id,
+            "table_name": table.display_name or table.source_table_name,
+            "source_kind": table.source_kind,
+            "source_table_name": table.source_table_name,
+            "datasource_id": table.datasource_id,
+        }
+        if table.source_kind != "physical_table" or not table.datasource_id or not table.source_table_name:
+            statuses.append({**base, "status": "ok", "code": None, "message": None})
+            continue
+
+        datasource = datasources.get(table.datasource_id)
+        if not datasource:
+            statuses.append({
+                **base,
+                "status": "error",
+                "code": "DATASOURCE_MISSING",
+                "message": "The datasource connected to this table no longer exists or is not accessible.",
+            })
+            continue
+
+        live_tables = get_live_tables(datasource)
+        if datasource.id in live_table_errors:
+            statuses.append({
+                **base,
+                "status": "error",
+                "code": "SOURCE_CONNECTION_ERROR",
+                "message": "Could not verify this table against the connected datasource.",
+                "raw_error": live_table_errors[datasource.id],
+            })
+            continue
+
+        exists = any(
+            _source_table_name_matches(table.source_table_name, live_table.get("name"))
+            for live_table in live_tables
+        )
+        if exists:
+            statuses.append({**base, "status": "ok", "code": None, "message": None})
+        else:
+            statuses.append({
+                **base,
+                "status": "missing",
+                **_build_source_table_missing_detail(table, datasource),
+            })
+
+    return {
+        "tables": statuses,
+        "checked_at": datetime.utcnow().isoformat() + "Z",
+    }
 
 
 @router.post("/{dataset_id}/tables", status_code=201)
@@ -1527,7 +1719,7 @@ def preview_dataset_table(
     else:
         datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
         if not datasource:
-            raise HTTPException(status_code=404, detail="Datasource not found")
+            raise HTTPException(status_code=404, detail=_build_datasource_missing_detail(db_table))
 
     # ── Preview directly from live source ──
     try:
@@ -1598,11 +1790,17 @@ def preview_dataset_table(
     except HTTPException:
         raise
     except ValueError as e:
+        detail = _build_preview_source_error_detail(db_table, datasource, e)
+        if detail:
+            raise HTTPException(status_code=400, detail=detail) from e
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         error_msg = _normalize_preview_error_message(e)
         if _is_fixable_preview_error(e):
             logger.warning("Preview execution error for table %d: %s", table_id, error_msg)
+            detail = _build_preview_source_error_detail(db_table, datasource, e)
+            if detail:
+                raise HTTPException(status_code=400, detail=detail) from e
             if any(kw in error_msg.lower() for kw in ("syntax error", "invalidquery", "invalid query", "parse error")):
                 raise HTTPException(status_code=400, detail=f"SQL error: {error_msg}")
             raise HTTPException(status_code=400, detail=error_msg or "Preview query failed.")

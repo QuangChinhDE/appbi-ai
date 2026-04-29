@@ -715,11 +715,11 @@ export function DatasetTableGrid({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <h3 className="text-lg font-medium text-text-primary mb-1">Failed to load data</h3>
+          <h3 className="text-lg font-medium text-text-primary mb-1">Không thể tải dữ liệu</h3>
           <p className="text-sm text-text-tertiary mb-4">{error}</p>
           {onRetry && (
             <button onClick={onRetry} className="px-4 py-2 bg-brand text-white rounded-md hover:bg-brand-hover transition-colors">
-              Retry
+              Thử lại
             </button>
           )}
         </div>

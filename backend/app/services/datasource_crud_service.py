@@ -12,39 +12,19 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 
-def _snapshot_google_sheets(config: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_google_sheets_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Fetch every sheet from the spreadsheet and store data in config['sheets'].
-    Mirrors the Manual Table format so the rest of the stack can treat them
-    identically.  On failure the original config is returned unchanged so that
-    datasource creation / update never blocks.
+    Keep Google Sheets datasources live-backed.
+
+    Older versions stored a full ``config['sheets']`` snapshot, which made a
+    deleted/renamed sheet continue to appear in datasets.  Manual uploaded
+    files still use snapshots; Google Sheets must reflect the workbook.
     """
-    try:
-        from app.services.google_sheets_connector import create_google_sheets_connector
-        connector = create_google_sheets_connector(config)
-        spreadsheet_id = config.get('spreadsheet_id', '')
-        if not spreadsheet_id:
-            return config
-
-        sheet_names = connector.list_sheets(spreadsheet_id)
-        sheets: Dict[str, Any] = {}
-        for name in sheet_names:
-            try:
-                data = connector.get_sheet_data(spreadsheet_id, sheet_name=name)
-                sheets[name] = {
-                    'columns': data.get('columns', []),
-                    'rows': data.get('rows', []),
-                }
-            except Exception as e:
-                logger.warning(f"Could not snapshot sheet '{name}': {e}")
-
-        updated = dict(config)
-        updated['sheets'] = sheets
-        logger.info(f"Snapshotted {len(sheets)} sheets from spreadsheet '{spreadsheet_id}'")
-        return updated
-    except Exception as e:
-        logger.warning(f"GG Sheets snapshot failed (using live mode): {e}")
-        return config
+    updated = dict(config or {})
+    if "sheets" in updated:
+        updated.pop("sheets", None)
+        logger.info("Removed legacy Google Sheets snapshot from datasource config")
+    return updated
 
 
 class DataSourceCRUDService:
@@ -91,7 +71,7 @@ class DataSourceCRUDService:
             from app.core.crypto import encrypt_config
             config = data_source.config
             if data_source.type.value == 'google_sheets':
-                config = _snapshot_google_sheets(config)
+                config = _normalize_google_sheets_config(config)
             config = encrypt_config(config)
             resolved_name = DataSourceCRUDService._resolve_unique_name(db, data_source.name)
 
@@ -133,7 +113,8 @@ class DataSourceCRUDService:
                         exclude_id=data_source_id,
                     )
 
-            # Re-snapshot sheets if config is being updated for a GG Sheets or Manual datasource.
+            # Refresh stored source metadata when config changes. Google Sheets
+            # is live-backed; Manual stores the uploaded-file snapshot.
             # Track whether config actually changed so we know to invalidate dataset-table caches.
             config_refreshed = False
             if 'config' in update_data:
@@ -155,7 +136,7 @@ class DataSourceCRUDService:
                 update_data['config'] = new_cfg
 
                 if ds_type == 'google_sheets':
-                    update_data['config'] = _snapshot_google_sheets(update_data['config'])
+                    update_data['config'] = _normalize_google_sheets_config(update_data['config'])
                     config_refreshed = True
                 elif ds_type == 'manual':
                     # Manual type: config is already the new snapshot (uploaded by user)
@@ -166,7 +147,7 @@ class DataSourceCRUDService:
                 setattr(db_data_source, field, value)
 
             # When the underlying data changes, invalidate all dataset-table caches that
-            # reference this datasource so the next preview re-reads from the fresh snapshot.
+            # reference this datasource so the next preview re-reads from the source.
             # This prevents stale column names showing in the UI after columns are added/removed.
             if config_refreshed:
                 from app.models.dataset import DatasetTable

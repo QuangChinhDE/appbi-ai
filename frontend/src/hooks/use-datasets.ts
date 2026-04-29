@@ -186,11 +186,35 @@ export interface TablePreviewOptions {
   enabled?: boolean;
 }
 
+export interface DatasetTableSourceStatusOptions {
+  enabled?: boolean;
+}
+
 export interface TablePreviewResponse {
   columns: ColumnMetadata[];
   rows: Record<string, any>[];
   total: number;
   has_more: boolean;
+}
+
+export type DatasetTableSourceStatusState = 'ok' | 'missing' | 'error';
+
+export interface DatasetTableSourceStatus {
+  table_id: number;
+  table_name?: string | null;
+  source_kind?: string | null;
+  source_table_name?: string | null;
+  datasource_id?: number | null;
+  status: DatasetTableSourceStatusState;
+  code?: string | null;
+  message?: string | null;
+  source_object?: 'sheet' | 'table' | string | null;
+  raw_error?: string | null;
+}
+
+export interface DatasetTableSourceStatusResponse {
+  tables: DatasetTableSourceStatus[];
+  checked_at?: string;
 }
 
 export interface AggregationSpec {
@@ -409,6 +433,8 @@ export const datasetKeys = {
   details: () => [...datasetKeys.all, 'detail'] as const,
   detail: (id: number) => [...datasetKeys.details(), id] as const,
   tables: (datasetId: number) => [...datasetKeys.detail(datasetId), 'tables'] as const,
+  tableSourceStatus: (datasetId: number) =>
+    [...datasetKeys.detail(datasetId), 'tables', 'source-status'] as const,
   dictionary: (datasetId: number) => [...datasetKeys.detail(datasetId), 'dictionary'] as const,
   tablePreview: (datasetId: number, tableId: number) =>
     [...datasetKeys.detail(datasetId), 'table', tableId, 'preview'] as const,
@@ -529,6 +555,27 @@ export function useDatasetTables(datasetId: number | null) {
   });
 }
 
+/**
+ * Check whether dataset tables still exist in their connected live datasource.
+ */
+export function useDatasetTableSourceStatus(
+  datasetId: number | null,
+  options: DatasetTableSourceStatusOptions = {}
+) {
+  return useQuery({
+    queryKey: datasetKeys.tableSourceStatus(datasetId!),
+    queryFn: async () => {
+      const response = await api.get<DatasetTableSourceStatusResponse>(
+        `/datasets/${datasetId}/tables/source-status`
+      );
+      return response.data;
+    },
+    enabled: datasetId !== null && (options.enabled ?? true),
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
+}
+
 export function useDatasetDictionary(datasetId: number | null) {
   return useQuery({
     queryKey: datasetKeys.dictionary(datasetId!),
@@ -617,6 +664,7 @@ export function useAddTableToDataset() {
     onSuccess: (_data: DatasetTable, variables: { datasetId: number; input: AddTableInput }) => {
       queryClient.invalidateQueries({ queryKey: datasetKeys.detail(variables.datasetId) });
       queryClient.invalidateQueries({ queryKey: datasetKeys.tables(variables.datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.tableSourceStatus(variables.datasetId) });
     },
   });
 }
@@ -696,6 +744,7 @@ export function useUpdateTable() {
         (current) => current ? current.map((table) => table.id === variables.tableId ? data : table) : current,
       );
       queryClient.invalidateQueries({ queryKey: datasetKeys.tablePreview(variables.datasetId, variables.tableId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.tableSourceStatus(variables.datasetId) });
     },
   });
 }
@@ -713,6 +762,7 @@ export function useRemoveTable() {
     onSuccess: (_data: void, variables: { datasetId: number; tableId: number }) => {
       queryClient.invalidateQueries({ queryKey: datasetKeys.detail(variables.datasetId) });
       queryClient.invalidateQueries({ queryKey: datasetKeys.tables(variables.datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.tableSourceStatus(variables.datasetId) });
     },
   });
 }

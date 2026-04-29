@@ -18,7 +18,6 @@ import {
   Columns,
   Trash2,
   AlertTriangle,
-  X,
   Pencil,
   ChevronLeft as ChevronLeftPag,
   ChevronRight,
@@ -27,6 +26,7 @@ import {
 } from 'lucide-react';
 import {
   useDataset,
+  useDatasetTableSourceStatus,
   useTablePreview,
   useUpdateDataset,
   useUpdateTable,
@@ -34,6 +34,7 @@ import {
   downloadDatasetTableExcel,
   type CalendarDimensionSettings,
   type DatasetTable,
+  type DatasetTableSourceStatus,
 } from '@/hooks/use-datasets';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
 import { AddTableModal } from '@/components/datasets/AddTableModalV2';
@@ -96,11 +97,68 @@ function formatTypeToBackendType(formatType: string): string | null {
   return null;
 }
 
-function extractDatasetErrorMessage(error: any, fallback: string): string {
+function getDatasetErrorDetail(error: any): any {
+  return error?.response?.data?.detail;
+}
+
+function getSourceIssueMessage(
+  issue: Partial<DatasetTableSourceStatus> | null | undefined,
+  table?: Partial<DatasetTable> | null,
+): string {
+  const sourceName = issue?.source_table_name || table?.source_table_name || table?.display_name || 'nguồn dữ liệu';
+  const objectLabel = issue?.source_object === 'sheet' ? 'Sheet' : 'Bảng nguồn';
+
+  if (issue?.code === 'DATASOURCE_MISSING') {
+    return 'Datasource đang kết nối với bảng này không còn tồn tại hoặc bạn không còn quyền truy cập.';
+  }
+
+  if (issue?.code === 'SOURCE_CONNECTION_ERROR') {
+    return 'Không thể kiểm tra bảng này với datasource hiện tại. Hãy kiểm tra lại quyền truy cập hoặc kết nối nguồn.';
+  }
+
+  return `${objectLabel} "${sourceName}" không còn tồn tại trong datasource. Có thể nguồn đã bị xóa hoặc đổi tên; hãy xóa bảng này khỏi dataset hoặc add lại sheet/bảng mới.`;
+}
+
+function looksLikeDeletedSourceMessage(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('not found in spreadsheet') ||
+    lower.includes('no such table') ||
+    lower.includes('table not found') ||
+    lower.includes('sheet not found') ||
+    (lower.includes('table with name') && lower.includes('does not exist')) ||
+    (lower.includes('relation') && lower.includes('does not exist'))
+  );
+}
+
+function extractDatasetErrorMessage(
+  error: any,
+  fallback: string,
+  table?: Partial<DatasetTable> | null,
+): string {
   const detail = error?.response?.data?.detail;
-  if (typeof detail === 'string' && detail.trim()) return detail;
-  if (detail?.message) return detail.message;
-  return error?.message || fallback;
+  if (detail?.code === 'SOURCE_TABLE_MISSING' || detail?.code === 'DATASOURCE_MISSING' || detail?.code === 'SOURCE_CONNECTION_ERROR') {
+    return getSourceIssueMessage(detail, table);
+  }
+
+  const message =
+    (typeof detail === 'string' && detail.trim())
+      ? detail
+      : (detail?.message || error?.message || fallback);
+
+  if (typeof message === 'string' && looksLikeDeletedSourceMessage(message)) {
+    return getSourceIssueMessage({ source_table_name: table?.source_table_name }, table);
+  }
+
+  const status = error?.response?.status;
+  if (status === 404) {
+    return 'Không tìm thấy tài nguyên nguồn. Có thể datasource hoặc bảng nguồn đã bị xóa.';
+  }
+  if (status >= 500) {
+    return 'Không thể tải dữ liệu do lỗi hệ thống hoặc kết nối nguồn. Hãy thử lại sau hoặc kiểm tra datasource.';
+  }
+
+  return message || fallback;
 }
 
 const DEFAULT_CALENDAR_SETTINGS: CalendarDimensionSettings = {
@@ -490,6 +548,12 @@ export default function DatasetDetailPage() {
     { limit: previewLimit, offset: previewOffset },
     { enabled: activeTab === 'tables' }
   );
+  const {
+    data: tableSourceStatus,
+    refetch: refetchTableSourceStatus,
+  } = useDatasetTableSourceStatus(datasetId, {
+    enabled: activeTab === 'tables' && Boolean(dataset?.tables?.length),
+  });
 
   const updateDatasetMutation = useUpdateDataset();
   const datasetCalendarSettings = useMemo(
@@ -685,7 +749,7 @@ export default function DatasetDetailPage() {
         },
       });
     } catch (error: any) {
-      const message = extractDatasetErrorMessage(error, 'Khong the cap nhat dinh dang cot');
+      const message = extractDatasetErrorMessage(error, 'Khong the cap nhat dinh dang cot', selectedTable);
       toast.error(message);
       throw new Error(message);
     }
@@ -732,9 +796,64 @@ export default function DatasetDetailPage() {
   const canCreateCalendarDimension = Boolean(
     (dataset?.tables ?? []).some((table: any) => !isGeneratedCalendarTable(table) && table?.datasource_id != null),
   );
+  const tableSourceIssueById = useMemo<Record<number, DatasetTableSourceStatus>>(() => {
+    const map: Record<number, DatasetTableSourceStatus> = {};
+    for (const status of tableSourceStatus?.tables ?? []) {
+      if (status.status !== 'ok') {
+        map[status.table_id] = status;
+      }
+    }
+
+    const detail = getDatasetErrorDetail(previewError);
+    const code = detail?.code;
+    const sourceIssueCode =
+      code === 'SOURCE_TABLE_MISSING' ||
+      code === 'DATASOURCE_MISSING' ||
+      code === 'SOURCE_CONNECTION_ERROR';
+
+    if (selectedTableId && sourceIssueCode) {
+      map[selectedTableId] = {
+        table_id: selectedTableId,
+        table_name: selectedTable?.display_name ?? null,
+        source_kind: selectedTable?.source_kind ?? null,
+        source_table_name: detail?.source_table_name || selectedTable?.source_table_name || null,
+        datasource_id: detail?.datasource_id ?? selectedTable?.datasource_id ?? null,
+        status: code === 'SOURCE_TABLE_MISSING' ? 'missing' : 'error',
+        code,
+        message: detail?.message ?? null,
+        source_object: detail?.source_object ?? null,
+        raw_error: detail?.raw_error ?? null,
+      };
+    } else if (selectedTableId && previewError) {
+      const rawMessage = typeof detail === 'string' ? detail : (detail?.message || (previewError as any)?.message || '');
+      if (typeof rawMessage === 'string' && looksLikeDeletedSourceMessage(rawMessage)) {
+        map[selectedTableId] = {
+          table_id: selectedTableId,
+          table_name: selectedTable?.display_name ?? null,
+          source_kind: selectedTable?.source_kind ?? null,
+          source_table_name: selectedTable?.source_table_name ?? null,
+          datasource_id: selectedTable?.datasource_id ?? null,
+          status: 'missing',
+          code: 'SOURCE_TABLE_MISSING',
+          message: rawMessage,
+        };
+      }
+    }
+
+    return map;
+  }, [tableSourceStatus?.tables, previewError, selectedTableId, selectedTable]);
+  const selectedTableSourceIssue = selectedTableId ? tableSourceIssueById[selectedTableId] ?? null : null;
+  const selectedTableSourceIssueMessage = selectedTableSourceIssue
+    ? getSourceIssueMessage(selectedTableSourceIssue, selectedTable)
+    : null;
   const selectedTableIsGenerated = isGeneratedCalendarTable(selectedTable as DatasetTable | undefined);
   const selectedTableTitle = getTablePrimaryName(selectedTable);
   const selectedTableSubtitle = getTableSecondaryName(selectedTable);
+
+  const handleRetryPreview = useCallback(() => {
+    void refetchTableSourceStatus();
+    void refetchPreview();
+  }, [refetchPreview, refetchTableSourceStatus]);
 
   const handleExportExcel = async () => {
     if (!datasetId || !selectedTableId || !selectedTable) return;
@@ -760,7 +879,7 @@ export default function DatasetDetailPage() {
         toast.success(`Exported ${selectedTableTitle || 'table'} to Excel.`);
       }
     } catch (error: any) {
-      toast.error(extractDatasetErrorMessage(error, 'Cannot export table to Excel'));
+      toast.error(extractDatasetErrorMessage(error, 'Cannot export table to Excel', selectedTable));
     } finally {
       setIsExportingExcel(false);
     }
@@ -1213,57 +1332,72 @@ export default function DatasetDetailPage() {
                               </div>
                             ) : (
                               <div className="space-y-0.5">
-                                {tablesInGroup.map((table: DatasetTable) => (
-                                  <div
-                                    key={table.id}
-                                    className={`group relative flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors cursor-pointer ${
-                                      selectedTableId === table.id
-                                        ? 'bg-brand/10 text-brand'
-                                        : 'text-text-primary hover:bg-surface-2'
-                                    }`}
-                                    onClick={() => {
-                                      startTransition(() => setSelectedTableId(table.id));
-                                      replaceTableInUrl(table.id);
-                                    }}
-                                  >
-                                    {getTableIcon(table)}
-                                    <div className="min-w-0 flex-1">
-                                      <div className="truncate text-xs font-medium leading-tight">
-                                        {getTablePrimaryName(table)}
-                                      </div>
-                                      {getTableSecondaryName(table) && (
-                                        <div className="truncate text-[11px] text-text-quaternary leading-tight">
-                                          {getTableSecondaryName(table)}
+                                {tablesInGroup.map((table: DatasetTable) => {
+                                  const sourceIssue = tableSourceIssueById[table.id];
+                                  return (
+                                    <div
+                                      key={table.id}
+                                      className={`group relative flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors cursor-pointer ${
+                                        selectedTableId === table.id
+                                          ? 'bg-brand/10 text-brand'
+                                          : 'text-text-primary hover:bg-surface-2'
+                                      } ${sourceIssue ? 'ring-1 ring-danger/35' : ''}`}
+                                      onClick={() => {
+                                        startTransition(() => setSelectedTableId(table.id));
+                                        replaceTableInUrl(table.id);
+                                      }}
+                                    >
+                                      {sourceIssue ? (
+                                        <span
+                                          className="flex h-4 w-4 flex-shrink-0 items-center justify-center"
+                                          title={getSourceIssueMessage(sourceIssue, table)}
+                                        >
+                                          <AlertTriangle
+                                            className="h-4 w-4 text-danger"
+                                            aria-label="Source issue"
+                                          />
+                                        </span>
+                                      ) : (
+                                        getTableIcon(table)
+                                      )}
+                                      <div className="min-w-0 flex-1">
+                                        <div className="truncate text-xs font-medium leading-tight">
+                                          {getTablePrimaryName(table)}
                                         </div>
+                                        {getTableSecondaryName(table) && (
+                                          <div className="truncate text-[11px] text-text-quaternary leading-tight">
+                                            {getTableSecondaryName(table)}
+                                          </div>
+                                        )}
+                                      </div>
+                                      {resPerms.canEdit && !isGeneratedCalendarTable(table) && (
+                                        <button
+                                          onClick={(e) => { e.stopPropagation(); openEditTableModal(table); }}
+                                          className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-text-quaternary hover:bg-brand/15 hover:text-brand transition-opacity"
+                                          title="Edit table"
+                                        >
+                                          <Pencil className="h-3 w-3" />
+                                        </button>
+                                      )}
+                                      {resPerms.canDelete && (
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setDeleteConstraints(null);
+                                            setTableToDelete({
+                                              id: table.id,
+                                              name: table.display_name || table.source_table_name || `Table ${table.id}`,
+                                            });
+                                          }}
+                                          className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-text-quaternary hover:bg-danger/15 hover:text-danger transition-opacity"
+                                          title="Delete table"
+                                        >
+                                          <Trash2 className="h-3 w-3" />
+                                        </button>
                                       )}
                                     </div>
-                                    {resPerms.canEdit && !isGeneratedCalendarTable(table) && (
-                                      <button
-                                        onClick={(e) => { e.stopPropagation(); openEditTableModal(table); }}
-                                        className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-text-quaternary hover:bg-brand/15 hover:text-brand transition-opacity"
-                                        title="Edit table"
-                                      >
-                                        <Pencil className="h-3 w-3" />
-                                      </button>
-                                    )}
-                                    {resPerms.canDelete && (
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setDeleteConstraints(null);
-                                          setTableToDelete({
-                                            id: table.id,
-                                            name: table.display_name || table.source_table_name || `Table ${table.id}`,
-                                          });
-                                        }}
-                                        className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-text-quaternary hover:bg-danger/15 hover:text-danger transition-opacity"
-                                        title="Delete table"
-                                      >
-                                        <Trash2 className="h-3 w-3" />
-                                      </button>
-                                    )}
-                                  </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             )}
                           </div>
@@ -1326,6 +1460,17 @@ export default function DatasetDetailPage() {
             <>
               {/* Grid Body */}
               <div className="flex-1 overflow-auto p-4">
+                {selectedTableSourceIssueMessage && (
+                  <div className="mb-3 flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-danger" />
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-danger">Nguồn dữ liệu đang lỗi</div>
+                      <div className="mt-0.5 text-xs leading-5 text-text-secondary">
+                        {selectedTableSourceIssueMessage}
+                      </div>
+                    </div>
+                  </div>
+                )}
                 {previewError && (previewError as any)?.response?.status === 422 ? (
                   <div className="flex items-center justify-center h-full">
                     <div className="text-center max-w-sm">
@@ -1335,7 +1480,7 @@ export default function DatasetDetailPage() {
                         Bảng này chưa được đồng bộ vào DuckDB. Nếu bạn vừa chạy Sync, hãy đợi vài giây — trang sẽ tự động cập nhật khi sync xong.
                       </p>
                       <button
-                        onClick={() => refetchPreview()}
+                        onClick={handleRetryPreview}
                         className="inline-flex items-center gap-2 px-4 py-2 bg-brand text-white text-sm font-medium rounded-lg hover:bg-brand-hover"
                       >
                         <RefreshCw className="w-4 h-4" />
@@ -1348,8 +1493,8 @@ export default function DatasetDetailPage() {
                     columns={computedPreviewData?.columns || []}
                     rows={computedPreviewData?.rows || []}
                     isLoading={loadingPreview}
-                    error={previewError ? extractDatasetErrorMessage(previewError, 'Cannot load table preview') : null}
-                    onRetry={() => refetchPreview()}
+                    error={previewError ? extractDatasetErrorMessage(previewError, 'Cannot load table preview', selectedTable) : null}
+                    onRetry={handleRetryPreview}
                     onAddColumn={resPerms.canEdit && !selectedTableIsGenerated ? () => setIsAddColumnModalOpen(true) : undefined}
                     onDeleteColumn={resPerms.canEdit && !selectedTableIsGenerated ? handleDeleteColumn : undefined}
                     onEditColumn={resPerms.canEdit && !selectedTableIsGenerated ? handleEditColumn : undefined}
