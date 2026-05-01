@@ -15,7 +15,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronRight,
-  ChevronLeft,
   CheckCircle2,
   ExternalLink,
   Loader2,
@@ -198,27 +197,14 @@ export default function BuilderLivePreview({
     return activeScreenId ? `${base}#screen=${activeScreenId}` : base;
   }, [activeWs, workboard.id, activeScreenId]);
 
-  // ── Collapsed state — hand-rail strip ─────────────────────────────
+  // ── Collapsed: hide entirely so the editor fills the whole row.
+  // The toggle that re-opens it lives in WorkboardBuilder's center panel.
   if (collapsed) {
-    return (
-      <button
-        onClick={onToggle}
-        className="flex w-9 shrink-0 flex-col items-center gap-2 border-l border-[rgb(var(--border-line))] bg-surface-1 py-3 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
-        title="Mở Live Preview"
-      >
-        <ChevronLeft className="h-3.5 w-3.5" />
-        <span
-          className="text-tiny font-emphasis"
-          style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
-        >
-          Live Preview
-        </span>
-      </button>
-    );
+    return null;
   }
 
   return (
-    <aside className="flex w-1/2 min-w-[420px] flex-col border-l border-[rgb(var(--border-line))] bg-surface-1">
+    <aside className="flex w-1/2 shrink-0 flex-col border-l border-[rgb(var(--border-line))] bg-surface-1">
       {/* Header — sync indicator + toggle */}
       <div className="flex items-center justify-between gap-2 border-b border-[rgb(var(--border-line))] px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">

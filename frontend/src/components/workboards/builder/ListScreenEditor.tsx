@@ -1,13 +1,22 @@
 /**
- * ListScreenEditor — column picker + filters + row actions.
+ * ListScreenEditor - cột hiển thị + filter + hành động trên dòng.
  */
 'use client';
 
 import React from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 
+import {
+  BUILDER_GRID_3,
+  BuilderActionButton,
+  BuilderIconButton,
+  BuilderSection,
+  DataSourcePicker,
+} from './BuilderChrome';
+import { CheckboxMultiSelect } from './BuilderValueControls';
 import type { ListFilterSpec, ScreenAction, ScreenSpec } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
+import type { BuilderMode } from './useBuilderMode';
 
 interface DatasetTableInfo {
   id: number;
@@ -21,21 +30,33 @@ interface Props {
   allScreens: ScreenSpec[];
   tables: DatasetTableInfo[];
   onChange: (next: ScreenSpec) => void;
+  mode: BuilderMode;
 }
 
-export default function ListScreenEditor({ screen, allScreens, tables, onChange }: Props) {
+const FILTER_KIND_LABEL: Record<ListFilterSpec['kind'], string> = {
+  text: 'Tìm theo văn bản',
+  select: 'Chọn 1 giá trị',
+  date_range: 'Khoảng ngày',
+  number_range: 'Khoảng số',
+};
+
+export default function ListScreenEditor({
+  screen,
+  allScreens,
+  tables,
+  onChange,
+  mode,
+}: Props) {
   const list = screen.list || { columns: [] };
-  const tableCols = tables.find((t) => t.id === screen.table_id)?.columns ?? [];
+  const tableCols = tables.find((table) => table.id === screen.table_id)?.columns ?? [];
+  const columnOptions = tableCols.map((column) => ({
+    value: column.name,
+    label: column.name,
+    description: column.type,
+  }));
 
   const updateList = (patch: Partial<NonNullable<ScreenSpec['list']>>) =>
     onChange({ ...screen, list: { ...list, ...patch } });
-
-  const toggleCol = (col: string) => {
-    const has = list.columns.includes(col);
-    updateList({
-      columns: has ? list.columns.filter((c) => c !== col) : [...list.columns, col],
-    });
-  };
 
   const addFilter = () =>
     updateList({
@@ -44,13 +65,15 @@ export default function ListScreenEditor({ screen, allScreens, tables, onChange 
         { column: tableCols[0]?.name || '', kind: 'text', label: '' },
       ],
     });
+
   const updateFilter = (idx: number, patch: Partial<ListFilterSpec>) => {
     const next = [...(list.filters || [])];
     next[idx] = { ...next[idx], ...patch };
     updateList({ filters: next });
   };
+
   const removeFilter = (idx: number) =>
-    updateList({ filters: (list.filters || []).filter((_, i) => i !== idx) });
+    updateList({ filters: (list.filters || []).filter((_, index) => index !== idx) });
 
   const addAction = () =>
     updateList({
@@ -64,63 +87,62 @@ export default function ListScreenEditor({ screen, allScreens, tables, onChange 
         },
       ],
     });
+
   const updateAction = (idx: number, patch: Partial<ScreenAction>) => {
     const next = [...(list.row_actions || [])];
     next[idx] = { ...next[idx], ...patch };
     updateList({ row_actions: next });
   };
+
   const removeAction = (idx: number) =>
-    updateList({ row_actions: (list.row_actions || []).filter((_, i) => i !== idx) });
+    updateList({ row_actions: (list.row_actions || []).filter((_, index) => index !== idx) });
 
   return (
-    <>
-      {/* Columns picker */}
-      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
-        <h2 className="mb-3 text-caption font-emphasis uppercase tracking-wider text-text-quaternary">
-          Cột hiển thị ({list.columns.length})
-        </h2>
+    <div className="space-y-4">
+      <DataSourcePicker
+        tableId={screen.table_id}
+        tables={tables}
+        onChange={(nextId) => onChange({ ...screen, table_id: nextId })}
+      />
+
+      <BuilderSection
+        title={`Cột hiển thị (${list.columns.length})`}
+        description="Chọn các cột bạn muốn hiển thị trên danh sách."
+      >
         {tableCols.length === 0 ? (
           <p className="text-tiny text-text-tertiary">
             Chưa chọn bảng dữ liệu hoặc bảng không có cột nào.
           </p>
         ) : (
-          <div className="grid grid-cols-3 gap-1.5">
-            {tableCols.map((c) => (
-              <label
-                key={c.name}
-                className="flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1.5 text-caption hover:border-brand"
-              >
-                <input
-                  type="checkbox"
-                  checked={list.columns.includes(c.name)}
-                  onChange={() => toggleCol(c.name)}
-                  className="h-3 w-3"
-                />
-                <span className="truncate">{c.name}</span>
-                {c.type && <span className="text-tiny text-text-tertiary">{c.type}</span>}
-              </label>
-            ))}
-          </div>
+          <CheckboxMultiSelect
+            options={columnOptions}
+            selectedValues={list.columns}
+            onChange={(columns) => updateList({ columns })}
+            columns={3}
+          />
         )}
-        <div className="mt-3 grid grid-cols-3 gap-3">
-          <Lbl label="Page size">
+
+        <div className={`mt-4 ${BUILDER_GRID_3}`}>
+          <Lbl label="Số dòng / trang">
             <input
               type="number"
               value={list.page_size ?? 50}
-              onChange={(e) => updateList({ page_size: Number(e.target.value) })}
+              onChange={(event) => updateList({ page_size: Number(event.target.value) })}
               className={INPUT}
             />
           </Lbl>
           <Lbl label="Sắp xếp theo">
             <select
               value={list.default_sort_column || ''}
-              onChange={(e) => updateList({ default_sort_column: e.target.value || null })}
+              onChange={(event) =>
+                updateList({ default_sort_column: event.target.value || null })
+              }
               className={INPUT}
             >
               <option value="">— không —</option>
-              {tableCols.map((c) => (
-                <option key={c.name} value={c.name}>
-                  {c.name}
+              {tableCols.map((column) => (
+                <option key={column.name} value={column.name}>
+                  {column.name}
                 </option>
               ))}
             </select>
@@ -128,8 +150,10 @@ export default function ListScreenEditor({ screen, allScreens, tables, onChange 
           <Lbl label="Hướng">
             <select
               value={list.default_sort_direction || 'desc'}
-              onChange={(e) =>
-                updateList({ default_sort_direction: e.target.value as 'asc' | 'desc' })
+              onChange={(event) =>
+                updateList({
+                  default_sort_direction: event.target.value as 'asc' | 'desc',
+                })
               }
               className={INPUT}
             >
@@ -137,140 +161,162 @@ export default function ListScreenEditor({ screen, allScreens, tables, onChange 
               <option value="asc">Tăng dần</option>
             </select>
           </Lbl>
-          <Lbl label="Empty state message">
-            <input
-              value={list.empty_state_message || ''}
-              onChange={(e) => updateList({ empty_state_message: e.target.value })}
-              className={INPUT}
-              placeholder="vd: Chưa có dữ liệu nào."
-            />
-          </Lbl>
+          {mode === 'advanced' && (
+            <Lbl label="Thông báo khi rỗng">
+              <input
+                value={list.empty_state_message || ''}
+                onChange={(event) => updateList({ empty_state_message: event.target.value })}
+                className={INPUT}
+                placeholder="vd: Chưa có dữ liệu nào."
+              />
+            </Lbl>
+          )}
         </div>
-      </div>
+      </BuilderSection>
 
-      {/* Filters */}
-      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-caption font-emphasis uppercase tracking-wider text-text-quaternary">
-            Filter ({(list.filters || []).length})
-          </h2>
-          <button
-            onClick={addFilter}
-            className="flex items-center gap-1 rounded-md border border-brand px-2 py-1 text-tiny text-brand hover:bg-brand/10"
-          >
-            <Plus className="h-3 w-3" />
-            Thêm filter
-          </button>
-        </div>
-        <div className="space-y-1.5">
-          {(list.filters || []).map((f, idx) => (
-            <div key={idx} className="flex gap-1.5">
+      <BuilderSection
+        title={`Bộ lọc (${(list.filters || []).length})`}
+        description="Bộ lọc hiển thị phía trên danh sách để user lọc nhanh."
+        action={
+          <BuilderActionButton variant="brand" onClick={addFilter}>
+            <Plus className="h-3.5 w-3.5" />
+            Thêm bộ lọc
+          </BuilderActionButton>
+        }
+      >
+        <div className="space-y-2">
+          {(list.filters || []).map((filter, idx) => (
+            <div
+              key={idx}
+              className="grid gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2 md:grid-cols-[minmax(0,1.2fr),200px,minmax(0,1fr),auto]"
+            >
               <select
-                value={f.column}
-                onChange={(e) => updateFilter(idx, { column: e.target.value })}
-                className={`${INPUT} flex-1`}
+                value={filter.column}
+                onChange={(event) => updateFilter(idx, { column: event.target.value })}
+                className={INPUT}
               >
-                {tableCols.map((c) => (
-                  <option key={c.name} value={c.name}>
-                    {c.name}
+                {tableCols.map((column) => (
+                  <option key={column.name} value={column.name}>
+                    {column.name}
                   </option>
                 ))}
               </select>
               <select
-                value={f.kind}
-                onChange={(e) =>
-                  updateFilter(idx, { kind: e.target.value as ListFilterSpec['kind'] })
+                value={filter.kind}
+                onChange={(event) =>
+                  updateFilter(idx, {
+                    kind: event.target.value as ListFilterSpec['kind'],
+                  })
                 }
                 className={INPUT}
-                style={{ width: 130 }}
               >
-                <option value="text">text</option>
-                <option value="select">select</option>
-                <option value="date_range">date_range</option>
-                <option value="number_range">number_range</option>
+                {(Object.keys(FILTER_KIND_LABEL) as ListFilterSpec['kind'][]).map((kind) => (
+                  <option key={kind} value={kind}>
+                    {FILTER_KIND_LABEL[kind]}
+                  </option>
+                ))}
               </select>
               <input
-                value={f.label || ''}
-                onChange={(e) => updateFilter(idx, { label: e.target.value })}
-                placeholder="Label hiển thị"
-                className={`${INPUT} flex-1`}
+                value={filter.label || ''}
+                onChange={(event) => updateFilter(idx, { label: event.target.value })}
+                placeholder="Nhãn hiển thị"
+                className={INPUT}
               />
-              <button
+              <BuilderIconButton
                 onClick={() => removeFilter(idx)}
-                className="rounded p-1 hover:bg-danger/10"
+                title="Xoá"
+                variant="danger"
               >
-                <Trash2 className="h-3 w-3 text-danger" />
-              </button>
+                <Trash2 className="h-3.5 w-3.5 text-danger" />
+              </BuilderIconButton>
             </div>
           ))}
+          {(list.filters || []).length === 0 && (
+            <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] p-3 text-center text-tiny text-text-tertiary">
+              Chưa có bộ lọc nào.
+            </p>
+          )}
         </div>
-      </div>
+      </BuilderSection>
 
-      {/* Row actions */}
-      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-caption font-emphasis uppercase tracking-wider text-text-quaternary">
-            Hành động trên mỗi dòng ({(list.row_actions || []).length})
-          </h2>
-          <button
-            onClick={addAction}
-            className="flex items-center gap-1 rounded-md border border-brand px-2 py-1 text-tiny text-brand hover:bg-brand/10"
-          >
-            <Plus className="h-3 w-3" />
-            Thêm action
-          </button>
-        </div>
+      <BuilderSection
+        title={`Hành động trên mỗi dòng (${(list.row_actions || []).length})`}
+        description="Mỗi dòng có thể có 1 hoặc nhiều nút (vd: Mở chi tiết, Sửa, Xoá)."
+        action={
+          <BuilderActionButton variant="brand" onClick={addAction}>
+            <Plus className="h-3.5 w-3.5" />
+            Thêm hành động
+          </BuilderActionButton>
+        }
+      >
         <div className="space-y-2">
-          {(list.row_actions || []).map((a, idx) => (
+          {(list.row_actions || []).map((action, idx) => (
             <div
               key={idx}
-              className="grid grid-cols-12 gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2"
+              className="grid gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-3 xl:grid-cols-[220px,minmax(0,260px),minmax(0,1fr),auto]"
             >
               <input
-                value={a.label}
-                onChange={(e) => updateAction(idx, { label: e.target.value })}
+                value={action.label}
+                onChange={(event) => updateAction(idx, { label: event.target.value })}
                 placeholder="Nhãn nút"
-                className={`${INPUT} col-span-3`}
+                className={INPUT}
               />
               <select
-                value={a.go_to_screen || ''}
-                onChange={(e) =>
-                  updateAction(idx, { go_to_screen: e.target.value || null })
+                value={action.go_to_screen || ''}
+                onChange={(event) =>
+                  updateAction(idx, { go_to_screen: event.target.value || null })
                 }
-                className={`${INPUT} col-span-4`}
+                className={INPUT}
               >
-                <option value="">— Chọn screen đích —</option>
+                <option value="">— chọn màn đích —</option>
                 {allScreens
-                  .filter((s) => s.id !== screen.id)
-                  .map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.title} ({s.id})
+                  .filter((item) => item.id !== screen.id)
+                  .map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.title}
                     </option>
                   ))}
               </select>
-              <input
-                value={(a.carry || []).join(', ')}
-                onChange={(e) =>
-                  updateAction(idx, {
-                    carry: e.target.value
-                      .split(',')
-                      .map((s) => s.trim())
-                      .filter(Boolean),
-                  })
-                }
-                placeholder="Cột truyền sang (vd: shift_id)"
-                className={`${INPUT} col-span-4`}
-              />
-              <button
+              <div>
+                {columnOptions.length > 0 ? (
+                  <CheckboxMultiSelect
+                    options={columnOptions}
+                    selectedValues={action.carry || []}
+                    onChange={(carry) => updateAction(idx, { carry })}
+                    columns={2}
+                  />
+                ) : (
+                  <input
+                    value={(action.carry || []).join(', ')}
+                    onChange={(event) =>
+                      updateAction(idx, {
+                        carry: event.target.value
+                          .split(',')
+                          .map((item) => item.trim())
+                          .filter(Boolean),
+                      })
+                    }
+                    placeholder="Cột truyền sang"
+                    className={INPUT}
+                  />
+                )}
+              </div>
+              <BuilderIconButton
                 onClick={() => removeAction(idx)}
-                className="col-span-1 rounded p-1 hover:bg-danger/10"
+                title="Xoá"
+                variant="danger"
               >
-                <Trash2 className="mx-auto h-3 w-3 text-danger" />
-              </button>
+                <Trash2 className="h-3.5 w-3.5 text-danger" />
+              </BuilderIconButton>
             </div>
           ))}
+          {(list.row_actions || []).length === 0 && (
+            <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] p-3 text-center text-tiny text-text-tertiary">
+              Chưa có hành động nào.
+            </p>
+          )}
         </div>
-      </div>
-    </>
+      </BuilderSection>
+    </div>
   );
 }

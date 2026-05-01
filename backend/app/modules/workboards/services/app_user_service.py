@@ -40,6 +40,8 @@ from app.modules.workboards.models import (
     WorkboardAppUser,
     WorkboardWorkspace,
 )
+from app.modules.workboards.roles import normalize_app_user_role
+from app.modules.workboards.roles import DEFAULT_APP_USER_PIN
 
 logger = get_logger(__name__)
 
@@ -65,6 +67,10 @@ def verify_pin(plain: str, stored: Optional[str]) -> bool:
         return _pwd_ctx.verify(plain, stored)
     except Exception:
         return False
+
+
+def is_default_pin_hash(stored: Optional[str]) -> bool:
+    return verify_pin(DEFAULT_APP_USER_PIN, stored)
 
 
 # ── Workspace lookup ──────────────────────────────────────────────────────
@@ -108,7 +114,7 @@ def app_user_to_payload(user: WorkboardAppUser) -> Dict[str, Any]:
     """
     payload: Dict[str, Any] = {
         "username": user.username,
-        "role": user.role,
+        "role": normalize_app_user_role(user.role),
         "full_name": user.full_name,
         "workboard_id": user.workboard_id,
     }

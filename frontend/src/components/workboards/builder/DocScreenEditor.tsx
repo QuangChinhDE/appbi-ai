@@ -1,15 +1,24 @@
 /**
- * DocScreenEditor — block editor for doc screens.
- *
- * Each block kind has a small inline editor. The most important is
- * `data_table` because that's what carries `group_by` (merge cells) and
- * `totals` (footer aggregates).
+ * DocScreenEditor - block editor for report/doc screens.
  */
 'use client';
 
 import React from 'react';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
 
+import {
+  CheckboxMultiSelect,
+  FixedExpressionInput,
+  type SelectOption,
+} from './BuilderValueControls';
+import {
+  BUILDER_GRID_2,
+  BUILDER_GRID_3,
+  BuilderActionButton,
+  BuilderIconButton,
+  BuilderSection,
+  BuilderSubsection,
+} from './BuilderChrome';
 import type { DocBlockSpec, ScreenSpec } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
 
@@ -30,6 +39,18 @@ const BLOCK_KINDS: DocBlockSpec['type'][] = [
   'footer',
 ];
 
+const DOC_EXPRESSION_OPTIONS: SelectOption[] = [
+  { value: '{{workboard.name}}', label: 'Workboard > Name' },
+  { value: '{{app_user.username}}', label: 'App user > Username' },
+  { value: '{{app_user.full_name}}', label: 'App user > Full name' },
+  { value: '{{today}}', label: 'System > Today' },
+  { value: '{{now}}', label: 'System > Now' },
+];
+
+type TotalAgg = 'sum' | 'avg' | 'count' | 'min' | 'max';
+
+import type { BuilderMode } from './useBuilderMode';
+
 export default function DocScreenEditor({
   screen,
   tables,
@@ -38,30 +59,35 @@ export default function DocScreenEditor({
   screen: ScreenSpec;
   tables: DatasetTableInfo[];
   onChange: (next: ScreenSpec) => void;
+  mode?: BuilderMode;
 }) {
   const doc = screen.doc || { blocks: [] };
   const blocks = doc.blocks || [];
 
   const updateDoc = (patch: Partial<NonNullable<ScreenSpec['doc']>>) =>
     onChange({ ...screen, doc: { ...doc, ...patch } });
+
   const updateBlock = (idx: number, patch: Partial<DocBlockSpec>) => {
     const next = [...blocks];
     next[idx] = { ...next[idx], ...patch };
     updateDoc({ blocks: next });
   };
+
   const moveBlock = (idx: number, dir: -1 | 1) => {
     const next = [...blocks];
-    const t = idx + dir;
-    if (t < 0 || t >= next.length) return;
-    [next[idx], next[t]] = [next[t], next[idx]];
+    const target = idx + dir;
+    if (target < 0 || target >= next.length) return;
+    [next[idx], next[target]] = [next[target], next[idx]];
     updateDoc({ blocks: next });
   };
+
   const removeBlock = (idx: number) =>
-    updateDoc({ blocks: blocks.filter((_, i) => i !== idx) });
+    updateDoc({ blocks: blocks.filter((_, index) => index !== idx) });
+
   const addBlock = (type: DocBlockSpec['type']) => {
     const fresh: DocBlockSpec =
       type === 'header'
-        ? { type, title: 'Tiêu đề', subtitle: '', align: 'center' }
+        ? { type, title: 'Tieu de', subtitle: '', align: 'center' }
         : type === 'kv_grid'
         ? { type, columns: 4, items: [{ label: 'Label', value: 'Value' }] }
         : type === 'data_table'
@@ -69,6 +95,7 @@ export default function DocScreenEditor({
             type,
             source: 'primary',
             columns: [],
+            column_groups: [],
             filters_from_view: false,
             totals: [],
             group_by: [],
@@ -81,38 +108,42 @@ export default function DocScreenEditor({
         : type === 'spacer'
         ? { type, height_mm: 4 }
         : type === 'signature'
-        ? { type, slots: [{ label: 'Tổ trưởng', role: '' }] }
+        ? { type, slots: [{ label: 'To truong', role: '' }] }
         : { type: 'footer', left: '', center: '', right: '' };
     updateDoc({ blocks: [...blocks, fresh] });
   };
 
   return (
     <>
-      {/* Page settings */}
-      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
-        <h2 className="mb-3 text-caption font-emphasis uppercase tracking-wider text-text-quaternary">
-          Cấu hình trang in
-        </h2>
-        <div className="grid grid-cols-3 gap-3">
+      <BuilderSection
+        title="Cấu hình trang in"
+        description="Khổ giấy, hướng và lề khi in/ xuất PDF."
+      >
+        <div className={BUILDER_GRID_3}>
           <Lbl label="Khổ giấy">
             <select
-              value={(doc.page?.size as string) || 'A4'}
-              onChange={(e) =>
-                updateDoc({ page: { ...(doc.page || {}), size: e.target.value as any } })
+              value={String(doc.page?.size || 'A4')}
+              onChange={(event) =>
+                updateDoc({
+                  page: { ...(doc.page || {}), size: event.target.value as 'A4' | 'A3' | 'Letter' },
+                })
               }
               className={INPUT}
             >
-              <option>A4</option>
-              <option>A3</option>
-              <option>Letter</option>
+              <option value="A4">A4</option>
+              <option value="A3">A3</option>
+              <option value="Letter">Letter</option>
             </select>
           </Lbl>
           <Lbl label="Hướng">
             <select
-              value={(doc.page?.orientation as string) || 'portrait'}
-              onChange={(e) =>
+              value={String(doc.page?.orientation || 'portrait')}
+              onChange={(event) =>
                 updateDoc({
-                  page: { ...(doc.page || {}), orientation: e.target.value as any },
+                  page: {
+                    ...(doc.page || {}),
+                    orientation: event.target.value as 'portrait' | 'landscape',
+                  },
                 })
               }
               className={INPUT}
@@ -125,38 +156,38 @@ export default function DocScreenEditor({
             <input
               type="number"
               value={doc.page?.margin_mm ?? 15}
-              onChange={(e) =>
-                updateDoc({ page: { ...(doc.page || {}), margin_mm: Number(e.target.value) } })
+              onChange={(event) =>
+                updateDoc({
+                  page: { ...(doc.page || {}), margin_mm: Number(event.target.value) },
+                })
               }
               className={INPUT}
             />
           </Lbl>
         </div>
-      </div>
+      </BuilderSection>
 
-      {/* Blocks */}
-      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-caption font-emphasis uppercase tracking-wider text-text-quaternary">
-            Blocks ({blocks.length})
-          </h2>
-          <div className="flex gap-1">
-            {BLOCK_KINDS.map((k) => (
-              <button
-                key={k}
-                onClick={() => addBlock(k)}
-                className="rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-tiny hover:border-brand hover:text-brand"
+      <BuilderSection
+        title={`Khối hiển thị (${blocks.length})`}
+        description="Mỗi khối là một phần của báo cáo (tiêu đề, KPI, bảng số liệu, chữ ký, …)."
+        action={
+          <div className="flex flex-wrap gap-2">
+            {BLOCK_KINDS.map((kind) => (
+              <BuilderActionButton
+                key={kind}
+                onClick={() => addBlock(kind)}
               >
-                + {k}
-              </button>
+                + {kind}
+              </BuilderActionButton>
             ))}
           </div>
-        </div>
+        }
+      >
         <div className="space-y-2">
-          {blocks.map((b, idx) => (
+          {blocks.map((block, idx) => (
             <BlockRow
               key={idx}
-              block={b}
+              block={block}
               tables={tables}
               isFirst={idx === 0}
               isLast={idx === blocks.length - 1}
@@ -168,11 +199,11 @@ export default function DocScreenEditor({
           ))}
           {blocks.length === 0 && (
             <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] p-4 text-center text-caption text-text-tertiary">
-              Chưa có block nào — bấm "+ block kind" để thêm.
+              Chưa có khối nào — bấm nút &quot;+&quot; ở trên để thêm.
             </p>
           )}
         </div>
-      </div>
+      </BuilderSection>
     </>
   );
 }
@@ -197,48 +228,48 @@ function BlockRow({
   onRemove: () => void;
 }) {
   return (
-    <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-3">
-      <div className="mb-2 flex items-center justify-between">
+    <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
+      <div className="mb-3 flex items-center justify-between gap-3">
         <span className="rounded bg-surface-2 px-2 py-0.5 text-tiny font-emphasis text-text-secondary">
           {block.type}
         </span>
-        <div className="flex">
+        <div className="flex flex-wrap items-center gap-2">
           {!isFirst && (
-            <button onClick={onMoveUp} className="rounded p-0.5 hover:bg-surface-2">
-              <ArrowUp className="h-3 w-3 text-text-tertiary" />
-            </button>
+            <BuilderIconButton onClick={onMoveUp} title="Lên">
+              <ArrowUp className="h-3.5 w-3.5" />
+            </BuilderIconButton>
           )}
           {!isLast && (
-            <button onClick={onMoveDown} className="rounded p-0.5 hover:bg-surface-2">
-              <ArrowDown className="h-3 w-3 text-text-tertiary" />
-            </button>
+            <BuilderIconButton onClick={onMoveDown} title="Xuống">
+              <ArrowDown className="h-3.5 w-3.5" />
+            </BuilderIconButton>
           )}
-          <button onClick={onRemove} className="rounded p-0.5 hover:bg-danger/10">
-            <Trash2 className="h-3 w-3 text-danger" />
-          </button>
+          <BuilderIconButton onClick={onRemove} title="Xoá khối" variant="danger">
+            <Trash2 className="h-3.5 w-3.5 text-danger" />
+          </BuilderIconButton>
         </div>
       </div>
 
       {block.type === 'header' && (
-        <div className="grid grid-cols-3 gap-2">
-          <Lbl label="Title">
+        <div className={BUILDER_GRID_3}>
+          <Lbl label="Tiêu đề">
             <input
               value={String(block.title ?? '')}
-              onChange={(e) => onChange({ title: e.target.value })}
+              onChange={(event) => onChange({ title: event.target.value })}
               className={INPUT}
             />
           </Lbl>
-          <Lbl label="Subtitle">
+          <Lbl label="Phụ đề">
             <input
               value={String(block.subtitle ?? '')}
-              onChange={(e) => onChange({ subtitle: e.target.value })}
+              onChange={(event) => onChange({ subtitle: event.target.value })}
               className={INPUT}
             />
           </Lbl>
-          <Lbl label="Align">
+          <Lbl label="Căn lề">
             <select
               value={String(block.align ?? 'center')}
-              onChange={(e) => onChange({ align: e.target.value })}
+              onChange={(event) => onChange({ align: event.target.value })}
               className={INPUT}
             >
               <option value="left">Trái</option>
@@ -253,7 +284,7 @@ function BlockRow({
         <Lbl label="Nội dung">
           <textarea
             value={String(block.content ?? '')}
-            onChange={(e) => onChange({ content: e.target.value })}
+            onChange={(event) => onChange({ content: event.target.value })}
             rows={2}
             className={INPUT}
           />
@@ -265,27 +296,28 @@ function BlockRow({
           <input
             type="number"
             value={Number(block.height_mm ?? 4)}
-            onChange={(e) => onChange({ height_mm: Number(e.target.value) })}
+            onChange={(event) => onChange({ height_mm: Number(event.target.value) })}
             className={INPUT}
           />
         </Lbl>
       )}
 
-      {block.type === 'kv_grid' && (
-        <KvGridEditor block={block} onChange={onChange} />
-      )}
-
+      {block.type === 'kv_grid' && <KvGridEditor block={block} onChange={onChange} />}
       {block.type === 'data_table' && (
         <DataTableEditor block={block} tables={tables} onChange={onChange} />
       )}
 
+      {block.type === 'signature' && (
+        <SignatureEditor block={block} onChange={onChange} />
+      )}
+
       {block.type === 'footer' && (
-        <div className="grid grid-cols-3 gap-2">
+        <div className={BUILDER_GRID_3}>
           {(['left', 'center', 'right'] as const).map((side) => (
             <Lbl key={side} label={side}>
               <input
                 value={String(block[side] ?? '')}
-                onChange={(e) => onChange({ [side]: e.target.value } as any)}
+                onChange={(event) => onChange({ [side]: event.target.value } as Partial<DocBlockSpec>)}
                 className={INPUT}
               />
             </Lbl>
@@ -304,56 +336,69 @@ function KvGridEditor({
   onChange: (patch: Partial<DocBlockSpec>) => void;
 }) {
   const items =
-    (block.items as Array<{ label: string; value: string }>) || [];
-  const cols = Number(block.columns ?? 2);
-  const update = (idx: number, patch: Partial<{ label: string; value: string }>) => {
+    (((block as { items?: Array<{ label: string; value: string }> }).items) || []) as Array<{
+      label: string;
+      value: string;
+    }>;
+  const columns = Number(block.columns ?? 2);
+
+  const updateItem = (
+    idx: number,
+    patch: Partial<{ label: string; value: string }>,
+  ) => {
     const next = [...items];
     next[idx] = { ...next[idx], ...patch };
     onChange({ items: next });
   };
+
   return (
     <div>
-      <div className="mb-2 grid grid-cols-2 gap-2">
-        <Lbl label="Số cột">
+      <div className={BUILDER_GRID_2}>
+        <Lbl label="So cot">
           <input
             type="number"
-            value={cols}
-            onChange={(e) => onChange({ columns: Number(e.target.value) })}
+            value={columns}
+            onChange={(event) => onChange({ columns: Number(event.target.value) })}
             className={INPUT}
           />
         </Lbl>
       </div>
-      <div className="space-y-1">
-        {items.map((it, idx) => (
-          <div key={idx} className="flex gap-1">
+      <div className="space-y-2">
+        {items.map((item, idx) => (
+          <div
+            key={idx}
+            className="grid gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2 md:grid-cols-[minmax(0,220px),minmax(0,1fr),auto]"
+          >
             <input
-              value={it.label}
-              onChange={(e) => update(idx, { label: e.target.value })}
+              value={item.label}
+              onChange={(event) => updateItem(idx, { label: event.target.value })}
               placeholder="Label"
-              className={`${INPUT} flex-1`}
+              className={INPUT}
             />
-            <input
-              value={it.value}
-              onChange={(e) => update(idx, { value: e.target.value })}
-              placeholder="Value (hỗ trợ {{app_user.x}} / {{today}})"
-              className={`${INPUT} flex-1`}
+            <FixedExpressionInput
+              value={item.value}
+              onChange={(next) => updateItem(idx, { value: next })}
+              fixedPlaceholder="Gia tri co dinh"
+              expressionPlaceholder="{{today}} hoac placeholder"
+              expressionOptions={DOC_EXPRESSION_OPTIONS}
             />
-            <button
-              onClick={() => onChange({ items: items.filter((_, i) => i !== idx) })}
-              className="rounded p-1 hover:bg-danger/10"
+            <BuilderIconButton
+              onClick={() => onChange({ items: items.filter((_, index) => index !== idx) })}
+              title="Xoa cell"
+              variant="danger"
             >
-              <Trash2 className="h-3 w-3 text-danger" />
-            </button>
+              <Trash2 className="h-3.5 w-3.5 text-danger" />
+            </BuilderIconButton>
           </div>
         ))}
       </div>
-      <button
+      <BuilderActionButton
         onClick={() => onChange({ items: [...items, { label: '', value: '' }] })}
-        className="mt-1 flex items-center gap-1 text-tiny text-brand hover:underline"
+        className="mt-2"
       >
-        <Plus className="h-3 w-3" />
-        Thêm cell
-      </button>
+        <Plus className="h-3.5 w-3.5" />
+        Them cell
+      </BuilderActionButton>
     </div>
   );
 }
@@ -374,42 +419,47 @@ function DataTableEditor({
       : source.startsWith('lookup:')
       ? Number(source.split(':')[1])
       : null;
-  const sourceTable = tables.find((t) => t.id === sourceTableId);
-  // For "primary" we don't know the table — let user free-type columns; for
-  // lookup we show the actual table's columns as checkboxes.
+  const sourceTable = tables.find((table) => table.id === sourceTableId);
   const tableCols = sourceTable?.columns || [];
-
-  const cols = (block.columns as string[]) || [];
-  const groupBy = (block.group_by as string[]) || [];
-  const totals = (block.totals as string[]) || [];
+  const selectedColumns = ((block.columns as string[]) || []).filter(Boolean);
+  const columnOptions = tableCols.map((column) => ({
+    value: column.name,
+    label: column.name,
+    description: column.type,
+  }));
+  const groupBy = ((block.group_by as string[]) || []).filter(Boolean);
+  const totals = ((block.totals as string[]) || []).filter(Boolean);
+  const columnGroups =
+    (((block as { column_groups?: Array<{ label?: string; columns?: string[] }> }).column_groups) ||
+      []) as Array<{ label?: string; columns?: string[] }>;
 
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-3 gap-2">
+    <div className="space-y-3">
+      <div className={BUILDER_GRID_3}>
         <Lbl label="Source">
           <select
             value={source.startsWith('lookup:') ? 'lookup' : source}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v === 'primary') onChange({ source: 'primary' });
+            onChange={(event) => {
+              const next = event.target.value;
+              if (next === 'primary') onChange({ source: 'primary' });
               else if (tables[0]) onChange({ source: `lookup:${tables[0].id}` });
             }}
             className={INPUT}
           >
-            <option value="primary">primary (bảng của screen)</option>
-            <option value="lookup">lookup (bảng khác)</option>
+            <option value="primary">primary (bang cua screen)</option>
+            <option value="lookup">lookup (bang khac)</option>
           </select>
         </Lbl>
         {source.startsWith('lookup:') && (
-          <Lbl label="Bảng lookup">
+          <Lbl label="Bang lookup">
             <select
               value={sourceTableId ?? ''}
-              onChange={(e) => onChange({ source: `lookup:${e.target.value}` })}
+              onChange={(event) => onChange({ source: `lookup:${event.target.value}` })}
               className={INPUT}
             >
-              {tables.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.display_name}
+              {tables.map((table) => (
+                <option key={table.id} value={table.id}>
+                  {table.display_name}
                 </option>
               ))}
             </select>
@@ -418,7 +468,7 @@ function DataTableEditor({
         <Lbl label="Title">
           <input
             value={String(block.title ?? '')}
-            onChange={(e) => onChange({ title: e.target.value })}
+            onChange={(event) => onChange({ title: event.target.value })}
             className={INPUT}
           />
         </Lbl>
@@ -426,87 +476,385 @@ function DataTableEditor({
           <input
             type="number"
             value={Number(block.max_rows ?? 200)}
-            onChange={(e) => onChange({ max_rows: Number(e.target.value) })}
+            onChange={(event) => onChange({ max_rows: Number(event.target.value) })}
             className={INPUT}
           />
         </Lbl>
+        <Lbl label="Lay filter hien tai?">
+          <select
+            value={block.filters_from_view ? 'yes' : 'no'}
+            onChange={(event) =>
+              onChange({ filters_from_view: event.target.value === 'yes' })
+            }
+            className={INPUT}
+          >
+            <option value="yes">Co</option>
+            <option value="no">Khong</option>
+          </select>
+        </Lbl>
+        <Lbl label="Show row index?">
+          <select
+            value={block.show_index ? 'yes' : 'no'}
+            onChange={(event) => onChange({ show_index: event.target.value === 'yes' })}
+            className={INPUT}
+          >
+            <option value="no">Khong</option>
+            <option value="yes">Co</option>
+          </select>
+        </Lbl>
       </div>
 
-      <div>
-        <div className="mb-1 text-tiny font-emphasis text-text-secondary">
-          Cột hiển thị
-        </div>
+      <BuilderSubsection title="Cot hien thi" description="Danh sach cot duoc gioi han trong panel rieng de giu nhom data-table gon mat.">
         {tableCols.length > 0 ? (
-          <div className="grid grid-cols-3 gap-1">
-            {tableCols.map((c) => (
-              <label
-                key={c.name}
-                className="flex items-center gap-1.5 rounded border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1 text-tiny"
-              >
-                <input
-                  type="checkbox"
-                  checked={cols.includes(c.name)}
-                  onChange={() => {
-                    const has = cols.includes(c.name);
-                    onChange({
-                      columns: has ? cols.filter((x) => x !== c.name) : [...cols, c.name],
-                    });
-                  }}
-                  className="h-3 w-3"
-                />
-                <span className="truncate">{c.name}</span>
-              </label>
-            ))}
-          </div>
+          <CheckboxMultiSelect
+            options={columnOptions}
+            selectedValues={selectedColumns}
+            onChange={(columns) => onChange({ columns })}
+            columns={3}
+          />
         ) : (
           <input
-            value={cols.join(', ')}
-            onChange={(e) =>
+            value={selectedColumns.join(', ')}
+            onChange={(event) =>
               onChange({
-                columns: e.target.value
+                columns: event.target.value
                   .split(',')
-                  .map((s) => s.trim())
+                  .map((item) => item.trim())
                   .filter(Boolean),
               })
             }
-            placeholder="Tên cột ngăn cách bằng dấu phẩy"
+            placeholder="Ten cot ngan cach bang dau phay"
             className={INPUT}
           />
         )}
-      </div>
+      </BuilderSubsection>
 
-      <div className="grid grid-cols-2 gap-2">
-        <Lbl label="Merge cells theo cột (group_by)">
-          <input
-            value={groupBy.join(', ')}
-            onChange={(e) =>
-              onChange({
-                group_by: e.target.value
-                  .split(',')
-                  .map((s) => s.trim())
-                  .filter(Boolean),
-              })
-            }
-            placeholder="vd: shift_id, worker_username"
-            className={INPUT}
-          />
+      <ColumnGroupsEditor
+        selectedColumns={selectedColumns}
+        groups={columnGroups}
+        onChange={(next) => onChange({ column_groups: next })}
+      />
+
+      <div className={BUILDER_GRID_2}>
+        <Lbl label="Merge cells theo cot (group_by)">
+          {selectedColumns.length > 0 ? (
+            <CheckboxMultiSelect
+              options={selectedColumns.map((column) => ({ value: column, label: column }))}
+              selectedValues={groupBy}
+              onChange={(next) => onChange({ group_by: next })}
+              columns={2}
+            />
+          ) : (
+            <input
+              value={groupBy.join(', ')}
+              onChange={(event) =>
+                onChange({
+                  group_by: event.target.value
+                    .split(',')
+                    .map((item) => item.trim())
+                    .filter(Boolean),
+                })
+              }
+              className={INPUT}
+              placeholder="vd: shift_id, worker_username"
+            />
+          )}
         </Lbl>
-        <Lbl label="Tổng (footer): col:sum / col:count / col:avg / col:min / col:max">
-          <input
-            value={totals.join(', ')}
-            onChange={(e) =>
-              onChange({
-                totals: e.target.value
-                  .split(',')
-                  .map((s) => s.trim())
-                  .filter(Boolean),
-              })
-            }
-            placeholder="vd: produced_qty:sum, defect_qty:sum"
-            className={INPUT}
-          />
-        </Lbl>
+
+        <TotalsEditor
+          selectedColumns={selectedColumns}
+          totals={totals}
+          onChange={(next) => onChange({ totals: next })}
+        />
       </div>
     </div>
+  );
+}
+
+function SignatureEditor({
+  block,
+  onChange,
+}: {
+  block: DocBlockSpec;
+  onChange: (patch: Partial<DocBlockSpec>) => void;
+}) {
+  const slots =
+    (((block as { slots?: Array<{ label: string; role?: string }> }).slots) || []) as Array<{
+      label: string;
+      role?: string;
+    }>;
+
+  const updateSlot = (idx: number, patch: Partial<{ label: string; role?: string }>) => {
+    const next = [...slots];
+    next[idx] = { ...next[idx], ...patch };
+    onChange({ slots: next });
+  };
+
+  return (
+    <div className="space-y-2">
+      {slots.map((slot, idx) => (
+        <div
+          key={idx}
+          className="grid gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2 md:grid-cols-[minmax(0,1fr),minmax(0,1fr),auto]"
+        >
+          <input
+            value={slot.label}
+            onChange={(event) => updateSlot(idx, { label: event.target.value })}
+            placeholder="Label"
+            className={INPUT}
+          />
+          <input
+            value={slot.role || ''}
+            onChange={(event) => updateSlot(idx, { role: event.target.value })}
+            placeholder="Role"
+            className={INPUT}
+          />
+          <BuilderIconButton
+            onClick={() => onChange({ slots: slots.filter((_, index) => index !== idx) })}
+            title="Xoa slot"
+            variant="danger"
+          >
+            <Trash2 className="h-3.5 w-3.5 text-danger" />
+          </BuilderIconButton>
+        </div>
+      ))}
+      <BuilderActionButton
+        onClick={() => onChange({ slots: [...slots, { label: '', role: '' }] })}
+        className="mt-2"
+      >
+        <Plus className="h-3.5 w-3.5" />
+        Them slot
+      </BuilderActionButton>
+    </div>
+  );
+}
+
+function buildColumnSlice(columns: string[], start: string, end: string): string[] {
+  const startIndex = columns.indexOf(start);
+  const endIndex = columns.indexOf(end);
+  if (startIndex < 0 || endIndex < 0) return [];
+  const from = Math.min(startIndex, endIndex);
+  const to = Math.max(startIndex, endIndex);
+  return columns.slice(from, to + 1);
+}
+
+function ColumnGroupsEditor({
+  selectedColumns,
+  groups,
+  onChange,
+}: {
+  selectedColumns: string[];
+  groups: Array<{ label?: string; columns?: string[] }>;
+  onChange: (next: Array<{ label: string; columns: string[] }>) => void;
+}) {
+  const updateGroup = (
+    idx: number,
+    patch: Partial<{ label: string; columns: string[] }>,
+  ) => {
+    const next = groups.map((group) => ({
+      label: String(group.label || ''),
+      columns: Array.isArray(group.columns) ? [...group.columns] : [],
+    }));
+    next[idx] = { ...next[idx], ...patch };
+    onChange(next);
+  };
+
+  const addGroup = () => {
+    if (selectedColumns.length < 2) return;
+    onChange([
+      ...groups.map((group) => ({
+        label: String(group.label || ''),
+        columns: Array.isArray(group.columns) ? [...group.columns] : [],
+      })),
+      {
+        label: `Nhom ${groups.length + 1}`,
+        columns: selectedColumns.slice(0, 2),
+      },
+    ]);
+  };
+
+  return (
+    <BuilderSubsection
+      title="Header groups"
+      description="Moi nhom header span qua mot doan cot lien nhau, giu rang buoc ro rang ve vi tri dau/cuoi."
+      action={
+        <BuilderActionButton
+          onClick={addGroup}
+          disabled={selectedColumns.length < 2}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Them nhom
+        </BuilderActionButton>
+      }
+    >
+
+      {groups.length === 0 ? (
+        <p className="text-tiny text-text-tertiary">
+          Chua co nhom nao. Chon it nhat 2 cot de tao grouped header.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {groups.map((group, idx) => {
+            const columns = Array.isArray(group.columns) ? group.columns : [];
+            const start = columns[0] || selectedColumns[0] || '';
+            const end = columns[columns.length - 1] || selectedColumns[1] || start;
+            const preview = columns.join(' | ');
+            return (
+              <div
+                key={idx}
+                className="grid gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3 xl:grid-cols-[minmax(0,1fr),minmax(0,180px),minmax(0,180px),auto]"
+              >
+                <input
+                  value={String(group.label || '')}
+                  onChange={(event) => updateGroup(idx, { label: event.target.value })}
+                  placeholder="Ten nhom"
+                  className={INPUT}
+                />
+                <select
+                  value={start}
+                  onChange={(event) =>
+                    updateGroup(idx, {
+                      columns: buildColumnSlice(selectedColumns, event.target.value, end),
+                    })
+                  }
+                  className={INPUT}
+                >
+                  {selectedColumns.map((column) => (
+                    <option key={column} value={column}>
+                      Tu: {column}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={end}
+                  onChange={(event) =>
+                    updateGroup(idx, {
+                      columns: buildColumnSlice(selectedColumns, start, event.target.value),
+                    })
+                  }
+                  className={INPUT}
+                >
+                  {selectedColumns.map((column) => (
+                    <option key={column} value={column}>
+                      Den: {column}
+                    </option>
+                  ))}
+                </select>
+                <BuilderIconButton
+                  onClick={() => onChange(groups.filter((_, index) => index !== idx) as Array<{ label: string; columns: string[] }>)}
+                  title="Xoa nhom"
+                  variant="danger"
+                >
+                  <Trash2 className="h-3.5 w-3.5 text-danger" />
+                </BuilderIconButton>
+                <div className="col-span-4 text-tiny text-text-tertiary">
+                  Covers: {preview || '(invalid range)'}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </BuilderSubsection>
+  );
+}
+
+function parseTotalSpec(spec: string): { column: string; agg: TotalAgg } {
+  const text = String(spec || '').trim();
+  if (!text) return { column: '', agg: 'sum' };
+  if (!text.includes(':')) return { column: text, agg: 'sum' };
+  const [column, rawAgg] = text.split(':', 2);
+  const agg = (rawAgg || 'sum').trim().toLowerCase() as TotalAgg;
+  return {
+    column: column.trim(),
+    agg: ['sum', 'avg', 'count', 'min', 'max'].includes(agg) ? agg : 'sum',
+  };
+}
+
+function TotalsEditor({
+  selectedColumns,
+  totals,
+  onChange,
+}: {
+  selectedColumns: string[];
+  totals: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const items = totals.map(parseTotalSpec);
+
+  const updateItem = (
+    idx: number,
+    patch: Partial<{ column: string; agg: TotalAgg }>,
+  ) => {
+    const next = items.map((item, index) => (index === idx ? { ...item, ...patch } : item));
+    onChange(next.filter((item) => item.column).map((item) => `${item.column}:${item.agg}`));
+  };
+
+  return (
+    <BuilderSubsection
+      title="Footer totals"
+      description="Moi total la mot cap cot + phep tinh, khong tron cung hang voi field merge de giam chenh chieu cao."
+      action={
+        <BuilderActionButton
+          onClick={() =>
+            onChange(
+              selectedColumns[0]
+                ? [...totals, `${selectedColumns[0]}:sum`]
+                : totals,
+            )
+          }
+          disabled={selectedColumns.length === 0}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Them total
+        </BuilderActionButton>
+      }
+    >
+
+      {items.length === 0 ? (
+        <p className="text-tiny text-text-tertiary">
+          Chua co total nao.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {items.map((item, idx) => (
+            <div
+              key={idx}
+              className="grid gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-2 md:grid-cols-[minmax(0,1fr),160px,auto]"
+            >
+              <select
+                value={item.column}
+                onChange={(event) => updateItem(idx, { column: event.target.value })}
+                className={INPUT}
+              >
+                {selectedColumns.map((column) => (
+                  <option key={column} value={column}>
+                    {column}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={item.agg}
+                onChange={(event) => updateItem(idx, { agg: event.target.value as TotalAgg })}
+                className={INPUT}
+              >
+                <option value="sum">sum</option>
+                <option value="avg">avg</option>
+                <option value="count">count</option>
+                <option value="min">min</option>
+                <option value="max">max</option>
+              </select>
+              <BuilderIconButton
+                onClick={() => onChange(totals.filter((_, index) => index !== idx))}
+                title="Xoa total"
+                variant="danger"
+              >
+                <Trash2 className="h-3.5 w-3.5 text-danger" />
+              </BuilderIconButton>
+            </div>
+          ))}
+        </div>
+      )}
+    </BuilderSubsection>
   );
 }

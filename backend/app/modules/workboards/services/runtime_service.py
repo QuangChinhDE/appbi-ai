@@ -222,6 +222,62 @@ def _compute_merges(
     return out
 
 
+def _normalize_column_groups(
+    columns: List[str],
+    column_groups: List[Any] | None,
+) -> List[Dict[str, Any]]:
+    """Keep only valid, contiguous column groups in display order.
+
+    Grouped headers can only span contiguous columns in the rendered table.
+    Invalid or overlapping definitions are skipped defensively so previews
+    and exports still render instead of breaking on bad builder state.
+    """
+    if not columns or not column_groups:
+        return []
+
+    order = {col: idx for idx, col in enumerate(columns)}
+    assigned: set[str] = set()
+    normalized: List[Dict[str, Any]] = []
+
+    for raw in column_groups or []:
+        if hasattr(raw, "model_dump"):
+            item = raw.model_dump()
+        elif isinstance(raw, dict):
+            item = raw
+        else:
+            continue
+        label = str(item.get("label") or "").strip()
+        raw_columns = item.get("columns") or []
+        if not label or not isinstance(raw_columns, list):
+            continue
+
+        cols: List[str] = []
+        seen_local: set[str] = set()
+        for raw_col in raw_columns:
+            col = str(raw_col or "").strip()
+            if (
+                col
+                and col in order
+                and col not in assigned
+                and col not in seen_local
+            ):
+                cols.append(col)
+                seen_local.add(col)
+        if len(cols) < 2:
+            continue
+
+        cols = sorted(cols, key=order.get)
+        indices = [order[col] for col in cols]
+        expected = list(range(indices[0], indices[0] + len(indices)))
+        if indices != expected:
+            continue
+
+        normalized.append({"label": label, "columns": cols})
+        assigned.update(cols)
+
+    return normalized
+
+
 def _resolve_relationship_labels(
     db: Session,
     *,
@@ -593,6 +649,9 @@ class WorkboardRuntimeService:
                     ),
                 )
         payload: Dict[str, Any] = {"columns": selected, "rows": rows}
+        column_groups = _normalize_column_groups(selected, block.column_groups)
+        if column_groups:
+            payload["column_groups"] = column_groups
         merges = _compute_merges(rows, block.group_by, selected)
         if merges:
             payload["merges"] = merges

@@ -201,6 +201,15 @@ class KvGridBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class DataTableColumnGroup(BaseModel):
+    """One grouped header spanning several contiguous table columns."""
+
+    label: str = Field(..., min_length=1, max_length=120)
+    columns: List[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class DataTableBlock(BaseModel):
     type: Literal["data_table"]
     source: str = Field(
@@ -208,6 +217,7 @@ class DataTableBlock(BaseModel):
         description="`primary` (the workboard's primary table) or `lookup:<table_id>`",
     )
     columns: List[str] = Field(default_factory=list)
+    column_groups: List[DataTableColumnGroup] = Field(default_factory=list)
     filters_from_view: bool = True
     totals: List[str] = Field(default_factory=list)
     # Phase 1 merge: rows are sorted by these columns and consecutive rows
@@ -856,6 +866,7 @@ class AppUserResponse(BaseModel):
     context: Dict[str, Any] = Field(default_factory=dict)
     # Never echo pin_hash to the client — admins reset PIN via PATCH.
     has_pin: bool = True
+    using_default_pin: bool = False
     created_at: datetime
     updated_at: datetime
 

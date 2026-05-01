@@ -471,6 +471,12 @@ def _rename_doc_columns(
         for key in ("columns", "totals", "group_by"):
             if key in block:
                 block[key] = _rename_col_list(block.get(key), old_table_id, column_map)
+        if isinstance(block.get("column_groups"), list):
+            for group in block["column_groups"]:
+                if isinstance(group, dict) and "columns" in group:
+                    group["columns"] = _rename_col_list(
+                        group.get("columns"), old_table_id, column_map
+                    )
 
 
 def _rename_lookup_columns(

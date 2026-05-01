@@ -77,6 +77,101 @@ def _normalize_footer_rows(
     return []
 
 
+def _normalize_column_groups(
+    columns: List[str],
+    column_groups: Any,
+) -> List[Dict[str, Any]]:
+    if not columns or not isinstance(column_groups, list):
+        return []
+    allowed = set(columns)
+    order = {col: idx for idx, col in enumerate(columns)}
+    assigned: set[str] = set()
+    out: List[Dict[str, Any]] = []
+    for raw in column_groups:
+        if not isinstance(raw, dict):
+            continue
+        label = str(raw.get("label") or "").strip()
+        raw_cols = raw.get("columns") or []
+        if not label or not isinstance(raw_cols, list):
+            continue
+        cols = [
+            str(col).strip()
+            for col in raw_cols
+            if str(col).strip() in allowed and str(col).strip() not in assigned
+        ]
+        if len(cols) < 2:
+            continue
+        cols = sorted(dict.fromkeys(cols), key=order.get)
+        indices = [order[col] for col in cols]
+        if indices != list(range(indices[0], indices[0] + len(indices))):
+            continue
+        out.append({"label": label, "columns": cols})
+        assigned.update(cols)
+    return out
+
+
+def _build_header_rows(
+    columns: List[str],
+    column_groups: Any,
+) -> List[List[Dict[str, Any]]]:
+    groups = _normalize_column_groups(columns, column_groups)
+    if not groups:
+        return [[{"label": col, "col_span": 1, "row_span": 1} for col in columns]]
+
+    group_start = {group["columns"][0]: group for group in groups}
+    rows: List[List[Dict[str, Any]]] = [[], []]
+    index = 0
+    while index < len(columns):
+        col = columns[index]
+        group = group_start.get(col)
+        if not group:
+            rows[0].append({"label": col, "col_span": 1, "row_span": 2})
+            index += 1
+            continue
+        rows[0].append(
+            {
+                "label": group["label"],
+                "col_span": len(group["columns"]),
+                "row_span": 1,
+            }
+        )
+        for member in group["columns"]:
+            rows[1].append({"label": member, "col_span": 1, "row_span": 1})
+        index += len(group["columns"])
+    return rows
+
+
+def _build_header_matrix(
+    columns: List[str],
+    column_groups: Any,
+) -> tuple[List[List[str]], List[tuple[tuple[int, int], tuple[int, int]]]]:
+    groups = _normalize_column_groups(columns, column_groups)
+    if not groups:
+        return [[str(col) for col in columns]], []
+
+    first_row = [""] * len(columns)
+    second_row = [""] * len(columns)
+    spans: List[tuple[tuple[int, int], tuple[int, int]]] = []
+    order = {col: idx for idx, col in enumerate(columns)}
+    grouped_members = {col for group in groups for col in group["columns"]}
+    group_start = {group["columns"][0]: group for group in groups}
+
+    for idx, col in enumerate(columns):
+        group = group_start.get(col)
+        if group:
+            span = len(group["columns"])
+            first_row[idx] = group["label"]
+            spans.append(((idx, 0), (idx + span - 1, 0)))
+            for offset, member in enumerate(group["columns"]):
+                second_row[idx + offset] = member
+            continue
+        if col not in grouped_members:
+            first_row[idx] = col
+            spans.append(((idx, 0), (idx, 1)))
+
+    return [first_row, second_row], spans
+
+
 def _format_total_cell(value: Any) -> str:
     """Render an aggregated value for a footer cell.
 
@@ -173,11 +268,28 @@ def _block_to_html(block: Dict[str, Any]) -> str:
         title = block.get("title")
         data = block.get("data") or {}
         columns: List[str] = data.get("columns") or block.get("columns") or []
+        header_rows = _build_header_rows(
+            columns, data.get("column_groups") or block.get("column_groups") or []
+        )
         rows: List[Dict[str, Any]] = data.get("rows") or []
         footer_row = data.get("footer_row") or {}
         merges = data.get("merges") or []
         rowspan_map, hidden = _build_merge_index(merges)
-        thead = "".join(f"<th>{html_escape(str(c))}</th>" for c in columns)
+        thead_parts: List[str] = []
+        for row in header_rows:
+            cells = []
+            for cell in row:
+                col_span = int(cell.get("col_span", 1) or 1)
+                row_span = int(cell.get("row_span", 1) or 1)
+                attrs = []
+                if col_span > 1:
+                    attrs.append(f' colspan="{col_span}"')
+                if row_span > 1:
+                    attrs.append(f' rowspan="{row_span}"')
+                cells.append(
+                    f"<th{''.join(attrs)}>{html_escape(str(cell.get('label') or ''))}</th>"
+                )
+            thead_parts.append(f"<tr>{''.join(cells)}</tr>")
         tbody_parts: List[str] = []
         for r_idx, row in enumerate(rows):
             cells_html = []
@@ -207,7 +319,7 @@ def _block_to_html(block: Dict[str, Any]) -> str:
             tfoot_html = f"<tfoot>{''.join(tfoot_inner)}</tfoot>"
         title_html = f"<h2>{html_escape(title)}</h2>" if title else ""
         return (
-            f"{title_html}<table><thead><tr>{thead}</tr></thead>"
+            f"{title_html}<table><thead>{''.join(thead_parts)}</thead>"
             f"<tbody>{''.join(tbody_parts)}</tbody>{tfoot_html}</table>"
         )
     if block_type == "text":
@@ -326,12 +438,15 @@ def _block_to_pdf_flowables(block: Dict[str, Any], styles) -> List[Any]:
             flow.append(Paragraph(f"<b>{html_escape(block.get('title') or '')}</b>", styles["Heading3"]))
         data = block.get("data") or {}
         columns: List[str] = data.get("columns") or block.get("columns") or []
+        column_groups = data.get("column_groups") or block.get("column_groups") or []
         rows: List[Dict[str, Any]] = data.get("rows") or []
         footer_row = data.get("footer_row") or {}
         merges = data.get("merges") or []
         if columns:
             col_index = {c: i for i, c in enumerate(columns)}
-            table_data: List[List[str]] = [[str(c) for c in columns]]
+            header_matrix, header_spans = _build_header_matrix(columns, column_groups)
+            header_depth = len(header_matrix)
+            table_data: List[List[str]] = [list(row) for row in header_matrix]
             for row in rows:
                 table_data.append(["" if row.get(c) is None else str(row.get(c)) for c in columns])
             footer_indices: List[int] = []
@@ -346,17 +461,18 @@ def _block_to_pdf_flowables(block: Dict[str, Any], styles) -> List[Any]:
                             cells.append(_format_total_cell(val))
                     table_data.append(cells)
                     footer_indices.append(len(table_data) - 1)
-            footer_idx = footer_indices[0] if footer_indices else None
             style_cmds = [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f0f1f4")),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("BACKGROUND", (0, 0), (-1, header_depth - 1), colors.HexColor("#f0f1f4")),
+                ("FONTNAME", (0, 0), (-1, header_depth - 1), "Helvetica-Bold"),
                 ("FONTSIZE", (0, 0), (-1, -1), 8),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cccccc")),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ]
+            for start, end in header_spans:
+                style_cmds.append(("SPAN", start, end))
             # Add SPAN ranges for merged cells. ReportLab uses (col, row)
-            # tuples; row indexes here are body-relative offset by +1 for
-            # the header row.
+            # tuples; row indexes here are body-relative offset by the
+            # number of header rows.
             for spec in merges:
                 col = spec.get("column")
                 start = int(spec.get("row_start", 0) or 0)
@@ -364,7 +480,9 @@ def _block_to_pdf_flowables(block: Dict[str, Any], styles) -> List[Any]:
                 if col not in col_index or span < 2:
                     continue
                 ci = col_index[col]
-                style_cmds.append(("SPAN", (ci, start + 1), (ci, start + span)))
+                style_cmds.append(
+                    ("SPAN", (ci, start + header_depth), (ci, start + header_depth + span - 1))
+                )
             for f_pos, f_idx in enumerate(footer_indices):
                 style_cmds.append(
                     ("BACKGROUND", (0, f_idx), (-1, f_idx), colors.HexColor("#fafbfc"))
@@ -376,7 +494,7 @@ def _block_to_pdf_flowables(block: Dict[str, Any], styles) -> List[Any]:
                     style_cmds.append(
                         ("LINEABOVE", (0, f_idx), (-1, f_idx), 0.75, colors.HexColor("#888888"))
                     )
-            tbl = Table(table_data, repeatRows=1)
+            tbl = Table(table_data, repeatRows=header_depth)
             tbl.setStyle(TableStyle(style_cmds))
             flow.append(tbl)
             flow.append(Spacer(1, 4 * mm))
@@ -482,17 +600,33 @@ def to_excel(rendered_doc: Dict[str, Any]) -> bytes:
                 cursor_row += 1
             data = block.get("data") or {}
             columns: List[str] = data.get("columns") or block.get("columns") or []
+            column_groups = data.get("column_groups") or block.get("column_groups") or []
             rows: List[Dict[str, Any]] = data.get("rows") or []
             footer_row = data.get("footer_row") or {}
             merges = data.get("merges") or []
             if columns:
                 col_index = {c: i for i, c in enumerate(columns, start=1)}
-                for c_idx, col in enumerate(columns, start=1):
-                    cell = ws.cell(row=cursor_row, column=c_idx, value=str(col))
-                    cell.font = bold
-                    cell.fill = header_fill
-                    cell.alignment = wrap
-                cursor_row += 1
+                header_matrix, header_spans = _build_header_matrix(columns, column_groups)
+                header_start_row = cursor_row
+                for row_offset, header_row in enumerate(header_matrix):
+                    excel_row = cursor_row + row_offset
+                    for c_idx, value in enumerate(header_row, start=1):
+                        cell = ws.cell(row=excel_row, column=c_idx, value=value)
+                        cell.font = bold
+                        cell.fill = header_fill
+                        cell.alignment = center
+                for start, end in header_spans:
+                    ws.merge_cells(
+                        start_row=header_start_row + start[1],
+                        start_column=start[0] + 1,
+                        end_row=header_start_row + end[1],
+                        end_column=end[0] + 1,
+                    )
+                    ws.cell(
+                        row=header_start_row + start[1],
+                        column=start[0] + 1,
+                    ).alignment = center
+                cursor_row += len(header_matrix)
                 first_data_row = cursor_row
                 for row in rows:
                     for c_idx, col in enumerate(columns, start=1):

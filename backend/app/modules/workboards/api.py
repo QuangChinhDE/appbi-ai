@@ -33,6 +33,7 @@ from app.modules.workboards.models import (
     WorkboardAppUser,
     WorkboardWorkspace,
 )
+from app.modules.workboards.roles import is_owner_role, normalize_app_user_role
 from app.modules.workboards.schemas import (
     AppUserCreate,
     AppUserResponse,
@@ -51,6 +52,7 @@ from app.modules.workboards.schemas import (
     WorkboardWriteResult,
 )
 from app.modules.workboards.services import doc_export_service as doc_export
+from app.modules.workboards.services.app_user_service import is_default_pin_hash
 from app.services.audit_service import audit
 from app.modules.workboards.services.runtime_service import WorkboardRuntimeService
 from app.modules.workboards.services.crud_service import WorkboardService, load_layout_v2
@@ -125,6 +127,7 @@ def list_workboards(
 def create_workboard(
     payload: WorkboardCreate,
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("workboards", "edit")),
 ):
@@ -141,6 +144,13 @@ def create_workboard(
         resource_id=str(wb.id),
         details={"name": wb.name, "dataset_id": wb.dataset_id},
     )
+    default_owner = getattr(wb, "_default_app_user", None)
+    if isinstance(default_owner, dict):
+        username = str(default_owner.get("username") or "").strip()
+        pin = str(default_owner.get("pin") or "").strip()
+        if username and pin:
+            response.headers["X-AppBI-Default-Owner-Username"] = username
+            response.headers["X-AppBI-Default-Owner-Pin"] = pin
     wb.user_permission = "full"
     return _stamp_v2(wb)
 
@@ -801,15 +811,17 @@ def import_workboard_template(
 
 
 def _app_user_to_response(user: WorkboardAppUser) -> AppUserResponse:
+    using_default_pin = bool(user.pin_hash) and is_owner_role(user.role) and is_default_pin_hash(user.pin_hash)
     return AppUserResponse(
         id=user.id,
         workboard_id=user.workboard_id,
         username=user.username,
         full_name=user.full_name,
-        role=user.role,
+        role=normalize_app_user_role(user.role),
         active=user.active,
         context=user.context or {},
         has_pin=bool(user.pin_hash),
+        using_default_pin=using_default_pin,
         created_at=user.created_at,
         updated_at=user.updated_at,
     )
@@ -903,7 +915,7 @@ def create_app_user(
         username=username,
         pin_hash=app_user_service.hash_pin(payload.pin),
         full_name=payload.full_name,
-        role=payload.role,
+        role=normalize_app_user_role(payload.role),
         active=payload.active,
         context=payload.context or {},
     )
@@ -969,7 +981,10 @@ def update_app_user(
 
     for field in ("full_name", "role", "active"):
         if field in data:
-            setattr(user, field, data[field])
+            value = data[field]
+            if field == "role":
+                value = normalize_app_user_role(value)
+            setattr(user, field, value)
 
     if "context" in data and data["context"] is not None:
         user.context = data["context"]

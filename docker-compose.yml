@@ -130,9 +130,6 @@ services:
       # Bind to 127.0.0.1 so the frontend is reachable only via nginx,
       # not directly from the public internet.
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
-    depends_on:
-      backend:
-        condition: service_healthy
     networks:
       - appbi-net
 

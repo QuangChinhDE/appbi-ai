@@ -32,6 +32,7 @@ from slowapi.util import get_remote_address
 
 if settings.WORKBOARDS_ENABLED:
     from app.modules.workboards.models import WorkboardWorkspace
+    from app.modules.workboards.roles import is_owner_role
     from app.modules.workboards.services import app_user_service
     from app.modules.workboards.services.public_links import WorkboardPublicLinkService
     from app.modules.workboards.services.rls_service import (
@@ -774,7 +775,7 @@ if settings.WORKBOARDS_ENABLED:
             if wb is None:
                 continue
             allowed_roles = [r.strip().lower() for r in item.roles or []]
-            if allowed_roles and role not in allowed_roles:
+            if allowed_roles and role not in allowed_roles and not is_owner_role(role):
                 continue
             # Hide workboards the matched session isn't bound to. The JWT
             # carries the workboard_id of the row that authenticated, so a

@@ -60,6 +60,49 @@ function pickIcon(name?: string | null): React.ElementType {
 
 type DeviceMode = 'mobile' | 'tablet' | 'desktop';
 
+interface ApiErrorLike {
+  response?: {
+    status?: number;
+    data?: {
+      detail?: unknown;
+    };
+  };
+}
+
+interface RuntimeFormPage {
+  id: number;
+  title: string;
+  description?: string;
+}
+
+interface RuntimeEvalCtx {
+  row: Record<string, unknown>;
+  app_user: Record<string, unknown>;
+  shared: Record<string, unknown>;
+}
+
+interface RuntimeField extends Record<string, unknown> {
+  column?: unknown;
+  widget?: unknown;
+  label?: unknown;
+  help_text?: unknown;
+  placeholder?: unknown;
+  required?: unknown;
+  readonly?: unknown;
+  default?: unknown;
+  page?: unknown;
+  section?: unknown;
+  show_if?: unknown;
+  required_if?: unknown;
+  readonly_if?: unknown;
+  lookup?: Record<string, unknown>;
+}
+
+interface RuntimeFormSpecExtras {
+  pages?: RuntimeFormPage[];
+  sections?: string[];
+}
+
 function detectDevice(): DeviceMode {
   if (typeof window === 'undefined') return 'desktop';
   const w = window.innerWidth;
@@ -117,14 +160,17 @@ export default function WorkspaceWorkboardPage() {
         } else if (s.screens.length > 0) {
           setActiveScreenId(s.screens[0].id);
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!alive) return;
-        if (err?.response?.status === 401) {
+        const apiError = err as ApiErrorLike;
+        if (apiError.response?.status === 401) {
           router.push(`/ws/${token}`);
           return;
         }
         setError(
-          err?.response?.data?.detail || 'Không tải được mini-app.',
+          typeof apiError.response?.data?.detail === 'string'
+            ? apiError.response.data.detail
+            : 'Không tải được mini-app.',
         );
       }
     })();
@@ -537,7 +583,7 @@ function ScreenContainer({
       try {
         const r = await workspaceApi.getScreen(token, workboardId, screenId, shared);
         if (alive) setData(r);
-      } catch (err) {
+      } catch {
         if (alive) setData(null);
       } finally {
         if (alive) setLoading(false);
@@ -580,9 +626,6 @@ function ScreenContainer({
       <ListScreen
         spec={data}
         accent={accent}
-        token={token}
-        workboardId={workboardId}
-        screenId={screenId}
         onAction={(action, row) => {
           if (action.go_to_screen) {
             const carry: Record<string, unknown> = {};
@@ -640,15 +683,16 @@ function FormScreen({
   const [success, setSuccess] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
 
-  const pages = ((spec as any).pages as Array<{ id: number; title: string; description?: string }>) || [];
-  const sections = ((spec as any).sections as string[]) || [];
+  const formSpec = spec as FormScreenResponse & RuntimeFormSpecExtras;
+  const pages = formSpec.pages ?? [];
+  const sections = formSpec.sections ?? [];
   const isMultiPage = pages.length >= 2;
 
-  const allFields = (spec.fields as Array<Record<string, unknown>>) || [];
+  const allFields = (spec.fields as RuntimeField[]) || [];
   // Distribute fields per page when multi-page; default page=1 for unassigned fields.
-  const fieldsByPage: Record<number, Array<Record<string, unknown>>> = {};
+  const fieldsByPage: Record<number, RuntimeField[]> = {};
   for (const f of allFields) {
-    const p = isMultiPage ? Number((f as any).page || 1) : 1;
+    const p = isMultiPage ? Number(f.page || 1) : 1;
     (fieldsByPage[p] = fieldsByPage[p] || []).push(f);
   }
   const visibleFields = isMultiPage
@@ -669,11 +713,11 @@ function FormScreen({
 
   const validateCurrentPage = (): boolean => {
     for (const f of visibleFields) {
-      const col = String((f as any).column);
-      const required = !!(f as any).required;
+      const col = String(f.column || '');
+      const required = !!f.required;
       const v = values[col];
       if (required && (v === undefined || v === null || v === '')) {
-        setSubmitError(`Vui lòng điền "${(f as any).label || col}"`);
+        setSubmitError(`Vui lòng điền "${String(f.label || col)}"`);
         return false;
       }
     }
@@ -697,9 +741,7 @@ function FormScreen({
       // engine forces these columns to the caller's identity anyway.
       const payload: Record<string, unknown> = {};
       const fieldColumns = new Set(
-        ((spec.fields as Array<Record<string, unknown>>) || []).map((f) =>
-          String((f as any).column),
-        ),
+        allFields.map((f) => String(f.column || '')),
       );
       const pkColumns = (spec.primary_key_columns || []).map(String);
       const submitColumns = new Set([...fieldColumns, ...pkColumns]);
@@ -731,8 +773,8 @@ function FormScreen({
       }
       // Brief delay so user sees the success badge before navigating.
       setTimeout(() => onSaved(carry, next), 600);
-    } catch (err: any) {
-      const detail = err?.response?.data?.detail;
+    } catch (err: unknown) {
+      const detail = (err as ApiErrorLike)?.response?.data?.detail;
       if (typeof detail === 'string') setSubmitError(detail);
       else if (detail && typeof detail === 'object' && 'message' in detail) {
         setSubmitError(String((detail as { message: string }).message));
@@ -743,15 +785,15 @@ function FormScreen({
   };
 
   // Build expression evaluation context that updates as the user types.
-  const evalCtx = {
-    row: values as Record<string, unknown>,
-    app_user: ((spec.initial_values as any) || {}) as Record<string, unknown>,
-    shared: shared as Record<string, unknown>,
+  const evalCtx: RuntimeEvalCtx = {
+    row: values,
+    app_user: spec.initial_values || {},
+    shared,
   };
 
   // Filter fields by show_if before grouping.
-  const computeShouldShow = (f: Record<string, unknown>) => {
-    const expr = (f as any).show_if as string | null | undefined;
+  const computeShouldShow = (f: RuntimeField) => {
+    const expr = typeof f.show_if === 'string' ? f.show_if : null;
     if (!expr) return true;
     return evaluateTruthy(expr, evalCtx, true);
   };
@@ -760,16 +802,20 @@ function FormScreen({
 
   // Group visible fields by section heading. Fields without a section land
   // in the "_default" bucket and render without a heading.
-  const fieldsBySection: Record<string, Array<Record<string, unknown>>> = {};
+  const fieldsBySection: Record<string, RuntimeField[]> = {};
   for (const f of renderableFields) {
-    const sec = String((f as any).section || '_default');
+    const sec = typeof f.section === 'string' && f.section ? f.section : '_default';
     (fieldsBySection[sec] = fieldsBySection[sec] || []).push(f);
   }
-  const sectionOrder: string[] = [];
-  for (const f of renderableFields) {
-    const sec = String((f as any).section || '_default');
-    if (!sectionOrder.includes(sec)) sectionOrder.push(sec);
-  }
+  const derivedSections = renderableFields.map((f) =>
+    typeof f.section === 'string' && f.section ? f.section : '_default',
+  );
+  const sectionOrder = Array.from(
+    new Set([
+      ...sections.filter((section) => (fieldsBySection[section] || []).length > 0),
+      ...derivedSections,
+    ]),
+  );
 
   return (
     <div className="mx-auto w-full max-w-3xl rounded-xl bg-white p-5 shadow-sm sm:p-6 xl:max-w-5xl 2xl:max-w-6xl">
@@ -797,15 +843,15 @@ function FormScreen({
               )}
               {list.map((field) => (
                 <Field
-                  key={String((field as any).column)}
+                  key={String(field.column || '')}
                   field={field}
                   lookups={spec.lookups}
-                  value={values[String((field as any).column)]}
+                  value={values[String(field.column || '')]}
                   evalCtx={evalCtx}
                   onChange={(v) =>
                     setValues((curr) => ({
                       ...curr,
-                      [String((field as any).column)]: v,
+                      [String(field.column || '')]: v,
                     }))
                   }
                 />
@@ -905,19 +951,21 @@ function Field({
   onChange,
   evalCtx,
 }: {
-  field: Record<string, unknown>;
+  field: RuntimeField;
   lookups: Record<string, Array<{ label: string; value: unknown }>>;
   value: unknown;
   onChange: (v: unknown) => void;
-  evalCtx?: { row: Record<string, unknown>; app_user: Record<string, unknown>; shared: Record<string, unknown> };
+  evalCtx?: RuntimeEvalCtx;
 }) {
   const col = String(field.column);
   const widget = String(field.widget || 'text');
   const label = String(field.label || col);
   const help = field.help_text ? String(field.help_text) : null;
   const placeholder = field.placeholder ? String(field.placeholder) : '';
-  const requiredIfExpr = (field as any).required_if as string | undefined;
-  const readonlyIfExpr = (field as any).readonly_if as string | undefined;
+  const requiredIfExpr =
+    typeof field.required_if === 'string' ? field.required_if : undefined;
+  const readonlyIfExpr =
+    typeof field.readonly_if === 'string' ? field.readonly_if : undefined;
   const required = requiredIfExpr && evalCtx
     ? evaluateTruthy(requiredIfExpr, evalCtx, false)
     : !!field.required;
@@ -1033,16 +1081,10 @@ function Field({
 function ListScreen({
   spec,
   accent,
-  token,
-  workboardId,
-  screenId,
   onAction,
 }: {
   spec: ListScreenResponse;
   accent: string;
-  token: string;
-  workboardId: number;
-  screenId: string;
   onAction: (
     action: { go_to_screen?: string | null; carry?: string[] },
     row: Record<string, unknown>,
@@ -1235,12 +1277,90 @@ function normalizeFooterRows(footer: unknown): FooterRow[] {
   return [{ agg: 'sum', label: 'Tổng', values: obj }];
 }
 
+function normalizeColumnGroups(
+  columns: string[],
+  columnGroups: unknown,
+): Array<{ label: string; columns: string[] }> {
+  if (!Array.isArray(columnGroups) || columns.length === 0) return [];
+  const order = new Map(columns.map((column, index) => [column, index]));
+  const assigned = new Set<string>();
+  const normalized: Array<{ label: string; columns: string[] }> = [];
+
+  for (const raw of columnGroups) {
+    if (!raw || typeof raw !== 'object') continue;
+    const label = String((raw as { label?: unknown }).label || '').trim();
+    const rawColumns = Array.isArray((raw as { columns?: unknown }).columns)
+      ? ((raw as { columns: unknown[] }).columns)
+      : [];
+    if (!label) continue;
+
+    const cols = Array.from(
+      new Set(
+        rawColumns
+          .map((column) => String(column || '').trim())
+          .filter((column) => order.has(column) && !assigned.has(column)),
+      ),
+    ).sort((left, right) => (order.get(left) ?? 0) - (order.get(right) ?? 0));
+
+    if (cols.length < 2) continue;
+    const indices = cols.map((column) => order.get(column) ?? -1);
+    const isContiguous = indices.every(
+      (value, index) => index === 0 || value === indices[index - 1] + 1,
+    );
+    if (!isContiguous) continue;
+
+    normalized.push({ label, columns: cols });
+    cols.forEach((column) => assigned.add(column));
+  }
+
+  return normalized;
+}
+
+function buildHeaderRows(
+  columns: string[],
+  columnGroups: unknown,
+): Array<Array<{ label: string; colSpan: number; rowSpan: number }>> {
+  const groups = normalizeColumnGroups(columns, columnGroups);
+  if (groups.length === 0) {
+    return [columns.map((column) => ({ label: column, colSpan: 1, rowSpan: 1 }))];
+  }
+
+  const rows: Array<Array<{ label: string; colSpan: number; rowSpan: number }>> = [[], []];
+  const groupStart = new Map(groups.map((group) => [group.columns[0], group]));
+
+  let index = 0;
+  while (index < columns.length) {
+    const column = columns[index];
+    const group = groupStart.get(column);
+    if (!group) {
+      rows[0].push({ label: column, colSpan: 1, rowSpan: 2 });
+      index += 1;
+      continue;
+    }
+    rows[0].push({
+      label: group.label,
+      colSpan: group.columns.length,
+      rowSpan: 1,
+    });
+    rows[1].push(
+      ...group.columns.map((member) => ({ label: member, colSpan: 1, rowSpan: 1 })),
+    );
+    index += group.columns.length;
+  }
+
+  return rows;
+}
+
 function DocDataTable({ block }: { block: Record<string, unknown> }) {
   const data = (block.data as Record<string, unknown>) || {};
   const cols = (data.columns as string[]) || [];
   const rows = (data.rows as Array<Record<string, unknown>>) || [];
   const footer = (data.footer_row as Record<string, unknown> | null) || null;
   const merges = (data.merges as Array<Record<string, unknown>>) || [];
+  const headerRows = buildHeaderRows(
+    cols,
+    data.column_groups ?? block.column_groups ?? [],
+  );
   const title = block.title ? String(block.title) : null;
 
   const rowspanMap = new Map<string, number>();
@@ -1262,16 +1382,20 @@ function DocDataTable({ block }: { block: Record<string, unknown> }) {
       <div className="overflow-x-auto rounded-lg border border-slate-200">
         <table className="w-full border-collapse text-sm">
           <thead>
-            <tr className="bg-slate-100">
-              {cols.map((c) => (
-                <th
-                  key={c}
-                  className="border border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-700"
-                >
-                  {c}
-                </th>
-              ))}
-            </tr>
+            {headerRows.map((row, rowIndex) => (
+              <tr key={rowIndex} className="bg-slate-100">
+                {row.map((cell, cellIndex) => (
+                  <th
+                    key={`${rowIndex}:${cellIndex}:${cell.label}`}
+                    colSpan={cell.colSpan}
+                    rowSpan={cell.rowSpan}
+                    className="border border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-700"
+                  >
+                    {cell.label}
+                  </th>
+                ))}
+              </tr>
+            ))}
           </thead>
           <tbody>
             {rows.map((row, i) => (

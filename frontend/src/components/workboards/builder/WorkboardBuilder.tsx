@@ -1,22 +1,10 @@
 /**
  * WorkboardBuilder — visual editor for the mini-app layout.
  *
- * Layout strategy:
- *   - Left rail (224px): list of screens + add menu + save action.
- *   - Center: screen editor. Fluid width — fills the space when the right
- *     rail is collapsed; capped at ~960px for readability when expanded.
- *   - Right rail (288px, collapsible): RLS rules for the selected screen.
- *     Collapses to a 12px toggle so a single workboard takes the full width
- *     when the admin doesn't need RLS visible.
- *
- * UX notes addressed in this revision:
- *   - First-time users see a welcome card with three obvious actions instead
- *     of an empty grey area.
- *   - Each screen in the rail shows a configuration status dot (ok / warn /
- *     missing) so the admin knows which screens still need work.
- *   - The header summarises the mini-app at a glance (counts + dataset).
- *   - Save button is sticky at the bottom of the left rail with last-saved
- *     timestamp and clear error/success feedback.
+ * Layout: left rail (screens list) · center (tabbed ScreenEditor) · right
+ * (Live Preview iframe). RLS used to live in a separate right panel; it now
+ * sits inside the "Quyền" tab of the ScreenEditor so the builder has only
+ * two visible panes (editor + preview).
  */
 'use client';
 
@@ -27,13 +15,13 @@ import {
   ArrowUp,
   CheckCircle2,
   ClipboardEdit,
+  Eye,
   FileText,
   HelpCircle,
   LayoutDashboard,
   ListChecks,
   Loader2,
-  PanelRightClose,
-  PanelRightOpen,
+  MoreVertical,
   Plus,
   Save,
   Settings,
@@ -53,7 +41,6 @@ import {
   ScreenSpec,
 } from './types';
 import ScreenEditor from './ScreenEditor';
-import RlsEditor from './RlsEditor';
 import AppSettingsEditor from './AppSettingsEditor';
 import BuilderLivePreview from './BuilderLivePreview';
 import { useDebouncedAutosave } from './useDebouncedAutosave';
@@ -149,30 +136,14 @@ export default function WorkboardBuilder({ workboard }: Props) {
   const [tables, setTables] = useState<DatasetTableInfo[]>([]);
   const [tablesLoading, setTablesLoading] = useState(true);
   const [showAppSettings, setShowAppSettings] = useState(false);
-  const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [previewCollapsed, setPreviewCollapsed] = useState(false);
+  const [focusFieldColumn, setFocusFieldColumn] = useState<string | null>(null);
 
   useEffect(() => {
     setBoundDatasetId(workboard.dataset_id);
   }, [workboard.id, workboard.dataset_id]);
 
-  // The RLS panel and Live Preview both eat horizontal space; on a 1080p
-  // monitor opening both leaves the editor too narrow to be usable. We
-  // mutually exclude them so opening one auto-collapses the other.
-  const toggleRlsPanel = () => {
-    setRightPanelOpen((prev) => {
-      const next = !prev;
-      if (next) setPreviewCollapsed(true);
-      return next;
-    });
-  };
-  const togglePreview = () => {
-    setPreviewCollapsed((prev) => {
-      const next = !prev;
-      if (!next) setRightPanelOpen(false);
-      return next;
-    });
-  };
+  const togglePreview = () => setPreviewCollapsed((prev) => !prev);
 
   // Auto-save with a 1.2s debounce. The mini-preview iframe re-keys on
   // each successful save so the user sees their edits the moment the
@@ -232,6 +203,27 @@ export default function WorkboardBuilder({ workboard }: Props) {
     () => layout.screens.find((s) => s.id === activeScreenId) || null,
     [layout.screens, activeScreenId],
   );
+
+  // Listen for postMessage from the live preview iframe. The runtime form
+  // renderer wraps each field in a clickable wrapper that posts
+  // `{ type: "wb-builder/field-click", screenId, column }`. We use it to
+  // jump to the matching screen + auto-select the field in the inspector.
+  useEffect(() => {
+    function onMessage(event: MessageEvent) {
+      const data = event.data;
+      if (!data || typeof data !== 'object') return;
+      if ((data as { type?: unknown }).type !== 'wb-builder/field-click') return;
+      const screenId = String((data as { screenId?: unknown }).screenId || '');
+      const column = String((data as { column?: unknown }).column || '');
+      if (!column) return;
+      if (screenId && screenId !== activeScreenId) {
+        setActiveScreenId(screenId);
+      }
+      setFocusFieldColumn(column);
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [activeScreenId]);
 
   const updateScreen = (next: ScreenSpec) => {
     setLayout((curr) => ({
@@ -307,7 +299,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
   return (
     <div className="flex h-full">
       {/* ── Left rail — screens list ─────────────────────────────── */}
-      <aside className="flex w-56 shrink-0 flex-col border-r border-[rgb(var(--border-line))] bg-surface-1">
+      <aside className="flex w-56 shrink-0 flex-col overflow-hidden border-r border-[rgb(var(--border-line))] bg-surface-1">
         <div className="border-b border-[rgb(var(--border-line))] px-3 py-2.5">
           <div className="flex items-center justify-between">
             <div>
@@ -315,7 +307,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
                 Mini-app
               </h3>
               <p className="mt-0.5 text-caption text-text-secondary">
-                {totalScreens} screen{totalScreens !== 1 ? 's' : ''}
+                {totalScreens} màn hình
                 {screensWithIssues > 0 && (
                   <span className="ml-1 text-warning">• {screensWithIssues} cần sửa</span>
                 )}
@@ -324,14 +316,14 @@ export default function WorkboardBuilder({ workboard }: Props) {
             <button
               onClick={() => setShowAppSettings(true)}
               className="rounded-md p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
-              title="App settings (branding, navigation)"
+              title="Thiết lập app (branding, navigation)"
             >
               <Settings className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-2 py-2">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden px-2 py-2">
           {hasScreens ? (
             <div className="space-y-0.5">
               {layout.screens.map((s, i) => (
@@ -340,6 +332,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
                   screen={s}
                   active={s.id === activeScreenId}
                   onClick={() => setActiveScreenId(s.id)}
+                  onChange={updateScreen}
                   onMoveUp={i > 0 ? () => moveScreen(i, -1) : undefined}
                   onMoveDown={i < layout.screens.length - 1 ? () => moveScreen(i, 1) : undefined}
                   onDelete={() => deleteScreen(s.id)}
@@ -348,15 +341,15 @@ export default function WorkboardBuilder({ workboard }: Props) {
             </div>
           ) : (
             <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-6 text-center text-tiny text-text-tertiary">
-              Chưa có screen nào.
+              Chưa có màn hình nào.
               <br />
-              Thêm screen đầu tiên ở dưới.
+              Thêm màn hình đầu tiên ở dưới.
             </p>
           )}
 
           <div className="mt-3 border-t border-[rgb(var(--border-line))] pt-3">
             <p className="mb-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-              + Thêm screen
+              + Thêm màn hình
             </p>
             <div className="grid grid-cols-2 gap-1">
               <AddBtn icon={ClipboardEdit} label="Form" onClick={() => addScreen('form')} />
@@ -383,8 +376,25 @@ export default function WorkboardBuilder({ workboard }: Props) {
         </div>
       </aside>
 
-      {/* ── Center panel ─────────────────────────────────────────── */}
-      <main className="relative flex-1 overflow-y-auto bg-surface-0">
+      {/* ── Workspace = editor + preview, splits 50/50 when preview is open.
+          Sidebar (w-56) sits outside this so the split ignores its width. */}
+      <div className="flex min-w-0 flex-1">
+      <main
+        className={`relative min-w-0 overflow-y-auto bg-surface-0 ${
+          previewCollapsed ? 'flex-1' : 'w-1/2 shrink-0'
+        }`}
+      >
+        {previewCollapsed && (
+          <button
+            type="button"
+            onClick={togglePreview}
+            title="Mở Live Preview"
+            className="absolute right-3 top-3 z-10 flex h-7 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 text-tiny text-text-secondary shadow-sm hover:bg-surface-2 hover:text-text-primary"
+          >
+            <Eye className="h-3.5 w-3.5" />
+            Live Preview
+          </button>
+        )}
         {!hasScreens ? (
           <WelcomeEmptyState
             onAdd={addScreen}
@@ -400,37 +410,12 @@ export default function WorkboardBuilder({ workboard }: Props) {
               tables={tables}
               tablesLoading={tablesLoading}
               onChange={updateScreen}
+              focusFieldColumn={focusFieldColumn}
+              onFocusFieldHandled={() => setFocusFieldColumn(null)}
             />
           </div>
         )}
-
-        {/* Floating right-rail toggle */}
-        {hasScreens && activeScreen && (
-          <button
-            onClick={toggleRlsPanel}
-            className="absolute right-3 top-3 z-10 flex h-7 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 text-tiny text-text-secondary shadow-sm hover:bg-surface-2"
-            title={rightPanelOpen ? 'Ẩn panel quyền' : 'Hiện panel quyền'}
-          >
-            {rightPanelOpen ? (
-              <PanelRightClose className="h-3.5 w-3.5" />
-            ) : (
-              <PanelRightOpen className="h-3.5 w-3.5" />
-            )}
-            Quyền (RLS)
-          </button>
-        )}
       </main>
-
-      {/* ── Right rail — RLS ─────────────────────────────────────── */}
-      {hasScreens && activeScreen && rightPanelOpen && (
-        <aside className="flex w-72 shrink-0 flex-col overflow-y-auto border-l border-[rgb(var(--border-line))] bg-surface-1 p-3">
-          <RlsEditor
-            screen={activeScreen}
-            tables={tables}
-            onChange={updateScreen}
-          />
-        </aside>
-      )}
 
       {/* ── Live Preview iframe ──────────────────────────────────── */}
       <BuilderLivePreview
@@ -442,6 +427,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
         collapsed={previewCollapsed}
         onToggle={togglePreview}
       />
+      </div>
 
       {showAppSettings && (
         <AppSettingsEditor
@@ -530,8 +516,8 @@ function WelcomeEmptyState({
           </h2>
         </div>
         <p className="mb-5 text-caption text-text-secondary">
-          Mini-app gồm các <strong>screens</strong> (form nhập, danh sách, báo cáo) liên kết với nhau.
-          Bắt đầu bằng một trong các screens dưới đây — sau đó bấm &quot;Lưu thay đổi&quot;
+          Mini-app gồm các <strong>màn hình</strong> (form nhập, danh sách, báo cáo) liên kết với nhau.
+          Bắt đầu bằng một trong các màn hình dưới đây — sau đó bấm &quot;Lưu thay đổi&quot;
           rồi vào tab <strong>Preview</strong> để dùng thử.
         </p>
 
@@ -600,7 +586,7 @@ function StarterCard({
         <p className="mt-1 text-tiny text-text-tertiary">{description}</p>
       </div>
       <span className="mt-auto flex items-center gap-1 text-tiny font-emphasis text-brand opacity-0 transition-opacity group-hover:opacity-100">
-        <Plus className="h-3 w-3" /> Thêm screen này
+        <Plus className="h-3 w-3" /> Thêm màn hình này
       </span>
     </button>
   );
@@ -617,11 +603,10 @@ function PickAScreenHint({
     <div className="mx-auto max-w-2xl px-6 py-10">
       <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5">
         <h3 className="mb-1 text-body font-emphasis text-text-primary">
-          Chọn screen để chỉnh sửa
+          Chọn màn hình để chỉnh sửa
         </h3>
         <p className="mb-3 text-caption text-text-secondary">
-          Mini-app này có {screens.length} screen{screens.length > 1 ? 's' : ''}.
-          Click thẻ dưới để mở editor.
+          Mini-app này có {screens.length} màn hình. Click thẻ dưới để mở editor.
         </p>
         <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
           {screens.map((s) => {
@@ -639,7 +624,7 @@ function PickAScreenHint({
                     {s.title}
                   </div>
                   <div className="text-tiny text-text-quaternary">
-                    {KIND_LABEL[s.kind]} • {s.id}
+                    {KIND_LABEL[s.kind]}
                   </div>
                 </div>
                 <StatusDot status={status} />
@@ -653,12 +638,13 @@ function PickAScreenHint({
 }
 
 
-// ── Screen list item with status ──────────────────────────────────────────
+// ── Screen list item with status + gear popover for screen meta ───────────
 
 function ScreenListItem({
   screen,
   active,
   onClick,
+  onChange,
   onMoveUp,
   onMoveDown,
   onDelete,
@@ -666,23 +652,45 @@ function ScreenListItem({
   screen: ScreenSpec;
   active: boolean;
   onClick: () => void;
+  onChange: (next: ScreenSpec) => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
   onDelete: () => void;
 }) {
   const Icon = KIND_ICON[screen.kind];
   const status = screenStatus(screen);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const wrapperRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Close menu/popover on outside click.
+  useEffect(() => {
+    if (!menuOpen && !settingsOpen) return;
+    function onDocClick(event: MouseEvent) {
+      if (!wrapperRef.current) return;
+      if (!wrapperRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+        setSettingsOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [menuOpen, settingsOpen]);
+
+  const showMenuButton = active || menuOpen || settingsOpen;
+
   return (
     <div
-      className={`group flex items-center gap-1 rounded-md px-2 py-1.5 ${
+      ref={wrapperRef}
+      className={`group relative flex items-center gap-1 rounded-md px-2 py-1.5 ${
         active ? 'bg-brand/10' : 'hover:bg-surface-2'
       }`}
     >
-      <button onClick={onClick} className="flex flex-1 items-center gap-2 text-left">
+      <button onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2 text-left">
         <Icon className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate text-caption font-emphasis text-text-primary">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="min-w-0 flex-1 truncate text-caption font-emphasis text-text-primary">
               {screen.title}
             </span>
             <StatusDot status={status} />
@@ -692,20 +700,166 @@ function ScreenListItem({
           </div>
         </div>
       </button>
-      <div className="flex opacity-0 group-hover:opacity-100">
-        {onMoveUp && (
-          <button onClick={onMoveUp} className="rounded p-0.5 hover:bg-surface-2" title="Lên">
-            <ArrowUp className="h-3 w-3 text-text-tertiary" />
-          </button>
-        )}
-        {onMoveDown && (
-          <button onClick={onMoveDown} className="rounded p-0.5 hover:bg-surface-2" title="Xuống">
-            <ArrowDown className="h-3 w-3 text-text-tertiary" />
-          </button>
-        )}
-        <button onClick={onDelete} className="rounded p-0.5 hover:bg-danger/10" title="Xoá">
-          <Trash2 className="h-3 w-3 text-danger" />
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          setMenuOpen((prev) => !prev);
+        }}
+        className={`shrink-0 rounded p-0.5 transition-opacity ${
+          showMenuButton ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+        } ${
+          menuOpen ? 'bg-surface-2 text-text-primary' : 'text-text-tertiary hover:bg-surface-2 hover:text-text-primary'
+        }`}
+        title="Thao tác"
+      >
+        <MoreVertical className="h-3.5 w-3.5" />
+      </button>
+
+      {menuOpen && (
+        <div
+          className="absolute right-1 top-full z-20 mt-1 w-44 overflow-hidden rounded-md border border-[rgb(var(--border-line))] bg-surface-1 py-1 shadow-lg"
+          role="menu"
+        >
+          <MenuItem
+            icon={<Settings className="h-3.5 w-3.5" />}
+            label="Thiết lập màn hình"
+            onClick={() => {
+              setMenuOpen(false);
+              setSettingsOpen(true);
+            }}
+          />
+          {onMoveUp && (
+            <MenuItem
+              icon={<ArrowUp className="h-3.5 w-3.5" />}
+              label="Di chuyển lên"
+              onClick={() => {
+                setMenuOpen(false);
+                onMoveUp();
+              }}
+            />
+          )}
+          {onMoveDown && (
+            <MenuItem
+              icon={<ArrowDown className="h-3.5 w-3.5" />}
+              label="Di chuyển xuống"
+              onClick={() => {
+                setMenuOpen(false);
+                onMoveDown();
+              }}
+            />
+          )}
+          <div className="my-1 border-t border-[rgb(var(--border-line))]" />
+          <MenuItem
+            icon={<Trash2 className="h-3.5 w-3.5" />}
+            label="Xoá màn hình"
+            danger
+            onClick={() => {
+              setMenuOpen(false);
+              onDelete();
+            }}
+          />
+        </div>
+      )}
+
+      {settingsOpen && (
+        <ScreenSettingsPopover
+          screen={screen}
+          onChange={onChange}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function MenuItem({
+  icon,
+  label,
+  onClick,
+  danger,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-caption ${
+        danger
+          ? 'text-danger hover:bg-danger/10'
+          : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+      }`}
+      role="menuitem"
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+function ScreenSettingsPopover({
+  screen,
+  onChange,
+  onClose,
+}: {
+  screen: ScreenSpec;
+  onChange: (next: ScreenSpec) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="absolute left-1 right-1 top-full z-30 mt-1 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3 shadow-lg"
+      role="dialog"
+    >
+      <div className="mb-2 flex items-center justify-between">
+        <h4 className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+          Thiết lập màn hình
+        </h4>
+        <button
+          onClick={onClose}
+          className="rounded p-0.5 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
+          title="Đóng"
+        >
+          ×
         </button>
+      </div>
+      <div className="space-y-2">
+        <label className="block">
+          <span className="mb-1 block text-tiny font-emphasis text-text-secondary">
+            Tên màn hình
+          </span>
+          <input
+            value={screen.title}
+            onChange={(event) => onChange({ ...screen, title: event.target.value })}
+            className="min-h-8 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1 text-caption text-text-primary focus:border-brand focus:outline-none"
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-tiny font-emphasis text-text-secondary">
+            Mô tả ngắn
+          </span>
+          <textarea
+            value={screen.description || ''}
+            onChange={(event) => onChange({ ...screen, description: event.target.value })}
+            rows={2}
+            className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1 text-caption text-text-primary focus:border-brand focus:outline-none"
+          />
+        </label>
+        <label className="flex items-center gap-2 text-tiny text-text-secondary">
+          <input
+            type="checkbox"
+            checked={screen.show_in_nav !== false}
+            onChange={(event) =>
+              onChange({ ...screen, show_in_nav: event.target.checked })
+            }
+            className="h-3.5 w-3.5"
+          />
+          Hiển thị trong menu
+        </label>
       </div>
     </div>
   );

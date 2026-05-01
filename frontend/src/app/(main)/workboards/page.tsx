@@ -14,7 +14,6 @@ import {
   Clock,
   Database,
   Eye,
-  Loader2,
   Plus,
   Search,
   Share2,
@@ -44,6 +43,7 @@ import { FieldGroup, Input, Textarea } from '@/components/ui/Input';
 import { WorkboardList } from '@/components/workboards/WorkboardList';
 import WorkboardImportModal from '@/components/workboards/WorkboardImportModal';
 import type { Workboard } from '@/lib/api/workboards';
+import { storeWorkboardDefaultOwnerNotice } from '@/lib/workboard-default-owner-notice';
 
 type WorkboardListFilters = {
   state?: string;        // 'published' | 'draft'
@@ -51,6 +51,19 @@ type WorkboardListFilters = {
   owner?: string;
   dataset?: string;      // dataset_id as string
 };
+
+type ApiErrorDetail = {
+  response?: {
+    data?: {
+      detail?: unknown;
+    };
+  };
+};
+
+function getApiErrorMessage(error: unknown, fallback: string): string {
+  const detail = (error as ApiErrorDetail)?.response?.data?.detail;
+  return typeof detail === 'string' ? detail : fallback;
+}
 
 export default function WorkboardsPage() {
   const router = useRouter();
@@ -81,7 +94,8 @@ export default function WorkboardsPage() {
 
   // ── Stats for the overview header ──────────────────────────────────
   const totalScreens = items.reduce((sum, wb) => {
-    const screens = ((wb.layout_json as any)?.screens as unknown[]) || [];
+    const layout = wb.layout_json as { screens?: unknown[] } | null;
+    const screens = Array.isArray(layout?.screens) ? layout.screens : [];
     return sum + screens.length;
   }, 0);
   const publishedCount = items.filter((wb) => wb.is_published).length;
@@ -135,18 +149,28 @@ export default function WorkboardsPage() {
           mini_app_nav: { mobile_kind: 'bottom_nav', desktop_kind: 'sidebar', items: [] },
           branding: { primary_color: '#2563eb' },
           form: { fields: [] },
-          list: { columns: [] },
+          list: { columns: [], filters: [], page_size: 50, row_actions: [] },
           doc_views: [],
           rls: { enabled: false },
           audit: {},
-        } as any,
+        },
       });
-      toast.success(`Đã tạo “${created.name}”`);
+      if (created.default_owner_credentials) {
+        storeWorkboardDefaultOwnerNotice({
+          workboardId: created.id,
+          ...created.default_owner_credentials,
+        });
+        toast.success(`Đã tạo “${created.name}”`, {
+          description: `Owner mặc định: ${created.default_owner_credentials.username} / ${created.default_owner_credentials.pin}. Hãy đổi PIN này trong tab Users.`,
+        });
+      } else {
+        toast.success(`Đã tạo “${created.name}”`);
+      }
       setIsCreateOpen(false);
       resetForm();
       router.push(`/workboards/${created.id}`);
-    } catch (err: any) {
-      toast.error(err?.response?.data?.detail || 'Tạo workboard thất bại');
+    } catch (err: unknown) {
+      toast.error(getApiErrorMessage(err, 'Tạo workboard thất bại'));
     }
   };
 
@@ -156,8 +180,8 @@ export default function WorkboardsPage() {
       await deleteMutation.mutateAsync(pendingDelete.id);
       toast.success(`Deleted “${pendingDelete.name}”`);
       setPendingDelete(null);
-    } catch (err: any) {
-      toast.error(err?.response?.data?.detail || 'Delete failed');
+    } catch (err: unknown) {
+      toast.error(getApiErrorMessage(err, 'Delete failed'));
     }
   };
 

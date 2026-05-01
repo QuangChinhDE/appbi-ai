@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException, status
 
 from app.core.logging import get_logger
+from app.modules.workboards.roles import is_owner_role
 from app.modules.workboards.schemas import RlsRoleRule, RowLevelSecurity
 
 logger = get_logger(__name__)
@@ -146,6 +147,9 @@ def build_rls_filter(
         # AppBI user with no owner_column rule → unrestricted (admin path).
         return [], True
 
+    if is_owner_role(identity.role):
+        return [], True
+
     rule = _pick_rule(rls, identity)
     if rule is None:
         # Closed by default: app users that don't match any rule see nothing.
@@ -193,6 +197,9 @@ def enforce_write_access(
     # writes; the legacy contract relied on object-level permission checks
     # in the API layer, which still run. We don't want to retro-tighten.
     if not identity.is_app_user:
+        return dict(row_values or {})
+
+    if is_owner_role(identity.role):
         return dict(row_values or {})
 
     rule = _pick_rule(rls, identity)

@@ -1,12 +1,28 @@
 /**
- * RlsEditor — per-screen RLS rules. Lives in the right rail of the
- * builder so the rule and the screen it applies to are visible together.
+ * RlsEditor — per-screen, per-role row-level rules.
+ *
+ * Convention enforced here:
+ *   - "owner" never appears in the role dropdown — owners are full-access
+ *     by definition (see backend roles.is_owner_role).
+ *   - Selecting "admin" auto-checks `unrestricted` and locks the filter
+ *     fields. Admins are operations users; restricting their data view
+ *     by row is rarely what people want and the backend treats them as
+ *     unrestricted by default anyway.
+ *   - Default new rule role is "user" with `{{app_user.username}}` as the
+ *     filter value, which is the common case.
  */
 'use client';
 
 import React from 'react';
-import { Plus, Shield, Trash2 } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 
+import { buildAppUserRoleOptions, normalizeAppUserRole } from './appUserRoles';
+import {
+  BUILDER_GRID_2,
+  BuilderActionButton,
+  BuilderIconButton,
+  BuilderSubsection,
+} from './BuilderChrome';
 import type { ScreenRlsRuleSpec, ScreenSpec } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
 
@@ -36,7 +52,7 @@ export default function RlsEditor({
   };
   const add = () => {
     const fresh: ScreenRlsRuleSpec = {
-      role: 'worker',
+      role: 'user',
       filter_column: null,
       filter_value: '{{app_user.username}}',
       can_create: true,
@@ -50,19 +66,6 @@ export default function RlsEditor({
 
   return (
     <div>
-      <div className="mb-3 flex items-center gap-1.5">
-        <Shield className="h-3.5 w-3.5 text-text-tertiary" />
-        <h3 className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-          RLS — Quyền theo role
-        </h3>
-      </div>
-
-      <p className="mb-3 text-tiny text-text-tertiary">
-        Mỗi role config riêng phạm vi xem / sửa / xoá. Worker giả mạo cột{' '}
-        <code className="bg-surface-2 px-1">filter_column</code> sẽ bị backend
-        force về username thật trên insert.
-      </p>
-
       <div className="space-y-2">
         {rules.map((r, idx) => (
           <RuleCard
@@ -75,20 +78,20 @@ export default function RlsEditor({
         ))}
         {rules.length === 0 && (
           <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] p-3 text-center text-tiny text-text-tertiary">
-            Chưa có rule nào.
-            <br />
-            Mặc định: tất cả role logged-in đều thấy mọi dòng.
+            Chưa có quy tắc nào. Mặc định: chỉ Owner / Admin thấy mọi dòng; User
+            không thấy gì cho đến khi bạn thêm rule.
           </p>
         )}
       </div>
 
-      <button
+      <BuilderActionButton
         onClick={add}
-        className="mt-3 flex w-full items-center justify-center gap-1 rounded-md border border-brand px-2 py-1.5 text-tiny text-brand hover:bg-brand/10"
+        variant="brand"
+        className="mt-3 w-full justify-center"
       >
-        <Plus className="h-3 w-3" />
-        Thêm rule
-      </button>
+        <Plus className="h-3.5 w-3.5" />
+        Thêm quy tắc
+      </BuilderActionButton>
     </div>
   );
 }
@@ -104,33 +107,64 @@ function RuleCard({
   onChange: (patch: Partial<ScreenRlsRuleSpec>) => void;
   onRemove: () => void;
 }) {
+  // Build options without `owner` — owner is full-access and editing a rule
+  // for it would be misleading.
+  const roleOptions = buildAppUserRoleOptions([rule.role]).filter(
+    (option) => option.value !== 'owner',
+  );
+  const normalizedRole = normalizeAppUserRole(rule.role) || 'user';
+  const isAdmin = normalizedRole === 'admin';
+  // Admin is treated as unrestricted regardless of stored value, so the UI
+  // mirrors that: checkbox is on and locked, filter fields are hidden.
+  const effectiveUnrestricted = isAdmin ? true : !!rule.unrestricted;
+
+  const handleRoleChange = (nextRole: string) => {
+    const patch: Partial<ScreenRlsRuleSpec> = { role: nextRole };
+    if (normalizeAppUserRole(nextRole) === 'admin') {
+      patch.unrestricted = true;
+      patch.filter_column = null;
+    }
+    onChange(patch);
+  };
+
   return (
-    <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2.5">
-      <div className="mb-2 flex items-center justify-between">
-        <input
-          value={rule.role}
-          onChange={(e) => onChange({ role: e.target.value })}
-          placeholder="role"
+    <BuilderSubsection title="Quy tắc" className="p-2.5">
+      <div className="mb-2 flex items-center gap-2">
+        <select
+          value={normalizedRole}
+          onChange={(e) => handleRoleChange(e.target.value)}
           className={`${INPUT} flex-1`}
           style={{ fontWeight: 600 }}
-        />
-        <button onClick={onRemove} className="ml-1 rounded p-1 hover:bg-danger/10">
-          <Trash2 className="h-3 w-3 text-danger" />
-        </button>
+        >
+          {roleOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <BuilderIconButton onClick={onRemove} title="Xoá quy tắc" variant="danger">
+          <Trash2 className="h-3.5 w-3.5 text-danger" />
+        </BuilderIconButton>
       </div>
 
-      <label className="mb-2 flex items-center gap-1 text-tiny text-text-secondary">
-        <input
-          type="checkbox"
-          checked={!!rule.unrestricted}
-          onChange={(e) => onChange({ unrestricted: e.target.checked })}
-          className="h-3 w-3"
-        />
-        Không giới hạn (xem mọi dòng)
-      </label>
+      {isAdmin ? (
+        <p className="mb-2 rounded-md border border-info/20 bg-info/5 px-2 py-1.5 text-tiny text-text-secondary">
+          Admin mặc định thấy mọi dòng — không cần đặt cột lọc.
+        </p>
+      ) : (
+        <label className="mb-2 flex items-center gap-1.5 text-tiny text-text-secondary">
+          <input
+            type="checkbox"
+            checked={effectiveUnrestricted}
+            onChange={(e) => onChange({ unrestricted: e.target.checked })}
+            className="h-3 w-3"
+          />
+          Không giới hạn (xem mọi dòng)
+        </label>
+      )}
 
-      {!rule.unrestricted && (
-        <div className="grid grid-cols-2 gap-1.5">
+      {!effectiveUnrestricted && (
+        <div className={BUILDER_GRID_2}>
           <Lbl label="Cột lọc">
             <select
               value={rule.filter_column || ''}
@@ -145,7 +179,7 @@ function RuleCard({
               ))}
             </select>
           </Lbl>
-          <Lbl label="Giá trị">
+          <Lbl label="Giá trị (so khớp với cột lọc)">
             <input
               value={String(rule.filter_value ?? '')}
               onChange={(e) => onChange({ filter_value: e.target.value })}
@@ -164,7 +198,7 @@ function RuleCard({
             onChange={(e) => onChange({ can_create: e.target.checked })}
             className="h-3 w-3"
           />
-          create
+          Thêm
         </label>
         <label className="flex items-center gap-1">
           <input
@@ -173,7 +207,7 @@ function RuleCard({
             onChange={(e) => onChange({ can_update: e.target.checked })}
             className="h-3 w-3"
           />
-          update
+          Sửa
         </label>
         <label className="flex items-center gap-1">
           <input
@@ -182,7 +216,7 @@ function RuleCard({
             onChange={(e) => onChange({ can_delete: e.target.checked })}
             className="h-3 w-3"
           />
-          delete
+          Xoá
         </label>
       </div>
 
@@ -198,9 +232,9 @@ function RuleCard({
             })
           }
           className={INPUT}
-          placeholder="Cột readonly (nếu có) — vd: id, created_at"
+          placeholder="Cột chỉ đọc (cách nhau dấu phẩy) — vd: id, created_at"
         />
       </div>
-    </div>
+    </BuilderSubsection>
   );
 }

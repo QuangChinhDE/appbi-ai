@@ -8,9 +8,10 @@
  */
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useParams, usePathname, useRouter } from 'next/navigation';
 import {
+  AlertTriangle,
   ChevronLeft,
   ClipboardList,
   Download,
@@ -23,6 +24,10 @@ import {
 import { useWorkboard } from '@/hooks/use-workboards';
 import { Button } from '@/components/ui/Button';
 import WorkboardImportExportModal from '@/components/workboards/builder/WorkboardImportExportModal';
+import {
+  consumeWorkboardDefaultOwnerNotice,
+  type WorkboardDefaultOwnerNotice,
+} from '@/lib/workboard-default-owner-notice';
 
 export default function WorkboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -30,8 +35,14 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
   const pathname = usePathname() || '';
   const id = Number(params.id);
   const [importExportMode, setImportExportMode] = useState<'export' | null>(null);
+  const [defaultOwnerNotice, setDefaultOwnerNotice] = useState<WorkboardDefaultOwnerNotice | null>(null);
 
   const { data: workboard, isLoading, error } = useWorkboard(id);
+
+  useEffect(() => {
+    if (!Number.isFinite(id) || id <= 0) return;
+    setDefaultOwnerNotice(consumeWorkboardDefaultOwnerNotice(id));
+  }, [id]);
 
   if (isLoading) {
     return (
@@ -106,6 +117,26 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
           Export
         </button>
       </div>
+
+      {defaultOwnerNotice && (
+        <div className="flex items-start gap-3 border-b border-danger/20 bg-danger/5 px-4 py-3 text-sm text-danger">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">Owner mặc định vừa được tạo cho workboard này.</p>
+            <p className="text-xs text-danger/90">
+              Username: <strong>{defaultOwnerNotice.username}</strong> | PIN mặc định:{' '}
+              <strong>{defaultOwnerNotice.pin}</strong>. Hãy đổi PIN này trong tab Users.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDefaultOwnerNotice(null)}
+            className="rounded px-1 py-0.5 text-xs text-danger/80 transition-colors hover:bg-danger/10 hover:text-danger"
+          >
+            Đóng
+          </button>
+        </div>
+      )}
 
       <div className="flex-1 overflow-hidden">{children}</div>
 

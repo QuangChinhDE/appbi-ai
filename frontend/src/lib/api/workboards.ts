@@ -78,6 +78,12 @@ export interface WorkboardListView {
   default_sort_direction?: 'asc' | 'desc';
 }
 
+export interface WorkboardMiniAppNav {
+  mobile_kind?: 'bottom_nav' | 'drawer';
+  desktop_kind?: 'sidebar' | 'top_tabs';
+  items?: string[];
+}
+
 export type WorkboardDocBlock = Record<string, unknown> & { type: string };
 
 export interface WorkboardDocView {
@@ -108,6 +114,8 @@ export interface WorkboardLayoutJson {
   views?: WorkboardAppView[];
   nav?: WorkboardNavConfig;
   security?: WorkboardSecurityConfig;
+  screens?: Array<Record<string, unknown>>;
+  mini_app_nav?: WorkboardMiniAppNav;
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +315,12 @@ export interface Workboard {
   user_permission?: string | null;
   created_at: string;
   updated_at: string;
+  default_owner_credentials?: WorkboardDefaultOwnerCredentials | null;
+}
+
+export interface WorkboardDefaultOwnerCredentials {
+  username: string;
+  pin: string;
 }
 
 export interface WorkboardCreateInput {
@@ -470,8 +484,19 @@ export const workboardApi = {
   },
 
   create: async (payload: WorkboardCreateInput): Promise<Workboard> => {
-    const { data } = await apiClient.post('/workboards/', payload);
-    return data;
+    const response = await apiClient.post<Workboard>('/workboards/', payload);
+    const username = response.headers['x-appbi-default-owner-username'];
+    const pin = response.headers['x-appbi-default-owner-pin'];
+    if (typeof username === 'string' && typeof pin === 'string' && username && pin) {
+      return {
+        ...response.data,
+        default_owner_credentials: {
+          username,
+          pin,
+        },
+      };
+    }
+    return response.data;
   },
 
   importTemplate: async (
@@ -678,6 +703,7 @@ export interface WorkboardAppUserResponse {
   active: boolean;
   context: Record<string, unknown>;
   has_pin: boolean;
+  using_default_pin: boolean;
   created_at: string;
   updated_at: string;
 }

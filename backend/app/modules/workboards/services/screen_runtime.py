@@ -26,6 +26,7 @@ from app.core.logging import get_logger
 from app.models.dataset import DatasetTable
 from app.models.models import DataSource
 from app.modules.workboards.models import Workboard
+from app.modules.workboards.roles import is_owner_role
 from app.modules.workboards.schemas import (
     DataTableBlock,
     LayoutJson,
@@ -43,6 +44,7 @@ from app.modules.workboards.services.runtime_service import (
     WorkboardRuntimeService,
     _build_substitution_map,
     _compute_merges,
+    _normalize_column_groups,
     _compute_totals_row,
     _filter_dicts,
     _resolve_relationship_labels,
@@ -76,6 +78,8 @@ def get_screen(layout: LayoutJson, screen_id: str) -> Screen:
 
 
 def is_screen_visible_for(screen: Screen, identity: CallerIdentity) -> bool:
+    if is_owner_role(identity.role):
+        return True
     if not screen.visible_for_roles:
         return True
     role = (identity.role or "").strip().lower()
@@ -506,6 +510,9 @@ def _resolve_doc_data_block(
                 ),
             )
     payload: Dict[str, Any] = {"columns": selected, "rows": rows}
+    column_groups = _normalize_column_groups(selected, block.column_groups)
+    if column_groups:
+        payload["column_groups"] = column_groups
     merges = _compute_merges(rows, block.group_by, selected)
     if merges:
         payload["merges"] = merges

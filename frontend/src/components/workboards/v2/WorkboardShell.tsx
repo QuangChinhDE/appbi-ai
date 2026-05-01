@@ -766,6 +766,7 @@ function FormPane({
     <WorkboardFormRenderer
       key={`${isEditing ? JSON.stringify(editContext?.pk) : 'new'}:${resetSeed}`}
       form={formSpec}
+      screenId={view.id}
       title={isEditing ? `${view.label} • Edit row` : view.label}
       submitLabel={isEditing ? 'Update row' : 'Create row'}
       initialValues={editContext?.values ?? null}

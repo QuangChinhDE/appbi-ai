@@ -11,12 +11,18 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.logging import get_logger
 from app.models import DataSource
 from app.models.dataset import DatasetTable
-from app.modules.workboards.models import Workboard, WorkboardSubmission
+from app.modules.workboards.models import Workboard, WorkboardAppUser, WorkboardSubmission
+from app.modules.workboards.roles import (
+    APP_USER_ROLE_OWNER,
+    DEFAULT_APP_USER_PIN,
+    build_default_owner_username,
+)
 from app.modules.workboards.schemas import (
     LayoutJson,
     WorkboardCreate,
     WorkboardUpdate,
 )
+from app.modules.workboards.services.app_user_service import hash_pin
 from app.services.dataset_model_service import get_dataset_model
 from app.services.datasource_service import DataSourceConnectionService
 
@@ -712,11 +718,32 @@ class WorkboardService:
         )
         db.add(db_obj)
         try:
+            db.flush()
+
+            default_owner_username = build_default_owner_username(db_obj.id)
+            db.add(
+                WorkboardAppUser(
+                    workboard_id=db_obj.id,
+                    username=default_owner_username,
+                    pin_hash=hash_pin(DEFAULT_APP_USER_PIN),
+                    role=APP_USER_ROLE_OWNER,
+                    active=True,
+                    context={},
+                )
+            )
             db.commit()
         except IntegrityError as exc:
             db.rollback()
             raise ValueError(f"Workboard could not be created: {exc.orig}") from exc
         db.refresh(db_obj)
+        setattr(
+            db_obj,
+            "_default_app_user",
+            {
+                "username": default_owner_username,
+                "pin": DEFAULT_APP_USER_PIN,
+            },
+        )
         logger.info(
             "Created workboard id=%s name=%s dataset=%s table=%s",
             db_obj.id,

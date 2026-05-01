@@ -94,8 +94,7 @@ services:
       dockerfile: Dockerfile.dev
     container_name: appbi-frontend-dev
     volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/public:/app/public
+      - ./frontend:/app
       - /app/node_modules
       - /app/.next
     environment:
@@ -105,15 +104,15 @@ services:
       NEXT_PUBLIC_AUTH_GOOGLE_ENABLED: ${NEXT_PUBLIC_AUTH_GOOGLE_ENABLED:-false}
       NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
       # AI service URLs derived at runtime from window.location (no localhost baking).
-      BACKEND_URL: http://backend:8000/api/v1
+      BACKEND_URL: ${FRONTEND_BACKEND_URL:-http://backend:8000/api/v1}
       AI_CHAT_INTERNAL_URL: http://ai-chat-service:8001
       AI_AGENT_INTERNAL_URL: http://ai-agent-service:8001
       SECRET_KEY: dev-secret-key
       COOKIE_SECURE: "false"
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
     ports:
       - "3000:3000"
-    depends_on:
-      - backend
     restart: unless-stopped
     networks:
       - appbi-net

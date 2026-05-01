@@ -13,8 +13,24 @@ interface Props {
   submitting?: boolean;
   error?: string | null;
   title?: string | null;
+  /** Screen id — used to send field-click events back to the builder
+   *  parent window when this form runs inside the live-preview iframe. */
+  screenId?: string | null;
   onSubmit: (values: Record<string, unknown>) => Promise<void> | void;
   onCancel?: () => void;
+}
+
+function notifyBuilderClick(screenId: string | null | undefined, column: string) {
+  if (typeof window === 'undefined') return;
+  if (window.parent === window) return;
+  try {
+    window.parent.postMessage(
+      { type: 'wb-builder/field-click', screenId: screenId || null, column },
+      '*',
+    );
+  } catch {
+    // ignore — cross-origin or detached frame
+  }
 }
 
 function toInputValue(field: WorkboardFormField, value: unknown): string {
@@ -50,6 +66,7 @@ export function WorkboardFormRenderer({
   submitting = false,
   error,
   title,
+  screenId,
   onSubmit,
   onCancel,
 }: Props) {
@@ -116,8 +133,11 @@ export function WorkboardFormRenderer({
         const options = lookupOptions[field.column] ?? field.lookup?.values ?? [];
 
         return (
-          <FieldGroup
+          <div
             key={field.column}
+            onMouseDownCapture={() => notifyBuilderClick(screenId, field.column)}
+          >
+          <FieldGroup
             label={commonLabel}
             required={field.required}
             description={field.help_text || undefined}
@@ -172,6 +192,7 @@ export function WorkboardFormRenderer({
               />
             )}
           </FieldGroup>
+          </div>
         );
       })}
 
