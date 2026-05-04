@@ -3530,7 +3530,19 @@ def build_dashboard_from_import(
     created_charts: List[Chart] = []
     type_changes: List[Dict[str, Any]] = []
 
-    for index, plan in enumerate(chart_plans, start=1):
+    # Split plans by widget_type. Plans without widget_type (or widget_type="chart")
+    # follow the legacy chart-creation path. Non-chart widgets (text/image/countdown/
+    # shape/parameter_switcher) skip Chart creation and only get a DashboardChart row
+    # with widget_type + widget_config set, chart_id=NULL. The migration
+    # 20260501_0001 made dashboard_charts.chart_id nullable for exactly this case.
+    def _plan_widget_type(plan: Dict[str, Any]) -> str:
+        wt = str(plan.get("widget_type") or "chart").strip().lower()
+        return wt if wt in {"chart", "text", "image", "countdown", "shape", "parameter_switcher"} else "chart"
+
+    chart_plans_only = [p for p in chart_plans if _plan_widget_type(p) == "chart"]
+    widget_plans = [p for p in chart_plans if _plan_widget_type(p) != "chart"]
+
+    for index, plan in enumerate(chart_plans_only, start=1):
         # Prefer user-edited title/description from the manual editor, falling back
         # to the AI-generated ones captured during analysis.
         raw_user_name = _normalize_text(plan.get("chart_name"), max_len=160)
@@ -3643,22 +3655,40 @@ def build_dashboard_from_import(
             dashboard_name or analysis.get("suggested_dashboard_name") or "Imported Dashboard",
         )
         page_id = _generate_page_id()
-        dashboard_obj = Dashboard(
-            name=resolved_dashboard_name,
-            description="Imported from HTML dashboard layout",
-            owner_id=current_user.id,
-            filters_config=[],
-            public_filters_config=[],
-            pages_config=[{"id": page_id, "name": import_page_name}],
-        )
+        # Plan can declare canvas mode at the dashboard level; default stays "grid"
+        # so legacy plans without these fields keep their original behavior.
+        plan_layout_mode = str(analysis.get("layout_mode") or "grid").strip().lower()
+        if plan_layout_mode not in {"grid", "canvas"}:
+            plan_layout_mode = "grid"
+        plan_canvas_config = analysis.get("canvas_config") if isinstance(analysis.get("canvas_config"), dict) else None
+        plan_theme_config = analysis.get("theme_config") if isinstance(analysis.get("theme_config"), dict) else None
+        dashboard_kwargs: Dict[str, Any] = {
+            "name": resolved_dashboard_name,
+            "description": "Imported from HTML dashboard layout",
+            "owner_id": current_user.id,
+            "filters_config": [],
+            "public_filters_config": [],
+            "pages_config": [{"id": page_id, "name": import_page_name}],
+            "layout_mode": plan_layout_mode,
+        }
+        if plan_canvas_config is not None:
+            dashboard_kwargs["canvas_config"] = plan_canvas_config
+        if plan_theme_config is not None:
+            dashboard_kwargs["theme_config"] = plan_theme_config
+        dashboard_obj = Dashboard(**dashboard_kwargs)
         db.add(dashboard_obj)
         db.flush()
 
-    for chart_obj, plan in zip(created_charts, chart_plans):
+    # First, persist DashboardChart rows for real charts (legacy path).
+    for chart_obj, plan in zip(created_charts, chart_plans_only):
         layout = dict(plan.get("layout") or {})
+        widget_type = _plan_widget_type(plan)  # "chart"
+        widget_config = plan.get("widget_config") if isinstance(plan.get("widget_config"), dict) else None
         dashboard_chart = DashboardChart(
             dashboard_id=dashboard_obj.id,
             chart_id=chart_obj.id,
+            widget_type=widget_type,
+            widget_config=widget_config,
             layout={
                 "x": int(layout.get("x", 0)),
                 "y": int(layout.get("y", 0)),
@@ -3666,6 +3696,30 @@ def build_dashboard_from_import(
                 "h": int(layout.get("h", 4)),
                 "pageId": page_id,
                 "custom_title": _normalize_text(plan.get("title"), max_len=160) or chart_obj.name,
+            },
+            parameters={},
+        )
+        db.add(dashboard_chart)
+
+    # Then persist DashboardChart rows for non-chart widgets (text/image/etc).
+    # No Chart row exists for these, so chart_id stays NULL.
+    for plan in widget_plans:
+        layout = dict(plan.get("layout") or {})
+        widget_type = _plan_widget_type(plan)
+        widget_config = plan.get("widget_config") if isinstance(plan.get("widget_config"), dict) else {}
+        widget_title = _normalize_text(plan.get("title"), max_len=160) or widget_type.title()
+        dashboard_chart = DashboardChart(
+            dashboard_id=dashboard_obj.id,
+            chart_id=None,
+            widget_type=widget_type,
+            widget_config=widget_config,
+            layout={
+                "x": int(layout.get("x", 0)),
+                "y": int(layout.get("y", 0)),
+                "w": int(layout.get("w", 6)),
+                "h": int(layout.get("h", 4)),
+                "pageId": page_id,
+                "custom_title": widget_title,
             },
             parameters={},
         )
@@ -3681,6 +3735,8 @@ def build_dashboard_from_import(
         "dashboard": hydrated_dashboard,
         "dashboard_id": dashboard_obj.id,
         "created_chart_count": len(created_charts),
+        "created_widget_count": len(widget_plans),
+        "layout_mode": dashboard_obj.layout_mode,
         "type_changes": type_changes,
         "page_id": page_id,
         "page_name": import_page_name,

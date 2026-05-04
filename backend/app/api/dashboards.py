@@ -495,6 +495,153 @@ async def build_html_dashboard_import(
         raise HTTPException(status_code=500, detail=f"Failed to build dashboard import: {exc}") from exc
 
 
+@router.post("/import-html/dry-run-build")
+async def dry_run_build_html_dashboard_import(
+    analysis_json: str = Form(...),
+    source_mode: str = Form(...),
+    target_mode: str = Form("new_dashboard"),
+    dashboard_name: Optional[str] = Form(None),
+    dataset_id: Optional[int] = Form(None),
+    dataset_table_id: Optional[int] = Form(None),
+    prepared_dataset_id: Optional[int] = Form(None),
+    selected_sheet_name: Optional[str] = Form(None),
+    target_dashboard_id: Optional[int] = Form(None),
+    included_block_ids_json: Optional[str] = Form(None),
+    excel_file: Optional[UploadFile] = File(None),
+    excel_files: List[UploadFile] = File(default=[]),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("dashboards", "edit")),
+):
+    """Run the full /import-html/build pipeline inside a savepoint that is
+    rolled back at the end. Returns the would-be result without persisting.
+
+    This lets the caller validate the entire materialization end-to-end
+    (calculated-field SQL, semantic model uniqueness, type coercion) before
+    committing for real. The response shape mirrors /import-html/build but
+    adds ``dry_run: true`` and ``rolled_back: true`` markers.
+    """
+    analysis = _parse_optional_json_form_field(analysis_json, "analysis_json")
+    if not isinstance(analysis, dict):
+        raise HTTPException(status_code=400, detail="analysis_json must decode to an object.")
+
+    included_block_ids = _parse_optional_json_form_field(included_block_ids_json, "included_block_ids_json")
+    if included_block_ids is None:
+        included_block_ids = []
+    if not isinstance(included_block_ids, list) or any(not isinstance(item, str) for item in included_block_ids):
+        raise HTTPException(status_code=400, detail="included_block_ids_json must decode to a string array.")
+
+    normalized_source_mode = _normalize_import_source_mode(source_mode)
+    normalized_target_mode = _normalize_import_target_mode(target_mode)
+
+    effective_source_mode = normalized_source_mode
+    effective_dataset_id = dataset_id
+    if prepared_dataset_id is not None:
+        effective_source_mode = "existing_dataset"
+        effective_dataset_id = prepared_dataset_id
+
+    source_bytes: bytes | None = None
+    source_filename: str | None = None
+    source_file_pairs: List[tuple] | None = None
+    if effective_source_mode == "upload_excel":
+        uploaded_files: List[UploadFile] = [f for f in excel_files if f and f.filename]
+        if not uploaded_files and excel_file is not None:
+            uploaded_files = [excel_file]
+        if not uploaded_files:
+            raise HTTPException(status_code=400, detail="excel_file(s) required for upload_excel.")
+        if len(uploaded_files) == 1:
+            source_bytes = await uploaded_files[0].read()
+            source_filename = uploaded_files[0].filename
+        else:
+            source_file_pairs = []
+            for uf in uploaded_files:
+                file_bytes = await uf.read()
+                source_file_pairs.append((file_bytes, uf.filename))
+
+    # Use a SAVEPOINT (begin_nested) so any commits inside the service become
+    # subordinate to this outer scope. After the service returns, we rollback
+    # to the savepoint, undoing every INSERT/UPDATE/DELETE the build produced.
+    #
+    # Caveats (documented in the response):
+    #   - Background embedding tasks scheduled during build are NOT rolled
+    #     back. They will run with rows that no longer exist, but the workers
+    #     handle missing rows gracefully.
+    #   - Filesystem writes (preview HTML cache) and Redis cache writes are
+    #     out-of-scope of the savepoint and may persist (harmless).
+    try:
+        savepoint = db.begin_nested()
+        try:
+            result = build_dashboard_from_html_import_service(
+                db,
+                current_user=current_user,
+                analysis=analysis,
+                source_mode=effective_source_mode,
+                dataset_table_id=dataset_table_id,
+                dataset_id=effective_dataset_id,
+                source_bytes=source_bytes,
+                source_filename=source_filename,
+                source_files=source_file_pairs,
+                selected_sheet_name=selected_sheet_name,
+                dashboard_name=dashboard_name,
+                target_mode=normalized_target_mode,
+                target_dashboard_id=target_dashboard_id,
+                included_block_ids=included_block_ids,
+            )
+            # Hydrate response payload BEFORE rollback so the client can see
+            # exactly what would have been created (ids will be invalid after
+            # rollback, but the structural diff is meaningful).
+            payload = {
+                "dry_run": True,
+                "rolled_back": True,
+                "would_create": {
+                    "dashboard_id": result.get("dashboard_id"),
+                    "created_chart_count": result.get("created_chart_count"),
+                    "created_widget_count": result.get("created_widget_count"),
+                    "layout_mode": result.get("layout_mode"),
+                    "page_id": result.get("page_id"),
+                    "page_name": result.get("page_name"),
+                    "dataset_id": result.get("dataset_id"),
+                    "dataset_table_id": result.get("dataset_table_id"),
+                    "dataset_table_ids": result.get("dataset_table_ids"),
+                    "type_changes": result.get("type_changes"),
+                },
+                "warnings": [
+                    "Background embedding/LLM tasks scheduled during build were "
+                    "NOT rolled back; they will run against rows that no longer exist.",
+                ],
+            }
+        finally:
+            # Always roll back, even on success.
+            try:
+                savepoint.rollback()
+            except Exception:
+                pass
+        # Also rollback the outer transaction so any state outside the savepoint
+        # (e.g. cascading commits inside the service) is fully reverted.
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return payload
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.exception("Dry-run build failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Dry-run build failed (this means a real build would also fail): {exc}",
+        ) from exc
+
+
 @router.post(
     "/import-html/build-batch",
     response_model=DashboardHtmlImportBatchBuildResponse,
