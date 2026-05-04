@@ -23,8 +23,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
-      <body className="antialiased font-sans">
+    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable} h-full overflow-hidden`}>
+      <body className="antialiased font-sans h-full overflow-hidden">
         <AppProviders>
           {children}
         </AppProviders>

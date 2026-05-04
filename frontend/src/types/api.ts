@@ -105,6 +105,34 @@ export enum ChartType {
   BAR_LINE = 'BAR_LINE',
   SCATTER = 'SCATTER',
   KPI = 'KPI',
+  PODIUM = 'PODIUM',
+}
+
+export type DashboardLayoutMode = 'grid' | 'canvas';
+
+export type DashboardWidgetType =
+  | 'chart'
+  | 'text'
+  | 'countdown'
+  | 'image'
+  | 'shape'
+  | 'parameter_switcher';
+
+export interface DashboardThemeConfig {
+  mode?: 'light' | 'dark';
+  accent?: string;
+  fontFamily?: string;
+  cardStyle?: 'soft' | 'sharp' | 'flat';
+  background?: string;
+  [k: string]: any;
+}
+
+export interface DashboardCanvasConfig {
+  width?: number;
+  height?: number;
+  snap?: number;
+  background?: string;
+  [k: string]: any;
 }
 
 export interface DataSource {
@@ -357,6 +385,13 @@ export interface DashboardChartLayout {
   custom_title?: string;
   pageId?: string | null;
   styleConfigOverride?: Record<string, any> | null;
+  // Canvas-mode geometry (px). Stored alongside grid coords so toggling modes
+  // never loses cell positions.
+  xPx?: number;
+  yPx?: number;
+  wPx?: number;
+  hPx?: number;
+  z?: number;
 }
 
 export interface DashboardPageConfig {
@@ -364,12 +399,19 @@ export interface DashboardPageConfig {
   name: string;
 }
 
+// NOTE: chart_id is typed as `number` for backward-compat with the ~25 call
+// sites that assume a chart row. The backend allows null for non-chart
+// widgets (added in commit 1); when widget code lands, narrow via
+// `widget_type !== 'chart'` and treat chart_id as optional in those branches.
+// See NOTES_DASHBOARD_UPGRADE.md.
 export interface DashboardChart {
   id: number;
   chart_id: number;
   layout: DashboardChartLayout;
   chart: Chart;
   parameters?: Record<string, any> | null;
+  widget_type?: DashboardWidgetType;
+  widget_config?: Record<string, any> | null;
 }
 
 export interface DashboardFilterField {
@@ -468,6 +510,9 @@ export interface Dashboard {
   available_filter_fields?: DashboardFilterField[];
   public_link_name?: string | null;
   public_link_appearance?: PublicLinkAppearanceConfig | null;
+  layout_mode?: DashboardLayoutMode;
+  theme_config?: DashboardThemeConfig | null;
+  canvas_config?: DashboardCanvasConfig | null;
 }
 
 export interface DashboardCreate {
@@ -487,6 +532,9 @@ export interface DashboardUpdate {
   filters_config?: any[];
   public_filters_config?: any[];
   pages_config?: DashboardPageConfig[];
+  layout_mode?: DashboardLayoutMode;
+  theme_config?: DashboardThemeConfig | null;
+  canvas_config?: DashboardCanvasConfig | null;
 }
 
 export interface QueryExecuteRequest {

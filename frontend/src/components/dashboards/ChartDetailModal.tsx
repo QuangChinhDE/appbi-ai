@@ -179,6 +179,11 @@ function deriveAppearanceRoleConfig(columns: ColumnMetadata[], chartType: string
         metrics: firstMetric ? [firstMetric] : [],
         ...(secondMetric ? { benchmarkMetric: secondMetric } : {}),
       };
+    case 'PODIUM':
+      return {
+        metrics: firstMetric ? [firstMetric] : [],
+        ...(primaryDimension ? { dimension: primaryDimension } : {}),
+      };
     case 'TIME_SERIES':
       return {
         metrics: metricFields,
@@ -224,7 +229,7 @@ function inferSortLimitColumns(
   roleConfig: ChartRoleConfig,
   preAggregated: boolean,
 ): ColumnMetadata[] {
-  if (!rows.length || chartType === 'TABLE' || chartType === 'KPI') {
+  if (!rows.length || chartType === 'TABLE' || chartType === 'KPI' || chartType === 'PODIUM') {
     return [];
   }
 

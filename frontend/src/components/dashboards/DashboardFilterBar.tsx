@@ -38,6 +38,8 @@ interface DashboardFilterBarProps {
   onReset?: () => void;
   isApplying?: boolean;
   initialExpanded?: boolean;
+  /** When true, strips the outer card wrapper — use when embedded inside another card. */
+  embedded?: boolean;
 }
 
 export function DashboardFilterBar({
@@ -51,6 +53,7 @@ export function DashboardFilterBar({
   onReset,
   isApplying = false,
   initialExpanded = true,
+  embedded = false,
 }: DashboardFilterBarProps) {
   const [isExpanded, setIsExpanded] = useState(initialExpanded);
   const [addingField, setAddingField] = useState(false);
@@ -250,9 +253,9 @@ export function DashboardFilterBar({
 
   // ── Render ─────────────────────────────────────────────────────
   return (
-    <div className="mb-6 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
+    <div className={embedded ? 'border-t border-[rgba(255,255,255,0.06)]' : 'mb-4 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm'}>
       {/* ── Header bar ────────────────────────────────────────────── */}
-      <div className="flex items-center gap-2 px-4 py-2.5">
+      <div className={`flex items-center gap-2 ${embedded ? 'px-3 py-1.5' : 'px-4 py-2.5'}`}>
         <button
           onClick={() => setIsExpanded(!isExpanded)}
           className="flex items-center gap-1.5 text-sm font-medium text-text-secondary hover:text-text-primary"

@@ -345,3 +345,29 @@
     print-color-adjust: exact !important;
   }
 }
+
+/* Dashboard theme — applied via DashboardThemeProvider wrapper.
+   Defaults to no override so existing dashboards remain unchanged. */
+[data-dashboard-theme='dark'] {
+  --surface-1: 17 24 39;
+  --surface-2: 31 41 55;
+  --border-line: 55 65 81;
+  --border-strong: 75 85 99;
+  --text-primary: 243 244 246;
+  --text-secondary: 209 213 219;
+  --text-tertiary: 156 163 175;
+  --text-quaternary: 107 114 128;
+  background-color: rgb(11 15 23);
+  color-scheme: dark;
+}
+
+[data-dashboard-card='sharp'] .rounded-2xl,
+[data-dashboard-card='sharp'] .rounded-xl {
+  border-radius: 4px;
+}
+
+[data-dashboard-card='flat'] .shadow-linear-sm,
+[data-dashboard-card='flat'] [class*='shadow-'] {
+  box-shadow: none !important;
+}
+

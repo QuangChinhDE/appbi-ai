@@ -6,6 +6,7 @@ import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { ChartTile } from './ChartTile';
 import { ChartErrorBoundary } from './ChartErrorBoundary';
+import { DashboardWidget } from './DashboardWidget';
 import { DashboardChart, DashboardPageConfig } from '@/types/api';
 import { DashboardFilter } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
@@ -53,6 +54,7 @@ interface DashboardGridProps {
   dashboardCharts: DashboardChart[];
   onLayoutChange?: (layouts: Layout[]) => void;
   onRemoveChart?: (dashboardChartId: number) => void;
+  onEditWidget?: (dashboardChartId: number) => void;
   removingChartId?: number;
   dashboardFilters?: DashboardFilter[];
   globalFilters?: BaseFilter[];
@@ -74,6 +76,7 @@ export function DashboardGrid({
   dashboardCharts,
   onLayoutChange,
   onRemoveChart,
+  onEditWidget,
   removingChartId,
   dashboardFilters = [],
   globalFilters = [],
@@ -145,7 +148,50 @@ export function DashboardGrid({
       preventCollision={false}
     >
       {dashboardCharts.map((dc) => {
-        const tile = (
+        const isWidget = dc.widget_type && dc.widget_type !== 'chart';
+        const tile = isWidget ? (
+          <div className="group relative h-full w-full">
+            {/* Drag handle for react-grid-layout — required so widgets are draggable */}
+            {canEdit && (
+              <div
+                className="drag-handle absolute inset-x-0 top-0 z-10 h-5 cursor-move bg-transparent"
+                title="Drag to move"
+              />
+            )}
+            <DashboardWidget widget={dc} />
+            {canEdit && (
+              <div className="absolute right-2 top-2 z-20 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                {onEditWidget && (
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={() => onEditWidget(dc.id)}
+                    className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 p-1.5 shadow-linear-sm transition-colors hover:border-brand/40 hover:bg-brand/10 hover:text-brand"
+                    title="Edit widget"
+                  >
+                    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M11.5 2.5l2 2L5 13l-3 1 1-3 8.5-8.5z" strokeLinejoin="round" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                )}
+                {onRemoveChart && (
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={() => onRemoveChart(dc.id)}
+                    disabled={removingChartId === dc.id}
+                    className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 p-1.5 shadow-linear-sm transition-colors hover:border-danger/40 hover:bg-danger/10 disabled:opacity-50"
+                    title="Remove widget"
+                  >
+                    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-danger" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M3 3l10 10M13 3L3 13" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
           <ChartTile
             chartId={dc.chart_id}
             dashboardChartId={dc.id}
@@ -172,10 +218,10 @@ export function DashboardGrid({
             <ChartErrorBoundary
               chartId={dc.chart_id}
               dashboardChartId={dc.id}
-              onRemove={onRemoveChart}
+              onRemove={isWidget ? undefined : onRemoveChart}
               isRemoving={removingChartId === dc.id}
             >
-              {disableLazy ? tile : <LazyChartSlot>{tile}</LazyChartSlot>}
+              {disableLazy || isWidget ? tile : <LazyChartSlot>{tile}</LazyChartSlot>}
             </ChartErrorBoundary>
           </div>
         );

@@ -51,6 +51,7 @@ const CHART_TYPE_OPTIONS: Array<{ value: ChartTypeFilter; label: string }> = [
   { value: ChartType.BAR_LINE, label: 'Bar + Line' },
   { value: ChartType.SCATTER, label: 'Scatter' },
   { value: ChartType.KPI, label: 'KPI' },
+  { value: ChartType.PODIUM, label: 'Podium' },
 ];
 
 function clampGridValue(rawValue: number, min: number, max: number, fallback: number): number {

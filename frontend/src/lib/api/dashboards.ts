@@ -73,6 +73,32 @@ export const dashboardApi = {
     return response.data;
   },
 
+  addWidget: async (
+    dashboardId: number,
+    widgetType: string,
+    layout: DashboardChartLayout,
+    widgetConfig?: Record<string, any>,
+  ): Promise<Dashboard> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/widgets`, {
+      widget_type: widgetType,
+      layout,
+      widget_config: widgetConfig ?? {},
+    });
+    return response.data;
+  },
+
+  updateWidget: async (
+    dashboardId: number,
+    dashboardChartId: number,
+    widgetConfig: Record<string, any>,
+  ): Promise<Dashboard> => {
+    const response = await apiClient.patch(
+      `/dashboards/${dashboardId}/widgets/${dashboardChartId}`,
+      { widget_config: widgetConfig },
+    );
+    return response.data;
+  },
+
   updateLayout: async (
     dashboardId: number,
     chartLayouts: Array<{ id: number; layout: Record<string, any> }>
