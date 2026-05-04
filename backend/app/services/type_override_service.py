@@ -10,11 +10,27 @@ best-effort fallback.
 """
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List
 
 from app.core.logging import get_logger
 from app.services import query_cache
+
+
+def _canonical_column_key(name: Any) -> str:
+    """Normalize column names for resilient matching.
+
+    Why: Google Sheets headers often pick up trailing spaces, NBSP, zero-width
+    characters, or casing drift between save and read. Without a canonical form,
+    a `type_overrides` entry saved as "REV FINAL " never matches a query column
+    "REV FINAL", and SUM falls back to the raw VARCHAR — the exact bug we hit.
+    How to apply: use as a fallback lookup, never as the stored key. Stored keys
+    must remain the user-facing original so SQL identifiers match.
+    """
+    text = unicodedata.normalize("NFKC", str(name or ""))
+    text = text.replace("​", "").replace("﻿", "")
+    return " ".join(text.split()).casefold()
 
 logger = get_logger(__name__)
 
@@ -173,17 +189,15 @@ def build_safe_cast_sql(value_sql: str, target_type: str, dialect: str) -> str:
             )
 
     if normalized == "integer":
-        return (
-            "CASE "
-            f"WHEN {trimmed} ~ '^-?[0-9]+$' THEN CAST({trimmed} AS BIGINT) "
-            "ELSE NULL END"
+        cleaned = (
+            f"REGEXP_REPLACE(REGEXP_REPLACE({trimmed}, '[\\s\\u00A0]', '', 'g'), ',', '', 'g')"
         )
+        return f"TRY_CAST({cleaned} AS BIGINT)"
     if normalized == "float":
-        return (
-            "CASE "
-            f"WHEN {trimmed} ~ '^[-+]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)$' "
-            f"THEN CAST({trimmed} AS DOUBLE PRECISION) ELSE NULL END"
+        cleaned = (
+            f"REGEXP_REPLACE(REGEXP_REPLACE({trimmed}, '[\\s\\u00A0]', '', 'g'), ',', '', 'g')"
         )
+        return f"TRY_CAST({cleaned} AS DOUBLE)"
     if normalized == "boolean":
         return (
             "CASE "
@@ -216,23 +230,82 @@ def build_runtime_projection_query(
 ) -> str:
     normalized_overrides = normalize_type_overrides(type_overrides)
     column_list = [str(column) for column in columns]
-    if not normalized_overrides or not column_list:
+    if not normalized_overrides:
+        return base_query
+    if not column_list and dialect in ("duckdb", "bigquery"):
+        return _build_replace_projection_query(base_query, normalized_overrides, dialect)
+    if not column_list:
         return base_query
 
+    canonical_index: Dict[str, str] = {}
+    for override_key in normalized_overrides:
+        canonical_index.setdefault(_canonical_column_key(override_key), override_key)
+
     projection: List[str] = []
+    matched_keys: set[str] = set()
     for column in column_list:
         quoted = _quote_identifier(column, dialect)
         target_type = normalized_overrides.get(column)
+        if not target_type:
+            fallback_key = canonical_index.get(_canonical_column_key(column))
+            if fallback_key is not None:
+                target_type = normalized_overrides.get(fallback_key)
+                if target_type:
+                    matched_keys.add(fallback_key)
+                    logger.warning(
+                        "Type override key mismatch resolved via canonical lookup: "
+                        "stored=%r query_column=%r target=%s",
+                        fallback_key,
+                        column,
+                        target_type,
+                    )
+        else:
+            matched_keys.add(column)
         if not target_type:
             projection.append(quoted)
             continue
         cast_expr = build_safe_cast_sql(quoted, target_type, dialect)
         projection.append(f"{cast_expr} AS {_quote_identifier(column, dialect)}")
 
+    unmatched = set(normalized_overrides) - matched_keys
+    if unmatched:
+        logger.warning(
+            "Type overrides defined for columns not present in projection: %s",
+            sorted(unmatched),
+        )
+
     return (
         "SELECT\n  "
         + ",\n  ".join(projection)
         + f"\nFROM (\n{_indent_sql(base_query)}\n) AS _appbi_typed"
+    )
+
+
+def _build_replace_projection_query(
+    base_query: str,
+    normalized_overrides: Dict[str, str],
+    dialect: str,
+) -> str:
+    """Fallback projection when the column list is unknown.
+
+    Why: For Google Sheets the output_columns cache can be empty on a cold
+    request, which previously skipped CAST entirely and let SUM(VARCHAR) reach
+    the engine. DuckDB and BigQuery both support `SELECT * REPLACE (...)`, which
+    rewrites only the overridden columns and passes the rest through unchanged.
+    How to apply: only used when callers cannot supply a column list; quoted
+    callers (chart/preview) still pass explicit columns and take the safer path.
+    """
+    replacements: List[str] = []
+    for column, target_type in normalized_overrides.items():
+        quoted = _quote_identifier(column, dialect)
+        cast_expr = build_safe_cast_sql(quoted, target_type, dialect)
+        replacements.append(f"{cast_expr} AS {quoted}")
+    if not replacements:
+        return base_query
+    return (
+        "SELECT * REPLACE (\n  "
+        + ",\n  ".join(replacements)
+        + f"\n)\nFROM (\n{_indent_sql(base_query)}\n) AS _appbi_typed"
     )
 
 

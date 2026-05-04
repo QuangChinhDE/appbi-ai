@@ -556,6 +556,13 @@ def build_live_base_query_plan(
                 dialect,
             )
             output_columns = projection_columns
+        elif dialect in ("duckdb", "bigquery"):
+            compiled_sql = build_runtime_projection_query(
+                compiled_sql,
+                [],
+                normalized_overrides,
+                dialect,
+            )
 
     return LiveBaseQueryPlan(
         sql=compiled_sql,
