@@ -414,6 +414,33 @@ export function ChartDetailModal({
   }, [activeRoleConfig, appearanceColumns, chartRuntime?.pre_aggregated, exploreChartType, normalizedRoleConfig, runtimeRows]);
   const previewStyleConfig = canEditAppearance ? draftStyleConfig : savedStyleConfig;
 
+  const previewSeriesKeys = useMemo(() => {
+    if (!runtimeRows.length || !appearanceRoleConfig ||
+      exploreChartType === 'TABLE' || exploreChartType === 'KPI' ||
+      exploreChartType === 'PODIUM' || exploreChartType === 'SCATTER') {
+      return [];
+    }
+    const model = buildExploreChartModel({
+      type: exploreChartType,
+      data: runtimeRows,
+      roleConfig: appearanceRoleConfig,
+      preAggregated: chartRuntime?.pre_aggregated ?? false,
+    });
+    if (exploreChartType === 'BAR_LINE') {
+      return [...(model.comboBarSeries ?? []), ...(model.comboLineSeries ?? [])].map((s: any) => ({
+        key: s.key,
+        label: s.label,
+      }));
+    }
+    if (exploreChartType === 'PIE') {
+      return (model.pieData ?? []).slice(0, 12).map((p: any) => ({
+        key: String(p?.name ?? ''),
+        label: String(p?.name ?? ''),
+      }));
+    }
+    return (model.categoricalSeries ?? []).map((s: any) => ({ key: s.key, label: s.label }));
+  }, [exploreChartType, runtimeRows, appearanceRoleConfig, chartRuntime?.pre_aggregated]);
+
   const isLoadingPreview = isLoadingChart || isLoadingRuntime || (queryMode === 'custom' && customSourcePreview.isLoading);
 
   useEffect(() => {
@@ -658,6 +685,7 @@ export function ChartDetailModal({
                   availableColumns={appearanceColumns}
                   sortLimitColumns={sortLimitColumns}
                   tableDisplayColumns={appearanceColumns}
+                  availableSeriesKeys={previewSeriesKeys}
                   queryMode={queryMode}
                   mode="styleOnly"
                   onChartTypeChange={() => {}}

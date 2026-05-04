@@ -757,28 +757,42 @@ function ExploreChartInner({
                       displaySeries.reduce((acc, s) => acc + (Number(row[s.key]) || 0), 0),
                     )
                   : null;
-                const labelFormatter = (val: any, _name?: any, props?: any) => {
-                  const idx = props?.index;
-                  if (isPercent && stackTotalsByIndex && typeof idx === 'number') {
-                    const total = stackTotalsByIndex[idx] || 0;
-                    if (total === 0) return '';
-                    const pct = (Number(val) / total) * 100;
-                    return pct >= 4 ? `${pct.toFixed(0)}%` : '';
-                  }
-                  return dataLabelFormatter(style)(val);
-                };
                 return (
                   <Bar key={series.key} dataKey={series.key} stackId="s" fill={getSeriesColor(series.key, i)}
                     name={series.label}
                     barSize={barSize}
                     radius={isTopOfStack ? [barRadius, barRadius, 0, 0] : undefined}>
-                    {showLabel && (
+                    {showLabel && isPercent && (
                       <LabelList
                         dataKey={series.key}
-                        position={labelPosition as any}
+                        position="center"
+                        content={(props: any) => {
+                          const { x, y, width, height, value, index } = props;
+                          const total = (stackTotalsByIndex as number[])?.[index] || 0;
+                          if (!total) return null;
+                          const pct = (Number(value) / total) * 100;
+                          if (pct < 4) return null;
+                          return (
+                            <text
+                              x={x + width / 2}
+                              y={y + height / 2}
+                              textAnchor="middle"
+                              dominantBaseline="middle"
+                              fill="#fff"
+                              fontSize={fontSize - 1}
+                            >
+                              {`${pct.toFixed(0)}%`}
+                            </text>
+                          );
+                        }}
+                      />
+                    )}
+                    {showLabel && !isPercent && (
+                      <LabelList
+                        dataKey={series.key}
+                        position="top"
                         fontSize={fontSize - 1}
-                        formatter={labelFormatter as any}
-                        fill={isPercent ? '#fff' : undefined}
+                        formatter={dataLabelFormatter(style) as any}
                       />
                     )}
                   </Bar>
