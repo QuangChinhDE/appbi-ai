@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import {
   BarChart, Bar, LabelList,
   LineChart, Line,
@@ -321,6 +321,15 @@ function ExploreChartInner({
     () => getPalette((style.palette as ChartPaletteName) || 'default').colors,
     [style.palette],
   );
+  // Resolve per-series color: explicit override beats palette index.
+  const getSeriesColor = useCallback(
+    (key: string, index: number): string => {
+      const override = style.seriesColors?.[key];
+      if (override) return override;
+      return PALETTE[index % PALETTE.length];
+    },
+    [style.seriesColors, PALETTE],
+  );
   const fontSize = style.fontSize || 12;
   const model = useMemo(
     () => buildExploreChartModel({ type, data, roleConfig, havingFilters, preAggregated }),
@@ -537,8 +546,71 @@ function ExploreChartInner({
               enableColorRules={style.kpiEnableColorRules}
               colorRules={style.kpiColorRules}
               rowCount={data.length}
+              iconName={style.kpiIconName}
+              iconColor={style.kpiIconColor}
+              accentBorder={style.kpiAccentBorder}
+              gradientBg={style.kpiGradientBg}
             />
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (type === 'PODIUM') {
+    const nameField = style.podiumNameField || dimension || (data[0] && Object.keys(data[0]).find((k) => typeof data[0][k] === 'string'));
+    const valueField = style.podiumValueField
+      || (metrics[0] ? metricKey(metrics[0]) : undefined)
+      || (data[0] && Object.keys(data[0]).find((k) => typeof data[0][k] === 'number'));
+    if (!nameField || !valueField) {
+      return <EmptyState message="Select a name dimension and a value metric to render the podium." />;
+    }
+    const top = Math.min(Math.max(style.podiumTop ?? 3, 1), 5);
+    const ranked = [...data]
+      .sort((a, b) => Number(b?.[valueField] ?? 0) - Number(a?.[valueField] ?? 0))
+      .slice(0, top);
+    const colors = [
+      style.podiumGoldColor || '#fbbf24',
+      style.podiumSilverColor || '#cbd5e1',
+      style.podiumBronzeColor || '#d97706',
+      '#64748b',
+      '#475569',
+    ];
+    const labels = ['QUÁN QUÂN', 'Á QUÂN', 'HẠNG 3', 'HẠNG 4', 'HẠNG 5'];
+    const display = ranked.length >= 3 ? [ranked[1], ranked[0], ranked[2], ...ranked.slice(3)] : ranked;
+    const fmt = (v: any) => formatNumber(Number(v) || 0, style);
+    return (
+      <div className="h-full flex flex-col">
+        {ChartTitleEl}
+        <div className="flex-1 flex items-end justify-center gap-4 px-4">
+          {display.map((e: any, i: number) => {
+            const rank = ranked.indexOf(e);
+            const color = colors[rank] || colors[colors.length - 1];
+            const isFirst = rank === 0;
+            return (
+              <div
+                key={i}
+                className="flex flex-col items-center rounded-2xl border p-4"
+                style={{
+                  borderColor: color,
+                  borderWidth: isFirst ? 2 : 1,
+                  minWidth: 140,
+                  transform: isFirst ? 'scale(1.05)' : undefined,
+                  background: `linear-gradient(180deg, ${color}10, transparent 70%)`,
+                }}
+              >
+                <div className="text-[10px] font-bold uppercase tracking-[0.2em]" style={{ color }}>
+                  {labels[rank] || `HẠNG ${rank + 1}`}
+                </div>
+                <div className="mt-2 text-sm font-semibold text-text-primary text-center break-words">
+                  {String(e?.[nameField] ?? '--')}
+                </div>
+                <div className="mt-1 text-2xl font-semibold tabular-nums" style={{ color }}>
+                  {fmt(e?.[valueField])}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     );
@@ -565,7 +637,9 @@ function ExploreChartInner({
                     : ''
                   : ({ name, percent }) => percent > 0.03 ? `${name} (${(percent * 100).toFixed(0)}%)` : ''}
               >
-                {sortedPieData.map((_, i) => <Cell key={i} fill={PALETTE[i % PALETTE.length]} />)}
+                {sortedPieData.map((row: any, i) => (
+                  <Cell key={i} fill={getSeriesColor(String(row?.name ?? i), i)} />
+                ))}
               </Pie>
               <Tooltip formatter={(v: any) => [formatNumber(v, style), metricLabel(m)]} />
               {renderLegend()}
@@ -672,16 +746,44 @@ function ExploreChartInner({
                 ? (v: any, name: string) => [`${(Number(v) * 100).toFixed(1)}%`, name]
                 : tooltipFormatter(displaySeries, style)} />
               {renderLegend()}
-              {displaySeries.map((series, i) => (
-                <Bar key={series.key} dataKey={series.key} stackId="s" fill={PALETTE[i % PALETTE.length]}
-                  name={series.label}
-                  barSize={barSize}
-                  radius={i === displaySeries.length - 1 ? [barRadius, barRadius, 0, 0] : undefined}>
-                  {showDataLabels && i === displaySeries.length - 1 && (
-                    <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
-                  )}
-                </Bar>
-              ))}
+              {displaySeries.map((series, i) => {
+                const isTopOfStack = i === displaySeries.length - 1;
+                // Percent mode: each segment shows its own % inside the bar.
+                // Normal mode: only the top segment shows total above the bar.
+                const showLabel = showDataLabels && (isPercent || isTopOfStack);
+                const labelPosition = isPercent ? 'center' : 'top';
+                const stackTotalsByIndex = isPercent
+                  ? displayData.map((row: any) =>
+                      displaySeries.reduce((acc, s) => acc + (Number(row[s.key]) || 0), 0),
+                    )
+                  : null;
+                const labelFormatter = (val: any, _name?: any, props?: any) => {
+                  const idx = props?.index;
+                  if (isPercent && stackTotalsByIndex && typeof idx === 'number') {
+                    const total = stackTotalsByIndex[idx] || 0;
+                    if (total === 0) return '';
+                    const pct = (Number(val) / total) * 100;
+                    return pct >= 4 ? `${pct.toFixed(0)}%` : '';
+                  }
+                  return dataLabelFormatter(style)(val);
+                };
+                return (
+                  <Bar key={series.key} dataKey={series.key} stackId="s" fill={getSeriesColor(series.key, i)}
+                    name={series.label}
+                    barSize={barSize}
+                    radius={isTopOfStack ? [barRadius, barRadius, 0, 0] : undefined}>
+                    {showLabel && (
+                      <LabelList
+                        dataKey={series.key}
+                        position={labelPosition as any}
+                        fontSize={fontSize - 1}
+                        formatter={labelFormatter as any}
+                        fill={isPercent ? '#fff' : undefined}
+                      />
+                    )}
+                  </Bar>
+                );
+              })}
               {renderBenchmarkLine('y')}
             </BarChart>,
             displayData.length,
@@ -711,8 +813,8 @@ function ExploreChartInner({
                 return (
                   <Area key={series.key} type="monotone" dataKey={series.key}
                     name={series.label}
-                    stroke={PALETTE[i % PALETTE.length]}
-                    fill={PALETTE[i % PALETTE.length]}
+                    stroke={getSeriesColor(series.key, i)}
+                    fill={getSeriesColor(series.key, i)}
                     fillOpacity={areaOpacity} strokeWidth={lineWidth}
                     dot={showDots && displayData.length <= 60}
                     strokeDasharray={lineDash} />
@@ -747,7 +849,7 @@ function ExploreChartInner({
                 return (
                   <Line key={series.key} type="monotone" dataKey={series.key}
                     name={series.label}
-                    stroke={PALETTE[i % PALETTE.length]}
+                    stroke={getSeriesColor(series.key, i)}
                     strokeWidth={lineWidth}
                     dot={showDots && displayData.length <= 60}
                     strokeDasharray={lineDash}>
@@ -787,7 +889,7 @@ function ExploreChartInner({
           return (
             <Bar key={series.key} dataKey={series.key}
               name={series.label}
-              fill={PALETTE[i % PALETTE.length]}
+              fill={getSeriesColor(series.key, i)}
               barSize={barSize}
               radius={[0, barRadius, barRadius, 0]}>
               {showDataLabels && (
@@ -848,7 +950,7 @@ function ExploreChartInner({
               {renderLegend()}
               {comboBarSeries.map((series, index) => (
                 <Bar key={series.key} dataKey={series.key} name={series.label}
-                  fill={PALETTE[index % PALETTE.length]} radius={[barRadius, barRadius, 0, 0]}
+                  fill={getSeriesColor(series.key, index)} radius={[barRadius, barRadius, 0, 0]}
                   barSize={barSize}>
                   {showDataLabels && (
                     <LabelList dataKey={series.key} position="top" fontSize={fontSize - 1} formatter={dataLabelFormatter(style)} />
@@ -856,7 +958,7 @@ function ExploreChartInner({
                 </Bar>
               ))}
               <Line dataKey={lineSeries.key} name={lineSeries.label}
-                type="monotone" stroke={PALETTE[comboBarSeries.length % PALETTE.length]} strokeWidth={lineWidth}
+                type="monotone" stroke={getSeriesColor(lineSeries.key, comboBarSeries.length)} strokeWidth={lineWidth}
                 dot={showDots && displayData.length <= 60}
                 strokeDasharray={lineDash}
                 yAxisId={dualYAxis ? 'right' : 0} />
@@ -888,7 +990,7 @@ function ExploreChartInner({
               return (
                 <Bar key={series.key} dataKey={series.key}
                   name={series.label}
-                  fill={PALETTE[i % PALETTE.length]}
+                  fill={getSeriesColor(series.key, i)}
                   barSize={barSize}
                   radius={[barRadius, barRadius, 0, 0]}>
                   {showDataLabels && (

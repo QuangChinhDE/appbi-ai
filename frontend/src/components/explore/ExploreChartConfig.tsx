@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Info, X, ChevronDown } from 'lucide-react';
 import { CHART_PALETTES, type ChartPaletteName } from '@/lib/chartColors';
 import type {
@@ -22,7 +22,7 @@ export type { ChartSortRule, TimeGranularity } from '@/types/api';
 export type ExploreChartType =
   | 'TABLE' | 'BAR' | 'HORIZONTAL_BAR' | 'GROUPED_BAR' | 'STACKED_BAR'
   | 'LINE' | 'AREA' | 'TIME_SERIES' | 'BAR_LINE'
-  | 'PIE' | 'SCATTER' | 'KPI';
+  | 'PIE' | 'SCATTER' | 'KPI' | 'PODIUM';
 
 export type AggFn = 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct';
 export type TableLayoutMode = 'standard' | 'pivot';
@@ -56,6 +56,9 @@ export interface ChartStyleConfig {
   showGrid?: boolean;
   // Palette
   palette?: ChartPaletteName;
+  // Per-series color overrides (priority: seriesColors[key] > palette[i]).
+  // Key matches the series key shown in the legend (metric key or breakdown value).
+  seriesColors?: Record<string, string>;
   // Font
   fontSize?: number;
   // Bar
@@ -80,6 +83,18 @@ export interface ChartStyleConfig {
   kpiAccentColor?: string;
   kpiEnableColorRules?: boolean;
   kpiColorRules?: KpiValueColorRule[];
+  // KPI icon (lucide-react icon name) + accent border + gradient bg
+  kpiIconName?: string;
+  kpiIconColor?: string;
+  kpiAccentBorder?: boolean;
+  kpiGradientBg?: boolean;
+  // PODIUM: top-N visualization with medal styling
+  podiumTop?: number;        // default 3, max 5
+  podiumNameField?: string;  // dimension column for the rank name
+  podiumValueField?: string; // measure column for the rank value
+  podiumGoldColor?: string;
+  podiumSilverColor?: string;
+  podiumBronzeColor?: string;
   // Table
   tableEnableConditionalFormatting?: boolean;
   tableEnableHeatmap?: boolean;
@@ -311,14 +326,27 @@ export function normalizeMetricConfig(metric: MetricConfig | string | null | und
 }
 
 export function normalizeRoleConfig(chartType: string, roleConfig: ChartRoleConfig | null | undefined): ChartRoleConfig {
-  const normalizedMetrics = (roleConfig?.metrics ?? [])
+  let normalizedMetrics = (roleConfig?.metrics ?? [])
     .map(metric => normalizeMetricConfig(metric as MetricConfig | string))
     .filter((metric): metric is MetricConfig => metric !== null);
 
-  let lineMetric = normalizeMetricConfig(roleConfig?.lineMetric);
-  if (!lineMetric && chartType === 'BAR_LINE' && roleConfig?.breakdown) {
-    lineMetric = { field: roleConfig.breakdown, agg: 'sum' };
+  // Per-chart contract — prune incompatible state when chartType switches.
+  // BAR / HORIZONTAL_BAR: many measures, no breakdown.
+  // GROUPED_BAR / STACKED_BAR: single measure + breakdown.
+  // BAR_LINE: bar metrics + explicit lineMetric, no breakdown.
+  let breakdown = roleConfig?.breakdown;
+  if (chartType === 'BAR' || chartType === 'HORIZONTAL_BAR' || chartType === 'BAR_LINE') {
+    breakdown = undefined;
   }
+  if ((chartType === 'GROUPED_BAR' || chartType === 'STACKED_BAR') && normalizedMetrics.length > 1) {
+    normalizedMetrics = [normalizedMetrics[0]];
+  }
+
+  // Explicit only — no implicit breakdown→lineMetric fallback.
+  const lineMetric = chartType === 'BAR_LINE'
+    ? normalizeMetricConfig(roleConfig?.lineMetric)
+    : null;
+
   const benchmarkMetric = normalizeMetricConfig(roleConfig?.benchmarkMetric);
   const tablePivotMetric = normalizeMetricConfig(roleConfig?.tablePivotMetric);
   const tableMode: TableLayoutMode = chartType === 'TABLE' && roleConfig?.tableMode === 'pivot'
@@ -328,6 +356,7 @@ export function normalizeRoleConfig(chartType: string, roleConfig: ChartRoleConf
   return {
     ...(roleConfig ?? EMPTY_ROLE_CONFIG),
     metrics: normalizedMetrics,
+    breakdown,
     tableMode,
     ...(benchmarkMetric ? { benchmarkMetric } : {}),
     ...(tablePivotMetric ? { tablePivotMetric } : {}),
@@ -336,18 +365,22 @@ export function normalizeRoleConfig(chartType: string, roleConfig: ChartRoleConf
 }
 
 const BREAKDOWN_MULTI_METRIC_UNSUPPORTED_TYPES = new Set<ExploreChartType>([
-  'BAR',
-  'HORIZONTAL_BAR',
-  'GROUPED_BAR',
   'LINE',
   'AREA',
   'TIME_SERIES',
 ]);
 
 const SINGLE_METRIC_TYPES = new Set<ExploreChartType>([
+  'GROUPED_BAR',
   'STACKED_BAR',
   'PIE',
   'KPI',
+  'PODIUM',
+]);
+
+const BREAKDOWN_REQUIRED_TYPES = new Set<ExploreChartType>([
+  'GROUPED_BAR',
+  'STACKED_BAR',
 ]);
 
 export function getChartRoleConfigValidationMessage(
@@ -359,6 +392,10 @@ export function getChartRoleConfigValidationMessage(
 
   if (SINGLE_METRIC_TYPES.has(typedChart) && normalized.metrics.length > 1) {
     return 'This chart type supports only one value column. Remove extra metrics to continue.';
+  }
+
+  if (BREAKDOWN_REQUIRED_TYPES.has(typedChart) && !normalized.breakdown) {
+    return 'This chart type requires a Breakdown field.';
   }
 
   if (
@@ -797,28 +834,45 @@ function SelectSlot({
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MetricSlot ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â PowerBI-style pill with per-field aggregation ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 function MetricSlot({
-  label, required, hint, single, value, options, onChange,
+  label, required, hint, single, value, options, allOptions, onChange,
 }: {
   label: string; required?: boolean; hint?: string;
   single?: boolean;
-  value: MetricConfig[]; options: Col[];
+  value: MetricConfig[];
+  /** Numeric columns (allowed for SUM/AVG/MIN/MAX). */
+  options: Col[];
+  /** All columns including non-numeric (allowed for COUNT/COUNT_DISTINCT). Defaults to options. */
+  allOptions?: Col[];
   onChange: (v: MetricConfig[]) => void;
 }) {
   const missing = required && value.length === 0;
+  const numericNames = useMemo(() => new Set(options.map((o) => o.name)), [options]);
+  const fullOptions = allOptions ?? options;
 
-  const addField = (fieldName: string) => {
+  const addField = (fieldName: string, agg: AggFn = 'sum') => {
     if (!fieldName) return;
     if (value.find(m => m.field === fieldName)) return;
-    const next: MetricConfig = { field: fieldName, agg: 'sum' };
+    const next: MetricConfig = { field: fieldName, agg };
     onChange(single ? [next] : [...value, next]);
   };
 
   const removeField = (fieldName: string) => onChange(value.filter(m => m.field !== fieldName));
 
+  // Changing agg may invalidate field type: SUM/AVG/MIN/MAX require numeric.
+  // If incompatible after switch, drop the metric silently rather than leaving
+  // a broken row that produces garbage SQL.
   const changeAgg = (fieldName: string, agg: AggFn) =>
-    onChange(value.map(m => m.field === fieldName ? { ...m, agg } : m));
+    onChange(value.flatMap((m) => {
+      if (m.field !== fieldName) return [m];
+      const numericRequired = agg === 'sum' || agg === 'avg' || agg === 'min' || agg === 'max';
+      if (numericRequired && !numericNames.has(m.field)) {
+        return [];
+      }
+      return [{ ...m, agg }];
+    }));
 
   const available = options.filter(o => !value.find(m => m.field === o.name));
+  const availableForCount = fullOptions.filter(o => !value.find(m => m.field === o.name));
 
   return (
     <div>
@@ -855,17 +909,31 @@ function MetricSlot({
         </div>
       )}
 
-      {/* Add field */}
+      {/* Add field — SUM/AVG/etc. on numeric columns. */}
       {(!single || value.length === 0) && (
         <select
           value=""
-          onChange={e => addField(e.target.value)}
-          className={`w-full px-2 py-1.5 text-xs border rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand ${
+          onChange={e => addField(e.target.value, 'sum')}
+          disabled={available.length === 0}
+          className={`w-full px-2 py-1.5 text-xs border rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand disabled:cursor-not-allowed disabled:opacity-60 ${
             missing ? 'border-danger/40 bg-danger/10 text-danger' : 'border-dashed border-[rgb(var(--border-strong))] text-text-quaternary'
           }`}
         >
-          <option value="">{available.length === 0 ? 'all fields added' : '+ add field...'}</option>
+          <option value="">{available.length === 0 ? 'all numeric fields added' : '+ add value...'}</option>
           {available.map(o => <option key={o.name} value={o.name}>{o.name}</option>)}
+        </select>
+      )}
+
+      {/* Add count — COUNT/COUNT_DISTINCT works on any column type. */}
+      {(!single || value.length === 0) && allOptions && (
+        <select
+          value=""
+          onChange={e => addField(e.target.value, 'count')}
+          disabled={availableForCount.length === 0}
+          className="mt-1 w-full px-2 py-1.5 text-xs border border-dashed border-[rgb(var(--border-strong))] rounded-md bg-surface-1 text-text-quaternary focus:outline-none focus:ring-1 focus:ring-brand disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <option value="">{availableForCount.length === 0 ? 'all fields added' : '+ count any field...'}</option>
+          {availableForCount.map(o => <option key={o.name} value={o.name}>{o.name}</option>)}
         </select>
       )}
     </div>
@@ -1043,6 +1111,8 @@ interface ExploreChartConfigProps {
   validationMessage?: string | null;
   readOnly?: boolean;
   mode?: 'full' | 'styleOnly';
+  /** Series keys (metric keys or breakdown values) available for per-series color override. */
+  availableSeriesKeys?: { key: string; label: string }[];
   onChartTypeChange: (t: ExploreChartType) => void;
   onRoleConfigChange: (c: ChartRoleConfig) => void;
   onStyleConfigChange: (c: ChartStyleConfig) => void;
@@ -1059,6 +1129,7 @@ export function ExploreChartConfig({
   validationMessage = null,
   readOnly,
   mode = 'full',
+  availableSeriesKeys = [],
   onChartTypeChange,
   onRoleConfigChange,
   onStyleConfigChange,
@@ -1411,6 +1482,7 @@ export function ExploreChartConfig({
                 single
                 value={tablePivotMetric}
                 options={numOrAll}
+                allOptions={allCols}
                 onChange={value => upd({ tablePivotMetric: value[0] })}
               />
 
@@ -1916,9 +1988,9 @@ export function ExploreChartConfig({
           description="Pick the KPI value first, then add an optional benchmark metric if the card should compare against live data."
         >
           <Disclosure title={chartBindingTitle} hint={chartRoleSectionHint} defaultOpen>
-            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
               onChange={v => upd({ metrics: v })} />
-            <MetricSlot label="Benchmark Metric" hint="In Custom SQL mode, choose a second numeric SQL output column. Use {benchmark}, {delta}, or {deltaPercent} in the Context Template." single value={benchmarkMetric} options={numOrAll}
+            <MetricSlot label="Benchmark Metric" hint="In Custom SQL mode, choose a second numeric SQL output column. Use {benchmark}, {delta}, or {deltaPercent} in the Context Template." single value={benchmarkMetric} options={numOrAll} allOptions={allCols}
               onChange={v => upd({ benchmarkMetric: v[0] || undefined })} />
           </Disclosure>
         </SectionPanel>
@@ -2159,26 +2231,26 @@ export function ExploreChartConfig({
           {(chartType === 'BAR' || chartType === 'HORIZONTAL_BAR') && <>
             <SelectSlot label={chartType === 'HORIZONTAL_BAR' ? 'Y Axis' : 'X Axis'} hint="group by" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label={chartType === 'HORIZONTAL_BAR' ? 'Values (X)' : 'Values (Y)'} required value={normalizedRoleConfig.metrics} options={numOrAll}
+            <MetricSlot label={chartType === 'HORIZONTAL_BAR' ? 'Values (X)' : 'Values (Y)'} required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
               onChange={v => upd({ metrics: v })} />
-            <SelectSlot label="Breakdown" hint="optional" value={brk} options={dimOrAll}
-              placeholder="none"
-              onChange={v => upd({ breakdown: v || undefined })} />
           </>}
 
           {chartType === 'GROUPED_BAR' && <>
             <SelectSlot label="X Axis" hint="group by" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Values (Y)" hint="each = one bar group" required value={normalizedRoleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Value (Y)" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
               onChange={v => upd({ metrics: v })} />
+            <SelectSlot label="Breakdown" hint="grouped by" required value={brk} options={dimOrAll}
+              placeholder="select field"
+              onChange={v => upd({ breakdown: v || undefined })} />
           </>}
 
           {chartType === 'STACKED_BAR' && <>
             <SelectSlot label="X Axis" hint="group by" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Value (Y)" required single value={normalizedRoleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Value (Y)" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
               onChange={v => upd({ metrics: v })} />
-            <SelectSlot label="Stack by" required value={brk} options={dimOrAll}
+            <SelectSlot label="Breakdown" hint="stack by" required value={brk} options={dimOrAll}
               placeholder="select field"
               onChange={v => upd({ breakdown: v || undefined })} />
           </>}
@@ -2186,9 +2258,9 @@ export function ExploreChartConfig({
           {chartType === 'BAR_LINE' && <>
             <SelectSlot label="X Axis" hint="group by" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Bar Values" hint="shown as bars" required value={normalizedRoleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Bar Values" hint="shown as bars" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
               onChange={v => upd({ metrics: v })} />
-            <MetricSlot label="Line Value" hint="shown as line" required single value={lineMetric} options={numOrAll}
+            <MetricSlot label="Line Value" hint="shown as line" required single value={lineMetric} options={numOrAll} allOptions={allCols}
               onChange={v => upd({ lineMetric: v[0], breakdown: undefined })} />
           </>}
 
@@ -2196,7 +2268,7 @@ export function ExploreChartConfig({
           {chartType === 'LINE' && <>
             <SelectSlot label="X Axis" required value={dim} options={allCols}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="optional" value={brk} options={dimOrAll}
               placeholder="none"
@@ -2206,7 +2278,7 @@ export function ExploreChartConfig({
           {chartType === 'AREA' && <>
             <SelectSlot label="X Axis" required value={dim} options={allCols}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="optional" value={brk} options={dimOrAll}
               placeholder="none"
@@ -2217,7 +2289,7 @@ export function ExploreChartConfig({
             <SelectSlot label="Time Field (X)" required value={tf} options={timeOrAll}
               placeholder="select time field"
               onChange={v => upd({ timeField: v || undefined })} />
-            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Values (Y)" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
               onChange={v => upd({ metrics: v })} />
             <SelectSlot label="Breakdown" hint="optional" value={brk} options={dimOrAll}
               placeholder="none"
@@ -2227,7 +2299,7 @@ export function ExploreChartConfig({
           {chartType === 'PIE' && <>
             <SelectSlot label="Legend" hint="slice label" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
-            <MetricSlot label="Value" hint="slice size" required single value={normalizedRoleConfig.metrics} options={numOrAll}
+            <MetricSlot label="Value" hint="slice size" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
               onChange={v => upd({ metrics: v })} />
           </>}
 
@@ -2327,6 +2399,50 @@ export function ExploreChartConfig({
                     </div>
                   </button>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* Per-series color overrides (visible when chart has identifiable series). */}
+          {chartType !== 'KPI' && chartType !== 'TABLE' && availableSeriesKeys.length > 0 && (
+            <div>
+              <label className="text-xs font-semibold text-text-secondary mb-1.5 block">
+                Series colors
+              </label>
+              <div className="space-y-1.5">
+                {availableSeriesKeys.map(({ key, label }, i) => {
+                  const current = styleConfig.seriesColors?.[key] ?? '';
+                  const fallback = (CHART_PALETTES.find((p) => p.name === (styleConfig.palette || 'default'))?.colors ?? [])[i] || '#888';
+                  return (
+                    <div key={key} className="flex items-center gap-2">
+                      <span className="flex-1 truncate text-xs text-text-secondary" title={label}>
+                        {label}
+                      </span>
+                      <input
+                        type="color"
+                        value={current || fallback}
+                        onChange={(e) => updStyle({
+                          seriesColors: { ...(styleConfig.seriesColors ?? {}), [key]: e.target.value },
+                        })}
+                        className="h-7 w-10 cursor-pointer rounded border border-[rgb(var(--border-line))]"
+                      />
+                      {current && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = { ...(styleConfig.seriesColors ?? {}) };
+                            delete next[key];
+                            updStyle({ seriesColors: next });
+                          }}
+                          className="text-xs text-text-tertiary hover:text-text-primary"
+                          title="Reset to palette"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

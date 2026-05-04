@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { ChartType } from '@/types/api';
-import { BarChart3, LineChart, PieChart, TrendingUp, Table, AreaChart, BarChart4, BarChart2, ScatterChart, Activity } from 'lucide-react';
+import { BarChart3, LineChart, PieChart, TrendingUp, Table, AreaChart, BarChart4, BarChart2, ScatterChart, Activity, Trophy } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 
 type ChartTypeOption = {
@@ -22,6 +22,7 @@ const chartTypeOptions: ChartTypeOption[] = [
   { type: ChartType.TIME_SERIES, label: 'Time Series', icon: TrendingUp },
   { type: ChartType.TABLE, label: 'Table', icon: Table },
   { type: ChartType.KPI, label: 'KPI', icon: Activity },
+  { type: ChartType.PODIUM, label: 'Podium', icon: Trophy },
 ];
 
 type ChartTypeSelectorProps = {

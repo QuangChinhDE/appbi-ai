@@ -798,8 +798,46 @@ export function ChartPreview({
               enableColorRules={style.kpiEnableColorRules}
               colorRules={style.kpiColorRules}
               rowCount={data.length}
+              iconName={style.kpiIconName}
+              iconColor={style.kpiIconColor}
+              accentBorder={style.kpiAccentBorder}
+              gradientBg={style.kpiGradientBg}
             />
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Render PODIUM (top-N ranking with medal styling)
+  if (chartType === ChartType.PODIUM) {
+    const nameField = style.podiumNameField || config.labelField || config.xField
+      || Object.keys(data[0] ?? {}).find((f) => typeof data[0]?.[f] === 'string');
+    const valueField = style.podiumValueField || config.valueField || config.yFields?.[0]
+      || Object.keys(data[0] ?? {}).find((f) => typeof data[0]?.[f] === 'number');
+    const top = Math.min(Math.max(style.podiumTop ?? 3, 1), 5);
+    const ranked = [...data]
+      .sort((a, b) => Number(b?.[valueField as string] ?? 0) - Number(a?.[valueField as string] ?? 0))
+      .slice(0, top);
+    return (
+      <div className="h-full flex flex-col">
+        {ChartTitleEl}
+        <div className="flex-1 flex items-center justify-center">
+          <PodiumDisplay
+            entries={ranked}
+            nameField={nameField as string}
+            valueField={valueField as string}
+            colors={[
+              style.podiumGoldColor || '#fbbf24',
+              style.podiumSilverColor || '#cbd5e1',
+              style.podiumBronzeColor || '#d97706',
+              '#64748b',
+              '#475569',
+            ]}
+            format={style.numberFormat ?? 'compact'}
+            decimalPlaces={style.decimalPlaces}
+            currencySymbol={style.currencySymbol}
+          />
         </div>
       </div>
     );
@@ -808,6 +846,84 @@ export function ChartPreview({
   return (
     <div className="flex items-center justify-center h-64 bg-surface-2 border border-[rgb(var(--border-line))] rounded-lg">
       <p className="text-text-tertiary">Invalid chart configuration</p>
+    </div>
+  );
+}
+
+function PodiumDisplay({
+  entries,
+  nameField,
+  valueField,
+  colors,
+  format,
+  decimalPlaces,
+  currencySymbol,
+}: {
+  entries: any[];
+  nameField: string;
+  valueField: string;
+  colors: string[];
+  format: NumberFormat;
+  decimalPlaces?: number;
+  currencySymbol?: string;
+}) {
+  const fmt = (v: any): string => {
+    const n = typeof v === 'number' ? v : Number(v);
+    if (!Number.isFinite(n)) return '--';
+    const dp = decimalPlaces ?? 1;
+    if (format === 'compact') {
+      const a = Math.abs(n);
+      if (a >= 1e9) return `${(n / 1e9).toFixed(dp)}B`;
+      if (a >= 1e6) return `${(n / 1e6).toFixed(dp)}M`;
+      if (a >= 1e3) return `${(n / 1e3).toFixed(dp)}K`;
+      return n.toLocaleString();
+    }
+    if (format === 'currency') return `${currencySymbol || '$'}${n.toLocaleString()}`;
+    if (format === 'percent') return `${(n * 100).toFixed(dp)}%`;
+    return n.toLocaleString();
+  };
+  const labels = ['QUÁN QUÂN', 'Á QUÂN', 'HẠNG 3', 'HẠNG 4', 'HẠNG 5'];
+  // Order for podium display: place #1 in the center
+  const display = entries.length >= 3
+    ? [entries[1], entries[0], entries[2], ...entries.slice(3)]
+    : entries;
+  const indexFor = (e: any) => entries.indexOf(e);
+  return (
+    <div className="flex items-end justify-center gap-4 px-4 w-full">
+      {display.map((e, i) => {
+        const rank = indexFor(e);
+        const color = colors[rank] || colors[colors.length - 1];
+        const isFirst = rank === 0;
+        return (
+          <div
+            key={i}
+            className="flex flex-col items-center rounded-2xl border p-4 transition"
+            style={{
+              borderColor: color,
+              borderWidth: isFirst ? 2 : 1,
+              minWidth: 140,
+              transform: isFirst ? 'scale(1.05)' : undefined,
+              background: `linear-gradient(180deg, ${color}10, transparent 70%)`,
+            }}
+          >
+            <div
+              className="text-[10px] font-bold uppercase tracking-[0.2em]"
+              style={{ color }}
+            >
+              {labels[rank] || `HẠNG ${rank + 1}`}
+            </div>
+            <div className="mt-2 text-sm font-semibold text-text-primary text-center break-words">
+              {String(e?.[nameField] ?? '--')}
+            </div>
+            <div
+              className="mt-1 text-2xl font-semibold tabular-nums"
+              style={{ color }}
+            >
+              {fmt(e?.[valueField])}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

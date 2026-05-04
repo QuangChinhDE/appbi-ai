@@ -52,6 +52,7 @@ const AGGREGATED_CHART_TYPES = new Set<ExploreChartType>([
   'BAR_LINE',
   'PIE',
   'KPI',
+  'PODIUM',
 ]);
 
 function datasetMetricAlias(metric: MetricConfig): string {
@@ -797,6 +798,17 @@ export function buildExploreExecuteRequest(args: {
   }
 
   if (chartType === 'KPI') {
+    request.measures = buildChartQueryMetrics(chartType, normalized).map((metric) => ({
+      field: metric.field,
+      function: metric.agg,
+    }));
+    return request;
+  }
+
+  if (chartType === 'PODIUM') {
+    if (normalized.dimension) {
+      request.dimensions = [normalized.dimension];
+    }
     request.measures = buildChartQueryMetrics(chartType, normalized).map((metric) => ({
       field: metric.field,
       function: metric.agg,

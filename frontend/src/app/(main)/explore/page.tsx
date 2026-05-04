@@ -56,6 +56,7 @@ const CHART_TYPE_LABELS: Record<string, string> = {
   BAR_LINE: 'Bar + Line',
   SCATTER: 'Scatter',
   KPI: 'KPI',
+  PODIUM: 'Podium',
   TABLE: 'Table',
 };
 

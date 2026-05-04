@@ -91,6 +91,12 @@ Copy-Item .env.example .env
 docker compose up -d --build backend frontend
 ```
 
+If you only changed the frontend and want to rebuild only that service:
+
+```bash
+docker compose up -d --build --no-deps frontend
+```
+
 4. If you want the bundled PostgreSQL container:
 
 ```bash
@@ -145,6 +151,26 @@ Useful commands:
 docker compose ps
 docker compose logs -f backend
 docker compose logs -f frontend
+```
+
+Frontend-only UI work:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --build backend
+docker compose -f docker-compose.dev.yml up -d --build --no-deps frontend
+```
+
+After the first image build, most UI changes should not need another Docker
+build at all because the whole `frontend/` folder is mounted into the container
+and Next.js runs in hot-reload mode. For normal UI edits, keep the container up
+and just save files.
+
+If the backend is already running elsewhere, point the frontend dev container to
+it and start only the frontend:
+
+```powershell
+$env:FRONTEND_BACKEND_URL="http://host.docker.internal:8000/api/v1"
+docker compose -f docker-compose.dev.yml up -d --build --no-deps frontend
 ```
 
 Frontend checks:

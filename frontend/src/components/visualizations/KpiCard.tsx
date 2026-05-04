@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import * as LucideIcons from 'lucide-react';
 import { Minus, Target, TrendingDown, TrendingUp } from 'lucide-react';
 import type { NumberFormat } from '@/components/explore/ExploreChartConfig';
 import type { KpiGoalDirection, KpiValueColorRule } from '@/types/api';
@@ -22,6 +23,10 @@ type KpiCardProps = {
   enableColorRules?: boolean;
   colorRules?: KpiValueColorRule[];
   rowCount?: number;
+  iconName?: string;
+  iconColor?: string;
+  accentBorder?: boolean;
+  gradientBg?: boolean;
 };
 
 const DEFAULT_ACCENT_COLOR = '#2563eb';
@@ -183,7 +188,13 @@ export function KpiCard({
   enableColorRules = false,
   colorRules = [],
   rowCount,
+  iconName,
+  iconColor,
+  accentBorder = false,
+  gradientBg = false,
 }: KpiCardProps) {
+  const IconComponent: React.ComponentType<{ className?: string; style?: React.CSSProperties }> | null =
+    iconName && (LucideIcons as any)[iconName] ? (LucideIcons as any)[iconName] : null;
   const numericValue = toNumber(value);
   const numericBenchmark = toNumber(benchmarkValue);
   const matchedRule = enableColorRules && numericValue !== null
@@ -219,7 +230,16 @@ export function KpiCard({
   const ComparisonIcon = legacyComparisonTone?.icon;
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm">
+    <div
+      className="overflow-hidden rounded-2xl border bg-surface-1 shadow-linear-sm"
+      style={{
+        borderColor: accentBorder ? (accentColor || DEFAULT_ACCENT_COLOR) : 'rgb(var(--border-line))',
+        borderWidth: accentBorder ? 2 : 1,
+        background: gradientBg
+          ? `linear-gradient(135deg, ${accentColor || DEFAULT_ACCENT_COLOR}10, transparent 60%)`
+          : undefined,
+      }}
+    >
       <div
         className="h-1.5 w-full"
         style={{
@@ -230,9 +250,15 @@ export function KpiCard({
       <div className="p-6 sm:p-7">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            {label && (
-              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-text-tertiary">
-                {label}
+            {(label || IconComponent) && (
+              <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.24em] text-text-tertiary">
+                {IconComponent && (
+                  <IconComponent
+                    className="h-4 w-4"
+                    style={{ color: iconColor || accentColor || DEFAULT_ACCENT_COLOR }}
+                  />
+                )}
+                {label && <span>{label}</span>}
               </div>
             )}
 

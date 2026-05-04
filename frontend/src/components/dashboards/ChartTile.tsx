@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette } from 'lucide-react';
+import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
@@ -276,6 +276,8 @@ export function ChartTile({
     () => (Array.isArray(currentLayout?.havingFilters) ? currentLayout.havingFilters : []),
   );
   const [isHavingOpen, setIsHavingOpen] = useState(false);
+  const [isTileMenuOpen, setIsTileMenuOpen] = useState(false);
+  const [isMovePageOpen, setIsMovePageOpen] = useState(false);
   const [draftHavingField, setDraftHavingField] = useState('');
   const [draftHavingOp, setDraftHavingOp] = useState<FilterOperator>('gt');
   const [draftHavingValue, setDraftHavingValue] = useState('');
@@ -310,8 +312,8 @@ export function ChartTile({
     }
   }, [isEditingTitle]);
 
-  const startEditingTitle = (e: React.MouseEvent) => {
-    e.stopPropagation();
+  const startEditingTitle = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
     setTitleInput(displayTitle);
     setIsEditingTitle(true);
   };
@@ -594,39 +596,8 @@ export function ChartTile({
         ) : (
           <>
             <h3 className="text-sm font-semibold truncate flex-1">{displayTitle}</h3>
-            <button
-              onMouseDown={e => e.stopPropagation()}
-              onClick={() => openDetailModal('data')}
-              className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-text-quaternary hover:text-brand"
-              title="View chart details"
-            >
-              <Eye className="h-3.5 w-3.5" />
-            </button>
-            {allowAppearanceEdit && (
-              <button
-                onMouseDown={e => e.stopPropagation()}
-                onClick={() => openDetailModal('appearance')}
-                className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-text-quaternary hover:text-brand"
-                title="Edit chart appearance"
-              >
-                <Palette className="h-3.5 w-3.5" />
-              </button>
-            )}
-            {canEdit && availablePages.length > 1 && onMoveToPage && (
-              <select
-                value={currentPageId ?? ''}
-                onMouseDown={e => e.stopPropagation()}
-                onChange={e => onMoveToPage(e.target.value)}
-                className="max-w-28 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-0.5 text-[10px] text-text-tertiary opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
-                title="Move chart to page"
-              >
-                {availablePages.map((page) => (
-                  <option key={page.id} value={page.id}>
-                    {page.name}
-                  </option>
-                ))}
-              </select>
-            )}
+
+            {/* HAVING badge stays separate — has active state + opens inline editor */}
             {canEdit && exploreConfig && havingOptions.length > 0 && (
               <button
                 onMouseDown={e => e.stopPropagation()}
@@ -644,16 +615,91 @@ export function ChartTile({
                 )}
               </button>
             )}
-            {canEdit && (
-            <button
-              onMouseDown={e => e.stopPropagation()}
-              onClick={startEditingTitle}
-              className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 text-text-quaternary hover:text-brand"
-              title="Edit title"
-            >
-              <Pencil className="h-3.5 w-3.5" />
-            </button>
-            )}
+
+            {/* Single overflow menu — gathers View, Appearance, Rename, Move to page */}
+            <div className="relative flex-shrink-0">
+              <button
+                onMouseDown={e => e.stopPropagation()}
+                onClick={() => { setIsTileMenuOpen(v => !v); setIsMovePageOpen(false); }}
+                className={`transition-opacity text-text-quaternary hover:text-brand ${
+                  isTileMenuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                }`}
+                title="More options"
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </button>
+              {isTileMenuOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={() => { setIsTileMenuOpen(false); setIsMovePageOpen(false); }}
+                  />
+                  <div
+                    className="absolute right-0 z-50 mt-1.5 w-48 overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 py-1 shadow-linear-lg"
+                    onMouseDown={e => e.stopPropagation()}
+                  >
+                    <button
+                      onClick={() => { openDetailModal('data'); setIsTileMenuOpen(false); }}
+                      className="flex w-full items-center gap-2.5 px-3 py-1.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
+                    >
+                      <Eye className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                      View details
+                    </button>
+                    {allowAppearanceEdit && (
+                      <button
+                        onClick={() => { openDetailModal('appearance'); setIsTileMenuOpen(false); }}
+                        className="flex w-full items-center gap-2.5 px-3 py-1.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
+                      >
+                        <Palette className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                        Edit appearance
+                      </button>
+                    )}
+                    {canEdit && (
+                      <button
+                        onClick={() => { startEditingTitle(); setIsTileMenuOpen(false); }}
+                        className="flex w-full items-center gap-2.5 px-3 py-1.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
+                      >
+                        <Pencil className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                        Rename title
+                      </button>
+                    )}
+                    {canEdit && availablePages.length > 1 && onMoveToPage && (
+                      <>
+                        <div className="my-1 border-t border-[rgb(var(--border-line))]" />
+                        <button
+                          onClick={() => setIsMovePageOpen(v => !v)}
+                          className="flex w-full items-center gap-2.5 px-3 py-1.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
+                        >
+                          <ArrowRightLeft className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                          <span className="flex-1 text-left">Move to page</span>
+                        </button>
+                        {isMovePageOpen && (
+                          <div className="bg-[rgba(0,0,0,0.02)]">
+                            {availablePages.map((page) => (
+                              <button
+                                key={page.id}
+                                onClick={() => {
+                                  if (page.id !== currentPageId) onMoveToPage(page.id);
+                                  setIsMovePageOpen(false);
+                                  setIsTileMenuOpen(false);
+                                }}
+                                className={`flex w-full items-center gap-2 px-6 py-1 text-[12px] transition-colors hover:bg-[rgba(0,0,0,0.04)] ${
+                                  page.id === currentPageId ? 'text-brand' : 'text-text-tertiary'
+                                }`}
+                              >
+                                {page.id === currentPageId && <Check className="h-3 w-3" />}
+                                <span className={page.id === currentPageId ? '' : 'pl-5'}>{page.name}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </>
         )}
         </div>

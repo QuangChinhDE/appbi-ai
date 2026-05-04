@@ -113,7 +113,7 @@ function inferSortLimitColumns(
   roleConfig: ChartRoleConfig,
   preAggregated: boolean,
 ): ColumnMetadata[] {
-  if (!rows.length || chartType === 'TABLE' || chartType === 'KPI') {
+  if (!rows.length || chartType === 'TABLE' || chartType === 'KPI' || chartType === 'PODIUM') {
     return [];
   }
 
@@ -278,7 +278,7 @@ function syncRoleConfigWithColumns(
   if (chartType === 'TIME_SERIES') {
     if (!next.timeField) next.timeField = timeColumns[0]?.name ?? fallbackDimension;
     if (!next.dimension) next.dimension = next.timeField ?? fallbackDimension;
-  } else if (chartType !== 'KPI' && !next.dimension) {
+  } else if (chartType !== 'KPI' && chartType !== 'PODIUM' && !next.dimension) {
     next.dimension = fallbackDimension;
   }
 
@@ -286,7 +286,7 @@ function syncRoleConfigWithColumns(
     next.metrics = [{ field: fallbackMetric, agg: 'sum' }];
   }
 
-  if (chartType === 'KPI' && next.metrics.length > 1) {
+  if ((chartType === 'KPI' || chartType === 'PODIUM') && next.metrics.length > 1) {
     next.metrics = [next.metrics[0]];
   }
 
@@ -748,6 +748,32 @@ export function ExploreEditor({
       normalizedRoleConfig,
     );
   }, [chartType, displayedQueryState?.chartPreAggregated, displayedQueryState?.chartRows, normalizedRoleConfig, previewRows]);
+
+  const previewSeriesKeys = useMemo(() => {
+    const rows = displayedQueryState?.chartRows ?? [];
+    if (!rows.length || chartType === 'TABLE' || chartType === 'KPI' || chartType === 'PODIUM' || chartType === 'SCATTER') {
+      return [];
+    }
+    const model = buildExploreChartModel({
+      type: chartType,
+      data: rows,
+      roleConfig: normalizedRoleConfig,
+      preAggregated: displayedQueryState?.chartPreAggregated ?? false,
+    });
+    if (chartType === 'BAR_LINE') {
+      return [...(model.comboBarSeries ?? []), ...(model.comboLineSeries ?? [])].map((s) => ({
+        key: s.key,
+        label: s.label,
+      }));
+    }
+    if (chartType === 'PIE') {
+      return (model.pieData ?? []).slice(0, 12).map((p: any) => ({
+        key: String(p?.name ?? ''),
+        label: String(p?.name ?? ''),
+      }));
+    }
+    return (model.categoricalSeries ?? []).map((s) => ({ key: s.key, label: s.label }));
+  }, [chartType, displayedQueryState?.chartRows, displayedQueryState?.chartPreAggregated, normalizedRoleConfig]);
 
   const sortLimitColumns = useMemo(() => {
     const inferenceRows = displayedQueryState?.chartRows?.length
@@ -1571,6 +1597,7 @@ export function ExploreEditor({
                     queryMode={sqlMode}
                     validationMessage={activeValidationMessage}
                     readOnly={!resPerms.canEdit}
+                    availableSeriesKeys={previewSeriesKeys}
                     onChartTypeChange={handleChartTypeChange}
                     onRoleConfigChange={sqlMode === 'custom' ? setCustomRoleConfig : setGeneratedRoleConfig}
                     onStyleConfigChange={setChartStyleConfig}

@@ -137,35 +137,65 @@ export function pivotByBreakdown(
   preAggregated = false,
   havingFilters: BaseFilter[] = [],
 ): { data: Record<string, any>[]; series: ChartSeriesDef[] } {
-  const breakdownKeys = [...new Set(data.map(row => String(row[breakdownField] ?? '')))].slice(0, 12);
   const valueField = resolveMetricValueField(data, metric, preAggregated);
+  const mKey = metricKey(metric);
 
+  // 1. Aggregate to long form: one row per (dim, breakdown) pair with the
+  //    metric stored under its canonical metricKey. This is the row that
+  //    measure-level filters like "Rev > 0" should be evaluated against.
   const groupMap = new Map<string, Map<string, Record<string, any>[]>>();
   for (const row of data) {
     const dimValue = String(row[dimField] ?? '');
     const breakdownValue = String(row[breakdownField] ?? '');
     if (!groupMap.has(dimValue)) groupMap.set(dimValue, new Map());
-    const breakdownMap = groupMap.get(dimValue)!;
-    if (!breakdownMap.has(breakdownValue)) breakdownMap.set(breakdownValue, []);
-    breakdownMap.get(breakdownValue)!.push(row);
+    const inner = groupMap.get(dimValue)!;
+    if (!inner.has(breakdownValue)) inner.set(breakdownValue, []);
+    inner.get(breakdownValue)!.push(row);
+  }
+  const longForm: Array<Record<string, any>> = [];
+  for (const [dimValue, inner] of groupMap.entries()) {
+    for (const [breakdownValue, rows] of inner.entries()) {
+      longForm.push({
+        [dimField]: dimValue,
+        [breakdownField]: breakdownValue,
+        [mKey]: aggregateMetricValue(rows, metric, valueField, preAggregated),
+      });
+    }
   }
 
-  const pivoted = Array.from(groupMap.entries()).map(([dimValue, breakdownMap]) => {
-    const result: Record<string, any> = { [dimField]: dimValue };
-    breakdownKeys.forEach(key => {
-      result[key] = 0;
-    });
-    for (const [breakdownValue, rows] of breakdownMap.entries()) {
-      if (!breakdownKeys.includes(breakdownValue)) continue;
-      result[breakdownValue] = aggregateMetricValue(rows, metric, valueField, preAggregated);
-    }
-    return result;
-  });
+  // 2. Apply HAVING / measure filters on aggregated long-form rows.
+  const surviving = havingFilters.length > 0
+    ? applyFiltersToRows(longForm, havingFilters)
+    : longForm;
 
-  const filtered = havingFilters.length > 0 ? applyFiltersToRows(pivoted, havingFilters) : pivoted;
+  // 3. Decide which breakdown values remain (cap at 12 distinct values for
+  //    rendering). Ordering follows first-appearance to keep stable output.
+  const breakdownKeys: string[] = [];
+  for (const r of surviving) {
+    const k = String(r[breakdownField] ?? '');
+    if (!breakdownKeys.includes(k)) breakdownKeys.push(k);
+    if (breakdownKeys.length >= 12) break;
+  }
+
+  // 4. Pivot only what survived for rendering.
+  const dimOrder: string[] = [];
+  const pivotMap = new Map<string, Record<string, any>>();
+  for (const r of surviving) {
+    const dimValue = String(r[dimField] ?? '');
+    const breakdownValue = String(r[breakdownField] ?? '');
+    if (!breakdownKeys.includes(breakdownValue)) continue;
+    if (!pivotMap.has(dimValue)) {
+      const seed: Record<string, any> = { [dimField]: dimValue };
+      breakdownKeys.forEach((k) => { seed[k] = 0; });
+      pivotMap.set(dimValue, seed);
+      dimOrder.push(dimValue);
+    }
+    pivotMap.get(dimValue)![breakdownValue] = r[mKey];
+  }
+
   return {
-    data: filtered,
-    series: breakdownKeys.map(key => ({ key, label: key })),
+    data: dimOrder.map((d) => pivotMap.get(d)!),
+    series: breakdownKeys.map((key) => ({ key, label: key })),
   };
 }
 
@@ -315,6 +345,11 @@ export function buildExploreChartModel(args: {
     };
   }
 
+  if (type === 'PODIUM') {
+    // Podium just needs the raw rows; ChartPreview sorts + slices client-side.
+    return { ...emptyModel };
+  }
+
   if (type === 'KPI') {
     const metric = metrics[0];
     const benchmarkMetric = normalizedRoleConfig.benchmarkMetric;
@@ -384,7 +419,7 @@ export function buildExploreChartModel(args: {
     };
   }
 
-  if (breakdown && ['STACKED_BAR', 'LINE', 'AREA', 'BAR', 'HORIZONTAL_BAR', 'GROUPED_BAR', 'TIME_SERIES'].includes(type)) {
+  if (breakdown && ['STACKED_BAR', 'GROUPED_BAR', 'LINE', 'AREA', 'TIME_SERIES'].includes(type)) {
     const pivoted = pivotByBreakdown(data, xField, metrics[0], breakdown, preAggregated, havingFilters);
     const limitedPivot = limitRows(pivoted.data);
     return {
