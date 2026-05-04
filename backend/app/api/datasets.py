@@ -584,6 +584,62 @@ def _sync_dataset_model_safely(db: Session, dataset_id: int) -> None:
         logger.warning("Dataset model sync skipped for dataset %s: %s", dataset_id, exc)
 
 
+def _run_auto_type_detection(table_id: int) -> None:
+    """Background job: full-scan inference + apply for newly synced tables."""
+    from app.core.database import SessionLocal
+    from app.services.column_type_inference_service import (
+        apply_suggestions_to_table,
+        infer_full_column_types,
+    )
+
+    job_db = SessionLocal()
+    try:
+        table = job_db.query(DatasetTable).filter(DatasetTable.id == table_id).first()
+        if not table:
+            return
+        datasource = job_db.query(DataSource).filter(
+            DataSource.id == table.datasource_id
+        ).first()
+        if not datasource:
+            return
+        suggestions = infer_full_column_types(datasource, table)
+        applied = apply_suggestions_to_table(
+            job_db, table, suggestions, overwrite_user_overrides=False
+        )
+        if applied:
+            logger.info(
+                "Auto type detection applied %d overrides on table id=%s",
+                len(applied),
+                table_id,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Auto type detection failed for table id=%s: %s", table_id, exc
+        )
+    finally:
+        job_db.close()
+
+
+def _enqueue_auto_type_detection_if_needed(
+    background_tasks: BackgroundTasks,
+    db_table: DatasetTable,
+) -> None:
+    """Only run auto-detect for sources whose schema is unreliable (Sheets, manual)."""
+    datasource_id = getattr(db_table, "datasource_id", None)
+    if datasource_id is None:
+        return
+    table_id = getattr(db_table, "id", None)
+    if table_id is None:
+        return
+    ds_type = None
+    datasource = getattr(db_table, "datasource", None)
+    if datasource is not None:
+        ds_type = datasource.type if isinstance(datasource.type, str) else getattr(datasource.type, "value", None)
+    if ds_type not in ("google_sheets", "manual"):
+        return
+    background_tasks.add_task(_run_auto_type_detection, int(table_id))
+
+
 def _infer_dataset_table_columns(
     db: Session,
     dataset_obj: Dataset,
@@ -1193,6 +1249,8 @@ def add_table_to_dataset(
             db_table.id,
             trigger="table_created",
         )
+
+        _enqueue_auto_type_detection_if_needed(background_tasks, db_table)
 
         _sync_dataset_model_safely(db, dataset_id)
         db.refresh(db_table)
@@ -2971,3 +3029,94 @@ async def ai_suggest_quality_rule(
         columns=[{"name": c.name, "type": c.type} for c in body.columns],
     )
     return result
+
+
+@router.post("/{dataset_id}/tables/{table_id}/auto-detect-types")
+def auto_detect_column_types(
+    dataset_id: int,
+    table_id: int,
+    body: dict | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Full-scan inference of best column types and apply non-conflicting suggestions.
+
+    Body (all optional):
+      - tolerance: float, max fraction of invalid casts allowed (default 0.001)
+      - row_cap: int, override per-dialect default scan cap
+      - apply: bool, write suggestions to type_overrides (default True)
+      - overwrite_user_overrides: bool, replace existing overrides (default False)
+      - columns: list[str], restrict to a subset
+    """
+    body = body or {}
+    ds = _get_dataset_or_404(db, dataset_id)
+    require_edit_access(db, current_user, ds, "datasets")
+
+    table = db.query(DatasetTable).filter(
+        DatasetTable.id == table_id,
+        DatasetTable.dataset_id == dataset_id,
+    ).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+    datasource = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
+    if not datasource:
+        raise HTTPException(status_code=404, detail="Datasource not found")
+
+    from app.services.column_type_inference_service import (
+        apply_suggestions_to_table,
+        infer_full_column_types,
+    )
+
+    suggestions = infer_full_column_types(
+        datasource,
+        table,
+        columns=body.get("columns"),
+        tolerance=float(body.get("tolerance") or 0.001),
+        row_cap=body.get("row_cap"),
+    )
+    applied: dict[str, str] = {}
+    if body.get("apply", True):
+        applied = apply_suggestions_to_table(
+            db,
+            table,
+            suggestions,
+            overwrite_user_overrides=bool(body.get("overwrite_user_overrides", False)),
+        )
+
+    return {
+        "applied": applied,
+        "suggestions": [s.to_dict() for s in suggestions],
+    }
+
+
+@router.get("/{dataset_id}/tables/{table_id}/columns/{column_name}/summary")
+def get_column_summary_endpoint(
+    dataset_id: int,
+    table_id: int,
+    column_name: str,
+    top_limit: int = 10,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Kaggle-style summary for a single column: top values or histogram."""
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
+    if perm == "none":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    table = db.query(DatasetTable).filter(
+        DatasetTable.id == table_id,
+        DatasetTable.dataset_id == dataset_id,
+    ).first()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+    datasource = db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
+    if not datasource:
+        raise HTTPException(status_code=404, detail="Datasource not found")
+
+    from app.services.column_summary_service import get_column_summary
+
+    summary = get_column_summary(datasource, table, column_name, top_limit=int(top_limit))
+    return summary.to_dict()

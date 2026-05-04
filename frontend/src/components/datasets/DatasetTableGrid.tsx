@@ -5,7 +5,8 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Hash, Settings2, X, Trash2 } from 'lucide-react';
+import { Hash, Settings2, X, Trash2, Eye } from 'lucide-react';
+import { ColumnSummaryPopover } from './ColumnSummaryPopover';
 
 // ===================== Types =====================
 
@@ -29,6 +30,9 @@ export interface DatasetTableGridProps {
   columnFormatsDb?: Record<string, ColFormat>;
   /** Called when user applies a format so parent can persist to DB */
   onColumnFormatChange?: (colName: string, fmt: ColFormat | null) => Promise<void> | void;
+  /** When set, enables the per-column summary popover (eye icon). */
+  datasetId?: number | string;
+  tableId?: number | string;
 }
 
 type DisplayUnit = 'none' | 'K' | 'M' | 'B';
@@ -588,9 +592,12 @@ export function DatasetTableGrid({
   onEditColumn,
   columnFormatsDb,
   onColumnFormatChange,
+  datasetId,
+  tableId,
 }: DatasetTableGridProps) {
   const computedColSet = useMemo(() => new Set(computedColumns ?? []), [computedColumns]);
   const [columnFormats, setColumnFormats] = useState<Record<string, ColFormat>>({});
+  const [summaryCol, setSummaryCol] = useState<string | null>(null);
   const [activeFormatCol, setActiveFormatCol] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -791,24 +798,53 @@ export function DatasetTableGrid({
                         )}
                       </div>
 
-                      {/* Format button — gear icon, visible on hover or when active/customised */}
-                      {!readOnly && <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setActiveFormatCol(isActive ? null : column.name);
-                        }}
-                        className={`w-5 h-5 flex items-center justify-center rounded transition-all shrink-0 ${
-                          isActive
-                            ? 'opacity-100 text-brand bg-brand/15'
-                            : hasCustomFmt
-                            ? 'opacity-100 text-brand hover:bg-brand/15'
-                            : 'opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-brand hover:bg-brand/15'
-                        }`}
-                        title="Định dạng cột"
-                      >
-                        <Settings2 className="w-3.5 h-3.5" />
-                      </button>}
+                      <div className="flex items-center gap-0.5">
+                        {datasetId !== undefined && tableId !== undefined && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSummaryCol(summaryCol === column.name ? null : column.name);
+                              setActiveFormatCol(null);
+                            }}
+                            className={`w-5 h-5 flex items-center justify-center rounded transition-all shrink-0 ${
+                              summaryCol === column.name
+                                ? 'opacity-100 text-brand bg-brand/15'
+                                : 'opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-brand hover:bg-brand/15'
+                            }`}
+                            title="Xem tổng quan dữ liệu"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {!readOnly && <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveFormatCol(isActive ? null : column.name);
+                            setSummaryCol(null);
+                          }}
+                          className={`w-5 h-5 flex items-center justify-center rounded transition-all shrink-0 ${
+                            isActive
+                              ? 'opacity-100 text-brand bg-brand/15'
+                              : hasCustomFmt
+                              ? 'opacity-100 text-brand hover:bg-brand/15'
+                              : 'opacity-0 group-hover:opacity-100 text-text-quaternary hover:text-brand hover:bg-brand/15'
+                          }`}
+                          title="Định dạng cột"
+                        >
+                          <Settings2 className="w-3.5 h-3.5" />
+                        </button>}
+                      </div>
                     </div>
+
+                    {summaryCol === column.name && datasetId !== undefined && tableId !== undefined && (
+                      <ColumnSummaryPopover
+                        datasetId={datasetId}
+                        tableId={tableId}
+                        columnName={column.name}
+                        columnType={effectiveType}
+                        onClose={() => setSummaryCol(null)}
+                      />
+                    )}
 
                     {/* Format popover */}
                     {!readOnly && isActive && (

@@ -1509,6 +1509,8 @@ export default function DatasetDetailPage() {
                     typeOverrides={(selectedTable as any)?.type_overrides}
                     columnFormatsDb={(selectedTable as any)?.column_formats}
                     onColumnFormatChange={handleColumnFormatChange}
+                    datasetId={datasetId ?? undefined}
+                    tableId={selectedTableId ?? undefined}
                   />
                 )}
               </div>
