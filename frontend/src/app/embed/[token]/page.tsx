@@ -169,6 +169,26 @@ function getErrorMessage(error: any): string {
   return error?.response?.data?.detail ?? error?.message ?? 'Failed to load chart data.';
 }
 
+const CHART_FETCH_CONCURRENCY = 4;
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  worker: (item: T, index: number) => Promise<R>,
+  concurrency: number,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 export default function EmbedDashboardPage() {
   const params = useParams();
   const token = params.token as string;
@@ -196,6 +216,8 @@ export default function EmbedDashboardPage() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [visibleChartIds, setVisibleChartIds] = useState<Set<number>>(() => new Set());
+  const [forceVisibleAll, setForceVisibleAll] = useState(false);
   const embedContentRef = useRef<HTMLDivElement>(null);
   const gridSectionRef = useRef<HTMLElement>(null);
 
@@ -318,11 +340,15 @@ export default function EmbedDashboardPage() {
     pageId: string,
     sessionToken?: string,
     pageCrossFilterState: typeof crossFilterState = crossFilterState,
+    options?: { chartIds?: number[] },
   ) => {
     if (!dashboard) return false;
 
     const requestId = ++chartRequestIdRef.current;
-    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId);
+    const allCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId);
+    const targetCharts = options?.chartIds
+      ? allCharts.filter((dc) => options.chartIds!.includes(dc.chart_id))
+      : allCharts;
 
     setChartsLoading(true);
     setChartLoadError(null);
@@ -334,8 +360,9 @@ export default function EmbedDashboardPage() {
     }
 
     try {
-      const entries = await Promise.all(
-        targetCharts.map(async (dashboardChart) => {
+      const entries = await runWithConcurrency(
+        targetCharts,
+        async (dashboardChart) => {
           const requestFilters = pageCrossFilterState?.sourceChartId === dashboardChart.chart_id
             ? appliedViewerFilters
             : pageCrossFilterState
@@ -357,7 +384,8 @@ export default function EmbedDashboardPage() {
               status: err?.response?.status,
             };
           }
-        }),
+        },
+        CHART_FETCH_CONCURRENCY,
       );
 
       if (requestId !== chartRequestIdRef.current) {
@@ -419,9 +447,16 @@ export default function EmbedDashboardPage() {
       skipCrossFilterRefreshRef.current = null;
       return;
     }
+    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId);
+    const lazyIds = targetCharts
+      .map((dc) => dc.chart_id)
+      .filter((id) => visibleChartIds.has(id));
+    if (lazyIds.length === 0) return;
     const storedSession = getPublicSession(token);
-    fetchChartsForPage(activePageId, storedSession ?? undefined, crossFilterState);
-  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, pageState, token]);
+    fetchChartsForPage(activePageId, storedSession ?? undefined, crossFilterState, {
+      chartIds: lazyIds,
+    });
+  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, pageState, token, visibleChartIds]);
 
   const handlePasswordSubmit = useCallback(async (password: string) => {
     setAuthSubmitting(true);
@@ -454,10 +489,22 @@ export default function EmbedDashboardPage() {
     const el = embedContentRef.current;
     if (!el || !dashboard) return;
     setIsExportingPdf(true);
+    setForceVisibleAll(true);
     try {
       const safeName = (dashboard.name || 'embedded-dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
+      const storedSession = getPublicSession(token) ?? undefined;
+
+      const ensurePageDataLoaded = async (pageId: string) => {
+        const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId);
+        const missingIds = targetCharts
+          .map((dc) => dc.chart_id)
+          .filter((id) => !chartData[id] && !chartErrors[id]);
+        if (missingIds.length === 0) return;
+        await fetchChartsForPage(pageId, storedSession, null, { chartIds: missingIds });
+      };
 
       if (dashboardPages.length <= 1) {
+        await ensurePageDataLoaded(activePageId);
         const { exportElementToPdf } = await import('@/lib/export-pdf');
         await exportElementToPdf(el, `${safeName}.pdf`);
       } else {
@@ -467,6 +514,7 @@ export default function EmbedDashboardPage() {
         await captureAndBuildPdf(dashboardPages.length, async (pageIndex) => {
           const page = dashboardPages[pageIndex];
           setCurrentPageId(page.id);
+          await ensurePageDataLoaded(page.id);
           await new Promise<void>((resolve) => {
             requestAnimationFrame(() => requestAnimationFrame(() => {
               setTimeout(resolve, 500);
@@ -481,8 +529,9 @@ export default function EmbedDashboardPage() {
       console.error('PDF export failed', err);
     } finally {
       setIsExportingPdf(false);
+      setForceVisibleAll(false);
     }
-  }, [activePageId, dashboard, dashboardPages]);
+  }, [activePageId, chartData, chartErrors, dashboard, dashboardPages, fetchChartsForPage, token]);
 
   const filterRuntime = useMemo(
     () => buildPublicDashboardFilterRuntime(visibleDashboardCharts, chartData),
@@ -553,26 +602,13 @@ export default function EmbedDashboardPage() {
     ));
   }, [chartData, chartErrors, dashboard]);
 
-  // Pre-fetch ALL pages on mount so PDF export has complete data
-  const preWarmDoneRef = useRef(false);
-  useEffect(() => {
-    if (!dashboard || pageState !== 'loaded') return;
-    if (preWarmDoneRef.current) return;
-    if (dashboardPages.length <= 1) return;
-    preWarmDoneRef.current = true;
-    const storedSession = getPublicSession(token) ?? undefined;
-    for (const page of dashboardPages) {
-      if (page.id !== activePageId) {
-        fetchChartsForPage(page.id, storedSession, null);
-      }
-    }
-  }, [dashboard, pageState, dashboardPages, activePageId, fetchChartsForPage, token]);
+  // PDF export now fetches each page's data on-demand inside handleExportPdf,
+  // so the embed load path no longer prefetches all pages.
 
-  // All pages have settled (every chart has data or error)
   const allPagesLoaded = useMemo(() => {
     if (!dashboard) return false;
-    return dashboardPages.every((page) => hasSettledPageCache(page.id));
-  }, [dashboard, dashboardPages, hasSettledPageCache]);
+    return hasSettledPageCache(activePageId);
+  }, [activePageId, dashboard, hasSettledPageCache]);
 
   const handlePageSelect = useCallback(async (pageId: string) => {
     if (pageId === activePageId || pendingPageId === pageId) {
@@ -822,6 +858,15 @@ export default function EmbedDashboardPage() {
                             layout={dashboardChart.layout}
                             compact
                             showChartTypeLabel={false}
+                            forceVisible={forceVisibleAll}
+                            onVisible={() => {
+                              setVisibleChartIds((current) => {
+                                if (current.has(dashboardChart.chart_id)) return current;
+                                const next = new Set(current);
+                                next.add(dashboardChart.chart_id);
+                                return next;
+                              });
+                            }}
                             onSelectCrossFilter={(filter) => handleCrossFilterChange(dashboardChart.chart_id, filter)}
                             isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
                           />

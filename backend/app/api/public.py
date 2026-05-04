@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core import get_db
 from app.core.config import settings
@@ -309,7 +309,12 @@ def _get_dashboard_by_token(
                     headers={"X-Link-Password-Required": "true"},
                 )
 
-        dash = db.query(Dashboard).filter(Dashboard.id == link.dashboard_id).first()
+        dash = (
+            db.query(Dashboard)
+            .options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))
+            .filter(Dashboard.id == link.dashboard_id)
+            .first()
+        )
         if not dash:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found.")
         if track_access:
@@ -319,7 +324,12 @@ def _get_dashboard_by_token(
         return dash, link.filters_config or [], link.name, link.appearance_config or {}
 
     # Fallback to legacy share_token on Dashboard model
-    dash = db.query(Dashboard).filter(Dashboard.share_token == token).first()
+    dash = (
+        db.query(Dashboard)
+        .options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))
+        .filter(Dashboard.share_token == token)
+        .first()
+    )
     if not dash:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

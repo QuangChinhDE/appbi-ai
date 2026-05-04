@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Loader2, SlidersHorizontal, X } from 'lucide-react';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
@@ -26,6 +26,10 @@ interface ReadonlyChartTileProps {
   showChartTypeLabel?: boolean;
   onSelectCrossFilter?: (filter: BaseFilter | null) => void;
   isCrossFilterSource?: boolean;
+  /** Fires once when the tile first scrolls into view (or its 300px buffer). */
+  onVisible?: () => void;
+  /** When true, suppresses lazy gating (used during PDF export to render every tile). */
+  forceVisible?: boolean;
 }
 
 export function ReadonlyChartTile({
@@ -38,7 +42,38 @@ export function ReadonlyChartTile({
   showChartTypeLabel = true,
   onSelectCrossFilter,
   isCrossFilterSource = false,
+  onVisible,
+  forceVisible = false,
 }: ReadonlyChartTileProps) {
+  // Track first viewport entry. Sticky once seen so scrolling away doesn't
+  // re-trigger fetch. forceVisible bypasses gating during PDF export.
+  const visibilityRef = useRef<HTMLDivElement | null>(null);
+  const [hasBeenVisible, setHasBeenVisible] = useState<boolean>(forceVisible);
+  useEffect(() => {
+    if (forceVisible) {
+      setHasBeenVisible(true);
+      return;
+    }
+    if (hasBeenVisible) return;
+    const node = visibilityRef.current;
+    if (!node || typeof IntersectionObserver === 'undefined') {
+      setHasBeenVisible(true);
+      onVisible?.();
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setHasBeenVisible(true);
+          onVisible?.();
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '300px' },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [forceVisible, hasBeenVisible, onVisible]);
   const roleConfig = getActiveChartRoleConfig(
     (chart?.config as Record<string, unknown> | undefined) ?? null,
   );
@@ -136,6 +171,16 @@ export function ReadonlyChartTile({
     setDraftHavingValue('');
     setIsHavingOpen(false);
   };
+
+  if (!hasBeenVisible) {
+    return (
+      <div
+        ref={visibilityRef}
+        className="h-full rounded-[24px] border border-[rgb(var(--border-line))]/80 bg-surface-1"
+        aria-hidden="true"
+      />
+    );
+  }
 
   return (
     <div

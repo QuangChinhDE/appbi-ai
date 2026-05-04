@@ -166,6 +166,31 @@ function getErrorMessage(error: any): string {
   return error?.response?.data?.detail ?? error?.message ?? 'Failed to load chart data.';
 }
 
+/**
+ * Cap parallel chart requests so that 20+ tiles don't all queue against the
+ * browser's HTTP/1.1 6-socket-per-host ceiling at once. 4 in flight keeps the
+ * critical-path tiles snappy without starving later ones.
+ */
+const CHART_FETCH_CONCURRENCY = 4;
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  worker: (item: T, index: number) => Promise<R>,
+  concurrency: number,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 export default function PublicDashboardPage() {
   const params = useParams();
   const token = params.token as string;
@@ -191,6 +216,10 @@ export default function PublicDashboardPage() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  // Chart ids that have entered the viewport at least once. Tiles report visibility
+  // via onVisible; the fetch effect uses this set to gate which charts to request.
+  const [visibleChartIds, setVisibleChartIds] = useState<Set<number>>(() => new Set());
+  const [forceVisibleAll, setForceVisibleAll] = useState(false);
   const publicContentRef = useRef<HTMLElement>(null);
   const gridSectionRef = useRef<HTMLElement>(null);
 
@@ -313,11 +342,16 @@ export default function PublicDashboardPage() {
     pageId: string,
     sessionToken?: string,
     pageCrossFilterState: typeof crossFilterState = crossFilterState,
+    options?: { chartIds?: number[]; force?: boolean },
   ) => {
     if (!dashboard) return false;
 
     const requestId = ++chartRequestIdRef.current;
-    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId);
+    const allCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId);
+    // When chartIds is supplied (lazy viewport mode), only fetch those tiles.
+    const targetCharts = options?.chartIds
+      ? allCharts.filter((dc) => options.chartIds!.includes(dc.chart_id))
+      : allCharts;
 
     setChartsLoading(true);
     setChartLoadError(null);
@@ -329,8 +363,9 @@ export default function PublicDashboardPage() {
     }
 
     try {
-      const entries = await Promise.all(
-        targetCharts.map(async (dashboardChart) => {
+      const entries = await runWithConcurrency(
+        targetCharts,
+        async (dashboardChart) => {
           const requestFilters = pageCrossFilterState?.sourceChartId === dashboardChart.chart_id
             ? appliedViewerFilters
             : pageCrossFilterState
@@ -352,7 +387,8 @@ export default function PublicDashboardPage() {
               status: err?.response?.status,
             };
           }
-        }),
+        },
+        CHART_FETCH_CONCURRENCY,
       );
 
       if (requestId !== chartRequestIdRef.current) {
@@ -414,9 +450,22 @@ export default function PublicDashboardPage() {
       skipCrossFilterRefreshRef.current = null;
       return;
     }
+    // Lazy mode: only fetch tiles that have already entered the viewport.
+    // The visibility effect below picks up the rest as the user scrolls.
+    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId);
+    const lazyIds = targetCharts
+      .map((dc) => dc.chart_id)
+      .filter((id) => visibleChartIds.has(id));
+    if (lazyIds.length === 0) {
+      // Nothing visible yet (initial mount before IntersectionObserver fires).
+      // Skip — the visibility effect will trigger fetch as tiles report in.
+      return;
+    }
     const storedSession = getPublicSession(token);
-    fetchChartsForPage(activePageId, storedSession ?? undefined, crossFilterState);
-  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, pageState, token]);
+    fetchChartsForPage(activePageId, storedSession ?? undefined, crossFilterState, {
+      chartIds: lazyIds,
+    });
+  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, pageState, token, visibleChartIds]);
 
   const handlePasswordSubmit = useCallback(async (password: string) => {
     setAuthSubmitting(true);
@@ -449,21 +498,39 @@ export default function PublicDashboardPage() {
     const mainEl = publicContentRef.current;
     if (!mainEl || !dashboard) return;
     setIsExportingPdf(true);
+    // Disable lazy gating during export so every tile renders, including
+    // off-screen ones. Fetch any not-yet-loaded chart data per page below.
+    setForceVisibleAll(true);
     try {
       const safeName = (dashboard.name || 'shared-dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim();
+      const storedSession = getPublicSession(token) ?? undefined;
+
+      // Helper: ensure every chart on a given page has data fetched. Uses the
+      // same concurrency-limited path as the normal viewport fetch.
+      const ensurePageDataLoaded = async (pageId: string) => {
+        const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId);
+        const missingIds = targetCharts
+          .map((dc) => dc.chart_id)
+          .filter((id) => !chartData[id] && !chartErrors[id]);
+        if (missingIds.length === 0) return;
+        await fetchChartsForPage(pageId, storedSession, null, { chartIds: missingIds });
+      };
 
       if (dashboardPages.length <= 1) {
-        // Single page — capture the whole main content
+        // Single page — make sure all tiles for the active page have data.
+        await ensurePageDataLoaded(activePageId);
         const { exportElementToPdf } = await import('@/lib/export-pdf');
         await exportElementToPdf(mainEl, `${safeName}.pdf`);
       } else {
-        // Multi-page: switch to each page, capture grid section for each
+        // Multi-page: switch to each page, fetch its charts on-demand, then capture.
         const { captureAndBuildPdf } = await import('@/lib/export-pdf');
         const originalPageId = activePageId;
 
         await captureAndBuildPdf(dashboardPages.length, async (pageIndex) => {
           const page = dashboardPages[pageIndex];
           setCurrentPageId(page.id);
+          // Fetch any missing charts for this page before capture.
+          await ensurePageDataLoaded(page.id);
           // Wait for React to re-render with new page's charts
           await new Promise<void>((resolve) => {
             requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -480,8 +547,9 @@ export default function PublicDashboardPage() {
       console.error('PDF export failed', err);
     } finally {
       setIsExportingPdf(false);
+      setForceVisibleAll(false);
     }
-  }, [activePageId, dashboard, dashboardPages]);
+  }, [activePageId, chartData, chartErrors, dashboard, dashboardPages, fetchChartsForPage, token]);
 
   const filterRuntime = useMemo(
     () => buildPublicDashboardFilterRuntime(visibleDashboardCharts, chartData),
@@ -550,27 +618,17 @@ export default function PublicDashboardPage() {
     ));
   }, [chartData, chartErrors, dashboard]);
 
-  // Pre-fetch ALL pages on mount so PDF export has complete data
-  const preWarmDoneRef = useRef(false);
-  useEffect(() => {
-    if (!dashboard || pageState !== 'loaded') return;
-    if (preWarmDoneRef.current) return;
-    if (dashboardPages.length <= 1) return;
-    preWarmDoneRef.current = true;
-    const storedSession = getPublicSession(token) ?? undefined;
-    // Fetch data for all non-active pages
-    for (const page of dashboardPages) {
-      if (page.id !== activePageId) {
-        fetchChartsForPage(page.id, storedSession, null);
-      }
-    }
-  }, [dashboard, pageState, dashboardPages, activePageId, fetchChartsForPage, token]);
+  // PDF export now fetches each page's data on-demand inside handleExportPdf,
+  // so the dashboard load path no longer prefetches all pages. This was the
+  // single biggest source of public-link slowness — a 3-page × 15-chart
+  // dashboard fired 30 unused requests in the background on every open.
 
-  // All pages have settled (every chart has data or error)
+  // Export button stays enabled once the active page is settled. Other pages
+  // are fetched lazily during export itself.
   const allPagesLoaded = useMemo(() => {
     if (!dashboard) return false;
-    return dashboardPages.every((page) => hasSettledPageCache(page.id));
-  }, [dashboard, dashboardPages, hasSettledPageCache]);
+    return hasSettledPageCache(activePageId);
+  }, [activePageId, dashboard, hasSettledPageCache]);
 
   const handlePageSelect = useCallback(async (pageId: string) => {
     if (pageId === activePageId || pendingPageId === pageId) {
@@ -840,6 +898,15 @@ export default function PublicDashboardPage() {
                           showChartTypeLabel={false}
                           onSelectCrossFilter={(filter) => handleCrossFilterChange(dashboardChart.chart_id, filter)}
                           isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
+                          forceVisible={forceVisibleAll}
+                          onVisible={() => {
+                            setVisibleChartIds((current) => {
+                              if (current.has(dashboardChart.chart_id)) return current;
+                              const next = new Set(current);
+                              next.add(dashboardChart.chart_id);
+                              return next;
+                            });
+                          }}
                         />
                       </ChartErrorBoundary>
                     </div>
