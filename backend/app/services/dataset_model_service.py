@@ -1235,8 +1235,8 @@ def get_distinct_field_values(
         _estimate_bigquery_bytes,
         _quote_identifier,
         build_dataset_table_cache_identifier,
-        build_live_base_query_plan,
     )
+    from app.services.dataset_relation_service import resolve_dataset_table_relation
 
     cache_payload = {
         "field": field_name,
@@ -1375,7 +1375,7 @@ def get_distinct_field_values(
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
         quoted_field = _quote_identifier(field_name, dialect)
-        plan = build_live_base_query_plan(datasource, live_table, apply_type_overrides=True)
+        plan = resolve_dataset_table_relation(datasource, live_table)
         sql = (
             f"SELECT DISTINCT {quoted_field} AS value "
             f"FROM ({plan.sql}) AS _appbi_distinct "

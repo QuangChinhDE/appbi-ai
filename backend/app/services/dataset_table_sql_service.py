@@ -435,8 +435,8 @@ def build_dataset_table_live_query(
     from app.services.live_query_service import (
         _dialect_for_ds_type,
         _quote_identifier,
-        build_live_base_query_plan,
     )
+    from app.services.dataset_relation_service import resolve_dataset_table_relation
 
     if is_generated_calendar_table(table):
         datasource = _find_live_datasource_for_dataset(
@@ -469,7 +469,7 @@ def build_dataset_table_live_query(
                 "Live calculated tables can only reference tables from the same datasource.",
                 code="NOT_SYNCED",
             )
-        plan = build_live_base_query_plan(datasource, table, apply_type_overrides=True)
+        plan = resolve_dataset_table_relation(datasource, table)
         return datasource, plan.sql
 
     current_table_id = getattr(table, "id", None)

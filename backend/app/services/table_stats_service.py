@@ -170,7 +170,7 @@ class TableStatsService:
             # Fall back to live query if no cached sample available
             if not rows:
                 from app.services.datasource_service import DataSourceConnectionService
-                from app.services.live_query_service import build_live_base_query_plan
+                from app.services.dataset_relation_service import resolve_dataset_table_relation
 
                 datasource = None
                 target_table = table
@@ -205,11 +205,7 @@ class TableStatsService:
                     return {"stats": None, "changed": False, "added": [], "removed": [], "new_hash": table.schema_hash, "reason": "datasource_not_found"}
 
                 try:
-                    plan = build_live_base_query_plan(
-                        datasource,
-                        target_table,
-                        apply_type_overrides=True,
-                    )
+                    plan = resolve_dataset_table_relation(datasource, target_table)
                     sql = f"SELECT * FROM ({plan.sql}) AS _appbi_stats LIMIT {TableStatsService.SAMPLE_LIMIT}"
                     ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
                     _, rows, _ = DataSourceConnectionService.execute_query(

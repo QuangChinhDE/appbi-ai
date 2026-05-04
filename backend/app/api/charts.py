@@ -342,13 +342,13 @@ def ai_chart_preview(
             base_sql = proxy_table.source_query
         else:
             # Physical or sql_query table — build live SQL via query plan
-            from app.services.live_query_service import build_live_base_query_plan
+            from app.services.dataset_relation_service import resolve_dataset_table_relation
             datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
             if not datasource:
                 raise HTTPException(status_code=404, detail="Datasource not found")
             ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
             dialect = _dialect_for_ds_type(ds_type)
-            plan = build_live_base_query_plan(datasource, db_table)
+            plan = resolve_dataset_table_relation(datasource, db_table)
             base_sql = plan.sql
     except DatasetTableSqlError as exc:
         code = getattr(exc, "code", "")

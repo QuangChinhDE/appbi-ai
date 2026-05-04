@@ -4032,7 +4032,8 @@ def validate_chart_plans(
                 )
             else:
                 virtual = _VirtualTable(real_table, _extra_transforms_for(real_table.display_name))
-                base_plan = build_live_base_query_plan(datasource, virtual)
+                from app.services.dataset_relation_service import resolve_dataset_table_relation
+                base_plan = resolve_dataset_table_relation(datasource, virtual)
                 base_table = f"({base_plan.sql}) AS _appbi_live"
                 agg_sql, _ = build_live_agg_query(
                     base_table, chart_type, role_config, [], dialect, limit_override=5,

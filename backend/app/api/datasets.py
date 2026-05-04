@@ -1320,6 +1320,11 @@ def update_dataset_table(
                 table_draft = _build_table_draft(db_table, table_update)
 
                 try:
+                    # Specialty: the audit checks how many rows would FAIL to
+                    # cast under the candidate overrides. We must run it
+                    # against the raw base query — applying overrides here
+                    # would make every check look successful by construction.
+                    # Do NOT route through resolve_dataset_table_relation.
                     plan = build_live_base_query_plan(
                         datasource,
                         table_draft,

@@ -290,6 +290,11 @@ def _build_live_relation_for_semantic_view(
             joined_datasource = db.query(DataSource).filter(DataSource.id == joined_table.datasource_id).first()
             if joined_datasource and joined_datasource.id == datasource.id:
                 try:
+                    # Specialty: semantic view definition is shared across
+                    # consumers, so it must NOT bake in this dataset's casts.
+                    # Type overrides will be applied by the consumer's chart
+                    # query when it wraps this view. Do NOT route through
+                    # resolve_dataset_table_relation here.
                     return build_live_base_query_plan(
                         joined_datasource,
                         joined_table,
@@ -367,7 +372,7 @@ def _adapt_live_sql_for_semantic_filters(
         return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
 
     from app.models.semantic import SemanticExplore, SemanticView
-    from app.services.live_query_service import build_live_base_query_plan
+    from app.services.dataset_relation_service import resolve_dataset_table_relation
 
     explore_query = db.query(SemanticExplore)
     explore = (
@@ -379,11 +384,7 @@ def _adapt_live_sql_for_semantic_filters(
         return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
 
     try:
-        base_sql = build_live_base_query_plan(
-            datasource,
-            db_table,
-            apply_type_overrides=True,
-        ).sql
+        base_sql = resolve_dataset_table_relation(datasource, db_table).sql
     except Exception:
         logger.debug("Failed to build base live SQL for semantic runtime filters", exc_info=True)
         return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
@@ -567,15 +568,11 @@ def _build_row_filtered_live_relation_sql(
     from app.services.live_query_service import (
         _build_where_clause,
         _dialect_for_ds_type,
-        build_live_base_query_plan,
     )
+    from app.services.dataset_relation_service import resolve_dataset_table_relation
 
     normalized_filters = normalize_filter_conditions(filters)
-    base_plan = build_live_base_query_plan(
-        datasource,
-        db_table,
-        apply_type_overrides=True,
-    )
+    base_plan = resolve_dataset_table_relation(datasource, db_table)
     base_sql = base_plan.sql
     available_fields = {
         str(name).strip()

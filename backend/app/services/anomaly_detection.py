@@ -77,8 +77,8 @@ class AnomalyDetectionService:
         from app.services.live_query_service import (
             _dialect_for_ds_type,
             _quote_identifier,
-            build_live_base_query_plan,
         )
+        from app.services.dataset_relation_service import resolve_dataset_table_relation
         from app.services.datasource_service import DataSourceConnectionService
 
         table: DatasetTable = metric.dataset_table
@@ -95,7 +95,7 @@ class AnomalyDetectionService:
 
         # Build live base query (handles physical tables, sql_query, transforms, type overrides)
         try:
-            plan = build_live_base_query_plan(datasource, table, apply_type_overrides=True)
+            plan = resolve_dataset_table_relation(datasource, table)
         except Exception as exc:
             logger.warning("AnomalyDetection: failed to build query plan for metric %s — %s", metric.id, exc)
             return []
