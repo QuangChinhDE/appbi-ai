@@ -455,10 +455,10 @@ def preview_chart_data(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
-        logger.error(f"Failed to preview chart data: {exc}")
+        logger.exception("Failed to preview chart data")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to preview chart data.",
+            detail=f"Failed to preview chart data: {exc}",
         )
 
 
@@ -631,7 +631,7 @@ def get_chart_data(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve chart data."
+            detail=f"Failed to retrieve chart data: {e}",
         )
 
 
