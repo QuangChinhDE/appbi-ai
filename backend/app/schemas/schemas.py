@@ -35,6 +35,7 @@ class ChartTypeSchema(str, Enum):
     BAR_LINE = "BAR_LINE"
     SCATTER = "SCATTER"
     KPI = "KPI"
+    PODIUM = "PODIUM"
 
 
 # Data Source Schemas
@@ -226,6 +227,10 @@ class DashboardBase(BaseModel):
     filters_config: Optional[List[Dict[str, Any]]] = None  # Dashboard-level filters (hybrid v1)
     public_filters_config: Optional[List[Dict[str, Any]]] = None
     pages_config: Optional[List[Dict[str, Any]]] = None
+    # Layout mode + theme + canvas geometry. Defaults preserve existing behavior.
+    layout_mode: Optional[str] = Field("grid", description="'grid' or 'canvas'")
+    theme_config: Optional[Dict[str, Any]] = None
+    canvas_config: Optional[Dict[str, Any]] = None
 
 
 class DashboardCreate(DashboardBase):
@@ -240,6 +245,9 @@ class DashboardUpdate(BaseModel):
     filters_config: Optional[List[Dict[str, Any]]] = None
     public_filters_config: Optional[List[Dict[str, Any]]] = None
     pages_config: Optional[List[Dict[str, Any]]] = None
+    layout_mode: Optional[str] = None
+    theme_config: Optional[Dict[str, Any]] = None
+    canvas_config: Optional[Dict[str, Any]] = None
 
 
 class DashboardShareRequest(BaseModel):
@@ -286,11 +294,13 @@ class PublicLinkResponse(BaseModel):
 class DashboardChartResponse(BaseModel):
     """Schema for dashboard chart response."""
     id: int
-    chart_id: int
+    chart_id: Optional[int] = None  # Null for non-chart widgets
     chart: Optional['ChartResponse'] = None  # Include full chart data
     layout: Dict[str, Any]  # Changed from Dict[str, int] to allow None values
     parameters: Optional[Dict[str, Any]] = None  # Runtime parameter values for this instance
-    
+    widget_type: Optional[str] = "chart"
+    widget_config: Optional[Dict[str, Any]] = None
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -314,17 +324,26 @@ class DashboardResponse(DashboardBase):
 
 
 class DashboardAddChartRequest(BaseModel):
-    """Schema for adding a chart to a dashboard."""
-    chart_id: int
+    """Schema for adding a chart or widget to a dashboard."""
+    chart_id: Optional[int] = None
     layout: DashboardChartLayout
     parameters: Optional[Dict[str, Any]] = Field(
         None, description="Runtime parameter values for this chart instance"
     )
+    widget_type: Optional[str] = Field(
+        "chart", description="chart/text/countdown/image/shape/parameter_switcher"
+    )
+    widget_config: Optional[Dict[str, Any]] = None
 
 
 class DashboardUpdateLayoutRequest(BaseModel):
     """Schema for updating dashboard layout."""
     chart_layouts: List[DashboardLayoutUpdate]
+
+
+class DashboardUpdateWidgetRequest(BaseModel):
+    """Schema for updating a widget's config (non-chart widgets only)."""
+    widget_config: Dict[str, Any]
 
 
 # Query Execution Schemas

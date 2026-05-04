@@ -172,6 +172,32 @@ class DashboardService:
         return DashboardService.get_by_id(db, dashboard_id)
     
     @staticmethod
+    def add_widget(
+        db: Session,
+        dashboard_id: int,
+        widget_type: str,
+        layout: DashboardChartLayout,
+        widget_config: Optional[dict] = None,
+    ) -> Optional[Dashboard]:
+        """Add a non-chart widget (text/countdown/image/shape/parameter_switcher)."""
+        db_dashboard = DashboardService.get_by_id(db, dashboard_id)
+        if not db_dashboard:
+            return None
+        db_dashboard_chart = DashboardChart(
+            dashboard_id=dashboard_id,
+            chart_id=None,
+            widget_type=widget_type,
+            widget_config=widget_config or {},
+            layout=layout.model_dump(),
+            parameters={},
+        )
+        db.add(db_dashboard_chart)
+        db.commit()
+        db.refresh(db_dashboard)
+        logger.info(f"Added {widget_type} widget to dashboard {dashboard_id}")
+        return DashboardService.get_by_id(db, dashboard_id)
+
+    @staticmethod
     def remove_chart(
         db: Session,
         dashboard_id: int,

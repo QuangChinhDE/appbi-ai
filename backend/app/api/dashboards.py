@@ -31,6 +31,7 @@ from app.schemas import (
     DashboardResponse,
     DashboardAddChartRequest,
     DashboardUpdateLayoutRequest,
+    DashboardUpdateWidgetRequest,
     PublicLinkCreate,
     PublicLinkUpdate,
     PublicLinkResponse,
@@ -1234,6 +1235,62 @@ def add_chart_to_dashboard(
         return dashboard
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/{dashboard_id}/widgets", response_model=DashboardResponse)
+def add_widget_to_dashboard(
+    dashboard_id: int,
+    request: DashboardAddChartRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Add a non-chart widget (text/countdown/image/shape/parameter_switcher) to a dashboard."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    widget_type = request.widget_type or "text"
+    if widget_type == "chart":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Use /charts endpoint for chart widgets")
+    try:
+        dashboard = DashboardService.add_widget(
+            db,
+            dashboard_id,
+            widget_type,
+            request.layout,
+            request.widget_config,
+        )
+        return dashboard
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.patch("/{dashboard_id}/widgets/{dashboard_chart_id}", response_model=DashboardResponse)
+def update_widget_config(
+    dashboard_id: int,
+    dashboard_chart_id: int,
+    request: DashboardUpdateWidgetRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update widget_config for a non-chart widget on a dashboard."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+
+    item = db.query(DashboardChart).filter(
+        DashboardChart.id == dashboard_chart_id,
+        DashboardChart.dashboard_id == dashboard_id,
+    ).first()
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Widget not found")
+    if not item.widget_type or item.widget_type == "chart":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target is not a widget")
+
+    item.widget_config = request.widget_config or {}
+    db.commit()
+    return DashboardService.get_by_id(db, dashboard_id)
 
 
 @router.delete("/{dashboard_id}/charts/{dashboard_chart_id}", response_model=DashboardResponse)

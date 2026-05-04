@@ -36,6 +36,7 @@ class ChartType(str, enum.Enum):
     BAR_LINE = "BAR_LINE"
     SCATTER = "SCATTER"
     KPI = "KPI"
+    PODIUM = "PODIUM"
 
 
 class DataSource(Base):
@@ -123,7 +124,14 @@ class Dashboard(Base):
     # Structure: [{"id": "uuid", "datasetId": 1, "field": "country", "type": "dropdown", "operator": "in", "value": ["US"]}]
     filters_config = Column(JSON, nullable=True, default=list)
     pages_config = Column(JSON, nullable=True, default=list)
-    
+
+    # Layout mode: "grid" (react-grid-layout, default) or "canvas" (free positioning)
+    layout_mode = Column(String(16), nullable=False, server_default="grid", default="grid")
+    # Theme: {mode: "dark"|"light", accent: "#ffcc00", fontFamily: "...", cardStyle: "soft"|"sharp"}
+    theme_config = Column(JSON, nullable=True, default=dict)
+    # Canvas mode geometry: {width: 1440, height: 900, snap: 8, background: "#0b0f0b"}
+    canvas_config = Column(JSON, nullable=True, default=dict)
+
     # Ownership
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
@@ -188,12 +196,18 @@ class DashboardChart(Base):
     
     # Foreign keys
     dashboard_id = Column(Integer, ForeignKey("dashboards.id"), nullable=False)
-    chart_id = Column(Integer, ForeignKey("charts.id"), nullable=False)
-    
+    # Nullable so non-chart widgets (text/countdown/shape/image/parameter_switcher) can live here.
+    chart_id = Column(Integer, ForeignKey("charts.id"), nullable=True)
+
+    # Discriminator: "chart" (default) | "text" | "countdown" | "image" | "shape" | "parameter_switcher"
+    widget_type = Column(String(32), nullable=False, server_default="chart", default="chart")
+    # Free-form per-widget config (only used when widget_type != "chart")
+    widget_config = Column(JSON, nullable=True, default=dict)
+
     # Layout information for react-grid-layout
-    # Format: {x: 0, y: 0, w: 6, h: 4}
+    # Format: {x: 0, y: 0, w: 6, h: 4, xPx?, yPx?, wPx?, hPx?, z?}
     layout = Column(JSON, nullable=False)
-    
+
     # Runtime parameter values for this chart instance in this dashboard
     # Format: {"date_range": "last_30_days", "region": "VN"}
     parameters = Column(JSON, nullable=True, default=dict)

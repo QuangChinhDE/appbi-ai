@@ -34,7 +34,8 @@ from app.schemas.schemas import (
     DashboardResponse,
     DashboardAddChartRequest,
     DashboardUpdateLayoutRequest,
-    
+    DashboardUpdateWidgetRequest,
+
     # Query
     QueryExecuteRequest,
     QueryExecuteResponse,
@@ -143,6 +144,7 @@ __all__ = [
     "DashboardResponse",
     "DashboardAddChartRequest",
     "DashboardUpdateLayoutRequest",
+    "DashboardUpdateWidgetRequest",
     
     # Query
     "QueryExecuteRequest",
