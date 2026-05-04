@@ -15,6 +15,7 @@ import {
   EyeOff,
 } from 'lucide-react';
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
+import { DashboardWidget } from '@/components/dashboards/DashboardWidget';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { Button } from '@/components/ui/Button';
@@ -347,7 +348,10 @@ export default function PublicDashboardPage() {
     if (!dashboard) return false;
 
     const requestId = ++chartRequestIdRef.current;
-    const allCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId);
+    const allCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId)
+      // Non-chart widgets (text/image/countdown/shape/parameter_switcher) carry no
+      // chart_id and never need a /charts/{id}/data round-trip.
+      .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
     // When chartIds is supplied (lazy viewport mode), only fetch those tiles.
     const targetCharts = options?.chartIds
       ? allCharts.filter((dc) => options.chartIds!.includes(dc.chart_id))
@@ -452,7 +456,8 @@ export default function PublicDashboardPage() {
     }
     // Lazy mode: only fetch tiles that have already entered the viewport.
     // The visibility effect below picks up the rest as the user scrolls.
-    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId);
+    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId)
+      .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
     const lazyIds = targetCharts
       .map((dc) => dc.chart_id)
       .filter((id) => visibleChartIds.has(id));
@@ -508,7 +513,8 @@ export default function PublicDashboardPage() {
       // Helper: ensure every chart on a given page has data fetched. Uses the
       // same concurrency-limited path as the normal viewport fetch.
       const ensurePageDataLoaded = async (pageId: string) => {
-        const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId);
+        const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId)
+          .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
         const missingIds = targetCharts
           .map((dc) => dc.chart_id)
           .filter((id) => !chartData[id] && !chartErrors[id]);
@@ -611,7 +617,8 @@ export default function PublicDashboardPage() {
 
   const hasSettledPageCache = useCallback((pageId: string) => {
     if (!dashboard) return false;
-    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId);
+    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId)
+      .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
     if (targetCharts.length === 0) return true;
     return targetCharts.every((dashboardChart) => (
       Boolean(chartData[dashboardChart.chart_id]) || Boolean(chartErrors[dashboardChart.chart_id])
@@ -880,6 +887,19 @@ export default function PublicDashboardPage() {
                 compactType="vertical"
               >
                 {visibleDashboardCharts.map((dashboardChart: DashboardChart) => {
+                  // Non-chart widgets (text/image/countdown/shape/parameter_switcher)
+                  // skip the chart-fetch path and render via the shared DashboardWidget.
+                  const isWidget = Boolean(
+                    dashboardChart.widget_type && dashboardChart.widget_type !== 'chart'
+                  );
+                  if (isWidget) {
+                    return (
+                      <div key={dashboardChart.id.toString()} className="h-full">
+                        <DashboardWidget widget={dashboardChart} />
+                      </div>
+                    );
+                  }
+
                   const chart = dashboardChart.chart;
                   const payload = chartData[dashboardChart.chart_id];
                   const chartError = chartErrors[dashboardChart.chart_id];

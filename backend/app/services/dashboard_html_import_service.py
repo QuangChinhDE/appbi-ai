@@ -3728,6 +3728,28 @@ def build_dashboard_from_import(
     db.commit()
     db.refresh(dashboard_obj)
 
+    # Auto-generate the full semantic model (with FK joins detection) for the
+    # target dataset. Without this step, charts created via build only get a
+    # bare-bones SemanticModel/Views (sync_dataset_model_structure path) and
+    # cross-table joins are NOT discovered — users must manually click "regenerate
+    # model" later. We trigger the full pipeline once per build so the data model
+    # auto-connects after import.
+    if resolved_dataset_id is not None:
+        try:
+            from app.services.dataset_model_service import generate_dataset_model
+            generate_dataset_model(db, int(resolved_dataset_id), force=False)
+            db.commit()
+        except Exception:
+            # Auto-join detection is best-effort — failing here must not roll
+            # back the dashboard import. The user can still call generate_model
+            # manually if joins are missing.
+            logger.exception(
+                "Auto generate_dataset_model after import failed for dataset %s",
+                resolved_dataset_id,
+            )
+            db.rollback()
+            db.refresh(dashboard_obj)
+
     from app.services.dashboard_service import DashboardService
 
     hydrated_dashboard = DashboardService.get_by_id(db, dashboard_obj.id)
