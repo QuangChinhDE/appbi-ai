@@ -1365,8 +1365,15 @@ export default function DashboardDetailPage() {
                 {isFilterPopoverOpen && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setIsFilterPopoverOpen(false)} />
-                    <div className="absolute right-0 z-50 mt-1.5 w-[min(560px,90vw)] overflow-hidden rounded-lg border border-[rgba(255,255,255,0.12)] bg-surface-1 shadow-[0_4px_24px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.06)]">
-                      <div className="max-h-[70vh] overflow-y-auto p-2">
+                    <div className="absolute right-0 z-50 mt-1.5 w-[min(640px,92vw)] overflow-hidden rounded-lg border border-[rgba(255,255,255,0.12)] bg-surface-1 shadow-[0_4px_24px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.06)]">
+                      {/*
+                        Force the inner FilterCard grid to a single column inside this
+                        popover. The component's default responsive grid (sm:2 / lg:3 /
+                        xl:4) collapses cards to ~120px when the popover sits inside
+                        a wide viewport, which makes long labels (e.g. "ngày") and
+                        coverage badges ("16/30 charts") overlap.
+                       */}
+                      <div className="max-h-[70vh] overflow-y-auto p-2 [&_.grid]:!grid-cols-1">
                         <DashboardFilterBar
                           columns={resolvedAvailableColumns}
                           columnChartCount={resolvedColumnChartCount}
