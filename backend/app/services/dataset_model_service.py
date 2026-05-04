@@ -313,6 +313,44 @@ def _sanitize_join_definitions(
     return sanitized
 
 
+def _allocate_unique_semantic_model_name(
+    db: Session,
+    *,
+    base_name: str,
+    own_id: int | None,
+) -> str:
+    """Return a SemanticModel name guaranteed to be free for ``own_id``.
+
+    Defensive against legacy DB unique indexes on ``semantic_models.name``
+    (see migration 20260504_0001) and against orphan rows whose dataset was
+    deleted (``dataset_id`` is NULL because of ON DELETE SET NULL). If the
+    desired name is taken by a *different* model, we first try to free it by
+    deleting orphans (dataset_id IS NULL), then fall back to a numeric
+    suffix.
+    """
+    desired = base_name
+    for attempt in range(20):
+        candidate = desired if attempt == 0 else f"{desired} ({attempt + 1})"
+        clash = (
+            db.query(SemanticModel)
+            .filter(SemanticModel.name == candidate)
+            .filter(SemanticModel.id != (own_id or 0))
+            .first()
+        )
+        if clash is None:
+            return candidate
+        # If the conflicting row is an orphan, drop it so the rebuild can
+        # reclaim the name. Orphans appear when a dataset was deleted via
+        # ON DELETE SET NULL on semantic_models.dataset_id.
+        if clash.dataset_id is None:
+            db.delete(clash)
+            db.flush()
+            return candidate
+    # Last resort: a hash suffix that is guaranteed unique enough.
+    suffix = hashlib.sha1(f"{desired}|{own_id}".encode("utf-8")).hexdigest()[:8]
+    return f"{desired} [{suffix}]"
+
+
 def _upsert_semantic_view(
     db: Session,
     *,
@@ -689,18 +727,21 @@ def _sync_dataset_model_structure(
     calendar_dialect = _resolve_dataset_dialect(datasources)
 
     model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    desired_model_name = _allocate_unique_semantic_model_name(
+        db, base_name=f"model_{dataset_obj.name}", own_id=model.id if model else None
+    )
     if not model:
         if not create_model:
             return None
         model = SemanticModel(
-            name=f"model_{dataset_obj.name}",
+            name=desired_model_name,
             dataset_id=dataset_id,
             description=f"Auto-generated model for dataset: {dataset_obj.name}",
         )
         db.add(model)
         db.flush()
     else:
-        model.name = f"model_{dataset_obj.name}"
+        model.name = desired_model_name
         model.description = f"Auto-generated model for dataset: {dataset_obj.name}"
 
     existing_views = db.query(SemanticView).all()
