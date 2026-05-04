@@ -73,8 +73,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Public-Session", "X-Requested-With"],
+    max_age=3600,  # cache preflight 1h so cross-origin calls skip repeated OPTIONS
 )
 print("DEBUG: CORS middleware added")
 

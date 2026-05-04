@@ -61,6 +61,35 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   return debounced;
 }
 
+/**
+ * Defer chart fetch until the tile enters the viewport. Once visible we keep it
+ * mounted so scrolling away doesn't drop the cache or refetch needlessly.
+ */
+function useStickyVisibility(rootMargin = '300px') {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (visible) return;
+    const node = ref.current;
+    if (!node || typeof IntersectionObserver === 'undefined') {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [visible, rootMargin]);
+  return { ref, visible };
+}
+
 const NUMERIC_MAPPING_TYPES = new Set(['number', 'integer', 'float', 'double', 'decimal', 'numeric', 'bigint', 'int']);
 const DATE_MAPPING_TYPES = new Set(['date', 'datetime', 'timestamp', 'time']);
 
@@ -133,7 +162,8 @@ export function ChartTile({
   onMoveToPage,
 }: ChartTileProps) {
   const queryClient = useQueryClient();
-  const { data: chart, isLoading: isLoadingChart } = useChart(chartId);
+  const { ref: visibilityRef, visible: hasBeenVisible } = useStickyVisibility();
+  const { data: chart, isLoading: isLoadingChart } = useChart(chartId, { enabled: hasBeenVisible });
   const chartSemanticBinding = useMemo(() => {
     const config = chart?.config as any;
     return (config?.semanticBinding && typeof config.semanticBinding === 'object')
@@ -260,7 +290,7 @@ export function ChartTile({
     chartId,
     debouncedFilters,
     'dashboard',
-    { enabled: !isLoadingChart && Boolean(chart) },
+    { enabled: hasBeenVisible && !isLoadingChart && Boolean(chart) },
   );
 
   // Title editing state
@@ -529,6 +559,16 @@ export function ChartTile({
       </div>
     </div>
   );
+
+  if (!hasBeenVisible) {
+    return (
+      <div
+        ref={visibilityRef}
+        className="relative h-full rounded-lg border border-[rgb(var(--border-line))] bg-surface-1"
+        aria-hidden="true"
+      />
+    );
+  }
 
   if (isLoadingChart || isLoadingData) {
     return renderStatusCard(

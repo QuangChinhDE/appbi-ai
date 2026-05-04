@@ -374,7 +374,7 @@ def get_public_dashboard(
     # Public viewers get view-level permission (read-only, no edit actions)
     dash.user_permission = "view"
     for dashboard_chart in dash.dashboard_charts or []:
-        ChartService.hydrate_runtime_config(db, dashboard_chart.chart)
+        ChartService.hydrate_runtime_config(db, dashboard_chart.chart, auto_generate=False)
     # Expose the link-specific filters so the frontend can display filter badges
     dash.public_filters_config = public_filters
     dash.available_filter_fields = _build_public_filter_fields(db, dash)

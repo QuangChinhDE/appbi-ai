@@ -45,7 +45,7 @@ class DashboardService:
             .filter(Dashboard.id == dashboard_id).first()
         if dashboard:
             for dashboard_chart in dashboard.dashboard_charts or []:
-                ChartService.hydrate_runtime_config(db, dashboard_chart.chart)
+                ChartService.hydrate_runtime_config(db, dashboard_chart.chart, auto_generate=False)
         return dashboard
     
     @staticmethod

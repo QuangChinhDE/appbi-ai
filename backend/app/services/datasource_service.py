@@ -120,12 +120,41 @@ def _build_gcp_credentials(config: Dict[str, Any]):
     return service_account.Credentials.from_service_account_info(credentials_info)
 
 
+_BQ_CLIENT_CACHE: Dict[str, Tuple[float, bigquery.Client]] = {}
+_BQ_CLIENT_CACHE_TTL_SEC = 300  # 5 min — keeps client warm across dashboard requests
+
+
+def _bigquery_client_cache_key(config: Dict[str, Any]) -> str | None:
+    """Stable cache key over credential identity + project. None = uncacheable."""
+    auth_mode = str(config.get("auth_mode") or "service_account").strip().lower()
+    if auth_mode == "google_oauth":
+        # OAuth credentials carry refresh state — don't cache the client.
+        return None
+    try:
+        creds_json = _resolve_gcp_credentials_json(config)
+    except ValueError:
+        return None
+    project_id = str(config.get("project_id") or "").strip()
+    import hashlib
+    creds_fp = hashlib.sha256(creds_json.encode("utf-8")).hexdigest()
+    return f"{auth_mode}:{project_id}:{creds_fp}"
+
+
 def _build_bigquery_client(config: Dict[str, Any]) -> bigquery.Client:
     project_id = str(config.get("project_id") or "").strip() or None
-    return bigquery.Client(
+    cache_key = _bigquery_client_cache_key(config)
+    if cache_key is not None:
+        cached = _BQ_CLIENT_CACHE.get(cache_key)
+        now = time.time()
+        if cached and (now - cached[0]) < _BQ_CLIENT_CACHE_TTL_SEC:
+            return cached[1]
+    client = bigquery.Client(
         credentials=_build_gcp_credentials(config),
         project=project_id,
     )
+    if cache_key is not None:
+        _BQ_CLIENT_CACHE[cache_key] = (time.time(), client)
+    return client
 
 
 _TRAILING_ROW_LIMIT_RE = re.compile(

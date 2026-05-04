@@ -24,11 +24,12 @@ export const useCharts = (options?: ChartListParams & { enabled?: boolean }) => 
   });
 };
 
-export const useChart = (id: number) => {
+export const useChart = (id: number, options?: { enabled?: boolean }) => {
+  const enabled = options?.enabled ?? true;
   return useQuery({
     queryKey: ['charts', id],
     queryFn: () => chartApi.getById(id),
-    enabled: !!id,
+    enabled: !!id && enabled,
   });
 };
 
