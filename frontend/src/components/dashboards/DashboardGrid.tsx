@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useRef, useState, useEffect } from 'react';
-import { Responsive, WidthProvider, Layout } from 'react-grid-layout';
+import GridLayout, { WidthProvider, Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { ChartTile } from './ChartTile';
@@ -12,7 +12,11 @@ import { DashboardFilter } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { Loader2 } from 'lucide-react';
 
-const ResponsiveGridLayout = WidthProvider(Responsive);
+// Non-responsive grid: a single 12-column layout that simply scales cell
+// width with the container. Avoiding ResponsiveGridLayout means opening
+// DevTools (or any viewport shrink) won't reflow charts onto a different
+// breakpoint and clobber the saved layout.
+const FixedGridLayout = WidthProvider(GridLayout);
 
 /** Wrapper that defers rendering children until the element is visible. */
 function LazyChartSlot({ children }: { children: React.ReactNode }) {
@@ -105,8 +109,17 @@ export function DashboardGrid({
     };
   });
 
+  // Only persist layout when the user actually finishes dragging or resizing.
+  // react-grid-layout fires `onLayoutChange` for every internal recompute
+  // (initial mount, container resize while DevTools opens, compaction…) —
+  // forwarding those would clobber the saved layout with whatever it was
+  // momentarily reflowed to.
+  const isUserGestureRef = useRef(false);
+
   const handleLayoutChange = (newLayout: Layout[]) => {
-    // Only trigger if layout actually changed
+    if (!isUserGestureRef.current) return;
+    isUserGestureRef.current = false;
+
     const hasChanged = newLayout.some((item, index) => {
       const oldItem = layouts[index];
       return (
@@ -123,6 +136,10 @@ export function DashboardGrid({
     }
   };
 
+  const markUserGesture = () => {
+    isUserGestureRef.current = true;
+  };
+
   if (dashboardCharts.length === 0) {
     return (
       <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-2">
@@ -134,13 +151,14 @@ export function DashboardGrid({
   }
 
   return (
-    <ResponsiveGridLayout
+    <FixedGridLayout
       className="layout"
-      layouts={{ lg: layouts }}
-      breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
-      cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
+      layout={layouts}
+      cols={12}
       rowHeight={80}
       onLayoutChange={handleLayoutChange}
+      onDragStart={markUserGesture}
+      onResizeStart={markUserGesture}
       draggableHandle=".drag-handle"
       isDraggable={!!onLayoutChange}
       isResizable={!!onLayoutChange}
@@ -226,6 +244,6 @@ export function DashboardGrid({
           </div>
         );
       })}
-    </ResponsiveGridLayout>
+    </FixedGridLayout>
   );
 }
