@@ -64,12 +64,12 @@ export function DeleteConstraintModal({
                 </h2>
                 <p className="text-caption text-text-secondary mt-0.5">
                   <span className="font-emphasis text-text-primary">&ldquo;{itemName}&rdquo;</span>{' '}
-                  đang được sử dụng bởi:
+                  đang được sử dụng bởi {constraints.length} mục:
                 </p>
               </div>
             </div>
 
-            <ul className="mb-5 space-y-1.5">
+            <ul className="mb-5 space-y-1.5 max-h-[40vh] overflow-y-auto pr-1">
               {constraints.map((c, i) => (
                 <li
                   key={i}
