@@ -3174,3 +3174,157 @@ def get_column_summary_endpoint(
 
     summary = get_column_summary(datasource, table, column_name, top_limit=int(top_limit))
     return summary.to_dict()
+
+
+@router.post("/{dataset_id}/tables/{table_id}/profile")
+def get_table_profile(
+    dataset_id: int,
+    table_id: int,
+    sample_limit: int = Query(20, ge=1, le=200),
+    include_stats: bool = Query(True),
+    stats_top_limit: int = Query(5, ge=1, le=20),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Bundle schema + sample rows + per-column stats in one call.
+
+    Designed for orchestrator agents (MCP) that need to reason about a table
+    without making 1+N round-trips. The response is intentionally compact:
+
+      {
+        "table": {id, name, display_name, description, row_count_estimate},
+        "columns": [{name, type, nullable, role, description}, ...],
+        "sample_rows": [...],   # up to `sample_limit` rows
+        "stats": {              # only when include_stats=True
+            "<col>": {detected_kind, total_rows, null_count, distinct_count,
+                       top_values, min_value, max_value, avg_value, histogram}
+        }
+      }
+
+    Stats are computed per-column via the existing column_summary service so
+    behavior matches the dataset table tooltip exactly.
+    """
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
+    if perm == "none":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    db_table = DatasetCRUDService.get_table_by_id(db, table_id)
+    if not db_table or db_table.dataset_id != dataset_id:
+        raise HTTPException(status_code=404, detail="Table not found in this dataset")
+
+    datasource: Optional[DataSource] = None
+    target_table = db_table
+
+    if is_generated_calendar_table(db_table) or is_derived_table(db_table):
+        try:
+            datasource, target_table = build_live_proxy_table_for_dataset_table(
+                db, dataset_obj, db_table,
+            )
+        except DatasetTableSqlError as exc:
+            if getattr(exc, "code", "") == "NOT_SYNCED":
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": exc.code, "message": str(exc)},
+                )
+            raise HTTPException(status_code=400, detail=str(exc))
+    else:
+        datasource = db.query(DataSource).filter(
+            DataSource.id == db_table.datasource_id
+        ).first()
+        if not datasource:
+            raise HTTPException(
+                status_code=404,
+                detail=_build_datasource_missing_detail(db_table),
+            )
+
+    try:
+        result = LiveQueryService.execute_preview_query(
+            datasource=datasource,
+            db_table=target_table,
+            limit=int(sample_limit),
+            offset=0,
+            filters=None,
+        )
+    except Exception as exc:
+        logger.warning("Profile preview failed for table %d: %s", table_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    rows = result.get("rows") or []
+    columns = result.get("columns") or []
+    column_metadata: List[DatasetColumnMetadata] = []
+    for i, col in enumerate(columns):
+        col_type = _infer_column_type(col, i, rows)
+        column_metadata.append(
+            DatasetColumnMetadata(name=col, type=col_type, nullable=True)
+        )
+
+    from app.services.type_override_service import _override_type as _ovr_type
+    type_overrides = db_table.type_overrides or {}
+    for col_meta in column_metadata:
+        if col_meta.name in type_overrides:
+            resolved = _ovr_type(type_overrides[col_meta.name])
+            if resolved:
+                col_meta.type = resolved
+
+    def _serialize(val):
+        if isinstance(val, (datetime, date)):
+            return val.isoformat()
+        if isinstance(val, Decimal):
+            return float(val)
+        return val
+
+    serialized_rows = []
+    for row in rows[: int(sample_limit)]:
+        if isinstance(row, dict):
+            serialized_rows.append({k: _serialize(v) for k, v in row.items()})
+        else:
+            serialized_rows.append([_serialize(v) for v in row])
+
+    column_descriptions = db_table.column_descriptions or {}
+    columns_payload = [
+        {
+            "name": col.name,
+            "type": col.type,
+            "nullable": col.nullable,
+            "description": column_descriptions.get(col.name) or "",
+        }
+        for col in column_metadata
+    ]
+
+    payload: Dict[str, Any] = {
+        "table": {
+            "id": db_table.id,
+            "name": db_table.name,
+            "display_name": db_table.display_name,
+            "description": db_table.auto_description,
+            "description_source": db_table.description_source,
+            "common_questions": db_table.common_questions or [],
+            "estimated_row_count": db_table.estimated_row_count,
+        },
+        "columns": columns_payload,
+        "sample_rows": serialized_rows,
+        "sample_size": len(serialized_rows),
+    }
+
+    if include_stats:
+        from app.services.column_summary_service import get_column_summary
+
+        stats: Dict[str, Any] = {}
+        for col in columns_payload:
+            try:
+                summary = get_column_summary(
+                    datasource, target_table, col["name"], top_limit=int(stats_top_limit),
+                )
+                stats[col["name"]] = summary.to_dict()
+            except Exception as exc:
+                logger.warning(
+                    "Column stats failed for %s.%s: %s",
+                    db_table.name, col["name"], exc,
+                )
+                stats[col["name"]] = {"error": str(exc)}
+        payload["stats"] = stats
+
+    return payload
