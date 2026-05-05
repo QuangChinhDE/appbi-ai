@@ -126,6 +126,7 @@ export interface ColumnInfo {
   type: FilterType;
   key?: string;
   label?: string;
+  tableLabel?: string;
   datasetId?: number;
   semanticField?: string;
   defaultLinkedFields?: string[];
@@ -240,8 +241,9 @@ export function getSemanticViewLabel(semanticField: string | null | undefined): 
 }
 
 export function getColumnContextLabel(
-  column: Pick<ColumnInfo, 'semanticField' | 'datasetId' | 'key' | 'name'>,
+  column: Pick<ColumnInfo, 'semanticField' | 'datasetId' | 'key' | 'name' | 'tableLabel'>,
 ): string {
+  if (column.tableLabel) return getFriendlyFieldLabel(column.tableLabel);
   const viewLabel = getSemanticViewLabel(column.semanticField);
   if (viewLabel) return viewLabel;
   if (column.datasetId != null) return `Dataset ${column.datasetId}`;
@@ -250,8 +252,9 @@ export function getColumnContextLabel(
 }
 
 export function getColumnGroupLabel(
-  column: Pick<ColumnInfo, 'semanticField' | 'datasetId'>,
+  column: Pick<ColumnInfo, 'semanticField' | 'datasetId' | 'tableLabel'>,
 ): string {
+  if (column.tableLabel) return getFriendlyFieldLabel(column.tableLabel);
   const viewLabel = getSemanticViewLabel(column.semanticField);
   if (viewLabel) return viewLabel;
   if (column.datasetId != null) return `Dataset ${column.datasetId}`;

@@ -853,13 +853,14 @@ export default function DashboardDetailPage() {
           dimension,
           joinKeyFields,
         })) continue;
-        if (!dimension) continue;
+        if (!view || !dimension) continue;
         const key = semanticField;
         if (!columns.has(key)) {
           columns.set(key, {
             key,
             name: fieldName,
             label: getFriendlyFieldLabel(dimension.label ?? fieldName),
+            tableLabel: view.table_display_name ?? view.name,
             type: semanticDimensionToFilterType(dimension.type),
             datasetId: binding.datasetId,
             semanticField,
@@ -937,19 +938,26 @@ export default function DashboardDetailPage() {
     const orderedSemanticFields = Array.from(semanticFields).sort();
     if (orderedSemanticFields.length === 0) return [];
 
+    const firstSemanticField = orderedSemanticFields[0];
+    const [firstViewName] = firstSemanticField.split('.', 1);
+    const firstDatasetId = datasetIds.size === 1 ? Array.from(datasetIds)[0] : undefined;
+    const firstModel = firstDatasetId ? datasetModelsById.get(firstDatasetId) : undefined;
+    const firstView = firstModel?.views.find((view) => view.name === firstViewName);
+
     return [{
       key: orderedSemanticFields[0],
       name: 'date',
       label: 'Date',
+      tableLabel: firstView?.table_display_name ?? firstView?.name,
       type: 'date',
       semanticField: orderedSemanticFields[0],
-      datasetId: datasetIds.size === 1 ? Array.from(datasetIds)[0] : undefined,
+      datasetId: firstDatasetId,
       defaultLinkedFields: orderedSemanticFields.slice(1),
       chartCoverage: chartsWithCalendar.size,
       datasetChartCount: totalDashboardChartCount,
       sharedAcrossDataset: totalDashboardChartCount > 0 && chartsWithCalendar.size === totalDashboardChartCount,
     }];
-  }, [dashboard?.dashboard_charts]);
+  }, [dashboard?.dashboard_charts, datasetModelsById]);
 
   React.useEffect(() => {
     const dateColumn = calendarDateColumns[0] ?? null;
