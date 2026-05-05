@@ -336,6 +336,7 @@ def apply_suggestions_to_table(
     Returns a dict of {column: applied_type} for columns that were changed.
     By default never overwrites a column that already has an override.
     """
+    from app.services.type_override_service import _override_type as _ovr_type
     existing = normalize_type_overrides(getattr(db_table, "type_overrides", None) or {})
     applied: Dict[str, str] = {}
     merged = dict(existing)
@@ -345,7 +346,7 @@ def apply_suggestions_to_table(
             continue
         if sug.column in existing and not overwrite_user_overrides:
             continue
-        if existing.get(sug.column) == sug.suggested_type:
+        if _ovr_type(existing.get(sug.column)) == sug.suggested_type:
             continue
         merged[sug.column] = sug.suggested_type
         applied[sug.column] = sug.suggested_type

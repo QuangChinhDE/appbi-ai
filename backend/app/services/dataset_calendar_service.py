@@ -509,16 +509,17 @@ def iter_temporal_columns(table: DatasetTable | Any) -> List[Dict[str, str]]:
     if not isinstance(raw_columns, list):
         return []
 
+    from app.services.type_override_service import _override_type as _ovr_type
     overrides = getattr(table, "type_overrides", None) or {}
     seen: set[str] = set()
     temporal_columns: List[Dict[str, str]] = []
     for column in raw_columns:
         if isinstance(column, dict):
             name = str(column.get("name") or "").strip()
-            raw_type = overrides.get(name) or column.get("type")
+            raw_type = _ovr_type(overrides.get(name)) or column.get("type")
         else:
             name = str(column or "").strip()
-            raw_type = overrides.get(name)
+            raw_type = _ovr_type(overrides.get(name))
         if not name or name in seen:
             continue
         normalized_type = normalize_column_type(raw_type)

@@ -169,7 +169,7 @@ class TableUpdate(BaseModel):
     source_query: Optional[str] = None
     enabled: Optional[bool] = None
     transformations: Optional[List[Dict[str, Any]]] = None
-    type_overrides: Optional[Dict[str, str]] = Field(default=None, description="User-defined column type overrides, e.g. {'price': 'float', 'created_at': 'date'}")
+    type_overrides: Optional[Dict[str, Any]] = Field(default=None, description="User-defined column type overrides. Each value is either a type string ('float', 'date', ...) or an object {type, format} where format is a user-facing pattern (e.g. 'DD/MM/YYYY') used to parse date/datetime strings.")
     column_formats: Optional[Dict[str, Any]] = Field(default=None, description="Full display format config per column")
 
 
@@ -187,7 +187,7 @@ class TableResponse(DatasetTableBase):
     transformations: Optional[List[Dict[str, Any]]] = None
     columns_cache: Optional[Union[List[Any], Dict[str, Any]]] = None
     sample_cache: Optional[List[Dict[str, Any]]] = None
-    type_overrides: Optional[Dict[str, str]] = None
+    type_overrides: Optional[Dict[str, Any]] = None
     column_formats: Optional[Dict[str, Any]] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

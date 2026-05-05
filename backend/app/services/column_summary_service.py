@@ -50,8 +50,9 @@ class ColumnSummary:
 
 
 def _detect_kind(column_name: str, db_table) -> str:
+    from app.services.type_override_service import _override_type
     overrides = getattr(db_table, "type_overrides", None) or {}
-    target = str(overrides.get(column_name) or "").lower()
+    target = str(_override_type(overrides.get(column_name)) or "").lower()
     if target in _NUMERIC_TYPES:
         return "numeric"
     if target in _DATE_TYPES:

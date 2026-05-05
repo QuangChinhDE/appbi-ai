@@ -1833,10 +1833,13 @@ def preview_dataset_table(
             col_type = _infer_column_type(col, i, rows)
             column_metadata.append(DatasetColumnMetadata(name=col, type=col_type, nullable=True))
 
+        from app.services.type_override_service import _override_type as _ovr_type
         type_overrides = db_table.type_overrides or {}
         for col_meta in column_metadata:
             if col_meta.name in type_overrides:
-                col_meta.type = type_overrides[col_meta.name]
+                resolved = _ovr_type(type_overrides[col_meta.name])
+                if resolved:
+                    col_meta.type = resolved
 
         def serialize_value(val):
             if isinstance(val, (datetime, date)):

@@ -18,8 +18,10 @@ export interface DatasetTableGridProps {
   onRetry?: () => void;
   readOnly?: boolean;
   onAddColumn?: () => void;
-  /** User-defined type overrides loaded from DB: { colName: 'float' | 'date' | ... } */
-  typeOverrides?: Record<string, string>;
+  /** User-defined type overrides loaded from DB. Each value is either a type
+   *  string ("float", "date", ...) or an object {type, format} when a parse
+   *  pattern (e.g. "DD/MM/YYYY") was saved alongside the type. */
+  typeOverrides?: Record<string, any>;
   /** Names of columns that were added via formula (can be deleted) */
   computedColumns?: string[];
   /** Called when user deletes a computed column */
@@ -605,12 +607,19 @@ export function DatasetTableGrid({
   // columnFormatsDb (full format) takes priority over typeOverrides (type only).
   useEffect(() => {
     const initial: Record<string, ColFormat> = {};
-    // 1. Seed from typeOverrides (type only)
+    // 1. Seed from typeOverrides (type only). Entries may be a plain string
+    //    ("date") or {type, format} when a parse pattern was saved.
     if (typeOverrides) {
-      for (const [col, backendType] of Object.entries(typeOverrides)) {
+      for (const [col, entry] of Object.entries(typeOverrides as Record<string, any>)) {
+        const backendType = typeof entry === 'string' ? entry : (entry?.type ?? '');
+        if (!backendType) continue;
         const formatType = backendTypeToFormatType(backendType);
         if (formatType !== 'default') {
-          initial[col] = { ...DEFAULT_FORMAT, formatType };
+          const seed: ColFormat = { ...DEFAULT_FORMAT, formatType };
+          if (typeof entry === 'object' && typeof entry?.format === 'string' && entry.format) {
+            seed.dateFormat = entry.format as DateFmt;
+          }
+          initial[col] = seed;
         }
       }
     }

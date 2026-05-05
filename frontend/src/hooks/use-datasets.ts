@@ -129,7 +129,7 @@ export interface DatasetTable {
   transformations?: Transformation[];
   columns_cache?: Record<string, any>;
   sample_cache?: Record<string, any>[];
-  type_overrides?: Record<string, string>;
+  type_overrides?: Record<string, any>;
   column_formats?: Record<string, any>;
   created_at: string;
   updated_at: string;
@@ -165,7 +165,7 @@ export interface UpdateTableInput {
   source_query?: string;
   enabled?: boolean;
   transformations?: Transformation[];
-  type_overrides?: Record<string, string>;
+  type_overrides?: Record<string, any>;
   column_formats?: Record<string, any>;
 }
 

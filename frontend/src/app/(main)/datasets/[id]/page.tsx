@@ -731,7 +731,7 @@ export default function DatasetDetailPage() {
   const handleColumnFormatChange = async (colName: string, fmt: Record<string, any> | null) => {
     if (!datasetId || !selectedTableId) return;
     const currentFormats: Record<string, any> = (selectedTable as any)?.column_formats ?? {};
-    const currentOverrides: Record<string, string> = (selectedTable as any)?.type_overrides ?? {};
+    const currentOverrides: Record<string, any> = (selectedTable as any)?.type_overrides ?? {};
     const updatedFormats: Record<string, any> = { ...currentFormats };
     if (fmt === null) delete updatedFormats[colName];
     else updatedFormats[colName] = fmt;
@@ -741,11 +741,19 @@ export default function DatasetDetailPage() {
         ? null
         : formatTypeToBackendType(String(fmt.formatType ?? 'default'));
 
-    const updatedOverrides: Record<string, string> = { ...currentOverrides };
+    // For date/datetime, thread the user-picked pattern (e.g. "DD/MM/YYYY") to
+    // the backend so it can build a real PARSE_DATE/STR_TO_DATE — without it,
+    // BigQuery SAFE_CAST would silently NULL out values like "01/01/2026".
+    const nextParseFormat: string | null =
+      nextBackendType === 'date' || nextBackendType === 'datetime'
+        ? (typeof fmt?.dateFormat === 'string' && fmt.dateFormat ? fmt.dateFormat : null)
+        : null;
+
+    const updatedOverrides: Record<string, any> = { ...currentOverrides };
     if (nextBackendType === null) delete updatedOverrides[colName];
+    else if (nextParseFormat) updatedOverrides[colName] = { type: nextBackendType, format: nextParseFormat };
     else updatedOverrides[colName] = nextBackendType;
 
-    const overrideChanged = (currentOverrides[colName] ?? null) !== nextBackendType;
 
     try {
       await updateTableMutation.mutateAsync({
