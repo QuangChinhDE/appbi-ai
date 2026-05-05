@@ -249,6 +249,15 @@ export function getColumnContextLabel(
   return '';
 }
 
+export function getColumnGroupLabel(
+  column: Pick<ColumnInfo, 'semanticField' | 'datasetId'>,
+): string {
+  const viewLabel = getSemanticViewLabel(column.semanticField);
+  if (viewLabel) return viewLabel;
+  if (column.datasetId != null) return `Dataset ${column.datasetId}`;
+  return 'Columns';
+}
+
 export function getFilterDisplayLabel(
   filter: Pick<BaseFilter, 'label' | 'field' | 'semanticField'>,
 ): string {

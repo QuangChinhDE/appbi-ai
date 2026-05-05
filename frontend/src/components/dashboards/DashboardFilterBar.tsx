@@ -12,6 +12,7 @@ import {
   ColumnInfo,
   getColumnContextLabel,
   getColumnDisplayLabel,
+  getColumnGroupLabel,
   getColumnKey,
   getFilterDisplayLabel,
   getFilterKey,
@@ -43,6 +44,12 @@ interface DashboardFilterBarProps {
   /** When true, strips the outer card wrapper — use when embedded inside another card. */
   embedded?: boolean;
 }
+
+type AddFilterColumnGroup = {
+  key: string;
+  label: string;
+  columns: ColumnInfo[];
+};
 
 export function DashboardFilterBar({
   columns,
@@ -118,6 +125,7 @@ export function DashboardFilterBar({
       if (!normalizedAddFilterSearch) return true;
       const haystack = [
         getColumnDisplayLabel(column),
+        getColumnGroupLabel(column),
         column.name,
         column.semanticField,
       ]
@@ -129,15 +137,21 @@ export function DashboardFilterBar({
     [addableColumns, normalizedAddFilterSearch],
   );
 
-  const duplicateLabelCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const column of addableColumns) {
-      const label = getColumnDisplayLabel(column).trim().toLowerCase();
-      if (!label) continue;
-      counts.set(label, (counts.get(label) ?? 0) + 1);
+  const groupColumnsByTable = (sourceColumns: ColumnInfo[]): AddFilterColumnGroup[] => {
+    const groups = new Map<string, AddFilterColumnGroup>();
+    for (const column of sourceColumns) {
+      const semanticView = String(column.semanticField ?? '').split('.')[0]?.trim();
+      const label = getColumnGroupLabel(column);
+      const key = `${column.datasetId ?? 'global'}:${semanticView || label}`;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.columns.push(column);
+      } else {
+        groups.set(key, { key, label, columns: [column] });
+      }
     }
-    return counts;
-  }, [addableColumns]);
+    return Array.from(groups.values());
+  };
 
   // ── Mutators ───────────────────────────────────────────────────
   const addFilter = (columnKey: string, preset?: DatePreset) => {
@@ -259,11 +273,6 @@ export function DashboardFilterBar({
   const renderColumnOption = (column: ColumnInfo) => {
     const columnKey = getColumnKey(column);
     const label = getColumnDisplayLabel(column);
-    const contextLabel = getColumnContextLabel(column);
-    const showContext = Boolean(
-      contextLabel
-      && ((duplicateLabelCounts.get(label.trim().toLowerCase()) ?? 0) > 1 || column.semanticField),
-    );
     const sameTypeCount = column.type === 'date' && !column.semanticField
       ? columns.filter(c => c.type === 'date' && getColumnKey(c) !== columnKey && !usedFields.has(getColumnKey(c))).length
       : 0;
@@ -281,12 +290,6 @@ export function DashboardFilterBar({
           </span>
           <span className="min-w-0">
             <span className="block truncate text-text-secondary group-hover:text-brand">{label}</span>
-            {showContext && (
-              <span className="mt-0.5 block truncate text-[11px] text-text-quaternary">
-                {contextLabel}
-                {column.semanticField ? ` · ${column.semanticField}` : ''}
-              </span>
-            )}
           </span>
         </span>
         <span className="flex shrink-0 items-center gap-2">
@@ -303,6 +306,19 @@ export function DashboardFilterBar({
       </button>
     );
   };
+
+  const renderColumnGroups = (groups: AddFilterColumnGroup[]) => (
+    <>
+      {groups.map((group) => (
+        <div key={group.key} className="py-1">
+          <div className="sticky top-[49px] z-10 border-y border-[rgb(var(--border-line))] bg-surface-2/95 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-tertiary backdrop-blur">
+            {group.label}
+          </div>
+          {group.columns.map(renderColumnOption)}
+        </div>
+      ))}
+    </>
+  );
 
   // ── Render ─────────────────────────────────────────────────────
   return (
@@ -413,11 +429,11 @@ export function DashboardFilterBar({
                   setAddFilterSearch('');
                 }} />
                 <div
-                  className="fixed z-[9999] max-h-[min(32rem,70vh)] w-80 overflow-y-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg"
+                  className="fixed z-[9999] max-h-[min(32rem,70vh)] w-96 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg"
                   style={dropdownPos ? { top: dropdownPos.top, right: dropdownPos.right } : { top: 0, right: 0 }}
                 >
                   {/* Search — always visible, auto-focused */}
-                  <div className="p-2 border-b border-[rgb(var(--border-line))]">
+                  <div className="sticky top-0 z-20 border-b border-[rgb(var(--border-line))] bg-surface-1 p-2">
                     <div className="relative">
                       <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-quaternary" />
                       <input
@@ -425,7 +441,7 @@ export function DashboardFilterBar({
                         type="text"
                         value={addFilterSearch}
                         onChange={(e) => setAddFilterSearch(e.target.value)}
-                        placeholder="Search fields..."
+                        placeholder="Search table or field..."
                         className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1.5 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
                         onKeyDown={(e) => {
                           if (e.key === 'Escape') {
@@ -443,6 +459,8 @@ export function DashboardFilterBar({
                   {(() => {
                     const dateColumns = matchingAvailableColumns.filter(c => c.type === 'date');
                     const fieldColumns = matchingAvailableColumns.filter(c => c.type !== 'date');
+                    const dateGroups = groupColumnsByTable(dateColumns);
+                    const fieldGroups = groupColumnsByTable(fieldColumns);
                     return (
                       <>
                         {dateColumns.length > 0 && (
@@ -451,7 +469,7 @@ export function DashboardFilterBar({
                               <Calendar className="w-3 h-3" />
                               Filter theo Ngày
                             </div>
-                            {dateColumns.map(renderColumnOption)}
+                            {renderColumnGroups(dateGroups)}
                           </div>
                         )}
                         {fieldColumns.length > 0 && (
@@ -460,7 +478,7 @@ export function DashboardFilterBar({
                               <Filter className="w-3 h-3" />
                               Filter theo Trường
                             </div>
-                            {fieldColumns.map(renderColumnOption)}
+                            {renderColumnGroups(fieldGroups)}
                           </div>
                         )}
                       </>
