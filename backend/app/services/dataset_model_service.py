@@ -227,14 +227,13 @@ def _source_columns_for_transformations(table: DatasetTable) -> list[str] | None
 
 
 def _apply_semantic_transformations(base_query: str, table: DatasetTable, *, dialect: str) -> str:
-    server_transforms = [
-        step for step in (getattr(table, "transformations", None) or [])
-        if isinstance(step, dict) and step.get("enabled", True) and step.get("type") not in ("js_formula",)
-    ]
+    from app.services.transformation_compiler import TransformationCompiler
+
+    server_transforms = TransformationCompiler.normalize_server_transformations(
+        getattr(table, "transformations", None) or []
+    )
     if not server_transforms:
         return f"({base_query})"
-
-    from app.services.transformation_compiler import TransformationCompiler
 
     compiled_sql, _ = TransformationCompiler.compile_transformations(
         base_query,
@@ -300,7 +299,41 @@ def _sql_table_for_table(dataset_obj: Dataset, table: DatasetTable, *, calendar_
 def _semantic_fields_for_table(dataset_obj: Dataset, table: DatasetTable) -> tuple[list[dict], list[dict]]:
     if is_generated_calendar_table(table):
         return [dict(item) for item in CALENDAR_DIMENSIONS], [dict(item) for item in CALENDAR_MEASURES]
-    return _classify_columns(table.columns_cache or [])
+    dimensions, measures = _classify_columns(table.columns_cache or [])
+
+    from app.services.transformation_compiler import TransformationCompiler
+
+    existing_dimension_names = {
+        str(item.get("name"))
+        for item in dimensions
+        if isinstance(item, dict) and item.get("name")
+    }
+    existing_measure_names = {
+        str(item.get("name"))
+        for item in measures
+        if isinstance(item, dict) and item.get("name")
+    }
+
+    for step in TransformationCompiler.normalize_server_transformations(
+        getattr(table, "transformations", None) or []
+    ):
+        if step.get("type") != "add_column":
+            continue
+        new_field = str((step.get("params") or {}).get("newField") or "").strip()
+        if not new_field or new_field in existing_dimension_names or new_field in existing_measure_names:
+            continue
+
+        dimensions.append({
+            "name": new_field,
+            "type": "string",
+            "sql": new_field,
+            "label": _default_field_label(new_field),
+            "description": None,
+            "hidden": False,
+        })
+        existing_dimension_names.add(new_field)
+
+    return dimensions, measures
 
 
 def _field_names_for_view(view: SemanticView) -> set[str]:

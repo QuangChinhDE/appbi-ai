@@ -529,10 +529,9 @@ def build_live_base_query_plan(
         bigquery_partition_meta=bigquery_partition_meta,
     )
     source_columns = _resolve_source_columns(datasource, db_table, ds_type, base_query)
-    transformations = [
-        t for t in (getattr(db_table, "transformations", None) or [])
-        if t.get("enabled", True) and t.get("type") != "js_formula"
-    ]
+    transformations = TransformationCompiler.normalize_server_transformations(
+        getattr(db_table, "transformations", None) or []
+    )
     compiled_sql = base_query
     output_columns = list(source_columns)
     if transformations:

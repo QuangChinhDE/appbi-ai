@@ -265,6 +265,57 @@ class TransformationCompiler:
     """Compiles transformations into SQL queries."""
 
     @staticmethod
+    def normalize_server_transformations(
+        transformations: List[Dict[str, Any]] | None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Normalize persisted transformation steps into the subset the backend can
+        execute server-side.
+
+        Backward compatibility:
+        - Legacy dataset "Add Column" steps were historically stored as
+          ``js_formula`` with ``params.formula``.
+        - Modern dataset/table transforms use ``add_column`` with
+          ``params.expression``.
+
+        Only formula-based ``js_formula`` steps are upgraded. Code-based steps
+        remain client-only and are intentionally skipped.
+        """
+        normalized: List[Dict[str, Any]] = []
+
+        for step in transformations or []:
+            if not isinstance(step, dict) or not step.get("enabled", True):
+                continue
+
+            step_type = str(step.get("type") or "").strip()
+            params = dict(step.get("params") or {})
+
+            if step_type == "js_formula":
+                new_field = str(params.get("newField") or "").strip()
+                expression = str(
+                    params.get("expression")
+                    or params.get("formula")
+                    or ""
+                ).strip()
+                if not new_field or not expression:
+                    continue
+
+                normalized.append({
+                    **step,
+                    "type": "add_column",
+                    "params": {
+                        **params,
+                        "newField": new_field,
+                        "expression": expression,
+                    },
+                })
+                continue
+
+            normalized.append(step)
+
+        return normalized
+
+    @staticmethod
     def compile_transformations(
         base_query: str,
         transformations: List[Dict[str, Any]],
@@ -283,10 +334,7 @@ class TransformationCompiler:
         Returns:
             Tuple of (compiled_query, column_list)
         """
-        active_steps = [
-            t for t in (transformations or [])
-            if t.get("enabled", True) and t.get("type") != "js_formula"
-        ]
+        active_steps = TransformationCompiler.normalize_server_transformations(transformations)
         if not active_steps:
             return base_query, list(available_columns or [])
 

@@ -694,11 +694,13 @@ def _extract_cached_source_columns(db_table: DatasetTable | Any) -> List[str]:
 def _has_server_side_projection_changes(db_table: DatasetTable | Any) -> bool:
     if normalize_type_overrides(getattr(db_table, "type_overrides", None)):
         return True
+    from app.services.transformation_compiler import TransformationCompiler
+
     return any(
         isinstance(step, dict)
-        and step.get("enabled", True)
-        and step.get("type") != "js_formula"
-        for step in (getattr(db_table, "transformations", None) or [])
+        for step in TransformationCompiler.normalize_server_transformations(
+            getattr(db_table, "transformations", None) or []
+        )
     )
 
 
