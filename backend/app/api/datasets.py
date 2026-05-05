@@ -585,6 +585,28 @@ def _sync_dataset_model_safely(db: Session, dataset_id: int) -> None:
         logger.warning("Dataset model sync skipped for dataset %s: %s", dataset_id, exc)
 
 
+def _cleanup_semantic_view_for_table(db: Session, table_id: int) -> None:
+    """Delete the SemanticView linked to a DatasetTable and remove every
+    explore join that references it.  Must be called BEFORE the DatasetTable
+    row is deleted so the FK-backed dataset_table_id is still resolvable."""
+    from app.models.semantic import SemanticExplore, SemanticView
+
+    view = db.query(SemanticView).filter(SemanticView.dataset_table_id == table_id).first()
+    if view is None:
+        return
+
+    view_name = view.name
+    if view_name:
+        for explore in db.query(SemanticExplore).all():
+            old_joins = explore.joins or []
+            new_joins = [j for j in old_joins if j.get("view") != view_name]
+            if len(new_joins) != len(old_joins):
+                explore.joins = new_joins
+
+    db.delete(view)
+    db.flush()
+
+
 def _run_auto_type_detection(table_id: int) -> None:
     """Background job: full-scan inference + apply for newly synced tables."""
     from app.core.database import SessionLocal
@@ -641,6 +663,98 @@ def _enqueue_auto_type_detection_if_needed(
     background_tasks.add_task(_run_auto_type_detection, int(table_id))
 
 
+def _extract_cached_source_columns(db_table: DatasetTable | Any) -> List[str]:
+    cache = getattr(db_table, "columns_cache", None)
+    if isinstance(cache, dict):
+        source_columns = cache.get("source_columns")
+        if isinstance(source_columns, list):
+            normalized = [str(column) for column in source_columns if str(column).strip()]
+            if normalized:
+                return normalized
+        raw_columns = cache.get("columns")
+        if isinstance(raw_columns, list):
+            normalized = [
+                str(column.get("name") or "").strip()
+                for column in raw_columns
+                if isinstance(column, dict) and str(column.get("name") or "").strip()
+            ]
+            if normalized:
+                return normalized
+    elif isinstance(cache, list):
+        normalized = [
+            str(column.get("name") or "").strip()
+            for column in cache
+            if isinstance(column, dict) and str(column.get("name") or "").strip()
+        ]
+        if normalized:
+            return normalized
+    return []
+
+
+def _has_server_side_projection_changes(db_table: DatasetTable | Any) -> bool:
+    if normalize_type_overrides(getattr(db_table, "type_overrides", None)):
+        return True
+    return any(
+        isinstance(step, dict)
+        and step.get("enabled", True)
+        and step.get("type") != "js_formula"
+        for step in (getattr(db_table, "transformations", None) or [])
+    )
+
+
+def _infer_dataset_table_source_columns(
+    db: Session,
+    dataset_obj: Dataset,
+    datasource: Optional[DataSource],
+    db_table: DatasetTable | Any,
+    *,
+    fallback_columns: List[DatasetColumnMetadata] | None = None,
+) -> List[str]:
+    if is_generated_calendar_table(db_table):
+        return [column.name for column in (fallback_columns or []) if str(column.name or "").strip()]
+
+    if is_derived_table(db_table):
+        cached = _extract_cached_source_columns(db_table)
+        if cached:
+            return cached
+        return [column.name for column in (fallback_columns or []) if str(column.name or "").strip()]
+
+    if datasource is None:
+        cached = _extract_cached_source_columns(db_table)
+        if cached:
+            return cached
+        return [column.name for column in (fallback_columns or []) if str(column.name or "").strip()]
+
+    ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+    inferred_columns: List[Dict[str, Any]] = []
+    if db_table.source_kind == "physical_table" and db_table.source_table_name:
+        inferred_columns = DataSourceConnectionService.list_columns(
+            ds_id=datasource.id,
+            ds_type=ds_type,
+            config=datasource.config,
+            table_name=db_table.source_table_name,
+        )
+    elif db_table.source_kind == "sql_query" and db_table.source_query:
+        inferred_columns = infer_schema_from_sql(
+            db=db,
+            datasource=datasource,
+            sql_query=db_table.source_query,
+        )
+
+    normalized = [
+        str(column.get("name") or "").strip()
+        for column in inferred_columns or []
+        if str(column.get("name") or "").strip()
+    ]
+    if normalized:
+        return normalized
+
+    cached = _extract_cached_source_columns(db_table)
+    if cached:
+        return cached
+    return [column.name for column in (fallback_columns or []) if str(column.name or "").strip()]
+
+
 def _infer_dataset_table_columns(
     db: Session,
     dataset_obj: Dataset,
@@ -656,6 +770,40 @@ def _infer_dataset_table_columns(
             )
             for column in build_calendar_columns_cache()["columns"]
             if str(column.get("name") or "").strip()
+        ]
+
+    if _has_server_side_projection_changes(db_table):
+        if is_derived_table(db_table):
+            datasource, live_proxy_table = build_live_proxy_table_for_dataset_table(
+                db,
+                dataset_obj,
+                db_table,
+            )
+            result = LiveQueryService.execute_preview_query(
+                datasource=datasource,
+                db_table=live_proxy_table,
+                limit=200,
+                offset=0,
+            )
+        else:
+            if datasource is None:
+                raise DatasetTableSqlError("Datasource not found", code="DATASOURCE_NOT_FOUND")
+            result = LiveQueryService.execute_preview_query(
+                datasource=datasource,
+                db_table=db_table,
+                limit=200,
+                offset=0,
+            )
+
+        column_names = list(result.get("columns") or [])
+        rows = list(result.get("rows") or [])
+        return [
+            DatasetColumnMetadata(
+                name=column_name,
+                type=_infer_column_type(column_name, index, rows),
+                nullable=True,
+            )
+            for index, column_name in enumerate(column_names)
         ]
 
     if is_derived_table(db_table):
@@ -1230,13 +1378,20 @@ def add_table_to_dataset(
             if not inferred_metadata:
                 inferred_metadata = _infer_dataset_table_columns(db, ds, datasource, db_table)
             if inferred_metadata:
+                source_columns = _infer_dataset_table_source_columns(
+                    db,
+                    ds,
+                    datasource,
+                    db_table,
+                    fallback_columns=inferred_metadata,
+                )
                 db_table = DatasetCRUDService.update_table_cache(
                     db,
                     db_table.id,
                     columns_cache=_build_columns_cache_payload(
                         db_table,
                         inferred_metadata,
-                        source_columns=[column.name for column in inferred_metadata],
+                        source_columns=source_columns,
                     ),
                     sample_cache=_serialize_cached_rows(inferred_rows) or None,
                 ) or db_table
@@ -1314,6 +1469,7 @@ def update_dataset_table(
             status_code=400,
             detail=f"Cannot set source_query on a '{db_table.source_kind}' table.",
         )
+    datasource: Optional[DataSource] = None
     preview_metadata: List[DatasetColumnMetadata] = []
     preview_rows: List[Dict[str, Any]] = []
 
@@ -1448,6 +1604,44 @@ def update_dataset_table(
 
         table_update.type_overrides = normalized_overrides
 
+    schema_refresh_requested = any(
+        value is not None
+        for value in (
+            table_update.source_query,
+            table_update.transformations,
+            table_update.type_overrides,
+        )
+    )
+
+    if schema_refresh_requested and (
+        table_update.transformations is not None or table_update.type_overrides is not None
+    ):
+        validation_draft = _build_table_draft(db_table, table_update)
+        validation_datasource = datasource
+        if validation_datasource is None and getattr(validation_draft, "datasource_id", None) is not None:
+            validation_datasource = db.query(DataSource).filter(
+                DataSource.id == validation_draft.datasource_id
+            ).first()
+        try:
+            preview_metadata = _infer_dataset_table_columns(
+                db,
+                ds,
+                validation_datasource,
+                validation_draft,
+            )
+        except DatasetTableSqlError as exc:
+            status_code = 422 if getattr(exc, "code", "") == "NOT_SYNCED" else 400
+            detail: Any = str(exc)
+            if getattr(exc, "code", "") == "NOT_SYNCED":
+                detail = {"code": exc.code, "message": str(exc)}
+            raise HTTPException(status_code=status_code, detail=detail)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            if _is_fixable_preview_error(exc):
+                raise HTTPException(status_code=400, detail=_normalize_preview_error_message(exc)) from exc
+            raise
+
     try:
         updated_table = DatasetCRUDService.update_table(
             db, table_id, table_update
@@ -1457,18 +1651,25 @@ def update_dataset_table(
     if updated_table and db_table.datasource_id is not None:
         query_cache.invalidate_datasource(db_table.datasource_id)
 
-    if updated_table and table_update.source_query is not None:
+    if updated_table and schema_refresh_requested:
         datasource = db.query(DataSource).filter(DataSource.id == updated_table.datasource_id).first() if updated_table.datasource_id is not None else None
         try:
             inferred_metadata = preview_metadata or _infer_dataset_table_columns(db, ds, datasource, updated_table)
             if inferred_metadata:
+                source_columns = _infer_dataset_table_source_columns(
+                    db,
+                    ds,
+                    datasource,
+                    updated_table,
+                    fallback_columns=inferred_metadata,
+                )
                 updated_table = DatasetCRUDService.update_table_cache(
                     db,
                     updated_table.id,
                     columns_cache=_build_columns_cache_payload(
                         updated_table,
                         inferred_metadata,
-                        source_columns=[column.name for column in inferred_metadata],
+                        source_columns=source_columns,
                     ),
                     sample_cache=_serialize_cached_rows(preview_rows) or None,
                 ) or updated_table
@@ -1750,6 +1951,7 @@ def remove_table_from_dataset(
         success = True
     else:
         datasource_id = db_table.datasource_id
+        _cleanup_semantic_view_for_table(db, table_id)
         success = DatasetCRUDService.delete_table(db, table_id)
         if datasource_id is not None:
             query_cache.invalidate_datasource(datasource_id)

@@ -263,6 +263,8 @@ interface AddColumnModalProps {
   onSave: (transformations: Transformation[]) => Promise<void>;
   /** When provided the modal opens in EDIT mode for this existing step */
   editingStep?: Transformation | null;
+  /** Storage type for newly created computed columns. */
+  transformationType?: 'js_formula' | 'add_column';
 }
 
 export function AddColumnModal({
@@ -276,6 +278,7 @@ export function AddColumnModal({
   onClose,
   onSave,
   editingStep,
+  transformationType = 'js_formula',
 }: AddColumnModalProps) {
   const isEditMode = !!editingStep;
 
@@ -299,7 +302,7 @@ export function AddColumnModal({
     if (isOpen) {
       if (editingStep) {
         setColumnName(editingStep.params.newField ?? '');
-        setFormula(editingStep.params.formula ?? editingStep.params.code ?? '');
+        setFormula(editingStep.params.formula ?? editingStep.params.expression ?? editingStep.params.code ?? '');
       } else {
         setColumnName('');
         setFormula('');
@@ -339,11 +342,20 @@ export function AddColumnModal({
     setIsSaving(true);
     try {
       const existing = table.transformations || [];
+      const nextStepType = editingStep?.type === 'add_column' || editingStep?.type === 'js_formula'
+        ? editingStep.type
+        : transformationType;
       if (isEditMode && editingStep) {
         // EDIT: replace existing step in-place, preserving order
         const updated = existing.map((t) =>
           t.id === editingStep.id
-            ? { ...t, params: { ...t.params, formula: formula.trim() } }
+            ? {
+                ...t,
+                type: nextStepType,
+                params: nextStepType === 'add_column'
+                  ? { ...t.params, expression: formula.trim(), formula: formula.trim() }
+                  : { ...t.params, formula: formula.trim() },
+              }
             : t
         );
         await onSave(updated);
@@ -351,9 +363,11 @@ export function AddColumnModal({
         // ADD: append new step
         const newStep: Transformation = {
           id: crypto.randomUUID(),
-          type: 'js_formula',
+          type: nextStepType,
           enabled: true,
-          params: { newField: columnName.trim(), formula: formula.trim() },
+          params: nextStepType === 'add_column'
+            ? { newField: columnName.trim(), expression: formula.trim(), formula: formula.trim() }
+            : { newField: columnName.trim(), formula: formula.trim() },
         };
         await onSave([...existing, newStep]);
       }

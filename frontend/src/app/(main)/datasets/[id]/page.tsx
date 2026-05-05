@@ -800,7 +800,7 @@ export default function DatasetDetailPage() {
   const handleEditColumn = (colName: string) => {
     if (!selectedTable) return;
     const step = (selectedTable.transformations ?? []).find(
-      (t) => t.type === 'js_formula' && t.params?.newField === colName
+      (t) => (t.type === 'js_formula' || t.type === 'add_column') && t.params?.newField === colName
     ) ?? null;
     setEditingColumnStep(step);
     setIsAddColumnModalOpen(true);
@@ -1605,6 +1605,7 @@ export default function DatasetDetailPage() {
           onClose={() => { setIsAddColumnModalOpen(false); setEditingColumnStep(null); }}
           onSave={handleSaveTransformations}
           editingStep={editingColumnStep}
+          transformationType="add_column"
         />
       )}
 

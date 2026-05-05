@@ -181,6 +181,10 @@ function getViewLabel(view: Pick<DatasetModelView, 'name' | 'table_display_name'
   return view?.table_display_name || view?.name || 'Unknown';
 }
 
+function isManualRelationshipView(view: DatasetModelView): boolean {
+  return view.view_role !== 'calendar_role' && !view.hidden_in_canvas;
+}
+
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
 function DimIcon({ type }: { type: string }) {
@@ -275,7 +279,7 @@ function ViewCard({
               const isRelationship = relationshipCols?.has(d.name) ?? false;
               const isCalendarJoin = calendarCols?.has(d.name) ?? false;
               const isDropTarget = relationDraftTarget === d.name;
-              const canCreateRelationship = !view.system_managed && !isCalendarJoin;
+              const canCreateRelationship = isManualRelationshipView(view) && !isCalendarJoin;
               return (
                 <div
                   key={d.name}
@@ -715,13 +719,31 @@ export function DataModelCanvas({
     () => (model?.views ?? []).find((view) => view.view_role === 'calendar_dimension') ?? null,
     [model?.views],
   );
+  const hasManualCalendarRelationship = useMemo(() => {
+    const calendarViewName = calendarPresentationView?.name;
+    if (!calendarViewName) return false;
+    return (model?.explores ?? []).some((explore) => {
+      const manualJoins = (explore.joins ?? []).filter((join) => join.origin !== 'auto_calendar');
+      if (explore.base_view_name === calendarViewName && manualJoins.length > 0) return true;
+      return manualJoins.some((join) =>
+        join.view === calendarViewName
+        || join.presentation_view === calendarViewName
+      );
+    });
+  }, [calendarPresentationView?.name, model?.explores]);
   const visibleViews = useMemo(
     () => (model?.views ?? []).filter((view) => {
       if (view.hidden_in_canvas) return false;
-      if (!showCalendarLayer && view.view_role === 'calendar_dimension') return false;
+      if (
+        !showCalendarLayer
+        && view.view_role === 'calendar_dimension'
+        && !hasManualCalendarRelationship
+      ) {
+        return false;
+      }
       return true;
     }),
-    [model?.views, showCalendarLayer],
+    [hasManualCalendarRelationship, model?.views, showCalendarLayer],
   );
   const layoutExplores = useMemo(
     () => (model?.explores ?? []).map((explore) => ({
@@ -906,8 +928,8 @@ export function DataModelCanvas({
     return m;
   }, [visibleViews]);
   const joinableViews = useMemo(
-    () => visibleViews.filter((view) => !view.system_managed),
-    [visibleViews],
+    () => (model?.views ?? []).filter(isManualRelationshipView),
+    [model?.views],
   );
 
   // Columns that are part of at least one join (highlighted in cards)
@@ -1057,7 +1079,7 @@ export function DataModelCanvas({
     const columnName = target.dataset.colName ?? '';
     if (!viewId || !columnName) return null;
     const targetView = visibleViews.find((view) => view.id === viewId);
-    if (!targetView || targetView.system_managed) return null;
+    if (!targetView || !isManualRelationshipView(targetView)) return null;
     return { viewId, columnName };
   }, [visibleViews]);
 

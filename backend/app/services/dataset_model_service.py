@@ -198,22 +198,51 @@ def _normalize_join(join: dict, base_view_name: str, base_fields: set[str] | Non
     return normalized
 
 
-def _apply_duckdb_transformations(view_name: str, transformations) -> str:
+def _source_columns_for_transformations(table: DatasetTable) -> list[str] | None:
+    raw_cache = getattr(table, "columns_cache", None)
+    if isinstance(raw_cache, dict):
+        source_columns = raw_cache.get("source_columns")
+        if isinstance(source_columns, list):
+            normalized = [str(item) for item in source_columns if str(item).strip()]
+            if normalized:
+                return normalized
+        raw_columns = raw_cache.get("columns")
+        if isinstance(raw_columns, list):
+            normalized = [
+                str(item.get("name") or "").strip()
+                for item in raw_columns
+                if isinstance(item, dict) and str(item.get("name") or "").strip()
+            ]
+            if normalized:
+                return normalized
+    elif isinstance(raw_cache, list):
+        normalized = [
+            str(item.get("name") or "").strip()
+            for item in raw_cache
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        ]
+        if normalized:
+            return normalized
+    return None
+
+
+def _apply_semantic_transformations(base_query: str, table: DatasetTable, *, dialect: str) -> str:
     server_transforms = [
-        step for step in (transformations or [])
-        if step.get("enabled", True) and step.get("type") not in ("js_formula",)
+        step for step in (getattr(table, "transformations", None) or [])
+        if isinstance(step, dict) and step.get("enabled", True) and step.get("type") not in ("js_formula",)
     ]
     if not server_transforms:
-        return view_name
+        return f"({base_query})"
 
     from app.services.transformation_compiler import TransformationCompiler
 
     compiled_sql, _ = TransformationCompiler.compile_transformations(
-        f"SELECT * FROM {view_name}",
+        base_query,
         server_transforms,
-        dialect="duckdb",
+        dialect=dialect,
+        available_columns=_source_columns_for_transformations(table),
     )
-    return f"({compiled_sql}) AS _t"
+    return f"({compiled_sql})"
 
 
 def _coerce_distinct_values(rows: list[Any]) -> list[str]:
@@ -257,11 +286,14 @@ def _sql_table_for_table(dataset_obj: Dataset, table: DatasetTable, *, calendar_
         settings = get_calendar_settings(dataset_obj, enabled_default=False)
         return f"({build_calendar_live_sql(settings, calendar_dialect)})"
     if is_derived_table(table) and table.source_query:
-        return f"({table.source_query})"
+        base_query = f"SELECT * FROM ({table.source_query}) AS _dataset_model_src"
+        return _apply_semantic_transformations(base_query, table, dialect=calendar_dialect)
     if table.source_kind == "physical_table" and table.source_table_name:
-        return table.source_table_name
+        base_query = f"SELECT * FROM {table.source_table_name}"
+        return _apply_semantic_transformations(base_query, table, dialect=calendar_dialect)
     if table.source_kind == "sql_query" and table.source_query:
-        return f"({table.source_query})"
+        base_query = f"SELECT * FROM ({table.source_query}) AS _dataset_model_src"
+        return _apply_semantic_transformations(base_query, table, dialect=calendar_dialect)
     return _view_name_for_table(table)
 
 
