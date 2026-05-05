@@ -980,13 +980,22 @@ export default function DatasetDetailPage() {
 
   // Names of columns produced by js_formula OR add_column transformations (deletable in drawer)
   const computedColumnNames = useMemo(() => {
-    return (selectedTable?.transformations ?? [])
-      .filter((t: any) =>
-        (t.type === 'js_formula' || t.type === 'add_column') &&
-        t.enabled !== false &&
-        t.params?.newField
-      )
-      .map((t: any) => t.params.newField as string);
+    const seen = new Set<string>();
+    const names: string[] = [];
+    for (const step of (selectedTable?.transformations ?? [])) {
+      const t = step as any;
+      const newField = String(t?.params?.newField || '').trim();
+      if (
+        (t?.type === 'js_formula' || t?.type === 'add_column')
+        && t?.enabled !== false
+        && newField
+        && !seen.has(newField)
+      ) {
+        seen.add(newField);
+        names.push(newField);
+      }
+    }
+    return names;
   }, [selectedTable?.transformations]);
 
   const jsFormulaColumnNames = useMemo(() => {
@@ -1039,9 +1048,15 @@ export default function DatasetDetailPage() {
   // Apply js_formula transformations client-side on top of server preview rows
   const computedPreviewData = useMemo(() => {
     if (!previewData) return previewData;
-    const jsSteps = (selectedTable?.transformations ?? []).filter(
-      (t: any) => t.type === 'js_formula' && t.enabled !== false && t.params?.newField && (t.params?.code || t.params?.formula)
-    );
+    const serverColumnNames = new Set((previewData.columns ?? []).map((c) => c.name));
+    const jsSteps = (selectedTable?.transformations ?? []).filter((t: any) => {
+      const newField = String(t?.params?.newField || '').trim();
+      if (t?.type !== 'js_formula' || t?.enabled === false || !newField) return false;
+      if (!(t?.params?.code || t?.params?.formula)) return false;
+      // Backend already materialized this computed field -> do not append a duplicate client-side column.
+      if (serverColumnNames.has(newField)) return false;
+      return true;
+    });
     if (jsSteps.length === 0) return previewData;
 
     const formulaHelpers = buildFNS(datasetLookupData);
