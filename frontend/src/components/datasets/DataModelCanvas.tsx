@@ -1546,6 +1546,7 @@ export function DataModelCanvas({
         isOpen={dialogOpen}
         onClose={() => setDialogOpen(false)}
         onSave={handleAddJoin}
+        datasetId={datasetId}
         views={joinableViews}
         initialValue={dialogInitialValue}
         isSaving={addJoin.isPending}

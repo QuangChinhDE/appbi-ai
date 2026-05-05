@@ -2764,6 +2764,48 @@ def update_dataset_explore(
 
 
 @router.post(
+    "/{dataset_id}/model/joins/suggestion",
+    summary="Suggest and validate a relationship between two tables",
+)
+def suggest_model_join(
+    dataset_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Inspect two semantic views + columns and suggest the relationship shape.
+    Body: {from_view_id, to_view_id, from_column, to_column}
+    """
+    from app.services.dataset_model_service import suggest_join_relationship
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, dataset_obj, "datasets")
+
+    required = {"from_view_id", "to_view_id", "from_column", "to_column"}
+    missing = required - set(payload.keys())
+    if missing:
+        raise HTTPException(status_code=422, detail=f"Missing fields: {missing}")
+
+    try:
+        return suggest_join_relationship(
+            db,
+            dataset_id=dataset_id,
+            from_view_id=int(payload["from_view_id"]),
+            to_view_id=int(payload["to_view_id"]),
+            from_column=payload["from_column"],
+            to_column=payload["to_column"],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to suggest join for dataset {dataset_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
     "/{dataset_id}/model/joins",
     summary="Add or update a relationship between two tables",
 )

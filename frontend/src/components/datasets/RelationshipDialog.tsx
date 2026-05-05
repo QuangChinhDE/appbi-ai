@@ -5,10 +5,14 @@
  * Opened from DataModelCanvas when the user wants to define a relationship.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ArrowRight, Link2 } from 'lucide-react';
 import { AppModalShell } from '@/components/common/AppModalShell';
-import type { DatasetModelView, AddJoinParams } from '@/hooks/use-dataset-model';
+import {
+  useDatasetModelJoinSuggestion,
+  type DatasetModelView,
+  type AddJoinParams,
+} from '@/hooks/use-dataset-model';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -33,6 +37,7 @@ interface RelationshipDialogProps {
   isOpen: boolean;
   onClose: () => void;
   onSave: (value: Omit<AddJoinParams, 'datasetId'>) => Promise<void>;
+  datasetId: number;
   views: DatasetModelView[];
   /** Pre-fill when editing an existing join */
   initialValue?: Partial<RelationshipDialogValue>;
@@ -53,11 +58,12 @@ const RELATIONSHIP_OPTIONS: {
   label: string;
   from: string;
   to: string;
+  disabled?: boolean;
 }[] = [
   { value: 'one_to_one', label: '1 : 1  —  One to One', from: '1', to: '1' },
   { value: 'one_to_many', label: '1 : N  —  One to Many', from: '1', to: 'N' },
   { value: 'many_to_one', label: 'N : 1  —  Many to One', from: 'N', to: '1' },
-  { value: 'many_to_many', label: 'N : N  —  Many to Many', from: 'N', to: 'N' },
+  { value: 'many_to_many', label: 'N : N  —  Unsupported', from: 'N', to: 'N', disabled: true },
 ];
 
 // ─── Select component (native <select> wrapper) ───────────────────────────────
@@ -71,7 +77,7 @@ function Select({
 }: {
   value: string;
   onChange: (v: string) => void;
-  options: { value: string; label: string }[];
+  options: { value: string; label: string; disabled?: boolean }[];
   placeholder?: string;
   className?: string;
 }) {
@@ -89,7 +95,7 @@ function Select({
         </option>
       )}
       {options.map((o) => (
-        <option key={o.value} value={o.value}>
+        <option key={o.value} value={o.value} disabled={o.disabled}>
           {o.label}
         </option>
       ))}
@@ -103,6 +109,7 @@ export function RelationshipDialog({
   isOpen,
   onClose,
   onSave,
+  datasetId,
   views,
   initialValue,
   isSaving = false,
@@ -123,6 +130,12 @@ export function RelationshipDialog({
   );
   const [alias, setAlias] = useState<string>(initialValue?.alias ?? '');
   const [error, setError] = useState('');
+  const [relationshipTouched, setRelationshipTouched] = useState(false);
+  const [autoSuggestRelationship, setAutoSuggestRelationship] = useState(
+    !initialValue?.relationship
+  );
+  const [previousSelectionKey, setPreviousSelectionKey] = useState('');
+  const suppressSelectionResetRef = useRef(false);
 
   // Reset when dialog reopens
   useEffect(() => {
@@ -135,6 +148,12 @@ export function RelationshipDialog({
       setRelationship(initialValue?.relationship ?? 'many_to_one');
       setAlias(initialValue?.alias ?? '');
       setError('');
+      setRelationshipTouched(false);
+      setAutoSuggestRelationship(!initialValue?.relationship);
+      setPreviousSelectionKey(
+        `${initialValue?.fromViewId ?? ''}|${initialValue?.toViewId ?? ''}|${initialValue?.fromColumn ?? ''}|${initialValue?.toColumn ?? ''}`
+      );
+      suppressSelectionResetRef.current = true;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
@@ -151,6 +170,48 @@ export function RelationshipDialog({
   const toColumns = toView
     ? toView.dimensions.map((d) => ({ value: d.name, label: d.label || d.name }))
     : [];
+
+  const selectionKey = `${fromViewId}|${toViewId}|${fromColumn}|${toColumn}`;
+  useEffect(() => {
+    if (!isOpen) return;
+    if (suppressSelectionResetRef.current) {
+      suppressSelectionResetRef.current = false;
+      return;
+    }
+    if (previousSelectionKey === selectionKey) return;
+    setPreviousSelectionKey(selectionKey);
+    setRelationshipTouched(false);
+    setAutoSuggestRelationship(true);
+  }, [isOpen, previousSelectionKey, selectionKey]);
+
+  const shouldSuggestRelationship = Boolean(
+    isOpen
+    && datasetId > 0
+    && fromViewId
+    && toViewId
+    && fromColumn
+    && toColumn
+    && fromViewId !== toViewId
+  );
+  const {
+    data: joinSuggestion,
+    isLoading: isSuggestingRelationship,
+  } = useDatasetModelJoinSuggestion(
+    shouldSuggestRelationship ? datasetId : null,
+    shouldSuggestRelationship
+      ? {
+          fromViewId: Number(fromViewId),
+          toViewId: Number(toViewId),
+          fromColumn,
+          toColumn,
+        }
+      : null,
+  );
+
+  useEffect(() => {
+    if (!isOpen || !joinSuggestion || !autoSuggestRelationship || relationshipTouched) return;
+    setRelationship(joinSuggestion.relationship);
+  }, [autoSuggestRelationship, isOpen, joinSuggestion, relationshipTouched]);
 
   const viewOptions = views.map((v) => ({
     value: String(v.id),
@@ -205,6 +266,12 @@ export function RelationshipDialog({
   };
 
   const relOpt = RELATIONSHIP_OPTIONS.find((r) => r.value === relationship)!;
+  const suggestedRelationshipLabel = joinSuggestion
+    ? RELATIONSHIP_OPTIONS.find((option) => option.value === joinSuggestion.relationship)?.label
+    : null;
+  const blockingMessage = joinSuggestion?.can_create === false
+    ? (joinSuggestion.message || 'This relationship cannot be created.')
+    : null;
 
   return (
     <AppModalShell
@@ -227,7 +294,14 @@ export function RelationshipDialog({
           </button>
           <button
             onClick={handleSave}
-            disabled={isSaving || !fromViewId || !toViewId || !fromColumn || !toColumn}
+            disabled={
+              isSaving
+              || !fromViewId
+              || !toViewId
+              || !fromColumn
+              || !toColumn
+              || joinSuggestion?.can_create === false
+            }
             className="flex items-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover transition-colors disabled:opacity-50"
           >
             {isSaving ? (
@@ -345,12 +419,27 @@ export function RelationshipDialog({
               </label>
               <Select
                 value={relationship}
-                onChange={(v) => setRelationship(v as RelationshipType)}
+                onChange={(v) => {
+                  setRelationship(v as RelationshipType);
+                  setRelationshipTouched(true);
+                  setAutoSuggestRelationship(false);
+                }}
                 options={RELATIONSHIP_OPTIONS.map((r) => ({
                   value: r.value,
                   label: r.label,
+                  disabled: r.disabled,
                 }))}
               />
+              {(isSuggestingRelationship || suggestedRelationshipLabel) && (
+                <p className={`text-xs ${joinSuggestion?.can_create === false ? 'text-danger' : 'text-text-quaternary'}`}>
+                  {isSuggestingRelationship
+                    ? 'Checking join cardinality...'
+                    : `Suggested from current data: ${suggestedRelationshipLabel}${joinSuggestion?.from_unique !== null && joinSuggestion?.to_unique !== null
+                      ? ` (${joinSuggestion.from_unique ? 'from unique' : 'from duplicate'}, ${joinSuggestion.to_unique ? 'to unique' : 'to duplicate'})`
+                      : ''
+                    }`}
+                </p>
+              )}
             </div>
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
@@ -399,9 +488,9 @@ export function RelationshipDialog({
           )}
 
           {/* Error */}
-          {error && (
+          {(blockingMessage || error) && (
             <p className="text-sm text-danger bg-danger/10 rounded-md px-3 py-2">
-              {error}
+              {blockingMessage || error}
             </p>
           )}
       </div>

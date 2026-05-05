@@ -3,6 +3,7 @@ Dataset Model Service
 Auto-generates semantic layer (views, model, explores) from dataset tables.
 Each dataset = 1 Data Mart with its own semantic model.
 """
+from collections import deque
 import hashlib
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -49,6 +50,13 @@ _NUMERIC_MEASURE_TYPES = {"float", "number", "numeric", "decimal", "double", "re
 # FK naming heuristics: columns ending with these suffixes are likely foreign keys
 _FK_SUFFIXES = ("_id", "_pk", "_fk", "_key")
 _AUTO_JOIN_ORIGINS = {"auto_fk", "auto_calendar"}
+_VALID_JOIN_TYPES = {"left", "inner", "right", "full"}
+_VALID_RELATIONSHIP_TYPES = {
+    "one_to_one",
+    "one_to_many",
+    "many_to_one",
+    "many_to_many",
+}
 
 
 _JOIN_SQL_ON_RE = re.compile(r"\$\{TABLE\}\.([^\s=]+)\s*=\s*\$\{[^}]+\}\.([^\s=]+)")
@@ -172,6 +180,98 @@ def _parse_join_columns(sql_on: str | None) -> tuple[str | None, str | None]:
     if not match:
         return None, None
     return _clean_join_identifier(match.group(1)), _clean_join_identifier(match.group(2))
+
+
+def _normalize_join_type(join_type: str | None) -> str:
+    normalized = str(join_type or "").strip().lower()
+    if normalized not in _VALID_JOIN_TYPES:
+        return "left"
+    return normalized
+
+
+def _normalize_relationship_type(relationship: str | None) -> str:
+    normalized = str(relationship or "").strip().lower()
+    if normalized not in _VALID_RELATIONSHIP_TYPES:
+        return "many_to_one"
+    return normalized
+
+
+def _infer_relationship_from_uniqueness(
+    from_unique: bool,
+    to_unique: bool,
+) -> str:
+    if from_unique and to_unique:
+        return "one_to_one"
+    if from_unique:
+        return "one_to_many"
+    if to_unique:
+        return "many_to_one"
+    return "many_to_many"
+
+
+def _heuristic_relationship_for_columns(from_column: str, to_column: str) -> str:
+    normalized_from = _clean_join_identifier(from_column) or ""
+    normalized_to = _clean_join_identifier(to_column) or ""
+    lower_from = normalized_from.lower()
+    lower_to = normalized_to.lower()
+    if lower_from == "id" and lower_to == "id":
+        return "one_to_one"
+    if lower_to == "id":
+        return "many_to_one"
+    if lower_from == "id":
+        return "one_to_many"
+    if any(lower_from.endswith(suffix) for suffix in _FK_SUFFIXES):
+        return "many_to_one"
+    return "many_to_one"
+
+
+def _build_join_adjacency(model: SemanticModel) -> dict[str, set[str]]:
+    adjacency: dict[str, set[str]] = {}
+    for explore in model.explores or []:
+        base_view_name = str(getattr(explore, "base_view_name", "") or "").strip()
+        if not base_view_name:
+            continue
+        adjacency.setdefault(base_view_name, set())
+        for join in explore.joins or []:
+            source_view_name = str(join.get("from_view") or base_view_name).strip()
+            target_view_name = str(join.get("view") or "").strip()
+            if not source_view_name or not target_view_name:
+                continue
+            adjacency.setdefault(source_view_name, set()).add(target_view_name)
+            adjacency.setdefault(target_view_name, set())
+    return adjacency
+
+
+def _has_join_path(
+    adjacency: dict[str, set[str]],
+    start_view_name: str,
+    target_view_name: str,
+) -> bool:
+    if start_view_name == target_view_name:
+        return True
+    visited: set[str] = {start_view_name}
+    queue: deque[str] = deque([start_view_name])
+    while queue:
+        current = queue.popleft()
+        for neighbor in adjacency.get(current, set()):
+            if neighbor == target_view_name:
+                return True
+            if neighbor in visited:
+                continue
+            visited.add(neighbor)
+            queue.append(neighbor)
+    return False
+
+
+def _would_create_join_cycle(
+    model: SemanticModel,
+    from_view_name: str,
+    to_view_name: str,
+) -> bool:
+    adjacency = _build_join_adjacency(model)
+    adjacency.setdefault(from_view_name, set())
+    adjacency.setdefault(to_view_name, set())
+    return _has_join_path(adjacency, to_view_name, from_view_name)
 
 
 def _normalize_join(join: dict, base_view_name: str, base_fields: set[str] | None = None) -> dict | None:
@@ -1151,6 +1251,22 @@ def add_join(
         if to_view.name not in visible_view_names:
             raise ValueError("Views do not belong to this dataset")
 
+    join_validation = suggest_join_relationship(
+        db,
+        dataset_id=dataset_id,
+        from_view_id=from_view_id,
+        to_view_id=to_view_id,
+        from_column=from_column,
+        to_column=to_column,
+    )
+    if not join_validation.get("can_create"):
+        raise ValueError(str(join_validation.get("message") or "Relationship cannot be created"))
+
+    normalized_join_type = _normalize_join_type(join_type)
+    normalized_relationship = _normalize_relationship_type(relationship)
+    if normalized_relationship == "many_to_many":
+        raise ValueError("Many-to-many relationships are not supported")
+
     explore = db.query(SemanticExplore).filter(
         SemanticExplore.model_id == model.id,
         SemanticExplore.base_view_id == from_view_id,
@@ -1176,9 +1292,9 @@ def add_join(
         "name": alias_clean or to_view.name,
         "view": to_view.name,
         "alias": alias_clean,
-        "type": join_type,
+        "type": normalized_join_type,
         "sql_on": f"${{TABLE}}.{from_column} = ${{{placeholder_target}}}.{to_column}",
-        "relationship": relationship,
+        "relationship": normalized_relationship,
         "from_view": from_view.name,
         "from_column": from_column,
         "to_column": to_column,
@@ -1209,6 +1325,209 @@ def add_join(
         "explore_id": explore.id,
         "base_view_name": explore.base_view_name,
         "joins": explore.joins,
+    }
+
+
+def _resolve_semantic_view_table(
+    db: Session,
+    *,
+    dataset_obj: Dataset,
+    dataset_id: int,
+    view: SemanticView,
+) -> tuple[DatasetTable, DataSource, Any]:
+    db_table = db.query(DatasetTable).filter(
+        DatasetTable.id == view.dataset_table_id,
+        DatasetTable.dataset_id == dataset_id,
+    ).first()
+    if db_table is None:
+        raise ValueError("Views do not belong to this dataset")
+
+    live_table = db_table
+    datasource = (
+        db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+        if db_table.datasource_id is not None
+        else None
+    )
+
+    if datasource is None or is_generated_calendar_table(db_table) or is_derived_table(db_table):
+        from app.services.dataset_table_sql_service import (
+            DatasetTableSqlError,
+            build_live_proxy_table_for_dataset_table,
+        )
+
+        try:
+            datasource, live_table = build_live_proxy_table_for_dataset_table(db, dataset_obj, db_table)
+        except DatasetTableSqlError as exc:
+            raise ValueError(str(exc)) from exc
+
+    if datasource is None:
+        raise ValueError(f"Data source not found for view '{view.name}'")
+
+    return db_table, datasource, live_table
+
+
+def _profile_join_column(
+    db: Session,
+    *,
+    dataset_obj: Dataset,
+    dataset_id: int,
+    view: SemanticView,
+    column_name: str,
+) -> dict[str, Any]:
+    from app.services.column_summary_service import get_column_summary
+
+    _, datasource, live_table = _resolve_semantic_view_table(
+        db,
+        dataset_obj=dataset_obj,
+        dataset_id=dataset_id,
+        view=view,
+    )
+    summary = get_column_summary(datasource, live_table, column_name, top_limit=5)
+    total_rows = int(summary.total_rows or 0)
+    null_count = int(summary.null_count or 0)
+    distinct_count = int(summary.distinct_count or 0)
+    non_null_rows = max(total_rows - null_count, 0)
+
+    has_profiled_values = non_null_rows > 0
+    is_unique_non_null = has_profiled_values and distinct_count == non_null_rows
+    return {
+        "total_rows": total_rows,
+        "null_count": null_count,
+        "distinct_count": distinct_count,
+        "non_null_rows": non_null_rows,
+        "is_unique_non_null": is_unique_non_null if has_profiled_values else None,
+        "has_profiled_values": has_profiled_values,
+    }
+
+
+def suggest_join_relationship(
+    db: Session,
+    dataset_id: int,
+    from_view_id: int,
+    to_view_id: int,
+    from_column: str,
+    to_column: str,
+) -> dict[str, Any]:
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if dataset_obj is None:
+        raise ValueError("Dataset not found")
+
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    if model is None:
+        raise ValueError("No semantic model found - generate the model first")
+
+    from_view = db.query(SemanticView).filter(SemanticView.id == from_view_id).first()
+    to_view = db.query(SemanticView).filter(SemanticView.id == to_view_id).first()
+    if from_view is None or to_view is None:
+        raise ValueError("One or both views not found")
+    if from_view_id == to_view_id:
+        raise ValueError("Cannot join a view to itself")
+
+    normalized_from_column = _clean_join_identifier(from_column)
+    normalized_to_column = _clean_join_identifier(to_column)
+    if not normalized_from_column or not normalized_to_column:
+        raise ValueError("Please select join columns for both tables")
+
+    from_fields = _field_names_for_view(from_view)
+    to_fields = _field_names_for_view(to_view)
+    if normalized_from_column not in from_fields:
+        raise ValueError(f"Column '{normalized_from_column}' does not exist on view '{from_view.name}'")
+    if normalized_to_column not in to_fields:
+        raise ValueError(f"Column '{normalized_to_column}' does not exist on view '{to_view.name}'")
+
+    from_table = db.query(DatasetTable).filter(
+        DatasetTable.id == from_view.dataset_table_id,
+        DatasetTable.dataset_id == dataset_id,
+    ).first()
+    to_table = db.query(DatasetTable).filter(
+        DatasetTable.id == to_view.dataset_table_id,
+        DatasetTable.dataset_id == dataset_id,
+    ).first()
+    if from_table is None or to_table is None:
+        raise ValueError("Only dataset-backed tables can be joined manually")
+
+    blocking_code: str | None = None
+    blocking_message: str | None = None
+    if _would_create_join_cycle(model, from_view.name, to_view.name):
+        blocking_code = "cycle_detected"
+        blocking_message = (
+            f"Cannot create relationship because it would create a loop in the data model "
+            f"({to_view.name} already reaches {from_view.name})."
+        )
+
+    try:
+        from_profile = _profile_join_column(
+            db,
+            dataset_obj=dataset_obj,
+            dataset_id=dataset_id,
+            view=from_view,
+            column_name=normalized_from_column,
+        )
+        to_profile = _profile_join_column(
+            db,
+            dataset_obj=dataset_obj,
+            dataset_id=dataset_id,
+            view=to_view,
+            column_name=normalized_to_column,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Falling back to heuristic join suggestion for dataset %s (%s.%s -> %s.%s): %s",
+            dataset_id,
+            from_view.name,
+            normalized_from_column,
+            to_view.name,
+            normalized_to_column,
+            exc,
+        )
+        from_profile = {
+            "total_rows": 0,
+            "null_count": 0,
+            "distinct_count": 0,
+            "non_null_rows": 0,
+            "is_unique_non_null": None,
+            "has_profiled_values": False,
+        }
+        to_profile = {
+            "total_rows": 0,
+            "null_count": 0,
+            "distinct_count": 0,
+            "non_null_rows": 0,
+            "is_unique_non_null": None,
+            "has_profiled_values": False,
+        }
+
+    from_unique = from_profile.get("is_unique_non_null")
+    to_unique = to_profile.get("is_unique_non_null")
+    inference_mode = "profiled"
+    if isinstance(from_unique, bool) and isinstance(to_unique, bool):
+        suggested_relationship = _infer_relationship_from_uniqueness(from_unique, to_unique)
+    else:
+        inference_mode = "heuristic"
+        suggested_relationship = _heuristic_relationship_for_columns(
+            normalized_from_column,
+            normalized_to_column,
+        )
+
+    if blocking_code is None and suggested_relationship == "many_to_many":
+        blocking_code = "many_to_many"
+        blocking_message = (
+            "Cannot create relationship because both join columns contain duplicate non-null values, "
+            "so this join is many-to-many."
+        )
+
+    return {
+        "relationship": suggested_relationship,
+        "from_unique": from_unique,
+        "to_unique": to_unique,
+        "from_non_null_rows": from_profile.get("non_null_rows"),
+        "to_non_null_rows": to_profile.get("non_null_rows"),
+        "from_distinct_count": from_profile.get("distinct_count"),
+        "to_distinct_count": to_profile.get("distinct_count"),
+        "inference_mode": inference_mode,
+        "can_create": blocking_code is None,
+        "blocking_code": blocking_code,
+        "message": blocking_message,
     }
 
 

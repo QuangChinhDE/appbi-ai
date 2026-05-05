@@ -86,12 +86,33 @@ export interface DistinctFieldValuesResponse {
   values: string[];
 }
 
+export interface JoinSuggestionResponse {
+  relationship: 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many';
+  from_unique: boolean | null;
+  to_unique: boolean | null;
+  from_non_null_rows: number;
+  to_non_null_rows: number;
+  from_distinct_count: number;
+  to_distinct_count: number;
+  inference_mode: 'profiled' | 'heuristic';
+  can_create: boolean;
+  blocking_code: 'cycle_detected' | 'many_to_many' | null;
+  message: string | null;
+}
+
 // ===== Query Keys =====
 
 export const modelKeys = {
   all: ['dataset-model'] as const,
   detail: (datasetId: number) => [...modelKeys.all, datasetId] as const,
   distinct: (datasetId: number, field: string) => [...modelKeys.detail(datasetId), 'distinct', field] as const,
+  joinSuggestion: (
+    datasetId: number,
+    fromViewId: number,
+    toViewId: number,
+    fromColumn: string,
+    toColumn: string,
+  ) => [...modelKeys.detail(datasetId), 'join-suggestion', fromViewId, toViewId, fromColumn, toColumn] as const,
 };
 
 // ===== Hooks =====
@@ -115,6 +136,22 @@ export async function fetchDatasetModelDistinctValues(
         limit,
         ...(filters?.length ? { filters: JSON.stringify(filters) } : {}),
       },
+    },
+  );
+  return response.data;
+}
+
+export async function fetchDatasetModelJoinSuggestion(
+  datasetId: number,
+  params: Pick<AddJoinParams, 'fromViewId' | 'toViewId' | 'fromColumn' | 'toColumn'>,
+) {
+  const response = await api.post<JoinSuggestionResponse>(
+    `/datasets/${datasetId}/model/joins/suggestion`,
+    {
+      from_view_id: params.fromViewId,
+      to_view_id: params.toViewId,
+      from_column: params.fromColumn,
+      to_column: params.toColumn,
     },
   );
   return response.data;
@@ -238,6 +275,33 @@ export function useUpdateModelExplore() {
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: modelKeys.detail(variables.datasetId) });
     },
+  });
+}
+
+export function useDatasetModelJoinSuggestion(
+  datasetId: number | null,
+  params: Pick<AddJoinParams, 'fromViewId' | 'toViewId' | 'fromColumn' | 'toColumn'> | null,
+) {
+  return useQuery({
+    queryKey: params
+      ? modelKeys.joinSuggestion(
+          datasetId!,
+          params.fromViewId,
+          params.toViewId,
+          params.fromColumn,
+          params.toColumn,
+        )
+      : [...modelKeys.all, 'join-suggestion', 'idle'],
+    queryFn: () => fetchDatasetModelJoinSuggestion(datasetId!, params!),
+    enabled: datasetId !== null
+      && datasetId > 0
+      && params !== null
+      && params.fromViewId > 0
+      && params.toViewId > 0
+      && Boolean(params.fromColumn)
+      && Boolean(params.toColumn),
+    staleTime: 30_000,
+    retry: false,
   });
 }
 
