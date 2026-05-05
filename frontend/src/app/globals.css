@@ -358,7 +358,52 @@
   --text-tertiary: 156 163 175;
   --text-quaternary: 107 114 128;
   background-color: rgb(11 15 23);
+  /* Reset inherited text color so descendants don't carry the body's light-mode
+     dark ink (#08090a) onto dark surfaces — without this, table rows and any
+     element that relies purely on inheritance end up with dark text on dark
+     backgrounds ("nền đen chữ cũng đen"). */
+  color: rgb(var(--text-primary));
   color-scheme: dark;
+}
+
+/* Light-theme wrapper — explicitly reset to light-mode text so a "light"
+   dashboard remains correct even when embedded inside a dark-themed UI shell. */
+[data-dashboard-theme='light'] {
+  --surface-1: 255 255 255;
+  --surface-2: 243 244 245;
+  --border-line: 230 230 230;
+  --border-strong: 208 214 224;
+  --text-primary: 8 9 10;
+  --text-secondary: 60 65 73;
+  --text-tertiary: 107 111 118;
+  --text-quaternary: 138 143 152;
+  color: rgb(var(--text-primary));
+}
+
+/* Recharts SVG text (axis ticks, legend labels, axis titles) does not inherit
+   CSS `color` — SVG uses `fill`. Override so charts stay legible in dark mode. */
+[data-dashboard-theme='dark'] .recharts-text,
+[data-dashboard-theme='dark'] .recharts-cartesian-axis-tick-value,
+[data-dashboard-theme='dark'] .recharts-legend-item-text,
+[data-dashboard-theme='dark'] .recharts-label {
+  fill: rgb(var(--text-secondary));
+}
+
+/* Recharts tooltip: default white box looks jarring on a dark dashboard.
+   Keep it themed but don't force transparency — the tooltip plugin controls
+   most of the layout via inline styles so we only nudge bg / border. */
+[data-dashboard-theme='dark'] .recharts-default-tooltip {
+  background-color: rgb(var(--surface-2)) !important;
+  border-color: rgb(var(--border-line)) !important;
+  color: rgb(var(--text-primary)) !important;
+}
+
+[data-dashboard-theme='dark'] .recharts-tooltip-item {
+  color: rgb(var(--text-secondary)) !important;
+}
+
+[data-dashboard-theme='dark'] .recharts-tooltip-label {
+  color: rgb(var(--text-primary)) !important;
 }
 
 [data-dashboard-card='sharp'] .rounded-2xl,

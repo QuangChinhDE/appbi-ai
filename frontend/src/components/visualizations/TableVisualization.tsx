@@ -425,7 +425,7 @@ export function TableVisualization({
                 key={i} 
                 className={clsx(
                   "transition-colors",
-                  i % 2 === 0 ? "bg-white" : "bg-surface-2",
+                  i % 2 === 0 ? "bg-surface-1" : "bg-surface-2",
                   enableDrilldown && onRowClick && "cursor-pointer hover:bg-brand/15"
                 )}
                 onClick={() => enableDrilldown && onRowClick?.(row)}
