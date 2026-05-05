@@ -349,14 +349,19 @@ def audit_type_overrides(
     from app.services.datasource_service import DataSourceConnectionService
 
     normalized_overrides = normalize_type_overrides(candidate_overrides)
-    available_set = {str(column) for column in available_columns}
+    available_list = [str(column) for column in available_columns]
+    available_set = set(available_list)
+    canonical_lookup = {_canonical_column_key(c): c for c in available_list}
     audits: List[TypeAuditResult] = []
 
     for column_name, target_type in normalized_overrides.items():
         if target_type == "string":
             continue
         if column_name not in available_set:
-            raise ValueError(f"Unknown column for type override: {column_name}")
+            resolved = canonical_lookup.get(_canonical_column_key(column_name))
+            if resolved is None:
+                raise ValueError(f"Unknown column for type override: {column_name}")
+            column_name = resolved
 
         cache_payload = {
             "column": column_name,

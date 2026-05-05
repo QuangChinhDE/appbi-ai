@@ -1362,8 +1362,40 @@ def update_dataset_table(
                 raise
 
     if table_update.type_overrides is not None:
+        from app.services.type_override_service import _canonical_column_key
+
         normalized_overrides = normalize_type_overrides(table_update.type_overrides)
         current_overrides = normalize_type_overrides(getattr(db_table, "type_overrides", None))
+
+        # Resolve override keys against the actual base-query columns. Frontend
+        # may send display_name (e.g. "REV FINAL (TRỪ VAT, GỒM BBDS)") while
+        # the SQL plan exposes a canonical/safe identifier. Without this remap,
+        # save succeeds but the cast layer never matches the column at query
+        # time -> SUM falls back to VARCHAR and fails on rows with text.
+        if normalized_overrides and db_table.datasource_id is not None:
+            try:
+                _resolve_ds = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+                if _resolve_ds is not None:
+                    _resolve_draft = _build_table_draft(db_table, table_update)
+                    _resolve_plan = build_live_base_query_plan(
+                        _resolve_ds, _resolve_draft, apply_type_overrides=False
+                    )
+                    _avail = [str(c) for c in (_resolve_plan.output_columns or [])]
+                    _avail_set = set(_avail)
+                    _canon_map = {_canonical_column_key(c): c for c in _avail}
+                    remapped: Dict[str, str] = {}
+                    for col, tgt in normalized_overrides.items():
+                        if col in _avail_set:
+                            remapped[col] = tgt
+                        else:
+                            resolved = _canon_map.get(_canonical_column_key(col))
+                            remapped[resolved if resolved else col] = tgt
+                    normalized_overrides = remapped
+            except Exception:
+                # Best-effort remap; fall through to existing audit which will
+                # surface a precise "Unknown column" error if still mismatched.
+                pass
+
         changed_overrides = {
             column: target_type
             for column, target_type in normalized_overrides.items()
@@ -2054,10 +2086,10 @@ def execute_dataset_table_query(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Failed to execute query: %s", e)
+        logger.exception("Failed to execute query")
         raise HTTPException(
-            status_code=500,
-            detail="Failed to execute query."
+            status_code=400,
+            detail=f"Failed to execute query: {e}",
         )
 
 
