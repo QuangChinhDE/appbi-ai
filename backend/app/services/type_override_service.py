@@ -338,13 +338,22 @@ def build_safe_cast_sql(
             f"WHEN {trimmed} ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$' THEN CAST({trimmed} AS DATE) "
         )
         if parse_format:
+            if dialect == "duckdb":
+                # DuckDB has try_strptime(text, fmt) -> TIMESTAMP that returns
+                # NULL on parse failure. Use the BigQuery-style %Y/%m/%d tokens.
+                ddb_pat = _sql_string_literal(_translate_user_pattern(parse_format, _PATTERN_TOKENS_BIGQUERY))
+                return (
+                    f"COALESCE("
+                    f"CAST(try_strptime({trimmed}, {ddb_pat}) AS DATE), "
+                    f"TRY_CAST({trimmed} AS DATE)"
+                    f")"
+                )
             pg_pat = _sql_string_literal(_translate_user_pattern(parse_format, _PATTERN_TOKENS_POSTGRES))
-            # Postgres TO_DATE raises on invalid input, so guard with a regex
-            # check first using a NULL-safe pattern that rejects empty strings.
+            # Postgres TO_DATE raises on invalid input — wrap callers in their
+            # own retry/validation if needed; here we simply offer the typed
+            # parse alongside the ISO fallback.
             user_branch = (
-                f"WHEN {trimmed} IS NOT NULL THEN "
-                f"(SELECT CASE WHEN _v IS NULL THEN NULL ELSE _v END "
-                f"FROM (SELECT TRY_CAST(TO_CHAR(TO_DATE({trimmed}, {pg_pat}), 'YYYY-MM-DD') AS DATE) AS _v) _t) "
+                f"WHEN {trimmed} IS NOT NULL THEN TO_DATE({trimmed}, {pg_pat}) "
             )
             return f"CASE {user_branch}{iso_branch}ELSE NULL END"
         return f"CASE {iso_branch}ELSE NULL END"
@@ -354,10 +363,17 @@ def build_safe_cast_sql(
             f"THEN CAST({trimmed} AS TIMESTAMP) "
         )
         if parse_format:
+            if dialect == "duckdb":
+                ddb_pat = _sql_string_literal(_translate_user_pattern(parse_format, _PATTERN_TOKENS_BIGQUERY))
+                return (
+                    f"COALESCE("
+                    f"try_strptime({trimmed}, {ddb_pat}), "
+                    f"TRY_CAST({trimmed} AS TIMESTAMP)"
+                    f")"
+                )
             pg_pat = _sql_string_literal(_translate_user_pattern(parse_format, _PATTERN_TOKENS_POSTGRES))
             user_branch = (
-                f"WHEN {trimmed} IS NOT NULL THEN "
-                f"TRY_CAST(TO_TIMESTAMP({trimmed}, {pg_pat}) AS TIMESTAMP) "
+                f"WHEN {trimmed} IS NOT NULL THEN TO_TIMESTAMP({trimmed}, {pg_pat}) "
             )
             return f"CASE {user_branch}{iso_branch}ELSE NULL END"
         return f"CASE {iso_branch}ELSE NULL END"
