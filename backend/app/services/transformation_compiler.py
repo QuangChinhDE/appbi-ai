@@ -112,6 +112,151 @@ def _rewrite_safe_numeric_helpers(expr: str, dialect: str) -> str:
     return rewritten
 
 
+def _string_sql_type(dialect: str) -> str:
+    if dialect == "bigquery":
+        return "STRING"
+    if dialect == "postgres":
+        return "TEXT"
+    if dialect == "mysql":
+        return "CHAR"
+    return "VARCHAR"
+
+
+def _stringify_sql(expr: str, dialect: str) -> str:
+    return f"COALESCE(CAST({expr} AS {_string_sql_type(dialect)}), '')"
+
+
+def _compile_concat_expression(args: List[str], dialect: str) -> str:
+    if not args:
+        raise ValueError("CONCATENATE requires at least one argument")
+    rendered = ", ".join(_stringify_sql(arg, dialect) for arg in args)
+    return f"CONCAT({rendered})"
+
+
+def _compile_left_expression(args: List[str]) -> str:
+    if len(args) != 2:
+        raise ValueError("LEFT requires exactly two arguments")
+    text_expr, length_expr = args
+    return f"SUBSTR({text_expr}, 1, {length_expr})"
+
+
+def _compile_right_expression(args: List[str]) -> str:
+    if len(args) != 2:
+        raise ValueError("RIGHT requires exactly two arguments")
+    text_expr, length_expr = args
+    return f"RIGHT({text_expr}, {length_expr})"
+
+
+def _compile_mid_expression(args: List[str]) -> str:
+    if len(args) != 3:
+        raise ValueError("MID requires exactly three arguments")
+    text_expr, start_expr, length_expr = args
+    return f"SUBSTR({text_expr}, {start_expr}, {length_expr})"
+
+
+def _compile_len_expression(args: List[str]) -> str:
+    if len(args) != 1:
+        raise ValueError("LEN requires exactly one argument")
+    return f"LENGTH({args[0]})"
+
+
+def _compile_substitute_expression(args: List[str]) -> str:
+    if len(args) != 3:
+        raise ValueError("SUBSTITUTE requires exactly three arguments")
+    text_expr, from_expr, to_expr = args
+    return f"REPLACE({text_expr}, {from_expr}, {to_expr})"
+
+
+def _compile_find_expression(args: List[str], dialect: str) -> str:
+    if len(args) != 2:
+        raise ValueError("FIND requires exactly two arguments")
+    needle_expr, haystack_expr = args
+    if dialect == "mysql":
+        return f"INSTR({haystack_expr}, {needle_expr})"
+    return f"STRPOS({haystack_expr}, {needle_expr})"
+
+
+def _compile_logical_function(args: List[str], operator: str) -> str:
+    if not args:
+        raise ValueError(f"{operator} requires at least one argument")
+    return "(" + f" {operator} ".join(args) + ")"
+
+
+def _compile_not_expression(args: List[str]) -> str:
+    if len(args) != 1:
+        raise ValueError("NOT requires exactly one argument")
+    return f"(NOT {args[0]})"
+
+
+def _compile_extrema_expression(args: List[str], sql_name: str, fn_name: str) -> str:
+    if not args:
+        raise ValueError(f"{fn_name} requires at least one argument")
+    if len(args) == 1:
+        return args[0]
+    return f"{sql_name}(" + ", ".join(args) + ")"
+
+
+def _compile_alias_function(args: List[str], sql_name: str, fn_name: str, expected_args: int | None = None) -> str:
+    if expected_args is not None and len(args) != expected_args:
+        raise ValueError(f"{fn_name} requires exactly {expected_args} arguments")
+    if not args:
+        raise ValueError(f"{fn_name} requires at least one argument")
+    return f"{sql_name}(" + ", ".join(args) + ")"
+
+
+def _compile_iferror_expression(args: List[str]) -> str:
+    if len(args) != 2:
+        raise ValueError("IFERROR requires exactly two arguments")
+    value_expr, fallback_expr = args
+    # Best-effort SQL analogue: catches NULL-like outputs after SAFE_* rewrites.
+    # It does not trap every runtime SQL error class.
+    return f"COALESCE({value_expr}, {fallback_expr})"
+
+
+def _compile_text_expression(args: List[str], dialect: str) -> str:
+    if not args:
+        raise ValueError("TEXT requires at least one argument")
+    return f"CAST({args[0]} AS {_string_sql_type(dialect)})"
+
+
+def _compile_today_expression(_args: List[str], dialect: str) -> str:
+    if dialect == "bigquery":
+        return "DATE(CURRENT_TIMESTAMP())"
+    return "DATE(NOW())"
+
+
+def _compile_now_expression(_args: List[str], dialect: str) -> str:
+    if dialect == "bigquery":
+        return "CURRENT_TIMESTAMP()"
+    return "NOW()"
+
+
+def _rewrite_excel_functions(expr: str, dialect: str) -> str:
+    rewritten = expr
+    rewrite_specs = [
+        ("CONCATENATE", lambda args: _compile_concat_expression(args, dialect)),
+        ("LEFT", _compile_left_expression),
+        ("RIGHT", _compile_right_expression),
+        ("MID", _compile_mid_expression),
+        ("LEN", _compile_len_expression),
+        ("SUBSTITUTE", _compile_substitute_expression),
+        ("FIND", lambda args: _compile_find_expression(args, dialect)),
+        ("AND", lambda args: _compile_logical_function(args, "AND")),
+        ("OR", lambda args: _compile_logical_function(args, "OR")),
+        ("NOT", _compile_not_expression),
+        ("MAX", lambda args: _compile_extrema_expression(args, "GREATEST", "MAX")),
+        ("MIN", lambda args: _compile_extrema_expression(args, "LEAST", "MIN")),
+        ("CEILING", lambda args: _compile_alias_function(args, "CEIL", "CEILING")),
+        ("IFERROR", _compile_iferror_expression),
+        ("TEXT", lambda args: _compile_text_expression(args, dialect)),
+        ("TODAY", lambda args: _compile_today_expression(args, dialect)),
+        ("NOW", lambda args: _compile_now_expression(args, dialect)),
+    ]
+    for fn_name, replacer in rewrite_specs:
+        rewritten = _replace_function_calls(rewritten, fn_name, replacer)
+    return rewritten
+
+
 _SQL_EXPR_CONTROL_KEYWORDS = {
     "AND",
     "OR",
@@ -537,6 +682,7 @@ class TransformationCompiler:
         while previous != expr:
             previous = expr
             expr = _replace_function_calls(expr, "IF", _compile_if_expression)
+            expr = _rewrite_excel_functions(expr, dialect)
         expr = _rewrite_safe_numeric_helpers(expr, dialect)
         expr = expr.replace("!=", "<>")
         expr = _quote_bare_identifiers(expr, dialect)
@@ -585,8 +731,12 @@ class TransformationCompiler:
 
         # Whitelist allowed function calls to prevent dangerous DuckDB builtins
         _ALLOWED_FUNCTIONS = {
-            "ROUND", "COALESCE", "IF", "ABS", "CEIL", "FLOOR",
-            "NULLIF", "CAST", "GREATEST", "LEAST",
+            "ROUND", "COALESCE", "IF", "ABS", "CEIL", "CEILING", "FLOOR",
+            "NULLIF", "CAST", "GREATEST", "LEAST", "CONCAT", "CONCATENATE",
+            "LEFT", "RIGHT", "MID", "LEN", "LENGTH", "TRIM", "UPPER", "LOWER",
+            "IFERROR", "AND", "OR", "NOT", "DATE", "TODAY", "NOW",
+            "MAX", "MIN", "MOD", "POWER", "SQRT", "REPLACE", "SUBSTITUTE",
+            "FIND", "STRPOS", "INSTR", "TEXT",
             "SAFE_INT", "SAFE_FLOAT", "SAFE_NUMBER",
         }
         func_calls = re.findall(r"\b([A-Za-z_]\w*)\s*\(", expression)
