@@ -2571,6 +2571,9 @@ def add_model_join(
         raise HTTPException(status_code=422, detail=f"Missing fields: {missing}")
 
     try:
+        alias_value = payload.get("alias")
+        if alias_value is not None:
+            alias_value = str(alias_value).strip() or None
         result = add_join(
             db,
             dataset_id=dataset_id,
@@ -2580,6 +2583,7 @@ def add_model_join(
             to_column=payload["to_column"],
             join_type=payload.get("join_type", "left"),
             relationship=payload.get("relationship", "many_to_one"),
+            alias=alias_value,
         )
         return result
     except ValueError as e:

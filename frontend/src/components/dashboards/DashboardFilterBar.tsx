@@ -80,8 +80,14 @@ export function DashboardFilterBar({
 
   const normalizedAddFilterSearch = addFilterSearch.trim().toLowerCase();
 
+  // A column is offerable as a dashboard filter when at least one chart in
+  // the dashboard can apply it. Charts that don't reach the field are simply
+  // skipped at query time. Date columns are always offered (legacy auto-link
+  // behavior for non-semantic date fields still applies).
   const addableColumns = useMemo(
-    () => availableColumns.filter((column) => column.sharedAcrossDataset !== false || column.type === 'date'),
+    () => availableColumns.filter((column) =>
+      column.type === 'date' || (column.chartCoverage ?? 0) > 0,
+    ),
     [availableColumns],
   );
 

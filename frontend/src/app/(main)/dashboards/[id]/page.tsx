@@ -822,6 +822,7 @@ export default function DashboardDetailPage() {
             datasetId?: number;
             dimensionFields?: string[];
             fieldMap?: Record<string, string>;
+            reachableFields?: string[];
           }
         | undefined;
 
@@ -832,9 +833,15 @@ export default function DashboardDetailPage() {
 
       const viewsByName = new Map(model.views.map((view) => [view.name, view]));
       const joinKeyFields = datasetJoinKeyFields.get(binding.datasetId) ?? new Set<string>();
-      const candidateFields = binding.dimensionFields?.length
-        ? binding.dimensionFields
-        : Object.values(binding.fieldMap ?? {});
+      // Prefer reachableFields (multi-hop, reflects join graph) when present.
+      // This matches PowerBI/Looker semantics: a chart can be filtered by any
+      // field reachable through the data model joins, not only the dimensions
+      // currently rendered on the chart.
+      const candidateFields = binding.reachableFields?.length
+        ? binding.reachableFields
+        : (binding.dimensionFields?.length
+            ? binding.dimensionFields
+            : Object.values(binding.fieldMap ?? {}));
 
       for (const semanticField of candidateFields) {
         const parts = splitSemanticField(semanticField);

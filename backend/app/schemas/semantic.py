@@ -30,9 +30,16 @@ class MeasureDefinition(BaseModel):
 
 # Join Definition
 class JoinDefinition(BaseModel):
-    """LookML-style join definition"""
+    """LookML-style join definition.
+
+    `alias` is the name used to reference the joined view in semantic field
+    references (e.g. `creator.email` vs `users.email`). When omitted, the join
+    is referenced by `view` name. Aliasing enables role-playing dimensions
+    (same view joined multiple times via different keys).
+    """
     name: str
     view: str  # Name of the view to join
+    alias: Optional[str] = None  # Optional alias for role-playing dimensions
     type: Literal["left", "inner", "right", "full"] = "left"
     sql_on: str  # SQL join condition, can use ${view.field} placeholders
     relationship: Optional[Literal["one_to_one", "one_to_many", "many_to_one", "many_to_many"]] = None

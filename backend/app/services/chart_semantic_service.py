@@ -19,6 +19,7 @@ from app.services.dataset_table_sql_service import (
     is_derived_table,
     validate_and_clean_derived_query,
 )
+from app.services.semantic_join_resolver import reachable_fields_for_model
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -186,6 +187,9 @@ def resolve_chart_semantic_binding(
     field_map: dict[str, str] = {}
     dimension_fields: list[str] = []
     measure_fields: list[str] = []
+    reachable_views: list[str] = []
+    reachable_dimension_fields: list[str] = []
+    reachable_measure_fields: list[str] = []
     calendar_field_mappings: list[dict[str, Any]] = []
 
     if view is not None:
@@ -194,6 +198,8 @@ def resolve_chart_semantic_binding(
         dimension_fields.extend(f"{view_name}.{field}" for field in base_dimension_names)
         measure_fields.extend(f"{view_name}.{field}" for field in base_measure_names)
 
+        # Direct 1-hop joins from the explore (legacy semantic for
+        # dimensionFields / measureFields callers).
         join_targets: dict[str, SemanticView] = {}
         if explore is not None:
             for join in explore.joins or []:
@@ -213,6 +219,14 @@ def resolve_chart_semantic_binding(
                 f"{join_view_name}.{field}"
                 for field in _field_names(join_view.measures)
             )
+
+        # Compute reachable views & fields via multi-hop BFS over the model's
+        # join graph. Used by dashboard filter to detect which charts can
+        # apply a filter via join traversal (not just direct binding).
+        nodes, reachable_dimension_fields, reachable_measure_fields = (
+            reachable_fields_for_model(db, model, view)
+        )
+        reachable_views = nodes
 
         if explore is not None:
             calendar_field_mappings = iter_calendar_binding_fields(explore.joins or [])
@@ -253,6 +267,10 @@ def resolve_chart_semantic_binding(
         "fieldMap": field_map,
         "dimensionFields": sorted(set(dimension_fields)),
         "measureFields": sorted(set(measure_fields)),
+        "reachableViews": reachable_views,
+        "reachableFields": sorted(
+            set(reachable_dimension_fields) | set(reachable_measure_fields)
+        ),
         "calendarFieldMappings": calendar_field_mappings,
     }
     return binding

@@ -245,6 +245,8 @@ export interface AddJoinParams {
   toColumn: string;
   joinType?: 'left' | 'inner' | 'right' | 'full';
   relationship?: 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many';
+  /** Optional alias for role-playing joins (e.g. "creator", "updater" → users) */
+  alias?: string | null;
 }
 
 export function useAddJoin() {
@@ -260,6 +262,7 @@ export function useAddJoin() {
           to_column: params.toColumn,
           join_type: params.joinType ?? 'left',
           relationship: params.relationship ?? 'many_to_one',
+          ...(params.alias ? { alias: params.alias } : {}),
         }
       );
       return response.data;

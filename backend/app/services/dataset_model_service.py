@@ -1044,6 +1044,7 @@ def add_join(
     to_column: str,
     join_type: str = "left",
     relationship: str = "many_to_one",
+    alias: str | None = None,
 ) -> dict:
     """
     Add (or update) a join from one semantic view to another.
@@ -1102,11 +1103,16 @@ def add_join(
         db.flush()
 
     joins = list(explore.joins or [])
+    # When alias is provided, sql_on placeholders reference the alias rather
+    # than the view name so role-played joins resolve correctly later.
+    alias_clean = (alias or "").strip() or None
+    placeholder_target = alias_clean or to_view.name
     new_join = {
-        "name": to_view.name,
+        "name": alias_clean or to_view.name,
         "view": to_view.name,
+        "alias": alias_clean,
         "type": join_type,
-        "sql_on": f"${{TABLE}}.{from_column} = ${{{to_view.name}}}.{to_column}",
+        "sql_on": f"${{TABLE}}.{from_column} = ${{{placeholder_target}}}.{to_column}",
         "relationship": relationship,
         "from_view": from_view.name,
         "from_column": from_column,
@@ -1114,15 +1120,17 @@ def add_join(
     }
 
     # Update an exact existing join, otherwise append so one pair of tables can
-    # carry multiple explicit relationships on different columns.
+    # carry multiple explicit relationships on different columns or aliases.
     for i, j in enumerate(joins):
         existing_from, existing_to = _parse_join_columns(j.get("sql_on"))
         join_from = _clean_join_identifier(j.get("from_column")) or existing_from
         join_to = _clean_join_identifier(j.get("to_column")) or existing_to
+        existing_alias = (j.get("alias") or "").strip() or None
         if (
             j.get("view") == to_view.name
             and join_from == from_column
             and join_to == to_column
+            and existing_alias == alias_clean
         ):
             joins[i] = new_join
             break

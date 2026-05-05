@@ -26,6 +26,7 @@ export interface RelationshipDialogValue {
   toColumn: string;
   joinType: JoinType;
   relationship: RelationshipType;
+  alias?: string | null;
 }
 
 interface RelationshipDialogProps {
@@ -120,6 +121,7 @@ export function RelationshipDialog({
   const [relationship, setRelationship] = useState<RelationshipType>(
     initialValue?.relationship ?? 'many_to_one'
   );
+  const [alias, setAlias] = useState<string>(initialValue?.alias ?? '');
   const [error, setError] = useState('');
 
   // Reset when dialog reopens
@@ -131,6 +133,7 @@ export function RelationshipDialog({
       setToColumn(initialValue?.toColumn ?? '');
       setJoinType(initialValue?.joinType ?? 'left');
       setRelationship(initialValue?.relationship ?? 'many_to_one');
+      setAlias(initialValue?.alias ?? '');
       setError('');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -185,6 +188,7 @@ export function RelationshipDialog({
       return;
     }
     try {
+      const aliasTrim = alias.trim();
       await onSave({
         fromViewId: Number(fromViewId),
         toViewId: Number(toViewId),
@@ -192,6 +196,7 @@ export function RelationshipDialog({
         toColumn,
         joinType,
         relationship,
+        alias: aliasTrim || null,
       });
       onClose();
     } catch (e: any) {
@@ -357,6 +362,25 @@ export function RelationshipDialog({
                 options={JOIN_TYPE_OPTIONS}
               />
             </div>
+          </div>
+
+          {/* Optional alias for role-playing dimensions */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
+              Alias <span className="normal-case text-text-quaternary">(optional — for role-playing, e.g. "creator", "updater")</span>
+            </label>
+            <input
+              type="text"
+              value={alias}
+              onChange={(e) => setAlias(e.target.value)}
+              placeholder={toView ? `Leave blank to use "${toView.name}"` : 'e.g. creator, updater'}
+              className="w-full px-3 py-2 text-sm border border-[rgb(var(--border-strong))] rounded-md bg-surface-1
+                focus:outline-none focus:ring-2 focus:ring-brand"
+            />
+            <p className="text-xs text-text-quaternary">
+              Use this when the same table is joined more than once via different keys. Field references will use
+              the alias (e.g. <code>creator.email</code>) instead of the table name.
+            </p>
           </div>
 
           {/* SQL preview */}

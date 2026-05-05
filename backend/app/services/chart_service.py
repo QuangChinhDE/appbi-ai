@@ -77,6 +77,27 @@ def _semantic_field_is_supported_by_binding(
     if not semantic_ref or "." not in semantic_ref:
         return True
 
+    # Reachable set is computed via multi-hop BFS over the semantic model's
+    # join graph (see semantic_join_resolver). A field is supported if it
+    # belongs to a view reachable from this chart's base view via joins, OR
+    # it appears in the explicit chart bindings (dimensionFields, fieldMap,
+    # calendar mappings).
+    reachable_fields = {
+        str(value).strip()
+        for value in (binding.get("reachableFields") or [])
+        if str(value or "").strip()
+    }
+    reachable_views = {
+        str(value).strip()
+        for value in (binding.get("reachableViews") or [])
+        if str(value or "").strip()
+    }
+    if semantic_ref in reachable_fields:
+        return True
+    semantic_view, _ = semantic_ref.split(".", 1)
+    if semantic_view in reachable_views:
+        return True
+
     supported_fields = {
         str(value).strip()
         for value in [
@@ -227,6 +248,17 @@ def _normalize_runtime_filters_for_chart(
             continue
 
         if include_joined_semantic:
+            # Only forward joined-view filters when the target view is
+            # actually reachable from this chart's base view via the
+            # semantic model's join graph. The SQL adapter will resolve
+            # the actual join chain.
+            reachable_views = {
+                str(v).strip()
+                for v in (binding.get("reachableViews") or [])
+                if str(v or "").strip()
+            }
+            if reachable_views and semantic_view not in reachable_views:
+                continue
             result.append(filt)
 
     return result
@@ -345,6 +377,33 @@ def _render_live_join_condition(
     return None
 
 
+def _render_step_join_condition(
+    edge,
+    *,
+    from_alias: str,
+    to_alias: str,
+) -> str | None:
+    """Render a JOIN ON condition for a JoinEdge between two SQL aliases.
+
+    Prefers the raw `sql_on` template when present (replacing ${TABLE} →
+    from_alias and ${view} / ${alias} → to_alias). Falls back to
+    from_column/to_column equality when the template is absent.
+    """
+    sql_on = str(edge.sql_on or "").strip()
+    if sql_on:
+        rendered = sql_on.replace("${TABLE}", from_alias)
+        # Replace alias-keyed placeholder (preferred when role-played) and
+        # the raw view-keyed placeholder (legacy joins).
+        if edge.to_node and edge.to_node != edge.to_view:
+            rendered = rendered.replace(f"${{{edge.to_node}}}", to_alias)
+        rendered = rendered.replace(f"${{{edge.to_view}}}", to_alias)
+        return rendered
+
+    if edge.from_column and edge.to_column:
+        return f"{from_alias}.{edge.from_column} = {to_alias}.{edge.to_column}"
+    return None
+
+
 def _adapt_live_sql_for_semantic_filters(
     db: Session,
     datasource,
@@ -352,6 +411,18 @@ def _adapt_live_sql_for_semantic_filters(
     chart_config: dict | None,
     filters: list | None,
 ) -> tuple[str | None, list[dict]]:
+    """Wrap base SQL with multi-hop joins so dashboard filters that target
+    fields on joined views can be applied.
+
+    Strategy:
+    1. For each filter referencing a joined view (`alias.field`), use the
+       SemanticJoinResolver to compute a join path from base_view to the
+       target node.
+    2. Materialize each unique step in the chain as a LEFT JOIN with a
+       deterministic SQL alias.
+    3. Project the target field as `__sem_filter_N` on the wrapping SELECT
+       and rewrite the filter to reference that projection alias.
+    """
     normalized_filters = _normalize_runtime_filters_for_chart(
         chart_config,
         filters,
@@ -365,23 +436,21 @@ def _adapt_live_sql_for_semantic_filters(
         if isinstance(chart_config, dict) and isinstance(chart_config.get("semanticBinding"), dict)
         else {}
     )
-    explore_id = binding.get("exploreId")
-    explore_name = str(binding.get("exploreName") or "").strip()
     base_view_name = str(binding.get("baseViewName") or "").strip()
-    if not explore_id and not explore_name:
+    model_id = binding.get("modelId")
+    if not base_view_name:
         return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
 
-    from app.models.semantic import SemanticExplore, SemanticView
+    from app.models.semantic import SemanticModel, SemanticView
     from app.services.dataset_relation_service import resolve_dataset_table_relation
+    from app.services.semantic_join_resolver import SemanticJoinResolver
 
-    explore_query = db.query(SemanticExplore)
-    explore = (
-        explore_query.filter(SemanticExplore.id == explore_id).first()
-        if explore_id
-        else explore_query.filter(SemanticExplore.name == explore_name).first()
+    model = (
+        db.query(SemanticModel).filter(SemanticModel.id == model_id).first()
+        if model_id
+        else None
     )
-    if not explore:
-        return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
+    resolver = SemanticJoinResolver(db, model, base_view_name)
 
     try:
         base_sql = resolve_dataset_table_relation(datasource, db_table).sql
@@ -389,13 +458,26 @@ def _adapt_live_sql_for_semantic_filters(
         logger.debug("Failed to build base live SQL for semantic runtime filters", exc_info=True)
         return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
 
-    join_alias_by_view: dict[str, str] = {}
-    join_specs: list[dict[str, Any]] = []
+    # Track materialized join steps. Key = (from_alias_sql, to_node) so that
+    # a path of length N spawns N JOINs but two filters that share a prefix
+    # reuse them (e.g. orders → customers → addresses, plus another filter
+    # on customers.country reuses the customers join).
+    materialized_steps: dict[tuple[str, str], str] = {}
+    join_clauses: list[str] = []
     projected_fields: list[dict[str, str]] = []
     effective_filters: list[dict] = []
+    next_join_index = 0
+    next_projection_index = 0
 
-    join_index = 0
-    projection_index = 0
+    # cache SemanticView lookups
+    view_cache: dict[str, SemanticView | None] = {}
+
+    def _get_view(view_name: str) -> SemanticView | None:
+        if view_name in view_cache:
+            return view_cache[view_name]
+        result = db.query(SemanticView).filter(SemanticView.name == view_name).first()
+        view_cache[view_name] = result
+        return result
 
     for filt in normalized_filters:
         semantic_field = str(
@@ -407,33 +489,82 @@ def _adapt_live_sql_for_semantic_filters(
             effective_filters.append(filt)
             continue
 
-        semantic_view_name, semantic_name = semantic_field.split(".", 1)
-        if semantic_view_name == base_view_name:
+        target_node, semantic_name = semantic_field.split(".", 1)
+        if target_node == base_view_name:
             effective_filters.append(filt)
             continue
 
-        join_def = next(
-            (
-                join
-                for join in (explore.joins or [])
-                if str(join.get("view") or "").strip() == semantic_view_name
-                and str(join.get("from_view") or base_view_name).strip() == base_view_name
-                and join.get("from_column")
-                and join.get("to_column")
-            ),
-            None,
-        )
-        if not join_def:
+        path = resolver.resolve_path(target_node)
+        if path is None:
+            # not reachable — skip this filter for this chart
             continue
 
-        semantic_view = db.query(SemanticView).filter(SemanticView.name == semantic_view_name).first()
-        if not semantic_view:
+        # Materialize each step. Use stable alias based on path prefix so
+        # shared prefixes reuse the same JOIN.
+        prev_alias = "_appbi_base"
+        last_alias = prev_alias
+        path_failed = False
+        for step in path.steps:
+            cache_key = (prev_alias, step.edge.to_node)
+            existing_alias = materialized_steps.get(cache_key)
+            if existing_alias is not None:
+                last_alias = existing_alias
+                prev_alias = existing_alias
+                continue
+
+            joined_view = _get_view(step.edge.to_view)
+            if joined_view is None:
+                path_failed = True
+                break
+            relation = _build_live_relation_for_semantic_view(db, datasource, joined_view)
+            if not relation:
+                path_failed = True
+                break
+
+            new_alias = f"_appbi_sem_join_{next_join_index}"
+            next_join_index += 1
+            condition = _render_step_join_condition(
+                step.edge,
+                from_alias=prev_alias,
+                to_alias=new_alias,
+            )
+            # Validate the to_column actually exists; rebuild if necessary.
+            to_col = step.edge.to_column
+            if condition and to_col and not _semantic_view_has_field(joined_view, to_col):
+                # try fallback: maybe to_column is misnamed but from_column exists
+                from_col = step.edge.from_column
+                if from_col and _semantic_view_has_field(joined_view, from_col):
+                    condition = f"{prev_alias}.{from_col} = {new_alias}.{from_col}"
+                else:
+                    condition = None
+            if not condition:
+                path_failed = True
+                break
+
+            join_kw = (step.edge.type or "left").upper()
+            join_clauses.append(
+                f"{join_kw} JOIN {_wrap_live_sql_relation(relation)} AS {new_alias} "
+                f"ON {condition}"
+            )
+            materialized_steps[cache_key] = new_alias
+            prev_alias = new_alias
+            last_alias = new_alias
+
+        if path_failed:
             continue
 
+        # Resolve the field def on the target view
+        target_view_name = resolver.view_for_node(target_node) or target_node
+        target_view = _get_view(target_view_name)
+        if target_view is None:
+            continue
         field_def = next(
             (
                 item
-                for item in [*(semantic_view.dimensions or []), *(semantic_view.measures or [])]
+                for item in [
+                    *(target_view.dimensions or []),
+                    *(target_view.measures or []),
+                ]
                 if str(item.get("name") or "").strip() == semantic_name
             ),
             None,
@@ -441,65 +572,16 @@ def _adapt_live_sql_for_semantic_filters(
         if not field_def:
             continue
 
-        join_alias = join_alias_by_view.get(semantic_view_name)
-        if join_alias is None:
-            join_relation = _build_live_relation_for_semantic_view(db, datasource, semantic_view)
-            if not join_relation:
-                continue
-            join_condition = _render_live_join_condition(join_def, f"_appbi_sem_join_{join_index}")
-            # Verify to_column actually exists in the joined semantic view;
-            # otherwise fall through to rebuild the condition with from_column.
-            _jtc = str(join_def.get("to_column") or "").strip()
-            if join_condition and _jtc and not _semantic_view_has_field(semantic_view, _jtc):
-                join_condition = None
-            if not join_condition:
-                join_from_column = str(join_def.get("from_column"))
-                join_to_column = str(join_def.get("to_column"))
-                if (
-                    join_to_column
-                    and not _semantic_view_has_field(semantic_view, join_to_column)
-                    and _semantic_view_has_field(semantic_view, join_from_column)
-                ):
-                    join_to_column = join_from_column
-                join_condition = (
-                    f"_appbi_base.{join_from_column} = _appbi_sem_join_{join_index}.{join_to_column}"
-                    if join_from_column and join_to_column
-                    else None
-                )
-            if not join_condition:
-                continue
-            join_alias = f"_appbi_sem_join_{join_index}"
-            join_index += 1
-            join_alias_by_view[semantic_view_name] = join_alias
-            join_specs.append(
-                {
-                    "view": semantic_view_name,
-                    "alias": join_alias,
-                    "relation": join_relation,
-                    "condition": join_condition,
-                }
-            )
-
-        rendered_expr = _render_live_semantic_field_sql(field_def, semantic_name, join_alias)
+        rendered_expr = _render_live_semantic_field_sql(field_def, semantic_name, last_alias)
         if not rendered_expr:
             continue
 
-        projection_alias = f"__sem_filter_{projection_index}"
-        projection_index += 1
-        projected_fields.append(
-            {
-                "expr": rendered_expr,
-                "alias": projection_alias,
-            }
-        )
-        effective_filters.append(
-            {
-                **filt,
-                "field": projection_alias,
-            }
-        )
+        projection_alias = f"__sem_filter_{next_projection_index}"
+        next_projection_index += 1
+        projected_fields.append({"expr": rendered_expr, "alias": projection_alias})
+        effective_filters.append({**filt, "field": projection_alias})
 
-    if not join_specs or not projected_fields:
+    if not join_clauses or not projected_fields:
         return None, _normalize_runtime_filters_for_chart(chart_config, normalized_filters)
 
     select_parts = ["_appbi_base.*"]
@@ -507,13 +589,6 @@ def _adapt_live_sql_for_semantic_filters(
         f'{field["expr"]} AS {field["alias"]}'
         for field in projected_fields
     )
-    join_clauses = [
-        (
-            f'LEFT JOIN {_wrap_live_sql_relation(join_spec["relation"])} AS {join_spec["alias"]} '
-            f'ON {join_spec["condition"]}'
-        )
-        for join_spec in join_specs
-    ]
     enriched_sql = (
         f'SELECT {", ".join(select_parts)} '
         f'FROM ({base_sql}) AS _appbi_base '
