@@ -3,14 +3,20 @@
 import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { fetchDatasetModelDistinctValues, modelKeys } from '@/hooks/use-dataset-model';
-import { getColumnKey, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
+import {
+  getColumnKey,
+  getDistinctValueFilterContext,
+  getFilterKey,
+  type BaseFilter,
+  type ColumnInfo,
+} from '@/lib/filters';
 
 export function useFilterDistinctValues(
   columns: ColumnInfo[],
   filters: BaseFilter[],
   fallbackDistinctValues: Record<string, string[]>,
 ) {
-  const activeSemanticDistinctColumns = useMemo(() => {
+  const activeSemanticDistinctTargets = useMemo(() => {
     if (columns.length === 0 || filters.length === 0) {
       return [];
     }
@@ -28,13 +34,20 @@ export function useFilterDistinctValues(
       activeColumns.set(key, column);
     }
 
-    return Array.from(activeColumns.values());
+    return Array.from(activeColumns.values()).map((column) => {
+      const filterContext = getDistinctValueFilterContext(filters, column);
+      return {
+        column,
+        filterContext,
+        filterContextKey: JSON.stringify(filterContext),
+      };
+    });
   }, [columns, filters]);
 
   const semanticDistinctQueries = useQueries({
-    queries: activeSemanticDistinctColumns.map((column) => ({
-      queryKey: modelKeys.distinct(column.datasetId!, column.semanticField!),
-      queryFn: () => fetchDatasetModelDistinctValues(column.datasetId!, column.semanticField!),
+    queries: activeSemanticDistinctTargets.map(({ column, filterContext, filterContextKey }) => ({
+      queryKey: [...modelKeys.distinct(column.datasetId!, column.semanticField!), 'filters', filterContextKey],
+      queryFn: () => fetchDatasetModelDistinctValues(column.datasetId!, column.semanticField!, 200, filterContext),
       enabled: Boolean(column.datasetId && column.semanticField),
       staleTime: 5 * 60 * 1000,
     })),
@@ -43,7 +56,7 @@ export function useFilterDistinctValues(
   return useMemo(() => {
     const mergedValues: Record<string, string[]> = { ...fallbackDistinctValues };
 
-    activeSemanticDistinctColumns.forEach((column, index) => {
+    activeSemanticDistinctTargets.forEach(({ column }, index) => {
       const values = semanticDistinctQueries[index]?.data?.values;
       if (values) {
         mergedValues[getColumnKey(column)] = values;
@@ -51,5 +64,5 @@ export function useFilterDistinctValues(
     });
 
     return mergedValues;
-  }, [activeSemanticDistinctColumns, fallbackDistinctValues, semanticDistinctQueries]);
+  }, [activeSemanticDistinctTargets, fallbackDistinctValues, semanticDistinctQueries]);
 }

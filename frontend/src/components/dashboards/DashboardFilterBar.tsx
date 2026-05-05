@@ -10,10 +10,12 @@ import {
   DATE_PRESET_LABELS,
   computeDatePresetRange,
   ColumnInfo,
+  getColumnContextLabel,
   getColumnDisplayLabel,
   getColumnKey,
   getFilterDisplayLabel,
   getFilterKey,
+  isFilterValueActive,
 } from '@/lib/filters';
 import { DateInput } from '@/components/ui/DateInput';
 
@@ -84,10 +86,7 @@ export function DashboardFilterBar({
   }, [addingField]);
 
   // How many filters have a non-empty value?
-  const activeCount = filters.filter(f => {
-    if (Array.isArray(f.value)) return f.value.length > 0;
-    return f.value !== '' && f.value !== null && f.value !== undefined;
-  }).length;
+  const activeCount = filters.filter(isFilterValueActive).length;
 
   // Set of all fields currently used by filters (primary only)
   const usedFields = useMemo(
@@ -129,6 +128,16 @@ export function DashboardFilterBar({
     }),
     [addableColumns, normalizedAddFilterSearch],
   );
+
+  const duplicateLabelCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const column of addableColumns) {
+      const label = getColumnDisplayLabel(column).trim().toLowerCase();
+      if (!label) continue;
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    return counts;
+  }, [addableColumns]);
 
   // ── Mutators ───────────────────────────────────────────────────
   const addFilter = (columnKey: string, preset?: DatePreset) => {
@@ -249,6 +258,12 @@ export function DashboardFilterBar({
 
   const renderColumnOption = (column: ColumnInfo) => {
     const columnKey = getColumnKey(column);
+    const label = getColumnDisplayLabel(column);
+    const contextLabel = getColumnContextLabel(column);
+    const showContext = Boolean(
+      contextLabel
+      && ((duplicateLabelCounts.get(label.trim().toLowerCase()) ?? 0) > 1 || column.semanticField),
+    );
     const sameTypeCount = column.type === 'date' && !column.semanticField
       ? columns.filter(c => c.type === 'date' && getColumnKey(c) !== columnKey && !usedFields.has(getColumnKey(c))).length
       : 0;
@@ -257,15 +272,24 @@ export function DashboardFilterBar({
       <button
         key={columnKey}
         onClick={() => addFilter(columnKey)}
-        className="w-full text-left px-3 py-2 text-sm hover:bg-brand/15 flex items-center justify-between group"
+        title={column.semanticField ?? column.key ?? column.name}
+        className="w-full text-left px-3 py-2 text-sm hover:bg-brand/15 flex items-center justify-between gap-3 group"
       >
-        <span className="flex items-center gap-2 min-w-0">
+        <span className="flex items-start gap-2 min-w-0">
           <span className={`text-xs font-mono w-4 text-center ${TYPE_CLR[column.type]}`}>
             {TYPE_BADGE[column.type]}
           </span>
-          <span className="text-text-secondary group-hover:text-brand truncate">{getColumnDisplayLabel(column)}</span>
+          <span className="min-w-0">
+            <span className="block truncate text-text-secondary group-hover:text-brand">{label}</span>
+            {showContext && (
+              <span className="mt-0.5 block truncate text-[11px] text-text-quaternary">
+                {contextLabel}
+                {column.semanticField ? ` · ${column.semanticField}` : ''}
+              </span>
+            )}
+          </span>
         </span>
-        <span className="flex items-center gap-2 pl-2">
+        <span className="flex shrink-0 items-center gap-2">
           {sameTypeCount > 0 && (
             <span className="flex items-center gap-0.5 text-xs text-teal-500" title={`Will auto-link ${sameTypeCount} other date column(s)`}>
               <Link2 className="w-3 h-3" />
@@ -311,7 +335,7 @@ export function DashboardFilterBar({
         {!isExpanded && activeCount > 0 && (
           <div className="flex items-center gap-1.5 flex-wrap flex-1 ml-2">
             {filters
-              .filter(f => Array.isArray(f.value) ? f.value.length > 0 : !!f.value)
+              .filter(isFilterValueActive)
               .map(f => (
                 <span
                   key={f.id}
@@ -560,10 +584,7 @@ function FilterCard({
 
   const isMultiSelect = f.operator === 'in' || f.operator === 'not_in';
   const selected: string[] = isMultiSelect && Array.isArray(f.value) ? f.value : [];
-  const hasValue = isMultiSelect ? selected.length > 0
-    : f.operator === 'between'
-      ? (Array.isArray(f.value) && (f.value[0] || f.value[1]))
-      : (f.value !== '' && f.value !== null && f.value !== undefined);
+  const hasValue = isFilterValueActive(f);
 
   // Columns of the same type that could be linked (not the primary, not used as separate filters)
   const linkableColumns = useMemo(
@@ -606,6 +627,12 @@ function FilterCard({
   const filterCoverageLabel = primaryColumn?.datasetChartCount
     ? `${filterChartCount}/${primaryColumn.datasetChartCount} charts`
     : `${filterChartCount} chart${filterChartCount !== 1 ? 's' : ''}`;
+  const contextLabel = primaryColumn ? getColumnContextLabel(primaryColumn) : getColumnContextLabel({
+    name: f.field,
+    key: f.fieldKey,
+    semanticField: f.semanticField,
+    datasetId: f.datasetId,
+  });
 
   return (
     <div className="border border-[rgb(var(--border-line))] rounded-lg bg-surface-2/70 overflow-hidden flex flex-col">
@@ -616,6 +643,11 @@ function FilterCard({
             {TYPE_BADGE[f.type]}
           </span>
           <span className="text-sm font-semibold text-text-primary truncate">{getFilterDisplayLabel(f)}</span>
+          {contextLabel && (
+            <span className="hidden max-w-[9rem] truncate text-xs text-text-quaternary sm:inline">
+              {contextLabel}
+            </span>
+          )}
           {selected.length > 0 && (
             <span className="px-1.5 py-0.5 bg-brand/15 text-brand text-xs rounded-full font-semibold flex-shrink-0">
               {selected.length}

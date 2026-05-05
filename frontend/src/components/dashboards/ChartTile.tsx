@@ -19,6 +19,7 @@ import {
   applyFiltersToRows,
   canDeferFilterToChartSemanticBinding,
   inferColumnTypeFromData,
+  isFilterValueActive,
   resolveCalendarFieldMapping,
   resolveChartFieldForFilter,
   resolveChartSemanticField,
@@ -228,7 +229,7 @@ export function ChartTile({
     filters.push(...parameterFilters);
 
     const appendServerFilters = (sourceFilter: BaseFilter) => {
-      if (sourceFilter.value === undefined || sourceFilter.value === null || sourceFilter.value === '') {
+      if (!isFilterValueActive(sourceFilter)) {
         return;
       }
 
@@ -876,4 +877,3 @@ export function ChartTile({
     </div>
   );
 }
-

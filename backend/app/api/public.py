@@ -184,7 +184,11 @@ def _build_public_filter_fields(db: Session, dash: Dashboard) -> list[dict]:
             if isinstance(view, dict) and view.get("name")
         }
         join_key_fields = dataset_join_key_fields.get(dataset_id, set())
-        candidate_fields = binding.get("dimensionFields") or list((binding.get("fieldMap") or {}).values())
+        candidate_fields = (
+            binding.get("reachableFields")
+            or binding.get("dimensionFields")
+            or list((binding.get("fieldMap") or {}).values())
+        )
 
         for semantic_field in candidate_fields:
             if not isinstance(semantic_field, str) or "." not in semantic_field:
@@ -245,19 +249,59 @@ def _build_public_filter_fields(db: Session, dash: Dashboard) -> list[dict]:
     return normalized_columns
 
 
-def _resolve_public_filter_field(
-    db: Session,
-    dash: Dashboard,
+def _public_filter_semantic_refs(filter_condition: dict) -> list[str]:
+    refs: list[str] = []
+
+    def add_ref(raw_value) -> None:
+        raw = str(raw_value or "").strip()
+        if "." in raw and raw not in refs:
+            refs.append(raw)
+
+    for key in ("semanticField", "fieldKey", "field"):
+        add_ref(filter_condition.get(key))
+    linked_fields = filter_condition.get("linkedFields")
+    if isinstance(linked_fields, list):
+        for linked_field in linked_fields:
+            add_ref(linked_field)
+    return refs
+
+
+def _sanitize_public_viewer_filters(
+    public_filter_fields: list[dict],
     dataset_id: int,
-    field: str,
-) -> dict | None:
-    return next(
-        (
-            item for item in _build_public_filter_fields(db, dash)
-            if item.get("datasetId") == dataset_id and item.get("semanticField") == field
-        ),
-        None,
-    )
+    viewer_filters: list[dict],
+) -> list[dict]:
+    allowed_fields = {
+        str(item.get("semanticField"))
+        for item in public_filter_fields
+        if item.get("datasetId") == dataset_id and item.get("semanticField")
+    }
+    if not allowed_fields:
+        return []
+
+    sanitized: list[dict] = []
+    for filter_condition in viewer_filters:
+        filter_dataset_id = filter_condition.get("datasetId")
+        if filter_dataset_id not in (None, dataset_id):
+            continue
+
+        matched_field = next(
+            (ref for ref in _public_filter_semantic_refs(filter_condition) if ref in allowed_fields),
+            None,
+        )
+        if not matched_field:
+            continue
+
+        _, field_name = matched_field.split(".", 1)
+        sanitized.append({
+            **filter_condition,
+            "field": field_name,
+            "fieldKey": matched_field,
+            "semanticField": matched_field,
+            "datasetId": dataset_id,
+        })
+
+    return sanitized
 
 
 def _create_public_session(link_token: str) -> str:
@@ -1288,27 +1332,68 @@ def get_public_filter_distinct_values(
     dataset_id: int = Query(..., ge=1),
     field: str = Query(..., description="Qualified field name, e.g. orders.country"),
     limit: int = Query(200, ge=1, le=500),
+    filters: str | None = Query(
+        default=None,
+        description="JSON-encoded list of additional viewer filter objects.",
+    ),
     db: Session = Depends(get_db),
     x_public_session: str | None = Header(default=None),
 ):
-    dash, _, _, _ = _get_dashboard_by_token(
+    dash, public_filters, _, _ = _get_dashboard_by_token(
         token,
         db,
         session_token=x_public_session,
         track_access=False,
     )
 
-    allowed_field = _resolve_public_filter_field(db, dash, dataset_id, field)
+    public_filter_fields = _build_public_filter_fields(db, dash)
+    allowed_field = next(
+        (
+            item for item in public_filter_fields
+            if item.get("datasetId") == dataset_id and item.get("semanticField") == field
+        ),
+        None,
+    )
     if not allowed_field:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Filter field is not available for this shared dashboard.",
         )
 
+    viewer_filters: list[dict] = []
+    if filters:
+        try:
+            parsed_filters = json.loads(filters)
+            if not isinstance(parsed_filters, list):
+                raise ValueError("filters must be a JSON array")
+            viewer_filters = [item for item in parsed_filters if isinstance(item, dict)]
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid filters parameter: {exc}",
+            ) from exc
+
+    sanitized_viewer_filters = _sanitize_public_viewer_filters(
+        public_filter_fields,
+        dataset_id,
+        viewer_filters,
+    )
+
+    combined_filters = [
+        *[item for item in (public_filters or []) if isinstance(item, dict)],
+        *sanitized_viewer_filters,
+    ]
+
     try:
         return {
             "field": field,
-            "values": get_distinct_field_values(db, dataset_id, field, limit=limit),
+            "values": get_distinct_field_values(
+                db,
+                dataset_id,
+                field,
+                limit=limit,
+                filters=combined_filters,
+            ),
         }
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

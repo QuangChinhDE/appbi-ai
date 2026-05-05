@@ -3,7 +3,13 @@
 import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { publicDashboardApi } from '@/lib/api/public';
-import { getColumnKey, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
+import {
+  getColumnKey,
+  getDistinctValueFilterContext,
+  getFilterKey,
+  type BaseFilter,
+  type ColumnInfo,
+} from '@/lib/filters';
 
 export function usePublicFilterDistinctValues(
   token: string,
@@ -12,7 +18,7 @@ export function usePublicFilterDistinctValues(
   filters: BaseFilter[],
   fallbackDistinctValues: Record<string, string[]>,
 ) {
-  const activeSemanticDistinctColumns = useMemo(() => {
+  const activeSemanticDistinctTargets = useMemo(() => {
     if (!token || columns.length === 0 || filters.length === 0) {
       return [];
     }
@@ -30,17 +36,26 @@ export function usePublicFilterDistinctValues(
       activeColumns.set(key, column);
     }
 
-    return Array.from(activeColumns.values());
+    return Array.from(activeColumns.values()).map((column) => {
+      const filterContext = getDistinctValueFilterContext(filters, column);
+      return {
+        column,
+        filterContext,
+        filterContextKey: JSON.stringify(filterContext),
+      };
+    });
   }, [columns, filters, token]);
 
   const semanticDistinctQueries = useQueries({
-    queries: activeSemanticDistinctColumns.map((column) => ({
-      queryKey: ['public-filter-distinct', token, column.datasetId, column.semanticField, sessionToken ?? 'anon'],
+    queries: activeSemanticDistinctTargets.map(({ column, filterContext, filterContextKey }) => ({
+      queryKey: ['public-filter-distinct', token, column.datasetId, column.semanticField, sessionToken ?? 'anon', filterContextKey],
       queryFn: () => publicDashboardApi.getFilterDistinctValues(
         token,
         column.datasetId!,
         column.semanticField!,
         sessionToken,
+        200,
+        filterContext,
       ),
       enabled: Boolean(token && column.datasetId && column.semanticField),
       staleTime: 5 * 60 * 1000,
@@ -50,7 +65,7 @@ export function usePublicFilterDistinctValues(
   return useMemo(() => {
     const mergedValues: Record<string, string[]> = { ...fallbackDistinctValues };
 
-    activeSemanticDistinctColumns.forEach((column, index) => {
+    activeSemanticDistinctTargets.forEach(({ column }, index) => {
       const values = semanticDistinctQueries[index]?.data?.values;
       if (values) {
         mergedValues[getColumnKey(column)] = values;
@@ -58,5 +73,5 @@ export function usePublicFilterDistinctValues(
     });
 
     return mergedValues;
-  }, [activeSemanticDistinctColumns, fallbackDistinctValues, semanticDistinctQueries]);
+  }, [activeSemanticDistinctTargets, fallbackDistinctValues, semanticDistinctQueries]);
 }

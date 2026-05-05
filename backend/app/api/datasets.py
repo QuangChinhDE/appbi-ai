@@ -1,6 +1,7 @@
 """API endpoints for Datasets (Table-based Datasets)"""
 from typing import Any, Dict, List, Optional
 from decimal import Decimal
+import json
 import re
 from types import SimpleNamespace
 from datetime import datetime, date
@@ -2397,6 +2398,10 @@ def get_dataset_model_distinct_values(
     dataset_id: int,
     field: str = Query(..., description="Qualified field name, e.g. orders.country"),
     limit: int = Query(200, ge=1, le=500),
+    filters: str | None = Query(
+        default=None,
+        description="JSON-encoded list of dashboard filter objects used to cascade distinct values.",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -2409,10 +2414,20 @@ def get_dataset_model_distinct_values(
         raise HTTPException(status_code=404, detail="Dataset not found")
     require_view_access(db, current_user, dataset_obj, "datasets")
 
+    filter_context: list[dict] = []
+    if filters:
+        try:
+            parsed_filters = json.loads(filters)
+            if not isinstance(parsed_filters, list):
+                raise ValueError("filters must be a JSON array")
+            filter_context = [item for item in parsed_filters if isinstance(item, dict)]
+        except (json.JSONDecodeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=f"Invalid filters parameter: {e}")
+
     try:
         return {
             "field": field,
-            "values": get_distinct_field_values(db, dataset_id, field, limit=limit),
+            "values": get_distinct_field_values(db, dataset_id, field, limit=limit, filters=filter_context),
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

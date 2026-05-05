@@ -1225,6 +1225,7 @@ def get_distinct_field_values(
     dataset_id: int,
     field: str,
     limit: int = 200,
+    filters: list[dict] | None = None,
 ) -> list[str]:
     if "." not in field:
         raise ValueError("Field must be qualified as view.field")
@@ -1242,13 +1243,16 @@ def get_distinct_field_values(
         _dialect_for_ds_type,
         _estimate_bigquery_bytes,
         _quote_identifier,
+        _sql_literal,
         build_dataset_table_cache_identifier,
     )
+    from app.services.chart_contracts import normalize_filter_conditions, normalize_filter_operator
     from app.services.dataset_relation_service import resolve_dataset_table_relation
 
     cache_payload = {
         "field": field_name,
         "limit": limit,
+        "filters": normalize_filter_conditions(filters or []),
     }
 
     def execute_distinct_sql(datasource_obj, table_identifier: str, sql: str) -> list[str]:
@@ -1292,6 +1296,200 @@ def get_distinct_field_values(
         )
         return values
 
+    def _qualified_filter_refs(filter_condition: dict) -> list[tuple[str, str]]:
+        refs: list[tuple[str, str]] = []
+
+        def add_ref(raw_value) -> None:
+            raw = str(raw_value or "").strip()
+            if not raw:
+                return
+            if "." in raw:
+                node, name = raw.split(".", 1)
+                node = node.strip()
+                name = name.strip()
+                if node and name and (node, name) not in refs:
+                    refs.append((node, name))
+                return
+            if (view_name, raw) not in refs:
+                refs.append((view_name, raw))
+
+        for key in ("semanticField", "fieldKey", "field"):
+            add_ref(filter_condition.get(key))
+        linked_fields = filter_condition.get("linkedFields")
+        if isinstance(linked_fields, list):
+            for linked_field in linked_fields:
+                add_ref(linked_field)
+        return refs
+
+    def _render_filter_condition(field_expression: str, filter_condition: dict) -> str | None:
+        op = normalize_filter_operator(filter_condition.get("operator"))
+        value = filter_condition.get("value")
+
+        def value_present(candidate) -> bool:
+            return candidate is not None and not (isinstance(candidate, str) and not candidate.strip())
+
+        if op == "eq":
+            return f"{field_expression} = {_sql_literal(value)}"
+        if op == "neq":
+            return f"{field_expression} != {_sql_literal(value)}"
+        if op == "gt":
+            return f"{field_expression} > {_sql_literal(value)}"
+        if op == "gte":
+            return f"{field_expression} >= {_sql_literal(value)}"
+        if op == "lt":
+            return f"{field_expression} < {_sql_literal(value)}"
+        if op == "lte":
+            return f"{field_expression} <= {_sql_literal(value)}"
+        if op == "between" and isinstance(value, list):
+            lo = value[0] if len(value) > 0 else None
+            hi = value[1] if len(value) > 1 else None
+            if value_present(lo) and value_present(hi):
+                return f"{field_expression} BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}"
+            if value_present(lo):
+                return f"{field_expression} >= {_sql_literal(lo)}"
+            if value_present(hi):
+                return f"{field_expression} <= {_sql_literal(hi)}"
+            return None
+        if op in {"in", "not_in"} and isinstance(value, list):
+            vals = ", ".join(_sql_literal(item) for item in value if value_present(item))
+            if not vals:
+                return None
+            keyword = "IN" if op == "in" else "NOT IN"
+            return f"{field_expression} {keyword} ({vals})"
+        if op in {"like", "contains", "not_contains", "starts_with"} and value is not None:
+            esc = str(value).replace("'", "''").replace("%", "\\%").replace("_", "\\_")
+            if op == "not_contains":
+                return f"{field_expression} NOT LIKE '%{esc}%' ESCAPE '\\'"
+            if op == "starts_with":
+                return f"{field_expression} LIKE '{esc}%' ESCAPE '\\'"
+            return f"{field_expression} LIKE '%{esc}%' ESCAPE '\\'"
+        if op == "is_null":
+            return f"{field_expression} IS NULL"
+        if op == "is_not_null":
+            return f"{field_expression} IS NOT NULL"
+        return None
+
+    def _build_distinct_sql(
+        base_sql: str,
+        datasource_obj,
+        dialect: str,
+    ) -> str:
+        base_alias = "_appbi_base"
+        target_expr = f"{base_alias}.{_quote_identifier(field_name, dialect)}"
+        normalized_filters = [
+            item
+            for item in normalize_filter_conditions(filters or [])
+            if item.get("datasetId") in (None, dataset_id)
+        ]
+        if not normalized_filters:
+            return (
+                f"SELECT DISTINCT {target_expr} AS value "
+                f"FROM ({base_sql}) AS {base_alias} "
+                f"WHERE {target_expr} IS NOT NULL "
+                f"ORDER BY 1 "
+                f"LIMIT {limit}"
+            )
+
+        from app.services.chart_service import (
+            _build_live_relation_for_semantic_view,
+            _render_step_join_condition,
+            _semantic_view_has_field,
+            _wrap_live_sql_relation,
+        )
+        from app.services.semantic_join_resolver import SemanticJoinResolver
+
+        model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+        resolver = SemanticJoinResolver(db, model, view_name)
+        view_cache: dict[str, SemanticView | None] = {}
+        materialized_steps: dict[tuple[str, str], str] = {}
+        join_clauses: list[str] = []
+        next_join_index = 0
+
+        def _get_view(node_or_view: str) -> SemanticView | None:
+            actual_view = resolver.view_for_node(node_or_view) or node_or_view
+            if actual_view in view_cache:
+                return view_cache[actual_view]
+            result = db.query(SemanticView).filter(SemanticView.name == actual_view).first()
+            view_cache[actual_view] = result
+            return result
+
+        def _alias_for_node(node: str) -> str | None:
+            nonlocal next_join_index
+            if node == view_name:
+                return base_alias
+            path = resolver.resolve_path(node)
+            if path is None:
+                return None
+
+            prev_alias = base_alias
+            last_alias = prev_alias
+            for step in path.steps:
+                cache_key = (prev_alias, step.edge.to_node)
+                existing_alias = materialized_steps.get(cache_key)
+                if existing_alias is not None:
+                    last_alias = existing_alias
+                    prev_alias = existing_alias
+                    continue
+
+                joined_view = _get_view(step.edge.to_node)
+                if joined_view is None:
+                    return None
+                relation = _build_live_relation_for_semantic_view(db, datasource_obj, joined_view)
+                if not relation:
+                    return None
+                new_alias = f"_appbi_distinct_join_{next_join_index}"
+                next_join_index += 1
+                condition = _render_step_join_condition(
+                    step.edge,
+                    from_alias=prev_alias,
+                    to_alias=new_alias,
+                )
+                to_col = step.edge.to_column
+                if condition and to_col and not _semantic_view_has_field(joined_view, to_col):
+                    from_col = step.edge.from_column
+                    if from_col and _semantic_view_has_field(joined_view, from_col):
+                        condition = f"{prev_alias}.{from_col} = {new_alias}.{from_col}"
+                    else:
+                        condition = None
+                if not condition:
+                    return None
+                join_kw = (step.edge.type or "left").upper()
+                join_clauses.append(
+                    f"{join_kw} JOIN {_wrap_live_sql_relation(relation)} AS {new_alias} "
+                    f"ON {condition}"
+                )
+                materialized_steps[cache_key] = new_alias
+                last_alias = new_alias
+                prev_alias = new_alias
+
+            return last_alias
+
+        filter_conditions: list[str] = []
+        for filter_condition in normalized_filters:
+            for node, name in _qualified_filter_refs(filter_condition):
+                alias = _alias_for_node(node)
+                if not alias:
+                    continue
+                view_obj = _get_view(node)
+                if view_obj is not None and not _semantic_view_has_field(view_obj, name):
+                    continue
+                expression = f"{alias}.{_quote_identifier(name, dialect)}"
+                condition = _render_filter_condition(expression, filter_condition)
+                if condition:
+                    filter_conditions.append(condition)
+                    break
+
+        where_parts = [f"{target_expr} IS NOT NULL", *filter_conditions]
+        joins = " ".join(join_clauses)
+        return (
+            f"SELECT DISTINCT {target_expr} AS value "
+            f"FROM ({base_sql}) AS {base_alias} "
+            f"{joins} "
+            f"WHERE {' AND '.join(where_parts)} "
+            f"ORDER BY 1 "
+            f"LIMIT {limit}"
+        )
+
     if view.dataset_table_id is None:
         sql_source = str(view.sql_table_name or "").strip()
         if not sql_source:
@@ -1311,15 +1509,9 @@ def get_distinct_field_values(
 
         ds_type = datasource_for_view.type if isinstance(datasource_for_view.type, str) else datasource_for_view.type.value
         dialect = _dialect_for_ds_type(ds_type)
-        quoted_field = _quote_identifier(field_name, dialect)
-        base_table = f"{sql_source} AS _q" if sql_source.startswith("(") else sql_source
-        sql = (
-            f"SELECT DISTINCT {quoted_field} AS value "
-            f"FROM {base_table} "
-            f"WHERE {quoted_field} IS NOT NULL "
-            f"ORDER BY 1 "
-            f"LIMIT {limit}"
-        )
+        base_relation = f"{sql_source} AS _q" if sql_source.startswith("(") else sql_source
+        base_sql = f"SELECT * FROM {base_relation}"
+        sql = _build_distinct_sql(base_sql, datasource_for_view, dialect)
         source_hash = hashlib.sha1(sql_source.encode("utf-8")).hexdigest()[:16]
         table_identifier = f"semantic_view:{view_name}:{source_hash}"
         return execute_distinct_sql(datasource_for_view, table_identifier, sql)
@@ -1349,16 +1541,9 @@ def get_distinct_field_values(
 
         ds_type = cal_datasource.type if isinstance(cal_datasource.type, str) else cal_datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
-        quoted_field = _quote_identifier(field_name, dialect)
         calendar_settings = get_calendar_settings(dataset_obj, enabled_default=False)
         cal_sql = build_calendar_live_sql(calendar_settings, dialect)
-        sql = (
-            f"SELECT DISTINCT {quoted_field} AS value "
-            f"FROM ({cal_sql}) AS _q "
-            f"WHERE {quoted_field} IS NOT NULL "
-            f"ORDER BY 1 "
-            f"LIMIT {limit}"
-        )
+        sql = _build_distinct_sql(cal_sql, cal_datasource, dialect)
         table_identifier = f"calendar_view:{dataset_id}:{view_name}"
         return execute_distinct_sql(cal_datasource, table_identifier, sql)
 
@@ -1382,15 +1567,8 @@ def get_distinct_field_values(
     def fetch_live_values() -> list[str]:
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
-        quoted_field = _quote_identifier(field_name, dialect)
         plan = resolve_dataset_table_relation(datasource, live_table)
-        sql = (
-            f"SELECT DISTINCT {quoted_field} AS value "
-            f"FROM ({plan.sql}) AS _appbi_distinct "
-            f"WHERE {quoted_field} IS NOT NULL "
-            f"ORDER BY 1 "
-            f"LIMIT {limit}"
-        )
+        sql = _build_distinct_sql(plan.sql, datasource, dialect)
         table_identifier = build_dataset_table_cache_identifier(live_table)
         return execute_distinct_sql(datasource, table_identifier, sql)
 

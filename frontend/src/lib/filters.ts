@@ -9,13 +9,17 @@ export type FilterOperator =
   | 'neq'
   | 'in'
   | 'not_in'
+  | 'like'
   | 'contains'
+  | 'not_contains'
   | 'starts_with'
   | 'gt'
   | 'lt'
   | 'gte'
   | 'lte'
-  | 'between';
+  | 'between'
+  | 'is_null'
+  | 'is_not_null';
 
 export type FilterType = 'text' | 'number' | 'date' | 'dropdown';
 
@@ -229,6 +233,22 @@ export function getColumnDisplayLabel(
   );
 }
 
+export function getSemanticViewLabel(semanticField: string | null | undefined): string {
+  const trimmed = String(semanticField ?? '').trim();
+  if (!trimmed.includes('.')) return '';
+  return getFriendlyFieldLabel(trimmed.split('.')[0]);
+}
+
+export function getColumnContextLabel(
+  column: Pick<ColumnInfo, 'semanticField' | 'datasetId' | 'key' | 'name'>,
+): string {
+  const viewLabel = getSemanticViewLabel(column.semanticField);
+  if (viewLabel) return viewLabel;
+  if (column.datasetId != null) return `Dataset ${column.datasetId}`;
+  if (column.key && column.key !== column.name) return column.key;
+  return '';
+}
+
 export function getFilterDisplayLabel(
   filter: Pick<BaseFilter, 'label' | 'field' | 'semanticField'>,
 ): string {
@@ -292,7 +312,14 @@ export function getFilterKey(filter: Pick<BaseFilter, 'fieldKey' | 'semanticFiel
 
 type ChartSemanticBindingLike = Pick<
   ChartSemanticBinding,
-  'datasetId' | 'baseViewName' | 'fieldMap' | 'dimensionFields' | 'measureFields' | 'calendarFieldMappings'
+  | 'datasetId'
+  | 'baseViewName'
+  | 'fieldMap'
+  | 'dimensionFields'
+  | 'measureFields'
+  | 'reachableViews'
+  | 'reachableFields'
+  | 'calendarFieldMappings'
 >;
 
 function semanticCandidates(filter: Pick<BaseFilter, 'fieldKey' | 'semanticField' | 'field'>): string[] {
@@ -354,6 +381,7 @@ export function canDeferFilterToChartSemanticBinding(
   const supportedSemanticFields = new Set<string>([
     ...(binding.dimensionFields ?? []),
     ...(binding.measureFields ?? []),
+    ...(binding.reachableFields ?? []),
     ...Object.values(binding.fieldMap ?? {}).filter(
       (value): value is string => typeof value === 'string' && value.includes('.'),
     ),
@@ -362,7 +390,12 @@ export function canDeferFilterToChartSemanticBinding(
       .filter((value): value is string => typeof value === 'string' && value.includes('.')),
   ]);
 
-  return candidates.some((candidate) => supportedSemanticFields.has(candidate));
+  const reachableViews = new Set(binding.reachableViews ?? []);
+  return candidates.some((candidate) => {
+    if (supportedSemanticFields.has(candidate)) return true;
+    const viewName = candidate.split('.')[0];
+    return Boolean(viewName && reachableViews.has(viewName));
+  });
 }
 
 export function resolveChartFieldForFilter(
@@ -485,7 +518,11 @@ export function applyFiltersToRows(
 
   return rows.filter(row =>
     filters.every(f => {
+      if (!isFilterValueActive(f)) return true;
       const val = row[f.field];
+
+      if (f.operator === 'is_null') return val === null || val === undefined;
+      if (f.operator === 'is_not_null') return val !== null && val !== undefined;
 
       // handle null/undefined
       if (val === null || val === undefined) return false;
@@ -566,7 +603,9 @@ export function applyFiltersToRows(
           switch (f.operator) {
             case 'eq': return strVal === filterVal;
             case 'neq': return strVal !== filterVal;
+            case 'like':
             case 'contains': return strVal.toLowerCase().includes(filterVal.toLowerCase());
+            case 'not_contains': return !strVal.toLowerCase().includes(filterVal.toLowerCase());
             case 'starts_with': return strVal.toLowerCase().startsWith(filterVal.toLowerCase());
             default: return true;
           }
@@ -577,6 +616,42 @@ export function applyFiltersToRows(
       }
     })
   );
+}
+
+function hasPresentFilterAtom(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  if (Array.isArray(value)) return value.some(hasPresentFilterAtom);
+  return true;
+}
+
+export function isFilterValueActive(filter: Pick<BaseFilter, 'operator' | 'value'>): boolean {
+  const operator = filter.operator;
+  if (operator === 'is_null' || operator === 'is_not_null') return true;
+  if (operator === 'in' || operator === 'not_in') {
+    return Array.isArray(filter.value) && filter.value.some(hasPresentFilterAtom);
+  }
+  if (operator === 'between') {
+    const [start, end] = Array.isArray(filter.value) ? filter.value : [];
+    return hasPresentFilterAtom(start) || hasPresentFilterAtom(end);
+  }
+  return hasPresentFilterAtom(filter.value);
+}
+
+export function getDistinctValueFilterContext(
+  filters: BaseFilter[],
+  targetColumn: Pick<ColumnInfo, 'key' | 'semanticField' | 'name' | 'datasetId'>,
+): BaseFilter[] {
+  const targetKey = getColumnKey(targetColumn);
+  return filters.filter((filter) => {
+    if (!isFilterValueActive(filter)) return false;
+    if (filter.datasetId != null && targetColumn.datasetId != null && filter.datasetId !== targetColumn.datasetId) {
+      return false;
+    }
+    if (getFilterKey(filter) === targetKey) return false;
+    if ((filter.linkedFields ?? []).includes(targetKey)) return false;
+    return true;
+  });
 }
 
 /**
@@ -598,7 +673,12 @@ export function getDefaultOperator(type: FilterType): FilterOperator {
  */
 export function computeDatePresetRange(preset: DatePreset): [string, string] {
   const now = new Date();
-  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  const fmt = (d: Date) => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
   const today = fmt(now);
 
   switch (preset) {

@@ -68,6 +68,7 @@ export const publicDashboardApi = {
     field: string,
     sessionToken?: string,
     limit = 200,
+    filters?: BaseFilter[],
   ): Promise<{ field: string; values: string[] }> => {
     const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
     const res = await publicClient.get(
@@ -78,6 +79,7 @@ export const publicDashboardApi = {
           dataset_id: datasetId,
           field,
           limit,
+          ...(filters?.length ? { filters: JSON.stringify(filters) } : {}),
         },
       },
     );

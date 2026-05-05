@@ -119,6 +119,34 @@ def normalize_filter_value(operator: str, value: Any) -> Any:
     return value
 
 
+def _filter_atom_is_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple)):
+        return any(_filter_atom_is_present(item) for item in value)
+    return True
+
+
+def is_filter_condition_active(filter_condition: dict[str, Any]) -> bool:
+    operator = normalize_filter_operator(filter_condition.get("operator"))
+    if operator in {"is_null", "is_not_null"}:
+        return True
+
+    value = normalize_filter_value(operator, filter_condition.get("value"))
+    if operator in {"in", "not_in"}:
+        return isinstance(value, list) and any(_filter_atom_is_present(item) for item in value)
+    if operator == "between":
+        if not isinstance(value, list):
+            return False
+        lo = value[0] if len(value) > 0 else None
+        hi = value[1] if len(value) > 1 else None
+        return _filter_atom_is_present(lo) or _filter_atom_is_present(hi)
+
+    return _filter_atom_is_present(value)
+
+
 def normalize_filter_conditions(filters: list[dict] | None) -> list[dict]:
     normalized: list[dict] = []
     for filt in filters or []:
@@ -126,13 +154,17 @@ def normalize_filter_conditions(filters: list[dict] | None) -> list[dict]:
         if not field:
             continue
         operator = normalize_filter_operator(filt.get("operator"))
+        value = normalize_filter_value(operator, filt.get("value"))
+        candidate = {
+            **filt,
+            "field": field,
+            "operator": operator,
+            "value": value,
+        }
+        if not is_filter_condition_active(candidate):
+            continue
         normalized.append(
-            {
-                **filt,
-                "field": field,
-                "operator": operator,
-                "value": normalize_filter_value(operator, filt.get("value")),
-            }
+            candidate
         )
     return normalized
 

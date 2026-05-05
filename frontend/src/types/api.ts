@@ -315,6 +315,8 @@ export interface ChartSemanticBinding {
   fieldMap?: Record<string, string>;
   dimensionFields?: string[];
   measureFields?: string[];
+  reachableViews?: string[];
+  reachableFields?: string[];
   calendarFieldMappings?: Array<{
     semanticField: string;
     sourceField: string;

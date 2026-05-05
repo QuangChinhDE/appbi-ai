@@ -579,6 +579,10 @@ def _build_where_clause(filters: list, dialect: str) -> str:
         return ""
     parts = []
     qi = _quote_identifier
+
+    def value_present(value) -> bool:
+        return value is not None and not (isinstance(value, str) and not value.strip())
+
     for f in normalize_filter_conditions(filters):
         field = f.get("field", "")
         op = normalize_filter_operator(f.get("operator"))
@@ -610,15 +614,16 @@ def _build_where_clause(filters: list, dialect: str) -> str:
             parts.append(f"{qf} <= {_sql_literal(value)}")
         elif op == "between" and isinstance(value, list) and len(value) >= 2:
             lo, hi = value[0], value[1]
-            if lo and hi:
+            if value_present(lo) and value_present(hi):
                 parts.append(f"{qf} BETWEEN {_sql_literal(lo)} AND {_sql_literal(hi)}")
-            elif lo:
+            elif value_present(lo):
                 parts.append(f"{qf} >= {_sql_literal(lo)}")
-            elif hi:
+            elif value_present(hi):
                 parts.append(f"{qf} <= {_sql_literal(hi)}")
         elif op == "in" and isinstance(value, list):
-            vals = ", ".join(_sql_literal(v) for v in value)
-            parts.append(f"{qf} IN ({vals})")
+            vals = ", ".join(_sql_literal(v) for v in value if value_present(v))
+            if vals:
+                parts.append(f"{qf} IN ({vals})")
         elif op == "in" and isinstance(value, str) and value:
             vals = ", ".join(
                 _sql_literal(v.strip()) for v in value.split(",") if v.strip()
@@ -626,8 +631,9 @@ def _build_where_clause(filters: list, dialect: str) -> str:
             if vals:
                 parts.append(f"{qf} IN ({vals})")
         elif op == "not_in" and isinstance(value, list):
-            vals = ", ".join(_sql_literal(v) for v in value)
-            parts.append(f"{qf} NOT IN ({vals})")
+            vals = ", ".join(_sql_literal(v) for v in value if value_present(v))
+            if vals:
+                parts.append(f"{qf} NOT IN ({vals})")
         elif op == "not_in" and isinstance(value, str) and value:
             vals = ", ".join(
                 _sql_literal(v.strip()) for v in value.split(",") if v.strip()

@@ -32,8 +32,8 @@ import { DashboardChartLayout, DashboardPageConfig } from '@/types/api';
 import type { BaseFilter, ColumnInfo, FilterType } from '@/lib/filters';
 import {
   collectJoinKeySemanticFields,
-  computeDatePresetRange,
   getColumnDisplayLabel,
+  getDistinctValueFilterContext,
   getFilterDisplayLabel,
   getFriendlyFieldLabel,
   getColumnKey,
@@ -277,8 +277,6 @@ export default function DashboardDetailPage() {
     setDraftGlobalFilters(initial);
     setAppliedGlobalFilters(initial);
   }, [dashboard]);
-
-  const dateFilterAutoSeededRef = React.useRef(false);
 
   React.useEffect(() => {
     if (!crossFilterState) return;
@@ -967,41 +965,7 @@ export default function DashboardDetailPage() {
     });
   }, [calendarDateColumns]);
 
-  // Auto-seed a default date filter from the dataset calendar/date table when available.
-  React.useEffect(() => {
-    if (dateFilterAutoSeededRef.current) return;
-    if (!filtersSeededRef.current) return;
-    if (draftGlobalFilters.length > 0) {
-      dateFilterAutoSeededRef.current = true;
-      return;
-    }
-
-    const dateCol = calendarDateColumns[0];
-    if (!dateCol) return;
-
-    dateFilterAutoSeededRef.current = true;
-    const dateColKey = getColumnKey(dateCol);
-    const preset = 'this_month' as const;
-
-    const defaultDateFilter: BaseFilter = {
-      id: `gf-default-date-${Date.now()}`,
-      field: dateCol.name,
-      fieldKey: dateColKey,
-      semanticField: dateCol.semanticField,
-      datasetId: dateCol.datasetId,
-      type: 'date',
-      operator: 'between',
-      value: computeDatePresetRange(preset),
-      label: getColumnDisplayLabel(dateCol),
-      datePreset: preset,
-      linkedFields: dateCol.defaultLinkedFields?.length ? [...dateCol.defaultLinkedFields] : undefined,
-    };
-
-    setDraftGlobalFilters([defaultDateFilter]);
-    setAppliedGlobalFilters([defaultDateFilter]);
-  }, [draftGlobalFilters, calendarDateColumns]);
-
-  const activeSemanticDistinctColumns = React.useMemo(() => {
+  const activeSemanticDistinctTargets = React.useMemo(() => {
     if (semanticColumnsResult.columns.length === 0 || draftGlobalFilters.length === 0) {
       return [];
     }
@@ -1019,13 +983,20 @@ export default function DashboardDetailPage() {
       activeColumns.set(key, column);
     }
 
-    return Array.from(activeColumns.values());
+    return Array.from(activeColumns.values()).map((column) => {
+      const filterContext = getDistinctValueFilterContext(draftGlobalFilters, column);
+      return {
+        column,
+        filterContext,
+        filterContextKey: JSON.stringify(filterContext),
+      };
+    });
   }, [draftGlobalFilters, semanticColumnsResult.columns]);
 
   const semanticDistinctQueries = useQueries({
-    queries: activeSemanticDistinctColumns.map((column) => ({
-      queryKey: modelKeys.distinct(column.datasetId!, column.semanticField!),
-      queryFn: () => fetchDatasetModelDistinctValues(column.datasetId!, column.semanticField!),
+    queries: activeSemanticDistinctTargets.map(({ column, filterContext, filterContextKey }) => ({
+      queryKey: [...modelKeys.distinct(column.datasetId!, column.semanticField!), 'filters', filterContextKey],
+      queryFn: () => fetchDatasetModelDistinctValues(column.datasetId!, column.semanticField!, 200, filterContext),
       enabled: Boolean(column.datasetId && column.semanticField),
       staleTime: 5 * 60 * 1000,
     })),
@@ -1033,11 +1004,11 @@ export default function DashboardDetailPage() {
 
   const semanticDistinctValues = React.useMemo(() => {
     const values: Record<string, string[]> = {};
-    activeSemanticDistinctColumns.forEach((column, index) => {
+    activeSemanticDistinctTargets.forEach(({ column }, index) => {
       values[getColumnKey(column)] = semanticDistinctQueries[index]?.data?.values ?? [];
     });
     return values;
-  }, [activeSemanticDistinctColumns, semanticDistinctQueries]);
+  }, [activeSemanticDistinctTargets, semanticDistinctQueries]);
 
   const semanticFieldColumns = React.useMemo(
     () => semanticColumnsResult.columns.filter((column) => column.type !== 'date'),

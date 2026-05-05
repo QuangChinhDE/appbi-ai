@@ -3,6 +3,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient as api } from '@/lib/api-client';
+import type { BaseFilter } from '@/lib/filters';
 
 // ===== Types =====
 
@@ -104,11 +105,16 @@ export async function fetchDatasetModelDistinctValues(
   datasetId: number,
   field: string,
   limit = 200,
+  filters?: BaseFilter[],
 ) {
   const response = await api.get<DistinctFieldValuesResponse>(
     `/datasets/${datasetId}/model/distinct-values`,
     {
-      params: { field, limit },
+      params: {
+        field,
+        limit,
+        ...(filters?.length ? { filters: JSON.stringify(filters) } : {}),
+      },
     },
   );
   return response.data;
