@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { Plus, X, Filter, ChevronDown, ChevronRight, Search, Link2, Check, RotateCcw, Calendar } from 'lucide-react';
 import {
   BaseFilter,
@@ -59,6 +59,29 @@ export function DashboardFilterBar({
   const [addingField, setAddingField] = useState(false);
   const [addFilterSearch, setAddFilterSearch] = useState('');
   const [searchTerms, setSearchTerms] = useState<Record<string, string>>({});
+  const addFilterSearchRef = useRef<HTMLInputElement>(null);
+  const addButtonRef = useRef<HTMLButtonElement>(null);
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; right: number } | null>(null);
+
+  // Compute fixed position when dropdown opens so it escapes overflow-hidden parents
+  useEffect(() => {
+    if (addingField && addButtonRef.current) {
+      const rect = addButtonRef.current.getBoundingClientRect();
+      setDropdownPos({
+        top: rect.bottom + 4,
+        right: window.innerWidth - rect.right,
+      });
+    }
+  }, [addingField]);
+
+  // Auto-focus search input whenever the dropdown opens
+  useEffect(() => {
+    if (addingField) {
+      // Short timeout so the DOM element is mounted before we focus
+      const t = setTimeout(() => addFilterSearchRef.current?.focus(), 50);
+      return () => clearTimeout(t);
+    }
+  }, [addingField]);
 
   // How many filters have a non-empty value?
   const activeCount = filters.filter(f => {
@@ -343,6 +366,7 @@ export function DashboardFilterBar({
           {/* Add filter dropdown */}
           <div className="relative">
             <button
+              ref={addButtonRef}
               onClick={() => {
                 const next = !addingField;
                 setAddingField(next);
@@ -360,28 +384,36 @@ export function DashboardFilterBar({
 
             {addingField && addableColumns.length > 0 && (
               <>
-                <div className="fixed inset-0 z-30" onClick={() => {
+                <div className="fixed inset-0 z-[9998]" onClick={() => {
                   setAddingField(false);
                   setAddFilterSearch('');
                 }} />
-                <div className="absolute right-0 top-full z-40 mt-1 max-h-[28rem] w-80 overflow-y-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
+                <div
+                  className="fixed z-[9999] max-h-[min(32rem,70vh)] w-80 overflow-y-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg"
+                  style={dropdownPos ? { top: dropdownPos.top, right: dropdownPos.right } : { top: 0, right: 0 }}
+                >
+                  {/* Search — always visible, auto-focused */}
                   <div className="p-2 border-b border-[rgb(var(--border-line))]">
-                    <p className="text-xs font-medium text-text-tertiary uppercase tracking-wide">Add a filter</p>
-                  </div>
-                  {addableColumns.length > 8 && (
-                    <div className="p-2 border-b border-[rgb(var(--border-line))]">
-                      <div className="relative">
-                        <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-quaternary" />
-                        <input
-                          type="text"
-                          value={addFilterSearch}
-                          onChange={(e) => setAddFilterSearch(e.target.value)}
-                          placeholder="Search fields..."
-                          className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1.5 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
-                        />
-                      </div>
+                    <div className="relative">
+                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-quaternary" />
+                      <input
+                        ref={addFilterSearchRef}
+                        type="text"
+                        value={addFilterSearch}
+                        onChange={(e) => setAddFilterSearch(e.target.value)}
+                        placeholder="Search fields..."
+                        className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1.5 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') {
+                            setAddingField(false);
+                            setAddFilterSearch('');
+                          } else if (e.key === 'Enter' && matchingAvailableColumns.length > 0) {
+                            addFilter(getColumnKey(matchingAvailableColumns[0]));
+                          }
+                        }}
+                      />
                     </div>
-                  )}
+                  </div>
 
                   {/* ── Date filter section ─────────────────────────── */}
                   {(() => {
