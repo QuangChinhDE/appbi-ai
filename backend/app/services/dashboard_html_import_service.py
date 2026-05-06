@@ -73,6 +73,7 @@ _SUPPORTED_CHART_TYPES = {
     "TIMELINE",
     "WORD_CLOUD",
     "KPI",
+    "PODIUM",
 }
 _BLOCK_ROLE_TO_CHART_TYPE = {
     "table": "TABLE",
@@ -1630,6 +1631,7 @@ def _ai_chart_plans(
                 "KPI requires one numeric metric. TIME_SERIES requires one date field and one numeric metric. PIE requires one dimension and one numeric metric.",
                 "BAR_LINE requires one dimension plus one bar metric and one line metric.",
                 "SCATTER requires two numeric fields.",
+                "PODIUM requires one dimension (name field) and one numeric metric; use it for top-N ranking blocks with medal/rank styling.",
                 *multi_source_rules,
             ],
             "document_summary": {
@@ -1665,7 +1667,7 @@ def _ai_chart_plans(
                         "block_id": "string",
                         "title": "string",
                         "original_chart_type": "string",
-                        "suggested_chart_type": "BAR|HORIZONTAL_BAR|LINE|PIE|TIME_SERIES|TABLE|AREA|STACKED_BAR|GROUPED_BAR|BAR_LINE|SCATTER|KPI",
+                        "suggested_chart_type": "BAR|HORIZONTAL_BAR|LINE|PIE|TIME_SERIES|TABLE|AREA|STACKED_BAR|GROUPED_BAR|BAR_LINE|SCATTER|KPI|PODIUM",
                         "source_key": "table display_name (required for multi-table datasets)",
                         "field_mapping": {
                             "dimension": "string | null",
