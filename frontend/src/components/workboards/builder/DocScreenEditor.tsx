@@ -367,7 +367,7 @@ function KvGridEditor({
         {items.map((item, idx) => (
           <div
             key={idx}
-            className="grid gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2 md:grid-cols-[minmax(0,220px),minmax(0,1fr),auto]"
+            className="wb-row-key-value rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2"
           >
             <input
               value={item.label}
@@ -595,7 +595,7 @@ function SignatureEditor({
       {slots.map((slot, idx) => (
         <div
           key={idx}
-          className="grid gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2 md:grid-cols-[minmax(0,1fr),minmax(0,1fr),auto]"
+          className="wb-row-static-value rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2"
         >
           <input
             value={slot.label}
@@ -702,7 +702,7 @@ function ColumnGroupsEditor({
             return (
               <div
                 key={idx}
-                className="grid gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3 xl:grid-cols-[minmax(0,1fr),minmax(0,180px),minmax(0,180px),auto]"
+                className="wb-row-doc-col rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3"
               >
                 <input
                   value={String(group.label || '')}
@@ -820,7 +820,7 @@ function TotalsEditor({
           {items.map((item, idx) => (
             <div
               key={idx}
-              className="grid gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-2 md:grid-cols-[minmax(0,1fr),160px,auto]"
+              className="wb-row-doc-group rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-2"
             >
               <select
                 value={item.column}

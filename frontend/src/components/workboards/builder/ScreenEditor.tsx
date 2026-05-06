@@ -81,7 +81,9 @@ export default function ScreenEditor({
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
-      <div className="flex items-end justify-between gap-3">
+      {/* items-center vertically centers the toggle pill against the tabs
+          row. Tabs already render their own bottom border. */}
+      <div className="flex items-center justify-between gap-3">
         <Tabs<TabId> items={items} value={tab} onChange={setTab} variant="underline" />
         <ModeToggle mode={mode} onChange={setMode} />
       </div>
@@ -147,25 +149,14 @@ function ModeToggle({
   mode: BuilderMode;
   onChange: (next: BuilderMode) => void;
 }) {
-  return (
-    <div className="inline-flex items-center rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-0.5">
-      {(['basic', 'advanced'] as BuilderMode[]).map((m) => (
-        <button
-          key={m}
-          type="button"
-          onClick={() => onChange(m)}
-          className={
-            mode === m
-              ? 'rounded px-2 py-0.5 text-tiny font-medium text-text-primary bg-surface-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]'
-              : 'rounded px-2 py-0.5 text-tiny font-medium text-text-tertiary hover:text-text-primary'
-          }
-          title={m === 'basic' ? 'Chế độ Cơ bản' : 'Chế độ Nâng cao'}
-        >
-          {m === 'basic' ? 'Cơ bản' : 'Nâng cao'}
-        </button>
-      ))}
-    </div>
-  );
+  // Reuses the shared Tabs pill so this lives in the same design vocab as
+  // the surrounding underline tabs — same active treatment (surface-1 chip
+  // with linear shadow) and same hover, no ad-hoc styling.
+  const items: TabItem<BuilderMode>[] = [
+    { key: 'basic', label: 'Cơ bản' },
+    { key: 'advanced', label: 'Nâng cao' },
+  ];
+  return <Tabs<BuilderMode> items={items} value={mode} onChange={onChange} variant="pill" size="sm" />;
 }
 
 // ── Permission tab ────────────────────────────────────────────────────────
@@ -325,7 +316,7 @@ export function Lbl({
   children: React.ReactNode;
 }) {
   return (
-    <label className={className || 'block'}>
+    <label className={`block ${className ?? ''}`}>
       <span className="mb-1 block text-tiny font-emphasis text-text-secondary">
         {label}
       </span>
@@ -344,7 +335,7 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <label className={className || 'block'}>
+    <label className={`block ${className ?? ''}`}>
       <span className="mb-1 block text-tiny font-emphasis text-text-secondary">
         {label}
       </span>

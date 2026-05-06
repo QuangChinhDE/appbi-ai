@@ -17,18 +17,38 @@ import {
   AlertTriangle,
   ArrowLeft,
   BarChart3,
+  Bell,
+  Calendar,
   CheckCircle2,
+  ClipboardEdit,
   ClipboardList,
+  Eye,
   Factory,
   FileText,
+  Folder,
+  Grid3x3,
+  Home,
+  Image as ImageIcon,
+  LayoutDashboard,
   Laptop,
   ListChecks,
   Loader2,
   LogOut,
+  Mail,
+  MapPin,
+  MoreHorizontal,
+  Phone,
+  PieChart,
   PlusCircle,
+  Search,
+  Settings,
   Smartphone,
   Sparkles,
+  Star,
+  Table2,
   Tablet,
+  Truck,
+  Users,
 } from 'lucide-react';
 
 import {
@@ -43,14 +63,39 @@ import {
 import { evaluateTruthy } from '@/lib/wb-expr';
 
 const ICON_MAP: Record<string, React.ElementType> = {
-  ClipboardList,
-  PlusCircle,
-  BarChart3,
-  ListChecks,
+  // Original set
   AlertTriangle,
+  BarChart3,
   CheckCircle2,
-  FileText,
+  ClipboardList,
   Factory,
+  FileText,
+  ListChecks,
+  PlusCircle,
+  // Extended set for builder icon picker
+  Bell,
+  Calendar,
+  ClipboardEdit,
+  Eye,
+  Folder,
+  Grid3x3,
+  Home,
+  Image: ImageIcon,
+  ImageIcon,
+  LayoutDashboard,
+  Mail,
+  Map: MapPin,
+  MapPin,
+  MoreHorizontal,
+  Phone,
+  PieChart,
+  Search,
+  Settings,
+  Star,
+  Table: Table2,
+  Table2,
+  Truck,
+  Users,
 };
 
 function pickIcon(name?: string | null): React.ElementType {
@@ -240,6 +285,7 @@ export default function WorkspaceWorkboardPage() {
       <Header
         appName={appName}
         accent={accent}
+        logoUrl={shell.branding.logo_url}
         device={effectiveDevice}
         override={deviceOverride}
         onDeviceChange={setDeviceOverride}
@@ -309,6 +355,7 @@ export default function WorkspaceWorkboardPage() {
 function Header({
   appName,
   accent,
+  logoUrl,
   device,
   override,
   onDeviceChange,
@@ -317,6 +364,7 @@ function Header({
 }: {
   appName: string;
   accent: string;
+  logoUrl?: string | null;
   device: DeviceMode;        // currently effective layout
   override: DeviceMode | null;  // user override; null = auto
   onDeviceChange: (d: DeviceMode | null) => void;
@@ -367,10 +415,15 @@ function Header({
           <ArrowLeft className="h-3.5 w-3.5" />
         </button>
         <div
-          className="flex h-9 w-9 items-center justify-center rounded-lg text-white"
-          style={{ backgroundColor: accent }}
+          className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg"
+          style={{ backgroundColor: logoUrl ? 'transparent' : accent }}
         >
-          <Factory className="h-4 w-4" />
+          {logoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={logoUrl} alt="" className="h-full w-full object-contain" />
+          ) : (
+            <Factory className="h-4 w-4 text-white" />
+          )}
         </div>
         <h1 className="flex-1 truncate text-base font-semibold text-slate-900">
           {appName}
@@ -532,25 +585,82 @@ function BottomNav({
   onSelect: (id: string) => void;
   accent: string;
 }) {
-  // Cap to 5 items in bottom nav; hide overflow into a stack of "more".
-  const visible = items.slice(0, 5);
+  const [showMore, setShowMore] = useState(false);
+  // Show at most 4 primary items + "More" button when there are > 5 items
+  const MAX_VISIBLE = items.length > 5 ? 4 : 5;
+  const visible = items.slice(0, MAX_VISIBLE);
+  const overflow = items.slice(MAX_VISIBLE);
+  const hasOverflow = overflow.length > 0;
+  const overflowActive = overflow.some((s) => s.id === activeId);
+
   return (
-    <nav
-      className="fixed inset-x-0 bottom-0 z-30 grid border-t border-slate-200 bg-white shadow-[0_-2px_8px_rgba(0,0,0,0.04)]"
-      style={{ gridTemplateColumns: `repeat(${visible.length}, 1fr)` }}
-    >
-      {visible.map((s) => (
-        <NavBtn
-          key={s.id}
-          active={s.id === activeId}
-          accent={accent}
-          onClick={() => onSelect(s.id)}
-          icon={pickIcon(s.icon)}
-          label={s.title}
-          layout="bottom"
-        />
-      ))}
-    </nav>
+    <>
+      {/* More sheet overlay */}
+      {showMore && (
+        <div
+          className="fixed inset-0 z-40"
+          onClick={() => setShowMore(false)}
+        >
+          <div
+            className="absolute inset-x-0 bottom-0 rounded-t-2xl bg-white pb-safe shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mx-auto mb-3 mt-2 h-1 w-10 rounded-full bg-slate-200" />
+            <div className="border-b border-slate-100 px-4 pb-2">
+              <h3 className="text-sm font-semibold text-slate-700">Thêm menu</h3>
+            </div>
+            <div className="py-1">
+              {overflow.map((s) => {
+                const Icon = pickIcon(s.icon);
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => {
+                      onSelect(s.id);
+                      setShowMore(false);
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-slate-50"
+                    style={{ color: s.id === activeId ? accent : '#374151' }}
+                  >
+                    <Icon className="h-5 w-5 shrink-0" />
+                    <span className="font-medium">{s.title}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <nav
+        className="fixed inset-x-0 bottom-0 z-30 grid border-t border-slate-200 bg-white shadow-[0_-2px_8px_rgba(0,0,0,0.04)]"
+        style={{ gridTemplateColumns: `repeat(${visible.length + (hasOverflow ? 1 : 0)}, 1fr)` }}
+      >
+        {visible.map((s) => (
+          <NavBtn
+            key={s.id}
+            active={s.id === activeId}
+            accent={accent}
+            onClick={() => onSelect(s.id)}
+            icon={pickIcon(s.icon)}
+            label={s.title}
+            layout="bottom"
+          />
+        ))}
+        {hasOverflow && (
+          <button
+            type="button"
+            onClick={() => setShowMore((v) => !v)}
+            className="flex flex-col items-center justify-center gap-0.5 px-2 py-2"
+            style={{ color: overflowActive || showMore ? accent : '#64748b' }}
+          >
+            <MoreHorizontal className="h-5 w-5" />
+            <span className="text-[11px] font-medium leading-tight">Thêm</span>
+          </button>
+        )}
+      </nav>
+    </>
   );
 }
 
@@ -1076,6 +1186,61 @@ function Field({
   );
 }
 
+// ── Cell value formatter ─────────────────────────────────────────────────
+
+function formatCellValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'boolean') return value ? 'Có' : 'Không';
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return String(value);
+    return value.toLocaleString('vi-VN');
+  }
+  const s = String(value);
+  // ISO date/datetime
+  if (/^\d{4}-\d{2}-\d{2}(T|\s|$)/.test(s)) {
+    try {
+      const d = new Date(s);
+      if (!Number.isNaN(d.getTime())) {
+        return /^\d{4}-\d{2}-\d{2}$/.test(s)
+          ? d.toLocaleDateString('vi-VN')
+          : d.toLocaleString('vi-VN');
+      }
+    } catch {
+      // fall through
+    }
+  }
+  return s;
+}
+
+function CellDisplay({ value }: { value: unknown }) {
+  if (typeof value === 'boolean') {
+    return (
+      <span
+        className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${
+          value ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'
+        }`}
+      >
+        {value ? '✓' : '✕'}
+      </span>
+    );
+  }
+  const s = formatCellValue(value);
+  if (typeof value === 'string' && /^https?:\/\//i.test(value)) {
+    return (
+      <a
+        href={value}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="max-w-[180px] truncate text-blue-600 hover:underline"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {value}
+      </a>
+    );
+  }
+  return <>{s}</>;
+}
+
 // ── List screen ──────────────────────────────────────────────────────────
 
 function ListScreen({
@@ -1136,7 +1301,7 @@ function ListScreen({
                 <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
                   {cols.map((c) => (
                     <td key={c} className="px-3 py-2 text-slate-700">
-                      {r[c] == null ? '' : String(r[c])}
+                      <CellDisplay value={r[c]} />
                     </td>
                   ))}
                   {rowActions.length > 0 && (

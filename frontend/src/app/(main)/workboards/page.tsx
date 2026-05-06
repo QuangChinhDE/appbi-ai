@@ -42,6 +42,7 @@ import { FilterTag } from '@/components/ui/FilterTag';
 import { FieldGroup, Input, Textarea } from '@/components/ui/Input';
 import { WorkboardList } from '@/components/workboards/WorkboardList';
 import WorkboardImportModal from '@/components/workboards/WorkboardImportModal';
+import { DefaultOwnerCredentialsDialog } from '@/components/workboards/DefaultOwnerCredentialsDialog';
 import type { Workboard } from '@/lib/api/workboards';
 import { storeWorkboardDefaultOwnerNotice } from '@/lib/workboard-default-owner-notice';
 
@@ -82,6 +83,15 @@ export default function WorkboardsPage() {
   const [listFilters, setListFilters] = useState<WorkboardListFilters>({});
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  // After creating a workboard with default owner credentials we hold them
+  // here and surface a blocking modal — the toast was too easy to miss and
+  // the PIN cannot be recovered later.
+  const [pendingCredentials, setPendingCredentials] = useState<{
+    workboardId: number;
+    workboardName: string;
+    username: string;
+    pin: string;
+  } | null>(null);
 
   // Create-form state — only name + description + dataset are required.
   // Primary table is auto-picked by the backend (first physical table in
@@ -155,20 +165,25 @@ export default function WorkboardsPage() {
           audit: {},
         },
       });
+      setIsCreateOpen(false);
+      resetForm();
       if (created.default_owner_credentials) {
+        // Stash in sessionStorage as a fallback (e.g. if user navigates away
+        // before confirming), and show the blocking dialog.
         storeWorkboardDefaultOwnerNotice({
           workboardId: created.id,
           ...created.default_owner_credentials,
         });
-        toast.success(`Đã tạo “${created.name}”`, {
-          description: `Owner mặc định: ${created.default_owner_credentials.username} / ${created.default_owner_credentials.pin}. Hãy đổi PIN này trong tab Users.`,
+        setPendingCredentials({
+          workboardId: created.id,
+          workboardName: created.name,
+          username: created.default_owner_credentials.username,
+          pin: created.default_owner_credentials.pin,
         });
       } else {
         toast.success(`Đã tạo “${created.name}”`);
+        router.push(`/workboards/${created.id}`);
       }
-      setIsCreateOpen(false);
-      resetForm();
-      router.push(`/workboards/${created.id}`);
     } catch (err: unknown) {
       toast.error(getApiErrorMessage(err, 'Tạo workboard thất bại'));
     }
@@ -501,8 +516,20 @@ export default function WorkboardsPage() {
                 variant="primary"
                 size="sm"
                 onClick={() => handleCreate()}
-                disabled={createMutation.isPending || !name.trim()}
+                disabled={
+                  createMutation.isPending ||
+                  !name.trim() ||
+                  datasets.length === 0 ||
+                  !datasetId
+                }
                 loading={createMutation.isPending}
+                title={
+                  datasets.length === 0
+                    ? 'Bạn cần tạo dataset trước khi tạo workboard'
+                    : !datasetId
+                      ? 'Hãy chọn dataset'
+                      : undefined
+                }
               >
                 Create
               </Button>
@@ -531,23 +558,68 @@ export default function WorkboardsPage() {
               required
               description="Mỗi screen trong Builder sẽ tự chọn bảng từ dataset này."
             >
-              <select
-                className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-body"
-                value={datasetId ?? ''}
-                onChange={(e) =>
-                  setDatasetId(e.target.value ? Number(e.target.value) : null)
-                }
-              >
-                <option value="">— Chọn dataset —</option>
-                {datasets.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                  </option>
-                ))}
-              </select>
+              {datasets.length === 0 ? (
+                <div className="rounded-md border border-dashed border-warning/40 bg-warning/5 p-3">
+                  <div className="flex items-start gap-2">
+                    <Database className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+                    <div className="flex-1 text-tiny text-text-secondary">
+                      <p className="font-emphasis text-text-primary">
+                        Bạn chưa có dataset nào.
+                      </p>
+                      <p className="mt-0.5">
+                        Workboard cần một dataset để lấy bảng dữ liệu. Hãy tạo
+                        dataset trước (kết nối nguồn dữ liệu, chọn bảng), rồi
+                        quay lại đây.
+                      </p>
+                      <Button
+                        variant="primary"
+                        size="xs"
+                        className="mt-2"
+                        leadingIcon={<Database className="h-3 w-3" />}
+                        onClick={() => {
+                          setIsCreateOpen(false);
+                          resetForm();
+                          router.push('/datasets');
+                        }}
+                      >
+                        Sang module Datasets
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <select
+                  className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2 text-body"
+                  value={datasetId ?? ''}
+                  onChange={(e) =>
+                    setDatasetId(e.target.value ? Number(e.target.value) : null)
+                  }
+                >
+                  <option value="">— Chọn dataset —</option>
+                  {datasets.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+              )}
             </FieldGroup>
           </form>
         </Modal>
+      )}
+
+      {pendingCredentials && (
+        <DefaultOwnerCredentialsDialog
+          isOpen
+          workboardName={pendingCredentials.workboardName}
+          username={pendingCredentials.username}
+          pin={pendingCredentials.pin}
+          onConfirm={() => {
+            const target = pendingCredentials.workboardId;
+            setPendingCredentials(null);
+            router.push(`/workboards/${target}`);
+          }}
+        />
       )}
 
       {shareTarget && (

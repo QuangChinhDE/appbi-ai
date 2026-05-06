@@ -10,14 +10,19 @@ export const BUILDER_INPUT =
   'min-h-9 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2 text-caption text-text-primary placeholder:text-text-quaternary shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] transition-colors focus:border-brand focus:outline-none';
 
 export const BUILDER_PANEL =
-  'rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]';
+  'rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]';
 
 export const BUILDER_SUBPANEL =
   'rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]';
 
-export const BUILDER_GRID_2 = 'grid gap-3 md:grid-cols-2';
-export const BUILDER_GRID_3 = 'grid gap-3 md:grid-cols-2 xl:grid-cols-3';
-export const BUILDER_GRID_4 = 'grid gap-3 md:grid-cols-2 xl:grid-cols-4';
+// Container-query–driven grids — break by editor pane width, not viewport.
+// Definitions live in `frontend/src/app/globals.css` under "Workboard
+// builder — container-query grids". They expand 1 → 2 → 3/4 columns as
+// the .wb-editor-pane container grows, so opening the Live Preview
+// (which halves the editor) doesn't crush 2-col layouts.
+export const BUILDER_GRID_2 = 'wb-grid-2';
+export const BUILDER_GRID_3 = 'wb-grid-3';
+export const BUILDER_GRID_4 = 'wb-grid-4';
 
 export function BuilderSection({
   title,
@@ -34,13 +39,13 @@ export function BuilderSection({
 }) {
   return (
     <section className={cx(BUILDER_PANEL, className)}>
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <h2 className="text-caption font-emphasis uppercase tracking-wider text-text-quaternary">
             {title}
           </h2>
           {description ? (
-            <p className="mt-1 max-w-3xl text-tiny text-text-tertiary">{description}</p>
+            <p className="mt-0.5 max-w-3xl text-tiny text-text-tertiary">{description}</p>
           ) : null}
         </div>
         {action ? <div className="flex flex-wrap items-center gap-2">{action}</div> : null}
@@ -107,7 +112,7 @@ export function BuilderActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cx(
-        'inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-tiny font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+        'inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-tiny font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
         variantClass,
         className,
       )}
@@ -181,7 +186,9 @@ export function BuilderIconButton({
       title={title}
       disabled={disabled}
       className={cx(
-        'inline-flex h-8 w-8 items-center justify-center rounded-md border bg-surface-0 transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+        // h-9 / w-9 — matches the 36px height of INPUT so icon buttons
+        // align flush with the inputs they sit beside in row layouts.
+        'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border bg-surface-0 transition-colors disabled:cursor-not-allowed disabled:opacity-50',
         variantClass,
         className,
       )}

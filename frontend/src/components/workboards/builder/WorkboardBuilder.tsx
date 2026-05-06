@@ -380,7 +380,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
           Sidebar (w-56) sits outside this so the split ignores its width. */}
       <div className="flex min-w-0 flex-1">
       <main
-        className={`relative min-w-0 overflow-y-auto bg-surface-0 ${
+        className={`wb-editor-pane relative min-w-0 overflow-y-auto bg-surface-0 ${
           previewCollapsed ? 'flex-1' : 'w-1/2 shrink-0'
         }`}
       >

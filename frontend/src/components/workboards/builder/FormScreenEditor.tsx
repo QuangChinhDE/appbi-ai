@@ -13,6 +13,7 @@ import {
 } from './BuilderValueControls';
 import {
   BUILDER_GRID_2,
+  BUILDER_GRID_3,
   BUILDER_GRID_4,
   BuilderActionButton,
   BuilderIconButton,
@@ -376,7 +377,7 @@ export default function FormScreenEditor({
         ) : fields.length === 0 ? (
           <EmptyHint>Chưa có field nào. Bấm &quot;Thêm field&quot; ở trên.</EmptyHint>
         ) : (
-          <div className="grid gap-3 xl:grid-cols-[260px,minmax(0,1fr)]">
+          <div className="wb-inspector">
             <CompactFieldList
               fields={fields}
               activeIndex={activeFieldIndex}
@@ -445,7 +446,7 @@ export default function FormScreenEditor({
             </select>
           </Lbl>
           {form.after_submit?.go_to_screen && (
-            <Lbl label="Giữ lại giá trị (truyền sang màn sau)" className="md:col-span-2">
+            <Lbl label="Giữ lại giá trị (truyền sang màn sau)" className="wb-col-span-2">
               {fieldColumnOptions.length > 0 ? (
                 <CheckboxMultiSelect
                   options={fieldColumnOptions.map((column) => ({
@@ -630,7 +631,7 @@ function InitialValueRow({
   ];
 
   return (
-    <div className="grid items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2 md:grid-cols-[180px,minmax(0,1fr),auto]">
+    <div className="wb-row-key-value rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2">
       {fieldOptions.length > 0 ? (
         <select
           value={fieldKey}
@@ -691,7 +692,7 @@ function FieldInspector({
   return (
     <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-4">
       {/* Header — single line, label + meta on the right */}
-      <div className="mb-3 flex items-baseline gap-2 border-b border-[rgb(var(--border-line))] pb-2.5">
+      <div className="mb-3 flex items-center gap-2 border-b border-[rgb(var(--border-line))] pb-2">
         <span className="truncate text-caption font-medium text-text-primary">
           {field.label?.trim() || field.column}
         </span>
@@ -862,7 +863,7 @@ function FieldInspector({
                   placeholder="[submitted] == true"
                 />
               </Lbl>
-              <Lbl label="Tự tính từ dataset" className="md:col-span-2">
+              <Lbl label="Tự tính từ dataset" className="wb-col-span-2">
                 <select
                   value={computedValue}
                   onChange={(event) =>
@@ -1002,6 +1003,7 @@ function LookupEditor({
       ) : mode === 'advanced' ? (
         <RelationshipPathEditor
           tableId={lookup.table_id ?? null}
+          tables={tables}
           path={relationshipPath}
           onChange={(next) =>
             onChange({
@@ -1017,12 +1019,20 @@ function LookupEditor({
   );
 }
 
+type RelationshipHop = {
+  table_id?: number | null;
+  value_column?: string | null;
+  label_column?: string | null;
+};
+
 function RelationshipPathEditor({
   tableId,
+  tables,
   path,
   onChange,
 }: {
   tableId: number | null;
+  tables: DatasetTableInfo[];
   path: unknown[];
   onChange: (next: unknown[]) => void;
 }) {
@@ -1041,69 +1051,186 @@ function RelationshipPathEditor({
       .finally(() => setLoading(false));
   }, [tableId]);
 
+  const typedPath = path as RelationshipHop[];
+
+  const updateHop = (index: number, patch: Partial<RelationshipHop>) => {
+    const next = typedPath.map((hop, i) => (i === index ? { ...hop, ...patch } : hop));
+    onChange(next);
+  };
+  const removeHop = (index: number) =>
+    onChange(typedPath.filter((_, i) => i !== index));
+  const addHop = () =>
+    onChange([
+      ...typedPath,
+      { table_id: null, value_column: null, label_column: null } as RelationshipHop,
+    ]);
+
   return (
     <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
-      <div className="mb-2 text-tiny font-emphasis text-text-secondary">
-        Quan hệ lồng (advanced)
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="text-tiny font-emphasis text-text-secondary">
+          Quan hệ lồng (advanced)
+        </span>
+        <span className="text-[11px] text-text-tertiary">
+          Đi qua nhiều bảng để lấy nhãn hiển thị
+        </span>
       </div>
-      {loading ? <p className="text-tiny text-text-tertiary">Đang tải gợi ý…</p> : null}
-      {!loading && suggestions.length === 0 && (
-        <p className="text-tiny text-text-tertiary">Không có gợi ý quan hệ nào.</p>
-      )}
-      {suggestions.length > 0 ? (
-        <div className="mb-3 grid gap-2">
-          {suggestions.map((suggestion, index) => (
-            <button
-              key={index}
-              onClick={() =>
-                onChange([
-                  {
-                    table_id: suggestion.target_table_id,
-                    value_column: suggestion.to_column,
-                    label_column:
-                      (suggestion.suggested_label_columns as string[] | undefined)?.[0] || null,
-                  },
-                ])
-              }
-              className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2 text-left text-tiny hover:border-brand"
-            >
-              <span className="font-emphasis">
-                {String(suggestion.target_table_display || 'Target')}
-              </span>{' '}
-              <span className="text-text-tertiary">
-                ({String(suggestion.from_column || '')} → {String(suggestion.to_column || '')})
-              </span>
-            </button>
-          ))}
+      <p className="mb-3 text-[11px] text-text-tertiary">
+        Mỗi bước chọn 1 bảng đích kèm cột khoá và cột hiển thị. Nhãn cuối cùng
+        sẽ là “Cột hiển thị” của bước cuối.
+      </p>
+
+      {loading ? (
+        <p className="mb-3 text-tiny text-text-tertiary">Đang tải gợi ý quan hệ…</p>
+      ) : suggestions.length > 0 ? (
+        <div className="mb-3">
+          <div className="mb-1 text-[11px] font-emphasis text-text-tertiary">
+            Gợi ý nhanh từ dataset
+          </div>
+          <div className="grid gap-1.5">
+            {suggestions.map((suggestion, index) => {
+              const targetDisplay = String(suggestion.target_table_display || 'Bảng đích');
+              const fromCol = String(suggestion.from_column || '');
+              const toCol = String(suggestion.to_column || '');
+              const labelCol =
+                (suggestion.suggested_label_columns as string[] | undefined)?.[0] || null;
+              return (
+                <button
+                  key={index}
+                  type="button"
+                  onClick={() =>
+                    onChange([
+                      {
+                        table_id: suggestion.target_table_id,
+                        value_column: toCol,
+                        label_column: labelCol,
+                      },
+                    ])
+                  }
+                  className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2 text-left text-tiny hover:border-brand"
+                  title="Bấm để dùng quan hệ này"
+                >
+                  <span className="font-emphasis text-text-primary">→ {targetDisplay}</span>
+                  <span className="block text-[11px] text-text-tertiary">
+                    Nối qua: <code className="font-mono">{fromCol}</code> ={' '}
+                    <code className="font-mono">{toCol}</code>
+                    {labelCol ? (
+                      <>
+                        {' '}
+                        · Hiển thị: <code className="font-mono">{labelCol}</code>
+                      </>
+                    ) : null}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       ) : null}
-      {path.length > 0 ? (
+
+      {typedPath.length > 0 ? (
         <div className="space-y-2">
-          {path.map((hop, index) => {
-            const item = (hop || {}) as Record<string, unknown>;
+          {typedPath.map((hop, index) => {
+            const targetTable = tables.find((t) => t.id === Number(hop.table_id));
+            const cols = targetTable?.columns ?? [];
             return (
               <div
                 key={index}
-                className="flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2 text-tiny"
+                className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2.5"
               >
-                <span>Bước {index + 1}</span>
-                <span className="text-text-tertiary">
-                  table#{String(item.table_id || '')} · value={String(item.value_column || '')}{' '}
-                  · label={String(item.label_column || '')}
-                </span>
-                <BuilderIconButton
-                  onClick={() => onChange(path.filter((_, i) => i !== index))}
-                  title="Xoá"
-                  variant="danger"
-                  className="ml-auto"
-                >
-                  <Trash2 className="h-3.5 w-3.5 text-danger" />
-                </BuilderIconButton>
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[11px] font-emphasis text-brand">
+                    Bước {index + 1}
+                  </span>
+                  <BuilderIconButton
+                    onClick={() => removeHop(index)}
+                    title="Xoá bước này"
+                    variant="danger"
+                    className="ml-auto"
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-danger" />
+                  </BuilderIconButton>
+                </div>
+                <div className={BUILDER_GRID_3}>
+                  <Lbl label="Bảng đích">
+                    <select
+                      value={hop.table_id ?? ''}
+                      onChange={(event) =>
+                        updateHop(index, {
+                          table_id: event.target.value ? Number(event.target.value) : null,
+                          value_column: null,
+                          label_column: null,
+                        })
+                      }
+                      className={INPUT}
+                    >
+                      <option value="">— chọn bảng —</option>
+                      {tables.map((table) => (
+                        <option key={table.id} value={table.id}>
+                          {table.display_name}
+                        </option>
+                      ))}
+                    </select>
+                  </Lbl>
+                  <Lbl label="Cột khoá (nối với bước trước)">
+                    <select
+                      value={hop.value_column || ''}
+                      onChange={(event) =>
+                        updateHop(index, { value_column: event.target.value || null })
+                      }
+                      className={INPUT}
+                      disabled={!targetTable}
+                    >
+                      <option value="">
+                        {targetTable ? '— chọn cột —' : 'Chọn bảng trước'}
+                      </option>
+                      {cols.map((column) => (
+                        <option key={column.name} value={column.name}>
+                          {column.name}
+                          {column.type ? ` (${column.type})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </Lbl>
+                  <Lbl label="Cột hiển thị (nhãn cho user)">
+                    <select
+                      value={hop.label_column || ''}
+                      onChange={(event) =>
+                        updateHop(index, { label_column: event.target.value || null })
+                      }
+                      className={INPUT}
+                      disabled={!targetTable}
+                    >
+                      <option value="">
+                        {targetTable ? 'Mặc định = cột khoá' : 'Chọn bảng trước'}
+                      </option>
+                      {cols.map((column) => (
+                        <option key={column.name} value={column.name}>
+                          {column.name}
+                          {column.type ? ` (${column.type})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </Lbl>
+                </div>
               </div>
             );
           })}
         </div>
-      ) : null}
+      ) : (
+        <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] p-3 text-center text-tiny text-text-tertiary">
+          Chưa có bước nào. Chọn 1 gợi ý ở trên hoặc thêm bước thủ công.
+        </p>
+      )}
+
+      <BuilderActionButton
+        onClick={addHop}
+        variant="brand"
+        className="mt-3 w-full justify-center"
+      >
+        <Plus className="h-3.5 w-3.5" />
+        Thêm bước
+      </BuilderActionButton>
     </div>
   );
 }
@@ -1130,10 +1257,7 @@ function StaticValuesEditor({
       {values.length > 0 ? (
         <div className="space-y-2">
           {values.map((value, index) => (
-            <div
-              key={index}
-              className="grid gap-2 md:grid-cols-[minmax(0,1fr),minmax(0,1fr),auto]"
-            >
+            <div key={index} className="wb-row-static-value">
               <input
                 value={value.label}
                 onChange={(event) => update(index, { label: event.target.value })}

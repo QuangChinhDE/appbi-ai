@@ -23,8 +23,15 @@ import {
   BuilderIconButton,
   BuilderSubsection,
 } from './BuilderChrome';
+import { FixedExpressionInput, type SelectOption } from './BuilderValueControls';
 import type { ScreenRlsRuleSpec, ScreenSpec } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
+
+const RLS_FILTER_VAR_OPTIONS: SelectOption[] = [
+  { value: '{{app_user.username}}', label: 'User đang đăng nhập (username)' },
+  { value: '{{app_user.full_name}}', label: 'User đang đăng nhập (họ tên)' },
+  { value: '{{app_user.role}}', label: 'Vai trò user đang đăng nhập' },
+];
 
 interface DatasetTableInfo {
   id: number;
@@ -66,6 +73,21 @@ export default function RlsEditor({
 
   return (
     <div>
+      <div className="mb-3 rounded-md border border-info/20 bg-info/5 p-2.5 text-tiny text-text-secondary">
+        <p className="font-emphasis text-text-primary">Quy tắc xem dữ liệu theo vai trò</p>
+        <p className="mt-0.5">
+          Mỗi quy tắc cho một <em>vai trò</em> (user / admin / …) biết được phép
+          xem, thêm, sửa, xoá những dòng nào. Mặc định: Owner và Admin thấy mọi
+          dòng. Vai trò khác chỉ thấy đúng những dòng mà <em>cột lọc</em> khớp
+          với <em>giá trị so khớp</em>.
+        </p>
+        <p className="mt-1 text-[11px] text-text-tertiary">
+          Ví dụ: cột lọc <code className="font-mono">created_by</code> + giá trị{' '}
+          <code className="font-mono">{'{{app_user.username}}'}</code> = mỗi
+          user chỉ thấy đúng các dòng do mình tạo.
+        </p>
+      </div>
+
       <div className="space-y-2">
         {rules.map((r, idx) => (
           <RuleCard
@@ -164,76 +186,99 @@ function RuleCard({
       )}
 
       {!effectiveUnrestricted && (
-        <div className={BUILDER_GRID_2}>
-          <Lbl label="Cột lọc">
-            <select
-              value={rule.filter_column || ''}
-              onChange={(e) => onChange({ filter_column: e.target.value || null })}
-              className={INPUT}
-            >
-              <option value="">— chọn —</option>
-              {tableCols.map((c) => (
-                <option key={c.name} value={c.name}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </Lbl>
-          <Lbl label="Giá trị (so khớp với cột lọc)">
-            <input
-              value={String(rule.filter_value ?? '')}
-              onChange={(e) => onChange({ filter_value: e.target.value })}
-              className={INPUT}
-              placeholder="vd: {{app_user.username}}"
-            />
-          </Lbl>
-        </div>
+        <>
+          <div className={BUILDER_GRID_2}>
+            <Lbl label="Cột lọc">
+              <select
+                value={rule.filter_column || ''}
+                onChange={(e) => onChange({ filter_column: e.target.value || null })}
+                className={INPUT}
+              >
+                <option value="">— chọn cột —</option>
+                {tableCols.map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </Lbl>
+            <Lbl label="Giá trị so khớp">
+              <FixedExpressionInput
+                value={rule.filter_value}
+                onChange={(next) => onChange({ filter_value: next })}
+                fixedPlaceholder="vd: HN, branch-01, …"
+                expressionPlaceholder="vd: {{app_user.username}}"
+                expressionOptions={RLS_FILTER_VAR_OPTIONS}
+              />
+            </Lbl>
+          </div>
+          {rule.filter_column && rule.filter_value ? (
+            <p className="mt-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-[11px] text-text-secondary">
+              Vai trò <strong>{normalizedRole}</strong> chỉ thấy các dòng có{' '}
+              <code className="font-mono text-text-primary">
+                {rule.filter_column}
+              </code>{' '}
+              ={' '}
+              <code className="font-mono text-text-primary">
+                {String(rule.filter_value)}
+              </code>
+              .
+            </p>
+          ) : null}
+        </>
       )}
 
-      <div className="mt-2 grid grid-cols-3 gap-1 text-tiny text-text-secondary">
-        <label className="flex items-center gap-1">
-          <input
-            type="checkbox"
-            checked={rule.can_create !== false}
-            onChange={(e) => onChange({ can_create: e.target.checked })}
-            className="h-3 w-3"
-          />
-          Thêm
-        </label>
-        <label className="flex items-center gap-1">
-          <input
-            type="checkbox"
-            checked={rule.can_update !== false}
-            onChange={(e) => onChange({ can_update: e.target.checked })}
-            className="h-3 w-3"
-          />
-          Sửa
-        </label>
-        <label className="flex items-center gap-1">
-          <input
-            type="checkbox"
-            checked={!!rule.can_delete}
-            onChange={(e) => onChange({ can_delete: e.target.checked })}
-            className="h-3 w-3"
-          />
-          Xoá
-        </label>
+      <div className="mt-2">
+        <div className="mb-1 text-[11px] font-emphasis text-text-tertiary">
+          Vai trò này được phép làm gì với các dòng thấy được?
+        </div>
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-tiny text-text-secondary">
+          <label className="flex items-center gap-1" title="Cho phép thêm dòng mới">
+            <input
+              type="checkbox"
+              checked={rule.can_create !== false}
+              onChange={(e) => onChange({ can_create: e.target.checked })}
+              className="h-3 w-3"
+            />
+            Thêm dòng
+          </label>
+          <label className="flex items-center gap-1" title="Cho phép sửa dòng">
+            <input
+              type="checkbox"
+              checked={rule.can_update !== false}
+              onChange={(e) => onChange({ can_update: e.target.checked })}
+              className="h-3 w-3"
+            />
+            Sửa dòng
+          </label>
+          <label className="flex items-center gap-1" title="Cho phép xoá dòng">
+            <input
+              type="checkbox"
+              checked={!!rule.can_delete}
+              onChange={(e) => onChange({ can_delete: e.target.checked })}
+              className="h-3 w-3"
+            />
+            Xoá dòng
+          </label>
+        </div>
       </div>
 
-      <div className="mt-1.5">
-        <input
-          value={(rule.readonly_columns || []).join(', ')}
-          onChange={(e) =>
-            onChange({
-              readonly_columns: e.target.value
-                .split(',')
-                .map((s) => s.trim())
-                .filter(Boolean),
-            })
-          }
-          className={INPUT}
-          placeholder="Cột chỉ đọc (cách nhau dấu phẩy) — vd: id, created_at"
-        />
+      <div className="mt-2">
+        <Lbl label="Cột chỉ đọc (vai trò này không sửa được)">
+          <input
+            value={(rule.readonly_columns || []).join(', ')}
+            onChange={(e) =>
+              onChange({
+                readonly_columns: e.target.value
+                  .split(',')
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+              })
+            }
+            className={INPUT}
+            placeholder="Tên cột, cách nhau dấu phẩy — vd: id, created_at"
+          />
+        </Lbl>
       </div>
     </BuilderSubsection>
   );

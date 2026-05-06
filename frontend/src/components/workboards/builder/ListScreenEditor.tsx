@@ -188,7 +188,7 @@ export default function ListScreenEditor({
           {(list.filters || []).map((filter, idx) => (
             <div
               key={idx}
-              className="grid gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2 md:grid-cols-[minmax(0,1.2fr),200px,minmax(0,1fr),auto]"
+              className="wb-row-filter rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2"
             >
               <select
                 value={filter.column}
@@ -253,7 +253,7 @@ export default function ListScreenEditor({
           {(list.row_actions || []).map((action, idx) => (
             <div
               key={idx}
-              className="grid gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-3 xl:grid-cols-[220px,minmax(0,260px),minmax(0,1fr),auto]"
+              className="wb-row-action rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-3"
             >
               <input
                 value={action.label}

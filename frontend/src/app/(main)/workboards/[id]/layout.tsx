@@ -1,6 +1,6 @@
 /**
  * Layout for ``/workboards/[id]/*`` — shared header (breadcrumb + tabs +
- * Export) above three sibling routes: Builder (default), Users, Preview.
+ * Export) above three sibling routes: Builder, Users, Preview.
  *
  * Splitting tabs into routes lets users deep-link directly into a tab,
  * keeps browser back/forward semantics sane, and lets each tab keep its
@@ -70,8 +70,8 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
   // Active tab inferred from URL — single source of truth, survives
   // refresh and bookmarking.
   const baseHref = `/workboards/${id}`;
-  const isUsers = pathname.startsWith(`${baseHref}/users`);
   const isPreview = pathname.startsWith(`${baseHref}/preview`);
+  const isUsers = pathname.startsWith(`${baseHref}/users`);
   const isBuilder = !isUsers && !isPreview;
 
   return (

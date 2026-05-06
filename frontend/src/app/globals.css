@@ -416,3 +416,243 @@
   box-shadow: none !important;
 }
 
+/*
+ * ── Workboard builder — container-query grids ────────────────────────
+ *
+ * The editor pane on the right ("Form" tab) shares its viewport with the
+ * Live Preview pane: the container is roughly 50% of the window when the
+ * preview is open, full width when collapsed. Tailwind's md/lg/xl
+ * breakpoints all key off the viewport, not the container, so we got
+ * 2-col grids stuffed into a ~700px slot — fields collided, labels
+ * truncated, the whole panel looked broken.
+ *
+ * Solution: set `container-type: inline-size` on the editor scroll-pane
+ * (`.wb-editor-pane`) and key responsive grid breakpoints off
+ * `@container` queries instead. Numbers are tuned for the editor's real
+ * paddings (24/40px) so a 1-col layout shows below ~520px and a 2-col
+ * layout below ~860px regardless of the surrounding viewport.
+ */
+.wb-editor-pane {
+  container-type: inline-size;
+  container-name: wb-editor;
+}
+
+/* ── 2-column grid (label/value pairs) ─────────────────────────────── */
+.wb-grid-2 {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+@container wb-editor (min-width: 520px) {
+  .wb-grid-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ── 3-column grid (e.g. Bảng đích / Cột khoá / Cột hiển thị) ───── */
+.wb-grid-3 {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+@container wb-editor (min-width: 520px) {
+  .wb-grid-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container wb-editor (min-width: 860px) {
+  .wb-grid-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Span 2 columns inside wb-grid-* once the grid is at least 2-up. Below
+ * that the grid is single-column anyway so the span is a no-op. */
+.wb-col-span-2 {
+  grid-column: span 1 / span 1;
+}
+@container wb-editor (min-width: 520px) {
+  .wb-col-span-2 {
+    grid-column: span 2 / span 2;
+  }
+}
+
+/* ── 4-column grid (compact field options) ─────────────────────────── */
+.wb-grid-4 {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+@container wb-editor (min-width: 520px) {
+  .wb-grid-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container wb-editor (min-width: 860px) {
+  .wb-grid-4 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@container wb-editor (min-width: 1100px) {
+  .wb-grid-4 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* ── Row layouts with a dropdown + value + remove icon ───────────────
+ * Used for InitialValueRow, KV cells, doc cells, etc. The first column
+ * (key picker) was hard-coded to 180–220px which collapses awkwardly in
+ * narrow containers; on container <520px we use flex-wrap so the icon
+ * button stays small (the previous 1fr grid stretched it across the
+ * row), otherwise we give the key column a lower bound and let
+ * value/icon take the rest.
+ */
+.wb-row-key-value {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.wb-row-key-value > * {
+  min-width: 0;
+}
+.wb-row-key-value > *:not(:last-child) {
+  flex: 1 1 100%;
+}
+@container wb-editor (min-width: 520px) {
+  .wb-row-key-value {
+    display: grid;
+    grid-template-columns: minmax(160px, 220px) minmax(0, 1fr) auto;
+  }
+  .wb-row-key-value > *:not(:last-child) {
+    flex: initial;
+  }
+}
+
+/* Inspector layout: column list (left) + active field detail (right).
+ * Left column was 260px fixed which felt too wide when container shrank.
+ */
+.wb-inspector {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+@container wb-editor (min-width: 860px) {
+  .wb-inspector {
+    grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  }
+}
+
+/* Shared narrow-container behaviour: when the container is too narrow for
+ * the full grid, the row falls back to flex-wrap so the trailing icon
+ * button keeps its natural size instead of stretching across a full row.
+ */
+.wb-row-filter,
+.wb-row-action,
+.wb-row-doc-col,
+.wb-row-doc-group,
+.wb-row-static-value {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.wb-row-filter > *,
+.wb-row-action > *,
+.wb-row-doc-col > *,
+.wb-row-doc-group > *,
+.wb-row-static-value > * {
+  min-width: 0;
+}
+.wb-row-filter > *:not(:last-child),
+.wb-row-action > *:not(:last-child),
+.wb-row-doc-col > *:not(:last-child),
+.wb-row-doc-group > *:not(:last-child),
+.wb-row-static-value > *:not(:last-child) {
+  flex: 1 1 100%;
+}
+.wb-row-filter > *:nth-last-child(2),
+.wb-row-action > *:nth-last-child(2),
+.wb-row-doc-col > *:nth-last-child(2),
+.wb-row-doc-group > *:nth-last-child(2),
+.wb-row-static-value > *:nth-last-child(2) {
+  /* Pair the right-most input with the trailing icon button on the same
+   * line in the smallest layout — keeps the X button tight to its row. */
+  flex: 1 1 calc(100% - 2.5rem - 0.5rem);
+}
+
+/* List row filter: name | type | value | remove */
+@container wb-editor (min-width: 600px) {
+  .wb-row-filter {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  }
+  .wb-row-filter > *:not(:last-child),
+  .wb-row-filter > *:nth-last-child(2) {
+    flex: initial;
+  }
+}
+@container wb-editor (min-width: 900px) {
+  .wb-row-filter {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 200px) minmax(0, 1fr) auto;
+  }
+}
+
+/* Row action: label | screen target | param | remove */
+@container wb-editor (min-width: 600px) {
+  .wb-row-action {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  }
+  .wb-row-action > *:not(:last-child),
+  .wb-row-action > *:nth-last-child(2) {
+    flex: initial;
+  }
+}
+@container wb-editor (min-width: 900px) {
+  .wb-row-action {
+    grid-template-columns: minmax(0, 220px) minmax(0, 260px) minmax(0, 1fr) auto;
+  }
+}
+
+/* Doc table column header: name | width | align | remove */
+@container wb-editor (min-width: 520px) {
+  .wb-row-doc-col {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 180px) auto;
+  }
+  .wb-row-doc-col > *:not(:last-child),
+  .wb-row-doc-col > *:nth-last-child(2) {
+    flex: initial;
+  }
+}
+@container wb-editor (min-width: 860px) {
+  .wb-row-doc-col {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 180px) minmax(0, 180px) auto;
+  }
+}
+
+/* Doc table group: column source + width + remove */
+@container wb-editor (min-width: 520px) {
+  .wb-row-doc-group {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 160px) auto;
+  }
+  .wb-row-doc-group > *:not(:last-child),
+  .wb-row-doc-group > *:nth-last-child(2) {
+    flex: initial;
+  }
+}
+
+/* Static-values editor: label | value | remove */
+@container wb-editor (min-width: 480px) {
+  .wb-row-static-value {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  }
+  .wb-row-static-value > *:not(:last-child),
+  .wb-row-static-value > *:nth-last-child(2) {
+    flex: initial;
+  }
+}
+
