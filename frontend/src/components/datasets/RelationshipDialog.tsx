@@ -269,6 +269,11 @@ export function RelationshipDialog({
   const suggestedRelationshipLabel = joinSuggestion
     ? RELATIONSHIP_OPTIONS.find((option) => option.value === joinSuggestion.relationship)?.label
     : null;
+  const suggestedUniquenessLabel = joinSuggestion
+    && joinSuggestion.from_unique != null
+    && joinSuggestion.to_unique != null
+    ? ` (${joinSuggestion.from_unique ? 'from unique' : 'from duplicate'}, ${joinSuggestion.to_unique ? 'to unique' : 'to duplicate'})`
+    : '';
   const blockingMessage = joinSuggestion?.can_create === false
     ? (joinSuggestion.message || 'This relationship cannot be created.')
     : null;
@@ -434,10 +439,7 @@ export function RelationshipDialog({
                 <p className={`text-xs ${joinSuggestion?.can_create === false ? 'text-danger' : 'text-text-quaternary'}`}>
                   {isSuggestingRelationship
                     ? 'Checking join cardinality...'
-                    : `Suggested from current data: ${suggestedRelationshipLabel}${joinSuggestion?.from_unique !== null && joinSuggestion?.to_unique !== null
-                      ? ` (${joinSuggestion.from_unique ? 'from unique' : 'from duplicate'}, ${joinSuggestion.to_unique ? 'to unique' : 'to duplicate'})`
-                      : ''
-                    }`}
+                    : `Suggested from current data: ${suggestedRelationshipLabel}${suggestedUniquenessLabel}`}
                 </p>
               )}
             </div>

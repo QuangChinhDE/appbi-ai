@@ -55,6 +55,40 @@ type QueryMode = 'generated' | 'custom';
 
 const GENERATED_QUERY_LIMIT_OPTIONS = [50, 100, 250, 500, 1000, 2500, 5000, 10000];
 const CUSTOM_QUERY_LIMIT_OPTIONS = [50, 100, 250, 500, 1000, 2500, 5000];
+const TABLE_LIKE_CHART_TYPES = new Set<ChartType>(['TABLE', 'MATRIX']);
+const SCATTER_LIKE_CHART_TYPES = new Set<ChartType>(['SCATTER', 'BUBBLE', 'MAP_POINT']);
+const NO_DIMENSION_METRIC_CHART_TYPES = new Set<ChartType>(['KPI', 'GAUGE', 'BULLET']);
+const PIE_LIKE_CHART_TYPES = new Set<ChartType>(['PIE', 'DONUT', 'POLAR_AREA']);
+const SINGLE_METRIC_CHART_TYPES = new Set<ChartType>([
+  'GROUPED_BAR',
+  'STACKED_BAR',
+  'PIE',
+  'DONUT',
+  'POLAR_AREA',
+  'FUNNEL',
+  'TREEMAP',
+  'WATERFALL',
+  'MAP_REGION',
+  'BOXPLOT',
+  'HEATMAP',
+  'SANKEY',
+  'SUNBURST',
+  'RIBBON',
+  'TIMELINE',
+  'WORD_CLOUD',
+  'KPI',
+  'GAUGE',
+  'BULLET',
+  'PODIUM',
+]);
+const BREAKDOWN_REQUIRED_CHART_TYPES = new Set<ChartType>([
+  'GROUPED_BAR',
+  'STACKED_BAR',
+  'HEATMAP',
+  'SANKEY',
+  'SUNBURST',
+  'RIBBON',
+]);
 
 function getMaxQueryLimit(mode: QueryMode): number {
   return mode === 'custom' ? 5000 : 10000;
@@ -113,7 +147,12 @@ function inferSortLimitColumns(
   roleConfig: ChartRoleConfig,
   preAggregated: boolean,
 ): ColumnMetadata[] {
-  if (!rows.length || chartType === 'TABLE' || chartType === 'KPI' || chartType === 'PODIUM') {
+  if (
+    !rows.length ||
+    TABLE_LIKE_CHART_TYPES.has(chartType) ||
+    NO_DIMENSION_METRIC_CHART_TYPES.has(chartType) ||
+    chartType === 'PODIUM'
+  ) {
     return [];
   }
 
@@ -125,10 +164,10 @@ function inferSortLimitColumns(
   });
 
   const sortRows = (() => {
-    if (chartType === 'SCATTER') {
+    if (SCATTER_LIKE_CHART_TYPES.has(chartType)) {
       return model.scatterPoints;
     }
-    if (chartType === 'PIE') {
+    if (PIE_LIKE_CHART_TYPES.has(chartType)) {
       return model.pieData;
     }
     if (chartType === 'BAR_LINE') {
@@ -144,7 +183,10 @@ function inferSortLimitColumns(
   return inferQueryColumns(Object.keys(sortRows[0] ?? {}), sortRows);
 }
 
-function createDefaultTableRoleConfig(roleConfig: ChartRoleConfig): ChartRoleConfig {
+function createDefaultTableRoleConfig(
+  roleConfig: ChartRoleConfig,
+  tableMode: ChartRoleConfig['tableMode'] = 'standard',
+): ChartRoleConfig {
   return {
     ...roleConfig,
     dimension: undefined,
@@ -154,7 +196,7 @@ function createDefaultTableRoleConfig(roleConfig: ChartRoleConfig): ChartRoleCon
     scatterY: undefined,
     lineMetric: undefined,
     metrics: [],
-    tableMode: 'standard',
+    tableMode,
     tableRowDimension: undefined,
     tableColumnDimension: undefined,
     tablePivotMetric: undefined,
@@ -210,6 +252,14 @@ function syncRoleConfigWithColumns(
   const fallbackDimension = categoricalColumns[0]?.name ?? columns[0]?.name;
   const fallbackMetric = numericColumns.find((column) => column.name !== fallbackDimension)?.name
     ?? numericColumns[0]?.name;
+  const pickDimensionOtherThan = (...excluded: Array<string | undefined>) => (
+    categoricalColumns.find((column) => !excluded.includes(column.name))?.name
+      ?? columns.find((column) => !excluded.includes(column.name))?.name
+  );
+  const pickMetricOtherThan = (...excluded: Array<string | undefined>) => (
+    numericColumns.find((column) => !excluded.includes(column.name))?.name
+      ?? fallbackMetric
+  );
 
   const next: ChartRoleConfig = {
     ...normalized,
@@ -244,7 +294,10 @@ function syncRoleConfigWithColumns(
     next.selectedColumns = undefined;
   }
 
-  if (chartType === 'TABLE') {
+  if (TABLE_LIKE_CHART_TYPES.has(chartType)) {
+    if (chartType === 'MATRIX') {
+      next.tableMode = 'pivot';
+    }
     if (next.tableMode === 'pivot') {
       const rowDimensionFallback = categoricalColumns[0]?.name ?? fallbackDimension;
       const columnDimensionFallback = categoricalColumns.find((column) => column.name !== rowDimensionFallback)?.name
@@ -266,11 +319,30 @@ function syncRoleConfigWithColumns(
     return next;
   }
 
-  if (chartType === 'SCATTER') {
+  if (SCATTER_LIKE_CHART_TYPES.has(chartType)) {
     if (!next.scatterX) next.scatterX = numericColumns[0]?.name;
     if (!next.scatterY) next.scatterY = numericColumns[1]?.name ?? numericColumns[0]?.name;
     if (!next.dimension && categoricalColumns.length > 0) {
       next.dimension = categoricalColumns[0]?.name;
+    }
+    if ((chartType === 'BUBBLE' || chartType === 'MAP_POINT') && next.metrics.length === 0) {
+      const sizeMetric = pickMetricOtherThan(next.scatterX, next.scatterY);
+      if (sizeMetric) {
+        next.metrics = [{ field: sizeMetric, agg: 'sum' }];
+      }
+    }
+    return next;
+  }
+
+  if (NO_DIMENSION_METRIC_CHART_TYPES.has(chartType)) {
+    next.dimension = undefined;
+    next.breakdown = undefined;
+    next.timeField = undefined;
+    if (next.metrics.length === 0 && fallbackMetric) {
+      next.metrics = [{ field: fallbackMetric, agg: 'sum' }];
+    }
+    if (next.metrics.length > 1) {
+      next.metrics = [next.metrics[0]];
     }
     return next;
   }
@@ -278,7 +350,13 @@ function syncRoleConfigWithColumns(
   if (chartType === 'TIME_SERIES') {
     if (!next.timeField) next.timeField = timeColumns[0]?.name ?? fallbackDimension;
     if (!next.dimension) next.dimension = next.timeField ?? fallbackDimension;
-  } else if (chartType !== 'KPI' && chartType !== 'PODIUM' && !next.dimension) {
+  } else if (chartType === 'TIMELINE') {
+    if (!next.timeField) next.timeField = timeColumns[0]?.name ?? fallbackDimension;
+    if (!next.dimension) next.dimension = pickDimensionOtherThan(next.timeField) ?? fallbackDimension;
+  } else if (chartType === 'RIBBON') {
+    if (!next.timeField) next.timeField = timeColumns[0]?.name ?? fallbackDimension;
+    if (!next.dimension) next.dimension = next.timeField ?? fallbackDimension;
+  } else if (chartType !== 'PODIUM' && !next.dimension) {
     next.dimension = fallbackDimension;
   }
 
@@ -286,7 +364,11 @@ function syncRoleConfigWithColumns(
     next.metrics = [{ field: fallbackMetric, agg: 'sum' }];
   }
 
-  if ((chartType === 'KPI' || chartType === 'PODIUM') && next.metrics.length > 1) {
+  if (BREAKDOWN_REQUIRED_CHART_TYPES.has(chartType) && !next.breakdown) {
+    next.breakdown = pickDimensionOtherThan(next.dimension, next.timeField);
+  }
+
+  if (SINGLE_METRIC_CHART_TYPES.has(chartType) && next.metrics.length > 1) {
     next.metrics = [next.metrics[0]];
   }
 
@@ -718,13 +800,13 @@ export function ExploreEditor({
   const displayedQueryState = activeQueryState;
 
   const tableDisplayColumns = useMemo(() => {
-    if (chartType !== 'TABLE') {
+    if (!TABLE_LIKE_CHART_TYPES.has(chartType)) {
       return [];
     }
 
     if (displayedQueryState?.chartRows?.length) {
       const tableModel = buildExploreChartModel({
-        type: 'TABLE',
+        type: chartType,
         data: displayedQueryState.chartRows,
         roleConfig: normalizedRoleConfig,
         preAggregated: displayedQueryState.chartPreAggregated,
@@ -737,7 +819,7 @@ export function ExploreEditor({
     }
 
     const previewModel = buildExploreChartModel({
-      type: 'TABLE',
+      type: chartType,
       data: previewRows,
       roleConfig: normalizedRoleConfig,
       preAggregated: false,
@@ -751,7 +833,13 @@ export function ExploreEditor({
 
   const previewSeriesKeys = useMemo(() => {
     const rows = displayedQueryState?.chartRows ?? [];
-    if (!rows.length || chartType === 'TABLE' || chartType === 'KPI' || chartType === 'PODIUM' || chartType === 'SCATTER') {
+    if (
+      !rows.length ||
+      TABLE_LIKE_CHART_TYPES.has(chartType) ||
+      NO_DIMENSION_METRIC_CHART_TYPES.has(chartType) ||
+      chartType === 'PODIUM' ||
+      SCATTER_LIKE_CHART_TYPES.has(chartType)
+    ) {
       return [];
     }
     const model = buildExploreChartModel({
@@ -766,7 +854,7 @@ export function ExploreEditor({
         label: s.label,
       }));
     }
-    if (chartType === 'PIE') {
+    if (PIE_LIKE_CHART_TYPES.has(chartType)) {
       return (model.pieData ?? []).slice(0, 12).map((p: any) => ({
         key: String(p?.name ?? ''),
         label: String(p?.name ?? ''),
@@ -800,7 +888,7 @@ export function ExploreEditor({
   ]);
 
   const mappingSummary = useMemo(() => {
-    if (chartType === 'TABLE') {
+    if (TABLE_LIKE_CHART_TYPES.has(chartType)) {
       if (normalizedRoleConfig.tableMode === 'pivot') {
         return [
           normalizedRoleConfig.tableRowDimension ? { label: 'Rows', value: normalizedRoleConfig.tableRowDimension } : null,
@@ -813,17 +901,20 @@ export function ExploreEditor({
       return selectedCount > 0 ? [{ label: 'Columns', value: `${selectedCount} selected` }] : [];
     }
 
-    if (chartType === 'SCATTER') {
+    if (SCATTER_LIKE_CHART_TYPES.has(chartType)) {
       return [
         normalizedRoleConfig.scatterX ? { label: 'X', value: normalizedRoleConfig.scatterX } : null,
         normalizedRoleConfig.scatterY ? { label: 'Y', value: normalizedRoleConfig.scatterY } : null,
         normalizedRoleConfig.dimension ? { label: 'Label', value: normalizedRoleConfig.dimension } : null,
+        chartType !== 'SCATTER' && normalizedRoleConfig.metrics[0]
+          ? { label: 'Size', value: normalizedRoleConfig.metrics[0].field }
+          : null,
       ].filter((item): item is { label: string; value: string } => item !== null);
     }
 
     return [
       normalizedRoleConfig.timeField ? { label: 'Time', value: normalizedRoleConfig.timeField } : null,
-      normalizedRoleConfig.dimension && chartType !== 'TIME_SERIES' ? { label: 'X', value: normalizedRoleConfig.dimension } : null,
+      normalizedRoleConfig.dimension && chartType !== 'TIME_SERIES' && chartType !== 'RIBBON' ? { label: 'X', value: normalizedRoleConfig.dimension } : null,
       normalizedRoleConfig.metrics.length > 0
         ? { label: 'Y', value: normalizedRoleConfig.metrics.map((metric) => metric.field).join(', ') }
         : null,
@@ -859,12 +950,13 @@ export function ExploreEditor({
 
     setChartType(nextType);
 
-    if (nextType !== 'TABLE' || chartType === 'TABLE') {
+    if (!TABLE_LIKE_CHART_TYPES.has(nextType) || TABLE_LIKE_CHART_TYPES.has(chartType)) {
       return;
     }
 
-    setGeneratedRoleConfig((prev) => createDefaultTableRoleConfig(prev));
-    setCustomRoleConfig((prev) => createDefaultTableRoleConfig(prev));
+    const nextTableMode = nextType === 'MATRIX' ? 'pivot' : 'standard';
+    setGeneratedRoleConfig((prev) => createDefaultTableRoleConfig(prev, nextTableMode));
+    setCustomRoleConfig((prev) => createDefaultTableRoleConfig(prev, nextTableMode));
     setChartStyleConfig((prev) => createDefaultTableStyleConfig(prev));
     setGeneratedQueryState(null);
     setCustomQueryState(null);
@@ -987,7 +1079,7 @@ export function ExploreEditor({
         });
         const fallbackCustomRoleConfig = sourceColumns.length > 0
           ? (
-            chartType === 'TABLE'
+            TABLE_LIKE_CHART_TYPES.has(chartType)
               ? {
                   ...syncRoleConfigWithColumns(chartType, normalizedCustomRoleConfig, sourceColumns),
                   selectedColumns: sourceColumns.map((column) => column.name),
@@ -1154,7 +1246,7 @@ export function ExploreEditor({
       customRoleConfig,
       ...(trimmedCustomSql ? { customSql: trimmedCustomSql } : {}),
       styleConfig: chartStyleConfig,
-      ...(chartType === 'TABLE' && tableConditionalFormatting?.length
+      ...(TABLE_LIKE_CHART_TYPES.has(chartType) && tableConditionalFormatting?.length
         ? { conditional_formatting: tableConditionalFormatting }
         : {}),
     };

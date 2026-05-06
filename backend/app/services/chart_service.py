@@ -1340,7 +1340,8 @@ class ChartService:
 
             # In Custom SQL mode, the first Run should always be able to return
             # the SQL output sample even before the user picks a chart value column.
-            if normalized_chart_type not in {"TABLE", "SCATTER"} and not (normalized_role_config.get("metrics") or []):
+            metric_optional_chart_types = {"TABLE", "MATRIX", "SCATTER", "MAP_POINT", "TIMELINE"}
+            if normalized_chart_type not in metric_optional_chart_types and not (normalized_role_config.get("metrics") or []):
                 return preview
 
         result = _execute_chart_runtime_for_table(

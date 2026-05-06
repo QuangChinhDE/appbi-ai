@@ -279,8 +279,8 @@ export function buildExploreChartModel(args: {
   const { type, data, roleConfig, havingFilters = [], preAggregated = false } = args;
   const normalizedRoleConfig = normalizeRoleConfig(type, roleConfig);
   const { dimension, metrics, breakdown, lineMetric, timeField, scatterX, scatterY, selectedColumns } = normalizedRoleConfig;
-  const xField = type === 'TIME_SERIES' ? (timeField || dimension) : dimension;
-  const pivotTableModel = type === 'TABLE'
+  const xField = (type === 'TIME_SERIES' || type === 'RIBBON') ? (timeField || dimension) : dimension;
+  const pivotTableModel = (type === 'TABLE' || type === 'MATRIX')
     ? buildPivotTableModel({ data, roleConfig: normalizedRoleConfig, preAggregated })
     : null;
   const tableData = pivotTableModel?.rows ?? data;
@@ -325,14 +325,14 @@ export function buildExploreChartModel(args: {
     };
   }
 
-  if (type === 'TABLE') {
+  if (type === 'TABLE' || type === 'MATRIX') {
     return {
       ...emptyModel,
       totalPoints: tableData.length,
     };
   }
 
-  if (type === 'SCATTER') {
+  if (type === 'SCATTER' || type === 'BUBBLE' || type === 'MAP_POINT') {
     return {
       ...emptyModel,
       scatterPoints: scatterX && scatterY
@@ -373,7 +373,7 @@ export function buildExploreChartModel(args: {
     };
   }
 
-  if (type === 'PIE') {
+  if (type === 'PIE' || type === 'DONUT' || type === 'POLAR_AREA') {
     const metric = metrics[0];
     const aggregated = xField && metric
       ? (preAggregated ? data : applyGroupByAgg(data, xField, [metric]))

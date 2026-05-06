@@ -49,6 +49,10 @@ type DetailPanelTab = 'appearance' | 'data';
 
 const NUMERIC_MAPPING_TYPES = new Set(['number', 'integer', 'float', 'double', 'decimal', 'numeric', 'bigint', 'int']);
 const DATE_MAPPING_TYPES = new Set(['date', 'datetime', 'timestamp', 'time']);
+const TABLE_LIKE_CHART_TYPES = new Set(['TABLE', 'MATRIX']);
+const SCATTER_LIKE_CHART_TYPES = new Set(['SCATTER', 'BUBBLE', 'MAP_POINT']);
+const NO_DIMENSION_METRIC_CHART_TYPES = new Set(['KPI', 'GAUGE', 'BULLET']);
+const PIE_LIKE_CHART_TYPES = new Set(['PIE', 'DONUT', 'POLAR_AREA']);
 
 function resolveParameterMappingType(param: {
   parameter_type?: string | null;
@@ -170,11 +174,22 @@ function deriveAppearanceRoleConfig(columns: ColumnMetadata[], chartType: string
 
   switch (chartType) {
     case 'TABLE':
+    case 'MATRIX':
       return {
         metrics: [],
+        ...(chartType === 'MATRIX' && primaryDimension && secondaryDimension && firstMetric
+          ? {
+              tableMode: 'pivot' as const,
+              tableRowDimension: primaryDimension,
+              tableColumnDimension: secondaryDimension,
+              tablePivotMetric: firstMetric,
+            }
+          : {}),
         selectedColumns: columns.map((column) => column.name),
       };
     case 'KPI':
+    case 'GAUGE':
+    case 'BULLET':
       return {
         metrics: firstMetric ? [firstMetric] : [],
         ...(secondMetric ? { benchmarkMetric: secondMetric } : {}),
@@ -191,15 +206,47 @@ function deriveAppearanceRoleConfig(columns: ColumnMetadata[], chartType: string
         ...(secondaryDimension ? { breakdown: secondaryDimension } : {}),
       };
     case 'SCATTER':
+    case 'BUBBLE':
+    case 'MAP_POINT':
       return {
-        metrics: [],
+        metrics: chartType === 'BUBBLE' || chartType === 'MAP_POINT'
+          ? (firstMetric ? [firstMetric] : [])
+          : [],
         scatterX: numericColumns[0]?.name ?? firstColumnName,
         scatterY: numericColumns[1]?.name ?? numericColumns[0]?.name ?? firstColumnName,
         ...(primaryDimension ? { dimension: primaryDimension } : {}),
       };
     case 'PIE':
+    case 'DONUT':
+    case 'POLAR_AREA':
+    case 'FUNNEL':
+    case 'TREEMAP':
+    case 'WATERFALL':
+    case 'MAP_REGION':
+    case 'BOXPLOT':
+    case 'WORD_CLOUD':
       return {
         metrics: firstMetric ? [firstMetric] : [],
+        ...(primaryDimension ? { dimension: primaryDimension } : {}),
+      };
+    case 'HEATMAP':
+    case 'SANKEY':
+    case 'SUNBURST':
+      return {
+        metrics: firstMetric ? [firstMetric] : [],
+        ...(primaryDimension ? { dimension: primaryDimension } : {}),
+        ...(secondaryDimension ? { breakdown: secondaryDimension } : {}),
+      };
+    case 'RIBBON':
+      return {
+        metrics: firstMetric ? [firstMetric] : [],
+        ...(primaryTimeField ? { timeField: primaryTimeField, dimension: primaryTimeField } : {}),
+        ...(secondaryDimension ? { breakdown: secondaryDimension } : {}),
+      };
+    case 'TIMELINE':
+      return {
+        metrics: firstMetric ? [firstMetric] : [],
+        ...(primaryTimeField ? { timeField: primaryTimeField } : {}),
         ...(primaryDimension ? { dimension: primaryDimension } : {}),
       };
     case 'BAR_LINE':
@@ -229,7 +276,12 @@ function inferSortLimitColumns(
   roleConfig: ChartRoleConfig,
   preAggregated: boolean,
 ): ColumnMetadata[] {
-  if (!rows.length || chartType === 'TABLE' || chartType === 'KPI' || chartType === 'PODIUM') {
+  if (
+    !rows.length ||
+    TABLE_LIKE_CHART_TYPES.has(chartType) ||
+    NO_DIMENSION_METRIC_CHART_TYPES.has(chartType) ||
+    chartType === 'PODIUM'
+  ) {
     return [];
   }
 
@@ -241,10 +293,10 @@ function inferSortLimitColumns(
   });
 
   const sortRows = (() => {
-    if (chartType === 'SCATTER') {
+    if (SCATTER_LIKE_CHART_TYPES.has(chartType)) {
       return model.scatterPoints;
     }
-    if (chartType === 'PIE') {
+    if (PIE_LIKE_CHART_TYPES.has(chartType)) {
       return model.pieData;
     }
     if (chartType === 'BAR_LINE') {
@@ -416,8 +468,10 @@ export function ChartDetailModal({
 
   const previewSeriesKeys = useMemo(() => {
     if (!runtimeRows.length || !appearanceRoleConfig ||
-      exploreChartType === 'TABLE' || exploreChartType === 'KPI' ||
-      exploreChartType === 'PODIUM' || exploreChartType === 'SCATTER') {
+      TABLE_LIKE_CHART_TYPES.has(exploreChartType) ||
+      NO_DIMENSION_METRIC_CHART_TYPES.has(exploreChartType) ||
+      exploreChartType === 'PODIUM' ||
+      SCATTER_LIKE_CHART_TYPES.has(exploreChartType)) {
       return [];
     }
     const model = buildExploreChartModel({
@@ -432,7 +486,7 @@ export function ChartDetailModal({
         label: s.label,
       }));
     }
-    if (exploreChartType === 'PIE') {
+    if (PIE_LIKE_CHART_TYPES.has(exploreChartType)) {
       return (model.pieData ?? []).slice(0, 12).map((p: any) => ({
         key: String(p?.name ?? ''),
         label: String(p?.name ?? ''),

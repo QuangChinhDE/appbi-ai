@@ -672,7 +672,7 @@ def build_live_agg_query(
     Build an aggregation query for direct source execution.
 
     Returns (sql, pre_aggregated).
-    Defaults stay conservative (chart 1000, TABLE/SCATTER 5000), while
+    Defaults stay conservative (chart 1000, TABLE/raw point charts 5000), while
     preview callers may request a higher limit up to a 5000-row server cap.
     """
     qi = _quote_identifier
@@ -691,6 +691,32 @@ def build_live_agg_query(
     where_clause = _build_where_clause(filters, dialect)
     where_sql = f" WHERE {where_clause}" if where_clause else ""
 
+    def dedupe_fields(fields: list[Any]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for field in fields:
+            if not field:
+                continue
+            name = str(field).strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            result.append(name)
+        return result
+
+    def metric_fields(metric_defs: list[dict] | None) -> list[str]:
+        return dedupe_fields([
+            metric.get("field")
+            for metric in (metric_defs or [])
+            if isinstance(metric, dict)
+        ])
+
+    def raw_select(fields: list[Any], default_limit: int = 5000) -> str:
+        cols = dedupe_fields(fields)
+        select_cols = ", ".join(qi(col, dialect) for col in cols) if cols else "*"
+        limit = resolve_limit(default_limit)
+        return f"SELECT {select_cols} FROM {base_table}{where_sql} LIMIT {int(limit)}"
+
     if not role_config:
         limit = resolve_limit(500)
         return f"SELECT * FROM {base_table}{where_sql} LIMIT {int(limit)}", False
@@ -707,8 +733,8 @@ def build_live_agg_query(
     table_pivot_metric = role_config.get("tablePivotMetric")
     selected_cols = role_config.get("selectedColumns")
 
-    # TABLE: capped at 5000 rows
-    if ctype == "TABLE":
+    # TABLE/MATRIX: capped at 5000 rows
+    if ctype in {"TABLE", "MATRIX"}:
         if (
             table_mode == "pivot"
             and table_row_dimension
@@ -752,21 +778,26 @@ def build_live_agg_query(
         limit = resolve_limit(5000)
         return f"SELECT {cols} FROM {base_table}{where_sql} LIMIT {int(limit)}", True
 
-    # SCATTER: raw points up to 5000
-    if ctype == "SCATTER":
+    # SCATTER/BUBBLE/MAP_POINT: raw coordinates up to 5000 rows.
+    if ctype in {"SCATTER", "BUBBLE", "MAP_POINT"}:
         sx, sy = role_config.get("scatterX"), role_config.get("scatterY")
-        limit = resolve_limit(5000)
         if sx and sy:
             return (
-                f"SELECT {qi(sx, dialect)}, {qi(sy, dialect)} FROM {base_table}{where_sql} LIMIT {int(limit)}",
-                True,
+                raw_select([sx, sy, dimension, *metric_fields(metrics)]),
+                False,
             )
-        return f"SELECT * FROM {base_table}{where_sql} LIMIT {int(limit)}", True
+        return raw_select([], 5000), False
+
+    if ctype == "BOXPLOT":
+        return raw_select([dimension, *metric_fields(metrics)]), False
+
+    if ctype == "TIMELINE":
+        return raw_select([time_field, dimension, *metric_fields(metrics)]), False
 
     # All other types: GROUP BY aggregation (required for live mode)
-    group_field = dimension or time_field
+    group_field = (time_field or dimension) if ctype == "RIBBON" else (dimension or time_field)
     if not metrics:
-        # For live mode, reject charts without aggregation (except TABLE/SCATTER)
+        # For live mode, reject charts without aggregation except raw/table-like types.
         raise ValueError(
             "Charts on large tables require at least one metric (aggregation). "
             "Please add a SUM, COUNT, AVG, MIN or MAX measure."
@@ -774,7 +805,7 @@ def build_live_agg_query(
     metric_defs = list(metrics)
     if ctype == "BAR_LINE" and line_metric:
         metric_defs.append(line_metric)
-    if ctype == "KPI" and benchmark_metric:
+    if ctype in {"KPI", "GAUGE", "BULLET"} and benchmark_metric:
         metric_defs.append(benchmark_metric)
 
     select_parts = []
@@ -1319,7 +1350,8 @@ class LiveQueryService:
         normalized_role_config = normalize_chart_role_config(chart_type, role_config)
         normalized_chart_type = str(getattr(chart_type, "value", chart_type) or "").upper()
 
-        if normalized_chart_type not in {"TABLE", "SCATTER"} and not (normalized_role_config.get("metrics") or []):
+        metric_optional_chart_types = {"TABLE", "MATRIX", "SCATTER", "MAP_POINT", "TIMELINE"}
+        if normalized_chart_type not in metric_optional_chart_types and not (normalized_role_config.get("metrics") or []):
             raise ValueError(
                 "Choose at least one value column from your SQL output before previewing this chart."
             )

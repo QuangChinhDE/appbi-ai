@@ -26,7 +26,6 @@ import { useDataSources } from '@/hooks/use-datasources';
 import { useDatasets } from '@/hooks/use-datasets';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
-import { ChartType } from '@/types/api';
 import type { Chart } from '@/types/api';
 import { getActiveChartRoleConfig } from '@/lib/chart-config';
 import {
@@ -49,12 +48,31 @@ const CHART_TYPE_LABELS: Record<string, string> = {
   HORIZONTAL_BAR: 'Horizontal Bar',
   LINE: 'Line',
   PIE: 'Pie',
+  DONUT: 'Donut',
+  RADAR: 'Radar',
+  POLAR_AREA: 'Polar Area',
   TIME_SERIES: 'Time Series',
   AREA: 'Area',
   STACKED_BAR: 'Stacked Bar',
   GROUPED_BAR: 'Grouped Bar',
   BAR_LINE: 'Bar + Line',
   SCATTER: 'Scatter',
+  BUBBLE: 'Bubble',
+  HEATMAP: 'Heatmap',
+  TREEMAP: 'Treemap',
+  FUNNEL: 'Funnel',
+  GAUGE: 'Gauge',
+  WATERFALL: 'Waterfall',
+  MATRIX: 'Matrix',
+  MAP_POINT: 'Point Map',
+  MAP_REGION: 'Region Map',
+  BOXPLOT: 'Boxplot',
+  BULLET: 'Bullet',
+  SANKEY: 'Sankey',
+  SUNBURST: 'Sunburst',
+  RIBBON: 'Ribbon',
+  TIMELINE: 'Timeline',
+  WORD_CLOUD: 'Word Cloud',
   KPI: 'KPI',
   PODIUM: 'Podium',
   TABLE: 'Table',

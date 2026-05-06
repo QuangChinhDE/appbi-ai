@@ -51,8 +51,37 @@ const AGGREGATED_CHART_TYPES = new Set<ExploreChartType>([
   'TIME_SERIES',
   'BAR_LINE',
   'PIE',
+  'DONUT',
+  'RADAR',
+  'POLAR_AREA',
+  'FUNNEL',
+  'GAUGE',
+  'TREEMAP',
+  'WATERFALL',
+  'BUBBLE',
+  'HEATMAP',
+  'MAP_POINT',
+  'MAP_REGION',
+  'BULLET',
+  'SANKEY',
+  'SUNBURST',
+  'RIBBON',
+  'TIMELINE',
+  'WORD_CLOUD',
   'KPI',
   'PODIUM',
+]);
+
+const TABLE_LIKE_CHART_TYPES = new Set<ExploreChartType>(['TABLE', 'MATRIX']);
+const SCATTER_LIKE_CHART_TYPES = new Set<ExploreChartType>(['SCATTER', 'BUBBLE', 'MAP_POINT']);
+const RAW_DISTRIBUTION_CHART_TYPES = new Set<ExploreChartType>(['BOXPLOT']);
+const BREAKDOWN_REQUIRED_CHART_TYPES = new Set<ExploreChartType>([
+  'GROUPED_BAR',
+  'STACKED_BAR',
+  'HEATMAP',
+  'SANKEY',
+  'SUNBURST',
+  'RIBBON',
 ]);
 
 function datasetMetricAlias(metric: MetricConfig): string {
@@ -200,7 +229,7 @@ function buildChartQueryMetrics(
   roleConfig: ChartRoleConfig,
 ): MetricConfig[] {
   const normalized = normalizeRoleConfig(chartType, roleConfig);
-  if (chartType === 'KPI') {
+  if (chartType === 'KPI' || chartType === 'GAUGE' || chartType === 'BULLET') {
     const primaryMetric = normalized.metrics[0] ? [normalized.metrics[0]] : [];
     return dedupeMetrics(
       normalized.benchmarkMetric
@@ -211,7 +240,7 @@ function buildChartQueryMetrics(
 
   return dedupeMetrics(
     chartType === 'BAR_LINE' && normalized.lineMetric
-      ? [...normalized.metrics, normalized.lineMetric]
+      ? [...normalized.metrics, ...(normalized.lineMetric ? [normalized.lineMetric] : []), ...(normalized.benchmarkMetric ? [normalized.benchmarkMetric] : [])]
       : [...normalized.metrics],
   );
 }
@@ -512,7 +541,7 @@ export function inferRoleConfigFromCustomSql(args: {
     .map((item) => item.dimension)
     .filter((item): item is ParsedSqlDimension => Boolean(item));
 
-  if (chartType === 'TABLE') {
+  if (TABLE_LIKE_CHART_TYPES.has(chartType)) {
     if (isTablePivotConfig(normalizedCurrent)) {
       const pivotMetric = resolveSqlMetricConfig(
         outputColumns,
@@ -559,7 +588,7 @@ export function inferRoleConfigFromCustomSql(args: {
     return {};
   }
 
-  if (chartType === 'KPI') {
+  if (chartType === 'KPI' || chartType === 'GAUGE' || chartType === 'BULLET') {
     const resolvedCurrentMetric = resolveCurrentSqlMetric(
       columns,
       parsedMetrics,
@@ -637,6 +666,15 @@ export function inferRoleConfigFromCustomSql(args: {
   }
 
   const primaryDimension = parsedDimensions[0];
+  const secondaryDimension = parsedDimensions.find((dimension) => (
+    dimension.outputField !== primaryDimension?.outputField
+  ));
+  const inferredBreakdown = BREAKDOWN_REQUIRED_CHART_TYPES.has(chartType)
+    ? secondaryDimension
+    : undefined;
+  const inferredDisplayDimension = chartType === 'TIMELINE'
+    ? (secondaryDimension ?? primaryDimension)
+    : primaryDimension;
   const resolvedCurrentDimension = resolveSqlDimensionOutputField(
     outputColumns,
     parsedDimensions,
@@ -667,13 +705,18 @@ export function inferRoleConfigFromCustomSql(args: {
     parsedMetrics,
     normalizedCurrent.benchmarkMetric,
   );
+  const inferredTimeField = (chartType === 'TIME_SERIES' || chartType === 'TIMELINE' || chartType === 'RIBBON')
+    ? (resolvedCurrentTimeField ?? primaryDimension?.outputField)
+    : undefined;
+  const inferredDimension = resolvedCurrentDimension ?? inferredDisplayDimension?.outputField;
+  const inferredBreakdownField = resolvedCurrentBreakdown ?? inferredBreakdown?.outputField;
   const customRoleConfig: ChartRoleConfig = {
-    ...(resolvedCurrentDimension ?? primaryDimension?.outputField
-      ? { dimension: resolvedCurrentDimension ?? primaryDimension?.outputField }
+    ...(inferredDimension
+      ? { dimension: inferredDimension }
       : {}),
-    ...(resolvedCurrentBreakdown ? { breakdown: resolvedCurrentBreakdown } : {}),
-    ...(chartType === 'TIME_SERIES' && (resolvedCurrentTimeField ?? primaryDimension?.outputField)
-      ? { timeField: resolvedCurrentTimeField ?? primaryDimension?.outputField }
+    ...(inferredBreakdownField ? { breakdown: inferredBreakdownField } : {}),
+    ...(inferredTimeField
+      ? { timeField: inferredTimeField }
       : {}),
     ...(normalizedCurrent.scatterX && outputColumns.includes(normalizedCurrent.scatterX)
       ? { scatterX: normalizedCurrent.scatterX }
@@ -689,17 +732,24 @@ export function inferRoleConfigFromCustomSql(args: {
   };
 
   const canSyncGenerated = parsedMetrics.every((metric) => Boolean(metric.sourceField))
-    && (!primaryDimension || Boolean(primaryDimension.sourceField));
+    && (!primaryDimension || Boolean(primaryDimension.sourceField))
+    && (!inferredBreakdown || Boolean(inferredBreakdown.sourceField))
+    && (!(chartType === 'TIMELINE' && secondaryDimension) || Boolean(secondaryDimension.sourceField));
+  const generatedDimension = chartType === 'TIMELINE' && secondaryDimension
+    ? secondaryDimension.sourceField
+    : primaryDimension?.sourceField;
+  const generatedBreakdown = inferredBreakdown?.sourceField;
 
   return {
     customRoleConfig,
     ...(canSyncGenerated
       ? {
           generatedRoleConfig: {
-            ...(primaryDimension ? { dimension: primaryDimension.sourceField as string } : {}),
-            ...(chartType === 'TIME_SERIES' && primaryDimension
+            ...(generatedDimension ? { dimension: generatedDimension as string } : {}),
+            ...((chartType === 'TIME_SERIES' || chartType === 'TIMELINE' || chartType === 'RIBBON') && primaryDimension
               ? { timeField: primaryDimension.sourceField as string }
               : {}),
+            ...(generatedBreakdown ? { breakdown: generatedBreakdown as string } : {}),
             metrics: parsedMetrics.map((metric) => ({
               field: metric.sourceField as string,
               agg: metric.agg,
@@ -744,7 +794,7 @@ export function buildExploreExecuteRequest(args: {
 }): ExecuteQueryRequest {
   const { chartType, roleConfig, filters, limit } = args;
   const normalized = normalizeRoleConfig(chartType, roleConfig);
-  const xField = chartType === 'TIME_SERIES'
+  const xField = chartType === 'TIME_SERIES' || chartType === 'RIBBON'
     ? (normalized.timeField || normalized.dimension)
     : normalized.dimension;
 
@@ -763,7 +813,7 @@ export function buildExploreExecuteRequest(args: {
     request.filters = filterPayload;
   }
 
-  if (chartType === 'TABLE') {
+  if (TABLE_LIKE_CHART_TYPES.has(chartType)) {
     if (isTablePivotConfig(normalized)) {
       const rowDimension = normalized.tableRowDimension as string;
       const columnDimension = normalized.tableColumnDimension as string;
@@ -790,14 +840,27 @@ export function buildExploreExecuteRequest(args: {
     return request;
   }
 
-  if (chartType === 'SCATTER') {
+  if (SCATTER_LIKE_CHART_TYPES.has(chartType)) {
     request.dimensions = [normalized.scatterX, normalized.scatterY, normalized.dimension].filter(
       (field): field is string => Boolean(field),
     );
+    const queryMetrics = buildChartQueryMetrics(chartType, normalized);
+    if (queryMetrics.length > 0) {
+      request.measures = queryMetrics.map((metric) => ({
+        field: metric.field,
+        function: metric.agg,
+      }));
+    }
     return request;
   }
 
-  if (chartType === 'KPI') {
+  if (RAW_DISTRIBUTION_CHART_TYPES.has(chartType)) {
+    const metricField = normalized.metrics[0]?.field;
+    request.dimensions = [normalized.dimension, metricField].filter((field): field is string => Boolean(field));
+    return request;
+  }
+
+  if (chartType === 'KPI' || chartType === 'GAUGE' || chartType === 'BULLET') {
     request.measures = buildChartQueryMetrics(chartType, normalized).map((metric) => ({
       field: metric.field,
       function: metric.agg,
@@ -813,6 +876,20 @@ export function buildExploreExecuteRequest(args: {
       field: metric.field,
       function: metric.agg,
     }));
+    return request;
+  }
+
+  if (chartType === 'TIMELINE') {
+    request.dimensions = [normalized.timeField, normalized.dimension].filter(
+      (field): field is string => Boolean(field),
+    );
+    const queryMetrics = buildChartQueryMetrics(chartType, normalized);
+    if (queryMetrics.length > 0) {
+      request.measures = queryMetrics.map((metric) => ({
+        field: metric.field,
+        function: metric.agg,
+      }));
+    }
     return request;
   }
 
@@ -875,7 +952,7 @@ export function buildExploreSqlPreview(args: {
 
   const sqlLines = [
     `-- Explore query for "${table.display_name || table.source_table_name || 'table'}"`,
-    ...(chartType === 'TABLE' && isTablePivotConfig(normalizedRoleConfig)
+    ...(TABLE_LIKE_CHART_TYPES.has(chartType) && isTablePivotConfig(normalizedRoleConfig)
       ? [`-- Pivot mode fetches grouped cells for up to ${TABLE_PIVOT_COLUMN_LIMIT} dynamic columns.`]
       : []),
     `SELECT\n${selectParts.join(',\n')}`,
@@ -931,7 +1008,7 @@ export function buildExploreChartResult(args: {
   const { rows, columns, chartType, roleConfig, source } = args;
   const normalized = normalizeRoleConfig(chartType, roleConfig);
 
-  if (chartType === 'TABLE' && isTablePivotConfig(normalized) && normalized.tablePivotMetric) {
+  if (TABLE_LIKE_CHART_TYPES.has(chartType) && isTablePivotConfig(normalized) && normalized.tablePivotMetric) {
     const pivotMetric = normalized.tablePivotMetric;
     const aliasMap = new Map<string, string>();
     for (const sourceKey of metricOutputKeys(pivotMetric)) {

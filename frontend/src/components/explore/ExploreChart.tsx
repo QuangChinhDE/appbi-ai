@@ -20,6 +20,7 @@ import { applyFiltersToRows } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { getPalette, type ChartPaletteName } from '@/lib/chartColors';
 import { buildExploreChartModel, type ChartSeriesDef } from './chartDataAdapter';
+import { AdvancedExploreChart, ADVANCED_EXPLORE_CHART_TYPES } from './AdvancedExploreCharts';
 
 /** Maximum data points to render in a chart (BAR/LINE/AREA/STACKED_BAR etc.).
  *  Beyond this Recharts DOM rendering becomes unusably slow. */
@@ -714,6 +715,20 @@ function ExploreChartInner({
           />
         </div>
       </div>
+    );
+  }
+
+  if (ADVANCED_EXPLORE_CHART_TYPES.has(type)) {
+    return (
+      <AdvancedExploreChart
+        type={type}
+        data={data}
+        model={model}
+        style={style}
+        palette={PALETTE}
+        onStyleConfigChange={onStyleConfigChange}
+        onSelectDataPoint={onSelectDataPoint}
+      />
     );
   }
 

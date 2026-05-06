@@ -1,7 +1,41 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Info, X, ChevronDown } from 'lucide-react';
+import {
+  Activity,
+  AreaChart,
+  BarChart2,
+  BarChart3,
+  BarChart4,
+  BarChartHorizontal,
+  Box,
+  Boxes,
+  Check,
+  ChevronDown,
+  CircleDot,
+  Cloud,
+  Donut,
+  Flame,
+  Gauge,
+  GitBranch,
+  LineChart,
+  Map,
+  MapPin,
+  Network,
+  PieChart,
+  Radar,
+  Ribbon,
+  Rows3,
+  ScatterChart,
+  Table,
+  Table2,
+  Timer,
+  TrendingUp,
+  Trophy,
+  Workflow,
+  X,
+  Info,
+} from 'lucide-react';
 import { CHART_PALETTES, type ChartPaletteName } from '@/lib/chartColors';
 import type {
   ChartBenchmarkLineStyle,
@@ -22,7 +56,11 @@ export type { ChartSortRule, TimeGranularity } from '@/types/api';
 export type ExploreChartType =
   | 'TABLE' | 'BAR' | 'HORIZONTAL_BAR' | 'GROUPED_BAR' | 'STACKED_BAR'
   | 'LINE' | 'AREA' | 'TIME_SERIES' | 'BAR_LINE'
-  | 'PIE' | 'SCATTER' | 'KPI' | 'PODIUM';
+  | 'PIE' | 'DONUT' | 'RADAR' | 'POLAR_AREA'
+  | 'SCATTER' | 'BUBBLE' | 'HEATMAP' | 'TREEMAP' | 'FUNNEL' | 'GAUGE'
+  | 'WATERFALL' | 'MATRIX' | 'MAP_POINT' | 'MAP_REGION' | 'BOXPLOT'
+  | 'BULLET' | 'SANKEY' | 'SUNBURST' | 'RIBBON' | 'TIMELINE' | 'WORD_CLOUD'
+  | 'KPI' | 'PODIUM';
 
 export type AggFn = 'sum' | 'avg' | 'count' | 'min' | 'max' | 'count_distinct';
 export type TableLayoutMode = 'standard' | 'pivot';
@@ -298,6 +336,26 @@ export interface ChartRoleConfig {
 
 export const EMPTY_ROLE_CONFIG: ChartRoleConfig = { metrics: [] };
 
+const TABLE_LIKE_TYPES = new Set<string>(['TABLE', 'MATRIX']);
+const SCATTER_LIKE_TYPES = new Set<string>(['SCATTER', 'BUBBLE', 'MAP_POINT']);
+const NO_DIMENSION_METRIC_TYPES = new Set<string>(['KPI', 'GAUGE', 'BULLET']);
+const PIE_LIKE_TYPES = new Set<string>(['PIE', 'DONUT', 'POLAR_AREA']);
+const BREAKDOWN_CHART_TYPES = new Set<string>([
+  'GROUPED_BAR',
+  'STACKED_BAR',
+  'HEATMAP',
+  'SANKEY',
+  'SUNBURST',
+  'RIBBON',
+]);
+const BREAKDOWN_SUPPORTED_CHART_TYPES = new Set<string>([
+  ...BREAKDOWN_CHART_TYPES,
+  'LINE',
+  'AREA',
+  'TIME_SERIES',
+]);
+const RAW_DISTRIBUTION_TYPES = new Set<string>(['BOXPLOT']);
+
 /** Display label e.g. "SUM of revenue" */
 export function metricLabel(m: MetricConfig): string {
   const aggName = m.agg === 'count_distinct' ? 'COUNT DISTINCT' : m.agg.toUpperCase();
@@ -335,10 +393,19 @@ export function normalizeRoleConfig(chartType: string, roleConfig: ChartRoleConf
   // GROUPED_BAR / STACKED_BAR: single measure + breakdown.
   // BAR_LINE: bar metrics + explicit lineMetric, no breakdown.
   let breakdown = roleConfig?.breakdown;
-  if (chartType === 'BAR' || chartType === 'HORIZONTAL_BAR' || chartType === 'BAR_LINE') {
+  if (!BREAKDOWN_SUPPORTED_CHART_TYPES.has(chartType) || chartType === 'BAR_LINE') {
     breakdown = undefined;
   }
-  if ((chartType === 'GROUPED_BAR' || chartType === 'STACKED_BAR') && normalizedMetrics.length > 1) {
+  if (
+    (
+      chartType === 'GROUPED_BAR' ||
+      chartType === 'STACKED_BAR' ||
+      PIE_LIKE_TYPES.has(chartType) ||
+      BREAKDOWN_CHART_TYPES.has(chartType) ||
+      ['FUNNEL', 'TREEMAP', 'WATERFALL', 'MAP_REGION', 'WORD_CLOUD', 'BOXPLOT'].includes(chartType)
+    ) &&
+    normalizedMetrics.length > 1
+  ) {
     normalizedMetrics = [normalizedMetrics[0]];
   }
 
@@ -349,7 +416,7 @@ export function normalizeRoleConfig(chartType: string, roleConfig: ChartRoleConf
 
   const benchmarkMetric = normalizeMetricConfig(roleConfig?.benchmarkMetric);
   const tablePivotMetric = normalizeMetricConfig(roleConfig?.tablePivotMetric);
-  const tableMode: TableLayoutMode = chartType === 'TABLE' && roleConfig?.tableMode === 'pivot'
+  const tableMode: TableLayoutMode = TABLE_LIKE_TYPES.has(chartType) && roleConfig?.tableMode === 'pivot'
     ? 'pivot'
     : 'standard';
 
@@ -374,13 +441,32 @@ const SINGLE_METRIC_TYPES = new Set<ExploreChartType>([
   'GROUPED_BAR',
   'STACKED_BAR',
   'PIE',
+  'DONUT',
+  'POLAR_AREA',
+  'FUNNEL',
+  'TREEMAP',
+  'WATERFALL',
+  'MAP_REGION',
+  'BOXPLOT',
+  'HEATMAP',
+  'SANKEY',
+  'SUNBURST',
+  'RIBBON',
+  'TIMELINE',
+  'WORD_CLOUD',
   'KPI',
+  'GAUGE',
+  'BULLET',
   'PODIUM',
 ]);
 
 const BREAKDOWN_REQUIRED_TYPES = new Set<ExploreChartType>([
   'GROUPED_BAR',
   'STACKED_BAR',
+  'HEATMAP',
+  'SANKEY',
+  'SUNBURST',
+  'RIBBON',
 ]);
 
 export function getChartRoleConfigValidationMessage(
@@ -420,7 +506,7 @@ export function getChartRoleConfigRequirementMessage(
 
   const normalized = normalizeRoleConfig(chartType, roleConfig);
 
-  if (chartType === 'TABLE') {
+  if (TABLE_LIKE_TYPES.has(chartType)) {
     if (normalized.tableMode !== 'pivot') {
       return null;
     }
@@ -436,28 +522,41 @@ export function getChartRoleConfigRequirementMessage(
     return null;
   }
 
-  if (chartType === 'SCATTER') {
+  if (SCATTER_LIKE_TYPES.has(chartType)) {
     if (!normalized.scatterX) {
-      return 'Choose an X axis column for the scatter chart.';
+      return 'Choose an X axis column for this chart.';
     }
     if (!normalized.scatterY) {
-      return 'Choose a Y axis column for the scatter chart.';
+      return 'Choose a Y axis column for this chart.';
+    }
+    if (chartType === 'BUBBLE' && normalized.metrics.length === 0) {
+      return 'Choose a size value column for the bubble chart.';
     }
     return null;
   }
 
-  if (chartType === 'KPI') {
+  if (NO_DIMENSION_METRIC_TYPES.has(chartType)) {
     return normalized.metrics.length > 0
       ? null
-      : 'Choose a value column for the KPI card.';
+      : 'Choose a value column for this chart.';
   }
 
-  if (chartType === 'PIE') {
+  if (PIE_LIKE_TYPES.has(chartType)) {
     if (!normalized.dimension) {
-      return 'Choose a legend column for the pie chart.';
+      return 'Choose a legend column for this chart.';
     }
     if (normalized.metrics.length === 0) {
-      return 'Choose a value column for the pie chart.';
+      return 'Choose a value column for this chart.';
+    }
+    return null;
+  }
+
+  if (RAW_DISTRIBUTION_TYPES.has(chartType)) {
+    if (!normalized.dimension) {
+      return 'Choose a category column for this chart.';
+    }
+    if (normalized.metrics.length === 0) {
+      return 'Choose a numeric value column for this chart.';
     }
     return null;
   }
@@ -488,11 +587,11 @@ export function getChartRoleConfigRequirementMessage(
     return null;
   }
 
-  if (chartType === 'TIME_SERIES') {
+  if (chartType === 'TIME_SERIES' || chartType === 'TIMELINE') {
     if (!normalized.timeField && !normalized.dimension) {
-      return 'Choose a time field for the time series chart.';
+      return 'Choose a time field for this chart.';
     }
-    if (normalized.metrics.length === 0) {
+    if (chartType === 'TIME_SERIES' && normalized.metrics.length === 0) {
       return 'Choose at least one value column for the time series chart.';
     }
     return null;
@@ -514,8 +613,11 @@ export function getChartRoleConfigRequirementMessage(
 export function getRoleConfigDimensionFields(chartType: string, roleConfig: ChartRoleConfig | null | undefined): string[] {
   const normalized = normalizeRoleConfig(chartType, roleConfig);
   const fields = [normalized.dimension, normalized.timeField];
-  if (chartType === 'TABLE' && normalized.tableMode === 'pivot') {
+  if (TABLE_LIKE_TYPES.has(chartType) && normalized.tableMode === 'pivot') {
     fields.push(normalized.tableRowDimension, normalized.tableColumnDimension);
+  }
+  if (SCATTER_LIKE_TYPES.has(chartType)) {
+    fields.push(normalized.scatterX, normalized.scatterY);
   }
   if (chartType !== 'BAR_LINE' && normalized.breakdown) {
     fields.push(normalized.breakdown);
@@ -524,19 +626,76 @@ export function getRoleConfigDimensionFields(chartType: string, roleConfig: Char
 }
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Chart type list ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-const CHART_TYPE_GRID: { value: ExploreChartType; label: string; icon: string }[] = [
-  { value: 'TABLE',          label: 'Table',          icon: 'TB' },
-  { value: 'BAR',            label: 'Bar',            icon: 'BR' },
-  { value: 'HORIZONTAL_BAR', label: 'Horizontal Bar', icon: 'HB' },
-  { value: 'GROUPED_BAR',    label: 'Grouped Bar',    icon: 'GB' },
-  { value: 'STACKED_BAR',    label: 'Stacked Bar',    icon: 'SB' },
-  { value: 'BAR_LINE',       label: 'Bar + Line',     icon: 'BL' },
-  { value: 'LINE',           label: 'Line',           icon: 'LN' },
-  { value: 'AREA',           label: 'Area',           icon: 'AR' },
-  { value: 'TIME_SERIES',    label: 'Time Series',    icon: 'TS' },
-  { value: 'PIE',            label: 'Pie',            icon: 'PI' },
-  { value: 'SCATTER',        label: 'Scatter',        icon: 'XY' },
-  { value: 'KPI',            label: 'KPI',            icon: 'KP' },
+type ChartTypeGroupKey = 'essentials' | 'comparison' | 'trend' | 'composition' | 'relationship' | 'geo';
+
+type ChartTypeMeta = {
+  value: ExploreChartType;
+  label: string;
+  group: ChartTypeGroupKey;
+  icon: React.ComponentType<{ className?: string }>;
+};
+
+type ChartTypeGroupMeta = {
+  key: ChartTypeGroupKey;
+  label: string;
+  hint: string;
+};
+
+const DEFAULT_CHART_TYPE_GROUP: ChartTypeGroupMeta = {
+  key: 'essentials',
+  label: 'Essentials',
+  hint: 'Tables, cards, and goal visuals',
+};
+
+const CHART_TYPE_GROUPS: ChartTypeGroupMeta[] = [
+  DEFAULT_CHART_TYPE_GROUP,
+  { key: 'comparison', label: 'Comparison', hint: 'Compare categories and rankings' },
+  { key: 'trend', label: 'Trend', hint: 'Follow change over time or order' },
+  { key: 'composition', label: 'Composition', hint: 'Show part-to-whole structure' },
+  { key: 'relationship', label: 'Relationship', hint: 'Reveal correlation, flow, and distribution' },
+  { key: 'geo', label: 'Geo', hint: 'Map-based location visuals' },
+];
+
+const DEFAULT_CHART_TYPE_META: ChartTypeMeta = {
+  value: 'TABLE',
+  label: 'Table',
+  group: 'essentials',
+  icon: Table,
+};
+
+const CHART_TYPE_GRID: ChartTypeMeta[] = [
+  DEFAULT_CHART_TYPE_META,
+  { value: 'MATRIX',         label: 'Matrix',         group: 'essentials', icon: Table2 },
+  { value: 'KPI',            label: 'KPI',            group: 'essentials', icon: Activity },
+  { value: 'GAUGE',          label: 'Gauge',          group: 'essentials', icon: Gauge },
+  { value: 'BULLET',         label: 'Bullet',         group: 'essentials', icon: Rows3 },
+  { value: 'PODIUM',         label: 'Podium',         group: 'essentials', icon: Trophy },
+  { value: 'BAR',            label: 'Bar',            group: 'comparison', icon: BarChart3 },
+  { value: 'HORIZONTAL_BAR', label: 'Horizontal Bar', group: 'comparison', icon: BarChartHorizontal },
+  { value: 'GROUPED_BAR',    label: 'Grouped Bar',    group: 'comparison', icon: BarChart2 },
+  { value: 'STACKED_BAR',    label: 'Stacked Bar',    group: 'comparison', icon: BarChart4 },
+  { value: 'BAR_LINE',       label: 'Bar + Line',     group: 'comparison', icon: Workflow },
+  { value: 'WATERFALL',      label: 'Waterfall',      group: 'comparison', icon: Flame },
+  { value: 'LINE',           label: 'Line',           group: 'trend', icon: LineChart },
+  { value: 'AREA',           label: 'Area',           group: 'trend', icon: AreaChart },
+  { value: 'TIME_SERIES',    label: 'Time Series',    group: 'trend', icon: TrendingUp },
+  { value: 'RIBBON',         label: 'Ribbon',         group: 'trend', icon: Ribbon },
+  { value: 'TIMELINE',       label: 'Timeline',       group: 'trend', icon: Timer },
+  { value: 'PIE',            label: 'Pie',            group: 'composition', icon: PieChart },
+  { value: 'DONUT',          label: 'Donut',          group: 'composition', icon: Donut },
+  { value: 'POLAR_AREA',     label: 'Polar Area',     group: 'composition', icon: Radar },
+  { value: 'TREEMAP',        label: 'Treemap',        group: 'composition', icon: Boxes },
+  { value: 'FUNNEL',         label: 'Funnel',         group: 'composition', icon: GitBranch },
+  { value: 'WORD_CLOUD',     label: 'Word Cloud',     group: 'composition', icon: Cloud },
+  { value: 'SCATTER',        label: 'Scatter',        group: 'relationship', icon: ScatterChart },
+  { value: 'BUBBLE',         label: 'Bubble',         group: 'relationship', icon: CircleDot },
+  { value: 'HEATMAP',        label: 'Heatmap',        group: 'relationship', icon: Table2 },
+  { value: 'BOXPLOT',        label: 'Boxplot',        group: 'relationship', icon: Box },
+  { value: 'RADAR',          label: 'Radar',          group: 'relationship', icon: Radar },
+  { value: 'SANKEY',         label: 'Sankey',         group: 'relationship', icon: Network },
+  { value: 'SUNBURST',       label: 'Sunburst',       group: 'relationship', icon: PieChart },
+  { value: 'MAP_POINT',      label: 'Point Map',      group: 'geo', icon: MapPin },
+  { value: 'MAP_REGION',     label: 'Region Map',     group: 'geo', icon: Map },
 ];
 
 const AGG_OPTIONS: { value: AggFn; label: string }[] = [
@@ -1197,11 +1356,18 @@ export function ExploreChartConfig({
     ? tableFormattingColumns
     : availableColumns;
 
-  const isBarType = ['BAR', 'HORIZONTAL_BAR', 'GROUPED_BAR', 'STACKED_BAR', 'BAR_LINE'].includes(chartType);
-  const isLineType = ['LINE', 'TIME_SERIES', 'AREA', 'BAR_LINE'].includes(chartType);
-  const hasAxis = !['PIE', 'KPI', 'TABLE'].includes(chartType);
+  const isTableLike = ['TABLE', 'MATRIX'].includes(chartType);
+  const isNoDimensionMetric = ['KPI', 'GAUGE', 'BULLET'].includes(chartType);
+  const isPieLike = ['PIE', 'DONUT', 'POLAR_AREA'].includes(chartType);
+  const isScatterLike = ['SCATTER', 'BUBBLE', 'MAP_POINT'].includes(chartType);
+  const isBarType = ['BAR', 'HORIZONTAL_BAR', 'GROUPED_BAR', 'STACKED_BAR', 'BAR_LINE', 'WATERFALL'].includes(chartType);
+  const isLineType = ['LINE', 'TIME_SERIES', 'AREA', 'BAR_LINE', 'RIBBON'].includes(chartType);
+  const hasAxis = ![
+    'PIE', 'DONUT', 'POLAR_AREA', 'KPI', 'GAUGE', 'BULLET', 'TABLE', 'MATRIX',
+    'TREEMAP', 'FUNNEL', 'SANKEY', 'SUNBURST', 'WORD_CLOUD', 'MAP_REGION',
+  ].includes(chartType);
   const supportsBenchmarkLine = ['BAR', 'HORIZONTAL_BAR', 'GROUPED_BAR', 'STACKED_BAR', 'LINE', 'AREA', 'TIME_SERIES', 'BAR_LINE'].includes(chartType);
-  const supportsDataSection = !['TABLE', 'KPI'].includes(chartType);
+  const supportsDataSection = !isTableLike && !isNoDimensionMetric;
   const chartBindingTitle = queryMode === 'custom' ? 'SQL Column Roles' : 'Field Roles';
   const tableBindingTitle = isPivotEnabled ? 'Pivot Layout' : 'Visible Columns';
   const tableRoleSectionHint = queryMode === 'custom'
@@ -1210,14 +1376,32 @@ export function ExploreChartConfig({
   const chartRoleSectionHint = queryMode === 'custom'
     ? 'Choose which SQL output columns drive this chart. These selections work directly on your SQL output.'
     : undefined;
-  const showQuickView = !['TABLE', 'KPI'].includes(chartType);
-  const hasAdvancedControls = showQuickView && (hasAxis || supportsBenchmarkLine || isBarType || isLineType || chartType === 'PIE' || chartType === 'SCATTER' || chartType === 'TIME_SERIES' || supportsDataSection);
+  const showQuickView = !isTableLike && chartType !== 'KPI';
+  const hasAdvancedControls = showQuickView && (hasAxis || supportsBenchmarkLine || isBarType || isLineType || isPieLike || isScatterLike || chartType === 'TIME_SERIES' || supportsDataSection);
   const chartSortRules = normalizedStyleConfig.chartSortRules ?? [];
   const sortLimitCols = sortLimitColumns;
   const quickViewStep = isStyleOnly ? 'Step 1' : 'Step 3';
   const advancedStep = isStyleOnly ? 'Step 2' : 'Step 4';
   const tableSectionStep = isStyleOnly ? 'Step 1' : 'Step 2';
   const kpiSetupStep = isStyleOnly ? 'Step 1' : 'Step 3';
+  const currentChartTypeMeta = useMemo(
+    () => CHART_TYPE_GRID.find((item) => item.value === chartType) ?? DEFAULT_CHART_TYPE_META,
+    [chartType]
+  );
+  const currentChartTypeGroup = useMemo(
+    () => CHART_TYPE_GROUPS.find((group) => group.key === currentChartTypeMeta.group) ?? DEFAULT_CHART_TYPE_GROUP,
+    [currentChartTypeMeta.group]
+  );
+  const [isChartTypePickerOpen, setIsChartTypePickerOpen] = useState(false);
+  const [activeChartTypeGroup, setActiveChartTypeGroup] = useState<ChartTypeGroupKey>(currentChartTypeMeta.group);
+  const visibleChartTypes = useMemo(
+    () => CHART_TYPE_GRID.filter((item) => item.group === activeChartTypeGroup),
+    [activeChartTypeGroup]
+  );
+
+  useEffect(() => {
+    setActiveChartTypeGroup(currentChartTypeMeta.group);
+  }, [currentChartTypeMeta.group]);
 
   useEffect(() => {
     if (chartSortRules.length === 0 || sortLimitCols.length === 0) {
@@ -1400,6 +1584,8 @@ export function ExploreChartConfig({
     updStyle({ tableColumnWidths: undefined });
   };
 
+  const CurrentChartIcon = currentChartTypeMeta.icon;
+
   return (
     <div className={`space-y-4 p-4${readOnly ? ' pointer-events-none opacity-60' : ''}`}>
       {validationMessage && (
@@ -1415,27 +1601,85 @@ export function ExploreChartConfig({
           title="Chart Type"
           description="Start with the visual form. The required field roles below will adapt to the chart you choose."
         >
-          <p className="text-xs font-semibold text-text-tertiary uppercase tracking-wide mb-2">Chart Type</p>
-          <div className="grid grid-cols-4 gap-1">
-            {CHART_TYPE_GRID.map(({ value, label, icon }) => (
-              <button key={value} onClick={() => onChartTypeChange(value)}
-                className={`flex flex-col items-center gap-0.5 px-1 py-1.5 rounded-md text-[10px] leading-tight transition-colors border
-                  ${chartType === value
-                    ? 'border-brand/50 bg-brand/10 text-brand font-semibold'
-                    : 'border-transparent hover:bg-surface-2 text-text-secondary'
-                  }`}
-                title={label}
-              >
-                <span className="text-sm">{icon}</span>
-                <span className="truncate w-full text-center">{label}</span>
-              </button>
-            ))}
+          <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2/70 p-2">
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-surface-1"
+              onClick={() => setIsChartTypePickerOpen((open) => !open)}
+              aria-expanded={isChartTypePickerOpen}
+            >
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-brand/30 bg-brand/10 text-brand">
+                <CurrentChartIcon className="h-4 w-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-semibold text-text-primary">{currentChartTypeMeta.label}</span>
+                <span className="block truncate text-[11px] text-text-tertiary">{currentChartTypeGroup.label}</span>
+              </span>
+              <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-[11px] font-medium text-text-secondary">
+                {isChartTypePickerOpen ? 'Close' : 'Change'}
+              </span>
+              <ChevronDown className={`h-4 w-4 text-text-tertiary transition-transform ${isChartTypePickerOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {isChartTypePickerOpen && (
+              <div className="mt-3 space-y-3 border-t border-[rgb(var(--border-line))] pt-3">
+                <div className="flex gap-1 overflow-x-auto pb-1">
+                  {CHART_TYPE_GROUPS.map((group) => {
+                    const isActive = activeChartTypeGroup === group.key;
+                    const count = CHART_TYPE_GRID.filter((item) => item.group === group.key).length;
+
+                    return (
+                      <button
+                        key={group.key}
+                        type="button"
+                        className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                          isActive
+                            ? 'border-brand/40 bg-brand/10 text-brand'
+                            : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:text-text-secondary'
+                        }`}
+                        title={group.hint}
+                        onClick={() => setActiveChartTypeGroup(group.key)}
+                      >
+                        {group.label} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="grid grid-cols-2 gap-1.5">
+                  {visibleChartTypes.map(({ value, label, icon: Icon }) => {
+                    const isSelected = chartType === value;
+
+                    return (
+                      <button
+                        key={value}
+                        type="button"
+                        className={`flex min-w-0 items-center gap-2 rounded-lg border px-2 py-2 text-left text-[11px] font-medium transition-colors ${
+                          isSelected
+                            ? 'border-brand/50 bg-brand/10 text-brand'
+                            : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
+                        }`}
+                        title={label}
+                        onClick={() => {
+                          onChartTypeChange(value);
+                          setIsChartTypePickerOpen(false);
+                        }}
+                      >
+                        <Icon className="h-4 w-4 shrink-0" />
+                        <span className="min-w-0 flex-1 truncate">{label}</span>
+                        {isSelected && <Check className="h-3.5 w-3.5 shrink-0" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </SectionPanel>
       )}
 
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ TABLE: column picker ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
-      {chartType === 'TABLE' && (
+      {isTableLike && (
         <SectionPanel
           step={tableSectionStep}
           title={isStyleOnly ? 'Table Appearance' : 'Table Structure'}
@@ -1528,7 +1772,7 @@ export function ExploreChartConfig({
       {/* ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Field Mapping ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ */}
         </>
       )}
-      {chartType === 'TABLE' && (
+      {isTableLike && (
         <Disclosure
           title="Optional Enhancements"
           hint="Each option is opt-in. The base table remains unchanged until you enable one of these behaviors."
@@ -1561,7 +1805,7 @@ export function ExploreChartConfig({
         </Disclosure>
       )}
 
-      {chartType === 'TABLE' && tableFormattingColumns.length > 0 && (
+      {isTableLike && tableFormattingColumns.length > 0 && (
         <Disclosure
           title="Column Layout"
           hint="Resize columns directly from the table preview by dragging the header edge. Use these controls to set value alignment and clear saved widths."
@@ -1639,7 +1883,7 @@ export function ExploreChartConfig({
         </Disclosure>
       )}
 
-      {chartType === 'TABLE' && isSummaryRowEnabled && tableNumericColumns.length > 0 && (
+      {isTableLike && isSummaryRowEnabled && tableNumericColumns.length > 0 && (
         <Disclosure
           title="Summary Rows"
           hint="Keep one or more calculation rows pinned to the bottom of the table. Each row can target different numeric columns and use a different aggregation."
@@ -1769,7 +2013,7 @@ export function ExploreChartConfig({
         </Disclosure>
       )}
 
-      {chartType === 'TABLE' && isHeatmapEnabled && tableNumericColumns.length > 0 && (
+      {isTableLike && isHeatmapEnabled && tableNumericColumns.length > 0 && (
         <Disclosure
           title="Heatmap"
           hint="Split each numeric column into color bands based on that column's own value range."
@@ -1847,7 +2091,7 @@ export function ExploreChartConfig({
         </Disclosure>
       )}
 
-      {chartType === 'TABLE' && isConditionalFormattingEnabled && tableFormattingColumns.length > 0 && (
+      {isTableLike && isConditionalFormattingEnabled && tableFormattingColumns.length > 0 && (
         <Disclosure
           title="Conditional Formatting"
           hint="Rules run from top to bottom. The first match wins, and conditional formatting overrides heatmap colors on the same cell."
@@ -2220,7 +2464,7 @@ export function ExploreChartConfig({
         </SectionPanel>
       )}
 
-      {!isStyleOnly && chartType !== 'TABLE' && chartType !== 'KPI' && (
+      {!isStyleOnly && !isTableLike && chartType !== 'KPI' && (
         <SectionPanel
           step="Step 2"
           title="Data Binding"
@@ -2296,14 +2540,21 @@ export function ExploreChartConfig({
               onChange={v => upd({ breakdown: v || undefined })} />
           </>}
 
-          {chartType === 'PIE' && <>
+          {isPieLike && <>
             <SelectSlot label="Legend" hint="slice label" required value={dim} options={dimOrAll}
               onChange={v => upd({ dimension: v || undefined })} />
             <MetricSlot label="Value" hint="slice size" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
               onChange={v => upd({ metrics: v })} />
           </>}
 
-          {chartType === 'SCATTER' && <>
+          {chartType === 'RADAR' && <>
+            <SelectSlot label="Axis" hint="category" required value={dim} options={dimOrAll}
+              onChange={v => upd({ dimension: v || undefined })} />
+            <MetricSlot label="Values" required value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+              onChange={v => upd({ metrics: v })} />
+          </>}
+
+          {isScatterLike && <>
             <SelectSlot label="X Axis" hint="numeric" required value={sx} options={numOrAll}
               placeholder="select X"
               onChange={v => upd({ scatterX: v || undefined })} />
@@ -2313,6 +2564,57 @@ export function ExploreChartConfig({
             <SelectSlot label="Label" hint="optional" value={dim} options={dimOrAll}
               placeholder="none"
               onChange={v => upd({ dimension: v || undefined })} />
+            {chartType === 'BUBBLE' && (
+              <MetricSlot label="Size" hint="bubble radius" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+                onChange={v => upd({ metrics: v })} />
+            )}
+            {chartType === 'MAP_POINT' && (
+              <MetricSlot label="Size" hint="optional" single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+                onChange={v => upd({ metrics: v })} />
+            )}
+          </>}
+
+          {['FUNNEL', 'TREEMAP', 'WATERFALL', 'MAP_REGION', 'WORD_CLOUD', 'BOXPLOT'].includes(chartType) && <>
+            <SelectSlot label="Category" hint="group by" required value={dim} options={dimOrAll}
+              onChange={v => upd({ dimension: v || undefined })} />
+            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+              onChange={v => upd({ metrics: v })} />
+          </>}
+
+          {['HEATMAP', 'SANKEY', 'SUNBURST'].includes(chartType) && <>
+            <SelectSlot label="Source" hint="first dimension" required value={dim} options={dimOrAll}
+              onChange={v => upd({ dimension: v || undefined })} />
+            <SelectSlot label="Target" hint="second dimension" required value={brk} options={dimOrAll}
+              onChange={v => upd({ breakdown: v || undefined })} />
+            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+              onChange={v => upd({ metrics: v })} />
+          </>}
+
+          {chartType === 'RIBBON' && <>
+            <SelectSlot label="Time Field" required value={tf} options={timeOrAll}
+              placeholder="select time field"
+              onChange={v => upd({ timeField: v || undefined, dimension: v || undefined })} />
+            <SelectSlot label="Ribbon" hint="ranked series" required value={brk} options={dimOrAll}
+              onChange={v => upd({ breakdown: v || undefined })} />
+            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+              onChange={v => upd({ metrics: v })} />
+          </>}
+
+          {chartType === 'TIMELINE' && <>
+            <SelectSlot label="Time Field" required value={tf} options={timeOrAll}
+              placeholder="select time field"
+              onChange={v => upd({ timeField: v || undefined })} />
+            <SelectSlot label="Label" required value={dim} options={dimOrAll}
+              onChange={v => upd({ dimension: v || undefined })} />
+            <MetricSlot label="Value" hint="optional duration or size" single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+              onChange={v => upd({ metrics: v })} />
+          </>}
+
+          {['GAUGE', 'BULLET'].includes(chartType) && <>
+            <MetricSlot label="Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+              onChange={v => upd({ metrics: v })} />
+            <MetricSlot label="Target" hint="optional" single value={benchmarkMetric} options={numOrAll} allOptions={allCols}
+              onChange={v => upd({ benchmarkMetric: v[0] })} />
           </>}
 
         </Disclosure>
@@ -2337,7 +2639,7 @@ export function ExploreChartConfig({
           </div>
 
           {/* PIE: donut hole slider */}
-          {chartType === 'PIE' && (
+          {isPieLike && (
             <div>
               <label className="text-xs font-semibold text-text-secondary mb-1 block">
                 Donut Hole: {styleConfig.pieInnerRadius ?? 0}%
@@ -2362,49 +2664,47 @@ export function ExploreChartConfig({
             </div>
           )}
 
-          {chartType !== 'KPI' && (
-            <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1.5 block">Color Palette</label>
-              <div className="space-y-1.5">
-                {CHART_PALETTES.map(p => (
-                  <button
-                    key={p.name}
-                    type="button"
-                    onClick={() => updStyle({ palette: p.name })}
-                    className={`w-full rounded-lg border px-2.5 py-2 text-left transition-colors ${
-                      (styleConfig.palette || 'default') === p.name
-                        ? 'border-brand/40 bg-brand/10'
-                        : 'border-[rgb(var(--border-line))] bg-surface-1 hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <span className={`text-xs font-medium ${
-                        (styleConfig.palette || 'default') === p.name ? 'text-brand' : 'text-text-secondary'
-                      }`}>
-                        {p.label}
-                      </span>
-                      {(styleConfig.palette || 'default') === p.name && (
-                        <Check className="h-3.5 w-3.5 shrink-0 text-brand" />
-                      )}
-                    </div>
+          <div>
+            <label className="text-xs font-semibold text-text-secondary mb-1.5 block">Color Palette</label>
+            <div className="space-y-1.5">
+              {CHART_PALETTES.map(p => (
+                <button
+                  key={p.name}
+                  type="button"
+                  onClick={() => updStyle({ palette: p.name })}
+                  className={`w-full rounded-lg border px-2.5 py-2 text-left transition-colors ${
+                    (styleConfig.palette || 'default') === p.name
+                      ? 'border-brand/40 bg-brand/10'
+                      : 'border-[rgb(var(--border-line))] bg-surface-1 hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className={`text-xs font-medium ${
+                      (styleConfig.palette || 'default') === p.name ? 'text-brand' : 'text-text-secondary'
+                    }`}>
+                      {p.label}
+                    </span>
+                    {(styleConfig.palette || 'default') === p.name && (
+                      <Check className="h-3.5 w-3.5 shrink-0 text-brand" />
+                    )}
+                  </div>
 
-                    <div className="mt-2 flex items-center gap-1">
-                      {p.colors.slice(0, 6).map((c, i) => (
-                        <div
-                          key={i}
-                          className="h-3.5 w-3.5 rounded-sm border border-white/70"
-                          style={{ backgroundColor: c }}
-                        />
-                      ))}
-                    </div>
-                  </button>
-                ))}
-              </div>
+                  <div className="mt-2 flex items-center gap-1">
+                    {p.colors.slice(0, 6).map((c, i) => (
+                      <div
+                        key={i}
+                        className="h-3.5 w-3.5 rounded-sm border border-white/70"
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                  </div>
+                </button>
+              ))}
             </div>
-          )}
+          </div>
 
           {/* Per-series color overrides (visible when chart has identifiable series). */}
-          {chartType !== 'KPI' && chartType !== 'TABLE' && availableSeriesKeys.length > 0 && (
+          {!isTableLike && availableSeriesKeys.length > 0 && (
             <div>
               <label className="text-xs font-semibold text-text-secondary mb-1.5 block">
                 Series colors
@@ -2448,7 +2748,7 @@ export function ExploreChartConfig({
           )}
 
           {/* Data labels */}
-          {chartType !== 'KPI' && chartType !== 'SCATTER' && (
+          {!isScatterLike && (
             <Toggle label="Data Labels" checked={styleConfig.showDataLabels ?? false}
               onChange={v => updStyle({ showDataLabels: v })} />
           )}
@@ -2468,20 +2768,18 @@ export function ExploreChartConfig({
           </div>
 
           {/* Legend position */}
-          {chartType !== 'KPI' && (
-            <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">Legend</label>
-              <select value={styleConfig.legendPosition || 'bottom'}
-                onChange={e => updStyle({ legendPosition: e.target.value as LegendPosition })}
-                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
-                <option value="top">Top</option>
-                <option value="bottom">Bottom</option>
-                <option value="left">Left</option>
-                <option value="right">Right</option>
-                <option value="none">Hidden</option>
-              </select>
-            </div>
-          )}
+          <div>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Legend</label>
+            <select value={styleConfig.legendPosition || 'bottom'}
+              onChange={e => updStyle({ legendPosition: e.target.value as LegendPosition })}
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
+              <option value="top">Top</option>
+              <option value="bottom">Bottom</option>
+              <option value="left">Left</option>
+              <option value="right">Right</option>
+              <option value="none">Hidden</option>
+            </select>
+          </div>
 
         </Disclosure>
 
@@ -2682,7 +2980,7 @@ export function ExploreChartConfig({
       )}
 
       {/* SCATTER: point labels */}
-      {chartType === 'SCATTER' && (
+      {isScatterLike && (
         <Disclosure title="Point Labels" hint="Show a label on each scatter point from a dimension column.">
           <div>
             <label className="text-xs font-semibold text-text-secondary mb-1 block">Label Field</label>
