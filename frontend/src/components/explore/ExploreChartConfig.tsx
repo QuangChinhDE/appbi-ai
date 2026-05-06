@@ -541,6 +541,16 @@ export function getChartRoleConfigRequirementMessage(
       : 'Choose a value column for this chart.';
   }
 
+  if (chartType === 'PODIUM') {
+    if (!normalized.dimension) {
+      return 'Choose a rank name column for the podium chart.';
+    }
+    if (normalized.metrics.length === 0) {
+      return 'Choose a rank value column for the podium chart.';
+    }
+    return null;
+  }
+
   if (PIE_LIKE_TYPES.has(chartType)) {
     if (!normalized.dimension) {
       return 'Choose a legend column for this chart.';
@@ -2615,6 +2625,13 @@ export function ExploreChartConfig({
               onChange={v => upd({ metrics: v })} />
             <MetricSlot label="Target" hint="optional" single value={benchmarkMetric} options={numOrAll} allOptions={allCols}
               onChange={v => upd({ benchmarkMetric: v[0] })} />
+          </>}
+
+          {chartType === 'PODIUM' && <>
+            <SelectSlot label="Rank Name" hint="category" required value={dim} options={dimOrAll}
+              onChange={v => upd({ dimension: v || undefined })} />
+            <MetricSlot label="Rank Value" required single value={normalizedRoleConfig.metrics} options={numOrAll} allOptions={allCols}
+              onChange={v => upd({ metrics: v })} />
           </>}
 
         </Disclosure>

@@ -356,7 +356,7 @@ function syncRoleConfigWithColumns(
   } else if (chartType === 'RIBBON') {
     if (!next.timeField) next.timeField = timeColumns[0]?.name ?? fallbackDimension;
     if (!next.dimension) next.dimension = next.timeField ?? fallbackDimension;
-  } else if (chartType !== 'PODIUM' && !next.dimension) {
+  } else if (!next.dimension) {
     next.dimension = fallbackDimension;
   }
 
