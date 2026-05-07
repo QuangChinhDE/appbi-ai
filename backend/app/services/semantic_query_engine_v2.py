@@ -491,32 +491,67 @@ class SemanticQueryEngineV2:
             join_type = join_def.get('type', 'left').upper()
             join_view_name = join_def['view']
             join_condition = join_def['sql_on']
-            
+
             # Get joined view table name
             join_view = self.views_cache.get(join_view_name)
             if join_view:
                 join_table = join_view.sql_table_name or join_view_name
             else:
                 join_table = join_view_name
-            
-            # Render join condition (may have ${view.field} placeholders)
-            join_condition_rendered = self._render_join_condition(join_condition)
-            
+
+            # Render join condition. sql_on may use:
+            #   ${TABLE}             → base (left) view alias
+            #   ${join_view_name}    → joined (right) view alias
+            #   ${view.field}        → view.field
+            join_condition_rendered = self._render_join_condition(
+                join_condition,
+                base_alias=explore.base_view_name,
+                join_alias=join_view_name,
+            )
+
             from_clause += f"\n{join_type} JOIN {join_table} AS {join_view_name} ON {join_condition_rendered}"
-        
+
         return from_clause
-    
-    def _render_join_condition(self, condition: str) -> str:
-        """Render join condition with field references"""
-        # Replace ${view.field} with view.field
-        pattern = r'\$\{([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)\}'
-        
+
+    def _render_join_condition(
+        self,
+        condition: str,
+        *,
+        base_alias: str | None = None,
+        join_alias: str | None = None,
+    ) -> str:
+        """Render join condition with placeholder substitution.
+
+        Handles three placeholder forms found in stored sql_on templates:
+          - ``${TABLE}``           → the base (left-hand) view alias
+          - ``${some_view}``       → the alias of the joined view (or any
+                                     other referenced view alias)
+          - ``${view.field}``      → ``view.field``
+        """
+        rendered = condition
+
+        if base_alias:
+            rendered = rendered.replace("${TABLE}", base_alias)
+
+        if join_alias:
+            rendered = rendered.replace(f"${{{join_alias}}}", join_alias)
+
+        # ${view.field} → view.field
+        dotted_pattern = r'\$\{([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)\}'
+
         def replace_field(match):
             field_ref = match.group(1)
             view_name, field_name = self._parse_field_ref(field_ref)
             return f"{view_name}.{field_name}"
-        
-        return re.sub(pattern, replace_field, condition)
+
+        rendered = re.sub(dotted_pattern, replace_field, rendered)
+
+        # Bare ${view_alias} placeholders (any remaining views referenced
+        # in the condition, e.g. self-joins or multi-hop joins) → view_alias.
+        bare_pattern = r'\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}'
+        rendered = re.sub(bare_pattern, lambda m: m.group(1), rendered)
+
+        return rendered
     
     def _build_where_clause(self, filters: Dict[str, Any], time_grains: Dict[str, str]) -> str:
         """Build WHERE clause from filters"""

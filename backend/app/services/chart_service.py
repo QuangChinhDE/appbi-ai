@@ -17,6 +17,7 @@ from app.services.chart_contracts import (
     get_chart_custom_sql,
     merge_chart_query_filters,
     normalize_chart_filter_context,
+    normalize_chart_role_config,
     normalize_filter_conditions,
     resolve_chart_query_filters,
 )

@@ -206,7 +206,9 @@ export default function FormScreenEditor({
   };
 
   const addField = () => {
-    const column = tableCols[0]?.name || `field_${fields.length + 1}`;
+    const usedColumns = new Set(fields.map((f) => f.column));
+    const unusedCol = tableCols.find((c) => !usedColumns.has(c.name));
+    const column = unusedCol?.name || `field_${fields.length + 1}`;
     updateForm({
       fields: [
         ...fields,
@@ -711,7 +713,21 @@ function FieldInspector({
         {/* Group 1 — Hiển thị */}
         <CollapsibleGroup title="Hiển thị">
           <div className={BUILDER_GRID_4}>
-            <Lbl label="Nhãn">
+            <Lbl label="Cột dữ liệu">
+              <select
+                value={field.column}
+                onChange={(event) => onChange({ column: event.target.value })}
+                className={INPUT}
+              >
+                {tableCols.length === 0 && <option value={field.column}>{field.column}</option>}
+                {tableCols.map((col) => (
+                  <option key={col.name} value={col.name}>
+                    {col.name}{col.type ? ` (${col.type})` : ''}
+                  </option>
+                ))}
+              </select>
+            </Lbl>
+            <Lbl label="Nhãn hiển thị">
               <input
                 value={field.label || ''}
                 onChange={(event) => onChange({ label: event.target.value })}
@@ -815,20 +831,6 @@ function FieldInspector({
         {mode === 'advanced' && (
           <CollapsibleGroup title="Nâng cao" defaultOpen={false}>
             <div className={BUILDER_GRID_4}>
-              <Lbl label="Cột (column)">
-                <select
-                  value={field.column}
-                  onChange={(event) => onChange({ column: event.target.value })}
-                  className={INPUT}
-                >
-                  {tableCols.length === 0 && <option value={field.column}>{field.column}</option>}
-                  {tableCols.map((column) => (
-                    <option key={column.name} value={column.name}>
-                      {column.name} {column.type ? `(${column.type})` : ''}
-                    </option>
-                  ))}
-                </select>
-              </Lbl>
               <Lbl label="Hiện khi (show_if)">
                 <input
                   value={String(getFieldExtra<string>(field, 'show_if') || '')}
