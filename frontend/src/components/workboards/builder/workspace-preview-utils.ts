@@ -19,7 +19,6 @@ export interface WorkspaceLite {
    * (workspaces are public + PIN-protected unless explicitly internal).
    */
   access_mode?: WorkspaceAccessMode;
-  app_users_config?: Record<string, unknown> | null;
   menu_config: Array<{ workboard_slug: string }>;
 }
 
@@ -32,24 +31,14 @@ export function isWorkboardLinked(ws: WorkspaceLite, slug: string) {
 }
 
 /**
- * A workspace can host preview if it's either an internal workspace (admin
- * staff opens it directly with their AppBI session) or a public_app_users
- * workspace with a populated config. Empty-config public_app_users would
- * actually fail at the backend, so we surface them last.
- */
-export function isUsableForPreview(ws: WorkspaceLite): boolean {
-  if (getAccessMode(ws) === 'internal') return true;
-  return Boolean(
-    ws.app_users_config && Object.keys(ws.app_users_config).length > 0,
-  );
-}
-
-/**
  * Sort workspaces for the preview picker. We rank by:
  *   - workboard already in menu_config (highest signal)
- *   - workspace is usable (internal OR config present)
  *   - workspace is public_app_users (matches the new product default and
  *     exercises real RLS / per-workboard user table flows)
+ *   - workspace is internal (fallback for staff-only testing)
+ *
+ * App-user identity now lives on the workboard itself, so workspace-level
+ * app_users_config is intentionally not part of this decision anymore.
  * so the auto-selected one almost always works without further action.
  */
 export function sortPreviewWorkspaces(
@@ -59,8 +48,8 @@ export function sortPreviewWorkspaces(
   return [...data].sort((a, b) => {
     const score = (ws: WorkspaceLite) =>
       (isWorkboardLinked(ws, slug) ? 8 : 0)
-      + (isUsableForPreview(ws) ? 4 : 0)
-      + (getAccessMode(ws) === 'public_app_users' ? 1 : 0);
+      + (getAccessMode(ws) === 'public_app_users' ? 4 : 0)
+      + (getAccessMode(ws) === 'internal' ? 2 : 0);
     return score(b) - score(a);
   });
 }

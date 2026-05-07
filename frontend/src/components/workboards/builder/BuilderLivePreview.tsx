@@ -25,12 +25,20 @@ import {
   RotateCw,
 } from 'lucide-react';
 
-import type { Workboard } from '@/lib/api/workboards';
+import {
+  workboardApi,
+  type Workboard,
+  type WorkboardAppUserResponse,
+} from '@/lib/api/workboards';
 import { apiClient } from '@/lib/api-client';
 import type { AutosaveStatus } from './useDebouncedAutosave';
 import {
+  buildAppUserRoleOptions,
+  formatAppUserRoleLabel,
+  normalizeAppUserRole,
+} from './appUserRoles';
+import {
   getAccessMode,
-  isWorkboardLinked,
   sortPreviewWorkspaces,
   type WorkspaceLite,
 } from './workspace-preview-utils';
@@ -73,6 +81,9 @@ export default function BuilderLivePreview({
 }: Props) {
   const [workspaces, setWorkspaces] = useState<WorkspaceLite[]>([]);
   const [activeWs, setActiveWs] = useState<WorkspaceLite | null>(null);
+  const [appUsers, setAppUsers] = useState<WorkboardAppUserResponse[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(true);
+  const [previewRole, setPreviewRole] = useState('');
   const [previewUsername, setPreviewUsername] = useState('');
   const [device, setDevice] = useState<DeviceFrame>('desktop');
   const [sessionReady, setSessionReady] = useState(false);
@@ -108,30 +119,80 @@ export default function BuilderLivePreview({
 
   const isInternal = activeWs ? getAccessMode(activeWs) === 'internal' : false;
 
+  useEffect(() => {
+    let alive = true;
+    setLoadingUsers(true);
+    (async () => {
+      try {
+        const rows = await workboardApi.listAppUsers(workboard.id);
+        if (!alive) return;
+        setAppUsers(rows);
+      } catch {
+        if (alive) setAppUsers([]);
+      } finally {
+        if (alive) setLoadingUsers(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [workboard.id]);
+
+  const activePreviewUsers = useMemo(
+    () => appUsers.filter((user) => user.active),
+    [appUsers],
+  );
+
+  const previewRoleOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const user of activePreviewUsers) {
+      const role = normalizeAppUserRole(user.role) || 'user';
+      counts.set(role, (counts.get(role) || 0) + 1);
+    }
+    return buildAppUserRoleOptions(Array.from(counts.keys()))
+      .filter((option) => counts.has(option.value))
+      .map((option) => ({ ...option, count: counts.get(option.value) || 0 }));
+  }, [activePreviewUsers]);
+
+  const filteredPreviewUsers = useMemo(() => {
+    if (!previewRole) return activePreviewUsers;
+    return activePreviewUsers.filter(
+      (user) => (normalizeAppUserRole(user.role) || 'user') === previewRole,
+    );
+  }, [activePreviewUsers, previewRole]);
+
+  useEffect(() => {
+    if (isInternal || previewRole || loadingUsers || activePreviewUsers.length === 0) {
+      return;
+    }
+    setPreviewRole(normalizeAppUserRole(activePreviewUsers[0].role) || 'user');
+    setSessionReady(false);
+  }, [activePreviewUsers, isInternal, loadingUsers, previewRole]);
+
   // Track the (workspace, username) tuple we last tried so a failed mint
   // doesn't spin into an infinite loop: without this, ``finally``'s
   // ``setSessionLoading(false)`` re-armed the auto-mint effect and we
-  // hammered ``/preview-session`` ~10×/sec on a workspace with stale
-  // ``app_users_config`` until the user navigated away.
+  // hammered ``/preview-session`` on a stale preview identity until the
+  // user navigated away.
   const lastAttemptRef = useRef<string | null>(null);
 
   // ── Mint preview-session cookie ──────────────────────────────────
   const startSession = async () => {
     if (!activeWs) return;
-    const attemptKey = `${activeWs.id}::${previewUsername.trim()}::${workboard.id}`;
+    const attemptKey = `${activeWs.id}::${previewRole}::${previewUsername.trim()}::${workboard.id}`;
     lastAttemptRef.current = attemptKey;
     setSessionLoading(true);
     setSessionError(null);
     try {
-      const payload: { username?: string; workboard_id: number } = {
+      const payload: { username?: string; role?: string; workboard_id: number } = {
         workboard_id: workboard.id,
       };
       // Internal workspaces mint the session from the AppBI staff identity
-      // — the username field is ignored for them. For public workspaces an
-      // empty username asks the backend to pick the first active row from
-      // the configured app_users table, so the admin can preview without
-      // typing a real PIN-protected account.
+      // — role/user selectors are ignored for them. For public workspaces an
+      // empty username asks the backend to pick the first active row for the
+      // selected role.
       if (!isInternal) {
+        if (previewRole) payload.role = previewRole;
         const username = previewUsername.trim();
         if (username) payload.username = username;
       }
@@ -150,21 +211,27 @@ export default function BuilderLivePreview({
   // different workspace / username works without a manual refresh.
   useEffect(() => {
     lastAttemptRef.current = null;
-  }, [activeWs?.id, previewUsername, workboard.id]);
+  }, [activeWs?.id, previewRole, previewUsername, workboard.id]);
 
   // Auto-mint when workspace + user picked and we haven't started yet.
   // Skip when we already attempted this exact combination — even if the
   // attempt errored — so the effect doesn't loop forever on a 404/403.
   useEffect(() => {
     if (collapsed || !activeWs || sessionReady || sessionLoading) return;
-    const attemptKey = `${activeWs.id}::${previewUsername.trim()}::${workboard.id}`;
+    if (!isInternal && loadingUsers) return;
+    if (!isInternal && activePreviewUsers.length > 0 && !previewRole) return;
+    const attemptKey = `${activeWs.id}::${previewRole}::${previewUsername.trim()}::${workboard.id}`;
     if (lastAttemptRef.current === attemptKey) return;
     void startSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeWs,
     collapsed,
-    isInternal ? null : previewUsername,
+    activePreviewUsers.length,
+    isInternal,
+    loadingUsers,
+    previewRole,
+    previewUsername,
     sessionReady,
     sessionLoading,
   ]);
@@ -226,16 +293,50 @@ export default function BuilderLivePreview({
       <div className="flex items-center justify-between gap-2 border-b border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           {!isInternal && (
-            <input
-              value={previewUsername}
-              onChange={(e) => {
-                setPreviewUsername(e.target.value);
-                setSessionReady(false);
-              }}
-              placeholder="Username preview (trống = user đầu tiên)"
-              className="w-56 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny"
-              title="Nhập một username thực trong bảng app_users của workspace, hoặc để trống để backend tự chọn user active đầu tiên."
-            />
+            <>
+              <select
+                value={previewRole}
+                onChange={(e) => {
+                  setPreviewRole(e.target.value);
+                  setPreviewUsername('');
+                  setSessionReady(false);
+                }}
+                disabled={loadingUsers || activePreviewUsers.length === 0}
+                className="max-w-[128px] rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny disabled:opacity-60"
+                title="Role preview"
+              >
+                <option value="">{loadingUsers ? 'Loading roles...' : 'Auto role'}</option>
+                {previewRoleOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label} ({option.count})
+                  </option>
+                ))}
+              </select>
+              <select
+                value={previewUsername}
+                onChange={(e) => {
+                  setPreviewUsername(e.target.value);
+                  setSessionReady(false);
+                }}
+                disabled={loadingUsers || filteredPreviewUsers.length === 0}
+                className="max-w-[190px] rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny disabled:opacity-60"
+                title="App user preview"
+              >
+                <option value="">
+                  {filteredPreviewUsers.length === 0
+                    ? 'No active users'
+                    : previewRole
+                      ? `First ${formatAppUserRoleLabel(previewRole)}`
+                      : 'First active user'}
+                </option>
+                {filteredPreviewUsers.map((user) => (
+                  <option key={user.id} value={user.username}>
+                    {user.username}
+                    {user.full_name ? ` - ${user.full_name}` : ''}
+                  </option>
+                ))}
+              </select>
+            </>
           )}
           {isInternal && (
             <span
@@ -244,27 +345,6 @@ export default function BuilderLivePreview({
             >
               Internal · AppBI staff
             </span>
-          )}
-          {workspaces.length > 1 && (
-            <select
-              value={activeWs?.id ?? ''}
-              onChange={(e) => {
-                const next = workspaces.find((ws) => ws.id === Number(e.target.value));
-                if (next) {
-                  setActiveWs(next);
-                  setSessionReady(false);
-                }
-              }}
-              className="max-w-[180px] rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny"
-              title="Workspace preview"
-            >
-              {workspaces.map((ws) => (
-                <option key={ws.id} value={ws.id}>
-                  {ws.name}
-                  {isWorkboardLinked(ws, workboardSlug) ? '' : ' (preview)'}
-                </option>
-              ))}
-            </select>
           )}
           <div className="flex items-center gap-0.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-0.5">
             {(['mobile', 'tablet', 'desktop'] as DeviceFrame[]).map((d) => {

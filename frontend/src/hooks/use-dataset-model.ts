@@ -16,10 +16,44 @@ export interface DimensionDefinition {
   hidden: boolean;
 }
 
+export type MeasureFilterOperator =
+  | 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte'
+  | 'in' | 'not_in' | 'between'
+  | 'contains' | 'starts_with' | 'ends_with'
+  | 'is_null' | 'is_not_null';
+
+export interface MeasureFilter {
+  field: string;
+  operator: MeasureFilterOperator;
+  value?: unknown;
+}
+
+export interface MeasureFormat {
+  kind: 'number' | 'currency' | 'percent' | 'duration' | 'custom';
+  decimals?: number;
+  currency?: string;
+  prefix?: string;
+  suffix?: string;
+  pattern?: string;
+}
+
 export interface MeasureDefinition {
   name: string;
   type: 'count' | 'sum' | 'avg' | 'min' | 'max' | 'count_distinct' | 'percent_of_total';
+  /** Column or simple SQL — the value being aggregated (form mode). */
   sql?: string;
+  /** Free SQL expression (advanced). When set, takes precedence over `sql`. */
+  expression?: string;
+  /** Structured filter list (Looker-style filtered measure). */
+  filters?: MeasureFilter[];
+  /** Raw WHERE fragment for power users; AND-combined with `filters`. */
+  where_sql?: string;
+  /** Names of measures (same view) this one references — for cycle checks. */
+  depends_on?: string[];
+  /** Display format hint (does not affect SQL). */
+  format?: MeasureFormat;
+  /** UI grouping label. */
+  folder?: string;
   label?: string;
   description?: string;
   hidden: boolean;

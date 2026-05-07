@@ -18,11 +18,62 @@ class DimensionDefinition(BaseModel):
     hidden: bool = False
 
 
+class MeasureFilter(BaseModel):
+    """A single filter condition applied inside a measure aggregation.
+
+    Built via UI (column + operator + value) and translated to a SQL
+    `CASE WHEN ... THEN expr END` wrapper at compile time so users with
+    no SQL skill can still author filtered measures (Looker-style).
+    """
+    field: str  # Bare column or qualified ${view.field}; resolved against the host view
+    operator: Literal[
+        "eq", "ne", "gt", "gte", "lt", "lte",
+        "in", "not_in", "between",
+        "contains", "starts_with", "ends_with",
+        "is_null", "is_not_null",
+    ]
+    value: Any = None  # Scalar, list (for in/not_in), or [low, high] for between
+
+
+class MeasureFormat(BaseModel):
+    """Display format hint for a measure.
+
+    Compiler/UI use this to render values; it does not affect SQL.
+    """
+    kind: Literal["number", "currency", "percent", "duration", "custom"] = "number"
+    decimals: Optional[int] = Field(default=None, ge=0, le=10)
+    currency: Optional[str] = Field(default=None, max_length=8)  # e.g. "USD", "VND"
+    suffix: Optional[str] = Field(default=None, max_length=16)
+    prefix: Optional[str] = Field(default=None, max_length=16)
+    pattern: Optional[str] = Field(default=None, max_length=64)  # for custom
+
+
 class MeasureDefinition(BaseModel):
-    """LookML-style measure definition"""
+    """Measure definition (extended Phase-1).
+
+    Backwards compatible: legacy measures with only {name, type, sql, ...}
+    still validate. New optional fields:
+      - expression: free SQL expression (advanced); when set, takes precedence
+                    over `sql` as the value being aggregated.
+      - filters:    structured filter list rendered as CASE WHEN.
+      - where_sql:  raw WHERE fragment for power users; combined with `filters`
+                    via AND inside the same CASE WHEN.
+      - depends_on: list of measure names in the same view this measure
+                    references (e.g. ratio = revenue / orders). Used for
+                    dependency-cycle checks; the actual reference still
+                    happens through `expression` SQL.
+      - format:     display format hint.
+      - folder:     UI grouping label.
+    """
     name: str
     type: Literal["count", "sum", "avg", "min", "max", "count_distinct", "percent_of_total"]
-    sql: Optional[str] = None  # SQL template for the measure
+    sql: Optional[str] = None  # Column or simple SQL — value being aggregated
+    expression: Optional[str] = None  # Advanced: full SQL expression aggregated by `type`
+    filters: List[MeasureFilter] = Field(default_factory=list)
+    where_sql: Optional[str] = Field(default=None, max_length=2000)
+    depends_on: List[str] = Field(default_factory=list)
+    format: Optional[MeasureFormat] = None
+    folder: Optional[str] = Field(default=None, max_length=80)
     label: Optional[str] = None
     description: Optional[str] = None
     hidden: bool = False

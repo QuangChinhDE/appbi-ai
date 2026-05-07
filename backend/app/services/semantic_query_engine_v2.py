@@ -303,21 +303,41 @@ class SemanticQueryEngineV2:
         it takes precedence over the aggregation type stored in the view
         definition.  This allows callers (chart rendering, Explore API) to
         request a specific aggregation without mutating the semantic model.
+
+        Phase-1 extensions handled here:
+          * ``expression``: when set, takes precedence over ``sql`` as the
+            value being aggregated (advanced power-user mode).
+          * ``filters`` / ``where_sql``: produce a ``CASE WHEN <cond> THEN
+            <value> ELSE NULL END`` wrapper so the aggregation only sees
+            qualifying rows (Looker-style filtered measures).
         """
         view_name, field_name = self._parse_field_ref(field_ref)
         view = self.views_cache.get(view_name)
-        
+
         if not view:
             raise ValueError(f"View '{view_name}' not found")
-        
+
         measure_def = next((m for m in view.measures if m['name'] == field_name), None)
         if not measure_def:
             raise ValueError(f"Measure '{field_name}' not found in view '{view_name}'")
-        
+
         measure_type = (agg_override or measure_def.get('type', 'count')).lower().strip()
-        sql_template = measure_def.get('sql', '*')
+        # `expression` (advanced) wins over `sql` (form). Both are SQL templates.
+        sql_template = measure_def.get('expression') or measure_def.get('sql') or '*'
         base_sql = self._render_sql_template(sql_template, view_name)
-        
+
+        # Filtered measure: wrap `base_sql` in CASE WHEN so the aggregate only
+        # sees qualifying rows. COUNT(*) needs special-casing because there is
+        # no per-row value to gate.
+        filter_sql = self._render_measure_filter_clause(measure_def, view_name)
+        if filter_sql:
+            if measure_type == "count" and base_sql.strip() == "*":
+                # COUNT(CASE WHEN cond THEN 1 END) counts only matching rows
+                gated = f"CASE WHEN {filter_sql} THEN 1 END"
+            else:
+                gated = f"CASE WHEN {filter_sql} THEN {base_sql} END"
+            base_sql = gated
+
         if measure_type == "count":
             return f"COUNT({base_sql})"
         elif measure_type == "sum":
@@ -335,6 +355,84 @@ class SemanticQueryEngineV2:
             return f"SUM({base_sql}) / SUM(SUM({base_sql})) OVER () * 100"
         else:
             return f"SUM({base_sql})"  # Default fallback
+
+    def _render_measure_filter_clause(
+        self, measure_def: Dict[str, Any], view_name: str
+    ) -> Optional[str]:
+        """Compose AND-joined filter expression for a measure, or None.
+
+        Combines the structured ``filters`` list (UI builder) with the raw
+        ``where_sql`` fragment (advanced); both render against ``view_name``
+        and are joined with AND.
+        """
+        parts: List[str] = []
+        for f in measure_def.get('filters') or []:
+            rendered = self._render_one_measure_filter(f, view_name)
+            if rendered:
+                parts.append(rendered)
+        where_sql = (measure_def.get('where_sql') or "").strip()
+        if where_sql:
+            # Allow ${TABLE} / ${view.field} placeholders in raw SQL too
+            parts.append(f"({self._render_sql_template(where_sql, view_name)})")
+        if not parts:
+            return None
+        return " AND ".join(parts)
+
+    def _render_one_measure_filter(
+        self, f: Dict[str, Any], view_name: str
+    ) -> Optional[str]:
+        """Render a single MeasureFilter dict into a SQL boolean expression."""
+        field = (f.get('field') or "").strip()
+        operator = (f.get('operator') or "eq").lower().strip()
+        value = f.get('value')
+        if not field:
+            return None
+
+        # `field` may be a bare column ("status") or qualified ("orders.status")
+        if "." in field:
+            field_sql = self._render_dimension(field, self._parse_field_ref(field)[0])
+        else:
+            field_sql = f"{view_name}.{field}"
+
+        def _q(v: Any) -> str:
+            if v is None:
+                return "NULL"
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return str(v)
+            return "'" + str(v).replace("'", "''") + "'"
+
+        if operator == "eq":
+            return f"{field_sql} = {_q(value)}"
+        if operator == "ne":
+            return f"{field_sql} <> {_q(value)}"
+        if operator == "gt":
+            return f"{field_sql} > {_q(value)}"
+        if operator == "gte":
+            return f"{field_sql} >= {_q(value)}"
+        if operator == "lt":
+            return f"{field_sql} < {_q(value)}"
+        if operator == "lte":
+            return f"{field_sql} <= {_q(value)}"
+        if operator == "in":
+            vals = value if isinstance(value, list) else [value]
+            return f"{field_sql} IN ({', '.join(_q(v) for v in vals)})"
+        if operator == "not_in":
+            vals = value if isinstance(value, list) else [value]
+            return f"{field_sql} NOT IN ({', '.join(_q(v) for v in vals)})"
+        if operator == "between":
+            lo, hi = (value or [None, None])[:2]
+            return f"{field_sql} BETWEEN {_q(lo)} AND {_q(hi)}"
+        if operator == "contains":
+            return f"{field_sql} LIKE '%' || {_q(value)} || '%'"
+        if operator == "starts_with":
+            return f"{field_sql} LIKE {_q(value)} || '%'"
+        if operator == "ends_with":
+            return f"{field_sql} LIKE '%' || {_q(value)}"
+        if operator == "is_null":
+            return f"{field_sql} IS NULL"
+        if operator == "is_not_null":
+            return f"{field_sql} IS NOT NULL"
+        return None
     
     def _render_pivoted_measure(
         self, 
@@ -353,30 +451,35 @@ class SemanticQueryEngineV2:
             raise ValueError(f"Measure '{field_name}' not found")
         
         measure_type = (agg_override or measure_def.get('type', 'sum')).lower().strip()
-        sql_template = measure_def.get('sql', '*')
+        sql_template = measure_def.get('expression') or measure_def.get('sql') or '*'
         base_sql = self._render_sql_template(sql_template, view_name)
-        
+
+        # Filtered measure inside a pivot: AND the measure's own filter into
+        # the pivot CASE branch so each pivoted column also respects the filter.
+        measure_filter_sql = self._render_measure_filter_clause(measure_def, view_name)
+
         # Get pivot dimension SQL
         pivot_view_name, pivot_field_name = self._parse_field_ref(pivot_field)
         pivot_sql = self._render_dimension(pivot_field, pivot_view_name)
         
-        # Build CASE expression
+        # Build CASE expression. When the measure carries its own filter, AND
+        # it into the pivot predicate so each pivoted column is correctly gated.
+        pivot_pred = f"{pivot_sql} = '{pivot_value}'"
+        if measure_filter_sql:
+            pivot_pred = f"({pivot_pred}) AND ({measure_filter_sql})"
+
         if measure_type in ["sum", "avg"]:
-            # SUM/AVG: CASE WHEN pivot = value THEN base_sql ELSE 0 END wrapped in SUM/AVG
             agg_func = measure_type.upper()
-            case_expr = f"CASE WHEN {pivot_sql} = '{pivot_value}' THEN {base_sql} ELSE 0 END"
+            case_expr = f"CASE WHEN {pivot_pred} THEN {base_sql} ELSE 0 END"
             return f"{agg_func}({case_expr})"
         elif measure_type == "count":
-            # COUNT: CASE WHEN pivot = value THEN 1 ELSE 0 END wrapped in SUM
-            case_expr = f"CASE WHEN {pivot_sql} = '{pivot_value}' THEN 1 ELSE 0 END"
+            case_expr = f"CASE WHEN {pivot_pred} THEN 1 ELSE 0 END"
             return f"SUM({case_expr})"
         elif measure_type == "count_distinct":
-            # COUNT DISTINCT with pivot: not straightforward, use CASE
-            case_expr = f"CASE WHEN {pivot_sql} = '{pivot_value}' THEN {base_sql} ELSE NULL END"
+            case_expr = f"CASE WHEN {pivot_pred} THEN {base_sql} ELSE NULL END"
             return f"COUNT(DISTINCT {case_expr})"
         else:
-            # Default: SUM with CASE
-            case_expr = f"CASE WHEN {pivot_sql} = '{pivot_value}' THEN {base_sql} ELSE 0 END"
+            case_expr = f"CASE WHEN {pivot_pred} THEN {base_sql} ELSE 0 END"
             return f"SUM({case_expr})"
     
     def _render_window_function(self, wf_def: Dict[str, Any]) -> str:
