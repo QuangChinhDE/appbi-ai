@@ -46,6 +46,27 @@ interface ExploreColumnPanelProps {
   onSelectMeasure?: (measure: MeasureDefinition, viewName: string) => void;
 }
 
+function groupMeasures(measures: MeasureDefinition[]) {
+  const groups = new Map<string, MeasureDefinition[]>();
+  for (const measure of measures) {
+    const groupName = measure.folder?.trim() || 'Measures';
+    groups.set(groupName, [...(groups.get(groupName) ?? []), measure]);
+  }
+  return Array.from(groups.entries()).sort(([a], [b]) => {
+    if (a === 'Measures') return -1;
+    if (b === 'Measures') return 1;
+    return a.localeCompare(b);
+  });
+}
+
+function measureTitle(measure: MeasureDefinition) {
+  const source = measure.expression || measure.sql || measure.name;
+  const parts = [`${measure.type.toUpperCase()}(${source})`];
+  if (measure.filters?.length) parts.push(`${measure.filters.length} measure filter(s)`);
+  if (measure.depends_on?.length) parts.push(`depends on: ${measure.depends_on.join(', ')}`);
+  return parts.join(' | ');
+}
+
 export function ExploreColumnPanel({
   datasetId,
   selectedTableId,
@@ -134,6 +155,7 @@ export function ExploreColumnPanel({
           const isExpanded = expandedViews[view.id] ?? false;
           const visibleDims = view.dimensions.filter((d) => !d.hidden);
           const visibleMeasures = view.measures.filter((m) => !m.hidden);
+          const measureGroups = groupMeasures(visibleMeasures);
 
           return (
             <div key={view.id}>
@@ -176,22 +198,36 @@ export function ExploreColumnPanel({
 
                   {visibleMeasures.length > 0 && (
                     <div className="mb-1">
-                      <div className="px-4 py-1 text-tiny font-emphasis uppercase text-text-quaternary">
-                        Measures
-                      </div>
-                      {visibleMeasures.map((m) => (
-                        <button
-                          key={m.name}
-                          onClick={() => onSelectMeasure?.(m, view.name)}
-                          className="flex w-full items-center gap-2 rounded-sm px-4 py-1 text-caption text-text-secondary transition-colors hover:bg-warning/10 hover:text-warning"
-                          title={`${m.type.toUpperCase()}(${m.sql || m.name})`}
-                        >
-                          <Sigma className="h-3 w-3 shrink-0 text-warning" />
-                          <span className="truncate">{m.label || m.name}</span>
-                          <span className="ml-auto text-tiny uppercase text-text-quaternary">
-                            {m.type}
-                          </span>
-                        </button>
+                      {measureGroups.map(([groupName, groupMeasures]) => (
+                        <div key={groupName}>
+                          <div className="px-4 py-1 text-tiny font-emphasis uppercase text-text-quaternary">
+                            {groupName}
+                          </div>
+                          {groupMeasures.map((m) => (
+                            <button
+                              key={m.name}
+                              onClick={() => onSelectMeasure?.(m, view.name)}
+                              className="flex w-full items-center gap-2 rounded-sm px-4 py-1 text-caption text-text-secondary transition-colors hover:bg-warning/10 hover:text-warning"
+                              title={measureTitle(m)}
+                            >
+                              <Sigma className="h-3 w-3 shrink-0 text-warning" />
+                              <span className="truncate">{m.label || m.name}</span>
+                              {(m.filters?.length ?? 0) > 0 && (
+                                <span className="rounded bg-warning/10 px-1 text-tiny text-warning">
+                                  f{m.filters?.length}
+                                </span>
+                              )}
+                              {m.format?.kind && m.format.kind !== 'number' && (
+                                <span className="rounded bg-surface-2 px-1 text-tiny text-text-quaternary">
+                                  {m.format.kind}
+                                </span>
+                              )}
+                              <span className="ml-auto text-tiny uppercase text-text-quaternary">
+                                {m.type}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
                       ))}
                     </div>
                   )}

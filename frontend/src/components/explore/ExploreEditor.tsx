@@ -9,6 +9,7 @@ import { Save, ArrowLeft, ChevronDown, ChevronRight, Pencil, Check, Search, Sett
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
 import { useDataset, useTablePreview, useExecuteDatasetTableQueryMutation, type ColumnMetadata } from '@/hooks/use-datasets';
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
+import { ExploreColumnPanel } from '@/components/explore/ExploreColumnPanel';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { buildExploreChartModel } from '@/components/explore/chartDataAdapter';
@@ -47,6 +48,7 @@ import {
   stripTrailingSqlLimit,
 } from '@/lib/explore-query';
 import type { ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
+import { useDatasetModel, type DimensionDefinition, type MeasureDefinition } from '@/hooks/use-dataset-model';
 
 type ChartType = ExploreChartType;
 
@@ -235,6 +237,16 @@ function getApiErrorMessage(error: any, fallback: string): string {
     return error.message;
   }
   return fallback;
+}
+
+function semanticAlias(fieldRef: string): string {
+  return fieldRef.replace(/[^A-Za-z0-9_]/g, '_');
+}
+
+function measureAggForRole(measure: MeasureDefinition): MetricConfig['agg'] {
+  return ['sum', 'avg', 'count', 'min', 'max', 'count_distinct'].includes(measure.type)
+    ? measure.type as MetricConfig['agg']
+    : 'sum';
 }
 
 function syncRoleConfigWithColumns(
@@ -558,6 +570,7 @@ export function ExploreEditor({
 
   const { data: chart, isLoading: isChartLoading } = useChart(isEphemeral ? 0 : (chartId ?? 0));
   const { data: dataset } = useDataset(selectedDatasetId);
+  const { data: datasetModel } = useDatasetModel(selectedDatasetId);
   const resPerms = getResourcePermissions(isNew ? 'full' : chart?.user_permission);
   const skipNextSourceResetRef = useRef(false);
   const seedAppliedRef = useRef(false);
@@ -700,6 +713,28 @@ export function ExploreEditor({
   const selectedTable = dataset?.tables?.find((table) => table.id === selectedTableId) ?? null;
   const selectedTableDisplayName = selectedTable?.display_name || 'Selected table';
   const hasActiveTransforms = Boolean(selectedTable?.transformations?.some((step) => step.enabled));
+  const selectedSemanticView = useMemo(
+    () => datasetModel?.views?.find((view) => view.dataset_table_id === selectedTableId) ?? null,
+    [datasetModel?.views, selectedTableId],
+  );
+  const semanticColumns = useMemo<ColumnMetadata[]>(() => {
+    if (!selectedSemanticView) return [];
+    const dims = (selectedSemanticView.dimensions ?? [])
+      .filter((dim) => !dim.hidden)
+      .map((dim) => ({
+        name: `${selectedSemanticView.name}.${dim.name}`,
+        type: dim.type === 'number' ? 'number' : dim.type,
+        nullable: true,
+      }));
+    const measures = (selectedSemanticView.measures ?? [])
+      .filter((measure) => !measure.hidden)
+      .map((measure) => ({
+        name: `${selectedSemanticView.name}.${measure.name}`,
+        type: 'number',
+        nullable: true,
+      }));
+    return [...dims, ...measures];
+  }, [selectedSemanticView]);
   const normalizedGeneratedRoleConfig = useMemo(
     () => normalizeRoleConfig(chartType, generatedRoleConfig),
     [generatedRoleConfig, chartType],
@@ -787,10 +822,10 @@ export function ExploreEditor({
   const customConfigColumns = customQueryState?.columns ?? null;
   const configColumns = sqlMode === 'custom'
     ? (customConfigColumns ?? [])
-    : previewColumns;
+    : [...previewColumns, ...semanticColumns];
   const filterColumns = sqlMode === 'custom'
     ? (customConfigColumns ?? [])
-    : previewColumns;
+    : [...previewColumns, ...semanticColumns.filter((column) => column.type !== 'number')];
   const filterRows = sqlMode === 'custom'
     ? (customQueryState?.rows ?? [])
     : previewRows;
@@ -965,6 +1000,53 @@ export function ExploreEditor({
     setQueryError(null);
   }, [chartType]);
 
+  const handleSelectSemanticDimension = useCallback((dim: DimensionDefinition, viewName: string) => {
+    const field = `${viewName}.${dim.name}`;
+    setGeneratedRoleConfig((prev) => {
+      const current = normalizeRoleConfig(chartType, prev);
+      if (TABLE_LIKE_CHART_TYPES.has(chartType)) {
+        const selected = current.selectedColumns ?? [];
+        return {
+          ...current,
+          selectedColumns: selected.includes(field) ? selected : [...selected, field],
+        };
+      }
+      if (!current.dimension) {
+        return { ...current, dimension: field };
+      }
+      if (!current.breakdown && current.dimension !== field && BREAKDOWN_REQUIRED_CHART_TYPES.has(chartType)) {
+        return { ...current, breakdown: field };
+      }
+      return { ...current, dimension: field };
+    });
+    setSqlMode('generated');
+  }, [chartType]);
+
+  const handleSelectSemanticMeasure = useCallback((measure: MeasureDefinition, viewName: string) => {
+    const field = `${viewName}.${measure.name}`;
+    const metric: MetricConfig = {
+      field,
+      agg: measureAggForRole(measure),
+      outputField: semanticAlias(field),
+    };
+    setGeneratedRoleConfig((prev) => {
+      const current = normalizeRoleConfig(chartType, prev);
+      const existing = current.metrics.some((item) => item.field === field);
+      const metrics = existing ? current.metrics : [...current.metrics, metric];
+      if (TABLE_LIKE_CHART_TYPES.has(chartType)) {
+        return {
+          ...current,
+          metrics,
+        };
+      }
+      if (SINGLE_METRIC_CHART_TYPES.has(chartType)) {
+        return { ...current, metrics: [metric] };
+      }
+      return { ...current, metrics };
+    });
+    setSqlMode('generated');
+  }, [chartType]);
+
   // Auto-select first table when dataset changes
   useEffect(() => {
     if (dataset?.tables && dataset.tables.length > 0 && !selectedTableId) {
@@ -986,9 +1068,10 @@ export function ExploreEditor({
   }, [selectedTableId]);
 
   useEffect(() => {
-    if (!previewColumns.length) return;
-    setGeneratedRoleConfig((prev) => syncRoleConfigWithColumns(chartType, prev, previewColumns));
-  }, [chartType, previewColumns]);
+    const availableGeneratedColumns = [...previewColumns, ...semanticColumns];
+    if (!availableGeneratedColumns.length) return;
+    setGeneratedRoleConfig((prev) => syncRoleConfigWithColumns(chartType, prev, availableGeneratedColumns));
+  }, [chartType, previewColumns, semanticColumns]);
 
   useEffect(() => {
     const maxLimit = getMaxQueryLimit(sqlMode);
@@ -1675,6 +1758,32 @@ export function ExploreEditor({
                             </div>
                           )}
                         </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {sqlMode === 'generated' && selectedDatasetId && (
+                    <div className="border-b border-[rgb(var(--border-line))] bg-surface-1">
+                      <div className="flex items-center justify-between px-5 py-3">
+                        <div>
+                          <p className="text-sm font-medium text-text-secondary">Semantic fields</p>
+                          <p className="mt-0.5 text-xs text-text-tertiary">
+                            Pick governed dimensions and measures from the dataset model.
+                          </p>
+                        </div>
+                        {selectedSemanticView && (
+                          <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[10px] text-text-tertiary">
+                            {selectedSemanticView.table_display_name || selectedSemanticView.name}
+                          </span>
+                        )}
+                      </div>
+                      <div className="max-h-72 overflow-y-auto border-t border-[rgb(var(--border-line))]">
+                        <ExploreColumnPanel
+                          datasetId={selectedDatasetId}
+                          selectedTableId={selectedTableId}
+                          onSelectDimension={handleSelectSemanticDimension}
+                          onSelectMeasure={handleSelectSemanticMeasure}
+                        />
                       </div>
                     </div>
                   )}

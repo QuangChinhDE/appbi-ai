@@ -546,6 +546,32 @@ def _upsert_semantic_view(
     if view is None:
         view = existing_by_name.get(name)
 
+    def merge_existing_measures(
+        generated: list[dict],
+        existing: list[dict] | None,
+    ) -> list[dict]:
+        """Keep user-authored measure definitions when model structure syncs.
+
+        Generated measures are derived from table columns. Once a user edits a
+        measure in the semantic model, its JSON definition is the source of
+        truth and should not be clobbered by a regenerate action.
+        """
+        existing_by_name = {
+            str(item.get("name")): dict(item)
+            for item in (existing or [])
+            if isinstance(item, dict) and item.get("name")
+        }
+        merged: list[dict] = []
+        seen: set[str] = set()
+        for item in generated:
+            name = str(item.get("name") or "")
+            seen.add(name)
+            merged.append(existing_by_name.get(name, item))
+        for name, item in existing_by_name.items():
+            if name not in seen:
+                merged.append(item)
+        return merged
+
     created = False
     updated = False
     if view is None:
@@ -561,19 +587,20 @@ def _upsert_semantic_view(
         db.flush()
         created = True
     else:
+        next_measures = merge_existing_measures(measures, view.measures or [])
         changed = (
             view.name != name
             or view.sql_table_name != sql_table_name
             or view.dataset_table_id != dataset_table_id
             or (view.dimensions or []) != dimensions
-            or (view.measures or []) != measures
+            or (view.measures or []) != next_measures
             or view.description != description
         )
         view.name = name
         view.sql_table_name = sql_table_name
         view.dataset_table_id = dataset_table_id
         view.dimensions = dimensions
-        view.measures = measures
+        view.measures = next_measures
         view.description = description
         updated = changed
 

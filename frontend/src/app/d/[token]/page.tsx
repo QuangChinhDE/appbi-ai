@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
@@ -18,6 +18,7 @@ import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
 import { DashboardWidget } from '@/components/dashboards/DashboardWidget';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
+import { DashboardAiBot } from '@/components/dashboards/DashboardAiBot';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import {
@@ -722,12 +723,12 @@ export default function PublicDashboardPage() {
   });
 
   return (
-    <div className="min-h-screen bg-surface-0 text-text-primary" style={publicTheme.pageStyle}>
+    <div className="flex h-screen overflow-hidden bg-surface-0 text-text-primary" style={publicTheme.pageStyle}>
       {pageState === 'reauth' && (
         <SessionExpiredOverlay onReauth={handleReauth} />
       )}
 
-      <main ref={publicContentRef} className={`flex w-full flex-col ${publicTheme.density.listGapClass} px-3 py-4 sm:px-4 lg:px-6 lg:py-5`}>
+      <main ref={publicContentRef} className={`flex-1 min-w-0 overflow-y-auto flex flex-col ${publicTheme.density.listGapClass} px-3 py-4 sm:px-4 lg:px-6 lg:py-5`}>
         <section
           className="overflow-visible rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-4 sm:px-5 sm:py-5"
           style={publicTheme.panelStyle}
@@ -938,7 +939,13 @@ export default function PublicDashboardPage() {
         </section>
       </main>
 
-
+      {dashboard?.public_link_appearance?.ai_bot_enabled === true && (
+        <DashboardAiBot
+          token={token}
+          sessionToken={getPublicSession(token)}
+          dashboardName={presentationTitle}
+        />
+      )}
     </div>
   );
 }

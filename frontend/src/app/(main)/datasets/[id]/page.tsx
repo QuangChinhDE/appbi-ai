@@ -1456,17 +1456,24 @@ export default function DatasetDetailPage() {
                   onSelectView={(view) => setSelectedView((prev) => prev?.id === view.id ? null : view)}
                 />
               </div>
-              {/* Side panel — 520px, only when a view is selected */}
-              {selectedView && (
-                <div className="w-[520px] shrink-0 overflow-hidden flex flex-col">
+              {/* Side panel - 520px */}
+              <div className="w-[520px] shrink-0 overflow-hidden flex flex-col border-l border-[rgb(var(--border-line))] bg-surface-1">
+                {selectedView ? (
                   <ModelViewEditPanel
                     datasetId={datasetId!}
                     view={selectedView}
                     tables={dataset.tables ?? []}
                     canEdit={resPerms.canEdit}
                   />
-                </div>
-              )}
+                ) : (
+                  <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
+                    <h3 className="text-sm font-semibold text-text-primary">Select a model table</h3>
+                    <p className="text-xs leading-5 text-text-tertiary">
+                      Click the pencil on a table card to edit dimensions, advanced measures, filters, formats, and folders.
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
           ) : activeTab === 'quality' ? (
             <DatasetQualityPanel

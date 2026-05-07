@@ -288,6 +288,12 @@ export function PublicLinkAppearanceEditor({
             description="Let viewers use filter controls on the shared report."
             onToggle={() => updateField('allow_viewer_filters', !appearance.allow_viewer_filters)}
           />
+          <ToggleCard
+            checked={value.ai_bot_enabled === true}
+            label="AI Insight Bot"
+            description="Show a floating chat button so viewers can ask questions about the data."
+            onToggle={() => updateField('ai_bot_enabled', !(value.ai_bot_enabled === true))}
+          />
         </div>
       </div>
     </div>

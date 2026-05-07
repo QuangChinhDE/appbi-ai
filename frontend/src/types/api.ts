@@ -464,6 +464,7 @@ export interface PublicLinkAppearanceConfig {
   allow_viewer_filters?: boolean;
   show_footer?: boolean;
   show_chart_type_label?: boolean;
+  ai_bot_enabled?: boolean;
 }
 
 // --- Chart Metadata (semantic/business layer) ---

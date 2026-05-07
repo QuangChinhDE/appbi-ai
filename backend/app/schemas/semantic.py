@@ -3,7 +3,7 @@ Semantic Layer Schemas
 Pydantic schemas for LookML-style semantic definitions
 """
 from typing import Optional, List, Dict, Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 
 
@@ -77,6 +77,36 @@ class MeasureDefinition(BaseModel):
     label: Optional[str] = None
     description: Optional[str] = None
     hidden: bool = False
+
+    @field_validator("expression", "where_sql")
+    @classmethod
+    def validate_sql_fragment(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        text = value.strip()
+        if not text:
+            return None
+        lowered = text.lower()
+        forbidden = [
+            ";",
+            "--",
+            "/*",
+            "*/",
+            " drop ",
+            " delete ",
+            " insert ",
+            " update ",
+            " alter ",
+            " create ",
+            " truncate ",
+            " execute ",
+            " grant ",
+            " revoke ",
+        ]
+        padded = f" {lowered} "
+        if any(token in padded for token in forbidden):
+            raise ValueError("Measure SQL fragment contains a forbidden token")
+        return text
 
 
 # Join Definition

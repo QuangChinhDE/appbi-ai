@@ -1507,3 +1507,155 @@ def get_public_chart_data(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to load chart data.",
         )
+
+
+# ── Dashboard AI Bot endpoints ────────────────────────────────────────────────
+#
+# These endpoints power the BYOK AI chat widget on public dashboard pages.
+# The user's API key is passed in X-User-Ai-Key and is NEVER stored or logged.
+# Context (chart data) is fetched fresh per session and sent to the LLM.
+
+class _AiChatBody(BaseModel):
+    messages: list[dict]
+    context_snapshot: dict | None = None
+
+
+@router.get("/dashboards/{token}/ai/context")
+@_limiter.limit("20/minute")
+def get_dashboard_ai_context(
+    token: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Return chart data context for the AI bot.
+
+    The AI bot fetches this once on first open, caches it client-side for
+    the session, and sends a snapshot with each chat turn.
+    """
+    from app.services import dashboard_ai_service  # local import — optional feature
+
+    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
+        token,
+        db,
+        session_token=x_public_session,
+        track_access=False,
+    )
+
+    if not (appearance_config or {}).get("ai_bot_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="AI bot is not enabled for this shared link.",
+        )
+
+    try:
+        context = dashboard_ai_service.build_ai_context(db, dash, public_filters)
+    except Exception as exc:
+        logger.exception("AI context build error for token=%s", token)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to build AI context.",
+        )
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(content=context, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/dashboards/{token}/ai/chat")
+@_limiter.limit("20/minute")
+async def chat_dashboard_ai(
+    token: str,
+    body: _AiChatBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+    x_user_ai_key: str | None = Header(default=None),
+    x_user_ai_provider: str | None = Header(default=None),
+):
+    """Stream an LLM response for a chat turn using the user's own API key (BYOK).
+
+    The key is forwarded to the provider and NEVER persisted or logged.
+    Returns a text/event-stream (SSE) response.
+    """
+    from fastapi.responses import StreamingResponse
+    from app.services import dashboard_ai_service  # local import — optional feature
+
+    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
+        token,
+        db,
+        session_token=x_public_session,
+        track_access=False,
+    )
+
+    if not (appearance_config or {}).get("ai_bot_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="AI bot is not enabled for this shared link.",
+        )
+
+    if not x_user_ai_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-User-Ai-Key header is required for AI chat.",
+        )
+
+    provider = (x_user_ai_provider or "gemini").strip().lower()
+    if provider not in ("anthropic", "openai", "gemini"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-User-Ai-Provider must be one of: anthropic, openai, gemini.",
+        )
+
+    messages = body.messages or []
+    if not messages:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="messages is required.")
+
+    # Use snapshot context if provided; otherwise build fresh (more expensive)
+    context_snapshot = body.context_snapshot
+    if context_snapshot and isinstance(context_snapshot, dict):
+        # Validate: chart_ids in snapshot must belong to this dashboard
+        dash_chart_ids = {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id}
+        for chart in context_snapshot.get("charts") or []:
+            cid = chart.get("id")
+            if cid is not None and cid not in dash_chart_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Chart {cid} does not belong to this dashboard.",
+                )
+        context = context_snapshot
+    else:
+        try:
+            context = dashboard_ai_service.build_ai_context(db, dash, public_filters)
+        except Exception:
+            logger.exception("AI context build error (chat fallback) for token=%s", token)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to build AI context.",
+            )
+
+    system_prompt = dashboard_ai_service.build_system_prompt(context)
+
+    # Capture key before yielding into async generator (keep off stack after entry)
+    captured_key = x_user_ai_key
+
+    async def sse_stream():
+        async for chunk in dashboard_ai_service.stream_llm_byok(
+            messages=messages,
+            user_key=captured_key,
+            provider=provider,
+            system_prompt=system_prompt,
+        ):
+            if chunk:
+                # SSE format: "data: <payload>\n\n"
+                safe = chunk.replace("\n", "\\n")
+                yield f"data: {safe}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        sse_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

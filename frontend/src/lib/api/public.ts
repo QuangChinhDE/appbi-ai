@@ -175,3 +175,105 @@ export function publicSessionRemainingSeconds(linkToken: string): number {
     return 0;
   }
 }
+
+// ── AI Bot types ──────────────────────────────────────────────────────────────
+
+export type AiProvider = 'anthropic' | 'openai' | 'gemini';
+
+export interface AiChartContext {
+  id: number;
+  name: string;
+  chart_type: string;
+  columns: string[];
+  rows: unknown[][];
+  description?: string;
+}
+
+export interface AiDashboardContext {
+  dashboard_name: string;
+  dashboard_description?: string;
+  charts: AiChartContext[];
+  chart_count: number;
+}
+
+export interface AiChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+// ── AI Bot API calls ──────────────────────────────────────────────────────────
+
+/**
+ * Fetch the dashboard context for the AI bot. Context includes chart data
+ * (capped at 50 rows/chart, 10 charts max). Cached client-side for the session.
+ */
+export async function fetchAiContext(
+  token: string,
+  sessionToken?: string,
+): Promise<AiDashboardContext> {
+  const headers: Record<string, string> = {};
+  if (sessionToken) headers['X-Public-Session'] = sessionToken;
+  const res = await publicClient.get(`/public/dashboards/${token}/ai/context`, { headers });
+  return res.data as AiDashboardContext;
+}
+
+/**
+ * Stream a chat response from the LLM using the user's BYOK API key.
+ * Returns an async generator that yields text chunks as they arrive (SSE).
+ *
+ * The user's API key is sent in `X-User-Ai-Key` and is NEVER stored.
+ */
+export async function* streamAiChat(
+  token: string,
+  messages: AiChatMessage[],
+  contextSnapshot: AiDashboardContext,
+  userAiKey: string,
+  provider: AiProvider,
+  sessionToken?: string,
+): AsyncGenerator<string, void, unknown> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-User-Ai-Key': userAiKey,
+    'X-User-Ai-Provider': provider,
+  };
+  if (sessionToken) headers['X-Public-Session'] = sessionToken;
+
+  const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/chat`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ messages, context_snapshot: contextSnapshot }),
+  });
+
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try {
+      const json = await response.json();
+      detail = json?.detail ?? detail;
+    } catch { /* ignore */ }
+    throw new Error(detail);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) return;
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      // Unescape newlines encoded by the backend
+      yield payload.replace(/\\n/g, '\n');
+    }
+  }
+}

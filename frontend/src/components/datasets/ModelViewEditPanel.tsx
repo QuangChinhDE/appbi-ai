@@ -34,6 +34,9 @@ import {
   type DatasetModelView,
   type DimensionDefinition,
   type MeasureDefinition,
+  type MeasureFilter,
+  type MeasureFilterOperator,
+  type MeasureFormat,
 } from '@/hooks/use-dataset-model';
 import {
   useDatasetDictionary,
@@ -63,7 +66,70 @@ import {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const DIM_TYPES = ['string', 'number', 'date', 'datetime', 'yesno'] as const;
-const MEASURE_TYPES = ['count', 'sum', 'avg', 'min', 'max', 'count_distinct'] as const;
+const MEASURE_TYPES = [
+  'count',
+  'sum',
+  'avg',
+  'min',
+  'max',
+  'count_distinct',
+  'percent_of_total',
+] as const;
+const MEASURE_TYPE_LABEL: Record<(typeof MEASURE_TYPES)[number], string> = {
+  count: 'Count',
+  sum: 'Sum',
+  avg: 'Average',
+  min: 'Min',
+  max: 'Max',
+  count_distinct: 'Count Distinct',
+  percent_of_total: '% of Total',
+};
+
+const FILTER_OPERATORS: {
+  value: MeasureFilterOperator;
+  label: string;
+  needsValue: boolean;
+  isList?: boolean;
+  isRange?: boolean;
+}[] = [
+  { value: 'eq', label: '=', needsValue: true },
+  { value: 'ne', label: '≠', needsValue: true },
+  { value: 'gt', label: '>', needsValue: true },
+  { value: 'gte', label: '≥', needsValue: true },
+  { value: 'lt', label: '<', needsValue: true },
+  { value: 'lte', label: '≤', needsValue: true },
+  { value: 'in', label: 'in', needsValue: true, isList: true },
+  { value: 'not_in', label: 'not in', needsValue: true, isList: true },
+  { value: 'between', label: 'between', needsValue: true, isRange: true },
+  { value: 'contains', label: 'contains', needsValue: true },
+  { value: 'starts_with', label: 'starts with', needsValue: true },
+  { value: 'ends_with', label: 'ends with', needsValue: true },
+  { value: 'is_null', label: 'is empty', needsValue: false },
+  { value: 'is_not_null', label: 'is not empty', needsValue: false },
+];
+
+const FORMAT_KINDS: MeasureFormat['kind'][] = ['number', 'currency', 'percent', 'duration', 'custom'];
+
+type MeasureTemplate = { key: string; label: string; build: (n: number) => MeasureDefinition };
+
+const MEASURE_TEMPLATES: MeasureTemplate[] = [
+  { key: 'count', label: 'Count rows', build: (n) => ({ name: `count_${n}`, type: 'count', sql: '*', hidden: false }) },
+  { key: 'sum', label: 'Sum of column', build: (n) => ({ name: `sum_${n}`, type: 'sum', sql: '', hidden: false }) },
+  { key: 'avg', label: 'Average of column', build: (n) => ({ name: `avg_${n}`, type: 'avg', sql: '', hidden: false }) },
+  { key: 'distinct', label: 'Count distinct', build: (n) => ({ name: `distinct_${n}`, type: 'count_distinct', sql: '', hidden: false }) },
+  {
+    key: 'filtered',
+    label: 'Filtered count (e.g. paid orders)',
+    build: (n) => ({
+      name: `filtered_count_${n}`,
+      type: 'count',
+      sql: '*',
+      filters: [{ field: '', operator: 'eq', value: '' }],
+      hidden: false,
+    }),
+  },
+  { key: 'pct', label: '% of total', build: (n) => ({ name: `pct_${n}`, type: 'percent_of_total', sql: '', hidden: false }) },
+];
 
 type PanelTab = 'dictionary' | 'fields';
 
@@ -411,20 +477,105 @@ function DimensionRow({
   );
 }
 
+// ─── MeasureFilterRow ────────────────────────────────────────────────────────
+
+function MeasureFilterRow({
+  filter,
+  columnOptions,
+  listId,
+  onChange,
+  onRemove,
+}: {
+  filter: MeasureFilter;
+  columnOptions: string[];
+  listId: string;
+  onChange: (updated: MeasureFilter) => void;
+  onRemove: () => void;
+}) {
+  const opSpec = FILTER_OPERATORS.find((o) => o.value === filter.operator) ?? FILTER_OPERATORS[0];
+  const valueAsString = (() => {
+    if (filter.value == null) return '';
+    if (Array.isArray(filter.value)) return filter.value.join(', ');
+    return String(filter.value);
+  })();
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <input
+        list={listId}
+        value={filter.field}
+        onChange={(e) => onChange({ ...filter, field: e.target.value })}
+        placeholder="column"
+        className="flex-1 min-w-0 text-xs px-2 py-1 border border-[rgb(var(--border-line))] rounded font-mono focus:outline-none focus:ring-1 focus:ring-brand"
+      />
+      <select
+        value={filter.operator}
+        onChange={(e) => onChange({ ...filter, operator: e.target.value as MeasureFilterOperator })}
+        className="text-xs px-1.5 py-1 border border-[rgb(var(--border-line))] rounded bg-surface-1 shrink-0 focus:outline-none focus:ring-1 focus:ring-brand"
+      >
+        {FILTER_OPERATORS.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+      {opSpec.needsValue && (
+        <input
+          value={valueAsString}
+          onChange={(e) => {
+            const raw = e.target.value;
+            let parsed: unknown = raw;
+            if (opSpec.isList || opSpec.isRange) {
+              parsed = raw.split(',').map((s) => s.trim()).filter(Boolean);
+            }
+            onChange({ ...filter, value: parsed });
+          }}
+          placeholder={opSpec.isList ? 'a, b, c' : opSpec.isRange ? 'low, high' : 'value'}
+          className="flex-1 min-w-0 text-xs px-2 py-1 border border-[rgb(var(--border-line))] rounded focus:outline-none focus:ring-1 focus:ring-brand"
+        />
+      )}
+      <button
+        onClick={onRemove}
+        className="p-0.5 hover:bg-danger/10 rounded text-text-quaternary hover:text-danger shrink-0"
+        title="Remove filter"
+      >
+        <Trash2 className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}
+
 // ─── MeasureRow ───────────────────────────────────────────────────────────────
 
 function MeasureRow({
   measure,
   canEdit,
+  columnOptions,
+  measureNames,
+  rowKey,
   onChange,
   onRemove,
 }: {
   measure: MeasureDefinition;
   canEdit: boolean;
+  columnOptions: string[];
+  measureNames: string[];
+  rowKey: string;
   onChange: (updated: MeasureDefinition) => void;
   onRemove: () => void;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(Boolean(measure.expression || measure.where_sql));
+
+  const filters = measure.filters ?? [];
+  const updateFilters = (next: MeasureFilter[]) => onChange({ ...measure, filters: next });
+  const addFilter = () =>
+    updateFilters([...filters, { field: columnOptions[0] ?? '', operator: 'eq', value: '' }]);
+
+  const fmt: MeasureFormat = measure.format ?? { kind: 'number' };
+  const updateFormat = (patch: Partial<MeasureFormat>) =>
+    onChange({ ...measure, format: { ...fmt, ...patch } });
+
+  const colsListId = `__cols_${rowKey}`;
+  const measuresListId = `__measures_${rowKey}`;
 
   return (
     <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
@@ -434,6 +585,14 @@ function MeasureRow({
         </button>
         <Sigma className="w-3.5 h-3.5 text-warning shrink-0" />
         <span className="text-sm text-text-primary truncate flex-1">{measure.label || measure.name}</span>
+        {filters.length > 0 && (
+          <span
+            className="text-[9px] px-1 py-0.5 rounded bg-warning/10 text-warning shrink-0"
+            title={`${filters.length} filter(s)`}
+          >
+            ƒ {filters.length}
+          </span>
+        )}
         <span className="text-[10px] text-text-quaternary bg-warning/10 text-warning px-1.5 py-0.5 rounded uppercase">{measure.type}</span>
         {canEdit && (
           <>
@@ -454,26 +613,196 @@ function MeasureRow({
       </div>
       {isExpanded && canEdit && (
         <div className="px-3 pb-3 pt-1 border-t border-[rgb(var(--border-line))] space-y-2.5">
+          {/* Datalists shared across this row's inputs */}
+          <datalist id={colsListId}>
+            {columnOptions.map((c) => <option key={c} value={c} />)}
+          </datalist>
+          <datalist id={measuresListId}>
+            {measureNames.filter((n) => n !== measure.name).map((n) => <option key={n} value={n} />)}
+          </datalist>
+
+          {/* Identity */}
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="text-[10px] text-text-tertiary uppercase font-medium">Name</label>
-              <input value={measure.name} onChange={(e) => onChange({ ...measure, name: e.target.value })} className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand" />
+              <input
+                value={measure.name}
+                onChange={(e) => onChange({ ...measure, name: e.target.value })}
+                className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand"
+              />
             </div>
             <div>
               <label className="text-[10px] text-text-tertiary uppercase font-medium">Aggregation</label>
-              <select value={measure.type} onChange={(e) => onChange({ ...measure, type: e.target.value as any })} className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand">
-                {MEASURE_TYPES.map((t) => <option key={t} value={t}>{t.toUpperCase()}</option>)}
+              <select
+                value={measure.type}
+                onChange={(e) => onChange({ ...measure, type: e.target.value as MeasureDefinition['type'] })}
+                className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand"
+              >
+                {MEASURE_TYPES.map((t) => <option key={t} value={t}>{MEASURE_TYPE_LABEL[t]}</option>)}
               </select>
             </div>
           </div>
-          <div>
-            <label className="text-[10px] text-text-tertiary uppercase font-medium">Label</label>
-            <input value={measure.label || ''} onChange={(e) => onChange({ ...measure, label: e.target.value || undefined })} className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand" placeholder="Display label" />
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[10px] text-text-tertiary uppercase font-medium">Label</label>
+              <input
+                value={measure.label || ''}
+                onChange={(e) => onChange({ ...measure, label: e.target.value || undefined })}
+                className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand"
+                placeholder="Display label"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-text-tertiary uppercase font-medium">Folder</label>
+              <input
+                value={measure.folder || ''}
+                onChange={(e) => onChange({ ...measure, folder: e.target.value || undefined })}
+                className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand"
+                placeholder="e.g. Revenue"
+              />
+            </div>
           </div>
+
+          {/* Column to aggregate (form mode). COUNT counts rows so column is N/A. */}
+          {measure.type !== 'count' && (
+            <div>
+              <label className="text-[10px] text-text-tertiary uppercase font-medium">Column to aggregate</label>
+              <input
+                list={colsListId}
+                value={measure.sql || ''}
+                onChange={(e) => onChange({ ...measure, sql: e.target.value || undefined })}
+                className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
+                placeholder="Pick a column"
+              />
+            </div>
+          )}
+
+          {/* Filter builder */}
           <div>
-            <label className="text-[10px] text-text-tertiary uppercase font-medium">SQL / Column</label>
-            <input value={measure.sql || ''} onChange={(e) => onChange({ ...measure, sql: e.target.value || undefined })} className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand" placeholder="column_name or expression" />
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-[10px] text-text-tertiary uppercase font-medium">
+                Filters (apply to this measure only)
+              </label>
+              <button
+                onClick={addFilter}
+                className="text-[10px] text-brand hover:underline flex items-center gap-0.5 font-medium"
+              >
+                <Plus className="w-3 h-3" /> Add
+              </button>
+            </div>
+            {filters.length === 0 ? (
+              <p className="text-[10px] text-text-quaternary italic">
+                No filter — measure runs over every row.
+              </p>
+            ) : (
+              <div className="space-y-1">
+                {filters.map((f, i) => (
+                  <MeasureFilterRow
+                    key={i}
+                    filter={f}
+                    columnOptions={columnOptions}
+                    listId={colsListId}
+                    onChange={(u) => updateFilters(filters.map((x, j) => (j === i ? u : x)))}
+                    onRemove={() => updateFilters(filters.filter((_, j) => j !== i))}
+                  />
+                ))}
+              </div>
+            )}
           </div>
+
+          {/* Format */}
+          <div>
+            <label className="text-[10px] text-text-tertiary uppercase font-medium">Format</label>
+            <div className="mt-0.5 grid grid-cols-3 gap-2">
+              <select
+                value={fmt.kind}
+                onChange={(e) => updateFormat({ kind: e.target.value as MeasureFormat['kind'] })}
+                className="text-xs px-2 py-1 border border-[rgb(var(--border-line))] rounded bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand"
+              >
+                {FORMAT_KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
+              </select>
+              <input
+                type="number"
+                min={0}
+                max={10}
+                value={fmt.decimals ?? ''}
+                onChange={(e) =>
+                  updateFormat({ decimals: e.target.value === '' ? undefined : Number(e.target.value) })
+                }
+                placeholder="decimals"
+                className="text-xs px-2 py-1 border border-[rgb(var(--border-line))] rounded focus:outline-none focus:ring-1 focus:ring-brand"
+              />
+              {fmt.kind === 'currency' ? (
+                <input
+                  value={fmt.currency || ''}
+                  onChange={(e) => updateFormat({ currency: e.target.value || undefined })}
+                  placeholder="USD"
+                  className="text-xs px-2 py-1 border border-[rgb(var(--border-line))] rounded uppercase focus:outline-none focus:ring-1 focus:ring-brand"
+                  maxLength={4}
+                />
+              ) : (
+                <input
+                  value={fmt.suffix || ''}
+                  onChange={(e) => updateFormat({ suffix: e.target.value || undefined })}
+                  placeholder="suffix"
+                  className="text-xs px-2 py-1 border border-[rgb(var(--border-line))] rounded focus:outline-none focus:ring-1 focus:ring-brand"
+                />
+              )}
+            </div>
+          </div>
+
+          {/* Advanced toggle */}
+          <button
+            onClick={() => setShowAdvanced((v) => !v)}
+            className="text-[10px] text-text-tertiary hover:text-text-secondary flex items-center gap-1"
+          >
+            {showAdvanced ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+            Advanced (SQL expression, raw WHERE, depends on)
+          </button>
+
+          {showAdvanced && (
+            <div className="space-y-2 pl-3 border-l border-[rgb(var(--border-line))]">
+              <div>
+                <label className="text-[10px] text-text-tertiary uppercase font-medium">
+                  SQL expression (overrides column)
+                </label>
+                <input
+                  value={measure.expression || ''}
+                  onChange={(e) => onChange({ ...measure, expression: e.target.value || undefined })}
+                  className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
+                  placeholder="e.g. revenue - cost"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-text-tertiary uppercase font-medium">
+                  Raw WHERE (added to filters)
+                </label>
+                <input
+                  value={measure.where_sql || ''}
+                  onChange={(e) => onChange({ ...measure, where_sql: e.target.value || undefined })}
+                  className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
+                  placeholder="e.g. status <> 'cancelled'"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-text-tertiary uppercase font-medium">
+                  Depends on (other measures)
+                </label>
+                <input
+                  list={measuresListId}
+                  value={(measure.depends_on || []).join(', ')}
+                  onChange={(e) =>
+                    onChange({
+                      ...measure,
+                      depends_on: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                    })
+                  }
+                  className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
+                  placeholder="e.g. revenue, orders"
+                />
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -600,7 +929,36 @@ export function ModelViewEditPanel({
   const [dimensions, setDimensions] = useState<DimensionDefinition[]>([]);
   const [measures, setMeasures] = useState<MeasureDefinition[]>([]);
   const [viewDescription, setViewDescription] = useState('');
+  const [showMeasureTemplates, setShowMeasureTemplates] = useState(false);
   const updateView = useUpdateModelView();
+
+  // Pick-list for the form-first measure editor: pull from existing dimensions
+  // (their `sql` resolves to the underlying column) so users without SQL can
+  // pick a column from a dropdown.
+  const columnOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const d of dimensions) {
+      if (d.sql) set.add(d.sql);
+      if (d.name) set.add(d.name);
+    }
+    return Array.from(set).sort();
+  }, [dimensions]);
+
+  const measureNames = useMemo(() => measures.map((m) => m.name), [measures]);
+
+  const handleAddMeasureFromTemplate = (tpl: MeasureTemplate) => {
+    setMeasures((prev) => {
+      let n = prev.length + 1;
+      const existing = new Set(prev.map((m) => m.name));
+      let candidate = tpl.build(n);
+      while (existing.has(candidate.name)) {
+        n += 1;
+        candidate = tpl.build(n);
+      }
+      return [...prev, candidate];
+    });
+    setShowMeasureTemplates(false);
+  };
 
   useEffect(() => {
     if (!view) return;
@@ -779,27 +1137,46 @@ export function ModelViewEditPanel({
 
               {/* Measures */}
               <div>
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center justify-between mb-2 relative">
                   <span className="text-xs font-semibold text-text-secondary flex items-center gap-1.5">
                     <Sigma className="w-3.5 h-3.5 text-warning" />
                     Measures
                     <span className="text-text-quaternary font-normal">({measures.length})</span>
                   </span>
                   {canEdit && (
-                    <button
-                      onClick={() => setMeasures((prev) => [...prev, { name: `measure_${prev.length + 1}`, type: 'sum', hidden: false }])}
-                      className="inline-flex items-center gap-1 text-xs text-warning hover:text-warning font-medium"
-                    >
-                      <Plus className="w-3 h-3" /> Add
-                    </button>
+                    <>
+                      <button
+                        onClick={() => setShowMeasureTemplates((v) => !v)}
+                        className="inline-flex items-center gap-1 text-xs text-warning hover:text-warning font-medium"
+                      >
+                        <Plus className="w-3 h-3" /> Add
+                        <ChevronDown className="w-3 h-3" />
+                      </button>
+                      {showMeasureTemplates && (
+                        <div className="absolute right-0 top-6 z-20 w-60 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg py-1">
+                          {MEASURE_TEMPLATES.map((tpl) => (
+                            <button
+                              key={tpl.key}
+                              onClick={() => handleAddMeasureFromTemplate(tpl)}
+                              className="w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2"
+                            >
+                              {tpl.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
                 <div className="space-y-1.5">
                   {measures.map((m, idx) => (
                     <MeasureRow
                       key={`mea-${idx}-${m.name}`}
+                      rowKey={`mea-${idx}-${m.name}`}
                       measure={m}
                       canEdit={canEdit}
+                      columnOptions={columnOptions}
+                      measureNames={measureNames}
                       onChange={(u) => setMeasures((prev) => prev.map((mm, i) => (i === idx ? u : mm)))}
                       onRemove={() => setMeasures((prev) => prev.filter((_, i) => i !== idx))}
                     />

@@ -93,6 +93,178 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+def _validate_measure_dependencies(measures: list[Any]) -> None:
+    """Reject unknown or cyclic semantic measure dependencies."""
+    names = {
+        str(measure.name if hasattr(measure, "name") else measure.get("name", "")).strip()
+        for measure in measures
+        if str(measure.name if hasattr(measure, "name") else measure.get("name", "")).strip()
+    }
+    graph: dict[str, list[str]] = {}
+    for measure in measures:
+        name = str(measure.name if hasattr(measure, "name") else measure.get("name", "")).strip()
+        raw_deps = measure.depends_on if hasattr(measure, "depends_on") else measure.get("depends_on", [])
+        deps: list[str] = []
+        for raw_dep in raw_deps or []:
+            dep = str(raw_dep or "").strip()
+            dep_name = dep.split(".", 1)[1] if "." in dep else dep
+            if dep_name and dep_name not in names:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Measure '{name}' depends on unknown measure '{dep}'.",
+                )
+            if dep_name:
+                deps.append(dep_name)
+        graph[name] = deps
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node: str, path: list[str]) -> None:
+        if node in visited:
+            return
+        if node in visiting:
+            cycle_start = path.index(node) if node in path else 0
+            cycle = " -> ".join([*path[cycle_start:], node])
+            raise HTTPException(
+                status_code=400,
+                detail=f"Circular measure dependency detected: {cycle}.",
+            )
+        visiting.add(node)
+        for dep in graph.get(node, []):
+            visit(dep, [*path, node])
+        visiting.remove(node)
+        visited.add(node)
+
+    for measure_name in graph:
+        visit(measure_name, [])
+
+
+def _contains_semantic_field_refs(execute_request: ExecuteQueryRequest) -> bool:
+    def has_ref(value: Any) -> bool:
+        return isinstance(value, str) and "." in value and value.split(".", 1)[0].strip()
+
+    if any(has_ref(item) for item in (execute_request.dimensions or [])):
+        return True
+    if any(has_ref(getattr(item, "field", None)) for item in (execute_request.measures or [])):
+        return True
+    if any(has_ref(getattr(item, "field", None)) for item in (execute_request.filters or [])):
+        return True
+    if any(has_ref(getattr(item, "field", None)) for item in (execute_request.order_by or [])):
+        return True
+    return False
+
+
+def _execute_semantic_dataset_query(
+    db: Session,
+    dataset_obj: Dataset,
+    db_table: DatasetTable,
+    execute_request: ExecuteQueryRequest,
+) -> ExecuteQueryResponse:
+    from app.models.semantic import SemanticExplore, SemanticModel, SemanticView
+    from app.services.semantic_query_engine_v2 import SemanticQueryEngineV2
+
+    view = db.query(SemanticView).filter(
+        SemanticView.dataset_table_id == db_table.id,
+    ).first()
+    if not view:
+        raise HTTPException(status_code=400, detail="No semantic view found for this table.")
+
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_obj.id).first()
+    if not model:
+        raise HTTPException(status_code=400, detail="No semantic model found for this dataset.")
+
+    explore = db.query(SemanticExplore).filter(
+        SemanticExplore.model_id == model.id,
+        SemanticExplore.base_view_id == view.id,
+    ).first()
+    if not explore:
+        raise HTTPException(status_code=400, detail="No semantic explore found for this table.")
+
+    def qualify(field: str | None) -> str:
+        raw = str(field or "").strip()
+        if not raw:
+            return raw
+        return raw if "." in raw else f"{view.name}.{raw}"
+
+    dimensions = [qualify(item) for item in (execute_request.dimensions or []) if qualify(item)]
+    measures = [
+        qualify(item.field)
+        for item in (execute_request.measures or [])
+        if item.field
+    ]
+
+    filters = {
+        qualify(item.field): {
+            "operator": "ne" if item.operator == "neq" else item.operator,
+            "value": item.value,
+        }
+        for item in (execute_request.filters or [])
+        if item.field
+    }
+    sorts = [
+        {
+            "field": qualify(item.field),
+            "direction": str(item.direction or "ASC").lower(),
+        }
+        for item in (execute_request.order_by or [])
+        if item.field
+    ]
+
+    engine = SemanticQueryEngineV2(db, database_type="postgresql")
+    sql, _columns, _pivot_metadata = engine.generate_sql(
+        explore_name=explore.name,
+        dimensions=dimensions,
+        measures=measures,
+        filters=filters,
+        sorts=sorts,
+        limit=execute_request.limit or 500,
+    )
+
+    datasource: Optional[DataSource] = None
+    live_table = db_table
+    if is_generated_calendar_table(db_table) or is_derived_table(db_table):
+        try:
+            datasource, live_table = build_live_proxy_table_for_dataset_table(db, dataset_obj, db_table)
+        except DatasetTableSqlError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    elif db_table.datasource_id is not None:
+        datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
+
+    if datasource is None:
+        # Fall back to any datasource in this dataset. Semantic SQL may include
+        # joined views, so direct table ownership is not always enough.
+        table_with_ds = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.dataset_id == dataset_obj.id, DatasetTable.datasource_id.isnot(None))
+            .first()
+        )
+        if table_with_ds is not None:
+            datasource = db.query(DataSource).filter(DataSource.id == table_with_ds.datasource_id).first()
+
+    if datasource is None:
+        raise HTTPException(status_code=404, detail="Datasource not found for semantic query.")
+
+    ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+    _cols, rows, _elapsed = DataSourceConnectionService.execute_query(
+        ds_type,
+        datasource.config,
+        sql,
+        limit=None,
+    )
+
+    columns = list(rows[0].keys()) if rows else list(_columns or [])
+    column_metadata = [
+        DatasetColumnMetadata(
+            name=col,
+            type=_infer_column_type(col, idx, rows),
+            nullable=True,
+        )
+        for idx, col in enumerate(columns)
+    ]
+    return ExecuteQueryResponse(columns=column_metadata, rows=rows)
+
+
 def _stamp_dataset_catalog_fields(items: list[Dataset]) -> None:
     for item in items:
         datasource_ids: list[int] = []
@@ -1459,6 +1631,7 @@ def update_dataset_table(
     db_table = DatasetCRUDService.get_table_by_id(db, table_id)
     if not db_table or db_table.dataset_id != dataset_id:
         raise HTTPException(status_code=404, detail="Table not found in this dataset")
+
     if is_generated_calendar_table(db_table):
         raise HTTPException(
             status_code=400,
@@ -2214,6 +2387,9 @@ def execute_dataset_table_query(
     if not db_table or db_table.dataset_id != dataset_id:
         raise HTTPException(status_code=404, detail="Table not found in this dataset")
 
+    if _contains_semantic_field_refs(execute_request):
+        return _execute_semantic_dataset_query(db, dataset_obj, db_table, execute_request)
+
     # ── Resolve datasource and build live query target ──
     datasource: Optional[DataSource] = None
     target_table = db_table
@@ -2656,6 +2832,8 @@ def update_dataset_view(
     Used by the Visual Model editor.
     """
     from app.models.semantic import SemanticView
+    from app.schemas.semantic import SemanticViewUpdate
+    from pydantic import ValidationError
 
     dataset_obj = db.query(Dataset).filter(
         Dataset.id == dataset_id
@@ -2679,9 +2857,27 @@ def update_dataset_view(
         raise HTTPException(status_code=400, detail="System-managed model tables cannot be edited here.")
 
     allowed_fields = {"dimensions", "measures", "description"}
-    for key, value in update_data.items():
-        if key in allowed_fields:
-            setattr(view, key, value)
+    unknown_fields = set(update_data.keys()) - allowed_fields
+    if unknown_fields:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported model view fields: {', '.join(sorted(unknown_fields))}",
+        )
+
+    try:
+        validated = SemanticViewUpdate(**update_data)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+    update_payload = validated.model_dump(exclude_unset=True)
+    if "dimensions" in update_payload and update_payload["dimensions"] is not None:
+        update_payload["dimensions"] = [dim.model_dump() for dim in validated.dimensions or []]
+    if "measures" in update_payload and update_payload["measures"] is not None:
+        _validate_measure_dependencies(update_payload["measures"])
+        update_payload["measures"] = [measure.model_dump() for measure in validated.measures or []]
+
+    for key, value in update_payload.items():
+        setattr(view, key, value)
 
     db.commit()
     db.refresh(view)

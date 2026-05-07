@@ -2,7 +2,7 @@
 Semantic Query Engine v2
 Advanced SQL generation with pivots, window functions, calculated fields, and more
 """
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any, Optional, Set
 from sqlalchemy.orm import Session
 from app.models.semantic import SemanticView, SemanticExplore
 from app.schemas.semantic import (
@@ -296,7 +296,13 @@ class SemanticQueryEngineV2:
         else:  # PostgreSQL
             return f"DATE_TRUNC('{grain}', {base_sql})"
     
-    def _render_measure(self, field_ref: str, *, agg_override: Optional[str] = None) -> str:
+    def _render_measure(
+        self,
+        field_ref: str,
+        *,
+        agg_override: Optional[str] = None,
+        _stack: Optional[Set[str]] = None,
+    ) -> str:
         """Render measure SQL with aggregation.
 
         When *agg_override* is provided (e.g. ``"max"``, ``"count_distinct"``),
@@ -311,6 +317,12 @@ class SemanticQueryEngineV2:
             <value> ELSE NULL END`` wrapper so the aggregation only sees
             qualifying rows (Looker-style filtered measures).
         """
+        stack = set(_stack or set())
+        if field_ref in stack:
+            cycle = " -> ".join([*stack, field_ref])
+            raise ValueError(f"Circular measure dependency detected: {cycle}")
+        stack.add(field_ref)
+
         view_name, field_name = self._parse_field_ref(field_ref)
         view = self.views_cache.get(view_name)
 
@@ -322,8 +334,26 @@ class SemanticQueryEngineV2:
             raise ValueError(f"Measure '{field_name}' not found in view '{view_name}'")
 
         measure_type = (agg_override or measure_def.get('type', 'count')).lower().strip()
+        expression_template = (measure_def.get('expression') or "").strip()
+        depends_on = [
+            str(item).strip()
+            for item in (measure_def.get('depends_on') or [])
+            if str(item).strip()
+        ]
+
+        # Ratio / aggregate-level measures. When a measure declares
+        # `depends_on`, treat `expression` as a formula over already-aggregated
+        # measures instead of aggregating the expression again.
+        if expression_template and depends_on and agg_override is None:
+            return self._render_measure_formula(
+                expression_template,
+                view_name,
+                depends_on,
+                stack,
+            )
+
         # `expression` (advanced) wins over `sql` (form). Both are SQL templates.
-        sql_template = measure_def.get('expression') or measure_def.get('sql') or '*'
+        sql_template = expression_template or measure_def.get('sql') or '*'
         base_sql = self._render_sql_template(sql_template, view_name)
 
         # Filtered measure: wrap `base_sql` in CASE WHEN so the aggregate only
@@ -377,6 +407,66 @@ class SemanticQueryEngineV2:
         if not parts:
             return None
         return " AND ".join(parts)
+
+    def _render_measure_formula(
+        self,
+        template: str,
+        view_name: str,
+        depends_on: List[str],
+        stack: Set[str],
+    ) -> str:
+        """Render an aggregate-level formula over dependent measures.
+
+        Supported placeholders:
+          - ${TABLE}: current SQL alias
+          - ${measure_name}: measure in the same view listed in depends_on
+          - ${view.measure_name}: qualified measure listed in depends_on
+          - ${view.dimension_name}: qualified dimension reference
+        """
+        allowed_refs = set()
+        for dep in depends_on:
+            allowed_refs.add(dep)
+            allowed_refs.add(dep if "." in dep else f"{view_name}.{dep}")
+
+        rendered = template.replace("${TABLE}", view_name)
+        placeholder_pattern = r"\$\{([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\}"
+
+        def replace_placeholder(match):
+            ref = match.group(1)
+            qualified = ref if "." in ref else f"{view_name}.{ref}"
+            ref_view_name, ref_field_name = self._parse_field_ref(qualified)
+            ref_view = self.views_cache.get(ref_view_name)
+            if not ref_view:
+                ref_view = self.db.query(SemanticView).filter(
+                    SemanticView.name == ref_view_name
+                ).first()
+                if not ref_view:
+                    raise ValueError(f"View '{ref_view_name}' not found")
+                self.views_cache[ref_view_name] = ref_view
+
+            is_measure = any(
+                m.get("name") == ref_field_name
+                for m in (ref_view.measures or [])
+                if isinstance(m, dict)
+            )
+            if is_measure:
+                if ref not in allowed_refs and qualified not in allowed_refs:
+                    raise ValueError(
+                        f"Measure formula references '{ref}' but it is not listed in depends_on"
+                    )
+                return f"({self._render_measure(qualified, _stack=stack)})"
+
+            is_dimension = any(
+                d.get("name") == ref_field_name
+                for d in (ref_view.dimensions or [])
+                if isinstance(d, dict)
+            )
+            if is_dimension:
+                return self._render_dimension(qualified, ref_view_name)
+
+            raise ValueError(f"Unknown semantic field in measure formula: {ref}")
+
+        return re.sub(placeholder_pattern, replace_placeholder, rendered)
 
     def _render_one_measure_filter(
         self, f: Dict[str, Any], view_name: str
@@ -761,8 +851,22 @@ class SemanticQueryEngineV2:
         return parts[0], parts[1]
     
     def _render_sql_template(self, template: str, view_alias: str) -> str:
-        """Replace ${TABLE} with actual view alias"""
-        return template.replace("${TABLE}", view_alias)
+        """Render a SQL template with semantic placeholders.
+
+        `${TABLE}` resolves to the current SQL alias. `${view.field}` resolves
+        to `view.field`; bare column names are left untouched for backwards
+        compatibility with existing generated model fields.
+        """
+        rendered = template.replace("${TABLE}", view_alias)
+
+        dotted_pattern = r"\$\{([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\}"
+
+        def replace_field(match):
+            field_ref = match.group(1)
+            ref_view_name, ref_field_name = self._parse_field_ref(field_ref)
+            return f"{ref_view_name}.{ref_field_name}"
+
+        return re.sub(dotted_pattern, replace_field, rendered)
     
     def _safe_alias(self, field_ref: str) -> str:
         """Generate safe SQL alias from field reference"""
