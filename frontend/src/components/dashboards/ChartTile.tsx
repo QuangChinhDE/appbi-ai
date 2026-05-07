@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft } from 'lucide-react';
+import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft, ExternalLink, AlertTriangle, RefreshCw } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
@@ -89,6 +89,25 @@ function useStickyVisibility(rootMargin = '300px') {
     return () => observer.disconnect();
   }, [visible, rootMargin]);
   return { ref, visible };
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (!error) return fallback;
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string') return error;
+  if (typeof error === 'object' && error !== null) {
+    const maybeResponse = error as { response?: { data?: { detail?: unknown; message?: unknown } }; message?: unknown };
+    const detail = maybeResponse.response?.data?.detail ?? maybeResponse.response?.data?.message ?? maybeResponse.message;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+  }
+  return fallback;
+}
+
+function normalizeTitleText(value: unknown): string {
+  return String(value ?? '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
 }
 
 const NUMERIC_MAPPING_TYPES = new Set(['number', 'integer', 'float', 'double', 'decimal', 'numeric', 'bigint', 'int']);
@@ -287,7 +306,13 @@ export function ChartTile({
     [debouncedFilterKey],
   );
 
-  const { data: chartData, isLoading: isLoadingData } = useChartData(
+  const {
+    data: chartData,
+    isLoading: isLoadingData,
+    isFetching: isFetchingData,
+    error: chartDataError,
+    refetch: refetchChartData,
+  } = useChartData(
     chartId,
     debouncedFilters,
     'dashboard',
@@ -334,6 +359,18 @@ export function ChartTile({
     () => getEffectiveDashboardChartStyleConfig(chart, currentLayout),
     [chart, currentLayout],
   );
+  const chartRenderStyleConfig = useMemo(() => {
+    const innerTitle = normalizeTitleText(effectiveStyleConfig.chartTitle);
+    if (!innerTitle) return effectiveStyleConfig;
+
+    const visibleTitle = normalizeTitleText(displayTitle);
+    const baseChartName = normalizeTitleText(chart?.name);
+    if (innerTitle === visibleTitle || innerTitle === baseChartName) {
+      return { ...effectiveStyleConfig, chartTitle: '' };
+    }
+
+    return effectiveStyleConfig;
+  }, [chart?.name, displayTitle, effectiveStyleConfig]);
 
   // Focus input when entering edit mode
   useEffect(() => {
@@ -389,9 +426,9 @@ export function ChartTile({
       chartType,
       roleConfig: rc,
       filters: config.baseFilters ?? config.filters ?? [],
-      styleConfig: effectiveStyleConfig,
+      styleConfig: chartRenderStyleConfig,
     };
-  }, [chart?.config, chart?.chart_type, effectiveStyleConfig]);
+  }, [chart?.config, chart?.chart_type, chartRenderStyleConfig]);
 
   // Notify parent when data is loaded â€” only expose true dimension fields to the global filter bar
   React.useEffect(() => {
@@ -571,7 +608,7 @@ export function ChartTile({
     );
   }
 
-  if (isLoadingChart || isLoadingData) {
+  if (isLoadingChart) {
     return renderStatusCard(
       <div className="flex items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-brand" />
@@ -579,7 +616,7 @@ export function ChartTile({
     );
   }
 
-  if (!chart || !chartData) {
+  if (!chart) {
     return renderStatusCard(
       <div className="text-center">
         <p className="text-text-tertiary">Failed to load chart</p>
@@ -637,6 +674,14 @@ export function ChartTile({
         ) : (
           <>
             <h3 className="text-sm font-semibold truncate flex-1">{displayTitle}</h3>
+            <a
+              href={`/explore/${chartId}`}
+              onMouseDown={e => e.stopPropagation()}
+              className="flex-shrink-0 rounded-md p-1 text-text-quaternary opacity-70 transition hover:bg-surface-2 hover:text-brand group-hover:opacity-100"
+              title="Open chart in Explore"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
 
             {/* HAVING badge stays separate — has active state + opens inline editor */}
             {canEdit && exploreConfig && havingOptions.length > 0 && (
@@ -687,6 +732,14 @@ export function ChartTile({
                       <Eye className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                       View details
                     </button>
+                    <a
+                      href={`/explore/${chartId}`}
+                      onClick={() => setIsTileMenuOpen(false)}
+                      className="flex w-full items-center gap-2.5 px-3 py-1.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                      Open in Explore
+                    </a>
                     {allowAppearanceEdit && (
                       <button
                         onClick={() => { openDetailModal('appearance'); setIsTileMenuOpen(false); }}
@@ -837,7 +890,60 @@ export function ChartTile({
 
       {/* Chart visualization */}
       <div className="flex-1 min-h-0 overflow-hidden">
-        {exploreConfig ? (
+        {isLoadingData ? (
+          <div className="flex h-full items-center justify-center">
+            <Loader2 className="h-6 w-6 animate-spin text-brand" />
+          </div>
+        ) : chartDataError ? (
+          <div className="flex h-full items-center justify-center rounded-md border border-warning/30 bg-warning/5 p-4 text-center">
+            <div className="max-w-sm">
+              <AlertTriangle className="mx-auto mb-2 h-5 w-5 text-warning" />
+              <p className="text-sm font-semibold text-text-primary">Load data failed</p>
+              <p className="mt-1 text-xs uppercase tracking-[0.14em] text-text-quaternary">
+                {String(chart.chart_type).replace(/_/g, ' ')}
+              </p>
+              <p className="mt-2 line-clamp-3 text-xs text-text-tertiary">
+                {getErrorMessage(chartDataError, 'Could not load data for this chart.')}
+              </p>
+              <div className="mt-3 flex flex-wrap justify-center gap-2">
+                <button
+                  type="button"
+                  onMouseDown={e => e.stopPropagation()}
+                  onClick={() => refetchChartData()}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2.5 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-2"
+                >
+                  {isFetchingData ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                  Retry
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={e => e.stopPropagation()}
+                  onClick={() => openDetailModal('data')}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2.5 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-2"
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  Details
+                </button>
+                <a
+                  href={`/explore/${chartId}`}
+                  onMouseDown={e => e.stopPropagation()}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/10 px-2.5 py-1.5 text-xs font-medium text-brand hover:bg-brand/15"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  Explore
+                </a>
+              </div>
+            </div>
+          </div>
+        ) : !chartData ? (
+          <div className="flex h-full items-center justify-center rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-4 text-center">
+            <div>
+              <AlertTriangle className="mx-auto mb-2 h-5 w-5 text-warning" />
+              <p className="text-sm font-medium text-text-primary">No chart data available</p>
+              <p className="mt-1 text-xs text-text-tertiary">Open the chart details or Explore to inspect the configuration.</p>
+            </div>
+          </div>
+        ) : exploreConfig ? (
           <ExploreChart
             type={exploreConfig.chartType}
             data={filteredData}
@@ -854,7 +960,7 @@ export function ChartTile({
             chartType={chart.chart_type}
             data={filteredData}
             config={legacyChartConfig}
-            styleConfig={effectiveStyleConfig}
+            styleConfig={chartRenderStyleConfig}
             onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
               ? handleCrossFilterSelection
               : undefined}
