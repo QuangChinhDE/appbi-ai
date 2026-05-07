@@ -2,6 +2,7 @@
 
 import React, { useMemo } from 'react';
 import { TableVisualization } from '@/components/visualizations/TableVisualization';
+import { applyFiltersToRows, type BaseFilter } from '@/lib/filters';
 import type { ChartStyleConfig, MetricConfig } from './ExploreChartConfig';
 import { metricKey, metricLabel } from './ExploreChartConfig';
 import type { ExploreChartModel } from './chartDataAdapter';
@@ -36,6 +37,8 @@ interface AdvancedExploreChartProps {
   model: ExploreChartModel;
   style: ChartStyleConfig;
   palette: string[];
+  havingFilters?: BaseFilter[];
+  preAggregated?: boolean;
   onStyleConfigChange?: (nextStyleConfig: ChartStyleConfig) => void;
   onSelectDataPoint?: (selection: { field: string; value: unknown } | null) => void;
 }
@@ -75,50 +78,131 @@ function formatNumber(value: unknown, style?: ChartStyleConfig): string {
   }
 }
 
-function metricCandidates(metric: MetricConfig): string[] {
-  return [
+function uniqueStrings(values: Array<string | undefined>): string[] {
+  return Array.from(new Set(values.filter((value): value is string => Boolean(value))));
+}
+
+function metricCandidates(metric: MetricConfig, preAggregated = false): string[] {
+  const aggregatedCandidates = [
     metricKey(metric),
     metric.outputField,
-    metric.field,
     `${metric.agg}__${metric.field}`,
     `${metric.field}_${metric.agg}`,
     `${metric.agg}_${metric.field}`,
     `${metric.field}__${metric.agg}`,
-  ].filter((value): value is string => Boolean(value));
+    metric.field,
+  ];
+  return preAggregated
+    ? uniqueStrings(aggregatedCandidates)
+    : uniqueStrings([metric.field, metric.outputField, ...aggregatedCandidates]);
 }
 
-function metricValue(row: ChartRow, metric?: MetricConfig): number {
-  if (!metric) return 0;
-  for (const candidate of metricCandidates(metric)) {
+function readMetricValue(row: ChartRow, metric: MetricConfig, preAggregated = false): number | null {
+  for (const candidate of metricCandidates(metric, preAggregated)) {
     if (candidate in row) {
       const value = Number(row[candidate]);
-      return Number.isFinite(value) ? value : 0;
+      return Number.isFinite(value) ? value : null;
     }
   }
-  return 0;
+  return null;
 }
 
-function aggregateMetric(rows: ChartRow[], metric?: MetricConfig): number {
+function metricValue(row: ChartRow, metric?: MetricConfig, preAggregated = false): number {
   if (!metric) return 0;
-  const values = rows.map((row) => metricValue(row, metric));
+  return readMetricValue(row, metric, preAggregated) ?? 0;
+}
+
+function countDistinctRawValues(rows: ChartRow[], field: string): number {
+  const values = new Set<unknown>();
+  rows.forEach((row) => {
+    const value = row[field];
+    if (value !== null && value !== undefined && value !== '') {
+      values.add(value);
+    }
+  });
+  return values.size;
+}
+
+function aggregateMetric(rows: ChartRow[], metric?: MetricConfig, preAggregated = false): number {
+  if (!metric) return 0;
+  if (metric.agg === 'count') {
+    if (!preAggregated) return rows.length;
+    const values = rows
+      .map((row) => readMetricValue(row, metric, true))
+      .filter((value): value is number => value !== null);
+    return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) : rows.length;
+  }
+  if (metric.agg === 'count_distinct') {
+    if (!preAggregated) return countDistinctRawValues(rows, metric.field);
+    const values = rows
+      .map((row) => readMetricValue(row, metric, true))
+      .filter((value): value is number => value !== null);
+    return values.length > 0
+      ? values.reduce((sum, value) => sum + value, 0)
+      : countDistinctRawValues(rows, metric.field);
+  }
+  const values = rows.map((row) => metricValue(row, metric, preAggregated));
   switch (metric.agg) {
     case 'avg':
       return values.reduce((sum, value) => sum + value, 0) / Math.max(values.length, 1);
-    case 'count':
-      return values.reduce((sum, value) => sum + value, 0) || rows.length;
     case 'min':
       return values.length ? Math.min(...values) : 0;
     case 'max':
       return values.length ? Math.max(...values) : 0;
-    case 'count_distinct':
-      return values.reduce((sum, value) => sum + value, 0) || new Set(rows.map((row) => row[metric.field])).size;
     case 'sum':
     default:
       return values.reduce((sum, value) => sum + value, 0);
   }
 }
 
-function groupByMetric(rows: ChartRow[], field: string | undefined, metric: MetricConfig | undefined): NameValue[] {
+function formatPercent(value: number, total: number): string {
+  if (!Number.isFinite(value) || total <= 0) return '0%';
+  return `${((Math.max(value, 0) / total) * 100).toFixed(0)}%`;
+}
+
+function applyNameValueHaving(
+  items: NameValue[],
+  field: string | undefined,
+  metric: MetricConfig | undefined,
+  havingFilters: BaseFilter[] | undefined,
+): NameValue[] {
+  if (!items.length || !metric || !havingFilters?.length) return items;
+  const mKey = metricKey(metric);
+  const rows = items.map((item, index) => ({
+    ...(item.row ?? {}),
+    __advancedIndex: index,
+    ...(field ? { [field]: item.name } : {}),
+    [mKey]: item.value,
+  }));
+  const kept = new Set(applyFiltersToRows(rows, havingFilters).map((row) => Number(row.__advancedIndex)));
+  return items.filter((_, index) => kept.has(index));
+}
+
+function applyPairHaving(
+  pairs: PairValue[],
+  sourceField: string | undefined,
+  targetField: string | undefined,
+  metric: MetricConfig | undefined,
+  havingFilters: BaseFilter[] | undefined,
+): PairValue[] {
+  if (!pairs.length || !metric || !havingFilters?.length) return pairs;
+  const mKey = metricKey(metric);
+  const rows = pairs.map((pair, index) => ({
+    __advancedIndex: index,
+    ...(sourceField ? { [sourceField]: pair.source } : {}),
+    ...(targetField ? { [targetField]: pair.target } : {}),
+    [mKey]: pair.value,
+  }));
+  const kept = new Set(applyFiltersToRows(rows, havingFilters).map((row) => Number(row.__advancedIndex)));
+  return pairs.filter((_, index) => kept.has(index));
+}
+
+function groupByMetric(
+  rows: ChartRow[],
+  field: string | undefined,
+  metric: MetricConfig | undefined,
+  preAggregated = false,
+): NameValue[] {
   if (!field || !metric) return [];
   const groups = new Map<string, ChartRow[]>();
   for (const row of rows) {
@@ -127,11 +211,21 @@ function groupByMetric(rows: ChartRow[], field: string | undefined, metric: Metr
     groups.get(name)!.push(row);
   }
   return Array.from(groups.entries())
-    .map(([name, groupRows]) => ({ name, value: aggregateMetric(groupRows, metric), row: groupRows[0] }))
+    .map(([name, groupRows]) => ({
+      name,
+      value: aggregateMetric(groupRows, metric, preAggregated),
+      row: groupRows[0],
+    }))
     .filter((item) => Number.isFinite(item.value));
 }
 
-function groupPairs(rows: ChartRow[], sourceField?: string, targetField?: string, metric?: MetricConfig): PairValue[] {
+function groupPairs(
+  rows: ChartRow[],
+  sourceField?: string,
+  targetField?: string,
+  metric?: MetricConfig,
+  preAggregated = false,
+): PairValue[] {
   if (!sourceField || !targetField || !metric) return [];
   const groups = new Map<string, ChartRow[]>();
   for (const row of rows) {
@@ -143,8 +237,25 @@ function groupPairs(rows: ChartRow[], sourceField?: string, targetField?: string
   }
   return Array.from(groups.entries()).map(([key, groupRows]) => {
     const [source, target] = key.split('\u0000');
-    return { source, target, value: aggregateMetric(groupRows, metric) };
+    return { source, target, value: aggregateMetric(groupRows, metric, preAggregated) };
   });
+}
+
+function positiveShare(value: number, max: number): number {
+  if (!Number.isFinite(value) || max <= 0) return 0;
+  return Math.max(value, 0) / max;
+}
+
+function safeSqrtShare(value: number, max: number): number {
+  return Math.sqrt(positiveShare(value, max));
+}
+
+function metricValueForRawDistribution(row: ChartRow, metric?: MetricConfig): number {
+  if (!metric) return 0;
+  const value = readMetricValue(row, metric, false);
+  if (value !== null) return value;
+  const fallback = Number(row[metric.field]);
+  return Number.isFinite(fallback) ? fallback : 0;
 }
 
 function applyLimit<T extends { value: number }>(items: T[], style: ChartStyleConfig, fallback = 24): T[] {
@@ -216,17 +327,20 @@ function DonutOrPolarChart({
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       {items.map((item, index) => {
         const angle = type === 'POLAR_AREA' ? 360 / items.length : (Math.max(item.value, 0) / total) * 360;
-        const radius = type === 'POLAR_AREA' ? 35 + (Math.sqrt(Math.max(item.value, 0) / max) * (outer - 35)) : outer;
+        const radius = type === 'POLAR_AREA' ? 35 + (safeSqrtShare(item.value, max) * (outer - 35)) : outer;
         const path = ringSegment(cx, cy, radius, type === 'DONUT' ? inner : 0, cursor, cursor + angle);
         const mid = cursor + angle / 2;
         const labelPoint = polar(cx, cy, Math.max(radius + 24, 80), mid);
+        const labelText = style.showDataLabels
+          ? `${item.name.slice(0, 12)} ${formatNumber(item.value, style)} (${formatPercent(item.value, total)})`
+          : item.name.slice(0, 16);
         cursor += angle;
         return (
           <g key={item.name} onClick={() => onSelect?.(item.name)} className="cursor-pointer">
             <path d={path} fill={palette[index % palette.length]} opacity={0.9} stroke="rgb(var(--surface-1))" strokeWidth={2} />
             {index < 10 && (
               <text x={labelPoint.x} y={labelPoint.y} fontSize={11} textAnchor="middle" fill="rgb(var(--text-secondary))">
-                {item.name.slice(0, 16)}
+                {labelText}
               </text>
             )}
             <title>{item.name}: {formatNumber(item.value, style)}</title>
@@ -245,11 +359,12 @@ function DonutOrPolarChart({
   );
 }
 
-function RadarChartSvg({ rows, metrics, field, palette }: {
+function RadarChartSvg({ rows, metrics, field, palette, preAggregated }: {
   rows: ChartRow[];
   metrics: MetricConfig[];
   field?: string;
   palette: string[];
+  preAggregated?: boolean;
 }) {
   if (!field || metrics.length === 0) return <EmptyAdvanced message="Select an axis field and value columns." />;
   const labels = Array.from(new Set(rows.map((row) => String(row[field] ?? 'Unknown')))).slice(0, 10);
@@ -257,9 +372,9 @@ function RadarChartSvg({ rows, metrics, field, palette }: {
   const groupedRows = new Map(labels.map((label) => [label, rows.filter((row) => String(row[field] ?? 'Unknown') === label)]));
   const series = metrics.slice(0, 4).map((metric) => ({
     metric,
-    values: labels.map((label) => aggregateMetric(groupedRows.get(label) ?? [], metric)),
+    values: labels.map((label) => aggregateMetric(groupedRows.get(label) ?? [], metric, preAggregated)),
   }));
-  const max = Math.max(...series.flatMap((item) => item.values), 1);
+  const max = Math.max(...series.flatMap((item) => item.values.map((value) => Math.abs(value))), 1);
   const cx = 400;
   const cy = 210;
   const radius = 150;
@@ -284,7 +399,7 @@ function RadarChartSvg({ rows, metrics, field, palette }: {
       })}
       {series.map((item, index) => {
         const points = item.values.map((value, valueIndex) => {
-          const p = polar(cx, cy, radius * (value / max), angles[valueIndex]);
+          const p = polar(cx, cy, radius * positiveShare(value, max), angles[valueIndex]);
           return `${p.x},${p.y}`;
         }).join(' ');
         return (
@@ -305,9 +420,9 @@ function FunnelChartSvg({ items, style, palette, onSelect }: { items: NameValue[
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       {items.map((item, index) => {
-        const topWidth = 560 * (item.value / max);
+        const topWidth = 560 * positiveShare(item.value, max);
         const next = items[index + 1]?.value ?? item.value * 0.82;
-        const bottomWidth = 560 * (Math.max(next, 0) / max);
+        const bottomWidth = 560 * positiveShare(next, max);
         const y = 42 + index * (h + 8);
         const x1 = 400 - topWidth / 2;
         const x2 = 400 + topWidth / 2;
@@ -426,6 +541,11 @@ function WaterfallChartSvg({ items, style, palette, onSelect }: { items: NameVal
         return (
           <g key={bar.name} onClick={() => onSelect?.(bar.name)} className="cursor-pointer">
             <rect x={x} y={y} width={barW} height={h} rx={4} fill={color} />
+            {style.showDataLabels && (
+              <text x={x + barW / 2} y={Math.max(18, y - 6)} fontSize={10} textAnchor="middle" fill="rgb(var(--text-secondary))">
+                {formatNumber(bar.value, style)}
+              </text>
+            )}
             <text x={x + barW / 2} y={388} fontSize={10} textAnchor="end" transform={`rotate(-35 ${x + barW / 2} 388)`} fill="rgb(var(--text-tertiary))">{bar.name.slice(0, 12)}</text>
             <title>{bar.name}: {formatNumber(bar.value, style)}</title>
           </g>
@@ -435,13 +555,14 @@ function WaterfallChartSvg({ items, style, palette, onSelect }: { items: NameVal
   );
 }
 
-function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, onSelect }: {
+function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, preAggregated, onSelect }: {
   rows: ChartRow[];
   type: string;
   roleConfig: ExploreChartModel['roleConfig'];
   metric?: MetricConfig;
   style: ChartStyleConfig;
   palette: string[];
+  preAggregated?: boolean;
   onSelect?: (field: string, value: unknown) => void;
 }) {
   const { scatterX, scatterY, dimension } = roleConfig;
@@ -450,7 +571,7 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, onSelec
     .map((row) => ({
       x: Number(row[scatterX]),
       y: Number(row[scatterY]),
-      r: metric ? Math.abs(metricValue(row, metric)) : 1,
+      r: metric ? Math.abs(metricValue(row, metric, preAggregated)) : 1,
       label: dimension ? row[dimension] : undefined,
     }))
     .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
@@ -466,7 +587,7 @@ function XYBubbleChart({ rows, type, roleConfig, metric, style, palette, onSelec
   const maxR = Math.max(...rs, 1);
   const sx = (value: number) => 70 + ((value - minX) / Math.max(maxX - minX, 1)) * 650;
   const sy = (value: number) => 360 - ((value - minY) / Math.max(maxY - minY, 1)) * 300;
-  const sr = (value: number) => type === 'BUBBLE' || type === 'MAP_POINT' ? 4 + Math.sqrt(value / maxR) * 20 : 5;
+  const sr = (value: number) => type === 'BUBBLE' || type === 'MAP_POINT' ? 4 + safeSqrtShare(value, maxR) * 20 : 5;
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} className="h-full w-full">
       <rect x={55} y={35} width={690} height={335} fill={type === 'MAP_POINT' ? 'rgb(var(--surface-2))' : 'transparent'} stroke="rgb(var(--border-line))" rx={10} />
@@ -486,7 +607,7 @@ function HeatmapChart({ pairs, style, palette, onSelect }: { pairs: PairValue[];
   if (!pairs.length) return <EmptyAdvanced message="Select row, column, and value fields." />;
   const sources = Array.from(new Set(pairs.map((pair) => pair.source))).slice(0, 18);
   const targets = Array.from(new Set(pairs.map((pair) => pair.target))).slice(0, 14);
-  const max = Math.max(...pairs.map((pair) => pair.value), 1);
+  const max = Math.max(...pairs.map((pair) => Math.abs(pair.value)), 1);
   const cellW = 660 / Math.max(targets.length, 1);
   const cellH = 300 / Math.max(sources.length, 1);
   const valueMap = new Map(pairs.map((pair) => [`${pair.source}\u0000${pair.target}`, pair.value]));
@@ -500,10 +621,21 @@ function HeatmapChart({ pairs, style, palette, onSelect }: { pairs: PairValue[];
       ))}
       {sources.map((source, row) => targets.map((target, col) => {
         const value = valueMap.get(`${source}\u0000${target}`) ?? 0;
-        const opacity = value > 0 ? 0.12 + (value / max) * 0.84 : 0.05;
+        const opacity = value !== 0 ? 0.12 + (Math.abs(value) / max) * 0.84 : 0.05;
         return (
           <g key={`${source}-${target}`} onClick={() => onSelect?.(source)} className="cursor-pointer">
             <rect x={125 + col * cellW} y={52 + row * cellH} width={Math.max(cellW - 2, 1)} height={Math.max(cellH - 2, 1)} rx={3} fill={palette[0]} opacity={opacity} />
+            {style.showDataLabels && cellW >= 42 && cellH >= 20 && value !== 0 && (
+              <text
+                x={125 + col * cellW + cellW / 2}
+                y={52 + row * cellH + cellH / 2 + 4}
+                textAnchor="middle"
+                fontSize={10}
+                fill="rgb(var(--text-primary))"
+              >
+                {formatNumber(value, style)}
+              </text>
+            )}
             <title>{source} / {target}: {formatNumber(value, style)}</title>
           </g>
         );
@@ -525,7 +657,7 @@ function RegionChart({ items, style, palette, onSelect }: { items: NameValue[]; 
               <span className="text-sm font-semibold text-text-primary">{formatNumber(item.value, style)}</span>
             </div>
             <div className="mt-2 h-2 rounded-full bg-surface-3">
-              <div className="h-2 rounded-full" style={{ width: `${Math.max(3, (item.value / max) * 100)}%`, backgroundColor: palette[index % palette.length] }} />
+              <div className="h-2 rounded-full" style={{ width: `${Math.max(3, positiveShare(item.value, max) * 100)}%`, backgroundColor: palette[index % palette.length] }} />
             </div>
           </button>
         ))}
@@ -539,7 +671,7 @@ function BoxplotChart({ rows, field, metric, style, palette, onSelect }: { rows:
   const grouped = new Map<string, number[]>();
   for (const row of rows) {
     const key = String(row[field] ?? 'Unknown');
-    const value = metricValue(row, metric);
+    const value = metricValueForRawDistribution(row, metric);
     if (!Number.isFinite(value)) continue;
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key)!.push(value);
@@ -585,7 +717,7 @@ function SankeyChart({ pairs, style, palette, onSelect }: { pairs: PairValue[]; 
       {flows.map((flow, index) => {
         const y1 = yFor(sources, flow.source);
         const y2 = yFor(targets, flow.target);
-        const width = 2 + (flow.value / max) * 24;
+        const width = 2 + positiveShare(flow.value, max) * 24;
         return (
           <path key={`${flow.source}-${flow.target}-${index}`} d={`M 185 ${y1} C 330 ${y1}, 470 ${y2}, 615 ${y2}`}
             fill="none" stroke={palette[index % palette.length]} strokeWidth={width} opacity={0.38}
@@ -690,17 +822,19 @@ function RibbonChart({ pairs, palette, onSelect }: { pairs: PairValue[]; palette
   );
 }
 
-function TimelineChart({ rows, roleConfig, metric, palette, onSelect }: {
+function TimelineChart({ rows, roleConfig, metric, style, palette, preAggregated, onSelect }: {
   rows: ChartRow[];
   roleConfig: ExploreChartModel['roleConfig'];
   metric?: MetricConfig;
+  style: ChartStyleConfig;
   palette: string[];
+  preAggregated?: boolean;
   onSelect?: (field: string, value: unknown) => void;
 }) {
   const { timeField, dimension } = roleConfig;
   if (!timeField || !dimension) return <EmptyAdvanced message="Select time and label fields." />;
   const events = rows
-    .map((row) => ({ label: String(row[dimension] ?? 'Event'), time: new Date(String(row[timeField] ?? '')).getTime(), value: metricValue(row, metric) }))
+    .map((row) => ({ label: String(row[dimension] ?? 'Event'), time: new Date(String(row[timeField] ?? '')).getTime(), value: metricValue(row, metric, preAggregated) }))
     .filter((event) => Number.isFinite(event.time))
     .sort((a, b) => a.time - b.time)
     .slice(0, 80);
@@ -720,7 +854,7 @@ function TimelineChart({ rows, roleConfig, metric, palette, onSelect }: {
             <line x1={x(event.time)} y1={210} x2={x(event.time)} y2={yy} stroke="rgb(var(--border-line))" />
             <circle cx={x(event.time)} cy={yy} r={r} fill={palette[index % palette.length]} opacity={0.82} />
             {index < 18 && <text x={x(event.time)} y={yy + (yy < 210 ? -14 : 24)} fontSize={10} textAnchor="middle" fill="rgb(var(--text-tertiary))">{event.label.slice(0, 14)}</text>}
-            <title>{event.label}: {new Date(event.time).toISOString().slice(0, 10)}</title>
+            <title>{event.label}: {new Date(event.time).toISOString().slice(0, 10)}{metric ? `, ${formatNumber(event.value, style)}` : ''}</title>
           </g>
         );
       })}
@@ -729,7 +863,7 @@ function TimelineChart({ rows, roleConfig, metric, palette, onSelect }: {
 }
 
 function WordCloudChart({ items, style, palette, onSelect }: { items: NameValue[]; style: ChartStyleConfig; palette: string[]; onSelect?: (name: string) => void }) {
-  const max = Math.max(...items.map((item) => item.value), 1);
+  const max = Math.max(...items.map((item) => Math.abs(item.value)), 1);
   return (
     <div className="flex h-full items-center justify-center overflow-hidden p-6">
       <div className="flex max-w-full flex-wrap items-center justify-center gap-x-5 gap-y-3">
@@ -738,7 +872,7 @@ function WordCloudChart({ items, style, palette, onSelect }: { items: NameValue[
             className="font-semibold leading-none hover:opacity-80"
             style={{
               color: palette[index % palette.length],
-              fontSize: `${14 + Math.sqrt(item.value / max) * 34}px`,
+              fontSize: `${14 + safeSqrtShare(item.value, max) * 34}px`,
             }}
             title={`${item.name}: ${formatNumber(item.value, style)}`}>
             {item.name}
@@ -755,6 +889,8 @@ export function AdvancedExploreChart({
   model,
   style,
   palette,
+  havingFilters,
+  preAggregated = false,
   onStyleConfigChange,
   onSelectDataPoint,
 }: AdvancedExploreChartProps) {
@@ -767,25 +903,32 @@ export function AdvancedExploreChart({
   const xField = type === 'RIBBON' ? (roleConfig.timeField || dimension) : dimension;
 
   const items = useMemo(
-    () => applyLimit(groupByMetric(data, dimension, primaryMetric), style, type === 'WORD_CLOUD' ? 42 : 24),
-    [data, dimension, primaryMetric, style, type],
+    () => {
+      const grouped = groupByMetric(data, dimension, primaryMetric, preAggregated);
+      const filtered = applyNameValueHaving(grouped, dimension, primaryMetric, havingFilters);
+      return applyLimit(filtered, style, type === 'WORD_CLOUD' ? 42 : 24);
+    },
+    [data, dimension, primaryMetric, havingFilters, preAggregated, style, type],
   );
   const pairs = useMemo(
-    () => groupPairs(data, xField, breakdown, primaryMetric),
-    [data, xField, breakdown, primaryMetric],
+    () => {
+      const grouped = groupPairs(data, xField, breakdown, primaryMetric, preAggregated);
+      return applyPairHaving(grouped, xField, breakdown, primaryMetric, havingFilters);
+    },
+    [data, xField, breakdown, primaryMetric, havingFilters, preAggregated],
   );
   const totalValue = useMemo(
-    () => aggregateMetric(data, primaryMetric),
-    [data, primaryMetric],
+    () => aggregateMetric(data, primaryMetric, preAggregated),
+    [data, primaryMetric, preAggregated],
   );
   const targetValue = useMemo(() => {
-    const metricTarget = benchmarkMetric ? aggregateMetric(data, benchmarkMetric) : 0;
+    const metricTarget = benchmarkMetric ? aggregateMetric(data, benchmarkMetric, preAggregated) : 0;
     if (metricTarget > 0) return metricTarget;
     const staticTarget = style.kpiBenchmarkValue === '' || style.kpiBenchmarkValue == null
       ? Number(style.benchmarkValue)
       : Number(style.kpiBenchmarkValue);
     return Number.isFinite(staticTarget) && staticTarget > 0 ? staticTarget : Math.max(totalValue, 1);
-  }, [benchmarkMetric, data, style.benchmarkValue, style.kpiBenchmarkValue, totalValue]);
+  }, [benchmarkMetric, data, preAggregated, style.benchmarkValue, style.kpiBenchmarkValue, totalValue]);
 
   const emitDimension = (value: unknown) => {
     if (dimension) onSelectDataPoint?.({ field: dimension, value });
@@ -825,7 +968,7 @@ export function AdvancedExploreChart({
       {type === 'DONUT' || type === 'POLAR_AREA' ? (
         <DonutOrPolarChart type={type} items={items} style={style} palette={palette} onSelect={emitDimension} />
       ) : type === 'RADAR' ? (
-        <RadarChartSvg rows={data} metrics={roleConfig.metrics} field={dimension} palette={palette} />
+        <RadarChartSvg rows={data} metrics={roleConfig.metrics} field={dimension} palette={palette} preAggregated={preAggregated} />
       ) : type === 'FUNNEL' ? (
         <FunnelChartSvg items={items} style={style} palette={palette} onSelect={emitDimension} />
       ) : type === 'GAUGE' ? (
@@ -837,7 +980,7 @@ export function AdvancedExploreChart({
       ) : type === 'WATERFALL' ? (
         <WaterfallChartSvg items={items} style={style} palette={palette} onSelect={emitDimension} />
       ) : type === 'BUBBLE' || type === 'MAP_POINT' ? (
-        <XYBubbleChart rows={data} type={type} roleConfig={roleConfig} metric={primaryMetric} style={style} palette={palette} onSelect={emitField} />
+        <XYBubbleChart rows={data} type={type} roleConfig={roleConfig} metric={primaryMetric} style={style} palette={palette} preAggregated={preAggregated} onSelect={emitField} />
       ) : type === 'HEATMAP' ? (
         <HeatmapChart pairs={pairs} style={style} palette={palette} onSelect={(source) => xField && emitField(xField, source)} />
       ) : type === 'MAP_REGION' ? (
@@ -851,7 +994,7 @@ export function AdvancedExploreChart({
       ) : type === 'RIBBON' ? (
         <RibbonChart pairs={pairs} palette={palette} onSelect={(target) => breakdown && emitField(breakdown, target)} />
       ) : type === 'TIMELINE' ? (
-        <TimelineChart rows={data} roleConfig={roleConfig} metric={primaryMetric} palette={palette} onSelect={emitField} />
+        <TimelineChart rows={data} roleConfig={roleConfig} metric={primaryMetric} style={style} palette={palette} preAggregated={preAggregated} onSelect={emitField} />
       ) : type === 'WORD_CLOUD' ? (
         <WordCloudChart items={items} style={style} palette={palette} onSelect={emitDimension} />
       ) : (

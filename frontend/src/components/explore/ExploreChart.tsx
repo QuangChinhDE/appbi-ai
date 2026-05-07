@@ -726,6 +726,8 @@ function ExploreChartInner({
         model={model}
         style={style}
         palette={PALETTE}
+        havingFilters={havingFilters}
+        preAggregated={preAggregated}
         onStyleConfigChange={onStyleConfigChange}
         onSelectDataPoint={onSelectDataPoint}
       />
@@ -742,6 +744,9 @@ function ExploreChartInner({
     const displayData = sortedCategoricalData;
     const displaySeries = categoricalSeries;
     const isPercent = stackMode === 'percent';
+    const stackTotalsByIndex = displayData.map((row: any) =>
+      displaySeries.reduce((acc, s) => acc + (Number(row[s.key]) || 0), 0),
+    );
     const percentYAxis = isPercent ? (
       <YAxis tick={{ fontSize }} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} domain={[0, 1]}
         label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
@@ -766,12 +771,6 @@ function ExploreChartInner({
                 // Percent mode: each segment shows its own % inside the bar.
                 // Normal mode: only the top segment shows total above the bar.
                 const showLabel = showDataLabels && (isPercent || isTopOfStack);
-                const labelPosition = isPercent ? 'center' : 'top';
-                const stackTotalsByIndex = isPercent
-                  ? displayData.map((row: any) =>
-                      displaySeries.reduce((acc, s) => acc + (Number(row[s.key]) || 0), 0),
-                    )
-                  : null;
                 return (
                   <Bar key={series.key} dataKey={series.key} stackId="s" fill={getSeriesColor(series.key, i)}
                     name={series.label}
@@ -783,7 +782,7 @@ function ExploreChartInner({
                         position="center"
                         content={(props: any) => {
                           const { x, y, width, height, value, index } = props;
-                          const total = (stackTotalsByIndex as number[])?.[index] || 0;
+                          const total = stackTotalsByIndex[index] || 0;
                           if (!total) return null;
                           const pct = (Number(value) / total) * 100;
                           if (pct < 4) return null;
@@ -806,8 +805,22 @@ function ExploreChartInner({
                       <LabelList
                         dataKey={series.key}
                         position="top"
-                        fontSize={fontSize - 1}
-                        formatter={dataLabelFormatter(style) as any}
+                        content={(props: any) => {
+                          const { x, y, width, index } = props;
+                          const total = stackTotalsByIndex[index] || 0;
+                          if (!total) return null;
+                          return (
+                            <text
+                              x={x + width / 2}
+                              y={Math.max(12, y - 6)}
+                              textAnchor="middle"
+                              fill="rgb(var(--text-secondary))"
+                              fontSize={fontSize - 1}
+                            >
+                              {formatNumber(total, style)}
+                            </text>
+                          );
+                        }}
                       />
                     )}
                   </Bar>

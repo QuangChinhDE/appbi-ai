@@ -52,18 +52,16 @@ function dedupeMetrics(metrics: MetricConfig[]): MetricConfig[] {
 }
 
 function metricOutputCandidates(metric: MetricConfig): string[] {
-  const candidates = new Set<string>([
-    metric.field,
+  const candidates = [
     metricKey(metric),
+    metric.outputField,
     `${metric.agg}__${metric.field}`,
     `${metric.field}_${metric.agg}`,
     `${metric.agg}_${metric.field}`,
     `${metric.field}__${metric.agg}`,
-  ]);
-  if (metric.outputField) {
-    candidates.add(metric.outputField);
-  }
-  return Array.from(candidates).filter(Boolean);
+    metric.field,
+  ].filter((value): value is string => Boolean(value));
+  return Array.from(new Set(candidates));
 }
 
 function resolveMetricValueField(
@@ -353,6 +351,9 @@ export function buildExploreChartModel(args: {
   if (type === 'KPI') {
     const metric = metrics[0];
     const benchmarkMetric = normalizedRoleConfig.benchmarkMetric;
+    const metricValueField = metric
+      ? resolveMetricValueField(data, metric, preAggregated)
+      : undefined;
     const benchmarkValueField = benchmarkMetric
       ? resolveMetricValueField(data, benchmarkMetric, preAggregated)
       : undefined;
@@ -362,12 +363,12 @@ export function buildExploreChartModel(args: {
       kpiBenchmarkMetric: benchmarkMetric,
       kpiValue: metric
         ? (preAggregated
-            ? Number(data[0]?.[metricKey(metric)]) || 0
-            : aggregateMetricValue(data, metric))
+            ? Number(data[0]?.[metricValueField ?? metricKey(metric)]) || 0
+            : aggregateMetricValue(data, metric, metricValueField ?? metric.field))
         : undefined,
       kpiBenchmarkValue: benchmarkMetric
         ? (preAggregated
-            ? Number(data[0]?.[metricKey(benchmarkMetric)]) || 0
+            ? Number(data[0]?.[benchmarkValueField ?? metricKey(benchmarkMetric)]) || 0
             : aggregateMetricValue(data, benchmarkMetric, benchmarkValueField))
         : undefined,
     };
@@ -378,12 +379,18 @@ export function buildExploreChartModel(args: {
     const aggregated = xField && metric
       ? (preAggregated ? data : applyGroupByAgg(data, xField, [metric]))
       : data;
+    const filteredAggregated = havingFilters.length > 0
+      ? applyFiltersToRows(aggregated, havingFilters)
+      : aggregated;
+    const valueField = metric
+      ? resolveMetricValueField(filteredAggregated, metric, preAggregated)
+      : undefined;
     return {
       ...emptyModel,
       pieData: dimension && metric
-        ? aggregated.slice(0, 20).map(row => ({
+        ? filteredAggregated.slice(0, 20).map(row => ({
             name: String(row[dimension] ?? 'Unknown'),
-            value: Number(row[metricKey(metric)]) || 0,
+            value: Number(row[valueField ?? metricKey(metric)]) || 0,
           }))
         : [],
     };

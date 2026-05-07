@@ -514,6 +514,9 @@ export function ChartPreview({
   if (chartType === ChartType.STACKED_BAR && config.xField && config.yFields) {
     const isPercent = stackMode === 'percent';
     const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(sortedData.length, fontSize, xAxisLabel);
+    const stackTotalsByIndex = sortedData.map((row) =>
+      config.yFields!.reduce((acc, field) => acc + (Number(row[field]) || 0), 0),
+    );
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
@@ -530,13 +533,62 @@ export function ChartPreview({
                 ? (v: any, name: string) => [`${(Number(v) * 100).toFixed(1)}%`, name]
                 : (v: any) => formatNumber(v, style)} />
               {showLegend && legendProps && <Legend {...legendProps} />}
-              {config.yFields.map((field, index) => (
-                <Bar key={field} dataKey={field} stackId="stack"
-                  fill={getSeriesColor(field, index)} barSize={barSize}
-                  radius={index === config.yFields!.length - 1 ? [barRadius, barRadius, 0, 0] : undefined}>
-                  {showDataLabels && <LabelList position="center" formatter={(v: any) => formatNumber(v, style)} style={{ fontSize: fontSize - 2, fill: '#fff' }} />}
-                </Bar>
-              ))}
+              {config.yFields.map((field, index) => {
+                const isTopOfStack = index === config.yFields!.length - 1;
+                return (
+                  <Bar key={field} dataKey={field} stackId="stack"
+                    fill={getSeriesColor(field, index)} barSize={barSize}
+                    radius={isTopOfStack ? [barRadius, barRadius, 0, 0] : undefined}>
+                    {showDataLabels && isPercent && (
+                      <LabelList
+                        dataKey={field}
+                        position="center"
+                        content={(props: any) => {
+                          const { x, y, width, height, value, index: rowIndex } = props;
+                          const total = stackTotalsByIndex[rowIndex] || 0;
+                          if (!total) return null;
+                          const pct = (Number(value) / total) * 100;
+                          if (pct < 4) return null;
+                          return (
+                            <text
+                              x={x + width / 2}
+                              y={y + height / 2}
+                              textAnchor="middle"
+                              dominantBaseline="middle"
+                              fill="#fff"
+                              fontSize={fontSize - 1}
+                            >
+                              {`${pct.toFixed(0)}%`}
+                            </text>
+                          );
+                        }}
+                      />
+                    )}
+                    {showDataLabels && !isPercent && isTopOfStack && (
+                      <LabelList
+                        dataKey={field}
+                        position="top"
+                        content={(props: any) => {
+                          const { x, y, width, index: rowIndex } = props;
+                          const total = stackTotalsByIndex[rowIndex] || 0;
+                          if (!total) return null;
+                          return (
+                            <text
+                              x={x + width / 2}
+                              y={Math.max(12, y - 6)}
+                              textAnchor="middle"
+                              fill="rgb(var(--text-secondary))"
+                              fontSize={fontSize - 1}
+                            >
+                              {formatNumber(total, style)}
+                            </text>
+                          );
+                        }}
+                      />
+                    )}
+                  </Bar>
+                );
+              })}
               {renderBenchmarkLine('y')}
             </BarChart>,
             sortedData.length,
