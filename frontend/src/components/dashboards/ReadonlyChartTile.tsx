@@ -93,6 +93,13 @@ export function ReadonlyChartTile({
     () => getEffectiveDashboardChartStyleConfig(chart, layout),
     [chart, layout],
   );
+  const configuredChartTitle =
+    effectiveStyleConfig.chartTitle?.trim()
+    || (typeof (chart?.config as any)?.title === 'string' ? (chart?.config as any).title.trim() : '');
+  const fallbackTitle = typeof title === 'string' && title.trim()
+    ? title.trim()
+    : (typeof chart?.name === 'string' ? chart.name.trim() : '');
+  const displayTitle = configuredChartTitle || fallbackTitle;
   const chartRenderStyleConfig = useMemo(() => {
     if (!effectiveStyleConfig.chartTitle) return effectiveStyleConfig;
     return { ...effectiveStyleConfig, chartTitle: '' };
@@ -201,8 +208,8 @@ export function ReadonlyChartTile({
       <div className="flex h-full min-h-0 flex-col">
         <div className={`mb-3 flex min-h-[2.5rem] items-start gap-3 ${compact ? 'text-xs' : 'text-sm'}`}>
           <div className="min-w-0 flex-1">
-            {title ? (
-              <p className="truncate font-semibold text-text-primary">{title}</p>
+            {displayTitle ? (
+              <p className="truncate font-semibold text-text-primary">{displayTitle}</p>
             ) : (
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-quaternary">
                 Untitled chart

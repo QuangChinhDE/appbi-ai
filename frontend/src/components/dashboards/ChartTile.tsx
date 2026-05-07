@@ -346,12 +346,18 @@ export function ChartTile({
     }).catch(() => { /* layout save is best-effort */ });
   }, [havingFiltersKey, dashboardId, dashboardChartId, currentLayout, havingFilters, queryClient]);
 
-  const customTitle: string | undefined = currentLayout?.custom_title;
-  const displayTitle = customTitle ?? chart?.name ?? '';
   const effectiveStyleConfig = useMemo(
     () => getEffectiveDashboardChartStyleConfig(chart, currentLayout),
     [chart, currentLayout],
   );
+  const configuredChartTitle =
+    effectiveStyleConfig.chartTitle?.trim()
+    || (typeof (chart?.config as any)?.title === 'string' ? (chart?.config as any).title.trim() : '');
+  const customTitle = typeof currentLayout?.custom_title === 'string'
+    ? currentLayout.custom_title.trim()
+    : '';
+  const chartName = typeof chart?.name === 'string' ? chart.name.trim() : '';
+  const displayTitle = configuredChartTitle || customTitle || chartName;
   const chartRenderStyleConfig = useMemo(() => {
     if (!effectiveStyleConfig.chartTitle) return effectiveStyleConfig;
     return { ...effectiveStyleConfig, chartTitle: '' };
@@ -379,9 +385,17 @@ export function ChartTile({
     }
     setIsSavingTitle(true);
     try {
+      const currentStyleOverride = currentLayout?.styleConfigOverride;
+      const styleConfigOverride = (
+        currentStyleOverride
+        && typeof currentStyleOverride === 'object'
+        && !Array.isArray(currentStyleOverride)
+      )
+        ? { ...currentStyleOverride, chartTitle: newTitle }
+        : { chartTitle: newTitle };
       await dashboardApi.updateLayout(dashboardId, [{
         id: dashboardChartId,
-        layout: { ...currentLayout, custom_title: newTitle },
+        layout: { ...currentLayout, custom_title: newTitle, styleConfigOverride },
       }]);
       queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
     } finally {
