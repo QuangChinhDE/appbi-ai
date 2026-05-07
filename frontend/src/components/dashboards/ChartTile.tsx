@@ -103,13 +103,6 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-function normalizeTitleText(value: unknown): string {
-  return String(value ?? '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .toLowerCase();
-}
-
 const NUMERIC_MAPPING_TYPES = new Set(['number', 'integer', 'float', 'double', 'decimal', 'numeric', 'bigint', 'int']);
 const DATE_MAPPING_TYPES = new Set(['date', 'datetime', 'timestamp', 'time']);
 
@@ -360,17 +353,9 @@ export function ChartTile({
     [chart, currentLayout],
   );
   const chartRenderStyleConfig = useMemo(() => {
-    const innerTitle = normalizeTitleText(effectiveStyleConfig.chartTitle);
-    if (!innerTitle) return effectiveStyleConfig;
-
-    const visibleTitle = normalizeTitleText(displayTitle);
-    const baseChartName = normalizeTitleText(chart?.name);
-    if (innerTitle === visibleTitle || innerTitle === baseChartName) {
-      return { ...effectiveStyleConfig, chartTitle: '' };
-    }
-
-    return effectiveStyleConfig;
-  }, [chart?.name, displayTitle, effectiveStyleConfig]);
+    if (!effectiveStyleConfig.chartTitle) return effectiveStyleConfig;
+    return { ...effectiveStyleConfig, chartTitle: '' };
+  }, [effectiveStyleConfig]);
 
   // Focus input when entering edit mode
   useEffect(() => {
@@ -573,6 +558,10 @@ export function ChartTile({
     }
     return config;
   }, [chart?.config, exploreConfig]);
+  const legacyRenderChartConfig = useMemo(
+    () => ({ ...legacyChartConfig, title: undefined }),
+    [legacyChartConfig],
+  );
 
   const renderStatusCard = (content: React.ReactNode, tone: 'neutral' | 'danger' = 'neutral') => (
     <div className={`relative h-full rounded-lg border p-6 ${tone === 'danger' ? 'border-danger/30 bg-surface-1' : 'border-[rgb(var(--border-line))] bg-surface-1'}`}>
@@ -676,9 +665,11 @@ export function ChartTile({
             <h3 className="text-sm font-semibold truncate flex-1">{displayTitle}</h3>
             <a
               href={`/explore/${chartId}`}
+              target="_blank"
+              rel="noreferrer"
               onMouseDown={e => e.stopPropagation()}
-              className="flex-shrink-0 rounded-md p-1 text-text-quaternary opacity-70 transition hover:bg-surface-2 hover:text-brand group-hover:opacity-100"
-              title="Open chart in Explore"
+              className="flex-shrink-0 rounded-md p-1 text-text-quaternary opacity-0 transition hover:bg-surface-2 hover:text-brand focus:opacity-100 group-hover:opacity-100"
+              title="Open chart in Explore in a new tab"
             >
               <ExternalLink className="h-3.5 w-3.5" />
             </a>
@@ -734,6 +725,8 @@ export function ChartTile({
                     </button>
                     <a
                       href={`/explore/${chartId}`}
+                      target="_blank"
+                      rel="noreferrer"
                       onClick={() => setIsTileMenuOpen(false)}
                       className="flex w-full items-center gap-2.5 px-3 py-1.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
                     >
@@ -926,6 +919,8 @@ export function ChartTile({
                 </button>
                 <a
                   href={`/explore/${chartId}`}
+                  target="_blank"
+                  rel="noreferrer"
                   onMouseDown={e => e.stopPropagation()}
                   className="inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/10 px-2.5 py-1.5 text-xs font-medium text-brand hover:bg-brand/15"
                 >
@@ -959,7 +954,7 @@ export function ChartTile({
           <ChartPreview
             chartType={chart.chart_type}
             data={filteredData}
-            config={legacyChartConfig}
+            config={legacyRenderChartConfig}
             styleConfig={chartRenderStyleConfig}
             onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
               ? handleCrossFilterSelection

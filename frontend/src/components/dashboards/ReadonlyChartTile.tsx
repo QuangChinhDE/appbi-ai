@@ -16,13 +16,6 @@ import {
 } from '@/lib/filters';
 import type { Chart, ChartDataResponse, ChartSemanticBinding, DashboardChartLayout } from '@/types/api';
 
-function normalizeTitleText(value: unknown): string {
-  return String(value ?? '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .toLowerCase();
-}
-
 interface ReadonlyChartTileProps {
   chart: Chart | null | undefined;
   chartData?: ChartDataResponse | null;
@@ -101,17 +94,13 @@ export function ReadonlyChartTile({
     [chart, layout],
   );
   const chartRenderStyleConfig = useMemo(() => {
-    const innerTitle = normalizeTitleText(effectiveStyleConfig.chartTitle);
-    if (!innerTitle) return effectiveStyleConfig;
-
-    const visibleTitle = normalizeTitleText(title);
-    const baseChartName = normalizeTitleText(chart?.name);
-    if (innerTitle === visibleTitle || innerTitle === baseChartName) {
-      return { ...effectiveStyleConfig, chartTitle: '' };
-    }
-
-    return effectiveStyleConfig;
-  }, [chart?.name, effectiveStyleConfig, title]);
+    if (!effectiveStyleConfig.chartTitle) return effectiveStyleConfig;
+    return { ...effectiveStyleConfig, chartTitle: '' };
+  }, [effectiveStyleConfig]);
+  const legacyRenderChartConfig = useMemo(
+    () => ({ ...((chart?.config as any) ?? {}), title: undefined }),
+    [chart?.config],
+  );
 
   const handleCrossFilterSelection = (selection: { field: string; value: unknown } | null) => {
     if (!onSelectCrossFilter) return;
@@ -352,7 +341,7 @@ export function ReadonlyChartTile({
             <ChartPreview
               chartType={chart.chart_type}
               data={chartData.data}
-              config={(chart.config as any) ?? {}}
+              config={legacyRenderChartConfig}
               styleConfig={chartRenderStyleConfig}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
                 ? handleCrossFilterSelection
