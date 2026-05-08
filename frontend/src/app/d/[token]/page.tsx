@@ -907,7 +907,7 @@ export default function PublicDashboardPage() {
                   const title = dashboardChart.layout.custom_title ?? chart?.name ?? '';
 
                   return (
-                    <div key={dashboardChart.id.toString()} className="h-full">
+                    <div key={dashboardChart.id.toString()} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
                       <ChartErrorBoundary chartId={dashboardChart.chart_id}>
                         <ReadonlyChartTile
                           chart={chart}

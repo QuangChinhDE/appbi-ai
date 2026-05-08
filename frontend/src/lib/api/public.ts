@@ -266,8 +266,65 @@ export type AiAgentEvent =
   | { type: 'text'; text: string }
   | { type: 'status'; text: string; tool: string }
   | { type: 'tool_result'; tool: string; ok: boolean; error?: string | null }
+  | { type: 'state'; state: AiConversationState }
   | { type: 'error'; text: string }
   | { type: 'done' };
+
+// ── Briefing Wizard types ────────────────────────────────────────────────────
+
+export interface AiBriefing {
+  domain: string;
+  domain_label: string;
+  role: 'executive' | 'manager' | 'analyst' | 'staff' | string;
+  focus: 'overview' | 'issues' | 'compare' | 'deepdive' | string;
+  timeframe: string;
+  custom_note: string;
+  key_chart_ids: number[];
+  confirmed: boolean;
+}
+
+export interface AiBriefingGuessOption {
+  value: string;
+  label?: string;
+  label_vi?: string;
+  hint_vi?: string;
+}
+
+export interface AiBriefingGuess {
+  domain: string;
+  domain_label: string;
+  confidence: number;
+  alt_domains: { domain: string; label: string; score: number }[];
+  key_chart_ids: number[];
+  headline_facts: { text: string; chart_id: number }[];
+  timeframe_hint: string;
+  role_options: AiBriefingGuessOption[];
+  focus_options: AiBriefingGuessOption[];
+  timeframe_options: AiBriefingGuessOption[];
+  domain_catalog: AiBriefingGuessOption[];
+}
+
+export interface AiFinding {
+  claim: string;
+  chart_ids: number[];
+  confidence: 'HIGH' | 'MED' | 'LOW' | string;
+  turn_index: number;
+  metric_value: number | null;
+}
+
+export interface AiHypothesis {
+  text: string;
+  raised_in_turn: number;
+  status: 'open' | 'confirmed' | 'rejected' | string;
+}
+
+export interface AiConversationState {
+  briefing: AiBriefing | null;
+  findings: AiFinding[];
+  hypotheses: AiHypothesis[];
+  turn_index: number;
+  seen_chart_ids: number[];
+}
 
 /**
  * Fetch a proactive recon (manifest + Insight Packs for top charts) so the
@@ -284,6 +341,126 @@ export async function fetchAiRecon(
 }
 
 /**
+ * Build the URL of the AI-generated PDF for this dashboard. The user can
+ * download it and re-feed it into any LLM (Claude, ChatGPT) — same data
+ * the way they'd hand a printed report to a human analyst.
+ */
+export function buildAiDashboardPdfUrl(token: string, sessionToken?: string): string {
+  const base = `${API_BASE}/public/dashboards/${token}/ai/dashboard.pdf`;
+  if (!sessionToken) return base;
+  // Session token must travel via header for security, so we expose a
+  // separate fetch helper rather than a query string.
+  return base;
+}
+
+export async function downloadAiDashboardPdf(
+  token: string,
+  sessionToken?: string,
+  filename = 'dashboard.pdf',
+): Promise<void> {
+  const headers: Record<string, string> = {};
+  if (sessionToken) headers['X-Public-Session'] = sessionToken;
+  const res = await fetch(buildAiDashboardPdfUrl(token), { headers });
+  if (!res.ok) throw new Error(`PDF ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+}
+
+/**
+ * Heuristic guess of dashboard domain / role / key metrics. No LLM call —
+ * powers Step 1 of the briefing wizard ("AI đoán trước, user xác nhận").
+ */
+export async function fetchAiBriefingGuess(
+  token: string,
+  sessionToken?: string,
+): Promise<AiBriefingGuess> {
+  const headers: Record<string, string> = {};
+  if (sessionToken) headers['X-Public-Session'] = sessionToken;
+  const res = await publicClient.get(
+    `/public/dashboards/${token}/ai/briefing/guess`,
+    { headers },
+  );
+  return res.data as AiBriefingGuess;
+}
+
+/**
+ * Stream the Executive Brief paragraph after the user has confirmed their
+ * briefing. Uses BYOK like the chat endpoint.
+ */
+export async function* streamAiBriefingBrief(
+  token: string,
+  briefing: AiBriefing,
+  userAiKey: string,
+  provider: AiProvider,
+  model: string,
+  sessionToken?: string,
+): AsyncGenerator<AiAgentEvent, void, unknown> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-User-Ai-Key': userAiKey,
+    'X-User-Ai-Provider': provider,
+  };
+  const trimmedModel = model.trim();
+  if (trimmedModel) headers['X-User-Ai-Model'] = trimmedModel;
+  if (sessionToken) headers['X-Public-Session'] = sessionToken;
+
+  const response = await fetch(
+    `${API_BASE}/public/dashboards/${token}/ai/briefing/brief`,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ briefing }),
+    },
+  );
+
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try {
+      const json = await response.json();
+      detail = json?.detail ?? detail;
+    } catch { /* ignore */ }
+    throw new Error(detail);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) return;
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split('\n\n');
+    buffer = events.pop() ?? '';
+    for (const evBlock of events) {
+      const dataLine = evBlock.split('\n').find((l) => l.startsWith('data:'));
+      if (!dataLine) continue;
+      const payload = dataLine.slice(5).trim();
+      if (!payload) continue;
+      try {
+        const parsed = JSON.parse(payload) as AiAgentEvent;
+        yield parsed;
+        if (parsed.type === 'done') return;
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+/**
  * Stream typed events from the agentic chat endpoint.
  *
  * The user's API key is sent in `X-User-Ai-Key` and is NEVER stored.
@@ -297,6 +474,8 @@ export async function* streamAiAgentChat(
   provider: AiProvider,
   model: string,
   sessionToken?: string,
+  briefing?: AiBriefing | null,
+  state?: AiConversationState | null,
 ): AsyncGenerator<AiAgentEvent, void, unknown> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -309,10 +488,14 @@ export async function* streamAiAgentChat(
   }
   if (sessionToken) headers['X-Public-Session'] = sessionToken;
 
+  const body: Record<string, unknown> = { messages };
+  if (briefing) body.briefing = briefing;
+  if (state) body.state = state;
+
   const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/agent/chat`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {

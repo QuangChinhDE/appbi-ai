@@ -13,6 +13,7 @@ EventType = Literal[
     "tool_call",    # provider asked to call a tool (after the loop emits this we execute)
     "tool_result",  # tool finished — emitted by the loop, not the provider
     "status",       # human-readable progress line (e.g. "Đang xem chart X...")
+    "state",        # updated ConversationState (sent at end of turn)
     "error",        # non-fatal error message to surface
     "done",         # final marker
 ]

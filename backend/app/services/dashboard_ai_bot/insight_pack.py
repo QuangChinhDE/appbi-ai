@@ -53,6 +53,31 @@ class InsightPack:
     trend: dict[str, Any] | None  # {direction, pct_change, first, last, points}
     outliers: list[dict[str, Any]]
     filters_applied: list[dict[str, Any]]
+    # Disambiguation flags. ``empty_state`` is None when the chart has data
+    # with labelled rows. ``"no_rows"`` means total_rows == 0. 
+    # ``"unlabelled_dimension"`` means rows exist but the primary dimension
+    # column is entirely NULL/empty — the agent must NOT collapse this into
+    # "no data" (the rows are real, the labels are missing).
+    empty_state: str | None = None
+    # Pre-computed share-of-total for the top row, so the LLM does not need
+    # an extra `compute` call just to express "X chiếm Y% tổng". None when
+    # primary measure is missing or total is zero.
+    top_share_pct: float | None = None
+    # Heuristic role of this chart for the dashboard: "kpi" (single number),
+    # "trend" (time-series), "breakdown" (category × measure), or
+    # "distribution" (long-tail share). Helps the LLM triage which charts
+    # are most relevant to a question without inspecting every column.
+    chart_role: str = "breakdown"
+    # Pre-computed health signals for Phase-2 reasoning. Each is a short
+    # token the LLM can lift directly into a bullet:
+    #   - "concentration_high"   : top_share_pct > 50 (non-KPI charts only)
+    #   - "trend_up_strong" / "trend_down_strong" : abs(pct_change) > 10
+    #   - "completion_low"       : measure looks like a percentage and avg < 30
+    #   - "completion_high"      : measure looks like a percentage and avg > 70
+    #   - "outliers_present"     : >= 1 z>=2 rows
+    #   - "single_segment"       : distinct primary_dimension == 1
+    #   - "zero_value"           : KPI chart with total == 0 (possible data issue)
+    health_signals: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,6 +111,10 @@ class InsightPack:
             "trend": self.trend,
             "outliers": self.outliers,
             "filters_applied": self.filters_applied,
+            "empty_state": self.empty_state,
+            "top_share_pct": _round(self.top_share_pct),
+            "chart_role": self.chart_role,
+            "health_signals": list(self.health_signals),
         }
 
 
@@ -362,6 +391,18 @@ def build_chart_manifest(
     filters_applied: Sequence[dict[str, Any]],
 ) -> dict[str, Any]:
     """Lightweight manifest entry — no rows, no stats. For ``list_charts`` tool."""
+    # Cheap role hint without summary stats. Lets the agent triage in
+    # Phase 1 from the manifest alone, before deciding which charts to
+    # fetch full summaries for.
+    t = (chart_type or "").lower()
+    if any(h in t for h in _KPI_TYPE_HINTS):
+        role = "kpi"
+    elif any(h in t for h in _TREND_TYPE_HINTS):
+        role = "trend"
+    elif any(h in t for h in _DIST_TYPE_HINTS):
+        role = "distribution"
+    else:
+        role = "breakdown"
     return {
         "chart_id": chart_id,
         "chart_name": chart_name,
@@ -370,6 +411,7 @@ def build_chart_manifest(
         "columns": list(columns),
         "total_rows": int(total_rows),
         "filters_applied": list(filters_applied),
+        "role_hint": role,
     }
 
 
@@ -440,6 +482,75 @@ def build_insight_pack(
     trend = _detect_trend(rows, columns, dim_idx, measure_idx)
     outliers = _detect_outliers(rows, columns, measure_idx)
 
+    # Empty-state disambiguation: distinguish "no data" from "rows with
+    # unlabelled dimension". If total is 0 → no_rows. If we have rows but
+    # the chosen dimension is entirely NULL/empty → unlabelled_dimension.
+    empty_state: str | None = None
+    if total == 0:
+        empty_state = "no_rows"
+    elif dim_idx is not None:
+        dim_values = values_by_col[dim_idx]
+        non_null_labels = [v for v in dim_values if v is not None and str(v).strip() != ""]
+        if not non_null_labels:
+            empty_state = "unlabelled_dimension"
+
+    # Pre-compute top-1 share of total so the agent can frame "X chiếm Y%"
+    # without an extra compute call.
+    top_share_pct: float | None = None
+    if measure_idx is not None and top5:
+        first = top5[0]
+        first_val = _to_number(first.get(columns[measure_idx]))
+        col_summary = col_summaries[measure_idx] if measure_idx < len(col_summaries) else None
+        col_total = col_summary.total if col_summary else None
+        if first_val is not None and col_total and col_total > 0:
+            top_share_pct = (first_val / col_total) * 100.0
+
+    # Heuristic chart_role classification.
+    chart_role = _classify_chart_role(
+        chart_type=chart_type,
+        chart_name=chart_name,
+        columns=columns,
+        col_summaries=col_summaries,
+        dim_idx=dim_idx,
+        measure_idx=measure_idx,
+        trend=trend,
+        total=total,
+    )
+
+    # Health signal extraction. Cheap, deterministic — gives the LLM tokens
+    # it can lift directly into a bullet. See InsightPack.health_signals.
+    health_signals: list[str] = []
+    # concentration_high only makes sense when there are multiple segments;
+    # KPI charts always have total_rows==1 so top_share_pct is always 100% —
+    # flagging that as "concentration" would be a false positive.
+    if top_share_pct is not None and top_share_pct > 50 and chart_role != "kpi":
+        health_signals.append("concentration_high")
+    # Explicit zero on a KPI is a data-quality / business signal worth surfacing.
+    if chart_role == "kpi" and measure_idx is not None:
+        col_summary = col_summaries[measure_idx]
+        if col_summary.total is not None and col_summary.total == 0:
+            health_signals.append("zero_value")
+    if trend and trend.get("pct_change") is not None:
+        pct = abs(trend["pct_change"])
+        if pct > 10:
+            health_signals.append(
+                "trend_up_strong" if trend.get("direction") == "up" else "trend_down_strong"
+            )
+    if measure_idx is not None:
+        col_summary = col_summaries[measure_idx]
+        if col_summary.average is not None and _looks_like_percentage(
+            chart_name, col_summary.name, col_summary.maximum
+        ):
+            avg = col_summary.average
+            if avg < 30:
+                health_signals.append("completion_low")
+            elif avg > 70:
+                health_signals.append("completion_high")
+    if outliers:
+        health_signals.append("outliers_present")
+    if dim_idx is not None and col_summaries[dim_idx].distinct == 1 and total > 1:
+        health_signals.append("single_segment")
+
     return InsightPack(
         chart_id=chart_id,
         chart_name=chart_name,
@@ -456,4 +567,58 @@ def build_insight_pack(
         trend=trend,
         outliers=outliers,
         filters_applied=list(filters_applied),
+        empty_state=empty_state,
+        top_share_pct=top_share_pct,
+        chart_role=chart_role,
+        health_signals=health_signals,
     )
+
+
+_PERCENT_HINTS = (
+    "%", "percent", "tỷ lệ", "ty le", "rate", "completion", "hoàn thành",
+    "hoan thanh", "ratio",
+)
+
+
+def _looks_like_percentage(chart_name: str, col_name: str, maximum: float | None) -> bool:
+    blob = f"{chart_name or ''} {col_name or ''}".lower()
+    if any(h in blob for h in _PERCENT_HINTS):
+        return True
+    # Numbers all in [0, 100] → likely a percentage scale
+    if maximum is not None and 0 <= maximum <= 100:
+        return any(h in blob for h in ("rate", "%", "completion"))
+    return False
+
+
+_KPI_TYPE_HINTS = ("kpi", "metric", "card", "number", "stat", "single")
+_TREND_TYPE_HINTS = ("line", "area", "trend", "time")
+_DIST_TYPE_HINTS = ("pie", "donut", "treemap", "funnel")
+
+
+def _classify_chart_role(
+    *,
+    chart_type: str,
+    chart_name: str,
+    columns: Sequence[str],
+    col_summaries: Sequence[ColumnSummary],
+    dim_idx: int | None,
+    measure_idx: int | None,
+    trend: dict[str, Any] | None,
+    total: int,
+) -> str:
+    """Heuristic classification of the chart's analytic role.
+
+    Cheap; uses chart_type, primary dimension kind, and trend availability.
+    """
+    t = (chart_type or "").lower()
+    if any(h in t for h in _KPI_TYPE_HINTS) or total <= 1:
+        return "kpi"
+    if trend is not None or any(h in t for h in _TREND_TYPE_HINTS):
+        return "trend"
+    if any(h in t for h in _DIST_TYPE_HINTS):
+        return "distribution"
+    # Fall back: if the dimension is a short string and there are many rows
+    # → breakdown. If just a few rows → distribution.
+    if dim_idx is not None and measure_idx is not None and total >= 3:
+        return "breakdown"
+    return "kpi"

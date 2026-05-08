@@ -1,15 +1,18 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, X, Send, Loader2, ChevronDown, Key, ExternalLink, AlertTriangle, CheckCircle2, Sparkles, ListChecks, BarChart3, Calculator, GitCompareArrows, Search } from 'lucide-react';
+import { Bot, X, Send, Loader2, ChevronDown, Key, ExternalLink, AlertTriangle, CheckCircle2, Sparkles, ListChecks, BarChart3, Calculator, GitCompareArrows, Search, Filter, TrendingUp, Image as ImageIcon, Activity } from 'lucide-react';
 import {
   fetchAiRecon,
   streamAiAgentChat,
   type AiAgentEvent,
+  type AiBriefing,
   type AiChatMessage,
+  type AiConversationState,
   type AiProvider,
   type AiRecon,
 } from '@/lib/api/public';
+import { BriefingWizard, type BriefingWizardResult } from './BriefingWizard';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -34,21 +37,21 @@ const PROVIDERS: { value: AiProvider; label: string; keyLink: string; placeholde
   },
 ];
 
-// Curated model list per provider. The first entry is the default (strongest
-// general-purpose model commonly available to BYOK users as of 2025-2026).
+// Curated model list per provider. The first entry is the default — the
+// strongest commonly-available BYOK option as of 2026-05.
 const MODEL_OPTIONS: Record<AiProvider, { value: string; label: string }[]> = {
   openai: [
-    { value: 'gpt-4o', label: 'GPT-4o (mạnh nhất)' },
+    { value: 'gpt-4o', label: 'GPT-4o (mạnh, đa dụng)' },
     { value: 'gpt-4.1', label: 'GPT-4.1' },
     { value: 'gpt-4.1-mini', label: 'GPT-4.1 mini' },
     { value: 'gpt-4o-mini', label: 'GPT-4o mini (rẻ, nhanh)' },
     { value: 'o3-mini', label: 'o3-mini (reasoning)' },
   ],
   anthropic: [
-    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet (mạnh nhất)' },
-    { value: 'claude-3-7-sonnet-20250219', label: 'Claude 3.7 Sonnet' },
-    { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku (rẻ, nhanh)' },
-    { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus' },
+    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (đề xuất)' },
+    { value: 'claude-opus-4-7', label: 'Claude Opus 4.7 (mạnh nhất)' },
+    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (rẻ, nhanh)' },
+    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet (cũ)' },
   ],
   gemini: [
     { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro (mạnh nhất)' },
@@ -89,6 +92,27 @@ function setStoredModel(token: string, provider: AiProvider, model: string): voi
   try { sessionStorage.setItem(`dash_ai_model_${token}_${provider}`, model); } catch { /* ignore */ }
 }
 
+// Briefing is non-secret; remembering it across reopens of the bot panel
+// avoids re-running the wizard for every chat session.
+function getStoredBriefing(token: string): AiBriefing | null {
+  try {
+    const raw = sessionStorage.getItem(`dash_ai_briefing_${token}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as AiBriefing;
+    if (!parsed || typeof parsed !== 'object' || !parsed.confirmed) return null;
+    return parsed;
+  } catch { return null; }
+}
+function setStoredBriefing(token: string, briefing: AiBriefing | null): void {
+  try {
+    if (briefing) {
+      sessionStorage.setItem(`dash_ai_briefing_${token}`, JSON.stringify(briefing));
+    } else {
+      sessionStorage.removeItem(`dash_ai_briefing_${token}`);
+    }
+  } catch { /* ignore */ }
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface ChatMessage extends AiChatMessage {
@@ -101,6 +125,14 @@ interface Props {
   sessionToken?: string | null;
   dashboardName: string;
 }
+
+// ── Chart name resolution ────────────────────────────────────────────────────
+//
+// The model writes `[chart:N]` in its answers. The UI renders these as
+// chips, but users don't read chart_id — they read chart NAMES. This
+// context lets every nested chip resolve `N → "Chart Name"` without
+// threading a prop through 4 components.
+const ChartNamesContext = React.createContext<Map<number, string>>(new Map());
 
 // ── BotIcon ───────────────────────────────────────────────────────────────────
 
@@ -165,7 +197,7 @@ function buildWelcomeMessage(recon: AiRecon, dashboardName: string): string {
 
 export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
   const [isOpen, setIsOpen] = useState(false);
-  const [view, setView] = useState<'key' | 'chat'>('key');
+  const [view, setView] = useState<'key' | 'briefing' | 'chat'>('key');
   const [provider, setProvider] = useState<AiProvider>(() => getStoredProvider(token));
   const [modelId, setModelId] = useState(() => getStoredModel(token, getStoredProvider(token)));
   // API key kept only in component memory — never written to storage.
@@ -176,6 +208,14 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
   const [reconLoading, setReconLoading] = useState(false);
   const [reconError, setReconError] = useState('');
 
+  // Phase A — confirmed briefing (sent on every chat turn). Persisted in
+  // sessionStorage per-link so reopening the bot in the same tab skips the
+  // wizard.
+  const [briefing, setBriefing] = useState<AiBriefing | null>(() => getStoredBriefing(token));
+  // Phase B — conversation state (findings + seen charts) accumulated turn by
+  // turn. Backend echoes the new state in the `state` SSE event.
+  const [convState, setConvState] = useState<AiConversationState | null>(null);
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -184,6 +224,8 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<boolean>(false);
+  const [idleNudge, setIdleNudge] = useState<string | null>(null);
+  const idleTimerRef = useRef<number | null>(null);
 
   // ── Recon load ───────────────────────────────────────────────────────────
 
@@ -194,17 +236,16 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
     try {
       const r = await fetchAiRecon(token, sessionToken ?? undefined);
       setRecon(r);
-      setMessages([{
-        role: 'assistant',
-        content: buildWelcomeMessage(r, dashboardName),
-      }]);
+      // The briefing wizard / brief-skip path is responsible for seeding
+      // the welcome message. We only set it here as a backup if the user
+      // somehow lands in the chat view with no messages yet.
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Không thể tải dữ liệu dashboard.';
       setReconError(msg);
     } finally {
       setReconLoading(false);
     }
-  }, [dashboardName, recon, sessionToken, token]);
+  }, [recon, sessionToken, token]);
 
   const handleOpen = useCallback(() => {
     setIsOpen(true);
@@ -213,14 +254,48 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
     setModelId(getStoredModel(token, storedProvider));
     // Always require key entry on open. Key stays in memory only and we
     // never restore it from storage so it can never leak across sessions.
-    setView(apiKey ? 'chat' : 'key');
-  }, [apiKey, token]);
+    if (!apiKey) {
+      setView('key');
+    } else if (briefing) {
+      setView('chat');
+    } else {
+      setView('briefing');
+    }
+  }, [apiKey, briefing, token]);
 
   useEffect(() => {
     if (isOpen) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages, isOpen, activeStatus]);
+
+  // Idle nudge: 30s after the LAST stream completes, surface the strongest
+  // [FOLLOWUP] chip as a "Tôi gợi ý hỏi tiếp:" pill that auto-dismisses on
+  // user interaction. Reduces "blank-stare" when user doesn't know what to
+  // ask next — DA-style proactive prompting.
+  useEffect(() => {
+    if (idleTimerRef.current !== null) {
+      window.clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+    setIdleNudge(null);
+    if (!isOpen || isStreaming || view !== 'chat') return;
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== 'assistant' || !last.content) return;
+    // Pull the FIRST followup question out of the answer text
+    const m = /\[FOLLOWUP\]\s*([^\n]+\?)/i.exec(last.content);
+    if (!m) return;
+    const candidate = m[1].trim();
+    idleTimerRef.current = window.setTimeout(() => {
+      setIdleNudge(candidate);
+    }, 30_000);
+    return () => {
+      if (idleTimerRef.current !== null) {
+        window.clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+    };
+  }, [isOpen, isStreaming, messages, view]);
 
   const handleStartChat = useCallback(() => {
     const trimmed = apiKey.trim();
@@ -234,9 +309,73 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
     setStoredProvider(token, provider);
     setStoredModel(token, provider, chosenModel);
     setModelId(chosenModel);
-    setView('chat');
+    // Recon now happens IN the briefing wizard (it calls /briefing/guess
+    // which itself runs the recon under the hood). The chat view will use
+    // the manifest from /ai/recon for chip-name resolution; trigger it in
+    // parallel so the user does not wait for both calls sequentially.
     loadRecon();
+    // Skip the wizard if we already have a confirmed briefing from this tab
+    // (sessionStorage). Reset state so the new chat session starts fresh
+    // but keep the user briefing.
+    const stored = getStoredBriefing(token);
+    if (stored) {
+      setBriefing(stored);
+      setConvState({
+        briefing: stored,
+        findings: [],
+        hypotheses: [],
+        turn_index: 0,
+        seen_chart_ids: [],
+      });
+      setMessages([{
+        role: 'assistant',
+        content:
+          `Tôi nhớ bạn đang xem dashboard này với vai trò **${stored.role}**, ` +
+          `lĩnh vực **${stored.domain_label}**, trọng tâm **${stored.focus}**. ` +
+          'Hỏi gì cũng được — hoặc bấm "Đổi briefing" ở thanh trên để khảo sát lại.',
+      }]);
+      setView('chat');
+    } else {
+      setView('briefing');
+    }
   }, [apiKey, loadRecon, modelId, provider, token]);
+
+  const handleBriefingDone = useCallback((result: BriefingWizardResult) => {
+    setBriefing(result.briefing);
+    setStoredBriefing(token, result.briefing);
+    // Reset conversation state for a fresh session
+    setConvState({
+      briefing: result.briefing,
+      findings: [],
+      hypotheses: [],
+      turn_index: 0,
+      seen_chart_ids: [],
+    });
+    // Seed the chat with the executive brief as the assistant's first message.
+    setMessages([{ role: 'assistant', content: result.executiveBrief }]);
+    setView('chat');
+  }, [token]);
+
+  const handleBriefingSkip = useCallback(() => {
+    // Skip wizard — fall back to legacy welcome message from recon.
+    setBriefing(null);
+    setConvState({
+      briefing: null,
+      findings: [],
+      hypotheses: [],
+      turn_index: 0,
+      seen_chart_ids: [],
+    });
+    if (recon) {
+      setMessages([{
+        role: 'assistant',
+        content: buildWelcomeMessage(recon, dashboardName),
+      }]);
+    } else {
+      setMessages([]);
+    }
+    setView('chat');
+  }, [dashboardName, recon]);
 
   const handleProviderChange = useCallback((nextProvider: AiProvider) => {
     setProvider(nextProvider);
@@ -277,6 +416,8 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
         provider,
         modelId.trim() || DEFAULT_MODELS[provider],
         sessionToken ?? undefined,
+        briefing,
+        convState,
       );
       for await (const ev of gen) {
         if (abortRef.current) break;
@@ -304,6 +445,7 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
               return next;
             });
           },
+          updateState: (s) => setConvState(s),
         });
       }
     } catch (err: unknown) {
@@ -320,7 +462,7 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
       setIsStreaming(false);
       setActiveStatus('');
     }
-  }, [apiKey, inputText, isStreaming, messages, modelId, provider, sessionToken, token]);
+  }, [apiKey, briefing, convState, inputText, isStreaming, messages, modelId, provider, sessionToken, token]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -339,8 +481,35 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
     setApiKey('');
     setMessages([]);
     setRecon(null);
+    setBriefing(null);
+    setStoredBriefing(token, null);
+    setConvState(null);
     setView('key');
-  }, []);
+  }, [token]);
+
+  const handleResetBriefing = useCallback(() => {
+    setBriefing(null);
+    setStoredBriefing(token, null);
+    setConvState(null);
+    setMessages([]);
+    setView('briefing');
+  }, [token]);
+
+  // Build chart-id → name lookup once per recon, memoized so children don't
+  // re-render on every state change. The model emits `[chart:N]` and the
+  // chip renders the pretty name without us having to thread a prop.
+  // NOTE: must stay above any early-return so hook order is stable.
+  const chartNamesMap = useMemo(() => {
+    const m = new Map<number, string>();
+    if (recon?.manifest?.charts) {
+      for (const c of recon.manifest.charts) {
+        if (typeof c.chart_id === 'number' && c.chart_name) {
+          m.set(c.chart_id, c.chart_name);
+        }
+      }
+    }
+    return m;
+  }, [recon]);
 
   // ── Render: closed state ───────────────────────────────────────────────────
 
@@ -359,15 +528,20 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
   }
 
   return (
-    <div className="flex w-[380px] min-w-[260px] flex-shrink-0 flex-col border-l border-[rgb(var(--border-line))] bg-surface-1">
+    <ChartNamesContext.Provider value={chartNamesMap}>
+    <div className="flex w-[400px] min-w-[300px] flex-shrink-0 flex-col my-3 mr-3 overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-[0_8px_32px_-12px_rgba(0,0,0,0.18),0_2px_6px_-2px_rgba(0,0,0,0.08)] backdrop-blur-sm">
       {/* Header */}
-      <div className="flex flex-shrink-0 items-center justify-between border-b border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3">
+      <div className="flex flex-shrink-0 items-center justify-between border-b border-[rgb(var(--border-line))]/60 bg-gradient-to-b from-surface-2 to-surface-1 px-4 py-3">
         <div className="flex items-center gap-2">
-          <Bot className="h-4 w-4 text-brand" />
-          <span className="text-caption font-strong text-text-primary">AI Analyst</span>
-          {view === 'chat' && (
-            <span className="text-micro text-text-tertiary">{dashboardName}</span>
-          )}
+          <div className="flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-brand to-brand/70 text-white shadow-sm">
+            <Bot className="h-3.5 w-3.5" />
+          </div>
+          <div className="flex flex-col leading-tight">
+            <span className="text-caption font-strong text-text-primary">AI Analyst</span>
+            {view === 'chat' && dashboardName && (
+              <span className="text-micro text-text-tertiary truncate max-w-[180px]">{dashboardName}</span>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-1">
           {view === 'chat' && (
@@ -390,7 +564,7 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
         </div>
       </div>
 
-      {view === 'key' ? (
+      {view === 'key' && (
         <KeyInputView
           provider={provider}
           modelId={modelId}
@@ -401,7 +575,19 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
           onApiKeyChange={setApiKey}
           onSubmit={handleStartChat}
         />
-      ) : (
+      )}
+      {view === 'briefing' && (
+        <BriefingWizard
+          token={token}
+          sessionToken={sessionToken}
+          apiKey={apiKey}
+          provider={provider}
+          model={modelId.trim() || DEFAULT_MODELS[provider]}
+          onSkip={handleBriefingSkip}
+          onComplete={handleBriefingDone}
+        />
+      )}
+      {view === 'chat' && (
         <ChatView
           messages={messages}
           reconLoading={reconLoading}
@@ -415,9 +601,16 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
           onKeyDown={handleKeyDown}
           onSend={handleSend}
           onPickSuggestion={handlePickSuggestion}
+          briefing={briefing}
+          convState={convState}
+          onResetBriefing={handleResetBriefing}
+          idleNudge={idleNudge}
+          onDismissNudge={() => setIdleNudge(null)}
+          onAcceptNudge={(q) => { setIdleNudge(null); handleSend(q); }}
         />
       )}
     </div>
+    </ChartNamesContext.Provider>
   );
 }
 
@@ -429,6 +622,7 @@ function applyEvent(
     appendText: (chunk: string) => void;
     setStatus: (s: string) => void;
     appendStatusLog: (entry: { tool: string; text: string; ok?: boolean; error?: string | null }) => void;
+    updateState: (s: AiConversationState) => void;
   },
 ) {
   if (ev.type === 'text') {
@@ -446,6 +640,10 @@ function applyEvent(
   }
   if (ev.type === 'tool_result') {
     ops.appendStatusLog({ tool: ev.tool, text: '', ok: ev.ok, error: ev.error ?? null });
+    return;
+  }
+  if (ev.type === 'state') {
+    if (ev.state) ops.updateState(ev.state);
     return;
   }
   if (ev.type === 'error') {
@@ -569,6 +767,12 @@ function ChatView({
   onKeyDown,
   onSend,
   onPickSuggestion,
+  briefing,
+  convState,
+  onResetBriefing,
+  idleNudge,
+  onDismissNudge,
+  onAcceptNudge,
 }: {
   messages: ChatMessage[];
   reconLoading: boolean;
@@ -582,16 +786,20 @@ function ChatView({
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onSend: () => void;
   onPickSuggestion: (q: string) => void;
+  briefing: AiBriefing | null;
+  convState: AiConversationState | null;
+  onResetBriefing: () => void;
+  idleNudge: string | null;
+  onDismissNudge: () => void;
+  onAcceptNudge: (q: string) => void;
 }) {
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
+      {briefing && (
+        <BriefingPill briefing={briefing} convState={convState} onReset={onResetBriefing} />
+      )}
       <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
-        {reconLoading && (
-          <div className="flex items-center gap-2 text-label text-text-tertiary">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            Đang quét nhanh dashboard...
-          </div>
-        )}
+        {reconLoading && <ReconProgress />}
         {reconError && (
           <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-micro text-danger">
             {reconError}
@@ -622,33 +830,109 @@ function ChatView({
         })}
         <div ref={messagesEndRef} />
       </div>
-      <div className="border-t border-[rgb(var(--border-line))] p-3">
-        <div className="flex items-end gap-2">
+      <div className="border-t border-[rgb(var(--border-line))]/60 bg-gradient-to-t from-surface-2/80 to-surface-1 p-3">
+        {idleNudge && (
+          <div className="mb-2 flex items-center gap-2 rounded-lg border border-brand/30 bg-brand/5 px-2.5 py-1.5 text-tiny text-text-secondary">
+            <Sparkles className="h-3 w-3 flex-shrink-0 text-brand" />
+            <span className="text-text-tertiary">Tôi gợi ý hỏi tiếp:</span>
+            <button
+              onClick={() => onAcceptNudge(idleNudge)}
+              className="flex-1 truncate rounded-full border border-brand/40 bg-brand/10 px-2 py-0.5 text-left text-tiny font-strong text-brand transition-colors hover:bg-brand/20"
+              title={idleNudge}
+            >
+              {idleNudge}
+            </button>
+            <button
+              onClick={onDismissNudge}
+              className="rounded p-0.5 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-primary"
+              aria-label="Bỏ qua gợi ý"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        )}
+        <div className="flex items-end gap-2 rounded-2xl border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 shadow-sm transition-all focus-within:border-brand/60 focus-within:ring-2 focus-within:ring-brand/20">
           <textarea
             ref={inputRef}
             value={inputText}
             onChange={(e) => onInputChange(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Hỏi về số liệu hoặc xu hướng... (Enter để gửi)"
+            placeholder="Hỏi về số liệu hoặc xu hướng..."
             rows={1}
-            className="min-h-[32px] flex-1 resize-none rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-caption text-text-primary placeholder:text-text-quaternary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-            style={{ maxHeight: 100 }}
-            disabled={reconLoading || !!reconError}
+            className="min-h-[28px] flex-1 resize-none border-0 bg-transparent text-caption text-text-primary placeholder:text-text-quaternary focus:outline-none focus:ring-0"
+            style={{ maxHeight: 120 }}
+            disabled={!!reconError}
           />
           <button
             onClick={onSend}
-            disabled={!inputText.trim() || isStreaming || reconLoading || !!reconError}
-            className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-brand text-white transition-colors hover:bg-brand/90 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={!inputText.trim() || isStreaming || !!reconError}
+            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-brand text-white shadow-sm transition-all hover:bg-brand/90 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
             aria-label="Gửi"
           >
-            {isStreaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            {isStreaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
           </button>
         </div>
-        <p className="mt-1 text-micro text-text-quaternary">Shift+Enter để xuống dòng</p>
+        <p className="mt-1.5 px-1 text-micro text-text-quaternary">Enter để gửi · Shift+Enter để xuống dòng</p>
       </div>
     </div>
   );
 }
+
+// ── BriefingPill ──────────────────────────────────────────────────────────────
+//
+// Compact chip that lives above the chat scrollback and shows the user the
+// active briefing (domain / role / focus) plus how many findings the bot
+// has accumulated. Reassures the user that "the bot remembers".
+
+function BriefingPill({
+  briefing, convState, onReset,
+}: {
+  briefing: AiBriefing;
+  convState: AiConversationState | null;
+  onReset: () => void;
+}) {
+  const findings = convState?.findings.length ?? 0;
+  const seen = convState?.seen_chart_ids.length ?? 0;
+  const roleLabel = ROLE_LABEL_VI[briefing.role] || briefing.role;
+  const focusLabel = FOCUS_LABEL_VI[briefing.focus] || briefing.focus;
+  return (
+    <div className="flex flex-shrink-0 items-center gap-1.5 border-b border-[rgb(var(--border-line))]/60 bg-surface-2/60 px-3 py-1.5 text-tiny text-text-secondary">
+      <Sparkles className="h-3 w-3 text-brand" />
+      <span className="truncate">
+        <span className="font-strong">{briefing.domain_label}</span>
+        {' · '}{roleLabel}{' · '}{focusLabel}
+      </span>
+      {(findings > 0 || seen > 0) && (
+        <span className="ml-2 text-text-tertiary text-[0.7rem]">
+          {findings > 0 && <span title="Số phát hiện đã nhớ">📌 {findings}</span>}
+          {findings > 0 && seen > 0 && ' · '}
+          {seen > 0 && <span title="Số chart đã đọc summary">🗂 {seen}</span>}
+        </span>
+      )}
+      <button
+        onClick={onReset}
+        className="ml-auto rounded px-1.5 py-0.5 text-[0.7rem] text-text-tertiary transition-colors hover:bg-surface-3 hover:text-brand"
+        title="Mở lại khảo sát mở đầu"
+      >
+        Đổi briefing
+      </button>
+    </div>
+  );
+}
+
+const ROLE_LABEL_VI: Record<string, string> = {
+  executive: 'Lãnh đạo',
+  manager: 'Quản lý',
+  analyst: 'Analyst',
+  staff: 'Nhân viên',
+};
+
+const FOCUS_LABEL_VI: Record<string, string> = {
+  overview: 'tổng thể',
+  issues: 'vấn đề',
+  compare: 'so sánh',
+  deepdive: 'sâu',
+};
 
 // ── MessageBubble ─────────────────────────────────────────────────────────────
 
@@ -681,7 +965,7 @@ function MessageBubble({
         }`}
       >
         {!isUser && message.statusLog && message.statusLog.length > 0 && (
-          <StatusLog log={message.statusLog} />
+          <StatusLog log={message.statusLog} collapsed={!streaming} />
         )}
         <RichMarkdown text={body} />
         {!isUser && suggestions.length > 0 && onPickSuggestion && (
@@ -765,14 +1049,45 @@ function extractFollowups(text: string): { body: string; suggestions: string[] }
 
 function StatusLog({
   log,
+  collapsed = false,
 }: {
   log: NonNullable<ChatMessage['statusLog']>;
+  collapsed?: boolean;
 }) {
   // Collapse to one line per tool, showing OK/error after the run completes
   const visible = log.filter((l) => l.text || l.error);
+  const [expanded, setExpanded] = useState(!collapsed);
   if (visible.length === 0) return null;
+  // After streaming completes (collapsed=true), default to a single one-line
+  // summary that the user can expand. Mirrors how Claude/ChatGPT collapse
+  // tool traces after the answer is ready.
+  if (collapsed && !expanded) {
+    const errs = visible.filter((l) => l.ok === false || l.error).length;
+    return (
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        className="mb-1.5 flex items-center gap-1.5 border-b border-[rgb(var(--border-line))]/40 pb-1.5 text-tiny text-text-tertiary transition-colors hover:text-text-secondary"
+      >
+        <CheckCircle2 className="h-3 w-3 flex-shrink-0 text-success" />
+        <span className="italic">
+          Đã đọc {visible.length} bước{errs ? ` · ${errs} lỗi` : ''} · xem chi tiết
+        </span>
+        <ChevronDown className="h-3 w-3" />
+      </button>
+    );
+  }
   return (
     <div className="mb-1.5 flex flex-col gap-0.5 border-b border-[rgb(var(--border-line))]/40 pb-1.5 text-tiny text-text-tertiary">
+      {collapsed && (
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          className="self-start text-tiny text-text-tertiary hover:text-text-secondary"
+        >
+          Ẩn chi tiết ▴
+        </button>
+      )}
       {visible.map((entry, i) => (
         <div key={i} className="flex items-start gap-1.5">
           {entry.ok === false ? (
@@ -797,6 +1112,30 @@ function StatusLog({
 // running tool log + a live "thinking" line so the user always has visible
 // feedback even between provider deltas.
 
+function ReconProgress() {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const start = Date.now();
+    const id = window.setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 500);
+    return () => window.clearInterval(id);
+  }, []);
+  const slow = elapsed >= 8;
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg border border-brand/20 bg-brand/5 px-3 py-2 text-tiny text-text-secondary">
+      <div className="flex items-center gap-2">
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-brand" />
+        <span className="font-strong text-brand">Đang quét nhanh dashboard…</span>
+        <span className="ml-auto text-text-tertiary">{elapsed}s</span>
+      </div>
+      <div className="text-text-tertiary">
+        {slow
+          ? 'Dashboard có nhiều biểu đồ — đang tải insight pack ban đầu. Bạn có thể bắt đầu hỏi ngay, AI sẽ tự đọc thêm khi cần.'
+          : 'Đang đọc cấu trúc các biểu đồ và tổng hợp insight pack đầu tiên.'}
+      </div>
+    </div>
+  );
+}
+
 function toolIcon(tool: string | undefined): React.ReactNode {
   switch (tool) {
     case 'list_charts':
@@ -806,9 +1145,20 @@ function toolIcon(tool: string | undefined): React.ReactNode {
     case 'get_chart_data':
       return <Search className="h-3.5 w-3.5" />;
     case 'compare_segments':
+    case 'compare_periods':
       return <GitCompareArrows className="h-3.5 w-3.5" />;
     case 'compute':
       return <Calculator className="h-3.5 w-3.5" />;
+    case 'describe_distribution':
+      return <Activity className="h-3.5 w-3.5" />;
+    case 'correlate_charts':
+      return <TrendingUp className="h-3.5 w-3.5" />;
+    case 'detect_anomaly':
+      return <AlertTriangle className="h-3.5 w-3.5" />;
+    case 'get_chart_image':
+      return <ImageIcon className="h-3.5 w-3.5" />;
+    case 'smart_drilldown':
+      return <Filter className="h-3.5 w-3.5" />;
     default:
       return <Sparkles className="h-3.5 w-3.5" />;
   }
@@ -980,7 +1330,7 @@ function normalizeAgentText(text: string): string {
   return out;
 }
 
-const INLINE_PATTERN = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|\[chart:\d+\]|\[HIGH\]|\[MED\]|\[LOW\])/g;
+const INLINE_PATTERN = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|\[chart:\d+(?:\s*[—–-]\s*"[^"\]]+")?\]|\[HIGH\]|\[MED\]|\[LOW\])/g;
 
 function renderInline(text: string): React.ReactNode[] {
   if (!text) return [];
@@ -1004,9 +1354,10 @@ function renderInline(text: string): React.ReactNode[] {
       );
       return;
     }
-    const cm = /^\[chart:(\d+)\]$/.exec(part);
+    // Match either short `[chart:N]` or long `[chart:N — "Title"]`
+    const cm = /^\[chart:(\d+)(?:\s*[—–-]\s*"([^"]+)")?\]$/.exec(part);
     if (cm) {
-      out.push(<ChartChip key={idx} chartId={Number(cm[1])} />);
+      out.push(<ChartChip key={idx} chartId={Number(cm[1])} chartName={cm[2] || undefined} />);
       return;
     }
     if (part === '[HIGH]' || part === '[MED]' || part === '[LOW]') {
@@ -1023,25 +1374,44 @@ function renderInline(text: string): React.ReactNode[] {
   return out;
 }
 
-function ChartChip({ chartId }: { chartId: number }) {
+function ChartChip({ chartId, chartName }: { chartId: number; chartName?: string }) {
+  // If the model only emitted `[chart:N]`, look up the name from the
+  // dashboard manifest so the user sees the chart TITLE, not a raw id.
+  const namesMap = React.useContext(ChartNamesContext);
+  const resolvedName = chartName || namesMap.get(chartId);
+
   const handleClick = () => {
     const target = document.querySelector(`[data-chart-id="${chartId}"]`);
     if (target) {
       target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      target.classList.add('ring-2', 'ring-brand');
-      setTimeout(() => target.classList.remove('ring-2', 'ring-brand'), 1600);
+      target.classList.add('ring-2', 'ring-brand', 'ring-offset-2');
+      setTimeout(() => target.classList.remove('ring-2', 'ring-brand', 'ring-offset-2'), 1800);
     }
   };
+  // Prefer the chart name as the visible label. Fall back to `chart:N` only
+  // when we have no name (e.g. before recon has loaded). The id is shown as
+  // a small monospace suffix only on hover via tooltip, never in-line.
+  const label = resolvedName || `chart:${chartId}`;
+  const tooltip = resolvedName
+    ? `Bấm để xem "${resolvedName}" trên dashboard (#${chartId})`
+    : `Bấm để xem biểu đồ #${chartId} trên dashboard`;
   return (
     <button
       onClick={handleClick}
-      className="mx-0.5 inline-flex items-center rounded bg-brand/10 px-1 py-0 text-[0.7em] font-strong text-brand hover:bg-brand/20"
-      title="Xem biểu đồ này"
+      className="mx-0.5 inline-flex max-w-[260px] items-center gap-1 truncate rounded bg-brand/10 px-1.5 py-0 align-baseline text-[0.78em] font-strong text-brand transition-colors hover:bg-brand/20"
+      title={tooltip}
     >
-      chart:{chartId}
+      <BarChart3 className="h-2.5 w-2.5 flex-shrink-0" />
+      <span className="truncate">{label}</span>
     </button>
   );
 }
+
+const _CONFIDENCE_TOOLTIPS: Record<'HIGH' | 'MED' | 'LOW', string> = {
+  HIGH: 'Đọc trực tiếp từ dữ liệu biểu đồ',
+  MED: 'Tính từ phép tính trên dữ liệu biểu đồ',
+  LOW: 'Quan sát định tính, không khẳng định chắc chắn',
+};
 
 function ConfidenceBadge({ level }: { level: 'HIGH' | 'MED' | 'LOW' }) {
   const cls =
@@ -1049,7 +1419,10 @@ function ConfidenceBadge({ level }: { level: 'HIGH' | 'MED' | 'LOW' }) {
     : level === 'MED' ? 'bg-warning/15 text-warning'
     : 'bg-text-tertiary/15 text-text-tertiary';
   return (
-    <span className={`mx-0.5 inline-flex items-center rounded px-1 py-0 text-[0.65em] font-strong ${cls}`}>
+    <span
+      className={`mx-0.5 inline-flex cursor-help items-center rounded px-1 py-0 text-[0.65em] font-strong ${cls}`}
+      title={_CONFIDENCE_TOOLTIPS[level]}
+    >
       {level}
     </span>
   );

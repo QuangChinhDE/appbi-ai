@@ -38,9 +38,24 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
         role = msg.get("role")
         if role == "user":
             _flush_tool_results()
-            out.append({"role": "user", "content": [
-                {"type": "text", "text": str(msg.get("content") or "")},
-            ]})
+            blocks: list[dict] = [{"type": "text", "text": str(msg.get("content") or "")}]
+            # Multimodal image blocks (Phase D). Anthropic accepts:
+            #   {"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}
+            for img in msg.get("image_blocks") or []:
+                if not isinstance(img, dict):
+                    continue
+                b64 = img.get("png_base64")
+                if not b64:
+                    continue
+                blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img.get("media_type") or "image/png",
+                        "data": b64,
+                    },
+                })
+            out.append({"role": "user", "content": blocks})
         elif role == "assistant":
             _flush_tool_results()
             blocks: list[dict] = []
@@ -91,18 +106,40 @@ async def stream_anthropic(
     headers = {
         "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
+        # prompt-caching is generally available but the beta header is still
+        # honoured and helps older accounts opt in.
+        "anthropic-beta": "prompt-caching-2024-07-31",
         "content-type": "application/json",
     }
+    # Prompt caching (anthropic-beta): system + tools blocks rarely change
+    # within a single chat session, so we mark them with cache_control. This
+    # cuts ~60% of input cost on every follow-up turn (cache TTL ≈ 5 min).
     payload: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
-        "system": system_prompt,
+        # System as a list of blocks lets us pin cache_control on the last
+        # one. Anthropic accepts either a string or a list here.
+        "system": [
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         "messages": _to_anthropic_messages(messages),
         "stream": True,
     }
     anthropic_tools = _to_anthropic_tools(tools)
     if anthropic_tools:
-        payload["tools"] = anthropic_tools
+        # Mark the last tool definition with cache_control so the entire
+        # tool catalog gets cached as part of the prefix.
+        cached_tools = list(anthropic_tools)
+        if cached_tools:
+            cached_tools[-1] = {
+                **cached_tools[-1],
+                "cache_control": {"type": "ephemeral"},
+            }
+        payload["tools"] = cached_tools
 
     # Track in-flight blocks: index -> {type, id, name, input_buffer}
     blocks: dict[int, dict[str, Any]] = {}
@@ -119,7 +156,18 @@ async def stream_anthropic(
                         resp.status_code,
                         detail,
                     )
-                    yield AgentEvent(type="error", text=f"Anthropic {resp.status_code}: {detail}")
+                    if resp.status_code == 429:
+                        yield AgentEvent(
+                            type="error",
+                            text="Anthropic 429: API key bị giới hạn rate. Hãy chờ ~30s rồi thử lại, hoặc đổi sang model nhẹ hơn (Haiku).",
+                        )
+                    elif resp.status_code in (401, 403):
+                        yield AgentEvent(
+                            type="error",
+                            text="Anthropic từ chối API key (401/403). Kiểm tra lại key hoặc quyền truy cập model.",
+                        )
+                    else:
+                        yield AgentEvent(type="error", text=f"Anthropic {resp.status_code}: {detail}")
                     return
                 async for line in resp.aiter_lines():
                     if not line.startswith("data:"):

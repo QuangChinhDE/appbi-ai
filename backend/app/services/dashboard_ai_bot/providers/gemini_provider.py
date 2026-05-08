@@ -25,7 +25,20 @@ def _to_gemini_contents(messages: list[dict]) -> list[dict]:
     for msg in messages:
         role = msg.get("role")
         if role == "user":
-            contents.append({"role": "user", "parts": [{"text": str(msg.get("content") or "")}]})
+            parts: list[dict] = [{"text": str(msg.get("content") or "")}]
+            for img in msg.get("image_blocks") or []:
+                if not isinstance(img, dict):
+                    continue
+                b64 = img.get("png_base64")
+                if not b64:
+                    continue
+                parts.append({
+                    "inline_data": {
+                        "mime_type": img.get("media_type") or "image/png",
+                        "data": b64,
+                    },
+                })
+            contents.append({"role": "user", "parts": parts})
         elif role == "assistant":
             text = msg.get("content")
             if text:

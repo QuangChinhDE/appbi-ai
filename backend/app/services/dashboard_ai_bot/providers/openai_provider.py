@@ -20,7 +20,29 @@ def _to_openai_messages(system_prompt: str, messages: list[dict]) -> list[dict]:
     for msg in messages:
         role = msg.get("role")
         if role == "user":
-            out.append({"role": "user", "content": str(msg.get("content") or "")})
+            text = str(msg.get("content") or "")
+            image_blocks = msg.get("image_blocks") or []
+            if image_blocks:
+                # OpenAI multimodal: content is a list of parts, each with a
+                # type ("text" | "image_url"). Image_url accepts a data URL.
+                parts: list[dict] = [{"type": "text", "text": text}]
+                for img in image_blocks:
+                    if not isinstance(img, dict):
+                        continue
+                    b64 = img.get("png_base64")
+                    if not b64:
+                        continue
+                    media = img.get("media_type") or "image/png"
+                    parts.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{media};base64,{b64}",
+                            "detail": "low",
+                        },
+                    })
+                out.append({"role": "user", "content": parts})
+            else:
+                out.append({"role": "user", "content": text})
         elif role == "assistant":
             entry: dict[str, Any] = {"role": "assistant"}
             text = msg.get("content")
@@ -102,7 +124,18 @@ async def stream_openai(
                         resp.status_code,
                         detail,
                     )
-                    yield AgentEvent(type="error", text=f"OpenAI {resp.status_code}: {detail}")
+                    if resp.status_code == 429:
+                        yield AgentEvent(
+                            type="error",
+                            text="OpenAI 429: vượt quota / bị rate-limit. Đợi vài chục giây hoặc chuyển sang gpt-4o-mini.",
+                        )
+                    elif resp.status_code in (401, 403):
+                        yield AgentEvent(
+                            type="error",
+                            text="OpenAI từ chối API key (401/403). Kiểm tra key hoặc model permission.",
+                        )
+                    else:
+                        yield AgentEvent(type="error", text=f"OpenAI {resp.status_code}: {detail}")
                     return
                 async for line in resp.aiter_lines():
                     if not line.startswith("data:"):

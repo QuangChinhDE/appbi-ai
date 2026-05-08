@@ -68,6 +68,7 @@ class ToolContext:
                 "name": (custom_title or getattr(dc.chart, "name", "") or f"Chart {dc.chart_id}"),
                 "chart_type": str(getattr(dc.chart, "chart_type", "") or ""),
                 "description": getattr(dc.chart, "description", None) or "",
+                "layout": layout,
             }
         return cls(
             db=db,
@@ -183,18 +184,30 @@ def _hash_filters(filters: list[dict]) -> str:
 
 
 def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
+    # ``light=True`` skips per-chart data fetches and returns only metadata
+    # (name, type, description, declared filters). Used by the recon endpoint
+    # at chat-open time to avoid blocking on N live SQL queries when the
+    # dashboard has many charts. The agent can still call
+    # ``get_chart_summary`` lazily on the chart it actually needs.
+    light = bool(args.get("light"))
     items = []
     for chart_id in sorted(ctx.allowed_chart_ids):
         meta = ctx.chart_meta.get(chart_id, {})
-        # Pull row count cheaply via the same fetch (cached for the turn)
-        try:
-            data = _fetch_chart_data(ctx, chart_id)
-            columns = data["columns"]
-            total_rows = len(data["rows"])
-        except Exception as exc:
-            columns = []
-            total_rows = 0
-            meta = {**meta, "error": str(exc)[:200]}
+        columns: list[str] = []
+        total_rows = 0
+        if not light:
+            # Pull row count via the same fetch (cached for the turn)
+            try:
+                data = _fetch_chart_data(ctx, chart_id)
+                columns = data["columns"]
+                total_rows = len(data["rows"])
+            except Exception as exc:
+                logger.warning(
+                    "dashboard_ai_bot list_charts fetch failed chart_id=%s err=%s",
+                    chart_id,
+                    type(exc).__name__,
+                )
+                meta = {**meta, "error": str(exc)[:200]}
 
         items.append(
             build_chart_manifest(
@@ -526,6 +539,35 @@ TOOLS: dict[str, ToolFn] = {
 }
 
 
+def _register_advanced_tools() -> None:
+    """Late import + register so we never form a circular import.
+
+    advanced_tools.py imports helpers from THIS module (``_fetch_chart_data``,
+    ``_ok`` etc.). If we import advanced_tools at module top, ``import tools``
+    would re-enter ``import advanced_tools`` mid-load and ImportError. Instead
+    we register on first ``execute_tool`` call and on ``TOOL_DEFINITIONS``
+    materialisation.
+    """
+    if "compare_periods" in TOOLS:
+        return
+    from app.services.dashboard_ai_bot.advanced_tools import (
+        tool_compare_periods,
+        tool_correlate_charts,
+        tool_describe_distribution,
+        tool_detect_anomaly,
+        tool_get_dashboard_overview_image,
+        tool_get_chart_image,
+        tool_smart_drilldown,
+    )
+    TOOLS["compare_periods"] = tool_compare_periods
+    TOOLS["describe_distribution"] = tool_describe_distribution
+    TOOLS["correlate_charts"] = tool_correlate_charts
+    TOOLS["detect_anomaly"] = tool_detect_anomaly
+    TOOLS["get_dashboard_overview_image"] = tool_get_dashboard_overview_image
+    TOOLS["get_chart_image"] = tool_get_chart_image
+    TOOLS["smart_drilldown"] = tool_smart_drilldown
+
+
 # JSON-Schema-ish definitions for provider tool calling. Field names follow
 # OpenAI/Anthropic shape. We translate per-provider in providers/*.
 
@@ -622,10 +664,165 @@ TOOL_DEFINITIONS: list[dict] = [
             "required": ["expression", "vars"],
         },
     },
+    # ── Phase C: advanced analytical tools ────────────────────────────────
+    {
+        "name": "compare_periods",
+        "description": (
+            "Compare a chart's measure across two time periods. Modes: 'auto' "
+            "or 'mom' = last vs prior point; 'qoq' = last vs 3 points back; "
+            "'yoy' = last vs 12 points back; 'custom' = pass period_a / "
+            "period_b (literal labels in the time dimension). Returns delta, "
+            "pct_change, and a verdict (improving/worsening/flat). Use this "
+            "INSTEAD of compare_segments when comparing the same metric across "
+            "time."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_id": {"type": "integer"},
+                "mode": {"type": "string", "enum": ["auto", "mom", "qoq", "yoy", "custom"]},
+                "period_a": {"type": "string", "description": "Required for mode=custom"},
+                "period_b": {"type": "string", "description": "Required for mode=custom"},
+            },
+            "required": ["chart_id"],
+        },
+    },
+    {
+        "name": "describe_distribution",
+        "description": (
+            "Return distribution stats for a chart's primary measure: P50/P90/"
+            "P95, mean, std, skewness, Gini coefficient, top-10% / top-20% "
+            "share of total, and the % of segments needed to reach 80% (Pareto "
+            "threshold). Use when the question is about CONCENTRATION ("
+            "'tập trung vào nhóm nào', 'phân phối có đều không', 'có long tail "
+            "không')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_id": {"type": "integer"},
+            },
+            "required": ["chart_id"],
+        },
+    },
+    {
+        "name": "correlate_charts",
+        "description": (
+            "Correlate two charts that share a common DIMENSION column (same "
+            "name in both). Pass chart_a, chart_b, and 'on' = column name. "
+            "Returns Pearson and Spearman coefficients on the values that "
+            "appear in BOTH. Use when the user asks 'liệu A có liên quan tới "
+            "B không' or for cross-chart hypothesis testing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_a": {"type": "integer"},
+                "chart_b": {"type": "integer"},
+                "on": {"type": "string", "description": "Column name shared by both charts"},
+            },
+            "required": ["chart_a", "chart_b", "on"],
+        },
+    },
+    {
+        "name": "detect_anomaly",
+        "description": (
+            "Find outlier rows / points. method='zscore' (|z|≥threshold, default "
+            "2), 'iqr' (Tukey fences), 'rolling' (rolling z over a time series, "
+            "window=3), or 'changepoint' (find a meaningful shift in level over "
+            "time). Use when the user asks 'có gì bất thường', 'spike', "
+            "'breakout'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_id": {"type": "integer"},
+                "method": {"type": "string", "enum": ["zscore", "iqr", "rolling", "changepoint"]},
+                "threshold": {"type": "number", "description": "Optional override for zscore"},
+            },
+            "required": ["chart_id"],
+        },
+    },
+    # ── Phase I: smart drilldown on user-named segment ──────────────────
+    {
+        "name": "smart_drilldown",
+        "description": (
+            "Filter the rows of one chart by a named column = value, then "
+            "rank by the chart's primary measure. Use when the user asks "
+            "for a specific segment ('chỉ phòng IT', 'khách hàng VIP', "
+            "'task của user X'). Ops: eq, neq, contains, startswith, gt, "
+            "lt, gte, lte. Returns matching rows + totals on the measure."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_id": {"type": "integer"},
+                "column": {"type": "string"},
+                "match": {"description": "Value to match (string or number)"},
+                "op": {"type": "string", "enum": ["eq", "neq", "contains", "startswith", "gt", "lt", "gte", "lte"]},
+                "top_n": {"type": "integer"},
+            },
+            "required": ["chart_id", "column", "match"],
+        },
+    },
+    # ── Phase D: visual perception ───────────────────────────────────────
+    {
+        "name": "get_dashboard_overview_image",
+        "description": (
+            "Render one overview PNG of the whole dashboard/report surface "
+            "using the current public filters and chart layout/order. Active "
+            "filters are stamped on the image so you know what you're looking "
+            "at. Use this when the user asks to look at the report visually, "
+            "review the overall dashboard from a viewer/user perspective, or "
+            "asks for a screenshot-style analysis instead of only numbers. "
+            "ONE call per turn is enough — its output stays in the message "
+            "history; do not re-invoke."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "max_charts": {
+                    "type": "integer",
+                    "description": "Optional cap on charts included in the overview image; default 12.",
+                },
+                "page_id": {
+                    "type": "string",
+                    "description": "Optional dashboard page id. Use only when the user asks about a specific page of a multi-page dashboard.",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_chart_image",
+        "description": (
+            "Render a tiny ASCII sparkline + shape summary for a chart so you "
+            "can REASON ABOUT THE SHAPE (not just numbers). Useful when the "
+            "user asks about trend shape: 'có flatten ở cuối không', 'có spike "
+            "đột biến không', 'biến động mạnh không'. Return includes a unicode "
+            "block sparkline and a one-line shape diagnosis."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_id": {"type": "integer"},
+            },
+            "required": ["chart_id"],
+        },
+    },
 ]
 
 
+# Eagerly register at import time when the cycle is not active. If we are
+# being imported FROM advanced_tools.py (the partial-module case), this call
+# raises ImportError — we swallow it; ``execute_tool`` will retry.
+try:
+    _register_advanced_tools()
+except ImportError:
+    pass
+
+
 def execute_tool(ctx: ToolContext, name: str, args: dict | None) -> dict:
+    _register_advanced_tools()
     fn = TOOLS.get(name)
     if fn is None:
         return _err(f"unknown tool: {name}")

@@ -1713,12 +1713,265 @@ def get_dashboard_ai_recon(
             detail="Failed to build AI recon.",
         )
 
-    from fastapi.responses import JSONResponse
-    return JSONResponse(content=recon, headers={"Cache-Control": "no-store"})
+    import json
+    from datetime import date, datetime
+
+    def _default(obj):
+        if isinstance(obj, (date, datetime)):
+            return obj.isoformat()
+        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+    from fastapi.responses import Response
+    return Response(
+        content=json.dumps(recon, default=_default),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 class _AiAgentChatBody(BaseModel):
     messages: list[dict]
+    # Phase A — confirmed user briefing (domain, role, focus, timeframe).
+    # Optional: if missing, agent runs without briefing customisation.
+    briefing: dict | None = None
+    # Phase B — conversation state from previous turns. Optional first turn.
+    state: dict | None = None
+
+
+class _AiBriefingGuessQuery(BaseModel):
+    pass  # currently no body, just GET
+
+
+class _AiBriefingBriefBody(BaseModel):
+    """Confirmed briefing — backend uses it (+ recon) to call BYOK LLM and
+    produce an Executive Brief paragraph.
+    """
+    briefing: dict
+
+
+@router.get("/dashboards/{token}/ai/dashboard.pdf")
+@_limiter.limit("10/minute")
+def get_dashboard_ai_pdf(
+    token: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Render the dashboard as a multi-page PDF — one page per chart plus a
+    cover page. The user can download this and re-feed it into ANY LLM
+    (Claude, ChatGPT) for offline analysis — same data, "real images" the
+    way the user described.
+    """
+    from app.services.dashboard_ai_bot.advanced_tools import (
+        _detect_dim_idx, _detect_measure_idx,
+    )
+    from app.services.dashboard_ai_bot.chart_renderer import render_dashboard_pdf
+    from app.services.dashboard_ai_bot.tools import _fetch_chart_data, ToolContext
+
+    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
+    if not (appearance_config or {}).get("ai_bot_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="AI bot is not enabled for this shared link.",
+        )
+
+    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=public_filters)
+    payloads: list[dict] = []
+    for chart_id in sorted(ctx.allowed_chart_ids):
+        meta = ctx.chart_meta.get(chart_id, {})
+        try:
+            data = _fetch_chart_data(ctx, chart_id)
+        except Exception:
+            logger.warning("AI PDF: failed to load chart_id=%s", chart_id)
+            continue
+        cols = data["columns"]
+        rows = data["rows"][:200]
+        m_idx = _detect_measure_idx(cols, rows)
+        d_idx = _detect_dim_idx(cols, rows, m_idx, prefer_datetime=True)
+        ctype = (meta.get("chart_type") or "").lower()
+        role = "kpi" if any(h in ctype for h in ("kpi", "metric", "card", "number", "stat")) else (
+            "trend" if any(h in ctype for h in ("line", "area")) else (
+                "distribution" if any(h in ctype for h in ("pie", "donut")) else "breakdown"
+            )
+        )
+        payloads.append({
+            "chart_id": chart_id,
+            "chart_name": meta.get("name", f"Chart {chart_id}"),
+            "chart_type": meta.get("chart_type", ""),
+            "chart_role": role,
+            "columns": cols,
+            "rows": rows,
+            "dim_idx": d_idx,
+            "measure_idx": m_idx,
+        })
+
+    try:
+        pdf_bytes = render_dashboard_pdf(
+            dashboard_name=dash.name or "Dashboard",
+            chart_payloads=payloads,
+        )
+    except Exception:
+        logger.exception("AI PDF render failed for token=%s", token)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to render PDF.",
+        )
+
+    safe_name = (dash.name or "dashboard").replace(" ", "_")[:60]
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}.pdf"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/dashboards/{token}/ai/briefing/guess")
+@_limiter.limit("20/minute")
+def get_dashboard_ai_briefing_guess(
+    token: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Heuristic guess of the dashboard's domain, role audience, and key
+    metrics. The frontend wizard renders this as Step 1 (confirm/correct).
+    No LLM call.
+    """
+    from app.services.dashboard_ai_bot.agent import build_proactive_recon
+    from app.services.dashboard_ai_bot.briefing import guess_briefing_from_recon
+    from app.services.dashboard_ai_bot.tools import ToolContext
+
+    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
+    if not (appearance_config or {}).get("ai_bot_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="AI bot is not enabled for this shared link.",
+        )
+    try:
+        ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=public_filters)
+        recon = build_proactive_recon(ctx)
+        guess = guess_briefing_from_recon(
+            recon,
+            dashboard_name=dash.name or "",
+            dashboard_description=getattr(dash, "description", "") or "",
+        )
+    except Exception:
+        logger.exception("AI briefing guess error for token=%s", token)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to build AI briefing guess.",
+        )
+
+    from datetime import date, datetime as _dt
+
+    def _default(obj):
+        if isinstance(obj, (date, _dt)):
+            return obj.isoformat()
+        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+    return Response(
+        content=json.dumps(guess, default=_default),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/dashboards/{token}/ai/briefing/brief")
+@_limiter.limit("10/minute")
+async def post_dashboard_ai_briefing_brief(
+    token: str,
+    body: _AiBriefingBriefBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+    x_user_ai_key: str | None = Header(default=None),
+    x_user_ai_provider: str | None = Header(default=None),
+    x_user_ai_model: str | None = Header(default=None),
+):
+    """Generate an Executive Brief paragraph using the user's confirmed
+    briefing + the dashboard recon. Streams text via SSE.
+    """
+    import json as _json
+    from fastapi.responses import StreamingResponse
+    from app.services.dashboard_ai_bot.agent import build_proactive_recon
+    from app.services.dashboard_ai_bot.briefing import (
+        Briefing,
+        EXEC_BRIEF_SYSTEM_PROMPT,
+        build_executive_brief_user_prompt,
+    )
+    from app.services.dashboard_ai_bot.providers import (
+        stream_anthropic, stream_gemini_singleshot, stream_openai,
+    )
+    from app.services.dashboard_ai_bot.tools import ToolContext
+
+    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
+    if not (appearance_config or {}).get("ai_bot_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="AI bot is not enabled for this shared link.",
+        )
+    if not x_user_ai_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-User-Ai-Key header is required.",
+        )
+    provider = (x_user_ai_provider or "gemini").strip().lower()
+    if provider not in ("anthropic", "openai", "gemini"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-User-Ai-Provider must be one of: anthropic, openai, gemini.",
+        )
+    model = (x_user_ai_model or "").strip() or None
+
+    briefing = Briefing.from_dict(body.briefing or {})
+    briefing.confirmed = True
+
+    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=public_filters)
+    recon = build_proactive_recon(ctx)
+    user_prompt = build_executive_brief_user_prompt(briefing=briefing, recon=recon)
+
+    if provider == "anthropic":
+        streamer = stream_anthropic
+    elif provider == "openai":
+        streamer = stream_openai
+    else:
+        streamer = stream_gemini_singleshot
+
+    captured_key = x_user_ai_key
+
+    async def sse_stream():
+        try:
+            async for ev in streamer(
+                api_key=captured_key,
+                system_prompt=EXEC_BRIEF_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_prompt}],
+                tools=None,
+                model=model or None,
+            ):
+                envelope = _event_to_envelope(ev)
+                if envelope is None:
+                    continue
+                yield f"data: {_json.dumps(envelope, ensure_ascii=False, default=str)}\n\n"
+        except Exception as exc:
+            logger.exception("AI briefing brief streaming failed")
+            yield f"data: {_json.dumps({'type':'error','text':f'Brief failed: {type(exc).__name__}'})}\n\n"
+        finally:
+            yield f"data: {_json.dumps({'type':'done'})}\n\n"
+
+    return StreamingResponse(
+        sse_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/dashboards/{token}/ai/agent/chat")
@@ -1802,6 +2055,16 @@ async def chat_dashboard_ai_agent(
     captured_key = x_user_ai_key
     ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=public_filters)
 
+    # Phase A + B: parse briefing + state, default-construct if missing.
+    from app.services.dashboard_ai_bot.briefing import Briefing as _Briefing
+    from app.services.dashboard_ai_bot.conversation_state import ConversationState as _ConvState
+    briefing_obj = _Briefing.from_dict(body.briefing or {}) if body.briefing else None
+    state_obj = _ConvState.from_dict(body.state or {}) if body.state is not None else _ConvState()
+    # Briefing on the state may be older than what FE sent — sync to caller's
+    # current briefing so role/focus changes take effect immediately.
+    if briefing_obj is not None:
+        state_obj.briefing = briefing_obj
+
     async def sse_stream():
         async for ev in run_agent_stream(
             ctx=ctx,
@@ -1809,6 +2072,8 @@ async def chat_dashboard_ai_agent(
             api_key=captured_key,
             provider=provider,
             model=model,
+            briefing=briefing_obj,
+            state=state_obj,
         ):
             envelope = _event_to_envelope(ev)
             if envelope is None:
@@ -1847,6 +2112,8 @@ def _event_to_envelope(ev) -> dict | None:
         }
     if et == "error":
         return {"type": "error", "text": ev.text}
+    if et == "state":
+        return {"type": "state", "state": (ev.extra or {}).get("state") or {}}
     if et == "done":
         return {"type": "done"}
     # tool_call is internal; not sent to FE

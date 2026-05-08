@@ -18,8 +18,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import time
 from typing import AsyncGenerator
 
+from app.services.dashboard_ai_bot.briefing import (
+    Briefing,
+    format_briefing_for_prompt,
+)
+from app.services.dashboard_ai_bot.conversation_state import (
+    ConversationState,
+    Hypothesis,
+    collect_seen_chart_ids,
+    detect_cross_turn_contradictions,
+    extract_findings_from_answer,
+    extract_hypotheses_from_user,
+    format_state_for_prompt,
+    update_hypothesis_status,
+)
 from app.services.dashboard_ai_bot.critique import critique_and_stream
 from app.services.dashboard_ai_bot.events import AgentEvent
 from app.services.dashboard_ai_bot.prompts import build_agent_system_prompt
@@ -39,7 +55,7 @@ from app.services.dashboard_ai_bot.tools import (
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_CALLS_PER_TURN = 16
-RECON_MAX_CHARTS = 4
+RECON_MAX_CHARTS = 10
 
 # Friendly status text per tool (shown in the chat UI as a transient bubble)
 _TOOL_STATUS_VI = {
@@ -48,6 +64,13 @@ _TOOL_STATUS_VI = {
     "get_chart_data": "Đang xem chi tiết chart {chart_id}…",
     "compare_segments": "Đang so sánh phân khúc trong chart {chart_id}…",
     "compute": "Đang tính toán chỉ số…",
+    "compare_periods": "Đang so sánh các kỳ trong chart {chart_id}…",
+    "describe_distribution": "Đang phân tích phân phối chart {chart_id}…",
+    "correlate_charts": "Đang đối chiếu chart {chart_a} với chart {chart_b}…",
+    "detect_anomaly": "Đang dò bất thường trong chart {chart_id}…",
+    "get_dashboard_overview_image": "Đang dựng ảnh tổng quan dashboard để đọc bằng AI…",
+    "get_chart_image": "Đang đọc dáng biểu đồ chart {chart_id}…",
+    "smart_drilldown": "Đang lọc chart {chart_id} theo {column}={match}…",
 }
 
 
@@ -74,25 +97,144 @@ def _streamer_for(provider: str):
 
 
 def build_proactive_recon(ctx: ToolContext) -> dict:
-    """Run list_charts + summaries for the first few charts. Returns a dict
-    with `manifest` and `summaries` (limited to RECON_MAX_CHARTS).
+    """Run list_charts (light) + summaries for the first few charts in parallel.
 
-    Cheap; no LLM calls. The caller may stuff this into the system prompt of
-    the very first turn to give the agent a head-start, OR stream a welcome
-    message that simply lists the surface-level facts. Used by both the
-    Gemini fallback and as an optional warm-up for the tool-aware providers.
+    Returns a dict with ``manifest`` and ``summaries`` (limited to
+    ``RECON_MAX_CHARTS``). Cheap; no LLM calls.
+
+    The manifest call uses ``light=True`` to skip per-chart data fetches —
+    on big dashboards (10+ charts × ~1.5s live SQL each), counting rows
+    eagerly was the dominant latency source. The agent still gets full
+    manifest metadata, and can call ``get_chart_summary`` on demand.
+
+    The first ``RECON_MAX_CHARTS`` summaries are fetched concurrently via
+    a thread pool so total wall time ≈ slowest single chart, not the sum.
     """
-    manifest = tool_list_charts(ctx, {})
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    manifest = tool_list_charts(ctx, {"light": True})
     summaries: list[dict] = []
-    if manifest.get("ok"):
-        for chart in (manifest["data"]["charts"] or [])[:RECON_MAX_CHARTS]:
-            cid = chart.get("chart_id")
-            if not isinstance(cid, int):
-                continue
-            res = tool_get_chart_summary(ctx, {"chart_id": cid})
-            if res.get("ok"):
-                summaries.append(res["data"])
-    return {"manifest": manifest.get("data") or {}, "summaries": summaries}
+    if not manifest.get("ok"):
+        return {"manifest": manifest.get("data") or {}, "summaries": []}
+
+    # Prioritise non-KPI charts (breakdown / trend / distribution) so the
+    # pre-loaded summaries contain richer analytical context.  KPI charts
+    # are appended last — their single aggregated value is cheap to read
+    # and less likely to hit the RECON_MAX_CHARTS cap.
+    all_charts = manifest["data"].get("charts") or []
+    non_kpi = [c for c in all_charts if c.get("role_hint") != "kpi"]
+    kpi_only = [c for c in all_charts if c.get("role_hint") == "kpi"]
+    ordered = (non_kpi + kpi_only)[:RECON_MAX_CHARTS]
+
+    chart_ids: list[int] = []
+    for chart in ordered:
+        cid = chart.get("chart_id")
+        if isinstance(cid, int):
+            chart_ids.append(cid)
+
+    if not chart_ids:
+        return {"manifest": manifest.get("data") or {}, "summaries": []}
+
+    # Parallel fan-out. Workers share the same SQLAlchemy session bound to
+    # ``ctx.db``; SQLite/Postgres sessions are not thread-safe, so we keep
+    # the pool small and serialize via a lock if we ever observe issues.
+    # In practice each summary call hits LiveQueryService which opens its
+    # own source DB connection per call, so the bottleneck is the source
+    # DB latency, which parallelizes fine.
+    results: dict[int, dict] = {}
+    with ThreadPoolExecutor(max_workers=min(6, len(chart_ids))) as pool:
+        futures = {
+            pool.submit(tool_get_chart_summary, ctx, {"chart_id": cid}): cid
+            for cid in chart_ids
+        }
+        for fut in as_completed(futures):
+            cid = futures[fut]
+            try:
+                results[cid] = fut.result(timeout=12)
+            except Exception as exc:
+                logger.warning(
+                    "recon summary failed chart_id=%s err=%s",
+                    cid,
+                    type(exc).__name__,
+                )
+
+    # Preserve manifest order
+    for cid in chart_ids:
+        res = results.get(cid)
+        if res and res.get("ok"):
+            summaries.append(res["data"])
+
+    # Auto cross-chart heuristics: if two summaries share a common keyword
+    # (e.g. one chart's name says "tổng / total" and another says "quá hạn /
+    # overdue"), pre-compute a ratio so the LLM doesn't need an extra
+    # `compute` call. Best-effort, never fatal.
+    cross_compute = _auto_cross_compute(summaries)
+
+    return {
+        "manifest": manifest.get("data") or {},
+        "summaries": summaries,
+        "cross_compute": cross_compute,
+    }
+
+
+_TOTAL_TOKENS = ("tổng", "total", "all tasks", "all task", "tất cả", "công việc")
+_OVERDUE_TOKENS = ("quá hạn", "overdue", "trễ", "delayed", "late")
+_COMPLETION_TOKENS = ("hoàn thành", "completion", "completed", "completion %", "complete rate")
+
+
+def _auto_cross_compute(summaries: list[dict]) -> list[dict]:
+    """Look for a pair (total chart, overdue chart) and pre-compute the rate.
+
+    Returns a list of derived facts the agent can consume directly. Each
+    fact has shape::
+
+        {"label": str, "value": float, "unit": str,
+         "citations": [chart_id, ...], "expression": str}
+
+    No-op when no pair found.
+    """
+    facts: list[dict] = []
+    if not summaries:
+        return facts
+
+    def _score(name: str, hints: tuple[str, ...]) -> int:
+        low = (name or "").lower()
+        return sum(1 for h in hints if h in low)
+
+    def _measure_total(pack: dict) -> float | None:
+        col_name = pack.get("primary_measure")
+        if not col_name:
+            return None
+        for c in pack.get("columns") or []:
+            if c.get("name") == col_name and isinstance(c.get("total"), (int, float)):
+                return float(c["total"])
+        return None
+
+    total_pack = max(
+        summaries, key=lambda p: _score(p.get("chart_name", ""), _TOTAL_TOKENS), default=None
+    )
+    overdue_pack = max(
+        summaries, key=lambda p: _score(p.get("chart_name", ""), _OVERDUE_TOKENS), default=None
+    )
+    if total_pack and overdue_pack and total_pack is not overdue_pack:
+        if _score(total_pack.get("chart_name", ""), _TOTAL_TOKENS) > 0 and _score(
+            overdue_pack.get("chart_name", ""), _OVERDUE_TOKENS
+        ) > 0:
+            t_val = _measure_total(total_pack)
+            o_val = _measure_total(overdue_pack)
+            if t_val and t_val > 0 and o_val is not None:
+                rate = (o_val / t_val) * 100.0
+                facts.append({
+                    "label": "overdue_rate_pct",
+                    "value": round(rate, 2),
+                    "unit": "%",
+                    "expression": "overdue / total * 100",
+                    "citations": [
+                        overdue_pack.get("chart_id"),
+                        total_pack.get("chart_id"),
+                    ],
+                })
+    return facts
 
 
 def _format_recon_for_prompt(recon: dict) -> str:
@@ -102,23 +244,41 @@ def _format_recon_for_prompt(recon: dict) -> str:
     charts = manifest.get("charts") or []
     lines.append(f"Charts: {len(charts)}")
     for c in charts:
+        role = c.get("role_hint") or "?"
         lines.append(
             f"  - [chart:{c.get('chart_id')}] {c.get('chart_name')!r} "
-            f"({c.get('chart_type')}) cols={c.get('columns')} rows={c.get('total_rows')}"
+            f"role={role} type={c.get('chart_type')} cols={c.get('columns')} rows={c.get('total_rows')}"
         )
     for pack in recon.get("summaries") or []:
         cid = pack.get("chart_id")
         lines.append(f"\n--- Insight Pack [chart:{cid}] {pack.get('chart_name')!r} ---")
+        if pack.get("chart_role"):
+            lines.append(f"role: {pack.get('chart_role')}")
         if pack.get("primary_measure"):
             lines.append(f"primary_measure: {pack.get('primary_measure')}")
         if pack.get("primary_dimension"):
             lines.append(f"primary_dimension: {pack.get('primary_dimension')}")
+        if pack.get("empty_state"):
+            lines.append(f"empty_state: {pack.get('empty_state')}")
         if pack.get("trend"):
             lines.append(f"trend: {pack['trend']}")
         if pack.get("top_5"):
             lines.append(f"top_5: {pack['top_5']}")
+        if pack.get("top_share_pct") is not None:
+            lines.append(f"top_share_pct: {pack['top_share_pct']:.2f}%")
+        if pack.get("health_signals"):
+            lines.append(f"health_signals: {', '.join(pack['health_signals'])}")
         if pack.get("outliers"):
             lines.append(f"outliers: {pack['outliers']}")
+    cross = recon.get("cross_compute") or []
+    if cross:
+        lines.append("\n--- Pre-computed cross-chart facts ---")
+        for fact in cross:
+            cites = ", ".join(f"chart:{c}" for c in (fact.get("citations") or []))
+            lines.append(
+                f"  - {fact.get('label')} = {fact.get('value')}{fact.get('unit', '')} "
+                f"(via {fact.get('expression')}; {cites})"
+            )
     return "\n".join(lines)
 
 
@@ -134,6 +294,8 @@ async def run_agent_stream(
     model: str | None = None,
     enable_critique: bool = True,
     max_tool_calls: int = MAX_TOOL_CALLS_PER_TURN,
+    briefing: Briefing | None = None,
+    state: ConversationState | None = None,
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run one chat turn end-to-end and yield AgentEvent objects.
 
@@ -147,6 +309,8 @@ async def run_agent_stream(
         yield AgentEvent(type="done")
         return
 
+    turn_started_at = time.monotonic()
+
     streamer, supports_tools = _streamer_for(provider)
     if streamer is None:
         yield AgentEvent(type="error", text=f"Unknown provider: {provider!r}")
@@ -154,18 +318,26 @@ async def run_agent_stream(
         return
     selected_model = (model or "").strip() or None
 
+    # Phase A + B: pour briefing + conversation state into the system prompt
+    briefing_block = format_briefing_for_prompt(briefing) if briefing else ""
+    state_block = format_state_for_prompt(state) if state else ""
+
     base_system = build_agent_system_prompt(
         dashboard_name=ctx.dashboard.name or "Dashboard",
         dashboard_description=getattr(ctx.dashboard, "description", "") or "",
         chart_count=len(ctx.allowed_chart_ids),
         filters_applied=ctx.public_filters,
         max_tool_calls=max_tool_calls,
+        briefing_block=briefing_block,
+        conversation_state_block=state_block,
     )
 
     # ── Gemini fallback path: single-shot with stuffed Insight Packs ─────────
     if not supports_tools:
         recon = build_proactive_recon(ctx)
         system_prompt = base_system + "\n\n" + _format_recon_for_prompt(recon)
+        # Buffer text so we can extract findings for the next turn
+        buffered: list[str] = []
         async for ev in streamer(
             api_key=api_key,
             system_prompt=system_prompt,
@@ -173,7 +345,27 @@ async def run_agent_stream(
             tools=None,
             model=selected_model or None,
         ):
+            if ev.type == "text" and ev.text:
+                buffered.append(ev.text)
             yield ev
+        # Update state from this turn even on the gemini single-shot path
+        if state is not None:
+            last_user = ""
+            for m in reversed(user_messages):
+                if m.get("role") == "user":
+                    last_user = str(m.get("content") or "")
+                    break
+            new_state = _evolve_state(
+                state=state,
+                draft_answer="".join(buffered),
+                tool_log=[],
+                briefing=briefing,
+                user_question=last_user,
+            )
+            yield AgentEvent(
+                type="state",
+                extra={"state": new_state.to_dict()},
+            )
         yield AgentEvent(type="done")
         return
 
@@ -192,6 +384,15 @@ async def run_agent_stream(
 
     draft_answer_parts: list[str] = []
     tool_calls_made = 0
+    # Per-tool budget within a single turn. Used for expensive tools that
+    # ship large multimodal payloads — the LLM occasionally tries to call
+    # them 2-3 times in a row, which inflates input tokens drastically.
+    per_tool_calls: dict[str, int] = {}
+    PER_TOOL_LIMITS = {
+        "get_dashboard_overview_image": 1,  # ~80 KB PNG ≈ 27K input tokens
+        "get_chart_image": 4,  # individual charts allowed more often
+        "render_dashboard_pdf": 1,
+    }
 
     while True:
         # Show a thinking indicator while the model decides what to do next
@@ -281,6 +482,29 @@ async def run_agent_stream(
                     tool_log.append({"name": tc.tool_name, "args": tc.tool_args, "result": err})
                     continue
 
+                # Per-tool budget (Fix 7). Expensive tools like the dashboard
+                # overview image are capped per-turn so a confused LLM cannot
+                # spam them. The error string is internal — the LLM should
+                # consume the prior result instead of trying again.
+                per_limit = PER_TOOL_LIMITS.get(tc.tool_name)
+                if per_limit is not None and per_tool_calls.get(tc.tool_name, 0) >= per_limit:
+                    err = {
+                        "ok": False,
+                        "error": (
+                            f"internal: tool '{tc.tool_name}' has already been called "
+                            f"{per_limit} time(s) this turn — its output is in the "
+                            "history above. Reuse it instead of re-calling. Do not "
+                            "mention this message to the user."
+                        ),
+                    }
+                    running.append({
+                        "role": "tool",
+                        "tool_call_id": tc.tool_call_id,
+                        "result": err,
+                    })
+                    tool_log.append({"name": tc.tool_name, "args": tc.tool_args, "result": err})
+                    continue
+
                 # Status update to user
                 yield AgentEvent(
                     type="status",
@@ -295,20 +519,45 @@ async def run_agent_stream(
                     execute_tool, ctx, tc.tool_name, tc.tool_args
                 )
                 tool_calls_made += 1
+                per_tool_calls[tc.tool_name] = per_tool_calls.get(tc.tool_name, 0) + 1
+
+                # Detach any multimodal image payload BEFORE we save the
+                # result onto the running message log — otherwise the same
+                # 50 KB PNG would be re-shipped to the model on every
+                # subsequent round as part of the tool turn JSON.
+                image_block = _pop_image_payload(result)
 
                 running.append({
                     "role": "tool",
                     "tool_call_id": tc.tool_call_id,
                     "result": result,
                 })
-                tool_log.append({"name": tc.tool_name, "args": tc.tool_args, "result": result})
+                # Inject the image as a fresh user turn so the LLM sees it as
+                # multimodal context for the NEXT round only. Providers that
+                # don't support images simply skip the block (see translators).
+                if image_block:
+                    running.append({
+                        "role": "user",
+                        "content": (
+                            f"(Hình minh hoạ chart {tc.tool_args.get('chart_id')} "
+                            f"từ tool get_chart_image — kind={image_block['kind']})"
+                        ),
+                        "image_blocks": [image_block],
+                    })
+
+                # Sanitised copy for the tool log (no PNG, no fluff)
+                tool_log.append({
+                    "name": tc.tool_name,
+                    "args": tc.tool_args,
+                    "result": _scrub_for_log(result),
+                })
 
                 # Optional: emit tool_result event for FE debug; we keep it light.
                 yield AgentEvent(
                     type="tool_result",
                     tool_call_id=tc.tool_call_id,
                     tool_name=tc.tool_name,
-                    tool_result=result,
+                    tool_result=_scrub_for_log(result),
                 )
 
             # Loop again so the LLM can react to the tool results
@@ -329,6 +578,7 @@ async def run_agent_stream(
         return
 
     # ── Self-critique pass ──────────────────────────────────────────────────
+    buffered_text = ""
     if enable_critique and last_user_question:
         yield AgentEvent(
             type="status",
@@ -337,7 +587,6 @@ async def run_agent_stream(
         )
         # Buffer the critique output so we can run a deterministic post-filter
         # before showing it to the user. We forward all non-text events live.
-        buffered_text = ""
         async for ev in critique_and_stream(
             streamer=streamer,
             api_key=api_key,
@@ -345,6 +594,7 @@ async def run_agent_stream(
             tool_log=tool_log,
             draft_answer=draft_answer,
             model=selected_model,
+            state_block=state_block,
         ):
             if ev.type == "text" and ev.text:
                 buffered_text += ev.text
@@ -356,7 +606,168 @@ async def run_agent_stream(
     else:
         yield AgentEvent(type="text", text=_sanitize_answer(draft_answer))
 
+    elapsed_ms = int((time.monotonic() - turn_started_at) * 1000)
+    final_answer_text = (
+        _sanitize_answer(buffered_text) if (enable_critique and last_user_question) else draft_answer
+    )
+    try:
+        telemetry = _telemetry_summary(
+            answer=final_answer_text,
+            tool_log=tool_log,
+            elapsed_ms=elapsed_ms,
+        )
+        logger.info(
+            "dashboard_ai_bot turn complete provider=%s model=%s telemetry=%s question=%r",
+            provider,
+            selected_model or "(default)",
+            telemetry,
+            last_user_question[:120],
+        )
+    except Exception:
+        logger.debug("dashboard_ai_bot telemetry compute failed", exc_info=True)
+
+    # Emit updated conversation state so the FE can pass it back next turn.
+    if state is not None:
+        try:
+            new_state = _evolve_state(
+                state=state,
+                draft_answer=final_answer_text,
+                tool_log=tool_log,
+                briefing=briefing,
+                user_question=last_user_question,
+            )
+            yield AgentEvent(
+                type="state",
+                extra={"state": new_state.to_dict()},
+            )
+        except Exception:
+            logger.exception("dashboard_ai_bot state evolve failed")
+
     yield AgentEvent(type="done")
+
+
+def _evolve_state(
+    *,
+    state: ConversationState,
+    draft_answer: str,
+    tool_log: list[dict],
+    briefing: Briefing | None,
+    user_question: str = "",
+) -> ConversationState:
+    """Apply this turn's results to the state, return the new snapshot.
+
+    Mutates a copy — never the caller's instance — so we can safely send
+    the result over SSE without aliasing.
+    """
+    next_turn = state.turn_index + 1
+    new_findings_full = extract_findings_from_answer(
+        answer=draft_answer,
+        turn_index=next_turn,
+        tool_log=tool_log,
+    )
+    seen = list(state.seen_chart_ids)
+    for cid in collect_seen_chart_ids(tool_log):
+        if cid not in seen:
+            seen.append(cid)
+
+    # De-duplicate findings: keep the latest version when claim text is similar
+    merged: list = list(state.findings)
+    for nf in new_findings_full:
+        # Drop any old finding that targets the same chart_id and looks similar
+        merged = [
+            f for f in merged
+            if not (
+                set(f.chart_ids) == set(nf.chart_ids)
+                and _claim_similarity(f.claim, nf.claim) > 0.8
+            )
+        ]
+        merged.append(nf)
+    # Cap
+    merged = merged[-30:]
+
+    # Cross-turn contradiction telemetry (logged only — critique handles user-facing)
+    pairs = detect_cross_turn_contradictions(state, new_findings_full)
+    if pairs:
+        logger.info(
+            "dashboard_ai_bot cross-turn contradictions=%d turn=%d",
+            len(pairs), next_turn,
+        )
+
+    # Hypothesis lifecycle: extract from current user msg + flip status of
+    # existing open hypotheses against the new findings.
+    hypotheses = list(state.hypotheses)
+    if user_question:
+        new_hyp = extract_hypotheses_from_user(user_question, turn_index=next_turn)
+        existing_texts = {h.text for h in hypotheses}
+        for h in new_hyp:
+            if h.text not in existing_texts:
+                hypotheses.append(h)
+    hypotheses = update_hypothesis_status(hypotheses, new_findings_full)
+    hypotheses = hypotheses[-20:]
+
+    return ConversationState(
+        briefing=briefing if briefing else state.briefing,
+        findings=merged,
+        hypotheses=hypotheses,
+        turn_index=next_turn,
+        seen_chart_ids=seen[-50:],
+    )
+
+
+def _pop_image_payload(result: dict) -> dict | None:
+    """Extract & remove any multimodal image payload from a tool result.
+
+    Returns ``{"png_base64": "...", "kind": "...", "media_type": "image/png"}``
+    when the tool flagged itself as multimodal. The caller can then attach
+    that as a real provider image block in the next user message.
+    """
+    if not isinstance(result, dict) or not result.get("ok"):
+        return None
+    data = result.get("data")
+    if not isinstance(data, dict) or not data.get("_multimodal"):
+        return None
+    png = data.pop("png_base64", None)
+    kind = data.pop("png_kind", "image")
+    data.pop("_multimodal", None)
+    if not png:
+        return None
+    # Replace with a small marker so the LLM still knows an image accompanied
+    # the result without us shipping the PNG twice.
+    data["image_attached"] = True
+    data["image_kind"] = kind
+    return {
+        "png_base64": png,
+        "kind": kind,
+        "media_type": "image/png",
+    }
+
+
+def _scrub_for_log(result: dict) -> dict:
+    """Make a shallow copy of a tool result safe to log/echo, with any base64
+    PNG payload elided. Idempotent — safe to call after _pop_image_payload."""
+    if not isinstance(result, dict):
+        return result
+    out = dict(result)
+    data = out.get("data")
+    if isinstance(data, dict) and "png_base64" in data:
+        d = dict(data)
+        d.pop("png_base64", None)
+        d["png_omitted"] = True
+        out["data"] = d
+    return out
+
+
+def _claim_similarity(a: str, b: str) -> float:
+    """Cheap Jaccard-on-words similarity in [0, 1]."""
+    if not a or not b:
+        return 0.0
+    sa = set(a.lower().split())
+    sb = set(b.lower().split())
+    if not sa or not sb:
+        return 0.0
+    inter = len(sa & sb)
+    union = len(sa | sb)
+    return inter / union if union else 0.0
 
 
 # Forbidden phrases that must never reach the user. Matched case-insensitively
@@ -418,3 +829,100 @@ def _sanitize_answer(text: str) -> str:
     while cleaned and cleaned[-1].strip() == "":
         cleaned.pop()
     return "\n".join(cleaned)
+
+
+# ── Telemetry & QA ──────────────────────────────────────────────────────────
+#
+# We compute a small quality score per answer for offline tuning. Logged at
+# INFO level only — never sent to the user. Fields:
+#   - bullet_count         (top-level bullets in body, follow-ups excluded)
+#   - has_drilldown        (was get_chart_data called?)
+#   - confidence_dist      ({HIGH, MED, LOW} counts in body)
+#   - tool_calls           (total tools used this turn)
+#   - contradiction_pairs  (bullets making opposite claims about same entity)
+#   - elapsed_ms
+
+_BULLET_RE = re.compile(r"^\s*(?:[-*•]|\d+\.)\s+")
+_CONFIDENCE_RE = re.compile(r"\[(HIGH|MED|LOW)\]", re.IGNORECASE)
+# Heuristic: "no <entity>" vs "<number> <entity>" within the same answer.
+# Common Vietnamese patterns: "không có ... nào", "chưa có ...".
+_NEGATIVE_RE = re.compile(
+    r"(không\s+có|chưa\s+có|no\s+|zero\s+|0\s+\w+)\s+([\w\s\u00C0-\u1EF9]{3,40}?)\s+(nào|đang|active|hoạt động)?",
+    re.IGNORECASE,
+)
+
+
+def _split_bullets(text: str) -> list[str]:
+    out = []
+    for line in text.split("\n"):
+        if _BULLET_RE.match(line):
+            out.append(line.strip())
+    return out
+
+
+def _detect_contradictions(bullets: list[str]) -> int:
+    """Crude check: bullet says "no X" while another bullet quotes a positive count of X.
+
+    Returns the number of contradicting pairs. Only used for telemetry —
+    real correction is the model's job per prompt rule 3a + critique rule 4.
+    """
+    pairs = 0
+    negatives = []
+    positives = []
+    for b in bullets:
+        low = b.lower()
+        if any(neg in low for neg in ("không có", "chưa có", "no active", "zero ", "0 dự án", "0 project")):
+            negatives.append(low)
+        m = re.search(r"\b(\d{1,4})\s+(dự án|project|task|công việc|đơn|item)", low)
+        if m and int(m.group(1)) > 0:
+            positives.append((m.group(2), low))
+    for neg in negatives:
+        for entity, pos in positives:
+            if entity in neg:
+                pairs += 1
+    return pairs
+
+
+def _telemetry_summary(
+    *,
+    answer: str,
+    tool_log: list[dict],
+    elapsed_ms: int,
+) -> dict:
+    bullets = _split_bullets(answer)
+    body_only = "\n".join(bullets)
+    conf_counts = {"HIGH": 0, "MED": 0, "LOW": 0}
+    for m in _CONFIDENCE_RE.findall(body_only):
+        conf_counts[m.upper()] = conf_counts.get(m.upper(), 0) + 1
+    tool_names = [t.get("name") for t in tool_log]
+
+    # Multimodal cost accounting (Fix 8). Each PNG byte ≈ 1.33 base64 chars,
+    # and Anthropic charges roughly 4 chars per token, so PNG kb ≈ 250
+    # input tokens per kb (rough but in the right order of magnitude).
+    image_kb_total = 0.0
+    image_count = 0
+    for entry in tool_log:
+        result = entry.get("result") or {}
+        data = result.get("data") if isinstance(result, dict) else None
+        if isinstance(data, dict) and (data.get("png_kb") or data.get("png_omitted")):
+            kb = data.get("png_kb") or 0
+            try:
+                image_kb_total += float(kb)
+                image_count += 1
+            except (TypeError, ValueError):
+                pass
+    estimated_image_tokens = int(image_kb_total * 256)  # ~256 input tokens per KB
+
+    return {
+        "bullet_count": len(bullets),
+        "has_drilldown": "get_chart_data" in tool_names,
+        "confidence_dist": conf_counts,
+        "tool_calls": len(tool_log),
+        "tool_names": tool_names,
+        "contradiction_pairs": _detect_contradictions(bullets),
+        "elapsed_ms": elapsed_ms,
+        # Cost-tracking for multimodal payloads
+        "image_count": image_count,
+        "image_kb_total": round(image_kb_total, 1),
+        "estimated_image_tokens": estimated_image_tokens,
+    }

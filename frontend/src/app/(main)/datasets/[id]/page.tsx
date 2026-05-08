@@ -19,6 +19,7 @@ import {
   Trash2,
   AlertTriangle,
   Pencil,
+  Calculator,
   ChevronLeft as ChevronLeftPag,
   ChevronRight,
   ShieldCheck,
@@ -43,9 +44,9 @@ import { AddColumnModal, buildFNS, type LookupTableOption } from '@/components/d
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { DatasetQualityPanel } from '@/components/datasets/DatasetQualityPanel';
 import { DataModelCanvas } from '@/components/datasets/DataModelCanvas';
-import { ModelViewEditPanel } from '@/components/datasets/ModelViewEditPanel';
+import { DatasetMeasuresPanel } from '@/components/datasets/DatasetMeasuresPanel';
+import { useDatasetModel, type DatasetModelView, type MeasureDefinition } from '@/hooks/use-dataset-model';
 import type { Transformation } from '@/hooks/use-datasets';
-import type { DatasetModelView } from '@/hooks/use-dataset-model';
 import { toast } from '@/lib/toast';
 
 // Inline Excel formula evaluator (mirrors AddColumnModal's evalExcelFormula)
@@ -206,8 +207,9 @@ function isCalculatedTable(table: Pick<DatasetTable, 'source_kind'> | null | und
   return table?.source_kind === 'derived_table';
 }
 
-type TableGroupKey = 'calendar' | 'source' | 'calculated';
+type TableGroupKey = 'source' | 'calculated' | 'measures' | 'calendar';
 type DatasetDetailTab = 'tables' | 'quality' | 'model';
+type TablesWorkspace = 'preview' | 'measures';
 
 function getTableGroupKey(table: Pick<DatasetTable, 'source_kind'> | null | undefined): TableGroupKey {
   if (isGeneratedCalendarTable(table)) return 'calendar';
@@ -216,13 +218,17 @@ function getTableGroupKey(table: Pick<DatasetTable, 'source_kind'> | null | unde
 }
 
 function getTableGroupLabel(group: TableGroupKey): string {
+  if (group === 'source') return 'Source';
   if (group === 'calendar') return 'Calendar';
+  if (group === 'measures') return 'Measures';
   if (group === 'calculated') return 'Calculated';
   return 'Source';
 }
 
 function getTableGroupEmptyMessage(group: TableGroupKey): string {
+  if (group === 'source') return 'No source tables yet';
   if (group === 'calendar') return 'No calendar table yet';
+  if (group === 'measures') return 'No measures workspace';
   if (group === 'calculated') return 'No calculated tables yet';
   return 'No source tables yet';
 }
@@ -245,15 +251,16 @@ function getTableIcon(table: Pick<DatasetTable, 'source_kind'> | null | undefine
     return <Calendar className="h-4 w-4 flex-shrink-0 text-brand" />;
   }
   if (isCalculatedTable(table)) {
-    return <Sigma className="h-4 w-4 flex-shrink-0 text-brand" />;
+    return <Calculator className="h-4 w-4 flex-shrink-0 text-brand" />;
   }
   return <Database className="h-4 w-4 flex-shrink-0 text-text-quaternary" />;
 }
 
 function getTableGroupIcon(group: TableGroupKey): React.ReactNode {
-  if (group === 'calendar') return <Calendar className="h-4 w-4 text-brand" />;
-  if (group === 'calculated') return <Sigma className="h-4 w-4 text-brand" />;
-  return <Database className="h-4 w-4 text-text-tertiary" />;
+  if (group === 'source') return <Database className="h-4 w-4 text-text-tertiary" />;
+  if (group === 'calculated') return <Calculator className="h-4 w-4 text-brand" />;
+  if (group === 'measures') return <Sigma className="h-4 w-4 text-warning" />;
+  return <Calendar className="h-4 w-4 text-brand" />;
 }
 
 function getTablePrimaryName(table: Partial<DatasetTable> | null | undefined): string {
@@ -499,16 +506,21 @@ export default function DatasetDetailPage() {
   const [editingColumnStep, setEditingColumnStep] = useState<Transformation | null>(null);
   const [tableSearchQuery, setTableSearchQuery] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Record<TableGroupKey, boolean>>({
-    calendar: false,
     source: false,
     calculated: false,
+    measures: false,
+    calendar: false,
   });
   const [tableToDelete, setTableToDelete] = useState<{ id: number; name: string } | null>(null);
   const [deleteConstraints, setDeleteConstraints] = useState<any[] | null>(null);
   const [isDeletingTable, setIsDeletingTable] = useState(false);
-  const [selectedView, setSelectedView] = useState<DatasetModelView | null>(null);
+  const [tablesWorkspace, setTablesWorkspace] = useState<TablesWorkspace>('preview');
   const [activeTab, setActiveTabState] = useState<DatasetDetailTab>(() => resolveDatasetDetailTab(paramTab));
   const [isExportingExcel, setIsExportingExcel] = useState(false);
+  const [measuresFocusViewId, setMeasuresFocusViewId] = useState<number | null>(null);
+  const [measuresFocusMeasureName, setMeasuresFocusMeasureName] = useState<string | null>(null);
+  const [measuresTriggerAdd, setMeasuresTriggerAdd] = useState(0);
+  const [showMeasuresAddPicker, setShowMeasuresAddPicker] = useState(false);
 
   // Tab routing via searchParam — ?tab=tables|quality|model
   // backward compat: ?tab=catalog → quality
@@ -526,7 +538,6 @@ export default function DatasetDetailPage() {
 
   const setActiveTab = useCallback((tab: DatasetDetailTab) => {
     if (tab === activeTab) return;
-    if (tab !== 'model') setSelectedView(null);
     startTransition(() => setActiveTabState(tab));
     syncTabInUrl(tab);
   }, [activeTab, syncTabInUrl]);
@@ -540,6 +551,9 @@ export default function DatasetDetailPage() {
     error: datasetError,
     refetch: refetchDataset,
   } = useDataset(datasetId);
+
+  // Fetch semantic model for measures sidebar list (same cache key as DatasetMeasuresPanel)
+  const { data: sidebarModel } = useDatasetModel(datasetId);
 
   const resPerms = getResourcePermissions(dataset?.user_permission);
 
@@ -592,9 +606,10 @@ export default function DatasetDetailPage() {
 
   const groupedTables = useMemo<Record<TableGroupKey, DatasetTable[]>>(() => {
     const groups: Record<TableGroupKey, DatasetTable[]> = {
-      calendar: [],
       source: [],
       calculated: [],
+      measures: [],
+      calendar: [],
     };
     for (const table of filteredTables as DatasetTable[]) {
       groups[getTableGroupKey(table)].push(table);
@@ -604,15 +619,45 @@ export default function DatasetDetailPage() {
 
   const groupCounts = useMemo<Record<TableGroupKey, number>>(() => {
     const counts: Record<TableGroupKey, number> = {
-      calendar: 0,
       source: 0,
       calculated: 0,
+      measures: 0,
+      calendar: 0,
     };
     for (const table of dataset?.tables ?? []) {
       counts[getTableGroupKey(table)] += 1;
     }
     return counts;
   }, [dataset?.tables]);
+
+  // Flat list of all measures across all views (for sidebar)
+  const flatMeasures = useMemo(() => {
+    const all: { measure: MeasureDefinition; view: DatasetModelView }[] = [];
+    for (const view of sidebarModel?.views ?? []) {
+      if (view.hidden_in_canvas || view.view_role === 'calendar_role') continue;
+      for (const m of view.measures) {
+        if (!m.hidden) all.push({ measure: m, view });
+      }
+    }
+    return all;
+  }, [sidebarModel?.views]);
+
+  const filteredFlatMeasures = useMemo(() => {
+    if (!tableSearchQuery) return flatMeasures;
+    const q = tableSearchQuery.toLowerCase();
+    return flatMeasures.filter(({ measure, view }) =>
+      (measure.label || measure.name).toLowerCase().includes(q) ||
+      measure.name.toLowerCase().includes(q) ||
+      (view.table_display_name || view.name || '').toLowerCase().includes(q),
+    );
+  }, [flatMeasures, tableSearchQuery]);
+
+  // Views available for the "Add measure" table picker
+  const sidebarModelViews = useMemo(() => {
+    return (sidebarModel?.views ?? []).filter(
+      (v) => !v.hidden_in_canvas && v.view_role !== 'calendar_role',
+    );
+  }, [sidebarModel?.views]);
 
   // Auto-select table: prefer ?table= URL param, then first table
   React.useEffect(() => {
@@ -677,6 +722,7 @@ export default function DatasetDetailPage() {
     refetchDataset();
     const latestCreated = Array.isArray(created) ? created[created.length - 1] : created;
     if (latestCreated?.id) {
+      setTablesWorkspace('preview');
       startTransition(() => setSelectedTableId(latestCreated.id));
       replaceTableInUrl(latestCreated.id);
     }
@@ -1218,7 +1264,7 @@ export default function DatasetDetailPage() {
         <div className="flex-1" />
 
         {/* Table-level actions — chỉ hiện ở tab Tables khi có table được chọn */}
-        {activeTab === 'tables' && selectedTable && (
+        {activeTab === 'tables' && tablesWorkspace === 'preview' && selectedTable && (
           <div className="flex items-center gap-1">
             <button
               onClick={handleExportExcel}
@@ -1298,18 +1344,25 @@ export default function DatasetDetailPage() {
 
             {/* Table Groups */}
             <div className="flex-1 overflow-y-auto p-2">
-              {tableSearchQuery && filteredTables.length === 0 ? (
+              {tableSearchQuery && filteredTables.length === 0 && filteredFlatMeasures.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-[rgb(var(--border-line))] px-4 py-6 text-center text-xs text-text-tertiary">
-                  No tables match your search
+                  No tables or measures match your search
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {(['calendar', 'source', 'calculated'] as TableGroupKey[]).map((group) => {
+                  {(['source', 'calculated', 'measures', 'calendar'] as TableGroupKey[]).map((group) => {
                     const tablesInGroup = groupedTables[group];
                     const totalCount = groupCounts[group];
                     const isCollapsed = collapsedGroups[group];
-                    const shouldRenderGroup = tableSearchQuery ? tablesInGroup.length > 0 : true;
+                    const isMeasuresGroup = group === 'measures';
+                    const visibleMeasures = isMeasuresGroup ? filteredFlatMeasures : [];
+                    const shouldRenderGroup = tableSearchQuery
+                      ? (isMeasuresGroup ? visibleMeasures.length > 0 : tablesInGroup.length > 0)
+                      : true;
                     if (!shouldRenderGroup) return null;
+                    const displayCount = isMeasuresGroup
+                      ? (tableSearchQuery ? visibleMeasures.length : flatMeasures.length)
+                      : (tableSearchQuery ? tablesInGroup.length : totalCount);
 
                     return (
                       <div key={group} className="overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
@@ -1324,13 +1377,57 @@ export default function DatasetDetailPage() {
                             </span>
                             {getTableGroupIcon(group)}
                             <span className="text-xs font-semibold text-text-primary">{getTableGroupLabel(group)}</span>
-                            <span className="text-xs text-text-quaternary">
-                              {tableSearchQuery ? `${tablesInGroup.length}` : `${totalCount}`}
-                            </span>
+                            <span className="text-xs text-text-quaternary">{displayCount}</span>
                           </button>
 
                           {resPerms.canEdit && (
-                            group === 'calendar' ? (
+                            isMeasuresGroup ? (
+                              <div className="relative">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (sidebarModelViews.length <= 1) {
+                                      setMeasuresFocusViewId(sidebarModelViews[0]?.id ?? null);
+                                      setMeasuresFocusMeasureName(null);
+                                      setMeasuresTriggerAdd((v) => v + 1);
+                                      setTablesWorkspace('measures');
+                                      clearTableInUrl();
+                                    } else {
+                                      setShowMeasuresAddPicker((v) => !v);
+                                    }
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-surface-2"
+                                >
+                                  <Plus className="h-3 w-3" />
+                                  Add
+                                </button>
+                                {showMeasuresAddPicker && sidebarModelViews.length > 1 && (
+                                  <>
+                                    <div className="fixed inset-0 z-10" onClick={() => setShowMeasuresAddPicker(false)} />
+                                    <div className="absolute right-0 top-full z-20 mt-1 w-52 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 py-1 shadow-linear-lg">
+                                      <p className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-text-quaternary">Add measure to…</p>
+                                      {sidebarModelViews.map((v) => (
+                                        <button
+                                          key={v.id}
+                                          type="button"
+                                          onClick={() => {
+                                            setMeasuresFocusViewId(v.id);
+                                            setMeasuresFocusMeasureName(null);
+                                            setMeasuresTriggerAdd((prev) => prev + 1);
+                                            setTablesWorkspace('measures');
+                                            clearTableInUrl();
+                                            setShowMeasuresAddPicker(false);
+                                          }}
+                                          className="w-full px-3 py-1.5 text-left text-xs text-text-primary transition-colors hover:bg-surface-2"
+                                        >
+                                          <span className="block truncate">{v.table_display_name || v.name}</span>
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            ) : group === 'calendar' ? (
                               <button
                                 type="button"
                                 onClick={openCalendarModal}
@@ -1356,7 +1453,44 @@ export default function DatasetDetailPage() {
 
                         {!isCollapsed && (
                           <div className="p-1.5">
-                            {tablesInGroup.length === 0 ? (
+                            {isMeasuresGroup ? (
+                              visibleMeasures.length === 0 ? (
+                                <div className="rounded border border-dashed border-[rgb(var(--border-line))] px-3 py-4 text-center text-[11px] text-text-quaternary">
+                                  No measures yet — click Add to define one
+                                </div>
+                              ) : (
+                                <div className="space-y-0.5">
+                                  {visibleMeasures.map(({ measure, view }) => {
+                                    const isActive = tablesWorkspace === 'measures'
+                                      && measuresFocusViewId === view.id
+                                      && measuresFocusMeasureName === measure.name;
+                                    return (
+                                      <button
+                                        key={`${view.id}:${measure.name}`}
+                                        type="button"
+                                        onClick={() => {
+                                          setMeasuresFocusViewId(view.id);
+                                          setMeasuresFocusMeasureName(measure.name);
+                                          setTablesWorkspace('measures');
+                                          clearTableInUrl();
+                                        }}
+                                        className={`flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
+                                          isActive
+                                            ? 'bg-warning/10 text-warning'
+                                            : 'text-text-primary hover:bg-surface-2'
+                                        }`}
+                                      >
+                                        <Sigma className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-warning" />
+                                        <span className="min-w-0 flex-1">
+                                          <span className="block truncate text-xs font-medium leading-tight">{measure.label || measure.name}</span>
+                                          <span className="block truncate text-[11px] leading-tight text-text-quaternary">{view.table_display_name || view.name}</span>
+                                        </span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )
+                            ) : tablesInGroup.length === 0 ? (
                               <div className="rounded border border-dashed border-[rgb(var(--border-line))] px-3 py-4 text-center text-[11px] text-text-quaternary">
                                 {getTableGroupEmptyMessage(group)}
                               </div>
@@ -1368,11 +1502,12 @@ export default function DatasetDetailPage() {
                                     <div
                                       key={table.id}
                                       className={`group relative flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors cursor-pointer ${
-                                        selectedTableId === table.id
+                                        tablesWorkspace === 'preview' && selectedTableId === table.id
                                           ? 'bg-brand/10 text-brand'
                                           : 'text-text-primary hover:bg-surface-2'
                                       } ${sourceIssue ? 'ring-1 ring-danger/35' : ''}`}
                                       onClick={() => {
+                                        setTablesWorkspace('preview');
                                         startTransition(() => setSelectedTableId(table.id));
                                         replaceTableInUrl(table.id);
                                       }}
@@ -1445,34 +1580,13 @@ export default function DatasetDetailPage() {
         <div className="flex-1 flex flex-col bg-surface-2 overflow-hidden">
           {activeTab === 'model' ? (
             <div className="flex-1 overflow-hidden flex flex-row">
-              {/* ERD canvas — takes remaining width */}
               <div className="flex-1 overflow-hidden min-w-0">
                 <DataModelCanvas
                   datasetId={datasetId!}
                   datasetName={dataset.name}
                   tables={dataset.tables ?? []}
                   canEdit={resPerms.canEdit}
-                  selectedViewId={selectedView?.id ?? null}
-                  onSelectView={(view) => setSelectedView((prev) => prev?.id === view.id ? null : view)}
                 />
-              </div>
-              {/* Side panel - 520px */}
-              <div className="w-[520px] shrink-0 overflow-hidden flex flex-col border-l border-[rgb(var(--border-line))] bg-surface-1">
-                {selectedView ? (
-                  <ModelViewEditPanel
-                    datasetId={datasetId!}
-                    view={selectedView}
-                    tables={dataset.tables ?? []}
-                    canEdit={resPerms.canEdit}
-                  />
-                ) : (
-                  <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
-                    <h3 className="text-sm font-semibold text-text-primary">Select a model table</h3>
-                    <p className="text-xs leading-5 text-text-tertiary">
-                      Click the pencil on a table card to edit dimensions, advanced measures, filters, formats, and folders.
-                    </p>
-                  </div>
-                )}
               </div>
             </div>
           ) : activeTab === 'quality' ? (
@@ -1480,6 +1594,16 @@ export default function DatasetDetailPage() {
               datasetId={datasetId!}
               tables={dataset.tables ?? []}
               canEdit={resPerms.canEdit}
+            />
+          ) : tablesWorkspace === 'measures' ? (
+            <DatasetMeasuresPanel
+              datasetId={datasetId!}
+              tables={dataset.tables ?? []}
+              canEdit={resPerms.canEdit}
+              initialTableId={selectedTableId}
+              focusViewId={measuresFocusViewId}
+              focusMeasureName={measuresFocusMeasureName}
+              triggerAddMeasure={measuresTriggerAdd}
             />
           ) : dataset.tables.length === 0 ? (
             <div className="flex-1 flex items-center justify-center">

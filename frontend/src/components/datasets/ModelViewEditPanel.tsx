@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * ModelViewEditPanel — Static right-side panel (no overlay) for the Model tab.
+ * ModelViewEditPanel — Static panel for semantic dictionary, fields, and measures.
  *
  * Layout: always visible beside the ERD canvas in a split-pane.
  * Two tabs:
@@ -154,27 +154,8 @@ function isAutoName(name: string, label?: string): boolean {
   return false;
 }
 
-type PanelTab = 'dictionary' | 'fields';
-
-// ─── Measure folder grouping ──────────────────────────────────────────────────
-
-function groupMeasuresByFolder(
-  measures: MeasureDefinition[],
-): { folder: string; items: { idx: number; m: MeasureDefinition }[] }[] {
-  const map = new Map<string, { idx: number; m: MeasureDefinition }[]>();
-  measures.forEach((m, idx) => {
-    const key = m.folder?.trim() || '';
-    map.set(key, [...(map.get(key) ?? []), { idx, m }]);
-  });
-  const result: { folder: string; items: { idx: number; m: MeasureDefinition }[] }[] = [];
-  const ungrouped = map.get('');
-  if (ungrouped?.length) result.push({ folder: '', items: ungrouped });
-  Array.from(map.entries())
-    .filter(([k]) => k !== '')
-    .sort(([a], [b]) => a.localeCompare(b))
-    .forEach(([folder, items]) => result.push({ folder, items }));
-  return result;
-}
+export type PanelTab = 'dictionary' | 'fields';
+type PanelContentMode = 'all-fields' | 'measures';
 
 // ─── DimIcon ──────────────────────────────────────────────────────────────────
 
@@ -229,7 +210,7 @@ function ColumnMeaningDrawer({
             </button>
           )}
           <button type="button" onClick={onClose} className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-2">
-              className="rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-2"
+            Close
           </button>
         </>
       }
@@ -501,7 +482,7 @@ function DimensionRow({
             </div>
             <div>
               <label className="text-[10px] text-text-tertiary uppercase font-medium">Type</label>
-              <select value={dim.type} onChange={(e) => onChange({ ...dim, type: e.target.value as any })} className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand">
+              <select value={dim.type} onChange={(e) => onChange({ ...dim, type: e.target.value as DimensionDefinition['type'] })} className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md bg-surface-1 focus:outline-none focus:ring-1 focus:ring-brand">
                 {DIM_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
@@ -524,13 +505,11 @@ function DimensionRow({
 
 function MeasureFilterRow({
   filter,
-  columnOptions,
   listId,
   onChange,
   onRemove,
 }: {
   filter: MeasureFilter;
-  columnOptions: string[];
   listId: string;
   onChange: (updated: MeasureFilter) => void;
   onRemove: () => void;
@@ -594,6 +573,7 @@ function MeasureRow({
   columnOptions,
   measureNames,
   rowKey,
+  defaultOpen,
   onChange,
   onRemove,
 }: {
@@ -602,10 +582,11 @@ function MeasureRow({
   columnOptions: string[];
   measureNames: string[];
   rowKey: string;
+  defaultOpen?: boolean;
   onChange: (updated: MeasureDefinition) => void;
   onRemove: () => void;
 }) {
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(() => rowKey.startsWith('new-measure') || Boolean(defaultOpen));
   const [showAdvanced, setShowAdvanced] = useState(Boolean(measure.expression || measure.where_sql));
   const [editingLabel, setEditingLabel] = useState(false);
 
@@ -785,7 +766,6 @@ function MeasureRow({
                   <MeasureFilterRow
                     key={i}
                     filter={f}
-                    columnOptions={columnOptions}
                     listId={colsListId}
                     onChange={(u) => updateFilters(filters.map((x, j) => (j === i ? u : x)))}
                     onRemove={() => updateFilters(filters.filter((_, j) => j !== i))}
@@ -906,6 +886,13 @@ export interface ModelViewEditPanelProps {
   view: DatasetModelView | null;           // null = no table selected
   tables: DatasetTable[];
   canEdit: boolean;
+  onClose?: () => void;
+  initialTab?: PanelTab;
+  showDictionaryTab?: boolean;
+  contentMode?: PanelContentMode;
+  titleKicker?: string;
+  focusMeasureName?: string | null;
+  triggerAddMeasure?: number;
 }
 
 export function ModelViewEditPanel({
@@ -913,8 +900,15 @@ export function ModelViewEditPanel({
   view,
   tables,
   canEdit,
+  onClose,
+  initialTab = 'fields',
+  showDictionaryTab = true,
+  contentMode = 'all-fields',
+  titleKicker = 'Model view',
+  focusMeasureName,
+  triggerAddMeasure,
 }: ModelViewEditPanelProps) {
-  const [activeTab, setActiveTab] = useState<PanelTab>('dictionary');
+  const [activeTab, setActiveTab] = useState<PanelTab>(showDictionaryTab ? initialTab : 'fields');
 
   const tableId = view?.dataset_table_id ?? null;
 
@@ -1018,10 +1012,15 @@ export function ModelViewEditPanel({
   // ── Model/Fields state ────────────────────────────────────────────────────
   const [dimensions, setDimensions] = useState<DimensionDefinition[]>([]);
   const [measures, setMeasures] = useState<MeasureDefinition[]>([]);
+  const [dimensionRowKeys, setDimensionRowKeys] = useState<string[]>([]);
+  const [measureRowKeys, setMeasureRowKeys] = useState<string[]>([]);
   const [viewDescription, setViewDescription] = useState('');
   const [showMeasureTemplates, setShowMeasureTemplates] = useState(false);
-  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
   const updateView = useUpdateModelView();
+
+  useEffect(() => {
+    if (triggerAddMeasure && triggerAddMeasure > 0) setShowMeasureTemplates(true);
+  }, [triggerAddMeasure]);
 
   // Pick-list for the form-first measure editor: pull from existing dimensions
   // (their `sql` resolves to the underlying column) so users without SQL can
@@ -1037,7 +1036,15 @@ export function ModelViewEditPanel({
 
   const measureNames = useMemo(() => measures.map((m) => m.name), [measures]);
 
+  const makeClientRowKey = useCallback((kind: 'dimension' | 'measure') => {
+    const randomPart = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return `new-${kind}-${randomPart}`;
+  }, []);
+
   const handleAddMeasureFromTemplate = (tpl: MeasureTemplate) => {
+    const rowKey = makeClientRowKey('measure');
     setMeasures((prev) => {
       let n = prev.length + 1;
       const existing = new Set(prev.map((m) => m.name));
@@ -1048,6 +1055,7 @@ export function ModelViewEditPanel({
       }
       return [...prev, candidate];
     });
+    setMeasureRowKeys((prev) => [...prev, rowKey]);
     setShowMeasureTemplates(false);
   };
 
@@ -1055,14 +1063,18 @@ export function ModelViewEditPanel({
     if (!view) return;
     setDimensions(view.dimensions.map((d) => ({ ...d })));
     setMeasures(view.measures.map((m) => ({ ...m })));
+    setDimensionRowKeys(view.dimensions.map((d, index) => `${view.id}:dimension:${index}:${d.name || 'field'}`));
+    setMeasureRowKeys(view.measures.map((m, index) => `${view.id}:measure:${index}:${m.name || 'field'}`));
     setViewDescription(view.description || '');
   }, [view]);
 
   const modelIsDirty =
     !!view && (
-      JSON.stringify(dimensions) !== JSON.stringify(view.dimensions) ||
       JSON.stringify(measures) !== JSON.stringify(view.measures) ||
-      viewDescription !== (view.description || '')
+      (contentMode !== 'measures' && (
+        JSON.stringify(dimensions) !== JSON.stringify(view.dimensions) ||
+        viewDescription !== (view.description || '')
+      ))
     );
 
   const handleSaveModel = async () => {
@@ -1108,9 +1120,10 @@ export function ModelViewEditPanel({
     }
     try {
       await updateView.mutateAsync({ datasetId, viewId: view.id, data: { dimensions, measures, description: viewDescription } });
-      toast.success('Fields saved');
-    } catch (err: any) {
-      toast.error(err?.response?.data?.detail || 'Failed to save fields');
+      toast.success(contentMode === 'measures' ? 'Measures saved' : 'Fields saved');
+    } catch (error: unknown) {
+      const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : contentMode === 'measures' ? 'Failed to save measures' : 'Failed to save fields');
     }
   };
 
@@ -1137,7 +1150,7 @@ export function ModelViewEditPanel({
       <div className="shrink-0 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-3">
         <div className="flex items-center justify-between">
           <div className="min-w-0">
-            <p className="text-[10px] font-medium text-text-quaternary uppercase tracking-wide">Model view</p>
+            <p className="text-[10px] font-medium text-text-quaternary uppercase tracking-wide">{titleKicker}</p>
             <h3 className="text-sm font-semibold text-text-primary truncate">{view.table_display_name || view.name}</h3>
           </div>
           {/* Dirty indicators */}
@@ -1151,32 +1164,44 @@ export function ModelViewEditPanel({
             {modelIsDirty && (
               <span className="inline-flex items-center gap-1 rounded-full bg-brand/10 border border-brand/30 px-2 py-0.5 text-[10px] font-medium text-brand">
                 <span className="h-1.5 w-1.5 rounded-full bg-brand" />
-                Fields
+                {contentMode === 'measures' ? 'Measures' : 'Fields'}
               </span>
+            )}
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                className="ml-1 rounded-md p-1 text-text-quaternary transition-colors hover:bg-surface-2 hover:text-text-secondary"
+                title="Close editor"
+              >
+                <X className="h-4 w-4" />
+              </button>
             )}
           </div>
         </div>
 
         {/* Tabs */}
-        <div className="mt-2.5 flex gap-0.5 bg-surface-2 rounded-lg p-0.5">
-          {([
-            { key: 'dictionary' as PanelTab, label: 'Dictionary', dirty: dictDirty },
-            { key: 'fields' as PanelTab, label: `Fields (${dimensions.length}D · ${measures.length}M)`, dirty: modelIsDirty },
-          ] as const).map(({ key, label, dirty }) => (
-            <button
-              key={key}
-              onClick={() => setActiveTab(key)}
-              className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
-                activeTab === key
-                  ? 'bg-surface-1 text-text-primary shadow-linear-sm'
-                  : 'text-text-tertiary hover:text-text-secondary'
-              }`}
-            >
-              {label}
-              {dirty && <span className="h-1.5 w-1.5 rounded-full bg-brand shrink-0" />}
-            </button>
-          ))}
-        </div>
+        {showDictionaryTab && (
+          <div className="mt-2.5 flex gap-0.5 bg-surface-2 rounded-lg p-0.5">
+            {([
+              { key: 'dictionary' as PanelTab, label: 'Dictionary', dirty: dictDirty },
+              { key: 'fields' as PanelTab, label: `Fields (${dimensions.length}D · ${measures.length}M)`, dirty: modelIsDirty },
+            ] as const).map(({ key, label, dirty }) => (
+              <button
+                key={key}
+                onClick={() => setActiveTab(key)}
+                className={`flex-1 flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+                  activeTab === key
+                    ? 'bg-surface-1 text-text-primary shadow-linear-sm'
+                    : 'text-text-tertiary hover:text-text-secondary'
+                }`}
+              >
+                {label}
+                {dirty && <span className="h-1.5 w-1.5 rounded-full bg-brand shrink-0" />}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Tab content */}
@@ -1218,20 +1243,23 @@ export function ModelViewEditPanel({
         {activeTab === 'fields' && (
           <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
             {/* View description */}
-            <div className="shrink-0 px-4 pt-3 pb-2 border-b border-[rgb(var(--border-line))]">
-              <label className="text-[10px] text-text-tertiary uppercase font-medium">View description</label>
-              <input
-                value={viewDescription}
-                onChange={(e) => setViewDescription(e.target.value)}
-                disabled={!canEdit}
-                className="mt-1 w-full text-xs px-2.5 py-1.5 border border-[rgb(var(--border-line))] rounded-md disabled:bg-surface-2 focus:outline-none focus:ring-1 focus:ring-brand"
-                placeholder="Short description of this semantic view"
-              />
-            </div>
+            {contentMode !== 'measures' && (
+              <div className="shrink-0 px-4 pt-3 pb-2 border-b border-[rgb(var(--border-line))]">
+                <label className="text-[10px] text-text-tertiary uppercase font-medium">View description</label>
+                <input
+                  value={viewDescription}
+                  onChange={(e) => setViewDescription(e.target.value)}
+                  disabled={!canEdit}
+                  className="mt-1 w-full text-xs px-2.5 py-1.5 border border-[rgb(var(--border-line))] rounded-md disabled:bg-surface-2 focus:outline-none focus:ring-1 focus:ring-brand"
+                  placeholder="Short description of this semantic view"
+                />
+              </div>
+            )}
 
             <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
               {/* Dimensions */}
-              <div>
+              {contentMode !== 'measures' && (
+                <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs font-semibold text-text-secondary flex items-center gap-1.5">
                     <Type className="w-3.5 h-3.5 text-brand" />
@@ -1240,7 +1268,10 @@ export function ModelViewEditPanel({
                   </span>
                   {canEdit && (
                     <button
-                      onClick={() => setDimensions((prev) => [...prev, { name: `dim_${prev.length + 1}`, type: 'string', hidden: false }])}
+                      onClick={() => {
+                        setDimensions((prev) => [...prev, { name: `dim_${prev.length + 1}`, type: 'string', hidden: false }]);
+                        setDimensionRowKeys((prev) => [...prev, makeClientRowKey('dimension')]);
+                      }}
                       className="inline-flex items-center gap-1 text-xs text-brand hover:text-brand font-medium"
                     >
                       <Plus className="w-3 h-3" /> Add
@@ -1248,15 +1279,21 @@ export function ModelViewEditPanel({
                   )}
                 </div>
                 <div className="space-y-1.5">
-                  {dimensions.map((dim, idx) => (
-                    <DimensionRow
-                      key={`dim-${idx}-${dim.name}`}
-                      dim={dim}
-                      canEdit={canEdit}
-                      onChange={(u) => setDimensions((prev) => prev.map((d, i) => (i === idx ? u : d)))}
-                      onRemove={() => setDimensions((prev) => prev.filter((_, i) => i !== idx))}
-                    />
-                  ))}
+                  {dimensions.map((dim, idx) => {
+                    const rowKey = dimensionRowKeys[idx] ?? `dimension-${idx}`;
+                    return (
+                      <DimensionRow
+                        key={rowKey}
+                        dim={dim}
+                        canEdit={canEdit}
+                        onChange={(u) => setDimensions((prev) => prev.map((d, i) => (i === idx ? u : d)))}
+                        onRemove={() => {
+                          setDimensions((prev) => prev.filter((_, i) => i !== idx));
+                          setDimensionRowKeys((prev) => prev.filter((_, i) => i !== idx));
+                        }}
+                      />
+                    );
+                  })}
                   {dimensions.length === 0 && (
                     <div className="rounded-lg border border-dashed border-[rgb(var(--border-line))] py-4 text-center text-xs text-text-quaternary">
                       No dimensions — add one above
@@ -1264,6 +1301,7 @@ export function ModelViewEditPanel({
                   )}
                 </div>
               </div>
+              )}
 
               {/* Measures */}
               <div>
@@ -1279,7 +1317,7 @@ export function ModelViewEditPanel({
                         onClick={() => setShowMeasureTemplates((v) => !v)}
                         className="inline-flex items-center gap-1 text-xs text-warning hover:text-warning font-medium"
                       >
-                        <Plus className="w-3 h-3" /> Add
+                        <Plus className="w-3 h-3" /> {contentMode === 'measures' ? 'Add measure' : 'Add'}
                         <ChevronDown className="w-3 h-3" />
                       </button>
                       {showMeasureTemplates && (
@@ -1299,57 +1337,31 @@ export function ModelViewEditPanel({
                   )}
                 </div>
                 <div className="space-y-1.5">
-                  {(() => {
-                    if (measures.length === 0) {
+                  {measures.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-[rgb(var(--border-line))] px-3 py-5 text-center text-xs text-text-quaternary">
+                      No measures yet
+                    </div>
+                  ) : (
+                    measures.map((m, idx) => {
+                      const rowKey = measureRowKeys[idx] ?? `measure-${idx}`;
                       return (
-                        <div className="rounded-lg border border-dashed border-[rgb(var(--border-line))] py-4 text-center text-xs text-text-quaternary">
-                          No measures — add one above
-                        </div>
+                        <MeasureRow
+                          key={rowKey}
+                          rowKey={rowKey}
+                          measure={m}
+                          canEdit={canEdit}
+                          columnOptions={columnOptions}
+                          measureNames={measureNames}
+                          defaultOpen={Boolean(focusMeasureName && m.name === focusMeasureName)}
+                          onChange={(u) => setMeasures((prev) => prev.map((mm, i) => (i === idx ? u : mm)))}
+                          onRemove={() => {
+                            setMeasures((prev) => prev.filter((_, i) => i !== idx));
+                            setMeasureRowKeys((prev) => prev.filter((_, i) => i !== idx));
+                          }}
+                        />
                       );
-                    }
-                    const groups = groupMeasuresByFolder(measures);
-                    const hasMultipleGroups = groups.length > 1 || (groups.length === 1 && groups[0].folder !== '');
-                    return groups.map(({ folder, items }) => (
-                      <div key={folder || '__ungrouped__'}>
-                        {hasMultipleGroups && folder && (
-                          <button
-                            onClick={() =>
-                              setCollapsedFolders((prev) => {
-                                const next = new Set(prev);
-                                next.has(folder) ? next.delete(folder) : next.add(folder);
-                                return next;
-                              })
-                            }
-                            className="flex w-full items-center gap-1 px-1 py-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary hover:text-text-secondary"
-                          >
-                            {collapsedFolders.has(folder) ? (
-                              <ChevronRight className="w-3 h-3" />
-                            ) : (
-                              <ChevronDown className="w-3 h-3" />
-                            )}
-                            <span className="truncate">{folder}</span>
-                            <span className="font-normal ml-1">({items.length})</span>
-                          </button>
-                        )}
-                        {!collapsedFolders.has(folder) && (
-                          <div className="space-y-1.5">
-                            {items.map(({ idx, m }) => (
-                              <MeasureRow
-                                key={`mea-${idx}-${m.name}`}
-                                rowKey={`mea-${idx}-${m.name}`}
-                                measure={m}
-                                canEdit={canEdit}
-                                columnOptions={columnOptions}
-                                measureNames={measureNames}
-                                onChange={(u) => setMeasures((prev) => prev.map((mm, i) => (i === idx ? u : mm)))}
-                                onRemove={() => setMeasures((prev) => prev.filter((_, i) => i !== idx))}
-                              />
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ));
-                  })()}
+                    })
+                  )}
                 </div>
               </div>
             </div>
@@ -1363,7 +1375,9 @@ export function ModelViewEditPanel({
           <span className="text-[11px] text-text-quaternary flex-1 truncate">
             {activeTab === 'dictionary'
               ? (dictDirty ? 'Unsaved dictionary changes' : 'Dictionary up to date')
-              : (modelIsDirty ? 'Unsaved field changes' : 'Fields up to date')}
+              : contentMode === 'measures'
+                ? (modelIsDirty ? 'Unsaved measure changes' : 'Measures up to date')
+                : (modelIsDirty ? 'Unsaved field changes' : 'Fields up to date')}
           </span>
           <button
             onClick={handleSave}

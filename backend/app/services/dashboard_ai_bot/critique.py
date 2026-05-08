@@ -34,6 +34,7 @@ async def critique_and_stream(
     tool_log: list[dict],
     draft_answer: str,
     model: str | None = None,
+    state_block: str = "",
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run the critique LLM and yield its corrected text as `text` events.
 
@@ -48,6 +49,7 @@ async def critique_and_stream(
         user_question=user_question,
         tool_log=tool_log,
         draft_answer=draft_answer,
+        state_block=state_block,
     )
 
     saw_text = False
