@@ -283,12 +283,12 @@ def ai_chart_preview(
     payload: AIChartPreviewRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("ai_chat", "view")),
+    current_user: User = Depends(require_permission("explore_charts", "view")),
 ):
     """
     Execute a chart from AI config and optionally save it permanently.
     Used by the AI agent's create_chart tool.
-    Requires ai_chat >= view permission.
+    Requires explore_charts >= view permission.
     """
     from app.models.models import DataSource
     from app.services.live_query_service import build_live_dataset_query, _dialect_for_ds_type

@@ -3,15 +3,6 @@
 # Base dev stack:
 #   docker compose -f docker-compose.dev.yml up --build -d
 #
-# Dev stack + both AI services:
-#   docker compose -f docker-compose.dev.yml -f docker-compose.ai.yml up --build -d
-#
-# Dev stack + chat only:
-#   docker compose -f docker-compose.dev.yml -f docker-compose.chat.yml up --build -d
-#
-# Dev stack + agent only:
-#   docker compose -f docker-compose.dev.yml -f docker-compose.agent.yml up --build -d
-
 services:
   db:
     profiles: ["local-db"]
@@ -105,8 +96,6 @@ services:
       NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
       # AI service URLs derived at runtime from window.location (no localhost baking).
       BACKEND_URL: ${FRONTEND_BACKEND_URL:-http://backend:8000/api/v1}
-      AI_CHAT_INTERNAL_URL: http://ai-chat-service:8001
-      AI_AGENT_INTERNAL_URL: http://ai-agent-service:8001
       SECRET_KEY: dev-secret-key
       COOKIE_SECURE: "false"
       WATCHPACK_POLLING: "true"

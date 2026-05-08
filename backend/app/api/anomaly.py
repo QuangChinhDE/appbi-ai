@@ -84,7 +84,7 @@ def list_monitored_metrics(
 def create_monitored_metric(
     payload: MonitoredMetricCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("ai_chat", "edit")),
+    current_user: User = Depends(require_permission("datasets", "edit")),
 ):
     """Create a new monitored metric."""
     table = db.query(DatasetTable).filter(
@@ -228,7 +228,7 @@ def clear_read_alerts(
 @router.post("/scan", response_model=Dict[str, Any])
 def trigger_anomaly_scan(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("ai_chat", "edit")),
+    current_user: User = Depends(require_permission("datasets", "edit")),
 ):
     """
     Manually trigger anomaly detection for all active metrics.

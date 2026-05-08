@@ -71,6 +71,24 @@ const FILTER_OPERATORS: { value: MeasureFilterOperator; label: string; needsValu
 
 const FORMAT_KINDS: MeasureFormat['kind'][] = ['number', 'currency', 'percent', 'duration', 'custom'];
 
+// ===== Name helpers =====
+
+function slugifyName(label: string): string {
+  const slug = label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^[0-9]/, '_$&')
+    .replace(/^_+|_+$/g, '');
+  return slug || 'measure';
+}
+
+function isAutoName(name: string, label?: string): boolean {
+  if (/^(count|sum|avg|min|max|distinct|filtered_count|pct)_\d+$/.test(name)) return true;
+  if (label) return name === slugifyName(label);
+  return false;
+}
+
 // ===== Dimension Row =====
 
 function DimensionRow({
@@ -286,14 +304,22 @@ function MeasureRow({
       </div>
       {isExpanded && (
         <div className="px-3 pb-3 pt-1 border-t space-y-2">
-          {/* Identity */}
+          {/* Identity — Label first, SQL name secondary */}
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[10px] text-text-tertiary uppercase">Name</label>
+              <label className="text-[10px] text-text-tertiary uppercase">Label</label>
               <input
-                value={measure.name}
-                onChange={(e) => onChange({ ...measure, name: e.target.value })}
+                value={measure.label || ''}
+                onChange={(e) => {
+                  const newLabel = e.target.value || undefined;
+                  const updates: Partial<MeasureDefinition> = { label: newLabel };
+                  if (newLabel && isAutoName(measure.name, measure.label)) {
+                    updates.name = slugifyName(newLabel);
+                  }
+                  onChange({ ...measure, ...updates });
+                }}
                 className="w-full text-xs px-2 py-1 border rounded"
+                placeholder="Display name"
               />
             </div>
             <div>
@@ -311,12 +337,17 @@ function MeasureRow({
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[10px] text-text-tertiary uppercase">Label</label>
+              <div className="flex items-center gap-1 mb-0.5">
+                <label className="text-[10px] text-text-tertiary uppercase">SQL Name</label>
+                {isAutoName(measure.name, measure.label) && (
+                  <span className="text-[9px] text-text-quaternary italic">auto</span>
+                )}
+              </div>
               <input
-                value={measure.label || ''}
-                onChange={(e) => onChange({ ...measure, label: e.target.value || undefined })}
-                className="w-full text-xs px-2 py-1 border rounded"
-                placeholder="Display label"
+                value={measure.name}
+                onChange={(e) => onChange({ ...measure, name: e.target.value })}
+                className="w-full text-xs px-2 py-1 border rounded font-mono"
+                title="Internal SQL identifier. Letters, digits and underscores only."
               />
             </div>
             <div>

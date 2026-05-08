@@ -3,7 +3,7 @@
 import React, { useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Bot, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter } from 'lucide-react';
+import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import { useQueries, useIsFetching, useQueryClient } from '@tanstack/react-query';
 import {
@@ -42,8 +42,6 @@ import {
   isSemanticDimensionFilterableForDashboard,
 } from '@/lib/filters';
 import { fetchDatasetModel, fetchDatasetModelDistinctValues, modelKeys, type DatasetModelResponse } from '@/hooks/use-dataset-model';
-import { usePermissions, hasPermission } from '@/hooks/use-permissions';
-import { useAgentReportSpecs } from '@/hooks/use-agent-report-specs';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import {
   createDashboardPageId,
@@ -210,9 +208,6 @@ export default function DashboardDetailPage() {
     });
     return map;
   }, [dashboardDatasetIds, datasetModelQueries]);
-  const { data: permData } = usePermissions();
-  const canViewAgentReports = hasPermission(permData?.permissions, 'ai_agent', 'view');
-  const { data: agentReportSpecs = [] } = useAgentReportSpecs(canViewAgentReports);
   const resPerms = getResourcePermissions(dashboard?.user_permission);
   const canShare = resPerms.canShare;
   const canEditResource = resPerms.canEdit;
@@ -1073,7 +1068,6 @@ export default function DashboardDetailPage() {
     );
   }
 
-  const linkedAgentReport = agentReportSpecs.find((spec) => spec.latest_dashboard_id === dashboardId);
   const activeCrossFilter = crossFilterState?.filter ?? null;
 
   const handleExportPdf = async () => {
@@ -1304,17 +1298,6 @@ export default function DashboardDetailPage() {
                         {dashboard.description}
                       </span>
                     </>
-                  )}
-                  {linkedAgentReport && (
-                    <button
-                      type="button"
-                      onClick={() => router.push(`/ai-reports/${linkedAgentReport.id}`)}
-                      className="inline-flex h-6 shrink-0 items-center gap-1 rounded-full border border-brand/25 bg-[rgba(94,106,210,0.08)] px-2 text-[11px] font-[510] text-brand transition-colors hover:bg-brand/15"
-                      title={`Generated from ${linkedAgentReport.name}`}
-                    >
-                      <Bot className="h-3 w-3" />
-                      <span className="hidden lg:inline">AI Report</span>
-                    </button>
                   )}
                   {hasUnsavedChanges && (
                     <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-[510] text-text-quaternary">

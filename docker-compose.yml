@@ -4,10 +4,6 @@
 # Start base stack:
 #   docker compose up --build -d
 #
-# Optional AI overlays:
-#   docker compose -f docker-compose.yml -f docker-compose.ai.yml up -d --build
-#   docker compose -f docker-compose.yml -f docker-compose.chat.yml up -d --build
-#   docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d --build
 # ============================================================
 
 services:
@@ -111,15 +107,10 @@ services:
         NEXT_PUBLIC_AUTH_GOOGLE_ENABLED: ${NEXT_PUBLIC_AUTH_GOOGLE_ENABLED:-false}
         NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
         # WebSocket cannot be proxied through Next.js rewrites — must be baked.
-        # Local dev (no nginx): ws://localhost:8001/chat/ws
-        # Production (with nginx): wss://yourdomain.com/chat/ws  (or leave empty)
-        NEXT_PUBLIC_AI_CHAT_WS_URL: ${NEXT_PUBLIC_AI_CHAT_WS_URL:-}
         NEXT_PUBLIC_WORKBOARDS_ENABLED: ${NEXT_PUBLIC_WORKBOARDS_ENABLED:-true}
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000/api/v1
-      AI_CHAT_INTERNAL_URL: http://ai-chat-service:8001
-      AI_AGENT_INTERNAL_URL: http://ai-agent-service:8001
       SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED: ${NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED:-true}

@@ -65,24 +65,8 @@ _ADMIN_PERMISSIONS = {
     "explore_charts": "full",
     "dashboards": "full",
     "workboards": "full",
-    "ai_chat": "full",
-    "ai_agent": "full",
     "settings": "full",
 }
-
-
-def _infer_legacy_ai_agent_level(perms: dict[str, str]) -> str:
-    ai_chat_level = perms.get("ai_chat", "none")
-    dashboards_level = perms.get("dashboards", "none")
-    charts_level = perms.get("explore_charts", "none")
-
-    if (
-        ai_chat_level in {"edit", "full"}
-        and dashboards_level in {"edit", "full"}
-        and charts_level in {"edit", "full"}
-    ):
-        return "edit"
-    return "none"
 
 
 def _normalize_email(email: str) -> str:
@@ -136,22 +120,11 @@ def _assert_google_email_allowed(email: str) -> None:
 
 def create_access_token(user: User) -> str:
     now = datetime.now(timezone.utc)
-    perms = user.permissions or {}
-    ai_chat_level: str = perms.get("ai_chat", "none") if isinstance(perms, dict) else "none"
-    if isinstance(perms, dict):
-        ai_agent_level = perms.get("ai_agent")
-        if ai_agent_level is None:
-            ai_agent_level = _infer_legacy_ai_agent_level(perms)
-    else:
-        ai_agent_level = "none"
     payload = {
         "sub": str(user.id),
         "jti": str(uuid.uuid4()),
         "iat": now,
         "exp": now + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS),
-        "ai_level": ai_chat_level,
-        "ai_chat_level": ai_chat_level,
-        "ai_agent_level": ai_agent_level,
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
 

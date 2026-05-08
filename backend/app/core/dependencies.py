@@ -46,8 +46,6 @@ MODULE_KEYS = (
     "explore_charts",
     "dashboards",
     "workboards",
-    "ai_chat",
-    "ai_agent",
     "settings",
 )
 
@@ -187,19 +185,6 @@ LEVEL_ORDER = {"none": 0, "view": 1, "edit": 2, "full": 3}
 def _normalize_permissions(user: User) -> dict:
     perms: dict = user.permissions or {}
     normalized = dict(perms)
-
-    if "ai_agent" not in normalized:
-        ai_chat_level = normalized.get("ai_chat", "none")
-        dashboards_level = normalized.get("dashboards", "none")
-        charts_level = normalized.get("explore_charts", "none")
-        if (
-            LEVEL_ORDER.get(ai_chat_level, 0) >= LEVEL_ORDER["edit"]
-            and LEVEL_ORDER.get(dashboards_level, 0) >= LEVEL_ORDER["edit"]
-            and LEVEL_ORDER.get(charts_level, 0) >= LEVEL_ORDER["edit"]
-        ):
-            normalized["ai_agent"] = "edit"
-        else:
-            normalized["ai_agent"] = "none"
 
     caps = _get_permission_caps(user)
     if caps:

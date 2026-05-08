@@ -72,8 +72,6 @@ const MODULE_LABELS: Record<string, string> = {
   explore_charts:    'Explore + charts',
   dashboards:        'Dashboards',
   workboards:        'Workboards',
-  ai_chat:           'AI chat',
-  ai_agent:          'AI agent',
   settings:          'Settings',
 };
 

@@ -43,11 +43,32 @@ import {
   type AddJoinParams,
   type DatasetModelView,
   type DatasetModelExplore,
+  type MeasureDefinition,
 } from '@/hooks/use-dataset-model';
 import { RelationshipDialog, type RelationshipDialogValue } from './RelationshipDialog';
 import { DatasetDictionaryPanel } from './DatasetDictionaryPanel';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { toast } from '@/lib/toast';
+
+// ─── Measure folder grouping ──────────────────────────────────────────────────
+
+function groupMeasuresByFolder(
+  measures: MeasureDefinition[],
+): { folder: string; items: MeasureDefinition[] }[] {
+  const map = new Map<string, MeasureDefinition[]>();
+  measures.forEach((m) => {
+    const key = m.folder?.trim() || '';
+    map.set(key, [...(map.get(key) ?? []), m]);
+  });
+  const result: { folder: string; items: MeasureDefinition[] }[] = [];
+  const ungrouped = map.get('');
+  if (ungrouped?.length) result.push({ folder: '', items: ungrouped });
+  Array.from(map.entries())
+    .filter(([k]) => k !== '')
+    .sort(([a], [b]) => a.localeCompare(b))
+    .forEach(([folder, items]) => result.push({ folder, items }));
+  return result;
+}
 
 // ─── Layout constants ────────────────────────────────────────────────────────
 
@@ -352,15 +373,26 @@ function ViewCard({
           {msrOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
         </button>
         {msrOpen && (
-          <div className="px-1.5 pb-1.5 space-y-0.5 max-h-40 overflow-y-auto">
-            {visM.map((m) => (
-              <div
-                key={m.name}
-                className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] hover:bg-warning/10"
-              >
-                <Sigma className="w-3 h-3 text-warning shrink-0" />
-                <span className="text-text-secondary truncate">{m.label || m.name}</span>
-                <span className="text-text-quaternary ml-auto text-[9px] uppercase">{m.type}</span>
+          <div className="px-1.5 pb-1.5 max-h-40 overflow-y-auto">
+            {groupMeasuresByFolder(visM).map(({ folder, items }) => (
+              <div key={folder || '__ungrouped__'}>
+                {folder && (
+                  <div className="px-2 pt-1.5 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-text-quaternary">
+                    {folder}
+                  </div>
+                )}
+                <div className="space-y-0.5">
+                  {items.map((m) => (
+                    <div
+                      key={m.name}
+                      className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] hover:bg-warning/10"
+                    >
+                      <Sigma className="w-3 h-3 text-warning shrink-0" />
+                      <span className="text-text-secondary truncate">{m.label || m.name}</span>
+                      <span className="text-text-quaternary ml-auto text-[9px] uppercase">{m.type}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             ))}
           </div>

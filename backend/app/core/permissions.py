@@ -11,7 +11,7 @@ Filter behaviour per level:
   full  → all items in the module (unrestricted)
 
 Module keys: data_sources, datasets, explore_charts,
-             dashboards, ai_chat, settings
+             dashboards, workboards, settings
 """
 from __future__ import annotations
 
@@ -34,7 +34,6 @@ _RESOURCE_TO_MODULE: Dict[str, str] = {
     "chart": "explore_charts",
     "dataset": "datasets",
     "datasource": "data_sources",
-    "chat_session": "ai_chat",
     "workboard": "workboards",
 }
 

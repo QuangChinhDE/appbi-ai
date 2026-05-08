@@ -28,11 +28,6 @@ ARG NEXT_PUBLIC_GOOGLE_CLIENT_ID=
 ENV NEXT_PUBLIC_GOOGLE_CLIENT_ID=$NEXT_PUBLIC_GOOGLE_CLIENT_ID
 ARG NEXT_PUBLIC_APP_URL=http://localhost:3000
 ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
-# WebSocket URL must be baked at build time — Next.js rewrites cannot proxy
-# WebSocket upgrades. Set to ws://localhost:8001/chat/ws for local dev,
-# or wss://yourdomain.com/chat/ws for production with nginx.
-ARG NEXT_PUBLIC_AI_CHAT_WS_URL=
-ENV NEXT_PUBLIC_AI_CHAT_WS_URL=$NEXT_PUBLIC_AI_CHAT_WS_URL
 ARG NEXT_PUBLIC_WORKBOARDS_ENABLED=false
 ENV NEXT_PUBLIC_WORKBOARDS_ENABLED=$NEXT_PUBLIC_WORKBOARDS_ENABLED
 

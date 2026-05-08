@@ -1,7 +1,7 @@
 # AppBI AI
 
 AppBI AI is a self-hosted business intelligence platform with governed data
-access, dashboarding, AI-assisted analysis, and a Workboards module for building
+access, dashboarding, AI-assisted helpers, and a Workboards module for building
 small operational apps on top of existing dataset tables.
 
 This repository is kept focused on runtime code. Local tests, demo data, audit
@@ -15,8 +15,6 @@ part of the Git payload.
   semantic metadata.
 - Explore data, save charts, assemble dashboards, and share dashboards through
   internal or public links.
-- Use AI Chat for ad hoc analysis over governed datasets.
-- Use AI Agent flows for saved analytical report generation.
 - Build Workboards: CRUD-style mini apps with forms, lists, doc views, row
   validation, public links, and workspace links.
 
@@ -28,8 +26,6 @@ portable, dataset-backed operational apps.
 ```text
 frontend/        Next.js application
 backend/         FastAPI API, auth, permissions, datasets, dashboards, Workboards
-ai-chat/         Optional AI Chat service
-ai-report/       Optional AI Agent service
 docker-compose*.yml
 nginx.conf
 ```
@@ -40,7 +36,6 @@ Runtime flow:
 Browser -> Frontend -> Backend API -> PostgreSQL metadata DB
                          |
                          +-> External data sources
-                         +-> Optional AI Chat / AI Agent services
 ```
 
 PostgreSQL metadata can be external or the bundled `db` service. The bundled DB
@@ -50,7 +45,7 @@ starts only when the `local-db` profile is enabled.
 
 Included:
 
-- `backend/`, `frontend/`, `ai-chat/`, `ai-report/`
+- `backend/`, `frontend/`
 - Alembic migrations and runtime service code
 - Docker Compose files, Dockerfiles, and `nginx.conf`
 - Safe environment templates such as `.env.example`
@@ -108,28 +103,6 @@ Base URLs:
 - Frontend: `http://localhost:3000`
 - Backend API: `http://localhost:8000`
 - API docs: `http://localhost:8000/docs`
-
-## Optional AI Services
-
-Start both AI services:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.ai.yml up -d --build
-```
-
-Start only AI Chat:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.chat.yml up -d --build
-```
-
-Start only AI Agent:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d --build
-```
-
-With bundled PostgreSQL, add `--profile local-db` to the same command.
 
 ## Development
 
@@ -244,8 +217,6 @@ Update an existing VM:
 git pull --rebase origin master
 docker compose up -d --build backend frontend
 ```
-
-If AI services are enabled, rebuild with the same overlay used during startup.
 
 ## Security Notes
 

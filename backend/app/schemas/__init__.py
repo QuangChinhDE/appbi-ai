@@ -86,15 +86,6 @@ from app.schemas.dataset import (
     QualityRuleTestRequest,
     QualityRuleTestResponse,
 )
-from app.schemas.agent_report import (
-    AgentReportSpecCreate,
-    AgentReportSpecUpdate,
-    AgentReportSpecResponse,
-    AgentReportSpecDetailResponse,
-    AgentReportRunCreate,
-    AgentReportRunUpdate,
-    AgentReportRunResponse,
-)
 from app.schemas.personal_access_token import (
     PersonalAccessTokenCreate,
     PersonalAccessTokenCreateResponse,
@@ -195,15 +186,6 @@ __all__ = [
     "DashboardHtmlImportAnalyzeResponse",
     "DashboardHtmlImportBuildResponse",
     "DashboardHtmlImportTypeChange",
-
-    # AI Agent saved reports
-    "AgentReportSpecCreate",
-    "AgentReportSpecUpdate",
-    "AgentReportSpecResponse",
-    "AgentReportSpecDetailResponse",
-    "AgentReportRunCreate",
-    "AgentReportRunUpdate",
-    "AgentReportRunResponse",
 
     # Personal access tokens
     "PersonalAccessTokenCreate",

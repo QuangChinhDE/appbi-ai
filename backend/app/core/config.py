@@ -119,7 +119,6 @@ class Settings(BaseSettings):
     BACKEND_AI_HTML_IMPORT_GEMINI_MODEL: str = ""
     BACKEND_AI_HTML_IMPORT_OPENROUTER_MODEL: str = ""
     BACKEND_AI_EMBEDDING_MODEL: str = ""
-    BACKEND_AI_REPORT_SUMMARY_MODEL: str = ""
     AI_DESCRIPTION_MODEL: str = "google/gemini-2.5-flash-lite"
     GEMINI_API_KEY: str = ""
     GEMINI_IMPORT_MODEL: str = "gemini-2.5-flash-lite"

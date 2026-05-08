@@ -17,11 +17,9 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  MessageSquareText,
   LogOut,
   KeyRound,
   Shield,
-  Bot,
   HelpCircle,
   Info,
   Trash2,
@@ -57,8 +55,6 @@ const ALL_NAV_ITEMS: NavItem[] = [
   { labelKey: 'sidebar.nav.explore', href: '/explore', icon: <Search className="h-4 w-4" />, module: 'explore_charts' },
   { labelKey: 'sidebar.nav.dashboards', href: '/dashboards', icon: <LayoutDashboard className="h-4 w-4" />, module: 'dashboards' },
   { labelKey: 'sidebar.nav.workboards', href: '/workboards', icon: <ClipboardList className="h-4 w-4" />, module: 'workboards' },
-  { labelKey: 'sidebar.nav.aiReports', href: '/ai-reports', icon: <Bot className="h-4 w-4" />, module: 'ai_agent' },
-  { labelKey: 'sidebar.nav.aiChat', href: '/chat', icon: <MessageSquareText className="h-4 w-4" />, module: 'ai_chat' },
   { labelKey: 'sidebar.nav.settings', href: '/permissions', icon: <Shield className="h-4 w-4" />, module: 'settings' },
 ];
 

@@ -9,17 +9,17 @@
  * Three fields stored in ChartMetadata are surfaced and editable here:
  *
  *   auto_description  — 2-3 sentence plain-text description used by:
- *                        • AI Chat context_builder vector search
+ *                        • AI-assisted chart search
  *                        • Chart search results snippet
  *                        • Dashboard card hover tooltip
  *
  *   insight_keywords  — short phrases used by:
  *                        • Vector embedding enrichment (joined into embedding text)
- *                        • AI Chat fuzzy fallback matching
+ *                        • Fuzzy fallback matching
  *                        • Explore global search
  *
  *   common_questions  — suggested follow-up questions used by:
- *                        • AI Chat _generate_suggestions() seed list
+ *                        • Suggested question seed list
  *                        • "Starter questions" on the Chat landing page
  *
  * Generation flow (background, non-blocking):
@@ -288,7 +288,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
                 <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   <Bot className="h-3 w-3" />
                   Description
-                  <span className="ml-1 font-normal normal-case text-text-quaternary">— used in AI Chat search</span>
+                  <span className="ml-1 font-normal normal-case text-text-quaternary">— used in chart search</span>
                 </label>
                 <textarea
                   rows={4}
@@ -339,7 +339,7 @@ export function ChartDescriptionPanel({ chartId, canEdit, defaultOpen = false }:
                 <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   <HelpCircle className="h-3 w-3" />
                   Suggested Questions
-                  <span className="ml-1 font-normal normal-case text-text-quaternary">— shown in AI Chat</span>
+                  <span className="ml-1 font-normal normal-case text-text-quaternary">— suggested questions</span>
                 </label>
                 <div className="mb-1.5 space-y-1">
                   {questions.map((q, i) => (

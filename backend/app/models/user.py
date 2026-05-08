@@ -45,7 +45,7 @@ class User(Base):
         server_default=text(
             '\'{"data_sources":"none","datasets":"none",'
             '"explore_charts":"none","dashboards":"none","workboards":"none",'
-            '"ai_chat":"none","ai_agent":"none","settings":"none"}\''
+            '"settings":"none"}\''
             '::jsonb'
         ),
     )

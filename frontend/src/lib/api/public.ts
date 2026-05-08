@@ -217,6 +217,146 @@ export async function fetchAiContext(
   return res.data as AiDashboardContext;
 }
 
+// ── Agentic AI Bot v2 ──────────────────────────────────────────────────────────
+
+export interface AiReconChartManifest {
+  chart_id: number;
+  chart_name: string;
+  chart_type: string;
+  description: string;
+  columns: string[];
+  total_rows: number;
+  filters_applied: Record<string, unknown>[];
+}
+
+export interface AiReconInsightPack {
+  chart_id: number;
+  chart_name: string;
+  chart_type: string;
+  description: string;
+  total_rows: number;
+  sample_rows: number;
+  truncated: boolean;
+  primary_measure: string | null;
+  primary_dimension: string | null;
+  top_5: Record<string, unknown>[];
+  bottom_5: Record<string, unknown>[];
+  trend: {
+    direction: 'up' | 'down' | 'flat';
+    pct_change: number | null;
+    first: { x: string; y: number };
+    last: { x: string; y: number };
+    points: number;
+  } | null;
+  outliers: { row: Record<string, unknown>; z_score: number }[];
+  filters_applied: Record<string, unknown>[];
+}
+
+export interface AiRecon {
+  manifest: {
+    dashboard_name: string;
+    dashboard_description: string;
+    filters_applied: Record<string, unknown>[];
+    charts: AiReconChartManifest[];
+  };
+  summaries: AiReconInsightPack[];
+}
+
+export type AiAgentEvent =
+  | { type: 'text'; text: string }
+  | { type: 'status'; text: string; tool: string }
+  | { type: 'tool_result'; tool: string; ok: boolean; error?: string | null }
+  | { type: 'error'; text: string }
+  | { type: 'done' };
+
+/**
+ * Fetch a proactive recon (manifest + Insight Packs for top charts) so the
+ * bot can render a "what's notable" welcome message without an LLM call.
+ */
+export async function fetchAiRecon(
+  token: string,
+  sessionToken?: string,
+): Promise<AiRecon> {
+  const headers: Record<string, string> = {};
+  if (sessionToken) headers['X-Public-Session'] = sessionToken;
+  const res = await publicClient.get(`/public/dashboards/${token}/ai/recon`, { headers });
+  return res.data as AiRecon;
+}
+
+/**
+ * Stream typed events from the agentic chat endpoint.
+ *
+ * The user's API key is sent in `X-User-Ai-Key` and is NEVER stored.
+ * The dashboard's public filters are applied automatically server-side —
+ * what the dashboard shows is what the agent sees.
+ */
+export async function* streamAiAgentChat(
+  token: string,
+  messages: AiChatMessage[],
+  userAiKey: string,
+  provider: AiProvider,
+  model: string,
+  sessionToken?: string,
+): AsyncGenerator<AiAgentEvent, void, unknown> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-User-Ai-Key': userAiKey,
+    'X-User-Ai-Provider': provider,
+  };
+  const trimmedModel = model.trim();
+  if (trimmedModel) {
+    headers['X-User-Ai-Model'] = trimmedModel;
+  }
+  if (sessionToken) headers['X-Public-Session'] = sessionToken;
+
+  const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/agent/chat`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ messages }),
+  });
+
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try {
+      const json = await response.json();
+      detail = json?.detail ?? detail;
+    } catch { /* ignore */ }
+    throw new Error(detail);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) return;
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    // SSE event boundaries are blank lines (\n\n)
+    const events = buffer.split('\n\n');
+    buffer = events.pop() ?? '';
+
+    for (const evBlock of events) {
+      const dataLine = evBlock
+        .split('\n')
+        .find((l) => l.startsWith('data:'));
+      if (!dataLine) continue;
+      const payload = dataLine.slice(5).trim();
+      if (!payload) continue;
+      try {
+        const parsed = JSON.parse(payload) as AiAgentEvent;
+        yield parsed;
+        if (parsed.type === 'done') return;
+      } catch {
+        // Ignore malformed lines
+      }
+    }
+  }
+}
+
 /**
  * Stream a chat response from the LLM using the user's BYOK API key.
  * Returns an async generator that yields text chunks as they arrive (SSE).

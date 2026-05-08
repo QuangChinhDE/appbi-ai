@@ -113,25 +113,68 @@ const FORMAT_KINDS: MeasureFormat['kind'][] = ['number', 'currency', 'percent', 
 type MeasureTemplate = { key: string; label: string; build: (n: number) => MeasureDefinition };
 
 const MEASURE_TEMPLATES: MeasureTemplate[] = [
-  { key: 'count', label: 'Count rows', build: (n) => ({ name: `count_${n}`, type: 'count', sql: '*', hidden: false }) },
-  { key: 'sum', label: 'Sum of column', build: (n) => ({ name: `sum_${n}`, type: 'sum', sql: '', hidden: false }) },
-  { key: 'avg', label: 'Average of column', build: (n) => ({ name: `avg_${n}`, type: 'avg', sql: '', hidden: false }) },
-  { key: 'distinct', label: 'Count distinct', build: (n) => ({ name: `distinct_${n}`, type: 'count_distinct', sql: '', hidden: false }) },
+  { key: 'count', label: 'Count rows', build: (n) => ({ name: `count_${n}`, label: 'Count', type: 'count', sql: '*', hidden: false }) },
+  { key: 'sum', label: 'Sum of column', build: (n) => ({ name: `sum_${n}`, label: 'Sum', type: 'sum', sql: '', hidden: false }) },
+  { key: 'avg', label: 'Average of column', build: (n) => ({ name: `avg_${n}`, label: 'Average', type: 'avg', sql: '', hidden: false }) },
+  { key: 'distinct', label: 'Count distinct', build: (n) => ({ name: `distinct_${n}`, label: 'Unique count', type: 'count_distinct', sql: '', hidden: false }) },
   {
     key: 'filtered',
     label: 'Filtered count (e.g. paid orders)',
     build: (n) => ({
       name: `filtered_count_${n}`,
+      label: 'Filtered count',
       type: 'count',
       sql: '*',
       filters: [{ field: '', operator: 'eq', value: '' }],
       hidden: false,
     }),
   },
-  { key: 'pct', label: '% of total', build: (n) => ({ name: `pct_${n}`, type: 'percent_of_total', sql: '', hidden: false }) },
+  { key: 'pct', label: '% of total', build: (n) => ({ name: `pct_${n}`, label: '% of total', type: 'percent_of_total', sql: '', hidden: false }) },
 ];
 
+// ─── Measure name helpers ───────────────────────────────────────────────────
+
+/** Slugify a display label into a valid SQL identifier. */
+function slugifyName(label: string): string {
+  const slug = label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^[0-9]/, '_$&')
+    .replace(/^_+|_+$/g, '');
+  return slug || 'measure';
+}
+
+/** Returns true when the name still looks like a template auto-generated default
+ *  (e.g. count_0, sum_3) or when it exactly equals the slugified version of
+ *  the current label — meaning the user has not overridden it. */
+function isAutoName(name: string, label?: string): boolean {
+  if (/^(count|sum|avg|min|max|distinct|filtered_count|pct)_\d+$/.test(name)) return true;
+  if (label) return name === slugifyName(label);
+  return false;
+}
+
 type PanelTab = 'dictionary' | 'fields';
+
+// ─── Measure folder grouping ──────────────────────────────────────────────────
+
+function groupMeasuresByFolder(
+  measures: MeasureDefinition[],
+): { folder: string; items: { idx: number; m: MeasureDefinition }[] }[] {
+  const map = new Map<string, { idx: number; m: MeasureDefinition }[]>();
+  measures.forEach((m, idx) => {
+    const key = m.folder?.trim() || '';
+    map.set(key, [...(map.get(key) ?? []), { idx, m }]);
+  });
+  const result: { folder: string; items: { idx: number; m: MeasureDefinition }[] }[] = [];
+  const ungrouped = map.get('');
+  if (ungrouped?.length) result.push({ folder: '', items: ungrouped });
+  Array.from(map.entries())
+    .filter(([k]) => k !== '')
+    .sort(([a], [b]) => a.localeCompare(b))
+    .forEach(([folder, items]) => result.push({ folder, items }));
+  return result;
+}
 
 // ─── DimIcon ──────────────────────────────────────────────────────────────────
 
@@ -564,6 +607,7 @@ function MeasureRow({
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(Boolean(measure.expression || measure.where_sql));
+  const [editingLabel, setEditingLabel] = useState(false);
 
   const filters = measure.filters ?? [];
   const updateFilters = (next: MeasureFilter[]) => onChange({ ...measure, filters: next });
@@ -584,7 +628,33 @@ function MeasureRow({
           {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
         </button>
         <Sigma className="w-3.5 h-3.5 text-warning shrink-0" />
-        <span className="text-sm text-text-primary truncate flex-1">{measure.label || measure.name}</span>
+        {canEdit && editingLabel ? (
+          <input
+            autoFocus
+            value={measure.label ?? measure.name}
+            onChange={(e) => {
+              const newLabel = e.target.value || undefined;
+              const updates: Partial<MeasureDefinition> = { label: newLabel };
+              // Auto-sync the SQL name when it's still an auto-generated default
+              if (newLabel && isAutoName(measure.name, measure.label)) {
+                updates.name = slugifyName(newLabel);
+              }
+              onChange({ ...measure, ...updates });
+            }}
+            onBlur={() => setEditingLabel(false)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') setEditingLabel(false); }}
+            onClick={(e) => e.stopPropagation()}
+            className="flex-1 text-sm text-text-primary bg-transparent border-b border-brand outline-none min-w-0"
+          />
+        ) : (
+          <span
+            className={`text-sm text-text-primary truncate flex-1 ${canEdit ? 'cursor-text' : ''}`}
+            title={canEdit ? 'Double-click to edit label' : undefined}
+            onDoubleClick={canEdit ? () => setEditingLabel(true) : undefined}
+          >
+            {measure.label || measure.name}
+          </span>
+        )}
         {filters.length > 0 && (
           <span
             className="text-[9px] px-1 py-0.5 rounded bg-warning/10 text-warning shrink-0"
@@ -621,14 +691,22 @@ function MeasureRow({
             {measureNames.filter((n) => n !== measure.name).map((n) => <option key={n} value={n} />)}
           </datalist>
 
-          {/* Identity */}
+          {/* Identity — Label first (primary), Aggregation alongside */}
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[10px] text-text-tertiary uppercase font-medium">Name</label>
+              <label className="text-[10px] text-text-tertiary uppercase font-medium">Label</label>
               <input
-                value={measure.name}
-                onChange={(e) => onChange({ ...measure, name: e.target.value })}
+                value={measure.label || ''}
+                onChange={(e) => {
+                  const newLabel = e.target.value || undefined;
+                  const updates: Partial<MeasureDefinition> = { label: newLabel };
+                  if (newLabel && isAutoName(measure.name, measure.label)) {
+                    updates.name = slugifyName(newLabel);
+                  }
+                  onChange({ ...measure, ...updates });
+                }}
                 className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand"
+                placeholder="Display name"
               />
             </div>
             <div>
@@ -642,14 +720,21 @@ function MeasureRow({
               </select>
             </div>
           </div>
+          {/* SQL name (secondary) + Folder */}
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[10px] text-text-tertiary uppercase font-medium">Label</label>
+              <div className="flex items-center gap-1 mb-0.5">
+                <label className="text-[10px] text-text-tertiary uppercase font-medium">SQL Name</label>
+                {isAutoName(measure.name, measure.label) && (
+                  <span className="text-[9px] text-text-quaternary italic">auto</span>
+                )}
+              </div>
               <input
-                value={measure.label || ''}
-                onChange={(e) => onChange({ ...measure, label: e.target.value || undefined })}
-                className="mt-0.5 w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md focus:outline-none focus:ring-1 focus:ring-brand"
-                placeholder="Display label"
+                value={measure.name}
+                onChange={(e) => onChange({ ...measure, name: e.target.value })}
+                className="w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md font-mono focus:outline-none focus:ring-1 focus:ring-brand"
+                placeholder="sql_identifier"
+                title="Internal SQL identifier. Letters, digits and underscores only."
               />
             </div>
             <div>
@@ -712,7 +797,12 @@ function MeasureRow({
 
           {/* Format */}
           <div>
-            <label className="text-[10px] text-text-tertiary uppercase font-medium">Format</label>
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] text-text-tertiary uppercase font-medium">Format</label>
+              <span className="text-[9px] italic text-text-quaternary" title="Display hint stored on the measure. Charts apply their own number format; this hint is exposed to chart pickers and AI consumers.">
+                display hint
+              </span>
+            </div>
             <div className="mt-0.5 grid grid-cols-3 gap-2">
               <select
                 value={fmt.kind}
@@ -930,6 +1020,7 @@ export function ModelViewEditPanel({
   const [measures, setMeasures] = useState<MeasureDefinition[]>([]);
   const [viewDescription, setViewDescription] = useState('');
   const [showMeasureTemplates, setShowMeasureTemplates] = useState(false);
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
   const updateView = useUpdateModelView();
 
   // Pick-list for the form-first measure editor: pull from existing dimensions
@@ -976,6 +1067,45 @@ export function ModelViewEditPanel({
 
   const handleSaveModel = async () => {
     if (!view) return;
+    // ── Client-side validation: catch misconfigurations before the round-trip ──
+    const errors: string[] = [];
+    const seen = new Map<string, number>();
+    measures.forEach((m, i) => {
+      const trimmedName = (m.name || '').trim();
+      if (!trimmedName) {
+        errors.push(`Measure #${i + 1}: name is required`);
+      } else if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(trimmedName)) {
+        errors.push(`Measure "${trimmedName}": name must start with a letter/underscore and contain only letters, digits, or underscores`);
+      } else if (seen.has(trimmedName)) {
+        errors.push(`Duplicate measure name "${trimmedName}"`);
+      } else {
+        seen.set(trimmedName, i);
+      }
+      // Aggregation needs an input column unless it is COUNT(*) or has an expression
+      const needsColumn = m.type !== 'count' && !m.expression;
+      if (needsColumn && !(m.sql || '').trim()) {
+        errors.push(`Measure "${trimmedName || `#${i + 1}`}": "${m.type}" needs a column to aggregate (or set an SQL expression in Advanced)`);
+      }
+      // depends_on must reference an existing measure in this view
+      for (const dep of m.depends_on || []) {
+        if (dep && !measures.some((mm) => mm.name === dep)) {
+          errors.push(`Measure "${trimmedName}": depends_on "${dep}" doesn't match any measure in this view`);
+        }
+        if (dep === trimmedName) {
+          errors.push(`Measure "${trimmedName}": cannot depend on itself`);
+        }
+      }
+      // Filters must have a field
+      (m.filters || []).forEach((f, fi) => {
+        if (!(f.field || '').trim()) {
+          errors.push(`Measure "${trimmedName}": filter #${fi + 1} is missing a field`);
+        }
+      });
+    });
+    if (errors.length) {
+      toast.error(errors[0]);
+      return;
+    }
     try {
       await updateView.mutateAsync({ datasetId, viewId: view.id, data: { dimensions, measures, description: viewDescription } });
       toast.success('Fields saved');
@@ -1169,23 +1299,57 @@ export function ModelViewEditPanel({
                   )}
                 </div>
                 <div className="space-y-1.5">
-                  {measures.map((m, idx) => (
-                    <MeasureRow
-                      key={`mea-${idx}-${m.name}`}
-                      rowKey={`mea-${idx}-${m.name}`}
-                      measure={m}
-                      canEdit={canEdit}
-                      columnOptions={columnOptions}
-                      measureNames={measureNames}
-                      onChange={(u) => setMeasures((prev) => prev.map((mm, i) => (i === idx ? u : mm)))}
-                      onRemove={() => setMeasures((prev) => prev.filter((_, i) => i !== idx))}
-                    />
-                  ))}
-                  {measures.length === 0 && (
-                    <div className="rounded-lg border border-dashed border-[rgb(var(--border-line))] py-4 text-center text-xs text-text-quaternary">
-                      No measures — add one above
-                    </div>
-                  )}
+                  {(() => {
+                    if (measures.length === 0) {
+                      return (
+                        <div className="rounded-lg border border-dashed border-[rgb(var(--border-line))] py-4 text-center text-xs text-text-quaternary">
+                          No measures — add one above
+                        </div>
+                      );
+                    }
+                    const groups = groupMeasuresByFolder(measures);
+                    const hasMultipleGroups = groups.length > 1 || (groups.length === 1 && groups[0].folder !== '');
+                    return groups.map(({ folder, items }) => (
+                      <div key={folder || '__ungrouped__'}>
+                        {hasMultipleGroups && folder && (
+                          <button
+                            onClick={() =>
+                              setCollapsedFolders((prev) => {
+                                const next = new Set(prev);
+                                next.has(folder) ? next.delete(folder) : next.add(folder);
+                                return next;
+                              })
+                            }
+                            className="flex w-full items-center gap-1 px-1 py-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary hover:text-text-secondary"
+                          >
+                            {collapsedFolders.has(folder) ? (
+                              <ChevronRight className="w-3 h-3" />
+                            ) : (
+                              <ChevronDown className="w-3 h-3" />
+                            )}
+                            <span className="truncate">{folder}</span>
+                            <span className="font-normal ml-1">({items.length})</span>
+                          </button>
+                        )}
+                        {!collapsedFolders.has(folder) && (
+                          <div className="space-y-1.5">
+                            {items.map(({ idx, m }) => (
+                              <MeasureRow
+                                key={`mea-${idx}-${m.name}`}
+                                rowKey={`mea-${idx}-${m.name}`}
+                                measure={m}
+                                canEdit={canEdit}
+                                columnOptions={columnOptions}
+                                measureNames={measureNames}
+                                onChange={(u) => setMeasures((prev) => prev.map((mm, i) => (i === idx ? u : mm)))}
+                                onRemove={() => setMeasures((prev) => prev.filter((_, i) => i !== idx))}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ));
+                  })()}
                 </div>
               </div>
             </div>

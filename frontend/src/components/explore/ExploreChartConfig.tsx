@@ -850,7 +850,12 @@ function pruneTableColumnAlignments(
 }
 
 // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Column helpers ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-type Col = { name: string; type: string };
+type Col = { name: string; type: string; label?: string };
+
+/** Display text for a Col option in pickers. Falls back to the raw name. */
+function colLabel(c: Col): string {
+  return (c.label && c.label.trim()) ? c.label : c.name;
+}
 
 function isNumeric(c: Col): boolean {
   return ['number', 'integer', 'float', 'double', 'decimal', 'bigint'].includes(
@@ -995,7 +1000,7 @@ function SelectSlot({
         }`}
       >
         <option value="">{placeholder}</option>
-        {options.map(o => <option key={o.name} value={o.name}>{o.name}</option>)}
+        {options.map(o => <option key={o.name} value={o.name} title={o.name}>{colLabel(o)}</option>)}
       </select>
     </div>
   );
@@ -1067,7 +1072,7 @@ function MetricSlot({
                   <option key={a.value} value={a.value}>{a.label}</option>
                 ))}
               </select>
-              <span className="flex-1 text-xs text-brand truncate" title={m.field}>{m.field}</span>
+              <span className="flex-1 text-xs text-brand truncate" title={m.field}>{(() => { const o = fullOptions.find(x => x.name === m.field); return o ? colLabel(o) : m.field; })()}</span>
               <button onClick={() => removeField(m.field)}
                 className="p-0.5 rounded hover:bg-brand-hover text-brand flex-shrink-0"
               >
@@ -1089,7 +1094,7 @@ function MetricSlot({
           }`}
         >
           <option value="">{available.length === 0 ? 'all numeric fields added' : '+ add value...'}</option>
-          {available.map(o => <option key={o.name} value={o.name}>{o.name}</option>)}
+          {available.map(o => <option key={o.name} value={o.name} title={o.name}>{colLabel(o)}</option>)}
         </select>
       )}
 
@@ -1102,7 +1107,7 @@ function MetricSlot({
           className="mt-1 w-full px-2 py-1.5 text-xs border border-dashed border-[rgb(var(--border-strong))] rounded-md bg-surface-1 text-text-quaternary focus:outline-none focus:ring-1 focus:ring-brand disabled:cursor-not-allowed disabled:opacity-60"
         >
           <option value="">{availableForCount.length === 0 ? 'all fields added' : '+ count any field...'}</option>
-          {availableForCount.map(o => <option key={o.name} value={o.name}>{o.name}</option>)}
+          {availableForCount.map(o => <option key={o.name} value={o.name} title={o.name}>{colLabel(o)}</option>)}
         </select>
       )}
     </div>
@@ -3005,7 +3010,7 @@ export function ExploreChartConfig({
               onChange={e => updStyle({ scatterLabelField: e.target.value })}
               className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
               <option value="">None</option>
-              {allCols.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+              {allCols.map(c => <option key={c.name} value={c.name} title={c.name}>{colLabel(c)}</option>)}
             </select>
           </div>
         </Disclosure>
@@ -3035,7 +3040,7 @@ export function ExploreChartConfig({
                 <select value={rule.field}
                   onChange={e => updStyle({ chartSortRules: chartSortRules.map((r, ri) => ri === i ? { ...r, field: e.target.value } : r) })}
                   className="flex-1 px-1.5 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1 min-w-0">
-                  {sortLimitCols.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                  {sortLimitCols.map(c => <option key={c.name} value={c.name} title={c.name}>{colLabel(c)}</option>)}
                 </select>
                 <select value={rule.direction}
                   onChange={e => updStyle({ chartSortRules: chartSortRules.map((r, ri) => ri === i ? { ...r, direction: e.target.value as 'asc' | 'desc' } : r) })}

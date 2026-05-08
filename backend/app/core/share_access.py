@@ -2,7 +2,6 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import require_full_access
-from app.models.chat_session import ChatSession
 from app.models.dataset import Dataset
 from app.models.models import Chart, Dashboard, DataSource
 from app.models.resource_share import ResourceType
@@ -15,7 +14,6 @@ _RESOURCE_MODEL_MAP = {
     ResourceType.CHART: (Chart, "explore_charts", "id"),
     ResourceType.DATASOURCE: (DataSource, "data_sources", "id"),
     ResourceType.DATASET: (Dataset, "datasets", "id"),
-    ResourceType.CHAT_SESSION: (ChatSession, "ai_chat", "session_id"),
     ResourceType.WORKBOARD: (Workboard, "workboards", "id"),
 }
 
@@ -32,13 +30,10 @@ def require_share_access(
         raise HTTPException(status_code=400, detail="Unsupported resource type")
 
     model, module, lookup_field = model_info
-    if lookup_field == "session_id":
-        lookup_value = resource_id
-    else:
-        try:
-            lookup_value = int(resource_id)
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=404, detail="Resource not found")
+    try:
+        lookup_value = int(resource_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=404, detail="Resource not found")
 
     resource = db.query(model).filter(getattr(model, lookup_field) == lookup_value).first()
     if not resource:

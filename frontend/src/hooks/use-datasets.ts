@@ -173,6 +173,10 @@ export interface ColumnMetadata {
   name: string;
   type: string;
   nullable?: boolean;
+  /** Optional human-readable display label sourced from the dataset model
+   *  (semantic dimension/measure label or column dictionary). When absent,
+   *  UIs should fall back to `name`. */
+  label?: string;
 }
 
 export interface TablePreviewRequest {

@@ -1659,3 +1659,195 @@ async def chat_dashboard_ai(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ── Agentic AI Bot endpoints (v2) ─────────────────────────────────────────────
+#
+# These endpoints back the new agentic flow built in
+# ``app.services.dashboard_ai_bot``. They coexist with the legacy
+# ``/ai/context`` + ``/ai/chat`` endpoints above (which power any old client
+# binaries still in the wild). New frontend code should prefer ``/ai/recon``
+# + ``/ai/agent/chat``.
+#
+# SSE wire format (NEW): every line is a JSON envelope so the client can
+# distinguish text deltas from tool status updates from errors.
+#   data: {"type":"text","text":"..."}\n\n
+#   data: {"type":"status","text":"...","tool":"..."}\n\n
+#   data: {"type":"tool_result","tool":"...","ok":true}\n\n
+#   data: {"type":"error","text":"..."}\n\n
+#   data: {"type":"done"}\n\n
+
+
+@router.get("/dashboards/{token}/ai/recon")
+@_limiter.limit("20/minute")
+def get_dashboard_ai_recon(
+    token: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Proactive recon: chart manifest + Insight Packs for the first few charts.
+
+    Frontend calls this once when the bot opens to render a "what's notable"
+    welcome message and to seed suggested questions. No LLM call here.
+    """
+    from app.services.dashboard_ai_bot.agent import build_proactive_recon
+    from app.services.dashboard_ai_bot.tools import ToolContext
+
+    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
+    if not (appearance_config or {}).get("ai_bot_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="AI bot is not enabled for this shared link.",
+        )
+
+    try:
+        ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=public_filters)
+        recon = build_proactive_recon(ctx)
+    except Exception:
+        logger.exception("AI recon build error for token=%s", token)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to build AI recon.",
+        )
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(content=recon, headers={"Cache-Control": "no-store"})
+
+
+class _AiAgentChatBody(BaseModel):
+    messages: list[dict]
+
+
+@router.post("/dashboards/{token}/ai/agent/chat")
+@_limiter.limit("20/minute")
+async def chat_dashboard_ai_agent(
+    token: str,
+    body: _AiAgentChatBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+    x_user_ai_key: str | None = Header(default=None),
+    x_user_ai_provider: str | None = Header(default=None),
+    x_user_ai_model: str | None = Header(default=None),
+):
+    """Run an agentic chat turn. Streams typed SSE events.
+
+    Honors the dashboard's public filters automatically — every tool the
+    agent calls applies the same filters the dashboard is currently showing.
+    """
+    import json as _json
+    from fastapi.responses import StreamingResponse
+    from app.services.dashboard_ai_bot.agent import run_agent_stream
+    from app.services.dashboard_ai_bot.tools import ToolContext
+
+    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
+    if not (appearance_config or {}).get("ai_bot_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="AI bot is not enabled for this shared link.",
+        )
+    if not x_user_ai_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-User-Ai-Key header is required for AI chat.",
+        )
+
+    provider = (x_user_ai_provider or "gemini").strip().lower()
+    if provider not in ("anthropic", "openai", "gemini"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-User-Ai-Provider must be one of: anthropic, openai, gemini.",
+        )
+    model = (x_user_ai_model or "").strip() or None
+    if model is not None and len(model) > 120:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-User-Ai-Model is too long.",
+        )
+
+    messages = body.messages or []
+    if not messages:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="messages is required.")
+
+    # Sanitize: strip any tool/assistant turns referencing chart_ids outside
+    # this dashboard (defensive — clients shouldn't send these but we guard).
+    allowed_chart_ids = {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id}
+    safe_messages: list[dict] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role not in ("user", "assistant", "tool"):
+            continue
+        # For previous tool turns the FE shouldn't be sending raw tool history
+        # back; we accept user/assistant text only from the wire and let the
+        # agent rebuild the tool log fresh each turn.
+        if role == "tool":
+            continue
+        out: dict = {"role": role}
+        content = msg.get("content")
+        if content is not None:
+            out["content"] = str(content)
+        # Drop any tool_calls echoed back — agent treats turns as fresh
+        safe_messages.append(out)
+
+    if not safe_messages:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid messages.")
+
+    captured_key = x_user_ai_key
+    ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=public_filters)
+
+    async def sse_stream():
+        async for ev in run_agent_stream(
+            ctx=ctx,
+            user_messages=safe_messages,
+            api_key=captured_key,
+            provider=provider,
+            model=model,
+        ):
+            envelope = _event_to_envelope(ev)
+            if envelope is None:
+                continue
+            yield f"data: {_json.dumps(envelope, ensure_ascii=False, default=str)}\n\n"
+
+    return StreamingResponse(
+        sse_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _event_to_envelope(ev) -> dict | None:
+    """Convert an AgentEvent into the wire envelope.
+
+    Hides internal fields and trims tool_result payloads to keep SSE small.
+    """
+    et = ev.type
+    if et == "text":
+        return {"type": "text", "text": ev.text}
+    if et == "status":
+        return {"type": "status", "text": ev.text, "tool": ev.tool_name}
+    if et == "tool_result":
+        # Send only ok/error so the FE can flag failures without leaking the
+        # full payload (which can be large).
+        result = ev.tool_result or {}
+        return {
+            "type": "tool_result",
+            "tool": ev.tool_name,
+            "ok": bool(result.get("ok")),
+            "error": result.get("error") if not result.get("ok") else None,
+        }
+    if et == "error":
+        return {"type": "error", "text": ev.text}
+    if et == "done":
+        return {"type": "done"}
+    # tool_call is internal; not sent to FE
+    return None

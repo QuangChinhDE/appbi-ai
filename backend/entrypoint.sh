@@ -122,7 +122,7 @@ name     = os.environ.get("ADMIN_NAME", "Admin")
 full_perms = json.dumps({
     "data_sources": "full", "datasets": "full",
     "explore_charts": "full", "dashboards": "full",
-    "ai_chat": "full", "user_management": "full", "settings": "full"
+    "workboards": "full", "settings": "full"
 })
 
 with engine.connect() as conn:

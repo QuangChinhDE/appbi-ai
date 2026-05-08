@@ -724,6 +724,7 @@ export function ExploreEditor({
       .map((dim) => ({
         name: `${selectedSemanticView.name}.${dim.name}`,
         type: dim.type === 'number' ? 'number' : dim.type,
+        label: (dim.label && dim.label.trim()) ? dim.label : dim.name,
         nullable: true,
       }));
     const measures = (selectedSemanticView.measures ?? [])
@@ -731,9 +732,25 @@ export function ExploreEditor({
       .map((measure) => ({
         name: `${selectedSemanticView.name}.${measure.name}`,
         type: 'number',
+        label: (measure.label && measure.label.trim()) ? measure.label : measure.name,
         nullable: true,
       }));
     return [...dims, ...measures];
+  }, [selectedSemanticView]);
+
+  /** Map of bare column-name → friendly label, sourced from the semantic
+   *  view's dimensions/measures so raw preview columns can also display
+   *  the user-facing label rather than the SQL identifier. */
+  const semanticLabelByColumnName = useMemo<Map<string, string>>(() => {
+    const map = new Map<string, string>();
+    if (!selectedSemanticView) return map;
+    for (const dim of selectedSemanticView.dimensions ?? []) {
+      if (dim.label && dim.label.trim()) map.set(dim.name, dim.label.trim());
+    }
+    for (const measure of selectedSemanticView.measures ?? []) {
+      if (measure.label && measure.label.trim()) map.set(measure.name, measure.label.trim());
+    }
+    return map;
   }, [selectedSemanticView]);
   const normalizedGeneratedRoleConfig = useMemo(
     () => normalizeRoleConfig(chartType, generatedRoleConfig),
@@ -768,7 +785,15 @@ export function ExploreEditor({
       : null,
     [chartType, customQueryState, normalizedCustomRoleConfig],
   );
-  const previewColumns = previewData?.columns ?? [];
+  const previewColumns = useMemo<ColumnMetadata[]>(() => {
+    const raw = previewData?.columns ?? [];
+    if (semanticLabelByColumnName.size === 0) return raw;
+    return raw.map((col) => {
+      if (col.label && col.label.trim()) return col;
+      const friendly = semanticLabelByColumnName.get(col.name);
+      return friendly ? { ...col, label: friendly } : col;
+    });
+  }, [previewData?.columns, semanticLabelByColumnName]);
   const previewRows = previewData?.rows ?? [];
   const executeRequest = useMemo(
     () => buildExploreExecuteRequest({

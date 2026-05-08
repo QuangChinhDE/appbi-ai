@@ -4,9 +4,9 @@
  * ChartDescriptionDrawer — slide-over panel for AI Description.
  *
  * Opened from the MODE bar "AI Description" button. Three fields:
- *   auto_description   → AI Chat vector search, chart search snippet, tooltip
+ *   auto_description   → chart search snippet and tooltip
  *   insight_keywords   → vector embedding enrichment, fuzzy search
- *   common_questions   → AI Chat suggestions seed list
+ *   common_questions   → suggested questions seed list
  *
  * AI Generate flow:
  *   1. User clicks "Generate with AI" → queues regeneration (POST …/regenerate)
@@ -484,7 +484,7 @@ export function ChartDescriptionDrawer({ chartId, canEdit, open, onClose }: Prop
                 <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   <Bot className="h-3 w-3" />
                   Description
-                  <span className="ml-1 font-normal normal-case text-text-quaternary">— AI Chat search · tooltip</span>
+                  <span className="ml-1 font-normal normal-case text-text-quaternary">— search · tooltip</span>
                 </label>
                 <textarea
                   rows={5}
@@ -535,7 +535,7 @@ export function ChartDescriptionDrawer({ chartId, canEdit, open, onClose }: Prop
                 <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-text-quaternary">
                   <HelpCircle className="h-3 w-3" />
                   Suggested Questions
-                  <span className="ml-1 font-normal normal-case text-text-quaternary">— AI Chat suggestions</span>
+                  <span className="ml-1 font-normal normal-case text-text-quaternary">— suggested questions</span>
                 </label>
                 <div className="mb-2 space-y-1.5">
                   {questions.map((q, i) => (

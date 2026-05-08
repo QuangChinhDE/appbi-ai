@@ -2,7 +2,7 @@
 API package initialization.
 """
 from fastapi import APIRouter
-from app.api import auth, datasources, charts, dashboards, datasets, users, shares, permissions, anomaly, feedback, chat_sessions, agent_report_specs, public, personal_access_tokens, teams
+from app.api import auth, datasources, charts, dashboards, datasets, users, shares, permissions, anomaly, feedback, public, personal_access_tokens, teams
 from app.core.config import settings
 from app.routers import semantic
 
@@ -42,12 +42,6 @@ api_router.include_router(anomaly.router)
 
 # Phase 5: Feedback-Driven Knowledge System
 api_router.include_router(feedback.router)
-
-# AI Chat session persistence
-api_router.include_router(chat_sessions.router)
-
-# AI Agent saved reports
-api_router.include_router(agent_report_specs.router)
 
 # Public unauthenticated endpoints (shared dashboard links)
 api_router.include_router(public.router)

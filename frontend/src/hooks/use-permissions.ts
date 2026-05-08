@@ -9,8 +9,6 @@ export type ModuleKey =
   | 'explore_charts'
   | 'dashboards'
   | 'workboards'
-  | 'ai_chat'
-  | 'ai_agent'
   | 'settings';
 
 export interface MyPermissionsResponse {

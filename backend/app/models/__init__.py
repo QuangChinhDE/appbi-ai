@@ -31,7 +31,6 @@ from app.models.anomaly import (
     AnomalyAlert,
 )
 from app.models.ai_feedback import AIFeedback
-from app.models.agent_report import AgentReportSpec, AgentReportRun
 from app.models.personal_access_token import PersonalAccessToken
 from app.models.revoked_token import RevokedToken
 from app.models.audit_log import AuditLog, AuditAction, AuditSeverity
@@ -75,8 +74,6 @@ __all__ = [
     "MonitoredMetric",
     "AnomalyAlert",
     "AIFeedback",
-    "AgentReportSpec",
-    "AgentReportRun",
     "PersonalAccessToken",
     "RevokedToken",
     "AuditLog",
