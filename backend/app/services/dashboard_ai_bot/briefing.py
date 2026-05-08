@@ -406,6 +406,11 @@ def format_briefing_for_prompt(briefing: Briefing | None) -> str:
         lines.append(f"Các biểu đồ quan trọng (KPI / signal): {ids_str}")
     if briefing.custom_note:
         lines.append(f"Ghi chú thêm của user: {briefing.custom_note}")
+    lines.append(
+        "Treat this briefing as a dynamic lens, not a fixed conclusion. "
+        "If the report data or the user's latest question points elsewhere, "
+        "follow the report and cite the relevant charts."
+    )
     lines.append("")
     lines.append("→ Khi triage và viết câu trả lời, ƯU TIÊN góc nhìn phù hợp với vai trò và trọng tâm trên.")
     lines.append(_role_priority_block(briefing.role))

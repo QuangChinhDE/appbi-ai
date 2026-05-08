@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronDown, Loader2, RefreshCw, Sigma } from 'lucide-react';
+import { Loader2, RefreshCw, Sigma } from 'lucide-react';
 
 import { useDatasetModel, type DatasetModelView } from '@/hooks/use-dataset-model';
 import type { DatasetTable } from '@/hooks/use-datasets';
@@ -32,7 +32,6 @@ function measureCount(view: DatasetModelView): number {
 export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableId, focusViewId, focusMeasureName, triggerAddMeasure }: DatasetMeasuresPanelProps) {
   const { data: model, isLoading, error, refetch } = useDatasetModel(datasetId);
   const [selectedViewId, setSelectedViewId] = useState<number | null>(null);
-  const [showTablePicker, setShowTablePicker] = useState(false);
 
   const tableById = useMemo(() => {
     const map = new Map<number, DatasetTable>();
@@ -115,45 +114,6 @@ export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableI
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      {/* Compact table switcher bar */}
-      <div className="shrink-0 flex items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2.5">
-        <Sigma className="h-4 w-4 flex-shrink-0 text-warning" />
-        <span className="text-xs font-semibold text-text-primary">Business Measures</span>
-        {views.length > 1 && (
-          <>
-            <span className="text-text-quaternary">·</span>
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setShowTablePicker((v) => !v)}
-                className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-2"
-              >
-                {selectedView?.table_display_name || selectedView?.name || 'Select table'}
-                <ChevronDown className="h-3 w-3" />
-              </button>
-              {showTablePicker && (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setShowTablePicker(false)} />
-                  <div className="absolute left-0 top-full z-20 mt-1 w-56 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg py-1 max-h-64 overflow-y-auto">
-                    {views.map((view) => (
-                      <button
-                        key={view.id}
-                        type="button"
-                        onClick={() => { setSelectedViewId(view.id); setShowTablePicker(false); }}
-                        className={`w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-surface-2 ${view.id === selectedViewId ? 'text-brand font-medium' : 'text-text-primary'}`}
-                      >
-                        <span className="block truncate">{view.table_display_name || view.name}</span>
-                        <span className="block truncate text-[11px] text-text-quaternary">{measureCount(view)} measures</span>
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-
       {/* Measures editor */}
       <div className="min-h-0 flex-1 overflow-hidden">
         {selectedView ? (

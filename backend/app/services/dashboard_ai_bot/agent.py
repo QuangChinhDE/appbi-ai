@@ -240,6 +240,10 @@ def _auto_cross_compute(summaries: list[dict]) -> list[dict]:
 def _format_recon_for_prompt(recon: dict) -> str:
     """Compact text representation of a recon bundle for stuffing into a system prompt."""
     lines = ["═══ RECON SNAPSHOT ═══"]
+    lines.append(
+        "Use this as the current report context available before any tool call. "
+        "It is a starting map, not a fixed conclusion; tool results remain authoritative."
+    )
     manifest = recon.get("manifest") or {}
     charts = manifest.get("charts") or []
     lines.append(f"Charts: {len(charts)}")
@@ -280,6 +284,28 @@ def _format_recon_for_prompt(recon: dict) -> str:
                 f"(via {fact.get('expression')}; {cites})"
             )
     return "\n".join(lines)
+
+
+def _should_include_recon_context(state: ConversationState | None) -> bool:
+    """Attach a compact report map when the chat has not established context yet."""
+    if state is None:
+        return True
+    if state.turn_index <= 0:
+        return True
+    return not bool(state.seen_chart_ids)
+
+
+def _safe_recon_prompt_block(ctx: ToolContext) -> str:
+    try:
+        recon = build_proactive_recon(ctx)
+    except Exception as exc:
+        logger.warning(
+            "dashboard_ai_bot recon_context_failed err=%s",
+            type(exc).__name__,
+            exc_info=True,
+        )
+        return ""
+    return _format_recon_for_prompt(recon)
 
 
 # Main loop ───────────────────────────────────────────────────────────────────
@@ -332,15 +358,22 @@ async def run_agent_stream(
         conversation_state_block=state_block,
     )
 
+    # The opening chat turn should feel like a DA has already skimmed the
+    # report, not like the model is starting blind and hoping to pick the
+    # right tools. Keep this compact and let later tool calls verify details.
+    system_with_context = base_system
+    if (not supports_tools) or _should_include_recon_context(state):
+        recon_block = _safe_recon_prompt_block(ctx)
+        if recon_block:
+            system_with_context = base_system + "\n\n" + recon_block
+
     # ── Gemini fallback path: single-shot with stuffed Insight Packs ─────────
     if not supports_tools:
-        recon = build_proactive_recon(ctx)
-        system_prompt = base_system + "\n\n" + _format_recon_for_prompt(recon)
         # Buffer text so we can extract findings for the next turn
         buffered: list[str] = []
         async for ev in streamer(
             api_key=api_key,
-            system_prompt=system_prompt,
+            system_prompt=system_with_context,
             messages=user_messages,
             tools=None,
             model=selected_model or None,
@@ -413,7 +446,7 @@ async def run_agent_stream(
         try:
             gen = streamer(
                 api_key=api_key,
-                system_prompt=base_system,
+                system_prompt=system_with_context,
                 messages=running,
                 tools=TOOL_DEFINITIONS,
                 model=selected_model or None,
