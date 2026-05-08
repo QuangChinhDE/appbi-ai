@@ -893,6 +893,8 @@ export interface ModelViewEditPanelProps {
   titleKicker?: string;
   focusMeasureName?: string | null;
   triggerAddMeasure?: number;
+  /** When true, only the measure matching focusMeasureName is rendered (single-measure editing mode) */
+  singleMeasureMode?: boolean;
 }
 
 export function ModelViewEditPanel({
@@ -907,6 +909,7 @@ export function ModelViewEditPanel({
   titleKicker = 'Model view',
   focusMeasureName,
   triggerAddMeasure,
+  singleMeasureMode = false,
 }: ModelViewEditPanelProps) {
   const [activeTab, setActiveTab] = useState<PanelTab>(showDictionaryTab ? initialTab : 'fields');
 
@@ -1080,6 +1083,15 @@ export function ModelViewEditPanel({
   const handleSaveModel = async () => {
     if (!view) return;
     // ── Client-side validation: catch misconfigurations before the round-trip ──
+
+    /** Mirror of backend MeasureDefinition.validate_sql_fragment */
+    const SQL_FORBIDDEN = [';', '--', '/*', '*/', ' drop ', ' delete ', ' insert ', ' update ', ' alter ', ' create ', ' truncate ', ' execute ', ' grant ', ' revoke '];
+    const hasForbiddenSql = (fragment: string | undefined) => {
+      if (!fragment?.trim()) return false;
+      const padded = ` ${fragment.trim().toLowerCase()} `;
+      return SQL_FORBIDDEN.some((t) => padded.includes(t));
+    };
+
     const errors: string[] = [];
     const seen = new Map<string, number>();
     measures.forEach((m, i) => {
@@ -1097,6 +1109,13 @@ export function ModelViewEditPanel({
       const needsColumn = m.type !== 'count' && !m.expression;
       if (needsColumn && !(m.sql || '').trim()) {
         errors.push(`Measure "${trimmedName || `#${i + 1}`}": "${m.type}" needs a column to aggregate (or set an SQL expression in Advanced)`);
+      }
+      // SQL fragments must not contain dangerous tokens (mirrors backend validator)
+      if (hasForbiddenSql(m.expression)) {
+        errors.push(`Measure "${trimmedName}": SQL expression contains a forbidden token`);
+      }
+      if (hasForbiddenSql(m.where_sql)) {
+        errors.push(`Measure "${trimmedName}": WHERE SQL contains a forbidden token`);
       }
       // depends_on must reference an existing measure in this view
       for (const dep of m.depends_on || []) {
@@ -1308,10 +1327,10 @@ export function ModelViewEditPanel({
                 <div className="flex items-center justify-between mb-2 relative">
                   <span className="text-xs font-semibold text-text-secondary flex items-center gap-1.5">
                     <Sigma className="w-3.5 h-3.5 text-warning" />
-                    Measures
-                    <span className="text-text-quaternary font-normal">({measures.length})</span>
+                    {singleMeasureMode ? 'Edit measure' : 'Measures'}
+                    {!singleMeasureMode && <span className="text-text-quaternary font-normal">({measures.length})</span>}
                   </span>
-                  {canEdit && (
+                  {canEdit && !singleMeasureMode && (
                     <>
                       <button
                         onClick={() => setShowMeasureTemplates((v) => !v)}
@@ -1342,25 +1361,28 @@ export function ModelViewEditPanel({
                       No measures yet
                     </div>
                   ) : (
-                    measures.map((m, idx) => {
-                      const rowKey = measureRowKeys[idx] ?? `measure-${idx}`;
-                      return (
-                        <MeasureRow
-                          key={rowKey}
-                          rowKey={rowKey}
-                          measure={m}
-                          canEdit={canEdit}
-                          columnOptions={columnOptions}
-                          measureNames={measureNames}
-                          defaultOpen={Boolean(focusMeasureName && m.name === focusMeasureName)}
-                          onChange={(u) => setMeasures((prev) => prev.map((mm, i) => (i === idx ? u : mm)))}
-                          onRemove={() => {
-                            setMeasures((prev) => prev.filter((_, i) => i !== idx));
-                            setMeasureRowKeys((prev) => prev.filter((_, i) => i !== idx));
-                          }}
-                        />
-                      );
-                    })
+                    measures
+                      .filter((m, _idx) => !singleMeasureMode || m.name === focusMeasureName)
+                      .map((m) => {
+                        const idx = measures.indexOf(m);
+                        const rowKey = measureRowKeys[idx] ?? `measure-${idx}`;
+                        return (
+                          <MeasureRow
+                            key={rowKey}
+                            rowKey={rowKey}
+                            measure={m}
+                            canEdit={canEdit}
+                            columnOptions={columnOptions}
+                            measureNames={measureNames}
+                            defaultOpen={singleMeasureMode || Boolean(focusMeasureName && m.name === focusMeasureName)}
+                            onChange={(u) => setMeasures((prev) => prev.map((mm, i) => (i === idx ? u : mm)))}
+                            onRemove={() => {
+                              setMeasures((prev) => prev.filter((_, i) => i !== idx));
+                              setMeasureRowKeys((prev) => prev.filter((_, i) => i !== idx));
+                            }}
+                          />
+                        );
+                      })
                   )}
                 </div>
               </div>

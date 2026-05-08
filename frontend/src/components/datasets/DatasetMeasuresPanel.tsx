@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Loader2, RefreshCw, Sigma } from 'lucide-react';
+import { ChevronLeft, Loader2, RefreshCw, Sigma } from 'lucide-react';
 
 import { useDatasetModel, type DatasetModelView } from '@/hooks/use-dataset-model';
 import type { DatasetTable } from '@/hooks/use-datasets';
+import { HelpTooltipRich } from '@/components/ui/HelpTooltip';
 import { ModelViewEditPanel } from './ModelViewEditPanel';
 
 interface DatasetMeasuresPanelProps {
@@ -15,6 +16,7 @@ interface DatasetMeasuresPanelProps {
   focusViewId?: number | null;
   focusMeasureName?: string | null;
   triggerAddMeasure?: number;
+  onClearMeasureFocus?: () => void;
 }
 
 function tableKindRank(table: DatasetTable | null | undefined): number {
@@ -25,11 +27,7 @@ function tableKindRank(table: DatasetTable | null | undefined): number {
   return 3;
 }
 
-function measureCount(view: DatasetModelView): number {
-  return view.measures.filter((measure) => !measure.hidden).length;
-}
-
-export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableId, focusViewId, focusMeasureName, triggerAddMeasure }: DatasetMeasuresPanelProps) {
+export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableId, focusViewId, focusMeasureName, triggerAddMeasure, onClearMeasureFocus }: DatasetMeasuresPanelProps) {
   const { data: model, isLoading, error, refetch } = useDatasetModel(datasetId);
   const [selectedViewId, setSelectedViewId] = useState<number | null>(null);
 
@@ -112,8 +110,57 @@ export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableI
     );
   }
 
+  const singleMeasureMode = Boolean(focusMeasureName);
+
+  // Find the focused measure's label for the breadcrumb
+  const focusedMeasureLabel = useMemo(() => {
+    if (!focusMeasureName || !selectedView) return focusMeasureName ?? '';
+    const m = selectedView.measures.find((m) => m.name === focusMeasureName);
+    return m?.label || m?.name || focusMeasureName;
+  }, [focusMeasureName, selectedView]);
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
+      {/* Top bar: breadcrumb in single-measure mode, context bar otherwise */}
+      {singleMeasureMode ? (
+        <div className="shrink-0 flex items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+          <button
+            type="button"
+            onClick={onClearMeasureFocus}
+            className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-secondary"
+            title="Back to all measures"
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+            All measures
+          </button>
+          <span className="text-text-quaternary">/</span>
+          <Sigma className="h-3.5 w-3.5 flex-shrink-0 text-warning" />
+          <span className="truncate text-xs font-semibold text-text-primary">{focusedMeasureLabel}</span>
+          {selectedView && (
+            <span className="ml-auto shrink-0 text-[10px] text-text-quaternary">
+              {selectedView.table_display_name || selectedView.name}
+            </span>
+          )}
+        </div>
+      ) : (
+        <div className="shrink-0 flex items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2">
+          <Sigma className="h-3.5 w-3.5 flex-shrink-0 text-warning" />
+          <span className="text-xs font-medium text-text-secondary">Business Measures</span>
+          <HelpTooltipRich side="left">
+            <p className="mb-1.5 font-semibold text-text-inverse">Measures vs Calculated Table</p>
+            <p className="leading-5 text-text-inverse/80">
+              <span className="font-medium text-text-inverse">Measure</span> = công thức tính chỉ số nghiệp vụ (SUM, AVG, COUNT…) gắn vào một bảng — không tạo dữ liệu mới.
+            </p>
+            <p className="mt-1.5 leading-5 text-text-inverse/80">
+              <span className="font-medium text-text-inverse">Calculated Table</span> = bảng SQL mới tổng hợp từ nhiều bảng khác.
+            </p>
+            <p className="mt-1.5 leading-5 text-warning/90">
+              💡 Cần chỉ số từ nhiều bảng? Tạo Calculated Table trước → rồi thêm Measure vào đó.
+            </p>
+          </HelpTooltipRich>
+        </div>
+      )}
+
       {/* Measures editor */}
       <div className="min-h-0 flex-1 overflow-hidden">
         {selectedView ? (
@@ -127,6 +174,7 @@ export function DatasetMeasuresPanel({ datasetId, tables, canEdit, initialTableI
             titleKicker="Business measures"
             focusMeasureName={focusMeasureName}
             triggerAddMeasure={triggerAddMeasure}
+            singleMeasureMode={singleMeasureMode}
           />
         ) : (
           <div className="flex h-full items-center justify-center px-6 text-center">

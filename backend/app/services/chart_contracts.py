@@ -25,6 +25,7 @@ _OPERATOR_MAP = {
     "!=": "neq",
     "<>": "neq",
     "neq": "neq",
+    "ne": "neq",        # canonical alias used by MeasureFilter / semantic schema
     ">": "gt",
     "gt": "gt",
     ">=": "gte",

@@ -555,7 +555,15 @@ def _upsert_semantic_view(
         Generated measures are derived from table columns. Once a user edits a
         measure in the semantic model, its JSON definition is the source of
         truth and should not be clobbered by a regenerate action.
+
+        Special case: if ``existing`` is an explicit empty list the user has
+        intentionally cleared all measures — do NOT restore the auto-generated
+        ones.  ``None`` means the view is brand-new (creation path), but we
+        guard it defensively by treating it the same as an empty existing list.
         """
+        # User deliberately deleted all measures — honour that.
+        if existing is not None and len(existing) == 0:
+            return []
         existing_by_name = {
             str(item.get("name")): dict(item)
             for item in (existing or [])
@@ -587,7 +595,9 @@ def _upsert_semantic_view(
         db.flush()
         created = True
     else:
-        next_measures = merge_existing_measures(measures, view.measures or [])
+        # Pass view.measures directly (not `or []`) so merge can distinguish
+        # "user explicitly cleared to []" from "never set".
+        next_measures = merge_existing_measures(measures, view.measures)
         changed = (
             view.name != name
             or view.sql_table_name != sql_table_name
@@ -1753,7 +1763,7 @@ def get_distinct_field_values(
 
         if op == "eq":
             return f"{field_expression} = {_sql_literal(value)}"
-        if op == "neq":
+        if op in ("neq", "ne"):
             return f"{field_expression} != {_sql_literal(value)}"
         if op == "gt":
             return f"{field_expression} > {_sql_literal(value)}"

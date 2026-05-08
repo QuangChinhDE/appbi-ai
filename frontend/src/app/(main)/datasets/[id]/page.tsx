@@ -46,6 +46,7 @@ import { DatasetQualityPanel } from '@/components/datasets/DatasetQualityPanel';
 import { DataModelCanvas } from '@/components/datasets/DataModelCanvas';
 import { DatasetMeasuresPanel } from '@/components/datasets/DatasetMeasuresPanel';
 import { useDatasetModel, type DatasetModelView, type MeasureDefinition } from '@/hooks/use-dataset-model';
+import { HelpTooltipRich } from '@/components/ui/HelpTooltip';
 import type { Transformation } from '@/hooks/use-datasets';
 import { toast } from '@/lib/toast';
 
@@ -521,6 +522,7 @@ export default function DatasetDetailPage() {
   const [measuresFocusMeasureName, setMeasuresFocusMeasureName] = useState<string | null>(null);
   const [measuresTriggerAdd, setMeasuresTriggerAdd] = useState(0);
   const [showMeasuresAddPicker, setShowMeasuresAddPicker] = useState(false);
+  const [collapsedMeasureViews, setCollapsedMeasureViews] = useState<Set<number>>(new Set());
 
   // Tab routing via searchParam — ?tab=tables|quality|model
   // backward compat: ?tab=catalog → quality
@@ -658,6 +660,16 @@ export default function DatasetDetailPage() {
       (v) => !v.hidden_in_canvas && v.view_role !== 'calendar_role',
     );
   }, [sidebarModel?.views]);
+
+  // Measures grouped by view/table for the two-level sidebar tree
+  const groupedFlatMeasures = useMemo(() => {
+    const viewMap = new Map<number, { view: DatasetModelView; measures: MeasureDefinition[] }>();
+    for (const { measure, view } of filteredFlatMeasures) {
+      if (!viewMap.has(view.id)) viewMap.set(view.id, { view, measures: [] });
+      viewMap.get(view.id)!.measures.push(measure);
+    }
+    return Array.from(viewMap.values());
+  }, [filteredFlatMeasures]);
 
   // Auto-select table: prefer ?table= URL param, then first table
   React.useEffect(() => {
@@ -1355,13 +1367,12 @@ export default function DatasetDetailPage() {
                     const totalCount = groupCounts[group];
                     const isCollapsed = collapsedGroups[group];
                     const isMeasuresGroup = group === 'measures';
-                    const visibleMeasures = isMeasuresGroup ? filteredFlatMeasures : [];
                     const shouldRenderGroup = tableSearchQuery
-                      ? (isMeasuresGroup ? visibleMeasures.length > 0 : tablesInGroup.length > 0)
+                      ? (isMeasuresGroup ? filteredFlatMeasures.length > 0 : tablesInGroup.length > 0)
                       : true;
                     if (!shouldRenderGroup) return null;
                     const displayCount = isMeasuresGroup
-                      ? (tableSearchQuery ? visibleMeasures.length : flatMeasures.length)
+                      ? (tableSearchQuery ? filteredFlatMeasures.length : flatMeasures.length)
                       : (tableSearchQuery ? tablesInGroup.length : totalCount);
 
                     return (
@@ -1378,6 +1389,28 @@ export default function DatasetDetailPage() {
                             {getTableGroupIcon(group)}
                             <span className="text-xs font-semibold text-text-primary">{getTableGroupLabel(group)}</span>
                             <span className="text-xs text-text-quaternary">{displayCount}</span>
+                            {group === 'calculated' && (
+                              <HelpTooltipRich side="left">
+                                <p className="mb-1.5 font-semibold text-text-inverse">Calculated Table</p>
+                                <p className="leading-5 text-text-inverse/80">Tương đương <span className="font-medium text-text-inverse">Calculated Table</span> trong Power BI — tạo bảng mới bằng SQL từ các bảng hiện có.</p>
+                                <ul className="mt-1.5 space-y-1 leading-5 text-text-inverse/80">
+                                  <li>• Lưu kết quả như bảng thật, có thể preview dữ liệu</li>
+                                  <li>• Dùng khi cần JOIN nhiều nguồn, reshape hoặc aggregate trước</li>
+                                  <li>• Sau khi tạo, định nghĩa Measures trên bảng này</li>
+                                </ul>
+                              </HelpTooltipRich>
+                            )}
+                            {group === 'measures' && (
+                              <HelpTooltipRich side="left">
+                                <p className="mb-1.5 font-semibold text-text-inverse">Measures</p>
+                                <p className="leading-5 text-text-inverse/80">Tương đương <span className="font-medium text-text-inverse">Measures</span> trong Power BI — công thức tính chỉ số nghiệp vụ gắn vào bảng.</p>
+                                <ul className="mt-1.5 space-y-1 leading-5 text-text-inverse/80">
+                                  <li>• Không tạo bảng mới — chỉ định nghĩa cách tính (SUM, AVG…)</li>
+                                  <li>• Hiển thị trong chart dưới dạng trục Y / giá trị</li>
+                                  <li>• Cần JOIN nhiều bảng? Tạo Calculated Table trước, sau đó thêm Measure vào đó</li>
+                                </ul>
+                              </HelpTooltipRich>
+                            )}
                           </button>
 
                           {resPerms.canEdit && (
@@ -1454,38 +1487,101 @@ export default function DatasetDetailPage() {
                         {!isCollapsed && (
                           <div className="p-1.5">
                             {isMeasuresGroup ? (
-                              visibleMeasures.length === 0 ? (
+                              groupedFlatMeasures.length === 0 ? (
                                 <div className="rounded border border-dashed border-[rgb(var(--border-line))] px-3 py-4 text-center text-[11px] text-text-quaternary">
                                   No measures yet — click Add to define one
                                 </div>
                               ) : (
-                                <div className="space-y-0.5">
-                                  {visibleMeasures.map(({ measure, view }) => {
-                                    const isActive = tablesWorkspace === 'measures'
-                                      && measuresFocusViewId === view.id
-                                      && measuresFocusMeasureName === measure.name;
+                                <div className="space-y-1">
+                                  {groupedFlatMeasures.map(({ view: mv, measures: mvMeasures }) => {
+                                    const isSubCollapsed = collapsedMeasureViews.has(mv.id);
+                                    const isTableActive = tablesWorkspace === 'measures' && measuresFocusViewId === mv.id && !measuresFocusMeasureName;
                                     return (
-                                      <button
-                                        key={`${view.id}:${measure.name}`}
-                                        type="button"
-                                        onClick={() => {
-                                          setMeasuresFocusViewId(view.id);
-                                          setMeasuresFocusMeasureName(measure.name);
-                                          setTablesWorkspace('measures');
-                                          clearTableInUrl();
-                                        }}
-                                        className={`flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
-                                          isActive
-                                            ? 'bg-warning/10 text-warning'
-                                            : 'text-text-primary hover:bg-surface-2'
-                                        }`}
-                                      >
-                                        <Sigma className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-warning" />
-                                        <span className="min-w-0 flex-1">
-                                          <span className="block truncate text-xs font-medium leading-tight">{measure.label || measure.name}</span>
-                                          <span className="block truncate text-[11px] leading-tight text-text-quaternary">{view.table_display_name || view.name}</span>
-                                        </span>
-                                      </button>
+                                      <div key={mv.id}>
+                                        {/* Table sub-header */}
+                                        <div className={`flex items-center gap-1 rounded-md px-1.5 py-1 transition-colors ${
+                                          isTableActive ? 'bg-warning/8' : 'hover:bg-surface-2'
+                                        }`}>
+                                          <button
+                                            type="button"
+                                            onClick={() => setCollapsedMeasureViews((prev) => {
+                                              const next = new Set(prev);
+                                              if (next.has(mv.id)) next.delete(mv.id); else next.add(mv.id);
+                                              return next;
+                                            })}
+                                            className="text-text-quaternary hover:text-text-secondary shrink-0"
+                                          >
+                                            {isSubCollapsed
+                                              ? <ChevronRight className="h-3 w-3" />
+                                              : <ChevronDown className="h-3 w-3" />}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setMeasuresFocusViewId(mv.id);
+                                              setMeasuresFocusMeasureName(null);
+                                              setTablesWorkspace('measures');
+                                              clearTableInUrl();
+                                            }}
+                                            className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                                          >
+                                            <Database className="h-3 w-3 flex-shrink-0 text-text-quaternary" />
+                                            <span className={`truncate text-[11px] font-medium ${
+                                              isTableActive ? 'text-warning' : 'text-text-secondary'
+                                            }`}>{mv.table_display_name || mv.name}</span>
+                                            <span className="text-[10px] text-text-quaternary">{mvMeasures.length}</span>
+                                          </button>
+                                          {resPerms.canEdit && (
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setMeasuresFocusViewId(mv.id);
+                                                setMeasuresFocusMeasureName(null);
+                                                setMeasuresTriggerAdd((v) => v + 1);
+                                                setTablesWorkspace('measures');
+                                                clearTableInUrl();
+                                              }}
+                                              className="shrink-0 rounded p-0.5 text-text-quaternary transition-colors hover:bg-surface-3 hover:text-warning"
+                                              title={`Add measure to ${mv.table_display_name || mv.name}`}
+                                            >
+                                              <Plus className="h-3 w-3" />
+                                            </button>
+                                          )}
+                                        </div>
+                                        {/* Individual measures under this table */}
+                                        {!isSubCollapsed && (
+                                          <div className="ml-3 space-y-0.5 border-l border-[rgb(var(--border-line))] pl-2">
+                                            {mvMeasures.map((measure) => {
+                                              const isActive = tablesWorkspace === 'measures'
+                                                && measuresFocusViewId === mv.id
+                                                && measuresFocusMeasureName === measure.name;
+                                              return (
+                                                <button
+                                                  key={measure.name}
+                                                  type="button"
+                                                  onClick={() => {
+                                                    setMeasuresFocusViewId(mv.id);
+                                                    setMeasuresFocusMeasureName(measure.name);
+                                                    setTablesWorkspace('measures');
+                                                    clearTableInUrl();
+                                                  }}
+                                                  className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left transition-colors ${
+                                                    isActive
+                                                      ? 'bg-warning/10 text-warning'
+                                                      : 'text-text-primary hover:bg-surface-2'
+                                                  }`}
+                                                >
+                                                  <Sigma className="h-3 w-3 flex-shrink-0 text-warning" />
+                                                  <span className="block min-w-0 flex-1 truncate text-[11px] font-medium leading-tight">
+                                                    {measure.label || measure.name}
+                                                  </span>
+                                                </button>
+                                              );
+                                            })}
+                                          </div>
+                                        )}
+                                      </div>
                                     );
                                   })}
                                 </div>
@@ -1604,6 +1700,7 @@ export default function DatasetDetailPage() {
               focusViewId={measuresFocusViewId}
               focusMeasureName={measuresFocusMeasureName}
               triggerAddMeasure={measuresTriggerAdd}
+              onClearMeasureFocus={() => setMeasuresFocusMeasureName(null)}
             />
           ) : dataset.tables.length === 0 ? (
             <div className="flex-1 flex items-center justify-center">

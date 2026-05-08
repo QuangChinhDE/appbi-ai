@@ -759,7 +759,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "chart_id": {"type": "integer"},
                 "column": {"type": "string"},
                 "match": {"description": "Value to match (string or number)"},
-                "op": {"type": "string", "enum": ["eq", "neq", "contains", "startswith", "gt", "lt", "gte", "lte"]},
+                "op": {"type": "string", "enum": ["eq", "ne", "contains", "starts_with", "gt", "lt", "gte", "lte"]},
                 "top_n": {"type": "integer"},
             },
             "required": ["chart_id", "column", "match"],

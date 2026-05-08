@@ -716,7 +716,10 @@ def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
         return _err("column (str) is required")
     if match is None:
         return _err("match (value to filter on) is required")
-    if op not in ("eq", "neq", "contains", "startswith", "gt", "lt", "gte", "lte"):
+    # Accept both canonical ("ne", "starts_with") and legacy alias names.
+    _OP_ALIAS = {"neq": "ne", "startswith": "starts_with"}
+    op = _OP_ALIAS.get(op, op)
+    if op not in ("eq", "ne", "contains", "starts_with", "gt", "lt", "gte", "lte"):
         return _err(f"unsupported op: {op}")
     try:
         ctx.assert_chart_in_scope(chart_id)
@@ -741,12 +744,12 @@ def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
     def _matches(v: Any) -> bool:
         if v is None:
             return False
-        if op in ("eq", "neq"):
+        if op in ("eq", "ne"):
             same = str(v) == str(match)
             return same if op == "eq" else not same
         if op == "contains":
             return str(match).lower() in str(v).lower()
-        if op == "startswith":
+        if op == "starts_with":
             return str(v).lower().startswith(str(match).lower())
         # numeric ops
         nv = _to_number(v)

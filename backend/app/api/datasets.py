@@ -194,9 +194,15 @@ def _execute_semantic_dataset_query(
         if item.field
     ]
 
+    # Operator normalisation: external callers (chart contracts, AI tools) may
+    # use legacy names — canonicalise to the semantic schema's Literal values.
+    _OP_ALIAS: dict[str, str] = {
+        "neq": "ne",
+        "startswith": "starts_with",
+    }
     filters = {
         qualify(item.field): {
-            "operator": "ne" if item.operator == "neq" else item.operator,
+            "operator": _OP_ALIAS.get(item.operator, item.operator),
             "value": item.value,
         }
         for item in (execute_request.filters or [])
@@ -2878,6 +2884,13 @@ def update_dataset_view(
 
     for key, value in update_payload.items():
         setattr(view, key, value)
+
+    # SQLAlchemy does not always detect in-place mutations of JSON columns;
+    # flag them explicitly so the change is always persisted.
+    from sqlalchemy.orm.attributes import flag_modified
+    for json_col in ("dimensions", "measures"):
+        if json_col in update_payload:
+            flag_modified(view, json_col)
 
     db.commit()
     db.refresh(view)
