@@ -808,6 +808,315 @@ def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
     })
 
 
+# ── Tool: aggregate_chart_data ──────────────────────────────────────────────
+#
+# Group-by + aggregate over a chart's already-fetched rows. This is the
+# missing primitive that lets the bot pivot a raw row-level chart (e.g. a
+# Priority Task List with one row per task carrying ``department_name`` and
+# ``is_overdue``) into the analytical view a DA would write in SQL:
+#
+#   SELECT department_name,
+#          COUNT(*)                          AS total,
+#          SUM(CASE WHEN is_overdue THEN 1 ELSE 0 END) AS overdue,
+#          AVG(CASE WHEN is_overdue THEN 1 ELSE 0 END) AS overdue_rate
+#   FROM <chart>
+#   GROUP BY department_name
+#   ORDER BY overdue_rate DESC
+#   LIMIT 10;
+#
+# Inputs:
+#   chart_id       (int, required)
+#   group_by       list[str]  — categorical column(s) to GROUP BY (1-3)
+#   aggregations   list[dict] — each with:
+#                     column   : source column name (use "*" for COUNT all rows)
+#                     op       : "count" | "count_truthy" | "count_distinct"
+#                                | "sum" | "avg" | "min" | "max"
+#                                | "ratio_truthy"          (= count_truthy / count)
+#                                | "ratio_truthy_pct"      (= * 100)
+#                     as       : output column name (defaults to "{op}_{column}")
+#   filters        list[dict] (optional) — row-level pre-filter, same shape
+#                  as the public_filters list:
+#                     {column: str, op: "eq"|"neq"|"contains"|"truthy", value: any}
+#   sort_by        str (optional) — output column name
+#   order          "asc" | "desc" (default "desc" if sort_by given)
+#   top_n          int (optional, capped at MAX_TOP_N)
+#
+# Output: aggregated rows + the SQL-equivalent expression (for traceability)
+# and totals across the whole result so the agent can frame "X chiếm Y% of
+# the population" without an extra compute call.
+
+
+_TRUTHY_TRUE_TOKENS = {"true", "t", "yes", "y", "1", "có", "co", "đúng", "dung"}
+_TRUTHY_FALSE_TOKENS = {"false", "f", "no", "n", "0", "không", "khong", "sai"}
+
+
+def _is_truthy(v: Any) -> bool | None:
+    """Three-valued truthiness for boolean-ish column values.
+
+    Returns True / False for clearly boolean-like values (Python bool, 0/1,
+    common string tokens). Returns None for NULL / empty string / values we
+    cannot map — caller decides whether to count or skip.
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        if math.isnan(v) if isinstance(v, float) else False:
+            return None
+        return bool(v)
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if not s:
+            return None
+        if s in _TRUTHY_TRUE_TOKENS:
+            return True
+        if s in _TRUTHY_FALSE_TOKENS:
+            return False
+        return None
+    return bool(v)
+
+
+def _row_passes_filter(row: list, columns: list[str], flt: dict) -> bool:
+    col = flt.get("column")
+    if not isinstance(col, str) or col not in columns:
+        return True  # unknown column → no-op, do not silently drop rows
+    idx = columns.index(col)
+    val = row[idx] if idx < len(row) else None
+    op = str(flt.get("op") or "eq").lower()
+    target = flt.get("value")
+    if op == "eq":
+        return str(val) == str(target)
+    if op == "neq":
+        return str(val) != str(target)
+    if op == "contains":
+        return target is not None and str(target).lower() in (str(val) if val is not None else "").lower()
+    if op == "truthy":
+        return _is_truthy(val) is True
+    if op == "falsy":
+        return _is_truthy(val) is False
+    if op == "not_null":
+        return val is not None and str(val).strip() != ""
+    return True
+
+
+_AGG_OPS = (
+    "count",
+    "count_truthy",
+    "count_distinct",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "ratio_truthy",
+    "ratio_truthy_pct",
+)
+
+
+def _apply_agg(op: str, col_idx: int | None, group_rows: list[list]) -> float | int | None:
+    """Apply a single aggregation over a group's rows. ``col_idx`` is None for
+    op='count' over all rows ("*").
+    """
+    if op == "count":
+        if col_idx is None:
+            return len(group_rows)
+        return sum(
+            1
+            for r in group_rows
+            if col_idx < len(r) and r[col_idx] is not None and str(r[col_idx]).strip() != ""
+        )
+    if op == "count_truthy":
+        if col_idx is None:
+            return None
+        return sum(1 for r in group_rows if col_idx < len(r) and _is_truthy(r[col_idx]) is True)
+    if op == "count_distinct":
+        if col_idx is None:
+            return None
+        seen = set()
+        for r in group_rows:
+            if col_idx < len(r) and r[col_idx] is not None:
+                seen.add(str(r[col_idx]))
+        return len(seen)
+    if op in ("sum", "avg", "min", "max"):
+        if col_idx is None:
+            return None
+        nums = [
+            _to_number(r[col_idx])
+            for r in group_rows
+            if col_idx < len(r)
+        ]
+        nums = [n for n in nums if n is not None]
+        if not nums:
+            return None
+        if op == "sum":
+            return sum(nums)
+        if op == "avg":
+            return sum(nums) / len(nums)
+        if op == "min":
+            return min(nums)
+        return max(nums)
+    if op in ("ratio_truthy", "ratio_truthy_pct"):
+        if col_idx is None:
+            return None
+        denom = 0
+        truthy = 0
+        for r in group_rows:
+            if col_idx >= len(r):
+                continue
+            t = _is_truthy(r[col_idx])
+            if t is None:
+                continue
+            denom += 1
+            if t:
+                truthy += 1
+        if denom == 0:
+            return None
+        ratio = truthy / denom
+        return ratio * 100.0 if op == "ratio_truthy_pct" else ratio
+    return None
+
+
+def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
+    chart_id = args.get("chart_id")
+    if not isinstance(chart_id, int):
+        return _err("chart_id (int) is required")
+    try:
+        ctx.assert_chart_in_scope(chart_id)
+    except ToolError as exc:
+        return _err(str(exc))
+
+    group_by = args.get("group_by") or []
+    if not isinstance(group_by, list) or not group_by:
+        return _err("group_by (list[str]) with 1-3 columns is required")
+    if len(group_by) > 3:
+        return _err("group_by supports at most 3 columns")
+    group_by = [str(g) for g in group_by]
+
+    aggregations = args.get("aggregations") or []
+    if not isinstance(aggregations, list) or not aggregations:
+        return _err(
+            "aggregations (list[dict]) is required; each entry needs `column` and `op`"
+        )
+    if len(aggregations) > 6:
+        return _err("aggregations supports at most 6 entries")
+
+    try:
+        data = _fetch_chart_data(ctx, chart_id)
+    except Exception as exc:
+        return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
+
+    columns: list[str] = data["columns"]
+    rows: list[list] = data["rows"]
+
+    # Validate group_by columns exist
+    for g in group_by:
+        if g not in columns:
+            return _err(f"group_by column {g!r} not in chart columns {columns}")
+    group_indices = [columns.index(g) for g in group_by]
+
+    # Validate aggregations
+    parsed_aggs: list[dict] = []
+    for a in aggregations:
+        if not isinstance(a, dict):
+            return _err("each aggregation must be a dict")
+        col = a.get("column")
+        op = str(a.get("op") or "").lower()
+        if op not in _AGG_OPS:
+            return _err(f"agg op {op!r} not supported; use one of {_AGG_OPS}")
+        if col == "*" or col is None:
+            col_idx: int | None = None
+            if op != "count":
+                return _err(f"column='*' only valid with op='count' (got {op!r})")
+        elif not isinstance(col, str):
+            return _err("aggregation.column must be a string")
+        elif col not in columns:
+            return _err(f"aggregation column {col!r} not in chart columns {columns}")
+        else:
+            col_idx = columns.index(col)
+        out_name = str(a.get("as") or "").strip() or (
+            f"{op}_*" if col_idx is None else f"{op}_{columns[col_idx]}"
+        )
+        parsed_aggs.append({"op": op, "col_idx": col_idx, "out": out_name, "src": col})
+
+    # Apply pre-filters (the agent can reuse the same filter dict shape)
+    pre_filters = args.get("filters") or []
+    if not isinstance(pre_filters, list):
+        return _err("filters must be a list of {column, op, value} dicts")
+    if pre_filters:
+        rows = [
+            r for r in rows
+            if all(_row_passes_filter(r, columns, f) for f in pre_filters if isinstance(f, dict))
+        ]
+
+    if not rows:
+        return _ok({
+            "chart_id": chart_id,
+            "group_by": group_by,
+            "aggregations": [{"op": a["op"], "column": a["src"], "as": a["out"]} for a in parsed_aggs],
+            "filters_applied": pre_filters,
+            "n_groups": 0,
+            "n_rows_total": 0,
+            "rows": [],
+            "totals": {},
+            "narrative_label": "Không có dòng nào sau bộ lọc",
+        })
+
+    # Bucket rows by composite key
+    buckets: dict[tuple, list[list]] = {}
+    for r in rows:
+        key = tuple(
+            ("" if gi >= len(r) or r[gi] is None else str(r[gi]))
+            for gi in group_indices
+        )
+        buckets.setdefault(key, []).append(r)
+
+    # Compute aggregations per group
+    out_rows: list[dict] = []
+    for key, group_rows in buckets.items():
+        out: dict[str, Any] = {}
+        for gname, kval in zip(group_by, key):
+            out[gname] = kval if kval != "" else None
+        for agg in parsed_aggs:
+            v = _apply_agg(agg["op"], agg["col_idx"], group_rows)
+            out[agg["out"]] = _round(v) if isinstance(v, float) else v
+        out_rows.append(out)
+
+    # Sort + top_n
+    sort_by = args.get("sort_by")
+    if isinstance(sort_by, str) and sort_by:
+        order = str(args.get("order") or "desc").lower()
+        rev = order != "asc"
+        out_rows.sort(
+            key=lambda d: (d.get(sort_by) is None, d.get(sort_by) if d.get(sort_by) is not None else 0),
+            reverse=rev,
+        )
+
+    n_groups = len(out_rows)
+    top_n = args.get("top_n")
+    if isinstance(top_n, int) and top_n > 0:
+        out_rows = out_rows[: min(top_n, MAX_TOP_N)]
+
+    # Population-level totals so the agent can express "group X covers Y% of all"
+    totals: dict[str, Any] = {"n_rows": len(rows)}
+    # Per agg, compute the total over ALL filtered rows (single bucket = all)
+    for agg in parsed_aggs:
+        v = _apply_agg(agg["op"], agg["col_idx"], rows)
+        if isinstance(v, float):
+            v = _round(v)
+        totals[agg["out"]] = v
+
+    return _ok({
+        "chart_id": chart_id,
+        "group_by": group_by,
+        "aggregations": [{"op": a["op"], "column": a["src"], "as": a["out"]} for a in parsed_aggs],
+        "filters_applied": pre_filters,
+        "n_groups": n_groups,
+        "n_rows_total": len(rows),
+        "rows": out_rows,
+        "totals": totals,
+    })
+
+
 # ── Tool: get_chart_image ───────────────────────────────────────────────────
 #
 # Produces a tiny ASCII sketch of the chart so the LLM can "see" the shape

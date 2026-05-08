@@ -1339,11 +1339,13 @@ function renderInline(text: string): React.ReactNode[] {
   parts.forEach((part, idx) => {
     if (!part) return;
     if (part.startsWith('**') && part.endsWith('**')) {
-      out.push(<strong key={idx}>{part.slice(2, -2)}</strong>);
+      // Recurse so [chart:N] / [HIGH] tags inside bold text still render as chips
+      out.push(<strong key={idx}>{renderInline(part.slice(2, -2))}</strong>);
       return;
     }
     if (part.startsWith('*') && part.endsWith('*') && part.length > 2) {
-      out.push(<em key={idx}>{part.slice(1, -1)}</em>);
+      // Recurse so tags inside italic text still render as chips
+      out.push(<em key={idx}>{renderInline(part.slice(1, -1))}</em>);
       return;
     }
     if (part.startsWith('`') && part.endsWith('`')) {

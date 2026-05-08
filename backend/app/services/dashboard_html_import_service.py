@@ -874,6 +874,57 @@ def _load_uploaded_excel_source_profile(
     return source_profile
 
 
+def _load_uploaded_single_file_multi_sheet_profiles(
+    *,
+    file_bytes: bytes,
+    filename: Optional[str],
+    primary_source_key: Optional[str] = None,
+) -> Tuple[Dict[str, Dict[str, Any]], str]:
+    """Build one source profile per sheet in a single uploaded workbook.
+
+    Unlike :func:`_load_uploaded_multi_source_profiles`, the resulting source
+    keys are the bare sheet names (e.g. ``customers``, ``deals``) instead of
+    ``filename::sheet``, which matches authored HTML metadata that references
+    sheets by name only.
+    """
+    all_sheets = parse_uploaded_source_sheets(file_bytes=file_bytes, filename=filename)
+    if not all_sheets:
+        raise ValueError("Uploaded file does not contain any sheets or rows.")
+
+    all_profiles: Dict[str, Dict[str, Any]] = {}
+    first_key: Optional[str] = None
+    safe_filename = filename or "uploaded"
+    for sheet_name, sheet_data in all_sheets.items():
+        source_key = str(sheet_name).strip() or safe_filename
+        if first_key is None:
+            first_key = source_key
+        columns = list(sheet_data.get("columns") or [])
+        rows = list(sheet_data.get("rows") or [])
+        profile = _source_profile_from_rows(
+            source_mode="upload_excel",
+            dataset_id=None,
+            dataset_name=None,
+            dataset_table_id=None,
+            dataset_table_name=sheet_name,
+            columns=columns,
+            sample_rows=rows,
+            row_count=len(rows),
+            uploaded_filename=safe_filename,
+        )
+        profile["source_key"] = source_key
+        profile["available_sheets"] = []
+        all_profiles[source_key] = profile
+
+    all_keys = list(all_profiles.keys())
+    for profile in all_profiles.values():
+        profile["available_sheets"] = all_keys
+
+    resolved_primary = primary_source_key
+    if not resolved_primary or resolved_primary not in all_profiles:
+        resolved_primary = first_key or ""
+    return all_profiles, resolved_primary
+
+
 def _load_uploaded_multi_source_profiles(
     *,
     files: List[Tuple[bytes, Optional[str]]],
@@ -1915,6 +1966,13 @@ def _finalize_plan_from_v1_metadata(
     selected_columns = [
         str(c).strip() for c in (raw_role_config.get("selectedColumns") or []) if str(c).strip()
     ]
+    # Spec for TABLE charts uses `dimensions` (plural); accept it as an alias
+    # for `selectedColumns` so authors can follow the role_config shape table
+    # without falling back to the runtime-only field name.
+    if not selected_columns:
+        selected_columns = [
+            str(c).strip() for c in (raw_role_config.get("dimensions") or []) if str(c).strip()
+        ]
     line_metric = _clean_metric(raw_role_config.get("lineMetric"))
 
     role_config: Dict[str, Any] = {"metrics": metrics}

@@ -490,6 +490,10 @@ QUY TẮC:
     bullet phù hợp.
   - KHÔNG bịa, KHÔNG suy diễn nguyên nhân ("có thể do..."), KHÔNG nhắc
     tới giới hạn hệ thống.
+  - TÊN THỰC TỪ DỮ LIỆU: dùng đúng chuỗi label từ recon (ví dụ
+    "Department Chi tạo", "Phòng QA"). KHÔNG đổi thành "khối ngành không
+    xác định" / "một phòng ban" khi label đã có — chỉ dùng mô tả mờ khi
+    label thực sự NULL/rỗng.
   - 3 dòng [FOLLOWUP] là 3 câu hỏi MÀ user CẦN hỏi tiếp để hành động —
     không phải câu hỏi rộng kiểu "kể thêm đi".
 """

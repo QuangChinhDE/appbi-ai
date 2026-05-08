@@ -551,6 +551,7 @@ def _register_advanced_tools() -> None:
     if "compare_periods" in TOOLS:
         return
     from app.services.dashboard_ai_bot.advanced_tools import (
+        tool_aggregate_chart_data,
         tool_compare_periods,
         tool_correlate_charts,
         tool_describe_distribution,
@@ -566,6 +567,7 @@ def _register_advanced_tools() -> None:
     TOOLS["get_dashboard_overview_image"] = tool_get_dashboard_overview_image
     TOOLS["get_chart_image"] = tool_get_chart_image
     TOOLS["smart_drilldown"] = tool_smart_drilldown
+    TOOLS["aggregate_chart_data"] = tool_aggregate_chart_data
 
 
 # JSON-Schema-ish definitions for provider tool calling. Field names follow
@@ -763,6 +765,80 @@ TOOL_DEFINITIONS: list[dict] = [
                 "top_n": {"type": "integer"},
             },
             "required": ["chart_id", "column", "match"],
+        },
+    },
+    # ── Phase J: group-by aggregation over a chart's rows ────────────────
+    {
+        "name": "aggregate_chart_data",
+        "description": (
+            "GROUP BY one or more columns of a chart's rows and compute "
+            "aggregations (count, count_truthy, count_distinct, sum, avg, "
+            "min, max, ratio_truthy, ratio_truthy_pct). Use this whenever "
+            "the user asks for a derived breakdown that the chart does NOT "
+            "already display directly — e.g. 'top phòng ban có tỷ lệ task "
+            "quá hạn cao nhất' on a Priority Task List that has one row per "
+            "task carrying both `department_name` and `is_overdue`. Pass "
+            "`group_by` (1-3 columns), `aggregations` (each with `column` "
+            "and `op`; column='*' allowed only with op='count'), optional "
+            "`filters` (row-level pre-filter), `sort_by` (output column), "
+            "`order` (asc/desc), and `top_n`. Returns aggregated rows + "
+            "totals across the population so you can frame relative shares "
+            "without an extra `compute` call."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_id": {"type": "integer"},
+                "group_by": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Categorical column(s) to group by (1-3).",
+                },
+                "aggregations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "column": {
+                                "type": "string",
+                                "description": "Source column name. Use '*' with op='count' to count all rows.",
+                            },
+                            "op": {
+                                "type": "string",
+                                "enum": [
+                                    "count", "count_truthy", "count_distinct",
+                                    "sum", "avg", "min", "max",
+                                    "ratio_truthy", "ratio_truthy_pct",
+                                ],
+                            },
+                            "as": {
+                                "type": "string",
+                                "description": "Optional output column name; defaults to '{op}_{column}'.",
+                            },
+                        },
+                        "required": ["column", "op"],
+                    },
+                },
+                "filters": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "column": {"type": "string"},
+                            "op": {
+                                "type": "string",
+                                "enum": ["eq", "neq", "contains", "truthy", "falsy", "not_null"],
+                            },
+                            "value": {},
+                        },
+                        "required": ["column", "op"],
+                    },
+                },
+                "sort_by": {"type": "string", "description": "Output column to sort by."},
+                "order": {"type": "string", "enum": ["asc", "desc"]},
+                "top_n": {"type": "integer", "description": f"Cap rows (max {MAX_TOP_N})."},
+            },
+            "required": ["chart_id", "group_by", "aggregations"],
         },
     },
     # ── Phase D: visual perception ───────────────────────────────────────

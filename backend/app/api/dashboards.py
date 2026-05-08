@@ -54,6 +54,7 @@ from app.services.dashboard_html_import_service import (
     _load_existing_dataset_profiles,
     _load_uploaded_excel_source_profile,
     _load_uploaded_multi_source_profiles,
+    _load_uploaded_single_file_multi_sheet_profiles,
     ai_fix_chart_plan,
     analyze_dashboard_html_import,
     analyze_dashboard_html_import_batch,
@@ -267,6 +268,22 @@ async def analyze_html_dashboard_import(
                 file_pairs.append((file_bytes, uf.filename))
 
             if len(file_pairs) == 1:
+                # If the workbook contains multiple sheets, expose them all as
+                # source profiles keyed by bare sheet name so v1 metadata
+                # source_key references (e.g. "customers") resolve correctly.
+                multi_profiles, multi_primary = _load_uploaded_single_file_multi_sheet_profiles(
+                    file_bytes=file_pairs[0][0],
+                    filename=file_pairs[0][1],
+                    primary_source_key=selected_source_key or selected_sheet_name or None,
+                )
+                if len(multi_profiles) > 1:
+                    primary_profile = multi_profiles.get(multi_primary, next(iter(multi_profiles.values())))
+                    return analyze_dashboard_html_import(
+                        html_text=normalized_html,
+                        html_summary=parsed_summary,
+                        source_profile=primary_profile,
+                        all_source_profiles=multi_profiles,
+                    )
                 source_profile = _load_uploaded_excel_source_profile(
                     file_bytes=file_pairs[0][0],
                     filename=file_pairs[0][1],
@@ -360,6 +377,18 @@ async def analyze_html_dashboard_import_batch_route(
             file_pairs.append((file_bytes, uf.filename))
 
         if len(file_pairs) == 1:
+            multi_profiles, multi_primary = _load_uploaded_single_file_multi_sheet_profiles(
+                file_bytes=file_pairs[0][0],
+                filename=file_pairs[0][1],
+                primary_source_key=selected_source_key or selected_sheet_name or None,
+            )
+            if len(multi_profiles) > 1:
+                primary_profile = multi_profiles.get(multi_primary, next(iter(multi_profiles.values())))
+                return analyze_dashboard_html_import_batch(
+                    documents=normalized_documents,
+                    source_profile=primary_profile,
+                    all_source_profiles=multi_profiles,
+                )
             source_profile = _load_uploaded_excel_source_profile(
                 file_bytes=file_pairs[0][0],
                 filename=file_pairs[0][1],
