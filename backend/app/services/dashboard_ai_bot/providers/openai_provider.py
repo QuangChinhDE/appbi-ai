@@ -104,6 +104,9 @@ async def stream_openai(
         "messages": _to_openai_messages(system_prompt, messages),
         "stream": True,
         "max_tokens": max_tokens,
+        # Ask OpenAI to emit a final chunk carrying token usage so the agent
+        # loop can tally cost against the per-turn cap.
+        "stream_options": {"include_usage": True},
     }
     openai_tools = _to_openai_tools(tools)
     if openai_tools:
@@ -147,6 +150,18 @@ async def stream_openai(
                         event = json.loads(raw)
                     except json.JSONDecodeError:
                         continue
+
+                    # The final chunk in a stream_options.include_usage stream
+                    # has empty `choices` and a top-level `usage` block.
+                    usage = event.get("usage")
+                    if usage and isinstance(usage, dict):
+                        yield AgentEvent(
+                            type="usage",
+                            extra={
+                                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                                "completion_tokens": int(usage.get("completion_tokens") or 0),
+                            },
+                        )
 
                     choices = event.get("choices") or []
                     if not choices:

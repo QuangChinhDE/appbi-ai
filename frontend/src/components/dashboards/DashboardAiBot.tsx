@@ -1,10 +1,14 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, X, Send, Loader2, ChevronDown, Key, ExternalLink, AlertTriangle, CheckCircle2, Sparkles, ListChecks, BarChart3, Calculator, GitCompareArrows, Search, Filter, TrendingUp, Image as ImageIcon, Activity } from 'lucide-react';
+import { Bot, X, Send, Loader2, ChevronDown, Key, ExternalLink, AlertTriangle, CheckCircle2, Sparkles, ListChecks, BarChart3, Calculator, GitCompareArrows, Search, Filter, TrendingUp, Image as ImageIcon, Activity, Trash2, ThumbsUp, ThumbsDown, Brain, Zap } from 'lucide-react';
+import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import {
   fetchAiRecon,
   streamAiAgentChat,
+  loadAiSession,
+  saveAiSession,
+  clearAiSession,
   type AiAgentEvent,
   type AiBriefing,
   type AiChatMessage,
@@ -113,17 +117,109 @@ function setStoredBriefing(token: string, briefing: AiBriefing | null): void {
   } catch { /* ignore */ }
 }
 
+// API key is stored in sessionStorage of the current tab ONLY when the user
+// opts in via the "remember key" checkbox. It dies when the tab closes; it
+// is never written to localStorage and never sent anywhere except the
+// backend chat endpoint as the X-User-Ai-Key header.
+// The value is XOR-encrypted with a per-tab secret so it is NOT readable
+// as plain text in DevTools / browser storage panels.
+function getStoredApiKey(token: string): string {
+  try {
+    const raw = sessionStorage.getItem(`dash_ai_apikey_${token}`);
+    if (!raw) return '';
+    return decryptKey(raw);
+  } catch { return ''; }
+}
+function setStoredApiKey(token: string, key: string, persist: boolean): void {
+  try {
+    if (persist && key) {
+      sessionStorage.setItem(`dash_ai_apikey_${token}`, encryptKey(key));
+    } else {
+      sessionStorage.removeItem(`dash_ai_apikey_${token}`);
+    }
+  } catch { /* ignore */ }
+}
+
+// ── API Key encryption ───────────────────────────────────────────────────────
+// XOR-cipher with a per-tab random secret stored in sessionStorage.
+// Prevents plain-text API keys from being visible in DevTools / storage inspection.
+
+function getTabSecret(): string {
+  try {
+    const existing = sessionStorage.getItem('_tk');
+    if (existing) return existing;
+    const bytes = Array.from(crypto.getRandomValues(new Uint8Array(32)))
+      .map((b) => b.toString(16).padStart(2, '0')).join('');
+    sessionStorage.setItem('_tk', bytes);
+    return bytes;
+  } catch { return 'fallback-key-appbi'; }
+}
+
+function encryptKey(text: string): string {
+  if (!text) return '';
+  try {
+    const secret = getTabSecret();
+    const bytes = Array.from(text).map((c, i) =>
+      c.charCodeAt(0) ^ secret.charCodeAt(i % secret.length),
+    );
+    return btoa(String.fromCharCode(...bytes));
+  } catch { return ''; }
+}
+
+function decryptKey(encoded: string): string {
+  if (!encoded) return '';
+  try {
+    const secret = getTabSecret();
+    const bytes = Array.from(atob(encoded)).map((c, i) =>
+      c.charCodeAt(0) ^ secret.charCodeAt(i % secret.length),
+    );
+    return bytes.map((b) => String.fromCharCode(b)).join('');
+  } catch { return ''; }
+}
+
+// ── Thinking mode ─────────────────────────────────────────────────────────────
+// Thinking mode uses a higher cost cap (0.10$); Normal uses 0.05$.
+function getStoredThinkingMode(token: string): boolean {
+  try { return sessionStorage.getItem(`dash_ai_thinking_${token}`) === '1'; } catch { return false; }
+}
+function setStoredThinkingMode(token: string, v: boolean): void {
+  try { sessionStorage.setItem(`dash_ai_thinking_${token}`, v ? '1' : '0'); } catch { /* ignore */ }
+}
+
+// Session key — a client-generated UUID stored in localStorage (survives F5/tab close).
+// Different sessions = different UUIDs. Never stored in the DB alongside the API key.
+function getOrCreateSessionKey(token: string): string {
+  try {
+    const k = `dash_ai_session_key_${token}`;
+    const existing = localStorage.getItem(k);
+    if (existing) return existing;
+    const next = crypto.randomUUID();
+    localStorage.setItem(k, next);
+    return next;
+  } catch {
+    return crypto.randomUUID();  // ephemeral fallback (private browsing, etc.)
+  }
+}
+function clearStoredSessionKey(token: string): void {
+  try { localStorage.removeItem(`dash_ai_session_key_${token}`); } catch { /* ignore */ }
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface ChatMessage extends AiChatMessage {
   /** Tool status notes accumulated while this assistant message was streaming. */
   statusLog?: { tool: string; text: string; ok?: boolean; error?: string | null }[];
+  /** User rating for this assistant message. */
+  rating?: 'up' | 'down';
 }
 
 interface Props {
   token: string;
   sessionToken?: string | null;
   dashboardName: string;
+  /** True when the admin has pre-configured an API key for this link.
+   *  When set, skip the key-entry view and send no key header (backend uses stored key). */
+  keyConfigured?: boolean;
 }
 
 // ── Chart name resolution ────────────────────────────────────────────────────
@@ -195,13 +291,18 @@ function buildWelcomeMessage(recon: AiRecon, dashboardName: string): string {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
+export function DashboardAiBot({ token, sessionToken, dashboardName, keyConfigured }: Props) {
   const [isOpen, setIsOpen] = useState(false);
-  const [view, setView] = useState<'key' | 'briefing' | 'chat'>('key');
+  // When keyConfigured the admin has pre-set a key server-side — start in 'chat'
+  // (or 'briefing' if no stored briefing) instead of the key-entry view.
+  const [view, setView] = useState<'key' | 'briefing' | 'chat'>(keyConfigured ? 'briefing' : 'key');
   const [provider, setProvider] = useState<AiProvider>(() => getStoredProvider(token));
   const [modelId, setModelId] = useState(() => getStoredModel(token, getStoredProvider(token)));
-  // API key kept only in component memory — never written to storage.
-  const [apiKey, setApiKey] = useState('');
+  // API key kept in component memory; optionally mirrored to sessionStorage
+  // of the current tab so the user does not have to re-paste it on every
+  // F5. Persistence is opt-out (default ON) via a checkbox in KeyInputView.
+  const [apiKey, setApiKey] = useState<string>(() => getStoredApiKey(token));
+  const [persistKey, setPersistKey] = useState<boolean>(true);
   const [keyError, setKeyError] = useState('');
 
   const [recon, setRecon] = useState<AiRecon | null>(null);
@@ -220,7 +321,17 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
   const [inputText, setInputText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeStatus, setActiveStatus] = useState<string>('');
+  const [thinkingMode, setThinkingMode] = useState<boolean>(() => getStoredThinkingMode(token));
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
+  // Session key is a UUID stored in localStorage that identifies this browser
+  // across page reloads. Used to restore chat history from the server.
+  const [sessionKey] = useState<string>(() => getOrCreateSessionKey(token));
+  // Token usage counters — accumulated from SSE `usage` events and saved to DB.
+  const totalPromptTokensRef = useRef<number>(0);
+  const totalCompletionTokensRef = useRef<number>(0);
+  // Whether a restored session banner should be shown
+  const [sessionRestored, setSessionRestored] = useState<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<boolean>(false);
@@ -247,21 +358,64 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
     }
   }, [recon, sessionToken, token]);
 
-  const handleOpen = useCallback(() => {
+  const handleOpen = useCallback(async () => {
     setIsOpen(true);
     const storedProvider = getStoredProvider(token);
     setProvider(storedProvider);
     setModelId(getStoredModel(token, storedProvider));
-    // Always require key entry on open. Key stays in memory only and we
-    // never restore it from storage so it can never leak across sessions.
-    if (!apiKey) {
+
+    // Try to restore a previous chat session from the server first.
+    // We do this before deciding which view to show so we can jump straight
+    // to 'chat' when there are saved messages.
+    let restoredMessages: ChatMessage[] = [];
+    let restoredBriefing: AiBriefing | null = null;
+    try {
+      const saved = await loadAiSession(token, sessionKey, sessionToken ?? undefined);
+      if (saved && saved.messages && saved.messages.length > 0) {
+        restoredMessages = saved.messages as ChatMessage[];
+        if (saved.briefing) {
+          restoredBriefing = saved.briefing as unknown as AiBriefing;
+          setBriefing(restoredBriefing);
+          setStoredBriefing(token, restoredBriefing);
+        }
+        if (saved.conv_state) setConvState(saved.conv_state as unknown as AiConversationState);
+        if (saved.provider) setProvider(saved.provider as unknown as AiProvider);
+        if (saved.model) setModelId(saved.model);
+        totalPromptTokensRef.current = saved.prompt_tokens ?? 0;
+        totalCompletionTokensRef.current = saved.completion_tokens ?? 0;
+        setMessages(restoredMessages);
+        setSessionRestored(true);
+        setView('chat');
+        return;
+      }
+    } catch {
+      // Session load failed (network error etc.) — proceed normally
+    }
+
+    // When keyConfigured=true the admin key lives server-side; no key view needed.
+    if (keyConfigured) {
+      const currentBriefing = restoredBriefing ?? briefing;
+      if (currentBriefing) {
+        setView('chat');
+      } else {
+        setView('briefing');
+      }
+      return;
+    }
+    // If a key was persisted in this tab's sessionStorage, jump straight to
+    // briefing/chat — saves the user from re-pasting on every F5.
+    const storedKey = getStoredApiKey(token);
+    const effectiveKey = apiKey || storedKey;
+    if (storedKey && !apiKey) setApiKey(storedKey);
+    const currentBriefing = restoredBriefing ?? briefing;
+    if (!effectiveKey) {
       setView('key');
-    } else if (briefing) {
+    } else if (currentBriefing) {
       setView('chat');
     } else {
       setView('briefing');
     }
-  }, [apiKey, briefing, token]);
+  }, [apiKey, briefing, keyConfigured, sessionKey, sessionToken, token]);
 
   useEffect(() => {
     if (isOpen) {
@@ -306,6 +460,7 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
     }
     setKeyError('');
     setApiKey(trimmed);
+    setStoredApiKey(token, trimmed, persistKey);
     setStoredProvider(token, provider);
     setStoredModel(token, provider, chosenModel);
     setModelId(chosenModel);
@@ -338,23 +493,37 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
     } else {
       setView('briefing');
     }
-  }, [apiKey, loadRecon, modelId, provider, token]);
+  }, [apiKey, loadRecon, modelId, persistKey, provider, token]);
 
   const handleBriefingDone = useCallback((result: BriefingWizardResult) => {
     setBriefing(result.briefing);
     setStoredBriefing(token, result.briefing);
     // Reset conversation state for a fresh session
-    setConvState({
+    const initialState: AiConversationState = {
       briefing: result.briefing,
       findings: [],
       hypotheses: [],
       turn_index: 0,
       seen_chart_ids: [],
-    });
+    };
+    setConvState(initialState);
     // Seed the chat with the executive brief as the assistant's first message.
-    setMessages([{ role: 'assistant', content: result.executiveBrief }]);
+    const initialMessages: ChatMessage[] = [{ role: 'assistant', content: result.executiveBrief }];
+    setMessages(initialMessages);
     setView('chat');
-  }, [token]);
+    // Persist to DB so the session survives F5
+    saveAiSession(token, sessionKey, {
+      session_key: sessionKey,
+      provider,
+      model: modelId,
+      messages: initialMessages.map((m) => ({ role: m.role, content: m.content })),
+      briefing: result.briefing as unknown as Record<string, unknown>,
+      conv_state: initialState as unknown as Record<string, unknown>,
+      turn_count: 0,
+      prompt_tokens: 0,
+      completion_tokens: 0,
+    }, sessionToken ?? undefined).catch(() => { /* silent */ });
+  }, [modelId, provider, sessionKey, sessionToken, token]);
 
   const handleBriefingSkip = useCallback(() => {
     // Skip wizard — fall back to legacy welcome message from recon.
@@ -401,7 +570,12 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
       content: m.content,
     }));
 
-    setMessages((prev) => [...prev, userMsg, { role: 'assistant', content: '', statusLog: [] }]);
+    // Track the latest messages snapshot for session persistence after streaming
+    let latestMessages: ChatMessage[] = [...messages, userMsg, { role: 'assistant', content: '', statusLog: [] }];
+    let latestConvState = convState;
+    let turnCount = Math.floor(messages.filter((m) => m.role === 'user').length / 1) + 1;
+
+    setMessages(latestMessages);
     setInputText('');
     setIsStreaming(true);
     setActiveStatus('');
@@ -412,57 +586,85 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
       const gen = streamAiAgentChat(
         token,
         wireHistory,
-        apiKey,
+        // When admin pre-configured a key server-side, send empty string so the
+        // backend falls back to its stored key (the X-User-Ai-Key header will be
+        // sent as empty and the backend treats a missing header as "use stored").
+        keyConfigured ? '' : apiKey,
         provider,
         modelId.trim() || DEFAULT_MODELS[provider],
         sessionToken ?? undefined,
         briefing,
         convState,
+        thinkingMode ? 0.10 : 0.05,
       );
       for await (const ev of gen) {
         if (abortRef.current) break;
+        // Accumulate token usage for session persistence
+        if (ev.type === 'usage') {
+          totalPromptTokensRef.current += ev.prompt_tokens ?? 0;
+          totalCompletionTokensRef.current += ev.completion_tokens ?? 0;
+        }
         applyEvent(ev, {
           appendText: (chunk) => {
             answerSoFar += chunk;
-            setMessages((prev) => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last && last.role === 'assistant') {
-                next[next.length - 1] = { ...last, content: answerSoFar };
-              }
-              return next;
-            });
+            // Update latestMessages directly (synchronous) so the finally block
+            // always has the correct final state regardless of React batching.
+            const lastIdx = latestMessages.length - 1;
+            if (lastIdx >= 0 && latestMessages[lastIdx].role === 'assistant') {
+              latestMessages = [
+                ...latestMessages.slice(0, lastIdx),
+                { ...latestMessages[lastIdx], content: answerSoFar },
+              ];
+            }
+            setMessages(latestMessages);
           },
           setStatus: (s) => setActiveStatus(s),
           appendStatusLog: (entry) => {
-            setMessages((prev) => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last && last.role === 'assistant') {
-                const log = [...(last.statusLog ?? []), entry];
-                next[next.length - 1] = { ...last, statusLog: log };
-              }
-              return next;
-            });
+            const lastIdx = latestMessages.length - 1;
+            if (lastIdx >= 0 && latestMessages[lastIdx].role === 'assistant') {
+              const log = [...(latestMessages[lastIdx].statusLog ?? []), entry];
+              latestMessages = [
+                ...latestMessages.slice(0, lastIdx),
+                { ...latestMessages[lastIdx], statusLog: log },
+              ];
+            }
+            setMessages(latestMessages);
           },
-          updateState: (s) => setConvState(s),
+          updateState: (s) => { setConvState(s); latestConvState = s; },
         });
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Lỗi không xác định.';
-      setMessages((prev) => {
-        const next = [...prev];
-        const last = next[next.length - 1];
-        if (last && last.role === 'assistant') {
-          next[next.length - 1] = { ...last, content: `[Lỗi: ${msg}]` };
-        }
-        return next;
-      });
+      const lastIdx = latestMessages.length - 1;
+      if (lastIdx >= 0 && latestMessages[lastIdx].role === 'assistant') {
+        latestMessages = [
+          ...latestMessages.slice(0, lastIdx),
+          { ...latestMessages[lastIdx], content: `[Lỗi: ${msg}]` },
+        ];
+      }
+      setMessages(latestMessages);
     } finally {
       setIsStreaming(false);
       setActiveStatus('');
+      // Persist the session to DB so history survives F5
+      const safeMessages = latestMessages
+        .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
+        .map((m) => ({ role: m.role, content: m.content }));
+      if (safeMessages.length > 0) {
+        saveAiSession(token, sessionKey, {
+          session_key: sessionKey,
+          provider,
+          model: modelId,
+          messages: safeMessages,
+          briefing: briefing as unknown as Record<string, unknown> | null,
+          conv_state: latestConvState as unknown as Record<string, unknown> | null,
+          turn_count: turnCount,
+          prompt_tokens: totalPromptTokensRef.current,
+          completion_tokens: totalCompletionTokensRef.current,
+        }, sessionToken ?? undefined).catch(() => { /* silent */ });
+      }
     }
-  }, [apiKey, briefing, convState, inputText, isStreaming, messages, modelId, provider, sessionToken, token]);
+  }, [apiKey, briefing, convState, inputText, isStreaming, keyConfigured, messages, modelId, provider, sessionKey, sessionToken, thinkingMode, token]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -479,21 +681,66 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
   const handleChangeKey = useCallback(() => {
     abortRef.current = true;
     setApiKey('');
+    setStoredApiKey(token, '', false);
     setMessages([]);
     setRecon(null);
     setBriefing(null);
     setStoredBriefing(token, null);
     setConvState(null);
+    // Clear session from DB and generate a new session key for the next chat
+    clearAiSession(token, sessionKey, sessionToken ?? undefined).catch(() => { /* silent */ });
+    clearStoredSessionKey(token);
+    totalPromptTokensRef.current = 0;
+    totalCompletionTokensRef.current = 0;
+    setSessionRestored(false);
     setView('key');
-  }, [token]);
+  }, [sessionKey, sessionToken, token]);
 
   const handleResetBriefing = useCallback(() => {
     setBriefing(null);
     setStoredBriefing(token, null);
     setConvState(null);
     setMessages([]);
+    // Clear session from DB and start fresh
+    clearAiSession(token, sessionKey, sessionToken ?? undefined).catch(() => { /* silent */ });
+    clearStoredSessionKey(token);
+    totalPromptTokensRef.current = 0;
+    totalCompletionTokensRef.current = 0;
+    setSessionRestored(false);
     setView('briefing');
-  }, [token]);
+  }, [sessionKey, sessionToken, token]);
+
+  const handleToggleThinking = useCallback(() => {
+    const next = !thinkingMode;
+    setThinkingMode(next);
+    setStoredThinkingMode(token, next);
+  }, [thinkingMode, token]);
+
+  const handleRateMessage = useCallback((msgIndex: number, rating: 'up' | 'down') => {
+    setMessages((prev) => {
+      const next = prev.map((m, i) => {
+        if (i !== msgIndex) return m;
+        // Toggle off if clicking the same rating again
+        return { ...m, rating: m.rating === rating ? undefined : rating };
+      });
+      // Persist ratings to DB (silent)
+      const safeMessages = next
+        .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
+        .map((m) => ({ role: m.role, content: m.content, ...(m.rating ? { rating: m.rating } : {}) }));
+      saveAiSession(token, sessionKey, {
+        session_key: sessionKey,
+        provider,
+        model: modelId,
+        messages: safeMessages,
+        briefing: briefing as unknown as Record<string, unknown> | null,
+        conv_state: convState as unknown as Record<string, unknown> | null,
+        turn_count: Math.ceil(next.filter((m) => m.role === 'user').length),
+        prompt_tokens: totalPromptTokensRef.current,
+        completion_tokens: totalCompletionTokensRef.current,
+      }, sessionToken ?? undefined).catch(() => { /* silent */ });
+      return next;
+    });
+  }, [briefing, convState, modelId, provider, sessionKey, sessionToken, token]);
 
   // Build chart-id → name lookup once per recon, memoized so children don't
   // re-render on every state change. The model emits `[chart:N]` and the
@@ -546,12 +793,36 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
         <div className="flex items-center gap-1">
           {view === 'chat' && (
             <button
+              onClick={handleToggleThinking}
+              className={`flex items-center gap-1 rounded px-2 py-1 text-micro transition-colors ${
+                thinkingMode
+                  ? 'bg-brand/10 text-brand hover:bg-brand/20'
+                  : 'text-text-tertiary hover:bg-surface-3 hover:text-text-primary'
+              }`}
+              title={thinkingMode ? 'Đang dùng chế độ Thinking (phân tích sâu)' : 'Đang dùng chế độ Normal'}
+            >
+              {thinkingMode ? <Brain className="h-3 w-3" /> : <Zap className="h-3 w-3" />}
+              <span>{thinkingMode ? 'Thinking' : 'Normal'}</span>
+            </button>
+          )}
+          {view === 'chat' && !keyConfigured && (
+            <button
               onClick={handleChangeKey}
               className="flex items-center gap-1 rounded px-2 py-1 text-micro text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-primary"
               title="Thay đổi API key"
             >
               <Key className="h-3 w-3" />
               <span>Đổi key</span>
+            </button>
+          )}
+          {view === 'chat' && (
+            <button
+              onClick={() => setShowClearConfirm(true)}
+              className="rounded p-1 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-danger"
+              title="Xóa lịch sử chat"
+              aria-label="Xóa lịch sử chat"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
             </button>
           )}
           <button
@@ -570,9 +841,11 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
           modelId={modelId}
           apiKey={apiKey}
           keyError={keyError}
+          persistKey={persistKey}
           onProviderChange={handleProviderChange}
           onModelChange={handleModelChange}
           onApiKeyChange={setApiKey}
+          onPersistKeyChange={setPersistKey}
           onSubmit={handleStartChat}
         />
       )}
@@ -588,27 +861,62 @@ export function DashboardAiBot({ token, sessionToken, dashboardName }: Props) {
         />
       )}
       {view === 'chat' && (
-        <ChatView
-          messages={messages}
-          reconLoading={reconLoading}
-          reconError={reconError}
-          inputText={inputText}
-          isStreaming={isStreaming}
-          activeStatus={activeStatus}
-          messagesEndRef={messagesEndRef}
-          inputRef={inputRef}
-          onInputChange={setInputText}
-          onKeyDown={handleKeyDown}
-          onSend={handleSend}
-          onPickSuggestion={handlePickSuggestion}
-          briefing={briefing}
-          convState={convState}
-          onResetBriefing={handleResetBriefing}
-          idleNudge={idleNudge}
-          onDismissNudge={() => setIdleNudge(null)}
-          onAcceptNudge={(q) => { setIdleNudge(null); handleSend(q); }}
-        />
+        <>
+          {sessionRestored && (
+            <div className="flex items-center justify-between gap-2 px-4 py-2 bg-surface-2 border-b border-[rgb(var(--border-line))]/50">
+              <span className="text-micro text-text-secondary">↩ Tiếp tục từ phiên trước</span>
+              <button
+                className="text-micro text-text-tertiary hover:text-text-primary transition-colors"
+                onClick={() => setSessionRestored(false)}
+              >
+                ✕
+              </button>
+            </div>
+          )}
+          <ChatView
+            messages={messages}
+            reconLoading={reconLoading}
+            reconError={reconError}
+            inputText={inputText}
+            isStreaming={isStreaming}
+            activeStatus={activeStatus}
+            messagesEndRef={messagesEndRef}
+            inputRef={inputRef}
+            onInputChange={setInputText}
+            onKeyDown={handleKeyDown}
+            onSend={handleSend}
+            onPickSuggestion={handlePickSuggestion}
+            briefing={briefing}
+            convState={convState}
+            onResetBriefing={handleResetBriefing}
+            idleNudge={idleNudge}
+            onDismissNudge={() => setIdleNudge(null)}
+            onAcceptNudge={(q) => { setIdleNudge(null); handleSend(q); }}
+            onRateMessage={handleRateMessage}
+          />
+        </>
       )}
+      <ConfirmDialog
+        isOpen={showClearConfirm}
+        onClose={() => setShowClearConfirm(false)}
+        onConfirm={() => {
+          // Clear local session only — DB history is kept for admin analytics
+          clearStoredSessionKey(token);
+          totalPromptTokensRef.current = 0;
+          totalCompletionTokensRef.current = 0;
+          setSessionRestored(false);
+          setBriefing(null);
+          setStoredBriefing(token, null);
+          setConvState(null);
+          setMessages([]);
+          setView('briefing');
+        }}
+        title="Xóa lịch sử chat?"
+        description="Toàn bộ tin nhắn trong tab này sẽ bị xóa và phiên mới sẽ bắt đầu. Hành động này không thể hoàn tác."
+        confirmLabel="Xóa lịch sử"
+        cancelLabel="Hủy"
+        variant="danger"
+      />
     </div>
     </ChartNamesContext.Provider>
   );
@@ -646,6 +954,10 @@ function applyEvent(
     if (ev.state) ops.updateState(ev.state);
     return;
   }
+  if (ev.type === 'cost' || ev.type === 'usage') {
+    // Internal cost/usage telemetry — hidden from the user.
+    return;
+  }
   if (ev.type === 'error') {
     ops.appendText(`\n\n_⚠️ ${ev.text}_`);
   }
@@ -658,25 +970,29 @@ function KeyInputView({
   modelId,
   apiKey,
   keyError,
+  persistKey,
   onProviderChange,
   onModelChange,
   onApiKeyChange,
+  onPersistKeyChange,
   onSubmit,
 }: {
   provider: AiProvider;
   modelId: string;
   apiKey: string;
   keyError: string;
+  persistKey: boolean;
   onProviderChange: (p: AiProvider) => void;
   onModelChange: (v: string) => void;
   onApiKeyChange: (v: string) => void;
+  onPersistKeyChange: (v: boolean) => void;
   onSubmit: () => void;
 }) {
   const selectedProvider = PROVIDERS.find((p) => p.value === provider) ?? PROVIDERS[0];
   return (
     <div className="flex flex-col gap-4 p-4">
       <p className="text-label text-text-secondary">
-        Nhập API key để bắt đầu chat. Key chỉ tồn tại trong bộ nhớ trang đang mở: không lưu vào trình duyệt và không gửi về server của chúng tôi. Reload hoặc đóng panel sẽ xóa key, bạn cần nhập lại.
+        Nhập API key để bắt đầu chat. Key chỉ được giữ trong bộ nhớ tab này (sessionStorage) — đóng tab là mất; không bao giờ gửi về server của chúng tôi.
       </p>
       <div>
         <label className="mb-1.5 block text-micro font-strong text-text-secondary">
@@ -737,6 +1053,17 @@ function KeyInputView({
         />
         {keyError && <p className="mt-1 text-tiny text-danger">{keyError}</p>}
       </div>
+      <label className="flex items-start gap-2 text-micro text-text-secondary">
+        <input
+          type="checkbox"
+          checked={persistKey}
+          onChange={(e) => onPersistKeyChange(e.target.checked)}
+          className="mt-0.5 h-3.5 w-3.5 rounded border-[rgb(var(--border-line))] bg-surface-2 text-brand focus:ring-1 focus:ring-brand"
+        />
+        <span>
+          Ghi nhớ key trong tab này (sessionStorage). Tự xóa khi đóng tab — không bao giờ ghi vào localStorage.
+        </span>
+      </label>
       <button
         onClick={onSubmit}
         disabled={!apiKey.trim()}
@@ -746,7 +1073,7 @@ function KeyInputView({
         Bắt đầu chat
       </button>
       <p className="text-center text-micro text-text-quaternary">
-        API key chỉ nằm trong bộ nhớ tạm của trang này. Reload trang sẽ xóa.
+        Bỏ tick &quot;Ghi nhớ key&quot; nếu bạn dùng máy chung — khi đó key chỉ ở RAM cho đến khi đóng panel.
       </p>
     </div>
   );
@@ -773,6 +1100,7 @@ function ChatView({
   idleNudge,
   onDismissNudge,
   onAcceptNudge,
+  onRateMessage,
 }: {
   messages: ChatMessage[];
   reconLoading: boolean;
@@ -792,6 +1120,7 @@ function ChatView({
   idleNudge: string | null;
   onDismissNudge: () => void;
   onAcceptNudge: (q: string) => void;
+  onRateMessage: (index: number, rating: 'up' | 'down') => void;
 }) {
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -817,9 +1146,11 @@ function ChatView({
               {!(showThinking && !msg.content) && (
                 <MessageBubble
                   message={msg}
+                  messageIndex={i}
                   streaming={showThinking}
                   disabled={isStreaming}
                   onPickSuggestion={onPickSuggestion}
+                  onRate={onRateMessage}
                 />
               )}
               {showThinking && (
@@ -938,14 +1269,18 @@ const FOCUS_LABEL_VI: Record<string, string> = {
 
 function MessageBubble({
   message,
+  messageIndex,
   streaming = false,
   disabled = false,
   onPickSuggestion,
+  onRate,
 }: {
   message: ChatMessage;
+  messageIndex: number;
   streaming?: boolean;
   disabled?: boolean;
   onPickSuggestion?: (q: string) => void;
+  onRate?: (index: number, rating: 'up' | 'down') => void;
 }) {
   const isUser = message.role === 'user';
   // Strip [FOLLOWUP] lines from the body so they render as chips, not text.
@@ -981,6 +1316,37 @@ function MessageBubble({
                 {q}
               </button>
             ))}
+          </div>
+        )}
+        {!isUser && !streaming && message.content && onRate && (
+          <div className="mt-1.5 flex items-center gap-1 border-t border-[rgb(var(--border-line))]/30 pt-1.5">
+            <span className="text-micro text-text-quaternary mr-1">Phản hồi:</span>
+            <button
+              type="button"
+              onClick={() => onRate(messageIndex, 'up')}
+              className={`rounded p-1 transition-colors ${
+                message.rating === 'up'
+                  ? 'text-success bg-success/10'
+                  : 'text-text-quaternary hover:text-success hover:bg-success/10'
+              }`}
+              title="Trả lời hữu ích"
+              aria-label="Đánh giá tốt"
+            >
+              <ThumbsUp className="h-3 w-3" />
+            </button>
+            <button
+              type="button"
+              onClick={() => onRate(messageIndex, 'down')}
+              className={`rounded p-1 transition-colors ${
+                message.rating === 'down'
+                  ? 'text-danger bg-danger/10'
+                  : 'text-text-quaternary hover:text-danger hover:bg-danger/10'
+              }`}
+              title="Trả lời chưa tốt"
+              aria-label="Đánh giá chưa tốt"
+            >
+              <ThumbsDown className="h-3 w-3" />
+            </button>
           </div>
         )}
       </div>

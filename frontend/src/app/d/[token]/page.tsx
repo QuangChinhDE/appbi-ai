@@ -944,6 +944,7 @@ export default function PublicDashboardPage() {
           token={token}
           sessionToken={getPublicSession(token)}
           dashboardName={presentationTitle}
+          keyConfigured={dashboard.public_link_appearance?.ai_bot_key_configured === true}
         />
       )}
     </div>

@@ -1664,6 +1664,67 @@ def delete_public_link(
     return {"deleted": True}
 
 
+# ── Admin: AI Chat Sessions ────────────────────────────────────────────────────
+
+@router.get("/{dashboard_id}/ai/sessions")
+def list_ai_chat_sessions(
+    dashboard_id: int,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return paginated list of AI chat sessions for a dashboard.
+
+    Requires at least view access.  Only returns metadata rows (no messages)
+    so the list is fast.  Fetch individual rows with the GET /session/{key}
+    public endpoint if you need to inspect messages.
+    """
+    from app.models.ai_chat_session import AiChatSession
+    from app.models.models import DashboardPublicLink
+
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    require_view_access(db, current_user, dash, "dashboards")
+
+    # Collect all tokens for this dashboard
+    tokens = [
+        row.token
+        for row in db.query(DashboardPublicLink.token).filter(
+            DashboardPublicLink.dashboard_id == dashboard_id
+        ).all()
+    ]
+    if not tokens:
+        return {"total": 0, "items": []}
+
+    q = (
+        db.query(AiChatSession)
+        .filter(AiChatSession.token.in_(tokens))
+        .order_by(AiChatSession.updated_at.desc())
+    )
+    total = q.count()
+    rows = q.offset(offset).limit(min(limit, 200)).all()
+    return {
+        "total": total,
+        "items": [
+            {
+                "id": r.id,
+                "session_key": r.session_key,
+                "token": r.token,
+                "provider": r.provider,
+                "model": r.model,
+                "turn_count": r.turn_count,
+                "prompt_tokens": r.prompt_tokens,
+                "completion_tokens": r.completion_tokens,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
 # ============ Dashboard Filters ============
 # Commented out - using hybrid approach with filters_config JSON field instead
 # Filters are now stored directly in dashboard.filters_config as JSON array

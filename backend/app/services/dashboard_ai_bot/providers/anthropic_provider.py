@@ -143,6 +143,11 @@ async def stream_anthropic(
 
     # Track in-flight blocks: index -> {type, id, name, input_buffer}
     blocks: dict[int, dict[str, Any]] = {}
+    # Anthropic emits usage in two parts: input_tokens lands in message_start
+    # while output_tokens streams in message_delta and is finalised by
+    # message_stop. Tally locally and emit once when the response ends.
+    usage_in: int = 0
+    usage_out: int = 0
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -181,7 +186,14 @@ async def stream_anthropic(
                         continue
 
                     et = event.get("type")
-                    if et == "content_block_start":
+                    if et == "message_start":
+                        msg_obj = event.get("message") or {}
+                        u = msg_obj.get("usage") or {}
+                        usage_in += int(u.get("input_tokens") or 0)
+                        usage_in += int(u.get("cache_read_input_tokens") or 0)
+                        usage_in += int(u.get("cache_creation_input_tokens") or 0)
+                        usage_out += int(u.get("output_tokens") or 0)
+                    elif et == "content_block_start":
                         idx = event.get("index", 0)
                         block = event.get("content_block") or {}
                         bt = block.get("type")
@@ -222,6 +234,21 @@ async def stream_anthropic(
                                 tool_args=args if isinstance(args, dict) else {},
                             )
                     # message_delta / message_stop: nothing to emit
+                    elif et == "message_delta":
+                        u = (event.get("usage") or {})
+                        if u:
+                            usage_out += int(u.get("output_tokens") or 0)
+                    elif et == "message_stop":
+                        if usage_in or usage_out:
+                            yield AgentEvent(
+                                type="usage",
+                                extra={
+                                    "prompt_tokens": usage_in,
+                                    "completion_tokens": usage_out,
+                                },
+                            )
+                            usage_in = 0
+                            usage_out = 0
     except httpx.TimeoutException:
         logger.warning("dashboard_ai_bot anthropic_timeout model=%s", model)
         yield AgentEvent(type="error", text="Anthropic request timed out.")

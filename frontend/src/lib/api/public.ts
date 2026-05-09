@@ -267,6 +267,8 @@ export type AiAgentEvent =
   | { type: 'status'; text: string; tool: string }
   | { type: 'tool_result'; tool: string; ok: boolean; error?: string | null }
   | { type: 'state'; state: AiConversationState }
+  | { type: 'cost'; usd: number; cap_usd: number; remaining_usd: number; over_cap: boolean; near_cap?: boolean; rounds?: number; prompt_tokens?: number; completion_tokens?: number }
+  | { type: 'usage'; prompt_tokens: number; completion_tokens: number }
   | { type: 'error'; text: string }
   | { type: 'done' };
 
@@ -460,6 +462,92 @@ export async function* streamAiBriefingBrief(
   }
 }
 
+// ── AI Chat Session persistence ────────────────────────────────────────────────
+
+export interface AiChatSessionData {
+  session_key: string;
+  provider?: string | null;
+  model?: string | null;
+  messages: AiChatMessage[];
+  briefing?: Record<string, unknown> | null;
+  conv_state?: Record<string, unknown> | null;
+  turn_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface AiChatSessionSavePayload {
+  session_key: string;
+  provider?: string | null;
+  model?: string | null;
+  messages: AiChatMessage[];
+  briefing?: Record<string, unknown> | null;
+  conv_state?: Record<string, unknown> | null;
+  turn_count: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+}
+
+/**
+ * Load a persisted chat session.  Returns null when no session exists yet (404).
+ */
+export async function loadAiSession(
+  token: string,
+  sessionKey: string,
+  sessionToken?: string,
+): Promise<AiChatSessionData | null> {
+  const headers: Record<string, string> = {};
+  if (sessionToken) headers['X-Public-Session'] = sessionToken;
+  try {
+    const res = await publicClient.get(
+      `/public/dashboards/${token}/ai/session/${encodeURIComponent(sessionKey)}`,
+      { headers },
+    );
+    return res.data as AiChatSessionData;
+  } catch (err: unknown) {
+    // 404 means no saved session — callers treat this as fresh start
+    if (axios.isAxiosError(err) && err.response?.status === 404) return null;
+    throw err;
+  }
+}
+
+/**
+ * Upsert (create or update) a chat session.  Called after each completed turn.
+ */
+export async function saveAiSession(
+  token: string,
+  sessionKey: string,
+  data: AiChatSessionSavePayload,
+  sessionToken?: string,
+): Promise<void> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (sessionToken) headers['X-Public-Session'] = sessionToken;
+  await publicClient.put(
+    `/public/dashboards/${token}/ai/session/${encodeURIComponent(sessionKey)}`,
+    { ...data, session_key: sessionKey },
+    { headers },
+  );
+}
+
+/**
+ * Clear a session's messages and state (called on "Xóa lịch sử").
+ */
+export async function clearAiSession(
+  token: string,
+  sessionKey: string,
+  sessionToken?: string,
+): Promise<void> {
+  const headers: Record<string, string> = {};
+  if (sessionToken) headers['X-Public-Session'] = sessionToken;
+  await publicClient.post(
+    `/public/dashboards/${token}/ai/session/${encodeURIComponent(sessionKey)}/clear`,
+    {},
+    { headers },
+  );
+}
+
 /**
  * Stream typed events from the agentic chat endpoint.
  *
@@ -476,6 +564,7 @@ export async function* streamAiAgentChat(
   sessionToken?: string,
   briefing?: AiBriefing | null,
   state?: AiConversationState | null,
+  costCapUsd?: number,
 ): AsyncGenerator<AiAgentEvent, void, unknown> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -485,6 +574,10 @@ export async function* streamAiAgentChat(
   const trimmedModel = model.trim();
   if (trimmedModel) {
     headers['X-User-Ai-Model'] = trimmedModel;
+  }
+  if (typeof costCapUsd === 'number' && Number.isFinite(costCapUsd)) {
+    const capped = Math.max(0.01, Math.min(5.0, costCapUsd));
+    headers['X-User-Ai-Cost-Cap-Usd'] = capped.toFixed(3);
   }
   if (sessionToken) headers['X-Public-Session'] = sessionToken;
 

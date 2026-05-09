@@ -51,11 +51,13 @@ from app.services.dashboard_ai_bot.tools import (
     tool_get_chart_summary,
     tool_list_charts,
 )
+from app.services.dashboard_ai_bot.cost import CostMeter
 
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_CALLS_PER_TURN = 16
 RECON_MAX_CHARTS = 10
+DEFAULT_COST_CAP_USD = 0.10
 
 # Friendly status text per tool (shown in the chat UI as a transient bubble)
 _TOOL_STATUS_VI = {
@@ -322,6 +324,7 @@ async def run_agent_stream(
     max_tool_calls: int = MAX_TOOL_CALLS_PER_TURN,
     briefing: Briefing | None = None,
     state: ConversationState | None = None,
+    cost_cap_usd: float = DEFAULT_COST_CAP_USD,
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run one chat turn end-to-end and yield AgentEvent objects.
 
@@ -343,6 +346,13 @@ async def run_agent_stream(
         yield AgentEvent(type="done")
         return
     selected_model = (model or "").strip() or None
+
+    # Per-turn cost meter — tallied from provider usage events. The loop uses
+    # this to short-circuit further tool rounds once we cross the cap.
+    meter = CostMeter(
+        model=selected_model or "",
+        cap_usd=max(0.0, float(cost_cap_usd or 0.0)) or DEFAULT_COST_CAP_USD,
+    )
 
     # Phase A + B: pour briefing + conversation state into the system prompt
     briefing_block = format_briefing_for_prompt(briefing) if briefing else ""
@@ -380,6 +390,13 @@ async def run_agent_stream(
         ):
             if ev.type == "text" and ev.text:
                 buffered.append(ev.text)
+            if ev.type == "usage":
+                meter.add(
+                    prompt_tokens=int((ev.extra or {}).get("prompt_tokens") or 0),
+                    completion_tokens=int((ev.extra or {}).get("completion_tokens") or 0),
+                )
+                yield AgentEvent(type="cost", extra={"cost": meter.to_dict()})
+                continue
             yield ev
         # Update state from this turn even on the gemini single-shot path
         if state is not None:
@@ -427,6 +444,12 @@ async def run_agent_stream(
         "render_dashboard_pdf": 1,
     }
 
+    # When cost cap is breached the loop forces the next round to be the
+    # final draft (no more tool calls) and tells the model — via an injected
+    # tool error — to wrap up immediately with whatever data it has.
+    cost_cap_reached = False
+    cost_warning_injected = False
+
     while True:
         # Show a thinking indicator while the model decides what to do next
         # (between tool rounds, or before the very first model call). This is
@@ -456,6 +479,12 @@ async def run_agent_stream(
                     round_text_parts.append(ev.text)
                 elif ev.type == "tool_call":
                     round_tool_calls.append(ev)
+                elif ev.type == "usage":
+                    meter.add(
+                        prompt_tokens=int((ev.extra or {}).get("prompt_tokens") or 0),
+                        completion_tokens=int((ev.extra or {}).get("completion_tokens") or 0),
+                    )
+                    yield AgentEvent(type="cost", extra={"cost": meter.to_dict()})
                 elif ev.type == "error":
                     round_error = ev.text
                     break
@@ -481,6 +510,48 @@ async def run_agent_stream(
         round_text = "".join(round_text_parts).strip()
 
         if round_tool_calls:
+            # Cost-cap guard. If the prior round already pushed us over the
+            # per-question USD ceiling, refuse to execute any more tool calls
+            # and inject a synthetic tool result telling the model to wrap up
+            # with whatever it already has. The next loop round will be the
+            # model's final draft.
+            if meter.over_cap():
+                cost_cap_reached = True
+                # Append the assistant turn so we can attach matching tool
+                # results — providers reject tool_use without a response.
+                asst_entry: dict = {"role": "assistant"}
+                if round_text:
+                    asst_entry["content"] = round_text
+                asst_entry["tool_calls"] = [
+                    {"id": tc.tool_call_id, "name": tc.tool_name, "args": tc.tool_args}
+                    for tc in round_tool_calls
+                ]
+                running.append(asst_entry)
+                err = {
+                    "ok": False,
+                    "error": (
+                        "internal: per-question cost cap reached. STOP calling tools and "
+                        "produce the final answer NOW using only the data already gathered. "
+                        "Be concise: TL;DR + 2-3 bullets + at most 2 [FOLLOWUP] questions "
+                        "for narrower drill-downs the user can ask next. Do NOT mention this "
+                        "message, cost, tokens, or any internal limit to the user."
+                    ),
+                }
+                for tc in round_tool_calls:
+                    running.append({
+                        "role": "tool",
+                        "tool_call_id": tc.tool_call_id,
+                        "result": err,
+                    })
+                    tool_log.append({"name": tc.tool_name, "args": tc.tool_args, "result": err})
+                if not cost_warning_injected:
+                    # Intentionally NOT yielding a user-facing status here —
+                    # the cap is an internal cost control and must remain
+                    # invisible to the end user. The synthetic tool error
+                    # already instructs the model not to mention it.
+                    cost_warning_injected = True
+                continue
+
             # Append the assistant turn (any preamble text + tool_calls)
             asst_entry: dict = {"role": "assistant"}
             if round_text:
@@ -612,7 +683,10 @@ async def run_agent_stream(
 
     # ── Self-critique pass ──────────────────────────────────────────────────
     buffered_text = ""
-    if enable_critique and last_user_question:
+    # Skip the critique LLM call if we already blew through the cost cap —
+    # the draft itself is the user-visible answer in that mode.
+    run_critique = enable_critique and last_user_question and not cost_cap_reached
+    if run_critique:
         yield AgentEvent(
             type="status",
             text="Đang viết câu trả lời…",
@@ -632,6 +706,13 @@ async def run_agent_stream(
             if ev.type == "text" and ev.text:
                 buffered_text += ev.text
                 continue
+            if ev.type == "usage":
+                meter.add(
+                    prompt_tokens=int((ev.extra or {}).get("prompt_tokens") or 0),
+                    completion_tokens=int((ev.extra or {}).get("completion_tokens") or 0),
+                )
+                yield AgentEvent(type="cost", extra={"cost": meter.to_dict()})
+                continue
             yield ev
         cleaned = _sanitize_answer(buffered_text)
         if cleaned:
@@ -641,7 +722,7 @@ async def run_agent_stream(
 
     elapsed_ms = int((time.monotonic() - turn_started_at) * 1000)
     final_answer_text = (
-        _sanitize_answer(buffered_text) if (enable_critique and last_user_question) else draft_answer
+        _sanitize_answer(buffered_text) if run_critique else draft_answer
     )
     try:
         telemetry = _telemetry_summary(

@@ -95,6 +95,15 @@ async def stream_gemini_singleshot(
                             text = part.get("text") or ""
                             if text:
                                 yield AgentEvent(type="text", text=text)
+                    meta = event.get("usageMetadata")
+                    if meta:
+                        yield AgentEvent(
+                            type="usage",
+                            extra={
+                                "prompt_tokens": int(meta.get("promptTokenCount") or 0),
+                                "completion_tokens": int(meta.get("candidatesTokenCount") or 0),
+                            },
+                        )
     except httpx.TimeoutException:
         logger.warning("dashboard_ai_bot gemini_timeout model=%s", model)
         yield AgentEvent(type="error", text="Gemini request timed out.")

@@ -14,6 +14,8 @@ EventType = Literal[
     "tool_result",  # tool finished — emitted by the loop, not the provider
     "status",       # human-readable progress line (e.g. "Đang xem chart X...")
     "state",        # updated ConversationState (sent at end of turn)
+    "usage",        # provider-reported token usage for the just-completed round
+    "cost",         # running USD spend for this turn (emitted by the loop)
     "error",        # non-fatal error message to surface
     "done",         # final marker
 ]

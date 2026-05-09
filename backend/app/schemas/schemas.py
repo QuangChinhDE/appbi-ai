@@ -399,3 +399,53 @@ class SqlValidateResponse(BaseModel):
 class ErrorResponse(BaseModel):
     """Schema for error responses."""
     detail: str
+
+
+# ── AI Chat Session ────────────────────────────────────────────────────────────
+
+class AiChatSessionSave(BaseModel):
+    """Payload the frontend sends to upsert a chat session."""
+    session_key: str = Field(..., min_length=1, max_length=64)
+    provider: Optional[str] = Field(None, max_length=20)
+    model: Optional[str] = Field(None, max_length=120)
+    # [{role: "user"|"assistant", content: "..."}] — status logs stripped client-side
+    messages: List[Dict[str, Any]] = Field(default_factory=list)
+    briefing: Optional[Dict[str, Any]] = None
+    conv_state: Optional[Dict[str, Any]] = None
+    turn_count: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+
+class AiChatSessionResponse(BaseModel):
+    """What the API returns when loading a session."""
+    session_key: str
+    provider: Optional[str]
+    model: Optional[str]
+    messages: List[Dict[str, Any]]
+    briefing: Optional[Dict[str, Any]]
+    conv_state: Optional[Dict[str, Any]]
+    turn_count: int
+    prompt_tokens: int
+    completion_tokens: int
+    created_at: str
+    updated_at: str
+
+    class Config:
+        from_attributes = True
+
+
+class AiChatSessionAdminRow(BaseModel):
+    """Summary row for the admin session list endpoint."""
+    id: int
+    session_key: str
+    provider: Optional[str]
+    model: Optional[str]
+    turn_count: int
+    prompt_tokens: int
+    completion_tokens: int
+    created_at: str
+    updated_at: str
+
+    class Config:
+        from_attributes = True

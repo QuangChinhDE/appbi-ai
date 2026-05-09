@@ -469,6 +469,21 @@ export interface PublicLinkAppearanceConfig {
   show_footer?: boolean;
   show_chart_type_label?: boolean;
   ai_bot_enabled?: boolean;
+  /** Admin-configured AI provider for this link (e.g. "openai", "anthropic", "gemini"). */
+  ai_bot_provider?: string;
+  /** Admin-configured model id (e.g. "gpt-4o", "claude-sonnet-4-6"). */
+  ai_bot_model?: string;
+  /**
+   * Admin-configured API key. Written via the authenticated admin API.
+   * The public API NEVER returns this field — it strips it and sets
+   * `ai_bot_key_configured: true` instead.
+   */
+  ai_bot_key?: string;
+  /**
+   * Read-only, public-safe flag. True when the admin has pre-configured an
+   * API key for this link so public viewers don't need to enter one.
+   */
+  ai_bot_key_configured?: boolean;
 }
 
 // --- Chart Metadata (semantic/business layer) ---

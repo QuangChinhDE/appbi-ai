@@ -1,6 +1,6 @@
 'use client';
 
-import { Eye, Palette, Sparkles, Type } from 'lucide-react';
+import { Bot, ChevronDown, Eye, Palette, Sparkles, Type } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   PUBLIC_LINK_ACCENT_OPTIONS,
@@ -9,6 +9,32 @@ import {
 } from '@/lib/public-link-appearance';
 import type { PublicLinkAppearanceConfig } from '@/types/api';
 import { Input } from '@/components/ui/Input';
+
+// ── AI Bot config constants (mirrors DashboardAiBot.tsx) ──────────────────────
+const AI_PROVIDERS = [
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'anthropic', label: 'Anthropic Claude' },
+  { value: 'gemini', label: 'Google Gemini' },
+] as const;
+
+const AI_MODEL_OPTIONS: Record<string, { value: string; label: string }[]> = {
+  openai: [
+    { value: 'gpt-4o', label: 'GPT-4o' },
+    { value: 'gpt-4.1', label: 'GPT-4.1' },
+    { value: 'gpt-4.1-mini', label: 'GPT-4.1 mini' },
+    { value: 'gpt-4o-mini', label: 'GPT-4o mini (rẻ, nhanh)' },
+  ],
+  anthropic: [
+    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (đề xuất)' },
+    { value: 'claude-opus-4-7', label: 'Claude Opus 4.7 (mạnh nhất)' },
+    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (rẻ, nhanh)' },
+  ],
+  gemini: [
+    { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' },
+    { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+    { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (rẻ, nhanh)' },
+  ],
+};
 
 interface PublicLinkAppearanceEditorProps {
   value: PublicLinkAppearanceConfig;
@@ -292,9 +318,75 @@ export function PublicLinkAppearanceEditor({
             checked={value.ai_bot_enabled === true}
             label="AI Insight Bot"
             description="Show a floating chat button so viewers can ask questions about the data."
-            onToggle={() => updateField('ai_bot_enabled', !(value.ai_bot_enabled === true))}
+            onToggle={() => onChange({ ...value, ai_bot_enabled: !(value.ai_bot_enabled === true) })}
           />
         </div>
+
+        {/* ── AI bot config panel (visible only when ai_bot_enabled) ─────── */}
+        {value.ai_bot_enabled === true && (
+          <div className="mt-4 rounded-lg border border-brand/20 bg-brand/5 p-4 space-y-3">
+            <div className="flex items-center gap-2 text-caption font-strong text-text-primary">
+              <Bot className="h-4 w-4 text-brand" />
+              Cấu hình AI Bot cho link này
+            </div>
+            <p className="text-tiny text-text-tertiary leading-5">
+              Nhập API key của bạn — key được lưu server-side và <strong>không bao giờ lộ ra trình duyệt của người xem</strong>. Viewer mở link sẽ dùng bot ngay mà không cần nhập gì.
+            </p>
+
+            {/* Provider */}
+            <div>
+              <label className="mb-1 block text-tiny font-strong text-text-secondary">Nhà cung cấp AI</label>
+              <div className="relative">
+                <select
+                  value={value.ai_bot_provider || 'openai'}
+                  onChange={(e) => onChange({ ...value, ai_bot_provider: e.target.value, ai_bot_model: '' })}
+                  className="w-full appearance-none rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 py-1.5 pl-3 pr-8 text-caption text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                >
+                  {AI_PROVIDERS.map((p) => (
+                    <option key={p.value} value={p.value}>{p.label}</option>
+                  ))}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
+              </div>
+            </div>
+
+            {/* Model */}
+            <div>
+              <label className="mb-1 block text-tiny font-strong text-text-secondary">Model</label>
+              <div className="relative">
+                <select
+                  value={value.ai_bot_model || ''}
+                  onChange={(e) => onChange({ ...value, ai_bot_model: e.target.value })}
+                  className="w-full appearance-none rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 py-1.5 pl-3 pr-8 text-caption text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                >
+                  <option value="">— mặc định của provider —</option>
+                  {(AI_MODEL_OPTIONS[value.ai_bot_provider || 'openai'] ?? []).map((m) => (
+                    <option key={m.value} value={m.value}>{m.label}</option>
+                  ))}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
+              </div>
+            </div>
+
+            {/* API Key */}
+            <div>
+              <label className="mb-1 block text-tiny font-strong text-text-secondary">API Key</label>
+              <Input
+                type="password"
+                value={value.ai_bot_key || ''}
+                onChange={(e) => onChange({ ...value, ai_bot_key: e.target.value })}
+                placeholder={
+                  value.ai_bot_provider === 'anthropic' ? 'sk-ant-...'
+                  : value.ai_bot_provider === 'gemini' ? 'AIza...'
+                  : 'sk-...'
+                }
+              />
+              <p className="mt-1 text-tiny text-text-quaternary">
+                Để trống nếu muốn giữ key cũ đã lưu. Xóa hết nội dung → key bị xóa khỏi link.
+              </p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

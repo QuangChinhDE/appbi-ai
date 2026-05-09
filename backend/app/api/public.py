@@ -24,6 +24,7 @@ from app.core.dependencies import ALGORITHM
 from app.core.logging import get_logger
 from app.models.models import Dashboard, DashboardChart, DashboardPublicLink
 from app.schemas import ChartDataResponse, DashboardResponse
+from app.schemas.schemas import AiChatSessionSave
 from app.services import ChartService
 from app.services.dataset_model_service import get_dataset_model, get_distinct_field_values
 
@@ -456,7 +457,14 @@ def get_public_dashboard(
     dash.public_filters_config = public_filters
     dash.available_filter_fields = _build_public_filter_fields(db, dash)
     dash.public_link_name = link_name
-    dash.public_link_appearance = appearance_config or {}
+    # Strip the admin-only ai_bot_key before sending to public viewers.
+    # Replace it with a safe boolean so the AI bot UI can skip key entry.
+    safe_appearance: dict = dict(appearance_config or {})
+    if safe_appearance.pop("ai_bot_key", None):
+        safe_appearance["ai_bot_key_configured"] = True
+    else:
+        safe_appearance.pop("ai_bot_key_configured", None)
+    dash.public_link_appearance = safe_appearance
     return dash
 
 
@@ -1738,6 +1746,7 @@ class _AiAgentChatBody(BaseModel):
     state: dict | None = None
 
 
+
 class _AiBriefingGuessQuery(BaseModel):
     pass  # currently no body, just GET
 
@@ -1974,6 +1983,144 @@ async def post_dashboard_ai_briefing_brief(
     )
 
 
+# ── AI Chat Session persistence ────────────────────────────────────────────────
+
+@router.get("/dashboards/{token}/ai/session/{session_key}")
+async def load_ai_chat_session(
+    token: str,
+    session_key: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Load a persisted chat session by session_key.
+
+    Returns 404 when no session exists yet — the frontend treats this as a
+    fresh conversation.  The public-link auth check ensures the viewer is
+    allowed to see this dashboard before returning any messages.
+    """
+    # Verify the token is valid (raises 404/401 otherwise)
+    _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+
+    from app.models.ai_chat_session import AiChatSession
+    session_key = session_key.strip()
+    if len(session_key) > 64 or not session_key:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid session_key.")
+    row = db.query(AiChatSession).filter(
+        AiChatSession.token == token,
+        AiChatSession.session_key == session_key,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+    return {
+        "session_key": row.session_key,
+        "provider": row.provider,
+        "model": row.model,
+        "messages": row.messages or [],
+        "briefing": row.briefing,
+        "conv_state": row.conv_state,
+        "turn_count": row.turn_count,
+        "prompt_tokens": row.prompt_tokens,
+        "completion_tokens": row.completion_tokens,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+@router.put("/dashboards/{token}/ai/session/{session_key}")
+@_limiter.limit("60/minute")
+async def save_ai_chat_session(
+    token: str,
+    session_key: str,
+    body: AiChatSessionSave,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Create or update a chat session (upsert by session_key).
+
+    Called by the frontend after every completed turn and whenever the
+    briefing changes.  Rate-limited to 60/min which is generous for
+    human conversation cadence.
+    """
+    from app.models.ai_chat_session import AiChatSession
+    from datetime import datetime
+
+    _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+
+    session_key = session_key.strip()
+    if len(session_key) > 64 or not session_key:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid session_key.")
+
+    # Sanitize messages: keep only role/content/rating, drop tool internals
+    safe_messages = []
+    for msg in (body.messages or []):
+        role = (msg.get("role") or "")
+        content = msg.get("content") or ""
+        if role in ("user", "assistant") and isinstance(content, str):
+            entry: dict = {"role": role, "content": content}
+            rating = msg.get("rating")
+            if rating in ("up", "down"):
+                entry["rating"] = rating
+            safe_messages.append(entry)
+
+    row = db.query(AiChatSession).filter(
+        AiChatSession.token == token,
+        AiChatSession.session_key == session_key,
+    ).first()
+
+    if row is None:
+        row = AiChatSession(
+            token=token,
+            session_key=session_key,
+        )
+        db.add(row)
+
+    row.provider = (body.provider or "")[:20] or None
+    row.model = (body.model or "")[:120] or None
+    row.messages = safe_messages
+    row.briefing = body.briefing
+    row.conv_state = body.conv_state
+    row.turn_count = max(0, body.turn_count)
+    row.prompt_tokens = max(0, body.prompt_tokens)
+    row.completion_tokens = max(0, body.completion_tokens)
+    row.updated_at = datetime.utcnow()
+
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/dashboards/{token}/ai/session/{session_key}/clear")
+async def clear_ai_chat_session(
+    token: str,
+    session_key: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Clear a chat session's messages/state while keeping the session_key.
+
+    Used when the viewer clicks "Xóa lịch sử".
+    """
+    from app.models.ai_chat_session import AiChatSession
+    from datetime import datetime
+
+    _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+    session_key = session_key.strip()
+    row = db.query(AiChatSession).filter(
+        AiChatSession.token == token,
+        AiChatSession.session_key == session_key,
+    ).first()
+    if row:
+        row.messages = []
+        row.briefing = None
+        row.conv_state = None
+        row.turn_count = 0
+        row.updated_at = datetime.utcnow()
+        db.commit()
+    return {"ok": True}
+
+
 @router.post("/dashboards/{token}/ai/agent/chat")
 @_limiter.limit("20/minute")
 async def chat_dashboard_ai_agent(
@@ -1985,6 +2132,7 @@ async def chat_dashboard_ai_agent(
     x_user_ai_key: str | None = Header(default=None),
     x_user_ai_provider: str | None = Header(default=None),
     x_user_ai_model: str | None = Header(default=None),
+    x_user_ai_cost_cap_usd: str | None = Header(default=None, alias="X-User-Ai-Cost-Cap-Usd"),
 ):
     """Run an agentic chat turn. Streams typed SSE events.
 
@@ -2004,24 +2152,39 @@ async def chat_dashboard_ai_agent(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="AI bot is not enabled for this shared link.",
         )
-    if not x_user_ai_key:
+
+    # Prefer the user-supplied key/provider/model; fall back to admin-configured
+    # values stored in appearance_config so public viewers need not enter a key.
+    stored_key = (appearance_config or {}).get("ai_bot_key") or ""
+    effective_key = (x_user_ai_key or stored_key).strip()
+    if not effective_key:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="X-User-Ai-Key header is required for AI chat.",
         )
 
-    provider = (x_user_ai_provider or "gemini").strip().lower()
+    stored_provider = (appearance_config or {}).get("ai_bot_provider") or ""
+    provider = ((x_user_ai_provider or stored_provider).strip().lower()) or "gemini"
     if provider not in ("anthropic", "openai", "gemini"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="X-User-Ai-Provider must be one of: anthropic, openai, gemini.",
         )
-    model = (x_user_ai_model or "").strip() or None
+
+    stored_model = (appearance_config or {}).get("ai_bot_model") or ""
+    model = ((x_user_ai_model or stored_model).strip()) or None
     if model is not None and len(model) > 120:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="X-User-Ai-Model is too long.",
         )
+
+    # Per-question USD cap. Header is optional; falls back to default in agent.
+    try:
+        cost_cap_val = float(x_user_ai_cost_cap_usd) if x_user_ai_cost_cap_usd else 0.10
+    except (TypeError, ValueError):
+        cost_cap_val = 0.10
+    cost_cap_val = max(0.01, min(5.0, cost_cap_val))
 
     messages = body.messages or []
     if not messages:
@@ -2052,7 +2215,7 @@ async def chat_dashboard_ai_agent(
     if not safe_messages:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid messages.")
 
-    captured_key = x_user_ai_key
+    captured_key = effective_key
     ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=public_filters)
 
     # Phase A + B: parse briefing + state, default-construct if missing.
@@ -2074,6 +2237,7 @@ async def chat_dashboard_ai_agent(
             model=model,
             briefing=briefing_obj,
             state=state_obj,
+            cost_cap_usd=cost_cap_val,
         ):
             envelope = _event_to_envelope(ev)
             if envelope is None:
@@ -2114,6 +2278,13 @@ def _event_to_envelope(ev) -> dict | None:
         return {"type": "error", "text": ev.text}
     if et == "state":
         return {"type": "state", "state": (ev.extra or {}).get("state") or {}}
+    if et == "cost":
+        # Running USD spend for the current question. Sent every round.
+        info = (ev.extra or {}).get("cost") or {}
+        return {"type": "cost", **info}
+    if et == "usage":
+        # Per-round token counts (informational; FE may ignore).
+        return {"type": "usage", **(ev.extra or {})}
     if et == "done":
         return {"type": "done"}
     # tool_call is internal; not sent to FE
