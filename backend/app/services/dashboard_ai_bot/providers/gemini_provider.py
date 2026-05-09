@@ -80,6 +80,7 @@ async def stream_gemini_singleshot(
                     )
                     yield AgentEvent(type="error", text=f"Gemini {resp.status_code}: {detail}")
                     return
+                latest_usage: dict | None = None
                 async for line in resp.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -97,13 +98,22 @@ async def stream_gemini_singleshot(
                                 yield AgentEvent(type="text", text=text)
                     meta = event.get("usageMetadata")
                     if meta:
-                        yield AgentEvent(
-                            type="usage",
-                            extra={
-                                "prompt_tokens": int(meta.get("promptTokenCount") or 0),
-                                "completion_tokens": int(meta.get("candidatesTokenCount") or 0),
-                            },
-                        )
+                        thought_tokens = int(meta.get("thoughtsTokenCount") or 0)
+                        tool_use_prompt_tokens = int(meta.get("toolUsePromptTokenCount") or 0)
+                        latest_usage = {
+                            "provider": "gemini",
+                            "prompt_tokens": int(meta.get("promptTokenCount") or 0),
+                            "completion_tokens": (
+                                int(meta.get("candidatesTokenCount") or 0)
+                                + thought_tokens
+                            ),
+                            "effective_prompt_tokens": int(meta.get("promptTokenCount") or 0),
+                            "cached_content_tokens": int(meta.get("cachedContentTokenCount") or 0),
+                            "thought_tokens": thought_tokens,
+                            "tool_use_prompt_tokens": tool_use_prompt_tokens,
+                        }
+                if latest_usage:
+                    yield AgentEvent(type="usage", extra=latest_usage)
     except httpx.TimeoutException:
         logger.warning("dashboard_ai_bot gemini_timeout model=%s", model)
         yield AgentEvent(type="error", text="Gemini request timed out.")

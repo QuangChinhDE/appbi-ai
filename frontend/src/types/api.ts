@@ -473,6 +473,15 @@ export interface PublicLinkAppearanceConfig {
   ai_bot_provider?: string;
   /** Admin-configured model id (e.g. "gpt-4o", "claude-sonnet-4-6"). */
   ai_bot_model?: string;
+  /** Max spend per normal question on this public link. */
+  ai_bot_normal_cost_cap_usd?: number | null;
+  /** Max spend per thinking/deep-analysis question on this public link. */
+  ai_bot_thinking_cost_cap_usd?: number | null;
+  /**
+   * Short internal note injected into the AI prompt so the bot keeps the
+   * right lens for this report. This is admin-authored configuration.
+   */
+  ai_bot_report_context_note?: string | null;
   /**
    * Admin-configured API key. Written via the authenticated admin API.
    * The public API NEVER returns this field — it strips it and sets

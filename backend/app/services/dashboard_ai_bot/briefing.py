@@ -499,7 +499,12 @@ QUY TẮC:
 """
 
 
-def build_executive_brief_user_prompt(*, briefing: Briefing, recon: dict) -> str:
+def build_executive_brief_user_prompt(
+    *,
+    briefing: Briefing,
+    recon: dict,
+    report_context_note: str = "",
+) -> str:
     """Compact text representation of recon + briefing for the brief LLM call."""
     lines: list[str] = []
     lines.append("## Briefing user đã confirm")
@@ -511,6 +516,8 @@ def build_executive_brief_user_prompt(*, briefing: Briefing, recon: dict) -> str
         lines.append(f"- Ghi chú: {briefing.custom_note}")
     if briefing.key_chart_ids:
         lines.append(f"- Chart quan trọng theo briefing: {briefing.key_chart_ids}")
+    if report_context_note.strip():
+        lines.append(f"- Report mindset note: {report_context_note.strip()[:1200]}")
     lines.append("")
     lines.append("## Recon snapshot")
     manifest = recon.get("manifest") or {}

@@ -178,7 +178,21 @@ function decryptKey(encoded: string): string {
 }
 
 // ── Thinking mode ─────────────────────────────────────────────────────────────
-// Thinking mode uses a higher cost cap (0.10$); Normal uses 0.05$.
+const DEFAULT_NORMAL_COST_CAP_USD = 0.05;
+const DEFAULT_THINKING_COST_CAP_USD = 0.10;
+const MIN_COST_CAP_USD = 0.01;
+const MAX_COST_CAP_USD = 5.0;
+
+function clampCostCapUsd(value: number): number {
+  return Math.max(MIN_COST_CAP_USD, Math.min(MAX_COST_CAP_USD, value));
+}
+
+function resolveCostCapUsd(value: number | null | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? clampCostCapUsd(value)
+    : fallback;
+}
+
 function getStoredThinkingMode(token: string): boolean {
   try { return sessionStorage.getItem(`dash_ai_thinking_${token}`) === '1'; } catch { return false; }
 }
@@ -217,6 +231,8 @@ interface Props {
   token: string;
   sessionToken?: string | null;
   dashboardName: string;
+  normalCostCapUsd?: number | null;
+  thinkingCostCapUsd?: number | null;
   /** True when the admin has pre-configured an API key for this link.
    *  When set, skip the key-entry view and send no key header (backend uses stored key). */
   keyConfigured?: boolean;
@@ -291,7 +307,14 @@ function buildWelcomeMessage(recon: AiRecon, dashboardName: string): string {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function DashboardAiBot({ token, sessionToken, dashboardName, keyConfigured }: Props) {
+export function DashboardAiBot({
+  token,
+  sessionToken,
+  dashboardName,
+  normalCostCapUsd,
+  thinkingCostCapUsd,
+  keyConfigured,
+}: Props) {
   const [isOpen, setIsOpen] = useState(false);
   // When keyConfigured the admin has pre-set a key server-side — start in 'chat'
   // (or 'briefing' if no stored briefing) instead of the key-entry view.
@@ -337,6 +360,14 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, keyConfigur
   const abortRef = useRef<boolean>(false);
   const [idleNudge, setIdleNudge] = useState<string | null>(null);
   const idleTimerRef = useRef<number | null>(null);
+  const resolvedNormalCostCapUsd = useMemo(
+    () => resolveCostCapUsd(normalCostCapUsd, DEFAULT_NORMAL_COST_CAP_USD),
+    [normalCostCapUsd],
+  );
+  const resolvedThinkingCostCapUsd = useMemo(
+    () => resolveCostCapUsd(thinkingCostCapUsd, DEFAULT_THINKING_COST_CAP_USD),
+    [thinkingCostCapUsd],
+  );
 
   // ── Recon load ───────────────────────────────────────────────────────────
 
@@ -573,7 +604,7 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, keyConfigur
     // Track the latest messages snapshot for session persistence after streaming
     let latestMessages: ChatMessage[] = [...messages, userMsg, { role: 'assistant', content: '', statusLog: [] }];
     let latestConvState = convState;
-    let turnCount = Math.floor(messages.filter((m) => m.role === 'user').length / 1) + 1;
+    const turnCount = Math.floor(messages.filter((m) => m.role === 'user').length / 1) + 1;
 
     setMessages(latestMessages);
     setInputText('');
@@ -595,7 +626,8 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, keyConfigur
         sessionToken ?? undefined,
         briefing,
         convState,
-        thinkingMode ? 0.10 : 0.05,
+        thinkingMode ? resolvedThinkingCostCapUsd : resolvedNormalCostCapUsd,
+        thinkingMode ? 'thinking' : 'normal',
       );
       for await (const ev of gen) {
         if (abortRef.current) break;
@@ -664,7 +696,23 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, keyConfigur
         }, sessionToken ?? undefined).catch(() => { /* silent */ });
       }
     }
-  }, [apiKey, briefing, convState, inputText, isStreaming, keyConfigured, messages, modelId, provider, sessionKey, sessionToken, thinkingMode, token]);
+  }, [
+    apiKey,
+    briefing,
+    convState,
+    inputText,
+    isStreaming,
+    keyConfigured,
+    messages,
+    modelId,
+    provider,
+    resolvedNormalCostCapUsd,
+    resolvedThinkingCostCapUsd,
+    sessionKey,
+    sessionToken,
+    thinkingMode,
+    token,
+  ]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -799,7 +847,11 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, keyConfigur
                   ? 'bg-brand/10 text-brand hover:bg-brand/20'
                   : 'text-text-tertiary hover:bg-surface-3 hover:text-text-primary'
               }`}
-              title={thinkingMode ? 'Đang dùng chế độ Thinking (phân tích sâu)' : 'Đang dùng chế độ Normal'}
+              title={
+                thinkingMode
+                  ? `Thinking mode · tối đa $${resolvedThinkingCostCapUsd.toFixed(2)}/câu`
+                  : `Normal mode · tối đa $${resolvedNormalCostCapUsd.toFixed(2)}/câu`
+              }
             >
               {thinkingMode ? <Brain className="h-3 w-3" /> : <Zap className="h-3 w-3" />}
               <span>{thinkingMode ? 'Thinking' : 'Normal'}</span>

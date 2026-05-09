@@ -565,6 +565,7 @@ export async function* streamAiAgentChat(
   briefing?: AiBriefing | null,
   state?: AiConversationState | null,
   costCapUsd?: number,
+  mode?: 'normal' | 'thinking',
 ): AsyncGenerator<AiAgentEvent, void, unknown> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -578,6 +579,9 @@ export async function* streamAiAgentChat(
   if (typeof costCapUsd === 'number' && Number.isFinite(costCapUsd)) {
     const capped = Math.max(0.01, Math.min(5.0, costCapUsd));
     headers['X-User-Ai-Cost-Cap-Usd'] = capped.toFixed(3);
+  }
+  if (mode === 'normal' || mode === 'thinking') {
+    headers['X-User-Ai-Mode'] = mode;
   }
   if (sessionToken) headers['X-Public-Session'] = sessionToken;
 

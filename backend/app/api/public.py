@@ -27,6 +27,11 @@ from app.schemas import ChartDataResponse, DashboardResponse
 from app.schemas.schemas import AiChatSessionSave
 from app.services import ChartService
 from app.services.dataset_model_service import get_dataset_model, get_distinct_field_values
+from app.services.dashboard_ai_bot.public_link_config import (
+    resolve_public_ai_cost_cap,
+    resolve_public_ai_credentials,
+    sanitize_report_context_note,
+)
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -464,6 +469,7 @@ def get_public_dashboard(
         safe_appearance["ai_bot_key_configured"] = True
     else:
         safe_appearance.pop("ai_bot_key_configured", None)
+    safe_appearance.pop("ai_bot_report_context_note", None)
     dash.public_link_appearance = safe_appearance
     return dash
 
@@ -1928,25 +1934,26 @@ async def post_dashboard_ai_briefing_brief(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="AI bot is not enabled for this shared link.",
         )
-    if not x_user_ai_key:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="X-User-Ai-Key header is required.",
-        )
-    provider = (x_user_ai_provider or "gemini").strip().lower()
-    if provider not in ("anthropic", "openai", "gemini"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="X-User-Ai-Provider must be one of: anthropic, openai, gemini.",
-        )
-    model = (x_user_ai_model or "").strip() or None
+    effective_key, provider, model = resolve_public_ai_credentials(
+        appearance_config,
+        x_user_ai_key=x_user_ai_key,
+        x_user_ai_provider=x_user_ai_provider,
+        x_user_ai_model=x_user_ai_model,
+        missing_key_detail="X-User-Ai-Key header is required.",
+    )
 
     briefing = Briefing.from_dict(body.briefing or {})
     briefing.confirmed = True
 
     ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=public_filters)
     recon = build_proactive_recon(ctx)
-    user_prompt = build_executive_brief_user_prompt(briefing=briefing, recon=recon)
+    user_prompt = build_executive_brief_user_prompt(
+        briefing=briefing,
+        recon=recon,
+        report_context_note=sanitize_report_context_note(
+            (appearance_config or {}).get("ai_bot_report_context_note"),
+        ),
+    )
 
     if provider == "anthropic":
         streamer = stream_anthropic
@@ -1955,7 +1962,7 @@ async def post_dashboard_ai_briefing_brief(
     else:
         streamer = stream_gemini_singleshot
 
-    captured_key = x_user_ai_key
+    captured_key = effective_key
 
     async def sse_stream():
         try:
@@ -2133,6 +2140,7 @@ async def chat_dashboard_ai_agent(
     x_user_ai_provider: str | None = Header(default=None),
     x_user_ai_model: str | None = Header(default=None),
     x_user_ai_cost_cap_usd: str | None = Header(default=None, alias="X-User-Ai-Cost-Cap-Usd"),
+    x_user_ai_mode: str | None = Header(default=None, alias="X-User-Ai-Mode"),
 ):
     """Run an agentic chat turn. Streams typed SSE events.
 
@@ -2153,38 +2161,18 @@ async def chat_dashboard_ai_agent(
             detail="AI bot is not enabled for this shared link.",
         )
 
-    # Prefer the user-supplied key/provider/model; fall back to admin-configured
-    # values stored in appearance_config so public viewers need not enter a key.
-    stored_key = (appearance_config or {}).get("ai_bot_key") or ""
-    effective_key = (x_user_ai_key or stored_key).strip()
-    if not effective_key:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="X-User-Ai-Key header is required for AI chat.",
-        )
-
-    stored_provider = (appearance_config or {}).get("ai_bot_provider") or ""
-    provider = ((x_user_ai_provider or stored_provider).strip().lower()) or "gemini"
-    if provider not in ("anthropic", "openai", "gemini"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="X-User-Ai-Provider must be one of: anthropic, openai, gemini.",
-        )
-
-    stored_model = (appearance_config or {}).get("ai_bot_model") or ""
-    model = ((x_user_ai_model or stored_model).strip()) or None
-    if model is not None and len(model) > 120:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="X-User-Ai-Model is too long.",
-        )
-
-    # Per-question USD cap. Header is optional; falls back to default in agent.
-    try:
-        cost_cap_val = float(x_user_ai_cost_cap_usd) if x_user_ai_cost_cap_usd else 0.10
-    except (TypeError, ValueError):
-        cost_cap_val = 0.10
-    cost_cap_val = max(0.01, min(5.0, cost_cap_val))
+    effective_key, provider, model = resolve_public_ai_credentials(
+        appearance_config,
+        x_user_ai_key=x_user_ai_key,
+        x_user_ai_provider=x_user_ai_provider,
+        x_user_ai_model=x_user_ai_model,
+        missing_key_detail="X-User-Ai-Key header is required for AI chat.",
+    )
+    cost_cap_val = resolve_public_ai_cost_cap(
+        appearance_config,
+        x_user_ai_cost_cap_usd=x_user_ai_cost_cap_usd,
+        x_user_ai_mode=x_user_ai_mode,
+    )
 
     messages = body.messages or []
     if not messages:
@@ -2238,6 +2226,9 @@ async def chat_dashboard_ai_agent(
             briefing=briefing_obj,
             state=state_obj,
             cost_cap_usd=cost_cap_val,
+            report_context_note=sanitize_report_context_note(
+                (appearance_config or {}).get("ai_bot_report_context_note"),
+            ),
         ):
             envelope = _event_to_envelope(ev)
             if envelope is None:

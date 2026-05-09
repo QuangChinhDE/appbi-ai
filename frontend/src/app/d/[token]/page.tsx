@@ -944,6 +944,8 @@ export default function PublicDashboardPage() {
           token={token}
           sessionToken={getPublicSession(token)}
           dashboardName={presentationTitle}
+          normalCostCapUsd={dashboard.public_link_appearance?.ai_bot_normal_cost_cap_usd}
+          thinkingCostCapUsd={dashboard.public_link_appearance?.ai_bot_thinking_cost_cap_usd}
           keyConfigured={dashboard.public_link_appearance?.ai_bot_key_configured === true}
         />
       )}

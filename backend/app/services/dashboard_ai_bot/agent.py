@@ -58,6 +58,11 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_CALLS_PER_TURN = 16
 RECON_MAX_CHARTS = 10
 DEFAULT_COST_CAP_USD = 0.10
+_DEFAULT_MODEL_BY_PROVIDER = {
+    "anthropic": "claude-3-5-haiku-20241022",
+    "openai": "gpt-4o-mini",
+    "gemini": "gemini-1.5-flash",
+}
 
 # Friendly status text per tool (shown in the chat UI as a transient bubble)
 _TOOL_STATUS_VI = {
@@ -325,6 +330,7 @@ async def run_agent_stream(
     briefing: Briefing | None = None,
     state: ConversationState | None = None,
     cost_cap_usd: float = DEFAULT_COST_CAP_USD,
+    report_context_note: str = "",
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run one chat turn end-to-end and yield AgentEvent objects.
 
@@ -345,7 +351,9 @@ async def run_agent_stream(
         yield AgentEvent(type="error", text=f"Unknown provider: {provider!r}")
         yield AgentEvent(type="done")
         return
-    selected_model = (model or "").strip() or None
+    selected_model = (model or "").strip() or _DEFAULT_MODEL_BY_PROVIDER.get(
+        (provider or "").strip().lower(),
+    )
 
     # Per-turn cost meter — tallied from provider usage events. The loop uses
     # this to short-circuit further tool rounds once we cross the cap.
@@ -364,6 +372,7 @@ async def run_agent_stream(
         chart_count=len(ctx.allowed_chart_ids),
         filters_applied=ctx.public_filters,
         max_tool_calls=max_tool_calls,
+        report_context_note=report_context_note,
         briefing_block=briefing_block,
         conversation_state_block=state_block,
     )
@@ -391,10 +400,7 @@ async def run_agent_stream(
             if ev.type == "text" and ev.text:
                 buffered.append(ev.text)
             if ev.type == "usage":
-                meter.add(
-                    prompt_tokens=int((ev.extra or {}).get("prompt_tokens") or 0),
-                    completion_tokens=int((ev.extra or {}).get("completion_tokens") or 0),
-                )
+                meter.add_usage(ev.extra or {})
                 yield AgentEvent(type="cost", extra={"cost": meter.to_dict()})
                 continue
             yield ev
@@ -480,10 +486,7 @@ async def run_agent_stream(
                 elif ev.type == "tool_call":
                     round_tool_calls.append(ev)
                 elif ev.type == "usage":
-                    meter.add(
-                        prompt_tokens=int((ev.extra or {}).get("prompt_tokens") or 0),
-                        completion_tokens=int((ev.extra or {}).get("completion_tokens") or 0),
-                    )
+                    meter.add_usage(ev.extra or {})
                     yield AgentEvent(type="cost", extra={"cost": meter.to_dict()})
                 elif ev.type == "error":
                     round_error = ev.text
@@ -672,6 +675,7 @@ async def run_agent_stream(
         break
 
     draft_answer = "".join(draft_answer_parts).strip()
+    cost_cap_reached = cost_cap_reached or meter.over_cap()
     if not draft_answer:
         # The model produced nothing — emit a graceful fallback
         yield AgentEvent(

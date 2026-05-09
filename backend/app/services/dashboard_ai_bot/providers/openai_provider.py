@@ -155,11 +155,17 @@ async def stream_openai(
                     # has empty `choices` and a top-level `usage` block.
                     usage = event.get("usage")
                     if usage and isinstance(usage, dict):
+                        prompt_details = usage.get("prompt_tokens_details") or {}
+                        completion_details = usage.get("completion_tokens_details") or {}
                         yield AgentEvent(
                             type="usage",
                             extra={
+                                "provider": "openai",
                                 "prompt_tokens": int(usage.get("prompt_tokens") or 0),
                                 "completion_tokens": int(usage.get("completion_tokens") or 0),
+                                "effective_prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                                "cached_prompt_tokens": int(prompt_details.get("cached_tokens") or 0),
+                                "reasoning_tokens": int(completion_details.get("reasoning_tokens") or 0),
                             },
                         )
 

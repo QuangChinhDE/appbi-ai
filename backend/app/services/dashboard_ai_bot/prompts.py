@@ -28,6 +28,8 @@ Public filters currently applied: {filters_applied_block}
 The same filters bind every chart query you make — what the dashboard shows
 is exactly what you can read. You cannot widen the scope.
 
+{report_context_block}
+
 {briefing_block}
 
 {conversation_state_block}
@@ -444,6 +446,7 @@ def build_agent_system_prompt(
     chart_count: int,
     filters_applied: list[dict],
     max_tool_calls: int,
+    report_context_note: str = "",
     briefing_block: str = "",
     conversation_state_block: str = "",
 ) -> str:
@@ -451,6 +454,13 @@ def build_agent_system_prompt(
     description_block = f"Description: {desc}" if desc else ""
 
     # The two optional blocks; keep blank lines clean when missing
+    report_context_block_render = report_context_note.strip()
+    if report_context_block_render:
+        report_context_block_render = (
+            "\n═══ REPORT MINDSET NOTE (admin-configured) ═══\n"
+            + report_context_block_render
+            + "\n"
+        )
     briefing_block_render = briefing_block.strip()
     if briefing_block_render:
         briefing_block_render = "\n" + briefing_block_render + "\n"
@@ -464,6 +474,7 @@ def build_agent_system_prompt(
         chart_count=chart_count,
         filters_applied_block=_format_filters(filters_applied),
         max_tool_calls=max_tool_calls,
+        report_context_block=report_context_block_render,
         briefing_block=briefing_block_render,
         conversation_state_block=conv_state_block_render,
     )

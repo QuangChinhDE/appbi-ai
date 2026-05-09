@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { Bot, ChevronDown, Eye, Palette, Sparkles, Type } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -8,9 +9,8 @@ import {
   normalizePublicLinkAppearance,
 } from '@/lib/public-link-appearance';
 import type { PublicLinkAppearanceConfig } from '@/types/api';
-import { Input } from '@/components/ui/Input';
+import { Input, Textarea } from '@/components/ui/Input';
 
-// ── AI Bot config constants (mirrors DashboardAiBot.tsx) ──────────────────────
 const AI_PROVIDERS = [
   { value: 'openai', label: 'OpenAI' },
   { value: 'anthropic', label: 'Anthropic Claude' },
@@ -22,19 +22,24 @@ const AI_MODEL_OPTIONS: Record<string, { value: string; label: string }[]> = {
     { value: 'gpt-4o', label: 'GPT-4o' },
     { value: 'gpt-4.1', label: 'GPT-4.1' },
     { value: 'gpt-4.1-mini', label: 'GPT-4.1 mini' },
-    { value: 'gpt-4o-mini', label: 'GPT-4o mini (rẻ, nhanh)' },
+    { value: 'gpt-4o-mini', label: 'GPT-4o mini (cheap, fast)' },
   ],
   anthropic: [
-    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (đề xuất)' },
-    { value: 'claude-opus-4-7', label: 'Claude Opus 4.7 (mạnh nhất)' },
-    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (rẻ, nhanh)' },
+    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (recommended)' },
+    { value: 'claude-opus-4-7', label: 'Claude Opus 4.7 (strongest)' },
+    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (cheap, fast)' },
   ],
   gemini: [
     { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' },
     { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
-    { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (rẻ, nhanh)' },
+    { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (cheap, fast)' },
   ],
 };
+
+const DEFAULT_NORMAL_COST_CAP_USD = 0.05;
+const DEFAULT_THINKING_COST_CAP_USD = 0.10;
+const MIN_AI_COST_CAP_USD = 0.01;
+const MAX_AI_COST_CAP_USD = 5.0;
 
 interface PublicLinkAppearanceEditorProps {
   value: PublicLinkAppearanceConfig;
@@ -47,6 +52,32 @@ interface ChoiceCardProps {
   label: string;
   description: string;
   onClick: () => void;
+}
+
+function clampAiCostCap(value: number): number {
+  return Math.max(MIN_AI_COST_CAP_USD, Math.min(MAX_AI_COST_CAP_USD, value));
+}
+
+function resolveAiCostCap(value: number | null | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? clampAiCostCap(value)
+    : fallback;
+}
+
+function formatAiCostCap(value: number | null | undefined, fallback: number): string {
+  return resolveAiCostCap(value, fallback).toFixed(2);
+}
+
+function parseAiCostCapInput(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!trimmed || !/^\d+(\.\d{0,3})?$/.test(trimmed)) {
+    return null;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return clampAiCostCap(parsed);
 }
 
 function ChoiceCard({ active, label, description, onClick }: ChoiceCardProps) {
@@ -137,6 +168,12 @@ export function PublicLinkAppearanceEditor({
   onChange,
 }: PublicLinkAppearanceEditorProps) {
   const appearance = normalizePublicLinkAppearance(value);
+  const [normalCapInput, setNormalCapInput] = useState(() => (
+    formatAiCostCap(value.ai_bot_normal_cost_cap_usd, DEFAULT_NORMAL_COST_CAP_USD)
+  ));
+  const [thinkingCapInput, setThinkingCapInput] = useState(() => (
+    formatAiCostCap(value.ai_bot_thinking_cost_cap_usd, DEFAULT_THINKING_COST_CAP_USD)
+  ));
 
   const nextBaseAppearance = (): PublicLinkAppearanceConfig => ({
     ...appearance,
@@ -150,6 +187,14 @@ export function PublicLinkAppearanceEditor({
     show_stats: false,
     show_footer: false,
     show_chart_type_label: false,
+    ai_bot_enabled: value.ai_bot_enabled,
+    ai_bot_provider: value.ai_bot_provider,
+    ai_bot_model: value.ai_bot_model,
+    ai_bot_normal_cost_cap_usd: value.ai_bot_normal_cost_cap_usd,
+    ai_bot_thinking_cost_cap_usd: value.ai_bot_thinking_cost_cap_usd,
+    ai_bot_report_context_note: value.ai_bot_report_context_note,
+    ai_bot_key: value.ai_bot_key,
+    ai_bot_key_configured: value.ai_bot_key_configured,
   });
 
   const updateField = <K extends keyof PublicLinkAppearanceConfig>(
@@ -175,6 +220,57 @@ export function PublicLinkAppearanceEditor({
       accent_preset: accentPreset,
       accent_color: null,
     });
+  };
+
+  useEffect(() => {
+    setNormalCapInput(formatAiCostCap(value.ai_bot_normal_cost_cap_usd, DEFAULT_NORMAL_COST_CAP_USD));
+  }, [value.ai_bot_normal_cost_cap_usd]);
+
+  useEffect(() => {
+    setThinkingCapInput(formatAiCostCap(value.ai_bot_thinking_cost_cap_usd, DEFAULT_THINKING_COST_CAP_USD));
+  }, [value.ai_bot_thinking_cost_cap_usd]);
+
+  const handleAiToggle = () => {
+    onChange({
+      ...nextBaseAppearance(),
+      ai_bot_enabled: !(value.ai_bot_enabled === true),
+      ai_bot_provider: value.ai_bot_provider || 'openai',
+      ai_bot_model: value.ai_bot_model,
+      ai_bot_normal_cost_cap_usd: resolveAiCostCap(
+        value.ai_bot_normal_cost_cap_usd,
+        DEFAULT_NORMAL_COST_CAP_USD,
+      ),
+      ai_bot_thinking_cost_cap_usd: resolveAiCostCap(
+        value.ai_bot_thinking_cost_cap_usd,
+        DEFAULT_THINKING_COST_CAP_USD,
+      ),
+      ai_bot_report_context_note: value.ai_bot_report_context_note ?? '',
+      ai_bot_key: value.ai_bot_key,
+      ai_bot_key_configured: value.ai_bot_key_configured,
+    });
+  };
+
+  const handleAiCostCapInputChange = (
+    key: 'ai_bot_normal_cost_cap_usd' | 'ai_bot_thinking_cost_cap_usd',
+    rawValue: string,
+    setInput: (value: string) => void,
+  ) => {
+    setInput(rawValue);
+    const parsed = parseAiCostCapInput(rawValue);
+    if (parsed !== null) {
+      updateField(key, parsed);
+    }
+  };
+
+  const handleAiCostCapBlur = (
+    key: 'ai_bot_normal_cost_cap_usd' | 'ai_bot_thinking_cost_cap_usd',
+    rawValue: string,
+    fallback: number,
+    setInput: (value: string) => void,
+  ) => {
+    const parsed = parseAiCostCapInput(rawValue) ?? fallback;
+    updateField(key, parsed);
+    setInput(parsed.toFixed(2));
   };
 
   return (
@@ -314,75 +410,150 @@ export function PublicLinkAppearanceEditor({
             description="Let viewers use filter controls on the shared report."
             onToggle={() => updateField('allow_viewer_filters', !appearance.allow_viewer_filters)}
           />
-          <ToggleCard
-            checked={value.ai_bot_enabled === true}
-            label="AI Insight Bot"
-            description="Show a floating chat button so viewers can ask questions about the data."
-            onToggle={() => onChange({ ...value, ai_bot_enabled: !(value.ai_bot_enabled === true) })}
-          />
         </div>
+      </div>
 
-        {/* ── AI bot config panel (visible only when ai_bot_enabled) ─────── */}
+      <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
+        <SectionKicker
+          icon={Bot}
+          label="AI analyst"
+          description="Give this public report its own AI section, budget ceilings, and a report-specific analysis lens."
+        />
+
+        <ToggleCard
+          checked={value.ai_bot_enabled === true}
+          label="Enable AI analyst"
+          description="Show a floating analyst on the public page and embed for this link."
+          onToggle={handleAiToggle}
+        />
+
         {value.ai_bot_enabled === true && (
-          <div className="mt-4 rounded-lg border border-brand/20 bg-brand/5 p-4 space-y-3">
-            <div className="flex items-center gap-2 text-caption font-strong text-text-primary">
-              <Bot className="h-4 w-4 text-brand" />
-              Cấu hình AI Bot cho link này
-            </div>
-            <p className="text-tiny text-text-tertiary leading-5">
-              Nhập API key của bạn — key được lưu server-side và <strong>không bao giờ lộ ra trình duyệt của người xem</strong>. Viewer mở link sẽ dùng bot ngay mà không cần nhập gì.
+          <div className="mt-4 space-y-4 rounded-lg border border-brand/20 bg-brand/5 p-4">
+            <p className="text-tiny leading-5 text-text-tertiary">
+              The API key is stored server-side and never exposed to viewers. The two caps below are enforced per question,
+              with separate ceilings for `Normal` and `Thinking`.
             </p>
 
-            {/* Provider */}
-            <div>
-              <label className="mb-1 block text-tiny font-strong text-text-secondary">Nhà cung cấp AI</label>
-              <div className="relative">
-                <select
-                  value={value.ai_bot_provider || 'openai'}
-                  onChange={(e) => onChange({ ...value, ai_bot_provider: e.target.value, ai_bot_model: '' })}
-                  className="w-full appearance-none rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 py-1.5 pl-3 pr-8 text-caption text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-                >
-                  {AI_PROVIDERS.map((p) => (
-                    <option key={p.value} value={p.value}>{p.label}</option>
-                  ))}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-tiny font-strong text-text-secondary">Provider</label>
+                <div className="relative">
+                  <select
+                    value={value.ai_bot_provider || 'openai'}
+                    onChange={(event) => onChange({ ...value, ai_bot_provider: event.target.value, ai_bot_model: '' })}
+                    className="w-full appearance-none rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 py-1.5 pl-3 pr-8 text-caption text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                  >
+                    {AI_PROVIDERS.map((providerOption) => (
+                      <option key={providerOption.value} value={providerOption.value}>{providerOption.label}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-tiny font-strong text-text-secondary">Model</label>
+                <div className="relative">
+                  <select
+                    value={value.ai_bot_model || ''}
+                    onChange={(event) => onChange({ ...value, ai_bot_model: event.target.value })}
+                    className="w-full appearance-none rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 py-1.5 pl-3 pr-8 text-caption text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                  >
+                    <option value="">Use provider default</option>
+                    {(AI_MODEL_OPTIONS[value.ai_bot_provider || 'openai'] ?? []).map((modelOption) => (
+                      <option key={modelOption.value} value={modelOption.value}>{modelOption.label}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
+                </div>
               </div>
             </div>
 
-            {/* Model */}
             <div>
-              <label className="mb-1 block text-tiny font-strong text-text-secondary">Model</label>
-              <div className="relative">
-                <select
-                  value={value.ai_bot_model || ''}
-                  onChange={(e) => onChange({ ...value, ai_bot_model: e.target.value })}
-                  className="w-full appearance-none rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 py-1.5 pl-3 pr-8 text-caption text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-                >
-                  <option value="">— mặc định của provider —</option>
-                  {(AI_MODEL_OPTIONS[value.ai_bot_provider || 'openai'] ?? []).map((m) => (
-                    <option key={m.value} value={m.value}>{m.label}</option>
-                  ))}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
-              </div>
-            </div>
-
-            {/* API Key */}
-            <div>
-              <label className="mb-1 block text-tiny font-strong text-text-secondary">API Key</label>
+              <label className="mb-1 block text-tiny font-strong text-text-secondary">API key</label>
+              {value.ai_bot_key_configured && !value.ai_bot_key && (
+                <p className="mb-1.5 flex items-center gap-1.5 text-tiny text-success">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />
+                  A key is already configured for this link. Enter a new key below only if you want to replace it.
+                </p>
+              )}
               <Input
                 type="password"
                 value={value.ai_bot_key || ''}
-                onChange={(e) => onChange({ ...value, ai_bot_key: e.target.value })}
+                onChange={(event) => onChange({ ...value, ai_bot_key: event.target.value })}
                 placeholder={
-                  value.ai_bot_provider === 'anthropic' ? 'sk-ant-...'
-                  : value.ai_bot_provider === 'gemini' ? 'AIza...'
-                  : 'sk-...'
+                  value.ai_bot_key_configured
+                    ? '(keep current server-side key)'
+                    : value.ai_bot_provider === 'anthropic' ? 'sk-ant-...'
+                    : value.ai_bot_provider === 'gemini' ? 'AIza...'
+                    : 'sk-...'
                 }
               />
               <p className="mt-1 text-tiny text-text-quaternary">
-                Để trống nếu muốn giữ key cũ đã lưu. Xóa hết nội dung → key bị xóa khỏi link.
+                Leave blank to keep the current key. Clear the value and save to remove the stored key.
+              </p>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-tiny font-strong text-text-secondary">Normal cost cap (USD)</label>
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  value={normalCapInput}
+                  onChange={(event) => handleAiCostCapInputChange(
+                    'ai_bot_normal_cost_cap_usd',
+                    event.target.value,
+                    setNormalCapInput,
+                  )}
+                  onBlur={() => handleAiCostCapBlur(
+                    'ai_bot_normal_cost_cap_usd',
+                    normalCapInput,
+                    DEFAULT_NORMAL_COST_CAP_USD,
+                    setNormalCapInput,
+                  )}
+                  placeholder={DEFAULT_NORMAL_COST_CAP_USD.toFixed(2)}
+                />
+                <p className="mt-1 text-tiny text-text-quaternary">
+                  Used for standard asks. Range: {MIN_AI_COST_CAP_USD.toFixed(2)} to {MAX_AI_COST_CAP_USD.toFixed(2)} USD.
+                </p>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-tiny font-strong text-text-secondary">Thinking cost cap (USD)</label>
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  value={thinkingCapInput}
+                  onChange={(event) => handleAiCostCapInputChange(
+                    'ai_bot_thinking_cost_cap_usd',
+                    event.target.value,
+                    setThinkingCapInput,
+                  )}
+                  onBlur={() => handleAiCostCapBlur(
+                    'ai_bot_thinking_cost_cap_usd',
+                    thinkingCapInput,
+                    DEFAULT_THINKING_COST_CAP_USD,
+                    setThinkingCapInput,
+                  )}
+                  placeholder={DEFAULT_THINKING_COST_CAP_USD.toFixed(2)}
+                />
+                <p className="mt-1 text-tiny text-text-quaternary">
+                  Used when viewers switch to the deeper `Thinking` mode for multi-step or logic-heavy analysis.
+                </p>
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-tiny font-strong text-text-secondary">Report mindset note</label>
+              <Textarea
+                rows={3}
+                value={value.ai_bot_report_context_note || ''}
+                onChange={(event) => updateField('ai_bot_report_context_note', event.target.value.slice(0, 1200))}
+                placeholder="Example: Read this as an executive risk report. Prioritize bottlenecks, trend reversals, and logical links between departments. Avoid drifting into generic KPI recitation."
+              />
+              <p className="mt-1 text-tiny text-text-quaternary">
+                This note is injected into the bot prompt to keep analysis aligned with the report. It is not shown to public viewers.
               </p>
             </div>
           </div>

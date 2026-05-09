@@ -1,96 +1,295 @@
-"""Token-pricing & per-turn cost cap for the Dashboard AI Bot.
+"""Token pricing and per-turn cost accounting for the Dashboard AI Bot.
 
-Approximate USD prices per 1M tokens as of 2026-05. We keep this in code
-(not config) because the cap is a safety guard, not a billing feature —
-the user's BYOK key is the real cost source. The cap stops a single
-question from running away into a $1+ tool-calling loop.
+Prices are USD per 1M tokens and are meant for *guardrail* estimation, not
+exact end-user billing. We still try to mirror the providers' billing model
+closely enough that a per-question cap behaves predictably:
 
-If a model is unknown we fall back to a conservative GPT-4o-class
-estimate ($2.5 input / $10 output per 1M).
+- OpenAI: uncached input, cached input, and output are priced separately.
+- Anthropic: base input, cache reads, and cache writes are priced separately.
+- Gemini: input/output pricing can depend on prompt size, and thinking tokens
+  are billed as output tokens on models that expose them.
+
+If a model is unknown we fall back to a conservative GPT-4o-class estimate.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Mapping
 
-# (input_per_1m, output_per_1m) in USD. Cached_input is treated as input.
-_PRICES: dict[str, tuple[float, float]] = {
+
+def _per_token(price_per_million: float, tokens: int) -> float:
+    return (max(0, int(tokens or 0)) / 1_000_000.0) * float(price_per_million or 0.0)
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return int(default or 0)
+
+
+@dataclass(frozen=True)
+class PriceTier:
+    """Pricing for one prompt-size tier of a model family."""
+
+    input_per_1m: float
+    output_per_1m: float
+    prompt_tokens_lte: int | None = None
+    cached_input_per_1m: float | None = None
+    cache_read_per_1m: float | None = None
+    cache_write_5m_per_1m: float | None = None
+    cache_write_1h_per_1m: float | None = None
+
+
+@dataclass(frozen=True)
+class ModelPricing:
+    """Pricing metadata for a model family, optionally with prompt-size tiers."""
+
+    tiers: tuple[PriceTier, ...]
+
+    def tier_for_prompt_tokens(self, prompt_tokens: int) -> PriceTier:
+        normalized = max(0, int(prompt_tokens or 0))
+        for tier in self.tiers:
+            if tier.prompt_tokens_lte is None or normalized <= tier.prompt_tokens_lte:
+                return tier
+        return self.tiers[-1]
+
+
+def _openai(input_per_1m: float, cached_input_per_1m: float, output_per_1m: float) -> ModelPricing:
+    return ModelPricing((
+        PriceTier(
+            input_per_1m=input_per_1m,
+            cached_input_per_1m=cached_input_per_1m,
+            output_per_1m=output_per_1m,
+        ),
+    ))
+
+
+def _anthropic(input_per_1m: float, output_per_1m: float) -> ModelPricing:
+    return ModelPricing((
+        PriceTier(
+            input_per_1m=input_per_1m,
+            output_per_1m=output_per_1m,
+            cache_read_per_1m=input_per_1m * 0.10,
+            cache_write_5m_per_1m=input_per_1m * 1.25,
+            cache_write_1h_per_1m=input_per_1m * 2.00,
+        ),
+    ))
+
+
+def _gemini(
+    *,
+    short_input_per_1m: float,
+    short_output_per_1m: float,
+    short_cached_input_per_1m: float | None = None,
+    long_input_per_1m: float | None = None,
+    long_output_per_1m: float | None = None,
+    long_cached_input_per_1m: float | None = None,
+    threshold_tokens: int | None = None,
+) -> ModelPricing:
+    if threshold_tokens is None or long_input_per_1m is None or long_output_per_1m is None:
+        return ModelPricing((
+            PriceTier(
+                input_per_1m=short_input_per_1m,
+                cached_input_per_1m=short_cached_input_per_1m,
+                output_per_1m=short_output_per_1m,
+            ),
+        ))
+    return ModelPricing((
+        PriceTier(
+            input_per_1m=short_input_per_1m,
+            cached_input_per_1m=short_cached_input_per_1m,
+            output_per_1m=short_output_per_1m,
+            prompt_tokens_lte=threshold_tokens,
+        ),
+        PriceTier(
+            input_per_1m=long_input_per_1m,
+            cached_input_per_1m=long_cached_input_per_1m,
+            output_per_1m=long_output_per_1m,
+        ),
+    ))
+
+
+_PRICES: dict[str, ModelPricing] = {
     # OpenAI
-    "gpt-4o": (2.5, 10.0),
-    "gpt-4o-2024-11-20": (2.5, 10.0),
-    "gpt-4o-2024-08-06": (2.5, 10.0),
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4.1": (2.0, 8.0),
-    "gpt-4.1-mini": (0.4, 1.6),
-    "gpt-4.1-nano": (0.10, 0.40),
-    "o3-mini": (1.1, 4.4),
+    "gpt-4o-2024-11-20": _openai(2.5, 1.25, 10.0),
+    "gpt-4o-2024-08-06": _openai(2.5, 1.25, 10.0),
+    "gpt-4o-mini": _openai(0.15, 0.075, 0.60),
+    "gpt-4o": _openai(2.5, 1.25, 10.0),
+    "gpt-4.1-mini": _openai(0.40, 0.10, 1.60),
+    "gpt-4.1-nano": _openai(0.10, 0.025, 0.40),
+    "gpt-4.1": _openai(2.0, 0.50, 8.0),
+    "o3-mini": _openai(1.10, 0.55, 4.40),
     # Anthropic
-    "claude-opus-4-7": (15.0, 75.0),
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "claude-haiku-4-5-20251001": (0.80, 4.0),
-    "claude-3-5-sonnet-20241022": (3.0, 15.0),
-    "claude-3-5-haiku-20241022": (0.80, 4.0),
+    "claude-opus-4-7": _anthropic(15.0, 75.0),
+    "claude-opus-4": _anthropic(15.0, 75.0),
+    "claude-sonnet-4-6": _anthropic(3.0, 15.0),
+    "claude-sonnet-4": _anthropic(3.0, 15.0),
+    "claude-haiku-4-5-20251001": _anthropic(0.80, 4.0),
+    "claude-haiku-4-5": _anthropic(0.80, 4.0),
+    "claude-3-5-sonnet-20241022": _anthropic(3.0, 15.0),
+    "claude-3-5-sonnet": _anthropic(3.0, 15.0),
+    "claude-3-5-haiku-20241022": _anthropic(0.80, 4.0),
+    "claude-3-5-haiku": _anthropic(0.80, 4.0),
     # Gemini
-    "gemini-1.5-pro": (1.25, 5.0),
-    "gemini-1.5-flash": (0.075, 0.30),
-    "gemini-2.0-flash": (0.10, 0.40),
+    "gemini-1.5-pro": _gemini(
+        short_input_per_1m=1.25,
+        short_cached_input_per_1m=0.3125,
+        short_output_per_1m=5.0,
+        long_input_per_1m=2.50,
+        long_cached_input_per_1m=0.625,
+        long_output_per_1m=10.0,
+        threshold_tokens=128_000,
+    ),
+    "gemini-1.5-flash": _gemini(
+        short_input_per_1m=0.075,
+        short_cached_input_per_1m=0.01875,
+        short_output_per_1m=0.30,
+        long_input_per_1m=0.15,
+        long_cached_input_per_1m=0.0375,
+        long_output_per_1m=0.60,
+        threshold_tokens=128_000,
+    ),
+    "gemini-2.0-flash": _gemini(
+        short_input_per_1m=0.10,
+        short_cached_input_per_1m=0.025,
+        short_output_per_1m=0.40,
+    ),
 }
 
-_FALLBACK = (2.5, 10.0)
+_FALLBACK = _openai(2.5, 1.25, 10.0)
 
 
-def price_for(model: str) -> tuple[float, float]:
-    """Return (input_per_1m, output_per_1m) USD for a model name.
+def price_for(model: str) -> ModelPricing:
+    """Return pricing metadata for a model name.
 
-    Lookup is case-insensitive and tolerates suffixes like ``-latest``.
+    Lookup is case-insensitive and prefers the longest matching prefix so
+    dated snapshot names like ``gpt-4.1-mini-2025-04-14`` resolve to the
+    correct family rather than the broader ``gpt-4.1`` tier.
     """
     if not model:
         return _FALLBACK
     key = model.strip().lower()
     if key in _PRICES:
         return _PRICES[key]
-    for prefix, price in _PRICES.items():
+    for prefix in sorted(_PRICES.keys(), key=len, reverse=True):
         if key.startswith(prefix):
-            return price
+            return _PRICES[prefix]
     return _FALLBACK
 
 
 @dataclass
 class CostMeter:
-    """Accumulates token usage across multiple LLM rounds in one chat turn.
-
-    The agent loop instantiates one CostMeter per user turn. Each provider
-    round emits ``add(prompt_tokens, completion_tokens)`` once it sees the
-    final usage block, and the loop checks ``over_cap()`` before deciding
-    whether to allow another tool round.
-    """
+    """Accumulates token usage across multiple LLM rounds in one chat turn."""
 
     model: str = ""
     cap_usd: float = 0.10
     prompt_tokens: int = 0
     completion_tokens: int = 0
     rounds: int = 0
-    # Free-form notes: rough cost of multimodal images attached out-of-band
-    # (we already round those into prompt tokens via the API, so this stays 0
-    # unless we want to surface tool I/O cost separately).
     extra_usd: float = 0.0
+    billed_usd: float = 0.0
+    cached_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_write_input_tokens: int = 0
+    reasoning_tokens: int = 0
     capped_emitted: bool = field(default=False, init=False, repr=False)
 
     def add(self, *, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
-        if prompt_tokens:
-            self.prompt_tokens += int(prompt_tokens)
-        if completion_tokens:
-            self.completion_tokens += int(completion_tokens)
+        self.add_usage({
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+        })
+
+    def add_usage(self, usage: Mapping[str, object] | None = None) -> None:
+        payload = dict(usage or {})
+
+        prompt_tokens = max(0, _as_int(payload.get("prompt_tokens")))
+        completion_tokens = max(0, _as_int(payload.get("completion_tokens")))
+        effective_prompt_tokens = max(
+            0,
+            _as_int(payload.get("effective_prompt_tokens"), prompt_tokens),
+        )
+
+        cached_prompt_tokens = max(0, _as_int(payload.get("cached_prompt_tokens")))
+        cached_content_tokens = max(0, _as_int(payload.get("cached_content_tokens")))
+        cache_read_tokens = max(0, _as_int(payload.get("cache_read_input_tokens")))
+        cache_write_total_tokens = max(0, _as_int(payload.get("cache_creation_input_tokens")))
+        cache_write_5m_tokens = max(0, _as_int(payload.get("cache_creation_input_tokens_5m")))
+        cache_write_1h_tokens = max(0, _as_int(payload.get("cache_creation_input_tokens_1h")))
+        base_input_tokens = max(
+            0,
+            _as_int(
+                payload.get("base_input_tokens"),
+                prompt_tokens - cache_read_tokens - cache_write_total_tokens,
+            ),
+        )
+
+        thought_tokens = max(0, _as_int(payload.get("thought_tokens")))
+        tool_use_prompt_tokens = max(0, _as_int(payload.get("tool_use_prompt_tokens")))
+        reasoning_tokens = max(
+            0,
+            _as_int(payload.get("reasoning_tokens"))
+            if payload.get("reasoning_tokens") is not None
+            else thought_tokens,
+        )
+
+        self.prompt_tokens += prompt_tokens
+        self.completion_tokens += completion_tokens
+        self.cached_input_tokens += cached_prompt_tokens + cached_content_tokens
+        self.cache_read_input_tokens += cache_read_tokens
+        self.cache_write_input_tokens += cache_write_total_tokens
+        self.reasoning_tokens += reasoning_tokens
         self.rounds += 1
+
+        pricing = price_for(self.model)
+        tier = pricing.tier_for_prompt_tokens(effective_prompt_tokens or prompt_tokens)
+
+        round_usd = 0.0
+        has_explicit_anthropic_cache_buckets = (
+            "base_input_tokens" in payload
+            or cache_read_tokens > 0
+            or cache_write_total_tokens > 0
+        )
+        if has_explicit_anthropic_cache_buckets:
+            remaining_cache_write_tokens = max(
+                0,
+                cache_write_total_tokens - cache_write_5m_tokens - cache_write_1h_tokens,
+            )
+            round_usd += _per_token(tier.input_per_1m, base_input_tokens)
+            round_usd += _per_token(
+                tier.cache_read_per_1m or tier.cached_input_per_1m or tier.input_per_1m,
+                cache_read_tokens,
+            )
+            round_usd += _per_token(
+                tier.cache_write_5m_per_1m or tier.input_per_1m,
+                cache_write_5m_tokens + remaining_cache_write_tokens,
+            )
+            round_usd += _per_token(
+                tier.cache_write_1h_per_1m or tier.input_per_1m,
+                cache_write_1h_tokens,
+            )
+        else:
+            cached_input_tokens = max(0, cached_prompt_tokens + cached_content_tokens)
+            uncached_prompt_tokens = max(0, prompt_tokens - cached_input_tokens)
+            round_usd += _per_token(tier.input_per_1m, uncached_prompt_tokens)
+            round_usd += _per_token(
+                tier.cached_input_per_1m or tier.input_per_1m,
+                cached_input_tokens,
+            )
+
+        # Gemini "toolUsePromptTokenCount" is output-only metadata. Our Gemini
+        # path does not use tools today, but if a future API revision emits it,
+        # charge it as output to stay conservative rather than undercount.
+        round_usd += _per_token(
+            tier.output_per_1m,
+            completion_tokens + tool_use_prompt_tokens,
+        )
+        self.billed_usd += round_usd
 
     @property
     def usd(self) -> float:
-        in_p, out_p = price_for(self.model)
-        return (
-            (self.prompt_tokens / 1_000_000.0) * in_p
-            + (self.completion_tokens / 1_000_000.0) * out_p
-            + float(self.extra_usd or 0.0)
-        )
+        return float(self.billed_usd or 0.0) + float(self.extra_usd or 0.0)
 
     @property
     def remaining_usd(self) -> float:
@@ -112,6 +311,10 @@ class CostMeter:
             "remaining_usd": round(self.remaining_usd, 5),
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
+            "cached_input_tokens": self.cached_input_tokens,
+            "cache_read_input_tokens": self.cache_read_input_tokens,
+            "cache_write_input_tokens": self.cache_write_input_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
             "rounds": self.rounds,
             "over_cap": self.over_cap(),
             "near_cap": self.near_cap(),

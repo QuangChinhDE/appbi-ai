@@ -1556,7 +1556,22 @@ def unshare_dashboard(
     return {"share_token": None}
 
 
+def _sanitize_link_for_admin(link: DashboardPublicLink) -> DashboardPublicLink:
+    """Strip ai_bot_key from a public link before returning to admin clients.
+
+    The actual key stays in the DB; the response gets ai_bot_key_configured=True/False
+    instead. This prevents the key from appearing in browser Network/Console logs.
+    """
+    if link.appearance_config:
+        raw = dict(link.appearance_config)
+        key_present = bool(raw.pop("ai_bot_key", None))
+        raw["ai_bot_key_configured"] = key_present
+        link.appearance_config = raw
+    return link
+
+
 # ============ Multi Public Links ============
+
 
 @router.get("/{dashboard_id}/public-links", response_model=List[PublicLinkResponse])
 def list_public_links(
@@ -1575,7 +1590,7 @@ def list_public_links(
         .order_by(DashboardPublicLink.created_at.desc())
         .all()
     )
-    return links
+    return [_sanitize_link_for_admin(link) for link in links]
 
 
 @router.post("/{dashboard_id}/public-links", response_model=PublicLinkResponse, status_code=status.HTTP_201_CREATED)
@@ -1602,7 +1617,7 @@ def create_public_link(
     db.add(link)
     db.commit()
     db.refresh(link)
-    return link
+    return _sanitize_link_for_admin(link)
 
 
 @router.patch("/{dashboard_id}/public-links/{link_id}", response_model=PublicLinkResponse)
@@ -1630,14 +1645,29 @@ def update_public_link(
     if request.filters_config is not None:
         link.filters_config = request.filters_config
     if request.appearance_config is not None:
-        link.appearance_config = request.appearance_config
+        new_config = dict(request.appearance_config)
+        existing_config = dict(link.appearance_config or {})
+        incoming_key = new_config.get("ai_bot_key")
+        if incoming_key is None or incoming_key == "":
+            # Key absent or empty → keep existing key (empty string = explicit clear)
+            existing_key = existing_config.get("ai_bot_key")
+            if incoming_key is None and existing_key:
+                # No key field sent at all — preserve current key silently
+                new_config["ai_bot_key"] = existing_key
+            else:
+                # Empty string sent explicitly → delete the key
+                new_config.pop("ai_bot_key", None)
+                new_config.pop("ai_bot_key_configured", None)
+        # ai_bot_key_configured is computed server-side; strip any client-sent value
+        new_config.pop("ai_bot_key_configured", None)
+        link.appearance_config = new_config
     if request.is_active is not None:
         link.is_active = request.is_active
     if request.password is not None:
         link.password_hash = _pwd_context.hash(request.password) if request.password else None
     db.commit()
     db.refresh(link)
-    return link
+    return _sanitize_link_for_admin(link)
 
 
 @router.delete("/{dashboard_id}/public-links/{link_id}", status_code=status.HTTP_200_OK)

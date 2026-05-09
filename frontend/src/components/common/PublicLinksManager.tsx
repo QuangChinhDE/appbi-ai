@@ -305,7 +305,21 @@ export function PublicLinksManager({
     setEditingLink(link);
     setFormName(link.name);
     setFormFilters((link.filters_config ?? []) as BaseFilter[]);
-    setFormAppearance(normalizePublicLinkAppearance(link.appearance_config));
+    setFormAppearance({
+      ...normalizePublicLinkAppearance(link.appearance_config),
+      // normalizePublicLinkAppearance strips AI bot fields (they are not in
+      // NormalizedPublicLinkAppearanceConfig). Restore them from the raw config.
+      ai_bot_enabled: link.appearance_config?.ai_bot_enabled,
+      ai_bot_provider: link.appearance_config?.ai_bot_provider,
+      ai_bot_model: link.appearance_config?.ai_bot_model,
+      ai_bot_normal_cost_cap_usd: link.appearance_config?.ai_bot_normal_cost_cap_usd,
+      ai_bot_thinking_cost_cap_usd: link.appearance_config?.ai_bot_thinking_cost_cap_usd,
+      ai_bot_report_context_note: link.appearance_config?.ai_bot_report_context_note,
+      // ai_bot_key is stripped by backend response (security). Use
+      // ai_bot_key_configured to show "key is set" indicator in the editor.
+      ai_bot_key: undefined,
+      ai_bot_key_configured: link.appearance_config?.ai_bot_key_configured,
+    });
     setFormPassword('');
     setPasswordEnabled(link.has_password);
     setShowPassword(false);

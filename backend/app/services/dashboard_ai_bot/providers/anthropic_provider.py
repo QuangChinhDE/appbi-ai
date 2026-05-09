@@ -147,6 +147,11 @@ async def stream_anthropic(
     # while output_tokens streams in message_delta and is finalised by
     # message_stop. Tally locally and emit once when the response ends.
     usage_in: int = 0
+    usage_base_in: int = 0
+    usage_cache_read_in: int = 0
+    usage_cache_create_in: int = 0
+    usage_cache_create_5m_in: int = 0
+    usage_cache_create_1h_in: int = 0
     usage_out: int = 0
 
     try:
@@ -189,9 +194,17 @@ async def stream_anthropic(
                     if et == "message_start":
                         msg_obj = event.get("message") or {}
                         u = msg_obj.get("usage") or {}
-                        usage_in += int(u.get("input_tokens") or 0)
-                        usage_in += int(u.get("cache_read_input_tokens") or 0)
-                        usage_in += int(u.get("cache_creation_input_tokens") or 0)
+                        usage_base_in += int(u.get("input_tokens") or 0)
+                        usage_cache_read_in += int(u.get("cache_read_input_tokens") or 0)
+                        usage_cache_create_in += int(u.get("cache_creation_input_tokens") or 0)
+                        usage_in = usage_base_in + usage_cache_read_in + usage_cache_create_in
+                        cache_creation = u.get("cache_creation") or {}
+                        usage_cache_create_5m_in += int(
+                            cache_creation.get("ephemeral_5m_input_tokens") or 0,
+                        )
+                        usage_cache_create_1h_in += int(
+                            cache_creation.get("ephemeral_1h_input_tokens") or 0,
+                        )
                         usage_out += int(u.get("output_tokens") or 0)
                     elif et == "content_block_start":
                         idx = event.get("index", 0)
@@ -243,11 +256,23 @@ async def stream_anthropic(
                             yield AgentEvent(
                                 type="usage",
                                 extra={
+                                    "provider": "anthropic",
                                     "prompt_tokens": usage_in,
                                     "completion_tokens": usage_out,
+                                    "effective_prompt_tokens": usage_in,
+                                    "base_input_tokens": usage_base_in,
+                                    "cache_read_input_tokens": usage_cache_read_in,
+                                    "cache_creation_input_tokens": usage_cache_create_in,
+                                    "cache_creation_input_tokens_5m": usage_cache_create_5m_in,
+                                    "cache_creation_input_tokens_1h": usage_cache_create_1h_in,
                                 },
                             )
                             usage_in = 0
+                            usage_base_in = 0
+                            usage_cache_read_in = 0
+                            usage_cache_create_in = 0
+                            usage_cache_create_5m_in = 0
+                            usage_cache_create_1h_in = 0
                             usage_out = 0
     except httpx.TimeoutException:
         logger.warning("dashboard_ai_bot anthropic_timeout model=%s", model)
