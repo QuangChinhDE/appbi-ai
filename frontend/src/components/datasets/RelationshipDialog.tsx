@@ -137,6 +137,9 @@ export function RelationshipDialog({
   const [previousSelectionKey, setPreviousSelectionKey] = useState('');
   const suppressSelectionResetRef = useRef(false);
 
+  // Derived selection key (computed before hooks so it can be used in dep array)
+  const selectionKey = `${fromViewId}|${toViewId}|${fromColumn}|${toColumn}`;
+
   // Reset when dialog reopens
   useEffect(() => {
     if (isOpen) {
@@ -158,20 +161,6 @@ export function RelationshipDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
 
-  if (!isOpen) return null;
-
-  const fromView = views.find((v) => v.id === fromViewId);
-  const toView = views.find((v) => v.id === toViewId);
-
-  // Build column lists from view dimensions (includes hidden cols like FK cols)
-  const fromColumns = fromView
-    ? fromView.dimensions.map((d) => ({ value: d.name, label: d.label || d.name }))
-    : [];
-  const toColumns = toView
-    ? toView.dimensions.map((d) => ({ value: d.name, label: d.label || d.name }))
-    : [];
-
-  const selectionKey = `${fromViewId}|${toViewId}|${fromColumn}|${toColumn}`;
   useEffect(() => {
     if (!isOpen) return;
     if (suppressSelectionResetRef.current) {
@@ -212,6 +201,20 @@ export function RelationshipDialog({
     if (!isOpen || !joinSuggestion || !autoSuggestRelationship || relationshipTouched) return;
     setRelationship(joinSuggestion.relationship);
   }, [autoSuggestRelationship, isOpen, joinSuggestion, relationshipTouched]);
+
+  // Early return AFTER all hooks — avoids Rules of Hooks violation
+  if (!isOpen) return null;
+
+  const fromView = views.find((v) => v.id === fromViewId);
+  const toView = views.find((v) => v.id === toViewId);
+
+  // Build column lists from view dimensions (includes hidden cols like FK cols)
+  const fromColumns = fromView
+    ? fromView.dimensions.map((d) => ({ value: d.name, label: d.label || d.name }))
+    : [];
+  const toColumns = toView
+    ? toView.dimensions.map((d) => ({ value: d.name, label: d.label || d.name }))
+    : [];
 
   const viewOptions = views.map((v) => ({
     value: String(v.id),
