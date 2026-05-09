@@ -3,7 +3,8 @@ API router for data source endpoints.
 """
 from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File
 from sqlalchemy.orm import Session
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from pydantic import BaseModel
 import io
 import csv as csv_module
 
@@ -592,3 +593,185 @@ def get_watermark_candidates(
     except Exception as e:
         logger.error(f"Watermark candidates failed for {schema_name}.{table_name}: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve watermark candidates.")
+
+
+# ── Google Sheets write / structure endpoints ─────────────────────────────────
+# These endpoints expose full CRUD on a connected Google Sheets datasource so
+# that MCP tools (and the workboard builder) can manage sheet tabs and row data
+# without requiring direct Google API access from the client.
+
+def _require_gsheets_ds(data_source_id: int, db: Session, current_user: User):
+    """Load + authorize a google_sheets datasource; raise 404/403/400 on error."""
+    from app.models import DataSource
+    from app.core.crypto import decrypt_config
+    from app.services.google_sheets_connector import create_google_sheets_connector
+
+    ds = DataSourceCRUDService.get_by_id(db, data_source_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Data source not found")
+    require_view_access(db, current_user, ds, "data_sources")
+
+    ds_type = ds.type.value if hasattr(ds.type, "value") else str(ds.type or "")
+    if ds_type != "google_sheets":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Data source {data_source_id} is type '{ds_type}', not 'google_sheets'.",
+        )
+    cfg = decrypt_config(ds.config)
+    spreadsheet_id = (cfg.get("spreadsheet_id") or "").strip()
+    if not spreadsheet_id:
+        raise HTTPException(status_code=400, detail="Datasource missing spreadsheet_id")
+    connector = create_google_sheets_connector(cfg)
+    return connector, spreadsheet_id, ds
+
+
+@router.get("/{data_source_id}/gsheets/sheets")
+def list_gsheets_tabs(
+    data_source_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all sheet tabs in the connected Google Spreadsheet."""
+    connector, spreadsheet_id, _ = _require_gsheets_ds(data_source_id, db, current_user)
+    try:
+        sheets = connector.list_sheets(spreadsheet_id)
+        return {"spreadsheet_id": spreadsheet_id, "sheets": sheets}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class GSheetCreateRequest(BaseModel):
+    sheet_name: str
+    headers: Optional[List[str]] = None  # column names for row 1
+
+
+@router.post("/{data_source_id}/gsheets/sheets", status_code=status.HTTP_201_CREATED)
+def create_gsheets_tab(
+    data_source_id: int,
+    body: GSheetCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create a new sheet tab in the connected Google Spreadsheet.
+
+    Optionally writes a header row (column names) as the first row so the
+    sheet is immediately ready for workboard form submissions.
+    """
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    require_edit_access(db, current_user, ds, "data_sources")
+    try:
+        result = connector.create_sheet(spreadsheet_id, body.sheet_name, body.headers)
+        return {"spreadsheet_id": spreadsheet_id, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/{data_source_id}/gsheets/{sheet_name}/rows")
+def read_gsheets_rows(
+    data_source_id: int,
+    sheet_name: str,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Read rows from a sheet tab. Returns columns + rows list."""
+    connector, spreadsheet_id, _ = _require_gsheets_ds(data_source_id, db, current_user)
+    try:
+        data = connector.get_sheet_data(spreadsheet_id, sheet_name=sheet_name)
+        rows = data.get("rows") or []
+        if limit:
+            rows = rows[:limit]
+        return {
+            "spreadsheet_id": spreadsheet_id,
+            "sheet_name": sheet_name,
+            "columns": data.get("columns") or [],
+            "rows": rows,
+            "row_count": len(rows),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class GSheetAppendRequest(BaseModel):
+    values: Dict[str, Any]  # {column_name: value}
+
+
+@router.post("/{data_source_id}/gsheets/{sheet_name}/rows", status_code=status.HTTP_201_CREATED)
+def append_gsheets_row(
+    data_source_id: int,
+    sheet_name: str,
+    body: GSheetAppendRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Append a new row to a sheet tab.
+
+    ``values`` must be a dict mapping column names (header row) to values.
+    Columns not present in the payload receive an empty string.
+    """
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    require_edit_access(db, current_user, ds, "data_sources")
+    try:
+        row = connector.append_row(spreadsheet_id, sheet_name, body.values)
+        return {"ok": True, "sheet_name": sheet_name, "row": row}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class GSheetUpdateRequest(BaseModel):
+    pk: Dict[str, Any]       # {pk_column: pk_value} — used to find the row
+    values: Dict[str, Any]   # {column_name: new_value}
+
+
+@router.patch("/{data_source_id}/gsheets/{sheet_name}/rows")
+def update_gsheets_row(
+    data_source_id: int,
+    sheet_name: str,
+    body: GSheetUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update a row in a sheet tab identified by a primary-key dict.
+
+    ``pk`` identifies the row (e.g. ``{"id": "ROW-001"}``).
+    ``values`` provides the columns to overwrite; other columns are unchanged.
+    """
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    require_edit_access(db, current_user, ds, "data_sources")
+    try:
+        row = connector.update_row_by_pk(spreadsheet_id, sheet_name, body.pk, body.values)
+        return {"ok": True, "sheet_name": sheet_name, "row": row}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class GSheetDeleteRequest(BaseModel):
+    pk: Dict[str, Any]  # {pk_column: pk_value}
+
+
+@router.delete("/{data_source_id}/gsheets/{sheet_name}/rows")
+def delete_gsheets_row(
+    data_source_id: int,
+    sheet_name: str,
+    body: GSheetDeleteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a row from a sheet tab identified by a primary-key dict."""
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    require_edit_access(db, current_user, ds, "data_sources")
+    try:
+        row_num = connector.delete_row_by_pk(spreadsheet_id, sheet_name, body.pk)
+        return {"ok": True, "sheet_name": sheet_name, "deleted_row": row_num}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))

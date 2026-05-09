@@ -446,12 +446,15 @@ class WorkboardWriteService:
             if ds_type == "google_sheets":
                 # Sheets-backed workboards talk to the connector directly —
                 # no SQL string is built. The sheet name is the source_table_name.
+                # Auto-generate UUID for PK columns absent from the payload so
+                # every appended row has a stable, unique identifier.
                 row, rowcount, _ = DataSourceConnectionService.execute_write_op(
                     ds_type,
                     ctx.datasource.config or {},
                     "insert",
                     table_name=ctx.dataset_table.source_table_name or "",
                     values=clean,
+                    auto_pk_columns=ctx.primary_key_columns,
                 )
                 returned_rows = [row] if row else []
             else:
@@ -524,6 +527,8 @@ class WorkboardWriteService:
                     table_name=ctx.dataset_table.source_table_name or "",
                     values=clean,
                     pk=pk,
+                    lock_column=ctx.workboard.optimistic_lock_column or None,
+                    lock_token=lock_token,
                 )
                 returned_rows = [row] if row else []
             else:
@@ -535,6 +540,8 @@ class WorkboardWriteService:
                     ds_type, ctx.datasource.config or {}, sql, params
                 )
         except Exception as exc:
+            if "OPTIMISTIC_LOCK" in str(exc):
+                raise OptimisticLockError() from exc
             logger.exception("Workboard update failed (workboard=%s)", workboard.id)
             raise WorkboardWriteError(f"Update failed: {exc}") from exc
 
@@ -589,6 +596,8 @@ class WorkboardWriteService:
                     "delete",
                     table_name=ctx.dataset_table.source_table_name or "",
                     pk=pk,
+                    lock_column=ctx.workboard.optimistic_lock_column or None,
+                    lock_token=lock_token,
                 )
             else:
                 where_sql, where_params = _build_where_pk(
@@ -599,6 +608,8 @@ class WorkboardWriteService:
                     ds_type, ctx.datasource.config or {}, sql, params
                 )
         except Exception as exc:
+            if "OPTIMISTIC_LOCK" in str(exc):
+                raise OptimisticLockError() from exc
             logger.exception("Workboard delete failed (workboard=%s)", workboard.id)
             raise WorkboardWriteError(f"Delete failed: {exc}") from exc
 

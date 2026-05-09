@@ -6,7 +6,7 @@ import base64
 import os
 import re
 import time
-from typing import Generator, Iterator, List, Dict, Any, Tuple
+from typing import Generator, Iterator, List, Dict, Any, Tuple, Optional
 import pymysql
 import psycopg2
 from google.cloud import bigquery
@@ -441,6 +441,9 @@ class DataSourceConnectionService:
         table_name: str,
         values: Dict[str, Any] | None = None,
         pk: Dict[str, Any] | None = None,
+        lock_column: Optional[str] = None,
+        lock_token: Any = None,
+        auto_pk_columns: Optional[List[str]] = None,
     ) -> Tuple[Dict[str, Any], int, float]:
         """Row-level write that doesn't require SQL strings.
 
@@ -454,6 +457,13 @@ class DataSourceConnectionService:
         SQL-speaking datasources can still go through this helper —
         internally it builds the equivalent INSERT/UPDATE/DELETE and routes
         to :meth:`execute_write`.
+
+        Extra GSheets-only params:
+          * ``lock_column``/``lock_token`` — optimistic-lock column name and
+            the token value the client read. If set, update/delete will raise
+            ValueError("OPTIMISTIC_LOCK: ...") when the stored value differs.
+          * ``auto_pk_columns`` — for insert only. UUID is auto-generated for
+            each listed column that is absent/empty in ``values``.
         """
         from app.core.crypto import decrypt_config
         cfg = decrypt_config(config)
@@ -471,21 +481,28 @@ class DataSourceConnectionService:
             # ``table_name`` is the sheet name for Sheets datasources.
             sheet_name = table_name
             if op == "insert":
-                row = connector.append_row(spreadsheet_id, sheet_name, values or {})
+                row = connector.append_row(
+                    spreadsheet_id, sheet_name, values or {},
+                    auto_pk_columns=auto_pk_columns,
+                )
                 ms = (time.time() - start) * 1000
                 return row, 1, ms
             if op == "update":
                 if not pk:
                     raise ValueError("update requires a primary-key dict.")
                 row = connector.update_row_by_pk(
-                    spreadsheet_id, sheet_name, pk, values or {}
+                    spreadsheet_id, sheet_name, pk, values or {},
+                    lock_column=lock_column, lock_token=lock_token,
                 )
                 ms = (time.time() - start) * 1000
                 return row, 1, ms
             if op == "delete":
                 if not pk:
                     raise ValueError("delete requires a primary-key dict.")
-                connector.delete_row_by_pk(spreadsheet_id, sheet_name, pk)
+                connector.delete_row_by_pk(
+                    spreadsheet_id, sheet_name, pk,
+                    lock_column=lock_column, lock_token=lock_token,
+                )
                 ms = (time.time() - start) * 1000
                 return {}, 1, ms
             raise ValueError(f"Unsupported op '{op}'.")

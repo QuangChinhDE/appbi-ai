@@ -1,9 +1,35 @@
 """Google Sheets data source connector."""
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import json
+import threading
+import uuid as _uuid
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+
+# ---------------------------------------------------------------------------
+# Per-spreadsheet write mutex
+# ---------------------------------------------------------------------------
+# GSheets has no native row-level locking. All mutating operations
+# (append / update / delete) are read-modify-write sequences. Without a
+# mutex two concurrent requests can read the same snapshot and clobber each
+# other. A threading.Lock per spreadsheet_id serialises writes within the
+# same process instance, which covers the typical single-worker deployment.
+# For multi-worker setups (multiple Gunicorn processes) the Sheets API
+# itself serialises at the spreadsheet level — the last write wins, but the
+# optimistic-lock check below will raise a 409 to the loser so the client
+# can retry with fresh data.
+
+_WRITE_LOCK_REGISTRY: Dict[str, threading.Lock] = {}
+_WRITE_LOCK_REGISTRY_LOCK = threading.Lock()
+
+
+def _get_write_lock(spreadsheet_id: str) -> threading.Lock:
+    """Return (or create) a per-spreadsheet write mutex."""
+    with _WRITE_LOCK_REGISTRY_LOCK:
+        if spreadsheet_id not in _WRITE_LOCK_REGISTRY:
+            _WRITE_LOCK_REGISTRY[spreadsheet_id] = threading.Lock()
+        return _WRITE_LOCK_REGISTRY[spreadsheet_id]
 
 
 class GoogleSheetsConnector:
@@ -161,34 +187,49 @@ class GoogleSheetsConnector:
         spreadsheet_id: str,
         sheet_name: str,
         values_by_col: Dict[str, Any],
+        auto_pk_columns: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Append a single row using the sheet's header row to align values.
 
-        Returns the appended row as a dict (columns → values) so the
-        workboard write service can echo it back to the caller.
-        """
-        headers, _ = self._read_headers_and_rows(spreadsheet_id, sheet_name)
-        if not headers:
-            raise ValueError(
-                f"Sheet '{sheet_name}' has no header row — cannot append."
-            )
-        row_values: list[Any] = []
-        for h in headers:
-            v = values_by_col.get(h)
-            row_values.append("" if v is None else v)
+        If ``auto_pk_columns`` is provided and any of those columns are
+        absent or empty in ``values_by_col``, a UUID is generated and
+        inserted automatically so the row always has a stable primary key.
 
-        body = {"values": [row_values]}
-        try:
-            self.service.spreadsheets().values().append(
-                spreadsheetId=spreadsheet_id,
-                range=f"{sheet_name}!A:ZZ",
-                valueInputOption="USER_ENTERED",
-                insertDataOption="INSERT_ROWS",
-                body=body,
-            ).execute()
-        except HttpError as e:
-            raise ValueError(f"Google Sheets append error: {str(e)}")
-        return {h: row_values[i] for i, h in enumerate(headers)}
+        The entire read-then-write is protected by a per-spreadsheet mutex
+        to serialise concurrent inserts within the same process.
+
+        Returns the appended row as a dict (columns → values).
+        """
+        with _get_write_lock(spreadsheet_id):
+            headers, _ = self._read_headers_and_rows(spreadsheet_id, sheet_name)
+            if not headers:
+                raise ValueError(
+                    f"Sheet '{sheet_name}' has no header row — cannot append."
+                )
+
+            # Auto-fill PK columns with a UUID if caller didn't provide them.
+            filled = dict(values_by_col)
+            for pk_col in (auto_pk_columns or []):
+                if pk_col in headers and not str(filled.get(pk_col, "")).strip():
+                    filled[pk_col] = str(_uuid.uuid4())
+
+            row_values: list[Any] = []
+            for h in headers:
+                v = filled.get(h)
+                row_values.append("" if v is None else v)
+
+            body = {"values": [row_values]}
+            try:
+                self.service.spreadsheets().values().append(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"{sheet_name}!A:ZZ",
+                    valueInputOption="USER_ENTERED",
+                    insertDataOption="INSERT_ROWS",
+                    body=body,
+                ).execute()
+            except HttpError as e:
+                raise ValueError(f"Google Sheets append error: {str(e)}")
+            return {h: row_values[i] for i, h in enumerate(headers)}
 
     def _find_row_index(
         self,
@@ -229,10 +270,49 @@ class GoogleSheetsConnector:
         sheet_name: str,
         pk: Dict[str, Any],
         values_by_col: Dict[str, Any],
+        lock_column: Optional[str] = None,
+        lock_token: Any = None,
+    ) -> Dict[str, Any]:
+        """Update a row by primary key with optional optimistic-lock check.
+
+        If ``lock_column`` and ``lock_token`` are provided, the current
+        value of that column is compared to ``lock_token`` before writing.
+        A mismatch raises ``ValueError`` with code OPTIMISTIC_LOCK so the
+        caller can surface a 409 to the end user.
+
+        The entire read-modify-write is protected by a per-spreadsheet
+        mutex to prevent concurrent requests from clobbering each other
+        within the same process.
+        """
+        with _get_write_lock(spreadsheet_id):
+            return self._update_row_by_pk_locked(
+                spreadsheet_id, sheet_name, pk, values_by_col,
+                lock_column=lock_column, lock_token=lock_token,
+            )
+
+    def _update_row_by_pk_locked(
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+        pk: Dict[str, Any],
+        values_by_col: Dict[str, Any],
+        lock_column: Optional[str] = None,
+        lock_token: Any = None,
     ) -> Dict[str, Any]:
         headers, r_idx, current = self._find_row_index(
             spreadsheet_id, sheet_name, pk
         )
+        # Optimistic-lock check: compare stored value against client token.
+        if lock_column and lock_token is not None:
+            idx_by_col = {h: i for i, h in enumerate(headers)}
+            if lock_column in idx_by_col:
+                stored = str(current[idx_by_col[lock_column]])
+                if stored != str(lock_token):
+                    raise ValueError(
+                        f"OPTIMISTIC_LOCK: row was modified since you last read it "
+                        f"(expected {lock_token!r}, found {stored!r}). "
+                        "Reload the form and try again."
+                    )
         # Merge: keep existing values for cols not in payload.
         new_row = list(current)
         for col, v in values_by_col.items():
@@ -257,8 +337,29 @@ class GoogleSheetsConnector:
         spreadsheet_id: str,
         sheet_name: str,
         pk: Dict[str, Any],
+        lock_column: Optional[str] = None,
+        lock_token: Any = None,
     ) -> int:
-        """Delete the row matching ``pk``; returns the spreadsheet row number deleted."""
+        """Delete the row matching ``pk``; returns the spreadsheet row number deleted.
+
+        Accepts the same ``lock_column``/``lock_token`` optimistic-lock
+        parameters as ``update_row_by_pk``. Protected by the same
+        per-spreadsheet mutex.
+        """
+        with _get_write_lock(spreadsheet_id):
+            return self._delete_row_by_pk_locked(
+                spreadsheet_id, sheet_name, pk,
+                lock_column=lock_column, lock_token=lock_token,
+            )
+
+    def _delete_row_by_pk_locked(
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+        pk: Dict[str, Any],
+        lock_column: Optional[str] = None,
+        lock_token: Any = None,
+    ) -> int:
         # Look up the sheet ID (numeric, separate from sheet_name) — the
         # batchUpdate API uses sheetId for row deletion.
         spreadsheet = (
@@ -274,7 +375,20 @@ class GoogleSheetsConnector:
         if sheet_id is None:
             raise ValueError(f"Sheet '{sheet_name}' not found in spreadsheet.")
 
-        _, r_idx, _ = self._find_row_index(spreadsheet_id, sheet_name, pk)
+        headers, r_idx, current = self._find_row_index(spreadsheet_id, sheet_name, pk)
+
+        # Optimistic-lock check.
+        if lock_column and lock_token is not None:
+            idx_by_col = {h: i for i, h in enumerate(headers)}
+            if lock_column in idx_by_col:
+                stored = str(current[idx_by_col[lock_column]])
+                if stored != str(lock_token):
+                    raise ValueError(
+                        f"OPTIMISTIC_LOCK: row was modified since you last read it "
+                        f"(expected {lock_token!r}, found {stored!r}). "
+                        "Reload the form and try again."
+                    )
+
         spreadsheet_row = r_idx + 2  # 1-based, +1 for header
         try:
             self.service.spreadsheets().batchUpdate(
@@ -321,6 +435,75 @@ class GoogleSheetsConnector:
             raise ValueError(f"Google Sheets API error: {str(e)}")
         except Exception as e:
             raise ValueError(f"Failed to list sheets: {str(e)}")
+
+    def create_sheet(
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+        headers: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Create a new sheet tab in an existing spreadsheet.
+
+        Optionally writes a header row as the first row so the sheet is
+        immediately usable for workboard forms.
+
+        Args:
+            spreadsheet_id: The spreadsheet to add the tab to.
+            sheet_name: Title for the new tab.
+            headers: Optional list of column header names to write in row 1.
+
+        Returns:
+            Dict with sheet_name, sheet_id (numeric), and headers written.
+        """
+        # Check the sheet doesn't already exist
+        existing = self.list_sheets(spreadsheet_id)
+        if sheet_name in existing:
+            raise ValueError(
+                f"Sheet '{sheet_name}' already exists in the spreadsheet."
+            )
+
+        try:
+            result = self.service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={
+                    "requests": [
+                        {
+                            "addSheet": {
+                                "properties": {"title": sheet_name}
+                            }
+                        }
+                    ]
+                },
+            ).execute()
+        except HttpError as e:
+            raise ValueError(f"Google Sheets create sheet error: {str(e)}")
+
+        sheet_id = (
+            result.get("replies", [{}])[0]
+            .get("addSheet", {})
+            .get("properties", {})
+            .get("sheetId")
+        )
+
+        # Write header row if provided
+        if headers:
+            try:
+                self.service.spreadsheets().values().update(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"{sheet_name}!A1",
+                    valueInputOption="RAW",
+                    body={"values": [headers]},
+                ).execute()
+            except HttpError as e:
+                raise ValueError(
+                    f"Sheet created but failed to write headers: {str(e)}"
+                )
+
+        return {
+            "sheet_name": sheet_name,
+            "sheet_id": sheet_id,
+            "headers": headers or [],
+        }
 
 
 def create_google_sheets_connector(config: Dict[str, Any]) -> GoogleSheetsConnector:
