@@ -42,6 +42,13 @@ def create_view(
     _: User = Depends(require_semantic_edit),
 ):
     """Create a new semantic view"""
+    from app.models.dataset import Dataset, DatasetTable
+    from app.models.models import DataSource
+    from app.services.dataset_model_service import (
+        _resolve_dataset_dialect,
+        _sql_table_for_table,
+    )
+
     # Check if name already exists
     existing = db.query(SemanticView).filter(SemanticView.name == view.name).first()
     if existing:
@@ -49,30 +56,84 @@ def create_view(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"View with name '{view.name}' already exists"
         )
-    
-    # Validate that sql_table_name is provided
-    if not view.sql_table_name:
+
+    resolved_sql_table_name = view.sql_table_name
+    dataset_table_id = view.dataset_table_id
+    dataset_table = None
+
+    if dataset_table_id is not None:
+        dataset_table = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.id == dataset_table_id)
+            .first()
+        )
+        if not dataset_table:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Dataset table with ID {dataset_table_id} not found",
+            )
+        existing_for_table = (
+            db.query(SemanticView)
+            .filter(SemanticView.dataset_table_id == dataset_table_id)
+            .first()
+        )
+        if existing_for_table:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Semantic view for dataset_table_id={dataset_table_id} already exists",
+            )
+
+        if not resolved_sql_table_name:
+            dataset_obj = (
+                db.query(Dataset)
+                .filter(Dataset.id == dataset_table.dataset_id)
+                .first()
+            )
+            if not dataset_obj:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Dataset {dataset_table.dataset_id} not found",
+                )
+            datasource = None
+            if getattr(dataset_table, "datasource_id", None) is not None:
+                datasource = (
+                    db.query(DataSource)
+                    .filter(DataSource.id == dataset_table.datasource_id)
+                    .first()
+                )
+            calendar_dialect = _resolve_dataset_dialect(
+                [datasource] if datasource is not None else []
+            )
+            resolved_sql_table_name = _sql_table_for_table(
+                dataset_obj,
+                dataset_table,
+                calendar_dialect=calendar_dialect,
+            )
+
+    # Validate that sql_table_name is provided directly or can be resolved from dataset_table_id
+    if not resolved_sql_table_name:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="sql_table_name must be provided"
+            detail="Either sql_table_name or dataset_table_id must be provided",
         )
-    
+
     # Convert Pydantic models to dicts for JSON storage
     dimensions_data = [dim.model_dump() for dim in view.dimensions]
     measures_data = [measure.model_dump() for measure in view.measures]
-    
+
     db_view = SemanticView(
         name=view.name,
-        sql_table_name=view.sql_table_name,
+        sql_table_name=resolved_sql_table_name,
+        dataset_table_id=dataset_table_id,
         dimensions=dimensions_data,
         measures=measures_data,
         description=view.description,
     )
-    
+
     db.add(db_view)
     db.commit()
     db.refresh(db_view)
-    
+
     return db_view
 
 
@@ -156,22 +217,43 @@ def create_model(
     _: User = Depends(require_semantic_edit),
 ):
     """Create a new semantic model"""
+    from app.models.dataset import Dataset
+
     existing = db.query(SemanticModel).filter(SemanticModel.name == model.name).first()
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Model with name '{model.name}' already exists"
         )
-    
+
+    if model.dataset_id is not None:
+        dataset_obj = db.query(Dataset).filter(Dataset.id == model.dataset_id).first()
+        if not dataset_obj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Dataset with ID {model.dataset_id} not found",
+            )
+        existing_for_dataset = (
+            db.query(SemanticModel)
+            .filter(SemanticModel.dataset_id == model.dataset_id)
+            .first()
+        )
+        if existing_for_dataset:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Semantic model for dataset_id={model.dataset_id} already exists",
+            )
+
     db_model = SemanticModel(
         name=model.name,
+        dataset_id=model.dataset_id,
         description=model.description,
     )
-    
+
     db.add(db_model)
     db.commit()
     db.refresh(db_model)
-    
+
     return db_model
 
 
