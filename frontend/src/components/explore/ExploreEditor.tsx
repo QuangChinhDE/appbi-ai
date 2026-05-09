@@ -650,7 +650,8 @@ export function ExploreEditor({
     if (chart.dataset_table_id) {
       skipNextSourceResetRef.current = true;
       setSelectedTableId(chart.dataset_table_id);
-      if (config?.dataset_id) setSelectedDatasetId(config.dataset_id);
+      const datasetId = config?.dataset_id ?? chart.dataset_id;
+      if (datasetId) setSelectedDatasetId(datasetId);
     } else if (config?.source?.kind === 'dataset_table') {
       skipNextSourceResetRef.current = true;
       setSelectedDatasetId(config.source.datasetId);
@@ -1310,12 +1311,12 @@ export function ExploreEditor({
 
   const didAutoRunRef = useRef(false);
   useEffect(() => {
-    if (isNew || didAutoRunRef.current || !isChartLoaded || !selectedDatasetId || !selectedTableId) {
+    if (isNew || didAutoRunRef.current || !isChartLoaded || !selectedDatasetId || !selectedTableId || !selectedTable) {
       return;
     }
     didAutoRunRef.current = true;
     void handleRunQuery();
-  }, [isNew, isChartLoaded, selectedDatasetId, selectedTableId, currentQuerySignature]);
+  }, [isNew, isChartLoaded, selectedDatasetId, selectedTableId, selectedTable, currentQuerySignature]);
 
   const handleSaveLook = async () => {
     if (!selectedTableId) {

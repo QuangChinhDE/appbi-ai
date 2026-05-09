@@ -112,6 +112,9 @@ def _gemini(
 
 _PRICES: dict[str, ModelPricing] = {
     # OpenAI
+    "gpt-5": _openai(1.25, 0.125, 10.0),
+    "gpt-5-mini": _openai(0.25, 0.025, 2.0),
+    "gpt-5-nano": _openai(0.05, 0.005, 0.40),
     "gpt-4o-2024-11-20": _openai(2.5, 1.25, 10.0),
     "gpt-4o-2024-08-06": _openai(2.5, 1.25, 10.0),
     "gpt-4o-mini": _openai(0.15, 0.075, 0.60),

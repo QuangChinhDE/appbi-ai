@@ -19,6 +19,9 @@ const AI_PROVIDERS = [
 
 const AI_MODEL_OPTIONS: Record<string, { value: string; label: string }[]> = {
   openai: [
+    { value: 'gpt-5', label: 'GPT-5 (strongest, expensive — set a $ cap)' },
+    { value: 'gpt-5-mini', label: 'GPT-5 mini (balanced)' },
+    { value: 'gpt-5-nano', label: 'GPT-5 nano (cheap, fast)' },
     { value: 'gpt-4o', label: 'GPT-4o' },
     { value: 'gpt-4.1', label: 'GPT-4.1' },
     { value: 'gpt-4.1-mini', label: 'GPT-4.1 mini' },

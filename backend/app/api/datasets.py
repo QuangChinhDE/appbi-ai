@@ -2287,8 +2287,8 @@ def preview_dataset_table(
             if any(kw in error_msg.lower() for kw in ("syntax error", "invalidquery", "invalid query", "parse error")):
                 raise HTTPException(status_code=400, detail=f"SQL error: {error_msg}")
             raise HTTPException(status_code=400, detail=error_msg or "Preview query failed.")
-        logger.error("Failed to preview table: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to preview table.")
+        logger.error("Failed to preview table %d: %s", table_id, e, exc_info=True)
+        raise HTTPException(status_code=400, detail=error_msg or "Preview query failed.")
 
 
 @router.get("/{dataset_id}/tables/{table_id}/export/excel")

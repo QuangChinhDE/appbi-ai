@@ -45,6 +45,9 @@ const PROVIDERS: { value: AiProvider; label: string; keyLink: string; placeholde
 // strongest commonly-available BYOK option as of 2026-05.
 const MODEL_OPTIONS: Record<AiProvider, { value: string; label: string }[]> = {
   openai: [
+    { value: 'gpt-5', label: 'GPT-5 (mạnh nhất, đắt — nhớ đặt giới hạn $)' },
+    { value: 'gpt-5-mini', label: 'GPT-5 mini (cân bằng)' },
+    { value: 'gpt-5-nano', label: 'GPT-5 nano (rẻ, nhanh)' },
     { value: 'gpt-4o', label: 'GPT-4o (mạnh, đa dụng)' },
     { value: 'gpt-4.1', label: 'GPT-4.1' },
     { value: 'gpt-4.1-mini', label: 'GPT-4.1 mini' },

@@ -414,6 +414,13 @@ def format_briefing_for_prompt(briefing: Briefing | None) -> str:
     lines.append("")
     lines.append("→ Khi triage và viết câu trả lời, ƯU TIÊN góc nhìn phù hợp với vai trò và trọng tâm trên.")
     lines.append(_role_priority_block(briefing.role))
+    # Inject domain know-how (KPI chuẩn, red-flag, glossary) khi domain
+    # đã được confirm. Module thuần data, không gọi LLM.
+    from app.services.dashboard_ai_bot.domain_skills import format_domain_skill_block
+    skill_block = format_domain_skill_block(briefing.domain)
+    if skill_block:
+        lines.append("")
+        lines.append(skill_block)
     return "\n".join(lines)
 
 
