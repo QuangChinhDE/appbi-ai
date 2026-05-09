@@ -1,7 +1,8 @@
 """Authenticated admin endpoints for managing workspaces.
 
-Lives behind ``settings`` permission so only AppBI admins (typically the
-IT/DE persona) can list / inspect / create the public workspace links.
+Lives behind ``workboards`` permission because workspace delivery is part of
+the Workboard mini-app flow. A Workboards-scoped PAT should be able to
+create/link/preview workspaces without also requiring Settings admin rights.
 The public-facing flows (login, menu, screen rendering) live in
 ``app.api.public``.
 """
@@ -98,7 +99,7 @@ def _serialise(ws: WorkboardWorkspace) -> WorkspaceAdminResponse:
 @router.get("/", response_model=List[WorkspaceAdminResponse])
 def list_workspaces(
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("settings", "view")),
+    _: User = Depends(require_permission("workboards", "view")),
 ):
     rows = (
         db.query(WorkboardWorkspace)
@@ -112,7 +113,7 @@ def list_workspaces(
 def create_workspace(
     body: WorkspaceCreateRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("settings", "full")),
+    user: User = Depends(require_permission("workboards", "full")),
 ):
     slug = body.slug
     if slug:
@@ -141,7 +142,7 @@ def create_workspace(
 def get_workspace(
     workspace_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("settings", "view")),
+    _: User = Depends(require_permission("workboards", "view")),
 ):
     ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
     if ws is None:
@@ -154,7 +155,7 @@ def update_workspace(
     workspace_id: int,
     body: WorkspaceUpdateRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("settings", "full")),
+    _: User = Depends(require_permission("workboards", "full")),
 ):
     ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
     if ws is None:
@@ -171,7 +172,7 @@ def update_workspace(
 def rotate_token(
     workspace_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("settings", "full")),
+    _: User = Depends(require_permission("workboards", "full")),
 ):
     ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
     if ws is None:
@@ -363,7 +364,7 @@ def preview_session(
 def delete_workspace(
     workspace_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("settings", "full")),
+    _: User = Depends(require_permission("workboards", "full")),
 ):
     ws = db.query(WorkboardWorkspace).filter(WorkboardWorkspace.id == workspace_id).first()
     if ws is None:

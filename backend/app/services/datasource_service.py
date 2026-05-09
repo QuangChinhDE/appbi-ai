@@ -1728,6 +1728,12 @@ class DataSourceConnectionService:
                     rows = sheet_data.get('rows', [])
                     col_defs = sheet_data.get('columns', [])
                     col_names = [c['name'] for c in col_defs]
+                    if not col_names:
+                        logger.info(
+                            "Skipping empty Google Sheet tab '%s' during DuckDB registration",
+                            sheet_name,
+                        )
+                        continue
 
                     if rows:
                         table = _build_arrow_table_from_sheet(pa, col_defs, rows)

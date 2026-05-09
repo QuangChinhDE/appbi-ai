@@ -259,6 +259,7 @@ def _execute_semantic_dataset_query(
         limit=None,
     )
 
+    rows = _serialize_cached_rows(rows, limit=len(rows))
     columns = list(rows[0].keys()) if rows else list(_columns or [])
     column_metadata = [
         DatasetColumnMetadata(
@@ -2463,6 +2464,7 @@ def execute_dataset_table_query(
             for idx, col in enumerate(columns)
         ]
 
+        rows = _serialize_cached_rows(rows, limit=len(rows))
         return ExecuteQueryResponse(columns=column_metadata, rows=rows)
     except DatasetTableSqlError as exc:
         if getattr(exc, "code", "") == "NOT_SYNCED":

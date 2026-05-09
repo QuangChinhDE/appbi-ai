@@ -453,7 +453,7 @@ class WorkboardWriteService:
                     ctx.datasource.config or {},
                     "insert",
                     table_name=ctx.dataset_table.source_table_name or "",
-                    values=clean,
+                    values=_jsonable(clean),
                     auto_pk_columns=ctx.primary_key_columns,
                 )
                 returned_rows = [row] if row else []
@@ -525,10 +525,10 @@ class WorkboardWriteService:
                     ctx.datasource.config or {},
                     "update",
                     table_name=ctx.dataset_table.source_table_name or "",
-                    values=clean,
-                    pk=pk,
+                    values=_jsonable(clean),
+                    pk=_jsonable(pk),
                     lock_column=ctx.workboard.optimistic_lock_column or None,
-                    lock_token=lock_token,
+                    lock_token=_jsonable(lock_token),
                 )
                 returned_rows = [row] if row else []
             else:
@@ -595,9 +595,9 @@ class WorkboardWriteService:
                     ctx.datasource.config or {},
                     "delete",
                     table_name=ctx.dataset_table.source_table_name or "",
-                    pk=pk,
+                    pk=_jsonable(pk),
                     lock_column=ctx.workboard.optimistic_lock_column or None,
-                    lock_token=lock_token,
+                    lock_token=_jsonable(lock_token),
                 )
             else:
                 where_sql, where_params = _build_where_pk(

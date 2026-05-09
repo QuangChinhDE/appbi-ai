@@ -169,6 +169,11 @@ def _apply_field_conditions(
     violations: List[str] = []
     for field in screen.form.fields:
         col = field.column
+        if getattr(field, "readonly", False):
+            # Static readonly fields are display-only. Drop submitted values so
+            # callers cannot override system columns such as generated PKs.
+            cleaned.pop(col, None)
+            continue
         show_if_expr = getattr(field, "show_if", None)
         if show_if_expr and not evaluate_truthy(show_if_expr, ctx, default=True):
             cleaned.pop(col, None)
