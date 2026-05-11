@@ -20,9 +20,27 @@ _BLUEPRINT_TEMPLATE = {
         "optimistic_lock_column": None,
     },
     "layout_json": {
-        "version": 1,
+        # branding: customise the mini-app login screen and chrome.
+        # app_name/logo_url/primary_color appear on the login page.
+        # welcome_text (string | null) is shown below the app name on login.
+        # accent_color (hex | null) is a secondary brand colour for buttons/links.
+        # theme: "auto" | "light" | "dark" — controls the mini-app colour scheme.
+        "branding": {
+            "app_name": None,
+            "logo_url": None,
+            "primary_color": None,
+            "welcome_text": None,
+            "accent_color": None,
+            "theme": "auto",
+        },
+        # audit: columns the write service fills automatically on every INSERT/UPDATE.
+        # Set the column name string if it exists in the primary table, else null.
+        # updated_at_column is also used for optimistic locking when optimistic_lock_column is set.
         "audit": {
-            "updated_at_column": None,
+            "created_by_column": None,      # auto-set to app_user.username on INSERT
+            "created_at_column": None,      # auto-set to now() on INSERT
+            "updated_by_column": None,      # auto-set to app_user.username on UPDATE
+            "updated_at_column": None,      # auto-set to now() on INSERT+UPDATE
         },
         "screens": [
             {
@@ -35,6 +53,9 @@ _BLUEPRINT_TEMPLATE = {
                 "primary_key_columns": ["id"],
                 "visible_for_roles": ["<<role_name>>"],
                 "show_in_nav": True,
+                # column_labels: friendly header map for list/doc screens on the same table.
+                # Also used by this form to display field labels on read-only summary views.
+                "column_labels": {},  # e.g. {"db_col": "Nhãn hiển thị"}
                 "rls": [
                     {
                         "role": "<<role_name>>",
@@ -53,6 +74,15 @@ _BLUEPRINT_TEMPLATE = {
                     "fields": [
                         {
                             "column": "<<db_column_name>>",
+                            # widget options: "text" | "textarea" | "number" | "select" |
+                            #                 "date" | "datetime" | "checkbox" | "lookup"
+                            # - "select": static dropdown; values come from the column's data.
+                            #   Do NOT add lookup for select; lookup is for dataset_table FK dropdowns.
+                            # - "lookup": dynamic dropdown from another table.
+                            #   Set lookup.kind="dataset_table", lookup.table_id, lookup.value_column,
+                            #   lookup.label_column. Or kind="static" with lookup.values=[{label, value}].
+                            # - "date" / "datetime": date/datetime picker.
+                            # - "checkbox": boolean toggle (stores true/false).
                             "widget": "text",
                             "label": "<<field_label>>",
                             "required": True,
@@ -61,8 +91,13 @@ _BLUEPRINT_TEMPLATE = {
                             "help_text": None,
                             "placeholder": None,
                             "lookup": None,
+                            # section: group fields under a heading inside one page.
+                            # Must match one of the strings in form.sections[].
                             "section": None,
+                            # page: 1-based index into form.pages[]. Omit for single-page forms.
                             "page": None,
+                            # Conditional expressions (JavaScript-like, references other field column names).
+                            # e.g. show_if: "loai_giao_dich == 'XK'"
                             "show_if": None,
                             "required_if": None,
                             "readonly_if": None,
@@ -70,13 +105,26 @@ _BLUEPRINT_TEMPLATE = {
                         }
                     ],
                     "submit_label": "Save",
+                    # after_submit: ScreenAction object to auto-navigate after save.
+                    # e.g. {"id":"goto-list","label":"View list","go_to_screen":"list-view","carry":["id"]}
                     "after_submit": None,
+                    # initial_values: pre-fill fields with static values or placeholders.
+                    # Supports {{app_user.username}}, {{app_user.role}}, {{today}}.
+                    # e.g. {"nam": "2026", "nguoi_tao": "{{app_user.username}}"}
                     "initial_values": {},
+                    # pages: list of page objects for multi-step (wizard) forms.
+                    # Each page: {id: int (1-based), title: str, description?: str, show_if?: str}
+                    # Fields reference their page via field.page = <page id>.
+                    # Empty list = single-page form.
                     "pages": [],
+                    # sections: ordered list of section heading strings used to group fields
+                    # within a page. Fields reference their section via field.section = "<name>".
+                    # e.g. ["Thời gian", "Hàng hóa", "Đối tác / Phương tiện"]
                     "sections": [],
                 },
                 "list": None,
                 "doc": None,
+                "dashboard": None,
             },
             {
                 "id": "list-view",
@@ -88,20 +136,27 @@ _BLUEPRINT_TEMPLATE = {
                 "primary_key_columns": ["id"],
                 "visible_for_roles": [],
                 "show_in_nav": True,
+                # column_labels: friendly column header map shown in the list table.
+                # Keys are db column names; values are display labels.
+                "column_labels": {},  # e.g. {"ngay": "Ngày", "so_luong": "SL (Tấn)"}
                 "rls": [],
                 "rls_default": None,
                 "form": None,
                 "list": {
                     "columns": ["<<col1>>", "<<col2>>"],
+                    # filters: each filter shown above the list for quick user filtering.
+                    # kind options: "text" (free text search) | "select" (dropdown of distinct values)
+                    #               | "date_range" (from/to date pickers) | "number_range" (min/max)
                     "filters": [],
-                    "page_size": 50,
+                    "page_size": 50,   # min 10, max 500
                     "default_sort_column": None,
-                    "default_sort_direction": "desc",
+                    "default_sort_direction": "desc",  # "asc" | "desc"
                     "row_actions": [
                         {
                             "id": "edit",
                             "label": "Edit",
                             "icon": "Pencil",
+                            # style: "primary" | "secondary" | "ghost" | "danger"
                             "style": "secondary",
                             "go_to_screen": "entry-form",
                             "carry": ["id"],
@@ -112,10 +167,12 @@ _BLUEPRINT_TEMPLATE = {
                     "empty_state_message": None,
                 },
                 "doc": None,
+                "dashboard": None,
             },
             # OPTIONAL: keep this screen only if the mini-app needs a
-            # report / dashboard view. Otherwise delete this dict.
-            # See get_doc_screen_examples() for richer patterns (pivot,
+            # printable report (kind='doc') OR an embedded dashboard (kind='dashboard').
+            # DELETE this block if neither is needed.
+            # See get_doc_screen_examples() for richer doc patterns (pivot,
             # unpivot, 2-row header, totals, group_by, Excel export).
             {
                 "id": "report-view",
@@ -127,13 +184,24 @@ _BLUEPRINT_TEMPLATE = {
                 "primary_key_columns": ["id"],
                 "visible_for_roles": [],
                 "show_in_nav": True,
+                # column_labels: friendly header map for this doc's data_table blocks.
                 "column_labels": {},  # {"db_col": "Nhãn hiển thị"}
                 "rls": [],
                 "rls_default": None,
                 "form": None,
                 "list": None,
                 "doc": {
+                    # page: print settings. size: "A4"|"A3"|"Letter"; orientation: "portrait"|"landscape"
                     "page": {"size": "A4", "orientation": "landscape", "margin_mm": 10},
+                    # blocks: ordered list of content blocks.
+                    # Allowed block types:
+                    #   "header"    — {type, logo_url?, title, subtitle?, align:"left"|"center"|"right"}
+                    #   "kv_grid"   — {type, columns:1-4, items:[{label, value}]}
+                    #   "data_table"— (see below)
+                    #   "text"      — {type, content, markdown:bool, align:"left"|"center"|"right"}
+                    #   "spacer"    — {type, height_mm:1-200}
+                    #   "signature" — {type, slots:[{label, role?}]}
+                    #   "footer"    — {type, left?, center?, right?}
                     "blocks": [
                         {
                             "type": "data_table",
@@ -151,10 +219,55 @@ _BLUEPRINT_TEMPLATE = {
                         }
                     ],
                 },
+                "dashboard": None,
+            },
+            # OPTIONAL: dashboard screen — embeds an existing AppBI Dashboard.
+            # DELETE this block if a dashboard is not needed.
+            # Two modes:
+            #   MANAGED (recommended): set dashboard_id. Workboard auto-provisions one public link
+            #     per distinct app_user role. Add role_filter_mapping to filter each role's view.
+            #   MANUAL: set share_token only. No per-role filtering, no auto-provisioning.
+            {
+                "id": "dashboard-view",
+                "kind": "dashboard",
+                "title": "<<dashboard_title>>",
+                "icon": "LayoutDashboard",
+                "description": None,
+                "table_id": None,           # dashboard screens don't bind a table
+                "primary_key_columns": [],
+                "visible_for_roles": [],
+                "show_in_nav": True,
+                "column_labels": {},
+                "rls": [],
+                "rls_default": None,
+                "form": None,
+                "list": None,
+                "doc": None,
+                "dashboard": {
+                    # MANAGED mode: set dashboard_id (int). Get the id from the Dashboard module.
+                    "dashboard_id": None,
+                    # role_filter_mapping: filter the dashboard by app_user role.
+                    # Each entry: {datasetId:int, semanticField:"view.column", operator:"eq"}
+                    # Get exact datasetId + semanticField from GET /dashboards/{id}/filter-fields.
+                    # Leave empty [] if no per-role filtering is needed.
+                    "role_filter_mapping": [],
+                    # static_filters: constant filters applied to every managed link.
+                    # Each entry: {datasetId:int, semanticField:"view.column", operator:"eq", value:<scalar>}
+                    # e.g. pin year=2026 across all roles: {datasetId:5, semanticField:"sales.year", value:2026}
+                    "static_filters": [],
+                    # managed_links is SERVER-OWNED — never set manually. Backend writes role→token here.
+                    "managed_links": {},
+                    # MANUAL mode: paste an existing public share_token (overrides managed mode).
+                    "share_token": None,
+                    "password": None,   # shared password for all managed links (mini-app auto-authenticates)
+                    "height_px": None,  # fixed iframe height 200-4000 px; null = auto-resize
+                },
             },
         ],
         "mini_app_nav": {
+            # mobile_kind: "bottom_nav" (up to 5 tabs at bottom) | "drawer" (hamburger sidebar)
             "mobile_kind": "bottom_nav",
+            # desktop_kind: "sidebar" (left panel) | "top_tabs" (horizontal tabs at top)
             "desktop_kind": "sidebar",
             "items": ["entry-form", "list-view", "report-view"],
         },
@@ -686,6 +799,148 @@ async def _normalize_and_validate_blueprint(blueprint_json: Dict[str, Any]) -> D
             errors.append(f"screens[{index}] kind=list but no list spec")
         if kind == "doc" and not screen.get("doc"):
             errors.append(f"screens[{index}] kind=doc but no doc spec (page + blocks)")
+        if kind == "dashboard":
+            dash_spec = screen.get("dashboard")
+            if not isinstance(dash_spec, dict):
+                errors.append(
+                    f"screens[{index}] kind=dashboard but no dashboard spec "
+                    "(need dashboard_id for managed mode, or share_token for manual mode)"
+                )
+            else:
+                dashboard_id = dash_spec.get("dashboard_id")
+                share_token = str(dash_spec.get("share_token") or "").strip()
+                if dashboard_id is None and not share_token:
+                    errors.append(
+                        f"screens[{index}].dashboard must have either `dashboard_id` "
+                        "(managed mode — workboard auto-provisions public links per role) "
+                        "or `share_token` (manual mode — paste an existing public link)"
+                    )
+                if dashboard_id is not None:
+                    try:
+                        int(dashboard_id)
+                    except Exception:
+                        errors.append(
+                            f"screens[{index}].dashboard.dashboard_id must be an integer"
+                        )
+                # role_filter_mapping validation
+                mapping = dash_spec.get("role_filter_mapping") or []
+                if mapping and not isinstance(mapping, list):
+                    errors.append(
+                        f"screens[{index}].dashboard.role_filter_mapping must be a list of "
+                        "{datasetId, semanticField, operator?}"
+                    )
+                else:
+                    seen_keys: set[tuple[int, str]] = set()
+                    for m_idx, entry in enumerate(mapping):
+                        mpath = (
+                            f"screens[{index}].dashboard.role_filter_mapping[{m_idx}]"
+                        )
+                        if not isinstance(entry, dict):
+                            errors.append(f"{mpath} must be an object")
+                            continue
+                        dsid = entry.get("datasetId")
+                        if not isinstance(dsid, int):
+                            errors.append(
+                                f"{mpath}.datasetId must be an integer "
+                                "(get it from GET /dashboards/{id}/filter-fields)"
+                            )
+                            continue
+                        semantic = entry.get("semanticField")
+                        if not isinstance(semantic, str) or "." not in semantic:
+                            errors.append(
+                                f"{mpath}.semanticField must be dotted like 'view.column' "
+                                "(must match a slot in /dashboards/{id}/filter-fields)"
+                            )
+                            continue
+                        key = (dsid, semantic)
+                        if key in seen_keys:
+                            errors.append(
+                                f"{mpath} duplicates the slot ({dsid}, {semantic!r}); "
+                                "each slot can only be mapped once."
+                            )
+                        seen_keys.add(key)
+                        operator = entry.get("operator")
+                        if operator is not None and not isinstance(operator, str):
+                            errors.append(f"{mpath}.operator must be a string if provided")
+                if mapping and dashboard_id is None:
+                    errors.append(
+                        f"screens[{index}].dashboard.role_filter_mapping requires dashboard_id "
+                        "(managed mode). Drop it or set dashboard_id."
+                    )
+
+                # static_filters validation: same slot shape as mapping but
+                # also requires a `value` (constant — backend does NOT
+                # substitute the role here).
+                statics = dash_spec.get("static_filters") or []
+                if statics and not isinstance(statics, list):
+                    errors.append(
+                        f"screens[{index}].dashboard.static_filters must be a list of "
+                        "{datasetId, semanticField, operator?, value}"
+                    )
+                else:
+                    static_keys: set[tuple[int, str]] = set()
+                    for s_idx, entry in enumerate(statics):
+                        spath = (
+                            f"screens[{index}].dashboard.static_filters[{s_idx}]"
+                        )
+                        if not isinstance(entry, dict):
+                            errors.append(f"{spath} must be an object")
+                            continue
+                        dsid = entry.get("datasetId")
+                        if not isinstance(dsid, int):
+                            errors.append(f"{spath}.datasetId must be an integer")
+                            continue
+                        semantic = entry.get("semanticField")
+                        if not isinstance(semantic, str) or "." not in semantic:
+                            errors.append(
+                                f"{spath}.semanticField must be dotted like 'view.column'"
+                            )
+                            continue
+                        if "value" not in entry:
+                            errors.append(
+                                f"{spath}.value is required for static_filters "
+                                "(backend does not substitute role here)"
+                            )
+                        key = (dsid, semantic)
+                        if key in static_keys:
+                            errors.append(
+                                f"{spath} duplicates the slot ({dsid}, {semantic!r})"
+                            )
+                        static_keys.add(key)
+                        # Warn (not error) when the same slot is in both
+                        # role_filter_mapping and static_filters — runtime
+                        # would dedupe one of them silently.
+                        if key in {(m["datasetId"], m["semanticField"]) for m in mapping if isinstance(m, dict) and isinstance(m.get("datasetId"), int) and isinstance(m.get("semanticField"), str)}:
+                            warnings.append(
+                                f"{spath}: slot ({dsid}, {semantic!r}) is also in "
+                                "role_filter_mapping; the dashboard runtime keys filters "
+                                "by (datasetId, semanticField) so one of the two will "
+                                "be ignored. Drop the duplicate."
+                            )
+                if statics and dashboard_id is None:
+                    errors.append(
+                        f"screens[{index}].dashboard.static_filters requires dashboard_id "
+                        "(managed mode). Drop it or set dashboard_id."
+                    )
+                # managed_links is backend-owned; warn if the caller is trying
+                # to set it manually (we accept it but won't use it).
+                if dash_spec.get("managed_links"):
+                    warnings.append(
+                        f"screens[{index}].dashboard.managed_links is server-generated; "
+                        "any value sent here will be overwritten on workboard save."
+                    )
+                height_px = dash_spec.get("height_px")
+                if height_px is not None:
+                    try:
+                        h = int(height_px)
+                        if not (200 <= h <= 4000):
+                            errors.append(
+                                f"screens[{index}].dashboard.height_px must be between 200 and 4000"
+                            )
+                    except Exception:
+                        errors.append(
+                            f"screens[{index}].dashboard.height_px must be an integer or null"
+                        )
 
         table_id = screen.get("table_id")
         if isinstance(table_id, str) and table_id.isdigit():
@@ -925,6 +1180,7 @@ async def propose_workboard_blueprint(
         if _datasource_type_for_table(primary_table, datasource_map) == "google_sheets":
             template["workboard"]["optimistic_lock_column"] = "updated_at"
             template["layout_json"]["audit"]["updated_at_column"] = "updated_at"
+            template["layout_json"]["audit"]["updated_by_column"] = None  # set to e.g. "nguoi_cap_nhat" if column exists
 
     table_summaries = []
     for table in tables:
@@ -951,32 +1207,64 @@ async def propose_workboard_blueprint(
         "blueprint_template": template,
         "schema_constraints": {
             "IMPORTANT — read before filling the template": [
-                "sections: list[string] — e.g. ['Personal Info', 'Work Details']. NOT list of objects.",
-                "pages: list[string] — e.g. ['Page 1', 'Page 2']. NOT list of objects.",
-                "after_submit: {id: string, label: string, go_to_screen: string} | null — NOT a plain string.",
-                "select widget: values come from the column data in the sheet. Do NOT add inline options or lookup for a select widget.",
-                "filters[]: each filter has {column, operator, value}. There is no 'widget' key on filters.",
-                "lookup.kind: must be 'static' or 'dataset_table'. Use 'static' for hardcoded lists with lookup.values=[...]. Use 'dataset_table' for dynamic lookups with lookup.table_id + lookup.value_column.",
+                "sections: list[string] — ordered list of section heading names, e.g. ['Thời gian', 'Hàng hóa']. NOT list of objects. Fields reference a section via field.section='<name>'.",
+                "pages: list of page OBJECTS (NOT strings). Each page object: {id: int (1-based), title: str, description?: str, show_if?: str}. Fields reference a page via field.page=<id>. Empty list = single-page form.",
+                "after_submit: ScreenAction object | null — e.g. {id:'goto-list', label:'Xem danh sách', icon:'List', style:'secondary', go_to_screen:'list-view', carry:['id'], confirm_message:null, visible_for_roles:[]}. NOT a plain string.",
+                "form.initial_values: pre-fill fields with static values or dynamic placeholders. Supports {{app_user.username}}, {{app_user.role}}, {{today}}. e.g. {'nam': '2026', 'nguoi_tao': '{{app_user.username}}'}.",
+                "widget options: 'text' | 'textarea' | 'number' | 'select' | 'date' | 'datetime' | 'checkbox' | 'lookup'. Use 'select' for static dropdowns (values come from column data). Use 'lookup' for FK dropdowns (set lookup.kind + lookup.table_id/lookup.values).",
+                "select widget: values come from the column data. Do NOT add lookup for a select widget — they're incompatible.",
+                "lookup.kind: 'static' (hardcoded list: lookup.values=[{label, value}]) | 'dataset_table' (FK: lookup.table_id + lookup.value_column + optional lookup.label_column).",
                 "lookup for text/select widgets: only use lookup when the field needs a dropdown. Omit lookup (set to null) for plain text inputs.",
-                "system columns (id, updated_at): do NOT include these in form fields. They are managed by the runtime.",
+                "list.filters[]: each filter: {column:str, kind:'text'|'select'|'date_range'|'number_range', label?:str}. kind='text' = free-text search; 'select' = distinct values dropdown; 'date_range' = from/to pickers; 'number_range' = min/max inputs.",
+                "row_actions[].style: 'primary' | 'secondary' | 'ghost' | 'danger'.",
+                "system columns (id, updated_at, created_at): do NOT include these in form fields. They are managed by the runtime.",
                 "visible_for_roles: list[string] — role names that can see this screen. Empty list = all roles.",
                 "rls[].filter_value: use '{{app_user.username}}' (double braces) to filter by logged-in user.",
                 "row_actions[].go_to_screen: must match an existing screen id exactly.",
                 "mini_app_nav.items: list of screen ids (strings), not screen objects.",
+                "mini_app_nav.mobile_kind: 'bottom_nav' (up to 5 tabs at bottom) | 'drawer' (hamburger sidebar). Default 'bottom_nav'.",
+                "mini_app_nav.desktop_kind: 'sidebar' (left panel) | 'top_tabs' (horizontal tabs at top). Default 'sidebar'.",
+                "branding: {app_name?:str, logo_url?:str, primary_color?:str (hex), welcome_text?:str, accent_color?:str (hex), theme:'auto'|'light'|'dark'}. All fields optional/nullable. Shown on the mini-app login screen and chrome.",
+                "audit: {created_by_column?, created_at_column?, updated_by_column?, updated_at_column?} — column names auto-filled by the write service. Set to null if the table doesn't have the column.",
+                "column_labels at the SCREEN level maps {db_column: 'Nhãn'} for friendly headers in list tables AND doc blocks. Add to EVERY screen that displays columns (form, list, doc, dashboard).",
                 "CALL validate_workboard_blueprint(blueprint_json=...) BEFORE commit_workboard_blueprint to catch errors early.",
             ],
-            "doc / báo cáo screens": [
-                "kind='doc' requires `doc: {page, blocks[]}`. Set form=null and list=null on that screen.",
-                "Allowed block.type values: header, kv_grid, data_table, text, spacer, signature, footer.",
+            "doc / printable document screens": [
+                "kind='doc' is for PRINTABLE A4-style documents (phiếu xuất kho, hợp đồng mini, báo cáo có chữ ký). NOT for charts — use kind='dashboard' for charts.",
+                "kind='doc' requires `doc: {page, blocks[]}`. Set form=null, list=null, dashboard=null on that screen.",
+                "doc.page: {size:'A4'|'A3'|'Letter', orientation:'portrait'|'landscape', margin_mm:0-50}.",
+                "Allowed block.type values and their fields:",
+                "  header   → {type, logo_url?, title, subtitle?, align:'left'|'center'|'right'}",
+                "  kv_grid  → {type, columns:1-4, items:[{label:str, value:str}]}",
+                "  data_table → see data_table rules below",
+                "  text     → {type, content:str, markdown:bool, align:'left'|'center'|'right'}",
+                "  spacer   → {type, height_mm:1-200}",
+                "  signature→ {type, slots:[{label:str, role?:str}]}",
+                "  footer   → {type, left?:str, center?:str, right?:str}",
                 "data_table.source: 'primary' (the screen's table_id) or 'lookup:<table_id>'. Default 'primary'.",
                 "data_table.columns / column_groups[*].columns / totals / group_by: must all be real columns of the bound table.",
                 "column_groups create a 2-row header (e.g. NHẬP HÀNG / XUẤT BÁN / TỒN KHO grouping monthly metric columns).",
-                "column_labels at the SCREEN level (not block) maps {db_column: 'Nhãn hiển thị'} for friendly headers in both list and doc.",
                 "data_table.transform=null by default. Use {kind:'unpivot', id_columns, value_columns, var_name, value_name} to flatten a wide Google Sheet (e.g. t1..t12 → one row per month).",
                 "data_table.transform={kind:'pivot', index:[...], columns:'col', values:'col', agg:'sum'|'avg'|'min'|'max'|'count'|'first', max_columns:1..200} to build a matrix from long data.",
                 "data_table.allow_export_excel=true exposes a 'Xuất Excel' download button on the mini-app block. Off by default.",
                 "totals SUMs the listed columns in a footer row; group_by merges equal-value rows into spanned cells (good for hierarchical reports).",
-                "CALL get_doc_screen_examples() to see annotated, copy-pasteable snippets for common report patterns.",
+                "CALL get_doc_screen_examples() to see annotated, copy-pasteable snippets for common document patterns.",
+            ],
+            "dashboard screens (embed an AppBI Dashboard)": [
+                "kind='dashboard' embeds an existing AppBI Dashboard (charts, KPIs, cross-filter). No dataset table binding required (table_id can be null).",
+                "Two modes:",
+                "  MANAGED (recommended) — set dashboard.dashboard_id + optional dashboard.role_filter_mapping. Workboard server provisions one DashboardPublicLink per distinct app_user role and writes the tokens into dashboard.managed_links. Filter value is substituted with the role string at provision time — no special hard-lock logic.",
+                "  MANUAL — set dashboard.share_token only. Embeds someone else's public link verbatim.",
+                "role_filter_mapping is a list of {datasetId, semanticField, operator?} — describes WHICH dashboard filter slot gets filled with the viewing app_user's role. Empty list = no per-role filtering.",
+                "static_filters is a list of {datasetId, semanticField, operator?, value, type?} — filters with constant value applied to every managed link regardless of role. Use for org-wide pins (year=2026, status='active'…).",
+                "Slot shape (STRICT — runtime silently drops malformed slots): {datasetId:int, semanticField:'view.column' (must contain dot), operator:'eq'?}. Get exact `datasetId` and `semanticField` from GET /dashboards/{id}/filter-fields. In role_filter_mapping do NOT include `value`; in static_filters `value` is required.",
+                "A slot can appear in role_filter_mapping OR static_filters but not both — dashboard runtime keys by (datasetId, semanticField) so one would silently shadow the other.",
+                "Fan-out: links = (managed dashboard screens) × (distinct app_user roles on the workboard). Sync runs on app_user create/update/delete and on workboard layout save.",
+                "Optional: dashboard.password — applied to every managed link; mini-app auto-authenticates.",
+                "Optional: dashboard.height_px (200-4000) — fixed iframe height. Omit to auto-resize.",
+                "Set form=null, list=null, doc=null on a dashboard screen. Screen-level RLS rules do NOT apply (the dashboard's own filters control data scope).",
+                "dashboard.managed_links is SERVER-OWNED. Never set it manually.",
+                "CALL get_dashboard_screen_examples() for copy-pasteable snippets.",
             ],
         },
         "next_step": (
@@ -1243,6 +1531,245 @@ async def get_doc_screen_examples() -> Any:
             "Set allow_export_excel=true only when the screen role is allowed to download data. The runtime returns 403 if false.",
             "transform=unpivot is in-memory after the fetch — keep max_rows large enough so all source rows survive the unpivot.",
             "transform=pivot caps columns via max_columns (default 50). Increase up to 200 for wider monthly matrices.",
+        ],
+    }
+
+
+@mcp.tool()
+async def get_dashboard_screen_examples() -> Any:
+    """Return annotated examples of `kind='dashboard'` screens.
+
+    A dashboard screen embeds an existing AppBI Dashboard via its public share
+    token. The mini-app iframe renders the standard /embed/{token} page, so all
+    chart loading, viewer filters, cross-filter, password gate, and PDF export
+    are reused from the Dashboard module — no chart logic lives in the workboard.
+
+    Use this tool when the user wants charts, KPIs, or a published BI view
+    inside a workboard. For printable A4-style documents (phiếu xuất kho, biên
+    bản, báo cáo có chữ ký), use ``get_doc_screen_examples()`` instead.
+    """
+    examples = [
+        {
+            "name": "1. Managed: 1 dashboard, mọi role thấy cùng dữ liệu",
+            "when_to_use": "Đơn giản nhất — dashboard nội bộ, không cần lọc theo role. Workboard sinh 1 public link cho mỗi role nhưng tất cả đều không filter.",
+            "screen": {
+                "id": "dashboard-kpi",
+                "kind": "dashboard",
+                "title": "KPI tổng hợp",
+                "icon": "LayoutDashboard",
+                "table_id": None,
+                "primary_key_columns": [],
+                "visible_for_roles": [],
+                "show_in_nav": True,
+                "rls": [],
+                "rls_default": None,
+                "form": None,
+                "list": None,
+                "doc": None,
+                "dashboard": {
+                    "dashboard_id": 42,  # id từ /dashboards/accessible-summary
+                    "role_filter_mapping": [],
+                },
+            },
+        },
+        {
+            "name": "2. Managed: mỗi role thấy data của phòng ban đó",
+            "when_to_use": "Dashboard có Access filter 'phong_ban' đã được DA cấu hình. Workboard map cột này ← app_user.role. App_user role='ke_toan' sẽ thấy data phong_ban='ke_toan'.",
+            "screen": {
+                "id": "dashboard-by-department",
+                "kind": "dashboard",
+                "title": "Báo cáo theo phòng ban",
+                "icon": "BarChart3",
+                "table_id": None,
+                "primary_key_columns": [],
+                "visible_for_roles": [],
+                "show_in_nav": True,
+                "rls": [],
+                "rls_default": None,
+                "form": None,
+                "list": None,
+                "doc": None,
+                "dashboard": {
+                    "dashboard_id": 42,
+                    # CHỈ khai báo slot — value = role được backend tự fill khi
+                    # provision link cho từng role. Get exact (datasetId,
+                    # semanticField) từ GET /dashboards/42/filter-fields.
+                    "role_filter_mapping": [
+                        {
+                            "datasetId": 7,
+                            "semanticField": "hr.phong_ban",
+                            "operator": "eq",
+                        },
+                    ],
+                },
+            },
+        },
+        {
+            "name": "3. Managed + role map + filter cố định",
+            "when_to_use": "Dashboard có 2 trục filter: (a) khu vực theo role, (b) chỉ năm 2026. Filter cố định áp cho mọi role.",
+            "screen": {
+                "id": "dashboard-with-static",
+                "kind": "dashboard",
+                "title": "Doanh thu 2026",
+                "icon": "BarChart3",
+                "table_id": None,
+                "primary_key_columns": [],
+                "visible_for_roles": [],
+                "show_in_nav": True,
+                "rls": [],
+                "rls_default": None,
+                "form": None,
+                "list": None,
+                "doc": None,
+                "dashboard": {
+                    "dashboard_id": 42,
+                    "role_filter_mapping": [
+                        {"datasetId": 7, "semanticField": "sales.region", "operator": "eq"},
+                    ],
+                    "static_filters": [
+                        # Áp cho mọi role: chỉ năm 2026 + trạng thái active.
+                        {
+                            "datasetId": 7,
+                            "semanticField": "sales.year",
+                            "operator": "eq",
+                            "value": 2026,
+                            "type": "number",
+                        },
+                        {
+                            "datasetId": 7,
+                            "semanticField": "sales.status",
+                            "operator": "in",
+                            "value": ["active", "confirmed"],
+                            "type": "dropdown",
+                        },
+                    ],
+                },
+            },
+        },
+        {
+            "name": "4. Managed + password (nhạy cảm)",
+            "when_to_use": "Dashboard nhạy cảm, muốn có thêm lớp password phòng URL bị share ra ngoài. Mini-app tự auth, end-user không bị hỏi.",
+            "screen": {
+                "id": "dashboard-sensitive",
+                "kind": "dashboard",
+                "title": "Doanh thu nội bộ",
+                "icon": "BarChart3",
+                "table_id": None,
+                "primary_key_columns": [],
+                "visible_for_roles": ["quan_ly"],
+                "show_in_nav": True,
+                "rls": [],
+                "rls_default": None,
+                "form": None,
+                "list": None,
+                "doc": None,
+                "dashboard": {
+                    "dashboard_id": 17,
+                    "role_filter_mapping": [
+                        {"datasetId": 3, "semanticField": "sales.region", "operator": "eq"},
+                    ],
+                    "password": "s3cret-shared-across-all-roles",
+                },
+            },
+        },
+        {
+            "name": "5. Manual mode (paste share_token có sẵn)",
+            "when_to_use": "Dùng public link người khác đã tạo (không phải dashboard của bạn). Không có managed link, không lọc theo role.",
+            "screen": {
+                "id": "dashboard-external",
+                "kind": "dashboard",
+                "title": "Báo cáo thị trường",
+                "icon": "LayoutDashboard",
+                "table_id": None,
+                "primary_key_columns": [],
+                "visible_for_roles": [],
+                "show_in_nav": True,
+                "rls": [],
+                "rls_default": None,
+                "form": None,
+                "list": None,
+                "doc": None,
+                "dashboard": {
+                    "share_token": "<<paste share_token người khác đưa>>",
+                },
+            },
+        },
+        {
+            "name": "6. Fixed-height KPI strip",
+            "when_to_use": "Dashboard chỉ vài KPI tile, không muốn iframe co dãn. Cố định height để layout mini-app gọn.",
+            "screen": {
+                "id": "dashboard-kpi-strip",
+                "kind": "dashboard",
+                "title": "KPI hôm nay",
+                "icon": "PieChart",
+                "table_id": None,
+                "primary_key_columns": [],
+                "visible_for_roles": [],
+                "show_in_nav": True,
+                "rls": [],
+                "rls_default": None,
+                "form": None,
+                "list": None,
+                "doc": None,
+                "dashboard": {
+                    "dashboard_id": 89,
+                    "role_filter_mapping": [],
+                    "height_px": 360,
+                },
+            },
+        },
+    ]
+    return {
+        "kind": "dashboard",
+        "purpose": "Embed an AppBI Dashboard inside a mini-app screen. Optionally fill one or more filter slots with the viewing app_user's role.",
+        "two_modes": {
+            "managed": (
+                "Set dashboard.dashboard_id. Backend reconciles one "
+                "DashboardPublicLink (source='workboard') per distinct app_user "
+                "role on workboard save AND on every app_user create/update/delete. "
+                "Each link's filters_config = role_filter_mapping (value=<role>) "
+                "+ static_filters (value as-defined). Tokens go to "
+                "dashboard.managed_links: {role: share_token}; mini-app runtime "
+                "picks one by app_user.role at view time."
+            ),
+            "manual": (
+                "Set dashboard.share_token only. Embeds an existing public link "
+                "verbatim. No managed links, no role-aware filtering, no static "
+                "filters."
+            ),
+        },
+        "how_to_find_dashboard_id": (
+            "Call the AppBI orchestrator's list-dashboards tool, or hit "
+            "GET /dashboards/accessible-summary as the workboard owner."
+        ),
+        "how_to_find_filter_fields": (
+            "Once you know the dashboard_id, GET /dashboards/{id}/filter-fields "
+            "returns the exact slicer slots: [{datasetId, semanticField, label, "
+            "type, ...}]. Copy `datasetId` and `semanticField` verbatim into "
+            "role_filter_mapping — the runtime drops anything that doesn't match."
+        ),
+        "mapping_slot_shape": {
+            "datasetId": "REQUIRED int — from /dashboards/{id}/filter-fields[].datasetId",
+            "semanticField": "REQUIRED dotted ref like 'hr.phong_ban' — from filter-fields[].semanticField",
+            "operator": "Optional, defaults to 'eq'. Common: eq, neq, contains. NOT in/not_in — value is a single role string.",
+        },
+        "constraints": [
+            "Exactly one of dashboard_id or share_token must be set.",
+            "role_filter_mapping and static_filters are only valid in managed mode (dashboard_id set).",
+            "role_filter_mapping entries: do NOT include `value` — backend fills it from app_user.role.",
+            "static_filters entries: `value` is REQUIRED and must be a scalar (eq/neq/gt/...) or list (in/not_in).",
+            "Each (datasetId, semanticField) pair can appear at most once across role_filter_mapping + static_filters combined.",
+            "managed_links is server-owned; never set it in a blueprint.",
+            "table_id is not used and should be null on dashboard screens.",
+            "Screen-level RLS rules are ignored — the dashboard's own filters control data scope.",
+            "password (if set) applies to ALL managed links of this screen and is stored verbatim in layout_json.",
+        ],
+        "examples": examples,
+        "tips": [
+            "Keep role_filter_mapping empty if all app_users should see the same dashboard data — workboard still creates 1 managed link per role but all are identical.",
+            "If a managed link has no effect: GET /dashboards/{id}/filter-fields and verify the (datasetId, semanticField) pair matches one of the slots EXACTLY. The dashboard runtime silently drops unmatched slots.",
+            "Workboard re-syncs managed links automatically when you add/edit/delete an app_user. You normally don't need to re-save the workboard layout after changing the app_user list.",
+            "Renaming a role on an existing app_user invalidates the old token and creates a new one — already-open iframes on the old token will start failing. Plan ahead before renaming roles in production.",
         ],
     }
 

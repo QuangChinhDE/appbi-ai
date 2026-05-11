@@ -414,10 +414,105 @@ class ListScreenSpec(BaseModel):
 
 
 class DocScreenSpec(BaseModel):
-    """A report/dashboard screen rendered from a doc-view layout."""
+    """A document-view screen (printable A4 layout: header, kv_grid, data_table, signature)."""
 
     page: DocPage = Field(default_factory=DocPage)
     blocks: List[DocBlock] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class DashboardRoleFilterMapping(BaseModel):
+    """Map one dashboard filter slot to ``app_user.role``.
+
+    The workboard provisions managed public links per distinct app_user role.
+    Each managed link's ``filters_config`` substitutes the role value into
+    this slot's ``value``: ``{datasetId, semanticField, operator, value: <role>}``.
+
+    The dashboard runtime treats this exactly like any other filter on a
+    public link — no special-casing, no override semantics — which keeps the
+    dashboard module's own filter pipeline (incl. ACR) untouched.
+    """
+
+    datasetId: int
+    semanticField: str = Field(..., min_length=1, max_length=256)
+    operator: str = Field(default="eq", max_length=32)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class DashboardStaticFilter(BaseModel):
+    """A pinned filter that applies to every managed public link of the screen.
+
+    Distinct from ``role_filter_mapping``: this one carries an explicit
+    ``value`` (text, number, or list) — it doesn't depend on the viewing
+    app_user. Every managed link gets these filters merged in; if the viewer
+    sends a request that targets the same ``(datasetId, semanticField)`` slot
+    the existing dashboard runtime's dedupe rules apply (legacy behaviour
+    unchanged — no special hard-lock).
+    """
+
+    datasetId: int
+    semanticField: str = Field(..., min_length=1, max_length=256)
+    operator: str = Field(default="eq", max_length=32)
+    value: Any
+    type: Optional[str] = Field(default=None, max_length=32)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class DashboardScreenSpec(BaseModel):
+    """A screen that embeds an existing AppBI Dashboard.
+
+    Two binding modes:
+
+    1. **Managed** (recommended) — set ``dashboard_id`` + optionally
+       ``role_filter_mapping``. The workboard owner picks a dashboard they can
+       view; the backend provisions one ``DashboardPublicLink``
+       (``source='workboard'``) per distinct app_user role on the workboard.
+       For each mapping the link's ``filters_config`` substitutes ``value`` =
+       the role string. Link tokens are surfaced through ``managed_links``;
+       the runtime picks the token matching the logged-in app_user's role.
+
+    2. **Manual** — paste an existing ``share_token``. No auto-provisioning,
+       no per-role filtering.
+
+    Mini-app users cannot authenticate against the AppBI platform so the
+    iframe always points at ``/embed/{token}``.
+    """
+
+    # — Managed mode —
+    dashboard_id: Optional[int] = Field(
+        default=None,
+        description="When set, workboard manages public links for this dashboard automatically.",
+    )
+    role_filter_mapping: List[DashboardRoleFilterMapping] = Field(
+        default_factory=list,
+        description=(
+            "Filter slots whose value is filled with the viewing app_user's role. "
+            "Empty = every role gets the same link (no per-role filtering)."
+        ),
+    )
+    static_filters: List[DashboardStaticFilter] = Field(
+        default_factory=list,
+        description=(
+            "Filters with hard-coded values that apply to every managed link "
+            "of this screen regardless of the viewer's role."
+        ),
+    )
+    # role -> share_token. Server-owned; written by the app_user sync hook
+    # whenever the set of distinct roles, the mapping, or static_filters change.
+    managed_links: Dict[str, str] = Field(default_factory=dict)
+
+    # — Manual mode —
+    share_token: Optional[str] = Field(default=None, min_length=1, max_length=128)
+
+    # — Shared options —
+    password: Optional[str] = Field(default=None, max_length=128)
+    height_px: Optional[int] = Field(
+        default=None, ge=200, le=4000,
+        description="Optional fixed iframe height. When omitted the runtime expands as the embed reports its own height.",
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -448,6 +543,7 @@ class Screen(BaseModel):
     form: Optional[FormScreenSpec] = None
     list: Optional[ListScreenSpec] = None
     doc: Optional[DocScreenSpec] = None
+    dashboard: Optional[DashboardScreenSpec] = None
 
     # Central column label map: {db_column_name: display_label}.
     # Used by list/doc screens to show friendly column headers instead of raw

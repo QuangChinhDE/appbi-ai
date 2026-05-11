@@ -73,6 +73,9 @@ dashboard orchestration MCP.
 | `update_gsheet_row` | 1b | Direct seed/repair update to GSheets |
 | `delete_gsheet_row` | 1b | Direct seed/repair delete from GSheets |
 | `propose_workboard_blueprint` | 3 | Return dataset context plus a starter blueprint |
+| `get_doc_screen_examples` | 3 | Copy-pasteable patterns for printable document screens |
+| `get_dashboard_screen_examples` | 3 | Copy-pasteable patterns for embedded-dashboard screens |
+| `validate_workboard_blueprint` | 3 | Dry-run validate a blueprint before commit |
 | `commit_workboard_blueprint` | 4 | Validate, normalize, create, and publish a workboard |
 | `update_workboard_blueprint` | 4 | Validate, normalize, and update an existing workboard |
 | `update_workboard` | 4 | Low-level raw PATCH for expert use |

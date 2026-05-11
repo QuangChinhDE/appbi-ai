@@ -136,7 +136,24 @@ export interface DocScreenResponse {
   context?: Record<string, unknown>;
 }
 
-export type ScreenResponse = FormScreenResponse | ListScreenResponse | DocScreenResponse;
+export interface DashboardScreenResponse {
+  screen_id: string;
+  kind: 'dashboard';
+  title: string;
+  icon?: string | null;
+  description?: string | null;
+  dashboard: {
+    share_token: string;
+    password?: string | null;
+    height_px?: number | null;
+  };
+}
+
+export type ScreenResponse =
+  | FormScreenResponse
+  | ListScreenResponse
+  | DocScreenResponse
+  | DashboardScreenResponse;
 
 const client = axios.create({
   baseURL: '/api/v1',

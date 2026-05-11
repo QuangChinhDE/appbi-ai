@@ -171,7 +171,7 @@ export default function DocScreenEditor({
 
       <BuilderSection
         title={`Khối hiển thị (${blocks.length})`}
-        description="Mỗi khối là một phần của báo cáo (tiêu đề, KPI, bảng số liệu, chữ ký, …)."
+        description="Mỗi khối là một phần của document (tiêu đề, KPI, bảng số liệu, chữ ký, …)."
         action={
           <div className="flex flex-wrap gap-2">
             {BLOCK_KINDS.map((kind) => (
@@ -658,7 +658,7 @@ function TransformEditor({
   return (
     <BuilderSubsection
       title="Pivot / Unpivot (tuỳ chọn)"
-      description="Chuyển dạng dữ liệu ngay khi render báo cáo — không động vào DB hay Google Sheet. Áp dụng trước khi chọn cột hiển thị / tính tổng."
+      description="Chuyển dạng dữ liệu ngay khi render document — không động vào DB hay Google Sheet. Áp dụng trước khi chọn cột hiển thị / tính tổng."
     >
       <Lbl label="Chế độ">
         <select

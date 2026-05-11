@@ -55,6 +55,10 @@ from app.modules.workboards.services import doc_export_service as doc_export
 from app.modules.workboards.services.app_user_service import is_default_pin_hash
 from app.services.audit_service import audit
 from app.modules.workboards.services.crud_service import WorkboardService
+from app.modules.workboards.services.dashboard_link_service import (
+    sync_workboard_dashboard_links as sync_managed_dashboard_links,
+    delete_all_for_workboard as delete_managed_dashboard_links,
+)
 from app.modules.workboards.services.public_links import WorkboardPublicLinkService
 from app.modules.workboards.services.write_service import (
     OptimisticLockError,
@@ -120,6 +124,8 @@ def create_workboard(
         wb = WorkboardService.create(db, payload, owner_id=current_user.id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    # Provision managed dashboard public links for any kind='dashboard' screens.
+    wb = sync_managed_dashboard_links(db, wb, creator=current_user)
     audit(
         db,
         AuditAction.WORKBOARD_CREATED,
@@ -165,6 +171,11 @@ def update_workboard(
         updated = WorkboardService.update(db, workboard_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    # Reconcile managed dashboard public links whenever the layout might have
+    # changed. The sync function is idempotent so calling on every PATCH is
+    # cheap when no dashboard screen exists.
+    if updated is not None and payload.model_dump(exclude_unset=True).get("layout_json") is not None:
+        updated = sync_managed_dashboard_links(db, updated, creator=current_user)
     audit(
         db,
         AuditAction.WORKBOARD_UPDATED,
@@ -188,6 +199,9 @@ def delete_workboard(
 ):
     wb = _get_or_404(db, workboard_id)
     require_full_access(db, current_user, wb, "workboards")
+    # Drop managed dashboard links first; once the workboard row is gone the
+    # name-prefix lookup can no longer find them.
+    delete_managed_dashboard_links(db, workboard_id)
     success = WorkboardService.delete(db, workboard_id)
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workboard not found")
@@ -605,6 +619,8 @@ def create_app_user(
     db.add(user)
     db.commit()
     db.refresh(user)
+    # A newly added role may need its own managed dashboard public link.
+    sync_managed_dashboard_links(db, wb, creator=current_user)
     return _app_user_to_response(user)
 
 
@@ -674,6 +690,8 @@ def update_app_user(
 
     db.commit()
     db.refresh(user)
+    # Role / active may have changed, which affects managed-link fan-out.
+    sync_managed_dashboard_links(db, wb, creator=current_user)
     return _app_user_to_response(user)
 
 
@@ -702,6 +720,9 @@ def delete_app_user(
         raise HTTPException(status_code=404, detail="App user not found.")
     db.delete(user)
     db.commit()
+    # The removed app_user may have been the last holder of its role on this
+    # workboard; sync drops the corresponding managed links.
+    sync_managed_dashboard_links(db, wb, creator=current_user)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

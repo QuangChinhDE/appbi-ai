@@ -193,6 +193,11 @@ class DashboardPublicLink(Base):
     last_accessed_at = Column(DateTime(timezone=True), nullable=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
+    # Provenance: 'user' (manual share dialog) | 'workboard' (auto-managed by a
+    # workboard dashboard screen). Managed links are hidden in the share UI and
+    # garbage-collected when the owning screen/role disappears.
+    source = Column(String(20), nullable=False, default="user", server_default="user", index=True)
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

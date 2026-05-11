@@ -55,12 +55,18 @@ import {
 import {
   AppShellResponse,
   AppShellScreenStub,
+  DashboardScreenResponse,
   DocScreenResponse,
   FormScreenResponse,
   ListScreenResponse,
   ScreenResponse,
   workspaceApi,
 } from '@/lib/api/workspace';
+import {
+  getPublicSession,
+  publicDashboardApi,
+  savePublicSession,
+} from '@/lib/api/public';
 import { evaluateTruthy } from '@/lib/wb-expr';
 
 const ICON_MAP: Record<string, React.ElementType> = {
@@ -752,7 +758,106 @@ function ScreenContainer({
   if (data.kind === 'doc') {
     return <DocScreen spec={data} token={token} workboardId={workboardId} />;
   }
+  if (data.kind === 'dashboard') {
+    return <DashboardScreen spec={data} />;
+  }
   return null;
+}
+
+// ── Dashboard screen ──────────────────────────────────────────────────────
+// Embeds an AppBI Dashboard via its public share token. We render the existing
+// /embed/{token} page in an iframe so password gates, viewer filters, chart
+// loading, cross-filter, and PDF export all use the dashboard module's own
+// runtime — no duplication.
+
+function DashboardScreen({ spec }: { spec: DashboardScreenResponse }) {
+  const { share_token: shareToken, password, height_px: heightPx } = spec.dashboard;
+  const [iframeReady, setIframeReady] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [reportedHeight, setReportedHeight] = useState<number | null>(null);
+
+  // If the public link is password-protected and the builder pre-filled the
+  // password, exchange it for a session before mounting the iframe so the
+  // mini-app user is never prompted. Plain links skip straight to mount.
+  useEffect(() => {
+    let alive = true;
+    setIframeReady(false);
+    setAuthError(null);
+    (async () => {
+      if (!shareToken) return;
+      if (!password) {
+        if (alive) setIframeReady(true);
+        return;
+      }
+      if (getPublicSession(shareToken)) {
+        if (alive) setIframeReady(true);
+        return;
+      }
+      try {
+        const { session_token, expires_in } = await publicDashboardApi.auth(
+          shareToken,
+          password,
+        );
+        savePublicSession(shareToken, session_token, expires_in);
+        if (alive) setIframeReady(true);
+      } catch {
+        if (alive) {
+          setAuthError('Không xác thực được dashboard. Có thể public link đã đổi password hoặc bị thu hồi.');
+          setIframeReady(true);
+        }
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [shareToken, password]);
+
+  // The /embed page posts { type: 'appbi:resize', height } so we can grow the
+  // iframe to fit its content. If the builder pinned a fixed height we ignore
+  // these messages.
+  useEffect(() => {
+    if (heightPx) return;
+    function onMessage(event: MessageEvent) {
+      const data = event.data;
+      if (!data || typeof data !== 'object') return;
+      if ((data as { type?: unknown }).type !== 'appbi:resize') return;
+      const next = Number((data as { height?: unknown }).height);
+      if (Number.isFinite(next) && next > 0) {
+        setReportedHeight(Math.max(240, Math.min(4000, Math.round(next))));
+      }
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [heightPx]);
+
+  if (!shareToken) {
+    return (
+      <div className="rounded-xl bg-white p-6 text-center text-sm text-slate-500 shadow-sm">
+        Màn hình Dashboard chưa được cấu hình share token.
+      </div>
+    );
+  }
+  if (!iframeReady) {
+    return <Loader2 className="mx-auto my-10 h-6 w-6 animate-spin text-slate-400" />;
+  }
+
+  const iframeHeight = heightPx ?? reportedHeight ?? 600;
+
+  return (
+    <div className="space-y-2">
+      {authError && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-tiny text-amber-800">
+          {authError}
+        </div>
+      )}
+      <iframe
+        src={`/embed/${shareToken}`}
+        title={spec.title}
+        className="w-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
+        style={{ height: iframeHeight }}
+      />
+    </div>
+  );
 }
 
 // ── Form screen ──────────────────────────────────────────────────────────

@@ -18,6 +18,7 @@ import type { ScreenSpec } from './types';
 import FormScreenEditor from './FormScreenEditor';
 import ListScreenEditor from './ListScreenEditor';
 import DocScreenEditor from './DocScreenEditor';
+import DashboardScreenEditor from './DashboardScreenEditor';
 import RlsEditor from './RlsEditor';
 import { useBuilderMode, type BuilderMode } from './useBuilderMode';
 
@@ -43,7 +44,7 @@ type TabId = 'form' | 'permission' | 'advanced';
 const KIND_LABELS: Record<ScreenSpec['kind'], string> = {
   form: 'Form',
   list: 'Danh sách',
-  doc: 'Báo cáo',
+  doc: 'Document',
   dashboard: 'Dashboard',
 };
 
@@ -118,6 +119,9 @@ export default function ScreenEditor({
               onChange={onChange}
               mode={mode}
             />
+          )}
+          {screen.kind === 'dashboard' && (
+            <DashboardScreenEditor screen={screen} onChange={onChange} />
           )}
         </>
       )}
@@ -199,12 +203,23 @@ function PermissionTab({
         </ul>
       </div>
 
-      <BuilderSection
-        title="Quy tắc theo vai trò"
-        description="Mỗi rule = một vai trò + phạm vi xem/sửa/xoá. Owner bị ẩn vì luôn full quyền."
-      >
-        <RlsEditor screen={screen} tables={tables} onChange={onChange} />
-      </BuilderSection>
+      {screen.kind === 'dashboard' ? (
+        <BuilderSection
+          title="Quy tắc theo vai trò"
+          description="Dashboard nhúng dùng cơ chế filter / quyền riêng của module Dashboard — không có RLS theo dòng ở đây. Chỉ giới hạn ai vào được màn hình ở phần dưới."
+        >
+          <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2.5 text-tiny text-text-tertiary">
+            Không cần cấu hình RLS cho màn hình Dashboard.
+          </p>
+        </BuilderSection>
+      ) : (
+        <BuilderSection
+          title="Quy tắc theo vai trò"
+          description="Mỗi rule = một vai trò + phạm vi xem/sửa/xoá. Owner bị ẩn vì luôn full quyền."
+        >
+          <RlsEditor screen={screen} tables={tables} onChange={onChange} />
+        </BuilderSection>
+      )}
 
       {mode === 'advanced' && (
         <BuilderSection

@@ -1195,6 +1195,41 @@ if settings.WORKBOARDS_ENABLED:
             return screen_runtime.render_doc_screen(
                 db, wb, screen, identity=identity, app_user_payload=app_user
             )
+        if screen.kind == "dashboard":
+            if screen.dashboard is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Dashboard screen is missing its dashboard config.",
+                )
+            # Pick the right share token for this app_user's role. Managed mode
+            # uses the per-role map (with a default fallback); manual mode just
+            # surfaces whatever share_token the builder pasted.
+            from app.modules.workboards.services.dashboard_link_service import (
+                resolve_managed_token,
+            )
+            resolved_token = resolve_managed_token(
+                layout_json=wb.layout_json,
+                screen_id=screen.id,
+                app_user_role=app_user.get("role") if isinstance(app_user, dict) else None,
+            )
+            effective_token = resolved_token or screen.dashboard.share_token
+            if not effective_token:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Dashboard screen has no share token for this role.",
+                )
+            return {
+                "screen_id": screen.id,
+                "kind": "dashboard",
+                "title": screen.title,
+                "icon": screen.icon,
+                "description": screen.description,
+                "dashboard": {
+                    "share_token": effective_token,
+                    "password": screen.dashboard.password,
+                    "height_px": screen.dashboard.height_px,
+                },
+            }
         raise HTTPException(status_code=400, detail=f"Unsupported screen kind '{screen.kind}'.")
 
 

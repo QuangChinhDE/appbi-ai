@@ -106,6 +106,11 @@ function screenStatus(s: ScreenSpec): ScreenStatus {
     const blocks = s.doc?.blocks || [];
     if (blocks.length === 0) return 'warn';
   }
+  if (s.kind === 'dashboard') {
+    const hasManaged = typeof s.dashboard?.dashboard_id === 'number' && (s.dashboard.dashboard_id ?? 0) > 0;
+    const hasManual = !!(s.dashboard?.share_token || '').trim();
+    if (!hasManaged && !hasManual) return 'missing';
+  }
   return 'ok';
 }
 
@@ -118,7 +123,7 @@ const KIND_ICON: Record<ScreenKind, React.ElementType> = {
 const KIND_LABEL: Record<ScreenKind, string> = {
   form: 'Form',
   list: 'List',
-  doc: 'Báo cáo',
+  doc: 'Document',
   dashboard: 'Dashboard',
 };
 
@@ -248,7 +253,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
     const titleByKind: Record<ScreenKind, string> = {
       form: 'Form mới',
       list: 'Danh sách',
-      doc: 'Báo cáo',
+      doc: 'Document',
       dashboard: 'Dashboard',
     };
     const iconByKind: Record<ScreenKind, string> = {
@@ -271,6 +276,13 @@ export default function WorkboardBuilder({ workboard }: Props) {
     if (kind === 'form') base.form = { fields: [], submit_label: 'Lưu', initial_values: {} };
     if (kind === 'list') base.list = { columns: [], page_size: 50, row_actions: [] };
     if (kind === 'doc') base.doc = { blocks: [], page: { size: 'A4', orientation: 'portrait', margin_mm: 15 } };
+    if (kind === 'dashboard') {
+      // New dashboard screens start empty — the editor lets the user pick
+      // managed (dashboard_id) or manual (share_token) mode. No dataset
+      // table binding either way.
+      base.dashboard = {};
+      base.table_id = null;
+    }
     setLayout((curr) => ({
       ...curr,
       screens: [...curr.screens, base],
@@ -354,13 +366,11 @@ export default function WorkboardBuilder({ workboard }: Props) {
             <div className="grid grid-cols-2 gap-1">
               <AddBtn icon={ClipboardEdit} label="Form" onClick={() => addScreen('form')} />
               <AddBtn icon={ListChecks} label="List" onClick={() => addScreen('list')} />
-              <AddBtn icon={FileText} label="Báo cáo" onClick={() => addScreen('doc')} />
+              <AddBtn icon={FileText} label="Document" onClick={() => addScreen('doc')} />
               <AddBtn
                 icon={LayoutDashboard}
                 label="Dashboard"
                 onClick={() => addScreen('dashboard')}
-                disabled
-                title="Sắp ra mắt"
               />
             </div>
           </div>
@@ -516,7 +526,7 @@ function WelcomeEmptyState({
           </h2>
         </div>
         <p className="mb-5 text-caption text-text-secondary">
-          Mini-app gồm các <strong>màn hình</strong> (form nhập, danh sách, báo cáo) liên kết với nhau.
+          Mini-app gồm các <strong>màn hình</strong> (form nhập, danh sách, document, dashboard) liên kết với nhau.
           Bắt đầu bằng một trong các màn hình dưới đây — sau đó bấm &quot;Lưu thay đổi&quot;
           rồi vào tab <strong>Preview</strong> để dùng thử.
         </p>
@@ -536,8 +546,8 @@ function WelcomeEmptyState({
           />
           <StarterCard
             icon={FileText}
-            title="Báo cáo (Doc)"
-            description="Trang tổng quan có header, KPI, bảng có merge cells + footer tổng hợp."
+            title="Document"
+            description="Trang in A4 có header, KPI, bảng có merge cells + chữ ký + footer tổng hợp."
             onClick={() => onAdd('doc')}
           />
         </div>

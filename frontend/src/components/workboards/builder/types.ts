@@ -86,6 +86,43 @@ export interface DocScreenSpecBuilt {
   blocks: DocBlockSpec[];
 }
 
+export interface DashboardRoleFilterMappingSpec {
+  /** Required by the dashboard public runtime — slicer model keys filters by (datasetId, semanticField). */
+  datasetId: number;
+  /** Dotted semantic ref like 'hr.phong_ban'. Must match a slot in the dashboard's available_filter_fields. */
+  semanticField: string;
+  /** Comparison operator the runtime applies. Defaults to 'eq' since the value is a single role string. */
+  operator?: string;
+}
+
+export interface DashboardStaticFilterSpec {
+  datasetId: number;
+  semanticField: string;
+  operator?: string;
+  /** Hard-coded value applied to every managed link of the screen. Scalar or list (for in/not_in). */
+  value: unknown;
+  type?: string;
+}
+
+export interface DashboardScreenSpecBuilt {
+  /** Managed mode: builder picks a dashboard the user has view access to. */
+  dashboard_id?: number | null;
+  /**
+   * Filter slots whose value is filled with the viewing app_user's role at
+   * provision time. Empty array = every role gets the same link (no
+   * per-role filtering).
+   */
+  role_filter_mapping?: DashboardRoleFilterMappingSpec[];
+  /** Filters with hard-coded values applied to every managed link regardless of role. */
+  static_filters?: DashboardStaticFilterSpec[];
+  /** role -> share_token. Written by the backend on save; treat as read-only on the FE. */
+  managed_links?: Record<string, string>;
+  /** Manual mode (legacy / quick-embed): paste an existing public share token. */
+  share_token?: string | null;
+  password?: string | null;
+  height_px?: number | null;
+}
+
 export interface ScreenRlsRuleSpec {
   role: string;
   unrestricted?: boolean;
@@ -111,6 +148,7 @@ export interface ScreenSpec {
   form?: FormScreenSpecBuilt | null;
   list?: ListScreenSpecBuilt | null;
   doc?: DocScreenSpecBuilt | null;
+  dashboard?: DashboardScreenSpecBuilt | null;
   rls?: ScreenRlsRuleSpec[];
   rls_default?: ScreenRlsRuleSpec | null;
 }

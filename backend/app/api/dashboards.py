@@ -5,7 +5,7 @@ import json
 import secrets
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from passlib.context import CryptContext
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Any, Dict, List, Optional
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -188,6 +188,78 @@ def list_dashboards(
         item.user_permission = get_effective_permission(db, current_user, item, "dashboards")
     stamp_owner_emails(db, items)
     return items
+
+
+@router.get("/accessible-summary")
+def list_accessible_dashboards_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Slim list of dashboards the current user can view.
+
+    Used by the Workboard builder to populate the dashboard picker on a
+    ``kind='dashboard'`` screen. Returns just id + name + description +
+    permission. The builder fetches per-dashboard filter columns separately
+    via ``GET /dashboards/{id}/filter-fields`` once the user picks one — keeps
+    this list endpoint cheap when an org has many dashboards.
+    """
+    items = (
+        _owned_or_shared(db, Dashboard, ResourceType.DASHBOARD, current_user)
+        .order_by(Dashboard.updated_at.desc())
+        .all()
+    )
+    out = []
+    for item in items:
+        out.append(
+            {
+                "id": item.id,
+                "name": item.name,
+                "description": item.description,
+                "permission": get_effective_permission(db, current_user, item, "dashboards"),
+            }
+        )
+    return out
+
+
+@router.get("/{dashboard_id}/filter-fields")
+def get_dashboard_filter_fields(
+    dashboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the slicer-style filter columns for a dashboard.
+
+    Mirrors the shape produced by the public runtime so a workboard builder
+    can preview the exact slots a managed link would expose. When the
+    dashboard has ``public_filters_config`` set (DA configured Access filters
+    in the share dialog), those slots are returned verbatim; otherwise we
+    fall back to scanning chart semantic bindings — the same behaviour the
+    public link uses when no Access filter has been pinned.
+
+    Each entry has at minimum ``{datasetId: int, semanticField: 'view.col',
+    label, type}`` — the workboard builder writes ``datasetId`` and
+    ``semanticField`` straight into ``dashboard.role_filter_mapping`` on a
+    dashboard screen so the runtime matches them against ``allowed_fields``.
+    """
+    dash = (
+        db.query(Dashboard)
+        .options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))
+        .filter(Dashboard.id == dashboard_id)
+        .first()
+    )
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    require_view_access(db, current_user, dash, "dashboards")
+
+    from app.api.public import _build_public_filter_fields  # local import to dodge cycle
+
+    public_filters = list(dash.public_filters_config or [])
+    fields = _build_public_filter_fields(db, dash, public_filters if public_filters else None)
+    return {
+        "dashboard_id": dash.id,
+        "fields": fields,
+        "has_public_filters_config": bool(public_filters),
+    }
 
 
 @router.post("/import-html/analyze", response_model=DashboardHtmlImportAnalyzeResponse)
@@ -1584,9 +1656,14 @@ def list_public_links(
     if not dash:
         raise HTTPException(status_code=404, detail="Dashboard not found")
     require_view_access(db, current_user, dash, "dashboards")
+    # Hide workboard-managed links — they belong to a workboard screen's
+    # lifecycle and are surfaced through the Workboard builder UI instead.
     links = (
         db.query(DashboardPublicLink)
-        .filter(DashboardPublicLink.dashboard_id == dashboard_id)
+        .filter(
+            DashboardPublicLink.dashboard_id == dashboard_id,
+            DashboardPublicLink.source == "user",
+        )
         .order_by(DashboardPublicLink.created_at.desc())
         .all()
     )
@@ -1640,6 +1717,11 @@ def update_public_link(
     )
     if not link:
         raise HTTPException(status_code=404, detail="Public link not found")
+    if link.source == "workboard":
+        raise HTTPException(
+            status_code=403,
+            detail="This link is managed by a workboard. Edit it from the Workboard builder.",
+        )
     if request.name is not None:
         link.name = request.name
     if request.filters_config is not None:
@@ -1689,6 +1771,11 @@ def delete_public_link(
     )
     if not link:
         raise HTTPException(status_code=404, detail="Public link not found")
+    if link.source == "workboard":
+        raise HTTPException(
+            status_code=403,
+            detail="This link is managed by a workboard. Delete the workboard screen to remove it.",
+        )
     db.delete(link)
     db.commit()
     return {"deleted": True}
