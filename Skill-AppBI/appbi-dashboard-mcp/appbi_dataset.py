@@ -43,9 +43,52 @@ async def list_datasets(ctx: Context | None = None) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def get_dataset(dataset_id: int, ctx: Context | None = None) -> dict[str, Any]:
-    """Fetch a dataset with its tables (id, name, source_kind, display_name)."""
-    return await _request("GET", f"/datasets/{int(dataset_id)}")
+async def get_dataset(
+    dataset_id: int,
+    summary: bool = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Fetch a dataset with its tables.
+
+    Default returns the full backend payload (columns, samples, descriptions —
+    can be 100KB-1MB+ on wide datasets). Pass `summary=True` to get only the
+    fields needed for dashboard authoring: dataset id/name plus each table's
+    id, display_name, source_kind, and column count. This typically shrinks
+    the payload by 10-100x and is what propose_dashboard_blueprint reads.
+    """
+    payload = await _request("GET", f"/datasets/{int(dataset_id)}")
+    if summary:
+        return _summarize_dataset(payload)
+    return payload
+
+
+def _summarize_dataset(payload: Any) -> dict[str, Any]:
+    """Trim a dataset payload to the dashboard-author essentials."""
+    if not isinstance(payload, dict):
+        return {"raw_type": type(payload).__name__}
+    tables_summary: list[dict[str, Any]] = []
+    for table in payload.get("tables") or []:
+        if not isinstance(table, dict):
+            continue
+        cols = table.get("columns") or table.get("columns_cache") or []
+        tables_summary.append(
+            {
+                "id": table.get("id"),
+                "display_name": table.get("display_name"),
+                "source_kind": table.get("source_kind"),
+                "source_table_name": table.get("source_table_name"),
+                "datasource_id": table.get("datasource_id"),
+                "column_count": len(cols) if isinstance(cols, list) else None,
+                "enabled": table.get("enabled"),
+            }
+        )
+    return {
+        "id": payload.get("id"),
+        "name": payload.get("name"),
+        "description": payload.get("description"),
+        "tables": tables_summary,
+        "_summary": True,
+    }
 
 
 @mcp.tool()

@@ -521,33 +521,7 @@ def _rewrite_column_references(
     if not column_map:
         return out
 
-    # Legacy v1 top-level layout.
-    form = out.get("form") if isinstance(out.get("form"), dict) else None
-    if form:
-        for field in form.get("fields") or []:
-            if not isinstance(field, dict):
-                continue
-            if "column" in field:
-                field["column"] = _rename_col(field.get("column"), primary_old_table_id, column_map)
-            _rename_lookup_columns(field.get("lookup"), column_map)
-    list_cfg = out.get("list") if isinstance(out.get("list"), dict) else None
-    if list_cfg:
-        if "columns" in list_cfg:
-            list_cfg["columns"] = _rename_col_list(list_cfg.get("columns"), primary_old_table_id, column_map)
-        if "default_sort_column" in list_cfg:
-            list_cfg["default_sort_column"] = _rename_col(
-                list_cfg.get("default_sort_column"), primary_old_table_id, column_map
-            )
-        for item in list_cfg.get("filters") or []:
-            if isinstance(item, dict) and "column" in item:
-                item["column"] = _rename_col(item.get("column"), primary_old_table_id, column_map)
-    for doc in out.get("doc_views") or []:
-        _rename_doc_columns(doc, primary_old_table_id=primary_old_table_id, column_map=column_map)
-    rls = out.get("rls") if isinstance(out.get("rls"), dict) else None
-    if rls and "owner_column" in rls:
-        rls["owner_column"] = _rename_col(rls.get("owner_column"), primary_old_table_id, column_map)
-
-    # Modern mini-app screens.
+    # Mini-app screens.
     for screen in out.get("screens") or []:
         if not isinstance(screen, dict):
             continue
@@ -587,66 +561,6 @@ def _rewrite_column_references(
         for rule in screen.get("rls") or []:
             _rename_rls_rule_columns(rule, old_table_id, column_map)
         _rename_rls_rule_columns(screen.get("rls_default"), old_table_id, column_map)
-
-    # AppSheet-style v2 sections.
-    app_table_old_by_id: Dict[str, int] = {}
-    for app_table in out.get("tables") or []:
-        if not isinstance(app_table, dict):
-            continue
-        app_table_id = app_table.get("id")
-        old_table_id = app_table.get("table_id")
-        if isinstance(app_table_id, str) and isinstance(old_table_id, int):
-            app_table_old_by_id[app_table_id] = old_table_id
-        if isinstance(old_table_id, int):
-            if "pk" in app_table:
-                app_table["pk"] = _rename_col_list(app_table.get("pk"), old_table_id, column_map)
-            if "label_column" in app_table:
-                app_table["label_column"] = _rename_col(app_table.get("label_column"), old_table_id, column_map)
-            if isinstance(app_table.get("column_config"), dict):
-                app_table["column_config"] = _rename_col_dict_keys(
-                    app_table.get("column_config"), old_table_id, column_map
-                )
-    for ref in out.get("refs") or []:
-        if not isinstance(ref, dict):
-            continue
-        from_old = app_table_old_by_id.get(str(ref.get("from_table") or ""))
-        to_old = app_table_old_by_id.get(str(ref.get("to_table") or ""))
-        if "from_column" in ref:
-            ref["from_column"] = _rename_col(ref.get("from_column"), from_old, column_map)
-        if "to_column" in ref:
-            ref["to_column"] = _rename_col(ref.get("to_column"), to_old, column_map)
-    for view in out.get("views") or []:
-        if not isinstance(view, dict):
-            continue
-        source = view.get("source") if isinstance(view.get("source"), dict) else {}
-        source_old = app_table_old_by_id.get(str(source.get("id") or ""))
-        if "visible_columns" in view:
-            view["visible_columns"] = _rename_col_list(view.get("visible_columns"), source_old, column_map)
-        if "group_by" in view:
-            view["group_by"] = _rename_col(view.get("group_by"), source_old, column_map)
-        if "sort" in view:
-            view["sort"] = _rename_sort_columns(view.get("sort"), source_old, column_map)
-        cfg = view.get("config") if isinstance(view.get("config"), dict) else None
-        if cfg:
-            if "fields" in cfg:
-                for field in cfg.get("fields") or []:
-                    if isinstance(field, dict) and "column" in field:
-                        field["column"] = _rename_col(field.get("column"), source_old, column_map)
-            if "filters" in cfg:
-                for item in cfg.get("filters") or []:
-                    if isinstance(item, dict) and "column" in item:
-                        item["column"] = _rename_col(item.get("column"), source_old, column_map)
-    for action in out.get("actions") or []:
-        if not isinstance(action, dict):
-            continue
-        source_old = app_table_old_by_id.get(str(action.get("source_table") or ""))
-        if "set_columns" in action:
-            for item in action.get("set_columns") or []:
-                if isinstance(item, dict) and "column" in item:
-                    item["column"] = _rename_col(item.get("column"), source_old, column_map)
-        if "add_with_values" in action:
-            add_old = app_table_old_by_id.get(str(action.get("add_to_table") or "")) or source_old
-            action["add_with_values"] = _rename_col_dict_keys(action.get("add_with_values"), add_old, column_map)
 
     return out
 

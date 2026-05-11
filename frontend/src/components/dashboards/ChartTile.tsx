@@ -24,6 +24,7 @@ import {
   resolveChartFieldForFilter,
   resolveChartSemanticField,
   resolveFilterForChartData,
+  getFilterDisplayLabel,
 } from '@/lib/filters';
 import type { BaseFilter, FilterOperator } from '@/lib/filters';
 import { dashboardApi } from '@/lib/api/dashboards';
@@ -287,6 +288,35 @@ export function ChartTile({
 
     return filters.length > 0 ? filters : undefined;
   }, [globalFilters, crossFilters, dashboardFilters, parameterFilters, chartSemanticBinding]);
+
+  // Track which active global filters this chart could NOT consume. The
+  // dashboard filter bar fan-outs every global filter to every tile, but
+  // most charts have only a subset of fields available — silent dropping
+  // here is what caused BA to report "Date filter không tác động lên 17/37
+  // charts". Surface the count + names so the user knows when a filter
+  // they applied is being ignored by this chart.
+  const skippedGlobalFilters = useMemo(() => {
+    const skipped: BaseFilter[] = [];
+    for (const sourceFilter of globalFilters) {
+      if (!isFilterValueActive(sourceFilter)) continue;
+      let anyTargetAccepted = false;
+      for (const targetFilter of expandLinkedFilterTargets(sourceFilter)) {
+        const semanticRef = targetFilter.semanticField ?? targetFilter.fieldKey;
+        const hasSemanticRef = Boolean(semanticRef && semanticRef.includes('.'));
+        const resolvedField = hasSemanticRef && !chartSemanticBinding
+          ? null
+          : resolveChartFieldForFilter(targetFilter, chartSemanticBinding);
+        const canDeferToSemanticJoin = hasSemanticRef
+          && canDeferFilterToChartSemanticBinding(targetFilter, chartSemanticBinding);
+        if (resolvedField || canDeferToSemanticJoin) {
+          anyTargetAccepted = true;
+          break;
+        }
+      }
+      if (!anyTargetAccepted) skipped.push(sourceFilter);
+    }
+    return skipped;
+  }, [globalFilters, chartSemanticBinding]);
 
   // Debounce server filters to avoid cascading API calls on rapid cross-filter / dashboard filter changes
   const serverFilterKey = useMemo(
@@ -677,6 +707,20 @@ export function ChartTile({
         ) : (
           <>
             <h3 className="text-sm font-semibold truncate flex-1">{displayTitle}</h3>
+            {skippedGlobalFilters.length > 0 && (
+              <span
+                className="flex-shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded"
+                title={
+                  `This chart cannot apply ${skippedGlobalFilters.length} global filter`
+                  + `${skippedGlobalFilters.length !== 1 ? 's' : ''}`
+                  + ` — no matching field in the chart's data model:\n• `
+                  + skippedGlobalFilters.map(getFilterDisplayLabel).join('\n• ')
+                }
+              >
+                <AlertTriangle className="h-3 w-3" />
+                {skippedGlobalFilters.length} skipped
+              </span>
+            )}
             <a
               href={`/explore/${chartId}`}
               target="_blank"

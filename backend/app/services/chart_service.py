@@ -43,6 +43,113 @@ logger = get_logger(__name__)
 _SIMPLE_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+# ── Cross-table semantic chart routing ──────────────────────────────────────
+#
+# Background:
+#   The Explore chart builder lets the user pick dimensions / measures from
+#   ANY semantic view that is reachable (via JOIN) from the chart's anchor
+#   table. The user-facing field id is `view.field`. Legacy chart runtime
+#   (`LiveQueryService.execute_chart_query`) only knows how to query a single
+#   physical table — given dimension `"customers.name"` it would emit
+#   `"customers"."name"` against the orders subquery and fail.
+#
+#   The dataset-execute endpoint already handles this by routing to
+#   `SemanticQueryEngineV2`, which knows how to materialise the JOIN chain
+#   from `SemanticExplore.joins`. We extend the same routing into the chart
+#   runtime, but only when the chart actually uses cross-view refs — single-
+#   table charts continue to flow through the existing path (cheaper,
+#   smaller-blast-radius change).
+
+
+def _collect_role_config_field_refs(role_config: dict) -> list[str]:
+    """Collect every user-bound field reference in a chart role_config.
+
+    Returns the union of dimension-like roles, scatter axes, table pivot
+    fields, selectedColumns, and every metric.field. Used to detect whether
+    a chart query crosses semantic-view boundaries.
+    """
+    refs: list[str] = []
+
+    def push_str(value: Any) -> None:
+        if isinstance(value, str) and value.strip():
+            refs.append(value.strip())
+
+    def push_metric(metric: Any) -> None:
+        if isinstance(metric, dict):
+            push_str(metric.get("field"))
+
+    for key in (
+        "dimension", "breakdown", "timeField",
+        "scatterX", "scatterY",
+        "tableRowDimension", "tableColumnDimension",
+    ):
+        push_str(role_config.get(key))
+    for col in role_config.get("selectedColumns") or []:
+        push_str(col)
+    for metric in role_config.get("metrics") or []:
+        push_metric(metric)
+    for key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
+        push_metric(role_config.get(key))
+    return refs
+
+
+def _role_config_has_cross_view_refs(
+    role_config: dict,
+    base_view_name: str,
+) -> bool:
+    """True iff role_config references any field whose view-part is NOT the
+    chart's base view (e.g. a JOINed view's column)."""
+    base = (base_view_name or "").strip()
+    if not base:
+        return False
+    for ref in _collect_role_config_field_refs(role_config):
+        if "." not in ref:
+            continue
+        view_part, _ = ref.split(".", 1)
+        if view_part.strip() and view_part.strip() != base:
+            return True
+    return False
+
+
+def _build_semantic_alias_map(canonical_fields: list[str]) -> dict[str, str]:
+    """Map engine SQL alias (`view_field`) → canonical caller ref (`view.field`).
+
+    Mirrors `SemanticQueryEngineV2._safe_alias`. Used to rename keys in
+    returned rows so the response contract matches the request (callers ask
+    in `view.field` form, they get back `view.field` keyed rows)."""
+    out: dict[str, str] = {}
+    for raw in canonical_fields:
+        canonical = str(raw or "").strip()
+        if not canonical:
+            continue
+        alias = canonical.replace(".", "_")
+        # Two distinct refs cannot collide on the same alias because the
+        # engine itself rejects that case; first-write-wins is safe.
+        out.setdefault(alias, canonical)
+    return out
+
+
+def remap_semantic_engine_rows(
+    rows: list[dict],
+    alias_to_canonical: dict[str, str],
+) -> list[dict]:
+    """Rewrite each row's keys from engine aliases back to canonical refs.
+
+    Unknown keys (e.g. window-function aliases, calculated fields) pass
+    through unchanged. This keeps the row shape compatible with frontend
+    chart adapters which lookup `row[roleConfig.dimension]`.
+    """
+    if not alias_to_canonical or not rows:
+        return rows
+    remapped: list[dict] = []
+    for row in rows:
+        new_row: dict[str, Any] = {}
+        for key, value in row.items():
+            new_row[alias_to_canonical.get(key, key)] = value
+        remapped.append(new_row)
+    return remapped
+
+
 def _normalize_chart_name(name: str | None) -> str:
     return str(name or "").strip().lower()
 
@@ -884,6 +991,239 @@ def _build_filtered_live_sql_for_dataset_table(
     )
 
 
+def _execute_semantic_chart_runtime(
+    db: Session,
+    datasource,
+    chart_type,
+    chart_config: dict,
+    *,
+    binding: dict,
+    raw_extra_filters: list,
+    filter_context: str | None,
+    limit_override: int | None,
+) -> Dict[str, Any]:
+    """Execute a chart whose role_config touches multiple JOINed semantic
+    views. Uses `SemanticQueryEngineV2` so the generated SQL contains the
+    explore's join chain. The returned rows are remapped so their keys match
+    the requested `view.field` refs (rather than the engine's `view_field`
+    SQL aliases) — preserves the chart-runtime contract."""
+    import hashlib
+    import time
+
+    from app.models.semantic import SemanticExplore
+    from app.services.semantic_query_engine_v2 import SemanticQueryEngineV2
+    from app.services.datasource_service import DataSourceConnectionService
+    from app.services.live_query_service import (
+        _dialect_for_ds_type,
+        _estimate_bigquery_bytes,
+        _should_cache_live_query,
+    )
+    from app.services import query_cache
+    from app.core.crypto import decrypt_config
+    from app.core.config import settings
+
+    base_view_name = str(binding.get("baseViewName") or "").strip()
+    explore_name = str(binding.get("exploreName") or base_view_name).strip()
+    if not base_view_name:
+        raise ValueError("Cross-view chart requires a resolved semantic binding")
+
+    # Sanity-check the explore exists; without it the engine cannot resolve
+    # joins and the caller would get a confusing engine-level error.
+    if not db.query(SemanticExplore).filter(SemanticExplore.name == explore_name).first():
+        raise ValueError(
+            f"Cross-view chart needs an Explore '{explore_name}' with declared joins"
+        )
+
+    role_config = normalize_chart_role_config(chart_type, get_chart_active_role_config(chart_config))
+
+    def qualify(field: str | None) -> str:
+        raw = str(field or "").strip()
+        if not raw:
+            return raw
+        return raw if "." in raw else f"{base_view_name}.{raw}"
+
+    # Collect dimension-like refs (skip duplicates while preserving order).
+    dimension_refs: list[str] = []
+
+    def push_dim(value: Any) -> None:
+        if not isinstance(value, str):
+            return
+        qualified = qualify(value)
+        if qualified and qualified not in dimension_refs:
+            dimension_refs.append(qualified)
+
+    for key in (
+        "dimension", "breakdown", "timeField",
+        "tableRowDimension", "tableColumnDimension",
+    ):
+        push_dim(role_config.get(key))
+    for col in role_config.get("selectedColumns") or []:
+        push_dim(col)
+    # scatter X/Y are typically continuous columns that the user wants to
+    # plot raw. The engine treats anything in the `dimensions` list as a
+    # GROUP BY participant which is the right behavior for distinct points;
+    # for aggregated scatter the metric is supplied separately.
+    push_dim(role_config.get("scatterX"))
+    push_dim(role_config.get("scatterY"))
+
+    # Collect metric refs + per-field agg overrides (chart role config carries
+    # its own agg, which may diverge from the measure's default).
+    measure_refs: list[str] = []
+    agg_overrides: dict[str, str] = {}
+
+    def push_metric(metric: Any) -> None:
+        if not isinstance(metric, dict):
+            return
+        qualified = qualify(metric.get("field"))
+        if not qualified or qualified in measure_refs:
+            return
+        measure_refs.append(qualified)
+        agg = str(metric.get("agg") or "").strip().lower()
+        if agg:
+            agg_overrides[qualified] = agg
+
+    for metric in role_config.get("metrics") or []:
+        push_metric(metric)
+    for key in ("lineMetric", "benchmarkMetric", "tablePivotMetric"):
+        push_metric(role_config.get(key))
+
+    # Build filters: combine base + dashboard runtime; only forward filters
+    # whose target is supported by the binding (base or reachable view) and
+    # which the engine can understand. Bare-field filters get qualified to
+    # the base view; semantic refs pass through.
+    runtime_filters = _normalize_runtime_filters_for_chart(
+        chart_config,
+        merge_chart_query_filters(
+            chart_config,
+            extra_filters=raw_extra_filters,
+            context=filter_context,
+        ),
+        include_joined_semantic=True,
+    )
+
+    _OP_ALIAS = {"neq": "ne", "startswith": "starts_with"}
+    engine_filters: dict[str, dict] = {}
+    for filt in runtime_filters:
+        target_field = str(
+            filt.get("semanticField")
+            or filt.get("fieldKey")
+            or filt.get("field")
+            or ""
+        ).strip()
+        if not target_field:
+            continue
+        qualified = qualify(target_field)
+        if not qualified:
+            continue
+        operator = str(filt.get("operator") or "eq").strip().lower()
+        operator = _OP_ALIAS.get(operator, operator)
+        # Engine's filter dict uses last-write-wins on field key. Cross-table
+        # charts rarely repeat the same field with multiple operators; if it
+        # happens we keep the runtime/dashboard value (which is appended last
+        # by merge_chart_query_filters).
+        engine_filters[qualified] = {
+            "operator": operator,
+            "value": filt.get("value"),
+        }
+
+    # Resolve a sensible row limit. Charts use 1000 by default; preview /
+    # editor may raise via limit_override (capped at 5000 in shared resolver).
+    effective_limit: int = 1000
+    if limit_override is not None:
+        try:
+            effective_limit = max(1, min(int(limit_override), 5000))
+        except (TypeError, ValueError):
+            pass
+
+    ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+    dialect = _dialect_for_ds_type(ds_type)
+
+    engine = SemanticQueryEngineV2(db, database_type=dialect)
+    sql, _engine_columns, _pivot_metadata = engine.generate_sql(
+        explore_name=explore_name,
+        dimensions=dimension_refs,
+        measures=measure_refs,
+        filters=engine_filters,
+        sorts=[],
+        limit=effective_limit,
+        measure_agg_overrides=agg_overrides or None,
+    )
+
+    # Cache: namespace under a stable identifier derived from the explore +
+    # canonical refs so cross-table results don't collide with single-table
+    # cache rows. Reuse existing `query_cache` so eviction is consistent.
+    cache_enabled = _should_cache_live_query(ds_type)
+    cache_role_config = {
+        "_semantic_chart_runtime": True,
+        "_dimensions": dimension_refs,
+        "_measures": measure_refs,
+        "_agg_overrides": agg_overrides,
+        "_limit": effective_limit,
+    }
+    cache_identifier = f"semantic_chart::{explore_name}"
+    cache_filters = sorted(engine_filters.items())
+
+    if cache_enabled:
+        cached = query_cache.get_cached(
+            datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters
+        )
+        if cached is not None:
+            return cached
+
+    # BigQuery cost guard (mirrors LiveQueryService behavior).
+    if ds_type == "bigquery":
+        config = decrypt_config(datasource.config)
+        estimated_bytes = _estimate_bigquery_bytes(config, sql)
+        max_bytes = settings.BQ_MAX_BYTES_SCANNED
+        if estimated_bytes > max_bytes:
+            gb_est = estimated_bytes / (1024**3)
+            gb_max = max_bytes / (1024**3)
+            raise ValueError(
+                f"Query would scan {gb_est:.1f} GB (limit: {gb_max:.0f} GB). "
+                f"Add filters (e.g. date range) to reduce the data scanned."
+            )
+
+    timeout = 60 if ds_type == "bigquery" else 30
+    start = time.time()
+    _cols, rows, _exec_ms = DataSourceConnectionService.execute_query(
+        ds_type,
+        datasource.config,
+        sql,
+        timeout_seconds=timeout,
+        skip_bigquery_cost_check=True,
+    )
+    elapsed_ms = (time.time() - start) * 1000
+
+    alias_map = _build_semantic_alias_map(dimension_refs + measure_refs)
+    rows = remap_semantic_engine_rows(rows, alias_map)
+
+    result: Dict[str, Any] = {
+        "data": rows,
+        # The engine always emits SELECT … GROUP BY for measure'd queries, and
+        # raw distinct rows otherwise; both are already at the granularity the
+        # chart wants. Mark pre-aggregated so frontend skips client-side agg.
+        "pre_aggregated": True,
+        "execution_time_ms": round(elapsed_ms, 1),
+    }
+
+    if cache_enabled:
+        query_cache.set_cached(
+            datasource.id, cache_identifier, chart_type, cache_role_config, cache_filters, result
+        )
+
+    logger.info(
+        "Semantic chart query executed: ds=%d, explore=%s, dims=%d, measures=%d, rows=%d, time=%.0fms",
+        datasource.id,
+        explore_name,
+        len(dimension_refs),
+        len(measure_refs),
+        len(rows),
+        elapsed_ms,
+    )
+
+    return result
+
+
 def _execute_chart_runtime_for_table(
     db: Session,
     datasource,
@@ -1004,6 +1344,32 @@ def _execute_chart_runtime_for_table(
 
     if datasource is None:
         raise ValueError("Chart requires a datasource-backed table")
+
+    # ── Cross-view semantic chart: role_config touches joined views ──
+    # The chart anchor table still owns the binding (`baseViewName`); the
+    # engine resolves the join chain from `SemanticExplore.joins`. We only
+    # divert here when there's at least one cross-view ref because the
+    # single-table path below is cheaper and already battle-tested.
+    binding = (
+        chart_config.get("semanticBinding")
+        if isinstance(chart_config, dict) and isinstance(chart_config.get("semanticBinding"), dict)
+        else {}
+    )
+    base_view_name_for_routing = str(binding.get("baseViewName") or "").strip()
+    if (
+        base_view_name_for_routing
+        and _role_config_has_cross_view_refs(role_config, base_view_name_for_routing)
+    ):
+        return _execute_semantic_chart_runtime(
+            db,
+            datasource,
+            chart_type,
+            chart_config,
+            binding=binding,
+            raw_extra_filters=raw_extra_filters,
+            filter_context=filter_context,
+            limit_override=limit_override,
+        )
 
     # ── Physical table / SQL query: live query with semantic filter adaptation ──
     live_sql, live_filters = _adapt_live_sql_for_semantic_filters(

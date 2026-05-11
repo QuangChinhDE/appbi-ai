@@ -101,7 +101,9 @@ async def get_semantic_explore_by_name(
 
 @mcp.tool()
 async def get_dataset_model(
-    dataset_id: int, ctx: Context | None = None
+    dataset_id: int,
+    summary: bool = False,
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Get the semantic model attached to a dataset.
 
@@ -109,8 +111,67 @@ async def get_dataset_model(
     `generated=False` means no model has been built yet — call
     `generate_dataset_model` for a heuristic starter, or design from scratch
     via `create_semantic_view` + `create_semantic_explore`.
+
+    Pass `summary=True` to trim views/explores down to id+name+field-name
+    catalogue (drops full measure SQL, descriptions, hidden flags). Use the
+    summary when you only need the field index — propose_dashboard_blueprint
+    already exposes the same information in a richer agent-tuned shape.
     """
-    return await _request("GET", f"/datasets/{int(dataset_id)}/model")
+    payload = await _request("GET", f"/datasets/{int(dataset_id)}/model")
+    if summary:
+        return _summarize_dataset_model(payload)
+    return payload
+
+
+def _summarize_dataset_model(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {"raw_type": type(payload).__name__}
+    views_summary: list[dict[str, Any]] = []
+    for view in payload.get("views") or []:
+        if not isinstance(view, dict):
+            continue
+        views_summary.append(
+            {
+                "id": view.get("id"),
+                "name": view.get("name"),
+                "dataset_table_id": view.get("dataset_table_id"),
+                "dimensions": [
+                    d.get("name")
+                    for d in (view.get("dimensions") or [])
+                    if isinstance(d, dict) and d.get("name")
+                ],
+                "measures": [
+                    {"name": m.get("name"), "type": m.get("type")}
+                    for m in (view.get("measures") or [])
+                    if isinstance(m, dict) and m.get("name")
+                ],
+            }
+        )
+    explores_summary: list[dict[str, Any]] = []
+    for explore in payload.get("explores") or []:
+        if not isinstance(explore, dict):
+            continue
+        explores_summary.append(
+            {
+                "id": explore.get("id"),
+                "name": explore.get("name"),
+                "base_view_name": explore.get("base_view_name"),
+                "joined_views": [
+                    j.get("view")
+                    for j in (explore.get("joins") or [])
+                    if isinstance(j, dict) and j.get("view")
+                ],
+            }
+        )
+    return {
+        "model_id": payload.get("model_id"),
+        "dataset_id": payload.get("dataset_id"),
+        "dataset_name": payload.get("dataset_name"),
+        "generated": payload.get("generated"),
+        "views": views_summary,
+        "explores": explores_summary,
+        "_summary": True,
+    }
 
 
 @mcp.tool()

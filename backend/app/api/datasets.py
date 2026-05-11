@@ -259,8 +259,21 @@ def _execute_semantic_dataset_query(
         limit=None,
     )
 
+    # Engine emits SQL aliases of the form `view_field` (dots → underscores)
+    # for stable identifier safety. Callers (chart builder, AI tools) request
+    # in canonical `view.field` form and rely on the response keys matching.
+    # Remap row keys back to canonical refs so the request/response contract
+    # is symmetric — without this, frontend `row[roleConfig.dimension]`
+    # lookups silently return undefined for cross-view dimensions.
+    from app.services.chart_service import (
+        _build_semantic_alias_map,
+        remap_semantic_engine_rows,
+    )
+    alias_map = _build_semantic_alias_map(list(dimensions) + list(measures))
+    rows = remap_semantic_engine_rows(rows, alias_map)
+
     rows = _serialize_cached_rows(rows, limit=len(rows))
-    columns = list(rows[0].keys()) if rows else list(_columns or [])
+    columns = list(rows[0].keys()) if rows else [alias_map.get(c, c) for c in (_columns or [])]
     column_metadata = [
         DatasetColumnMetadata(
             name=col,

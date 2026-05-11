@@ -392,7 +392,21 @@ def _resolve_dataset_dialect(datasources: List[DataSource]) -> str:
     return "postgresql"
 
 
-def _sql_table_for_table(dataset_obj: Dataset, table: DatasetTable, *, calendar_dialect: str) -> str:
+def _sql_table_for_table(
+    dataset_obj: Dataset,
+    table: DatasetTable,
+    *,
+    calendar_dialect: str,
+    datasource: DataSource | None = None,
+) -> str:
+    """Build the SQL fragment used as a SemanticView's `sql_table_name`.
+
+    For BigQuery physical tables we MUST emit a fully-qualified reference
+    (`project.dataset.table`) — bare table names produce the runtime error
+    "Table 'X' must be qualified with a dataset" when the semantic engine
+    constructs JOINs. We piggy-back on live_query_service._build_base_table_ref
+    so the qualification logic stays in one place.
+    """
     if is_generated_calendar_table(table):
         settings = get_calendar_settings(dataset_obj, enabled_default=False)
         return f"({build_calendar_live_sql(settings, calendar_dialect)})"
@@ -400,12 +414,42 @@ def _sql_table_for_table(dataset_obj: Dataset, table: DatasetTable, *, calendar_
         base_query = f"SELECT * FROM ({table.source_query}) AS _dataset_model_src"
         return _apply_semantic_transformations(base_query, table, dialect=calendar_dialect)
     if table.source_kind == "physical_table" and table.source_table_name:
-        base_query = f"SELECT * FROM {table.source_table_name}"
+        qualified_ref = _qualified_table_reference(table, datasource, calendar_dialect)
+        base_query = f"SELECT * FROM {qualified_ref}"
         return _apply_semantic_transformations(base_query, table, dialect=calendar_dialect)
     if table.source_kind == "sql_query" and table.source_query:
         base_query = f"SELECT * FROM ({table.source_query}) AS _dataset_model_src"
         return _apply_semantic_transformations(base_query, table, dialect=calendar_dialect)
     return _view_name_for_table(table)
+
+
+def _qualified_table_reference(
+    table: DatasetTable,
+    datasource: DataSource | None,
+    dialect: str,
+) -> str:
+    """Resolve a physical table reference appropriate for `dialect`.
+
+    Falls back to the raw `source_table_name` if the datasource is missing
+    (preserves legacy behaviour) so callers without a datasource handle
+    don't crash.
+    """
+    raw = table.source_table_name or ""
+    if not raw or datasource is None:
+        return raw
+    try:
+        from app.services.live_query_service import _build_base_table_ref
+    except Exception:
+        return raw
+    ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
+    config = getattr(datasource, "config", None) or {}
+    try:
+        return _build_base_table_ref(ds_type, config, raw, dialect)
+    except Exception:
+        # Defensive: BigQuery decrypt_config may fail when called outside the
+        # request context (e.g. background workers). Fall back to the raw
+        # reference rather than blowing up semantic model generation.
+        return raw
 
 
 def _semantic_fields_for_table(dataset_obj: Dataset, table: DatasetTable) -> tuple[list[dict], list[dict]]:
@@ -938,6 +982,7 @@ def _sync_dataset_model_structure(
         if datasource_ids
         else []
     )
+    datasource_by_id: Dict[int, DataSource] = {int(d.id): d for d in datasources}
     calendar_dialect = _resolve_dataset_dialect(datasources)
 
     model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
@@ -1003,6 +1048,11 @@ def _sync_dataset_model_structure(
                 dataset_obj,
                 table,
                 calendar_dialect=calendar_dialect,
+                datasource=(
+                    datasource_by_id.get(int(table.datasource_id))
+                    if getattr(table, "datasource_id", None) is not None
+                    else None
+                ),
             ),
             dataset_table_id=table.id,
             dimensions=dimensions,

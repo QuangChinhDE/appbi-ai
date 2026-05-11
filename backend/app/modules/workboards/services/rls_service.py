@@ -1,21 +1,18 @@
-"""Row-level security engine for workboards.
+"""Row-level security engine for workboards (mini-app screens).
 
 The runtime calls :func:`build_rls_filter` before every read query and
 :func:`enforce_write_access` before every insert/update/delete to translate
-the workboard's declared :class:`RowLevelSecurity` rules + the caller's
+the screen's declared :class:`ScreenRlsRule` rules + the caller's
 identity into concrete LiveQuery filter dicts.
 
-There are two identity sources that can drive RLS:
+Identity comes from a workspace app user (worker / foreman / admin).
+AppBI logged-in users (admins opening the workboard inside the AppBI shell
+for preview / debugging) bypass RLS entirely — object-level permission
+checks in the API layer still apply.
 
-* AppBI authenticated user — the legacy path, used when an admin opens the
-  workboard inside the AppBI shell. Only the legacy ``owner_column`` rule
-  applies here today; broader role-based rules are reserved for app users.
-* Workspace app user — the new path, used when a worker/foreman opens the
-  public ``/w/{token}`` link. The role attached to their session token
-  picks one of ``app_user_rules`` (falling back to ``app_user_default``).
-
-If RLS is enabled but no matching rule is found and no default exists, the
-engine fails closed: list queries return zero rows and writes are denied.
+If RLS rules exist for a screen but no matching rule is found for the
+caller's role *and* no default exists, the engine fails closed: list
+queries return zero rows and writes are denied.
 """
 from __future__ import annotations
 
@@ -26,7 +23,7 @@ from fastapi import HTTPException, status
 
 from app.core.logging import get_logger
 from app.modules.workboards.roles import is_owner_role
-from app.modules.workboards.schemas import RlsRoleRule, RowLevelSecurity
+from app.modules.workboards.schemas import ScreenRlsRule
 
 logger = get_logger(__name__)
 
@@ -93,14 +90,18 @@ def _resolve_placeholder(value: Any, identity: CallerIdentity) -> Any:
     return identity.app_user.get(key)
 
 
-def _pick_rule(rls: RowLevelSecurity, identity: CallerIdentity) -> Optional[RlsRoleRule]:
+def _pick_rule(
+    rules: List[ScreenRlsRule],
+    default: Optional[ScreenRlsRule],
+    identity: CallerIdentity,
+) -> Optional[ScreenRlsRule]:
     if not identity.is_app_user:
         return None
     role = (identity.role or "").strip().lower()
-    for rule in rls.app_user_rules or []:
+    for rule in rules or []:
         if rule.role.strip().lower() == role:
             return rule
-    return rls.app_user_default
+    return default
 
 
 # ── Public API ────────────────────────────────────────────────────────────
@@ -111,46 +112,36 @@ class RlsDenied(HTTPException):
 
 
 def build_rls_filter(
-    rls: Optional[RowLevelSecurity],
+    rules: List[ScreenRlsRule],
+    default: Optional[ScreenRlsRule],
     identity: CallerIdentity,
 ) -> Tuple[List[Dict[str, Any]], bool]:
-    """Translate RLS config + identity into LiveQuery filter dicts.
+    """Translate per-screen RLS rules + identity into LiveQuery filter dicts.
 
     Returns ``(filters, allowed)``:
 
     * ``filters`` is the list of additional filter dicts to append to the
       caller-supplied filters before executing the read query.
-    * ``allowed=False`` means the caller is hard-denied (e.g. RLS is
-      enabled, they're an app user, no rule matches their role and no
-      default exists). The runtime should return an empty result without
-      executing the query in that case.
+    * ``allowed=False`` means the caller is hard-denied (app user with no
+      matching rule and no default). The runtime should return an empty
+      result without executing the query in that case.
 
-    When RLS is disabled (or rls is None), returns ``([], True)``.
+    When no rules exist (empty list and no default), returns ``([], True)``
+    — the screen is unrestricted.
     """
-    if rls is None or not rls.enabled:
+    # No rules configured → unrestricted.
+    if not rules and default is None:
         return [], True
 
-    # Legacy AppBI-user owner filter.
-    if not identity.is_app_user and rls.owner_column and identity.appbi_user_id:
-        return (
-            [
-                {
-                    "field": rls.owner_column,
-                    "operator": "eq",
-                    "value": identity.appbi_user_id,
-                }
-            ],
-            True,
-        )
-
+    # AppBI admin opening the workboard for preview — RLS does not apply.
     if not identity.is_app_user:
-        # AppBI user with no owner_column rule → unrestricted (admin path).
         return [], True
 
+    # Owner role bypasses RLS on its workboard.
     if is_owner_role(identity.role):
         return [], True
 
-    rule = _pick_rule(rls, identity)
+    rule = _pick_rule(rules, default, identity)
     if rule is None:
         # Closed by default: app users that don't match any rule see nothing.
         return [], False
@@ -177,7 +168,8 @@ def build_rls_filter(
 
 
 def enforce_write_access(
-    rls: Optional[RowLevelSecurity],
+    rules: List[ScreenRlsRule],
+    default: Optional[ScreenRlsRule],
     identity: CallerIdentity,
     *,
     op: str,
@@ -190,19 +182,18 @@ def enforce_write_access(
     Returns a sanitised copy of ``row_values`` with any read-only columns
     stripped out. Raises :class:`RlsDenied` if the caller is forbidden.
     """
-    if rls is None or not rls.enabled:
+    # No rules configured → unrestricted.
+    if not rules and default is None:
         return dict(row_values or {})
 
-    # AppBI users with the legacy owner_column rule are unrestricted on
-    # writes; the legacy contract relied on object-level permission checks
-    # in the API layer, which still run. We don't want to retro-tighten.
+    # AppBI admin — object-level permission checks gate the write.
     if not identity.is_app_user:
         return dict(row_values or {})
 
     if is_owner_role(identity.role):
         return dict(row_values or {})
 
-    rule = _pick_rule(rls, identity)
+    rule = _pick_rule(rules, default, identity)
     if rule is None:
         raise RlsDenied()
 

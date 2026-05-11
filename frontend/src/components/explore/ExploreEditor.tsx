@@ -48,7 +48,8 @@ import {
   stripTrailingSqlLimit,
 } from '@/lib/explore-query';
 import type { ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
-import { useDatasetModel, type DimensionDefinition, type MeasureDefinition } from '@/hooks/use-dataset-model';
+import { useDatasetModel, type DimensionDefinition, type MeasureDefinition, type DatasetModelView } from '@/hooks/use-dataset-model';
+import { computeReachableViews } from '@/lib/dataset-model-graph';
 
 type ChartType = ExploreChartType;
 
@@ -189,6 +190,28 @@ function createDefaultTableRoleConfig(
   roleConfig: ChartRoleConfig,
   tableMode: ChartRoleConfig['tableMode'] = 'standard',
 ): ChartRoleConfig {
+  // Preserve fields the user already bound: dimensions and metric fields all
+  // become candidate table columns. This avoids silently dropping cross-table
+  // fields when switching from chart \u2192 table view. `syncRoleConfigWithColumns`
+  // will still drop any field that isn't in `availableGeneratedColumns`.
+  const preservedColumns: string[] = [];
+  const pushUnique = (value?: string | null) => {
+    if (!value) return;
+    if (preservedColumns.includes(value)) return;
+    preservedColumns.push(value);
+  };
+  pushUnique(roleConfig.dimension);
+  pushUnique(roleConfig.breakdown);
+  pushUnique(roleConfig.timeField);
+  pushUnique(roleConfig.scatterX);
+  pushUnique(roleConfig.scatterY);
+  for (const metric of roleConfig.metrics ?? []) {
+    pushUnique(metric.field);
+  }
+  for (const existing of roleConfig.selectedColumns ?? []) {
+    pushUnique(existing);
+  }
+
   return {
     ...roleConfig,
     dimension: undefined,
@@ -202,7 +225,7 @@ function createDefaultTableRoleConfig(
     tableRowDimension: undefined,
     tableColumnDimension: undefined,
     tablePivotMetric: undefined,
-    selectedColumns: undefined,
+    selectedColumns: preservedColumns.length > 0 ? preservedColumns : undefined,
   };
 }
 
@@ -718,30 +741,51 @@ export function ExploreEditor({
     () => datasetModel?.views?.find((view) => view.dataset_table_id === selectedTableId) ?? null,
     [datasetModel?.views, selectedTableId],
   );
+  /**
+   * Cross-table support: from the selected table's semantic view, walk the
+   * explore's join graph to find every reachable view. The chart builder uses
+   * dimensions/measures from ALL reachable views (not just the selected one)
+   * so cross-table fields can flow through to the backend semantic engine,
+   * which already knows how to JOIN them via SemanticExplore.joins.
+   */
+  const reachableViewNames = useMemo<Set<string>>(() => {
+    if (!datasetModel || !selectedSemanticView) return new Set();
+    return computeReachableViews(datasetModel, selectedSemanticView.name);
+  }, [datasetModel, selectedSemanticView]);
+  const reachableSemanticViews = useMemo<DatasetModelView[]>(() => {
+    if (!datasetModel?.views || reachableViewNames.size === 0) return [];
+    return datasetModel.views.filter((view) => reachableViewNames.has(view.name));
+  }, [datasetModel?.views, reachableViewNames]);
   const semanticColumns = useMemo<ColumnMetadata[]>(() => {
-    if (!selectedSemanticView) return [];
-    const dims = (selectedSemanticView.dimensions ?? [])
-      .filter((dim) => !dim.hidden)
-      .map((dim) => ({
-        name: `${selectedSemanticView.name}.${dim.name}`,
-        type: dim.type === 'number' ? 'number' : dim.type,
-        label: (dim.label && dim.label.trim()) ? dim.label : dim.name,
-        nullable: true,
-      }));
-    const measures = (selectedSemanticView.measures ?? [])
-      .filter((measure) => !measure.hidden)
-      .map((measure) => ({
-        name: `${selectedSemanticView.name}.${measure.name}`,
-        type: 'number',
-        label: (measure.label && measure.label.trim()) ? measure.label : measure.name,
-        nullable: true,
-      }));
-    return [...dims, ...measures];
-  }, [selectedSemanticView]);
+    if (reachableSemanticViews.length === 0) return [];
+    const out: ColumnMetadata[] = [];
+    for (const view of reachableSemanticViews) {
+      for (const dim of view.dimensions ?? []) {
+        if (dim.hidden) continue;
+        out.push({
+          name: `${view.name}.${dim.name}`,
+          type: dim.type === 'number' ? 'number' : dim.type,
+          label: (dim.label && dim.label.trim()) ? dim.label : dim.name,
+          nullable: true,
+        });
+      }
+      for (const measure of view.measures ?? []) {
+        if (measure.hidden) continue;
+        out.push({
+          name: `${view.name}.${measure.name}`,
+          type: 'number',
+          label: (measure.label && measure.label.trim()) ? measure.label : measure.name,
+          nullable: true,
+        });
+      }
+    }
+    return out;
+  }, [reachableSemanticViews]);
 
-  /** Map of bare column-name → friendly label, sourced from the semantic
+  /** Map of bare column-name → friendly label, sourced from the selected
    *  view's dimensions/measures so raw preview columns can also display
-   *  the user-facing label rather than the SQL identifier. */
+   *  the user-facing label rather than the SQL identifier. Only the selected
+   *  (anchor) view contributes here because preview rows belong to that table. */
   const semanticLabelByColumnName = useMemo<Map<string, string>>(() => {
     const map = new Map<string, string>();
     if (!selectedSemanticView) return map;
@@ -1807,6 +1851,7 @@ export function ExploreEditor({
                         <ExploreColumnPanel
                           datasetId={selectedDatasetId}
                           selectedTableId={selectedTableId}
+                          reachableViewNames={reachableViewNames}
                           onSelectDimension={handleSelectSemanticDimension}
                           onSelectMeasure={handleSelectSemanticMeasure}
                         />

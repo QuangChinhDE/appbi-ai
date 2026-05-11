@@ -43,6 +43,10 @@ interface DashboardFilterBarProps {
   initialExpanded?: boolean;
   /** When true, strips the outer card wrapper — use when embedded inside another card. */
   embedded?: boolean;
+  /** Slicer mode (Looker/PowerBI parity): DA defines the slot inventory, viewer
+   * can only change values within those slots. Hides Add Filter / per-card Remove
+   * / Clear-all controls. Used on public-link viewer page. */
+  lockSlots?: boolean;
 }
 
 type AddFilterColumnGroup = {
@@ -63,6 +67,7 @@ export function DashboardFilterBar({
   isApplying = false,
   initialExpanded = true,
   embedded = false,
+  lockSlots = false,
 }: DashboardFilterBarProps) {
   const [isExpanded, setIsExpanded] = useState(initialExpanded);
   const [addingField, setAddingField] = useState(false);
@@ -394,7 +399,7 @@ export function DashboardFilterBar({
             </button>
           )}
 
-          {filters.length > 0 && (
+          {!lockSlots && filters.length > 0 && (
             <button
               onClick={() => onFiltersChange([])}
               className="text-xs text-text-quaternary hover:text-danger transition-colors"
@@ -404,6 +409,7 @@ export function DashboardFilterBar({
           )}
 
           {/* Add filter dropdown */}
+          {!lockSlots && (
           <div className="relative">
             <button
               ref={addButtonRef}
@@ -501,34 +507,47 @@ export function DashboardFilterBar({
               </>
             )}
           </div>
+          )}
         </div>
       </div>
 
       {/* ── Filter cards ──────────────────────────────────────────── */}
       {isExpanded && filters.length > 0 && (
         <div className="px-3 pb-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          {filters.map(f => (
-            <FilterCard
-              key={f.id}
-              filter={f}
-              allColumns={columns}
-              allDistinctValues={distinctValues}
-              usedFields={usedFields}
-              columnChartCount={columnChartCount}
-              filterChartCount={getFilterChartCount(f)}
-              search={searchTerms[f.id] ?? ''}
-              onSearchChange={s => setSearchTerms(prev => ({ ...prev, [f.id]: s }))}
-              onToggleValue={val => toggleValue(f.id, val)}
-              onSelectAll={vals => selectAll(f.id, vals)}
-              onDeselectAll={() => deselectAll(f.id)}
-              onUpdateValue={v => updateValue(f.id, v)}
-              onUpdateOperator={op => updateOperator(f.id, op)}
-              onUpdateDatePreset={preset => updateDatePreset(f.id, preset)}
-              onToggleLinkedField={col => toggleLinkedField(f.id, col)}
-              onClear={() => clearFilter(f.id)}
-              onRemove={() => removeFilter(f.id)}
-            />
-          ))}
+          {filters.map(f => {
+            // Conflict-detection signal: when the user picks values that have
+            // no intersection (e.g. Role=SDR & Phòng=BE.E), the cascading
+            // distinct query returns []. Surfacing the names of the other
+            // active filters here lets the user know which combo is empty
+            // instead of silently rendering "Loading values…".
+            const otherActiveFilters = filters.filter(
+              (other) => other.id !== f.id && isFilterValueActive(other),
+            );
+            return (
+              <FilterCard
+                key={f.id}
+                filter={f}
+                allColumns={columns}
+                allDistinctValues={distinctValues}
+                usedFields={usedFields}
+                columnChartCount={columnChartCount}
+                filterChartCount={getFilterChartCount(f)}
+                search={searchTerms[f.id] ?? ''}
+                onSearchChange={s => setSearchTerms(prev => ({ ...prev, [f.id]: s }))}
+                onToggleValue={val => toggleValue(f.id, val)}
+                onSelectAll={vals => selectAll(f.id, vals)}
+                onDeselectAll={() => deselectAll(f.id)}
+                onUpdateValue={v => updateValue(f.id, v)}
+                onUpdateOperator={op => updateOperator(f.id, op)}
+                onUpdateDatePreset={preset => updateDatePreset(f.id, preset)}
+                onToggleLinkedField={col => toggleLinkedField(f.id, col)}
+                onClear={() => clearFilter(f.id)}
+                onRemove={() => removeFilter(f.id)}
+                conflictingFilterLabels={otherActiveFilters.map((other) => getFilterDisplayLabel(other))}
+                lockSlots={lockSlots}
+              />
+            );
+          })}
         </div>
       )}
 
@@ -577,6 +596,12 @@ interface FilterCardProps {
   onToggleLinkedField: (columnName: string) => void;
   onClear: () => void;
   onRemove: () => void;
+  /** Labels of other filters currently constraining the distinct-values query
+   * for this card. Used to render a conflict banner when the cascading
+   * dropdown returns no values. */
+  conflictingFilterLabels?: string[];
+  /** Slicer-mode flag from parent: hides per-card remove (X) button. */
+  lockSlots?: boolean;
 }
 
 function FilterCard({
@@ -597,6 +622,8 @@ function FilterCard({
   onToggleLinkedField,
   onClear,
   onRemove,
+  conflictingFilterLabels,
+  lockSlots = false,
 }: FilterCardProps) {
   const [showLinked, setShowLinked] = useState(false);
 
@@ -695,13 +722,15 @@ function FilterCard({
               Clear
             </button>
           )}
-          <button
-            onClick={onRemove}
-            className="p-0.5 text-text-quaternary hover:text-danger transition-colors"
-            title="Remove filter"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
+          {!lockSlots && (
+            <button
+              onClick={onRemove}
+              className="p-0.5 text-text-quaternary hover:text-danger transition-colors"
+              title="Remove filter"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -717,6 +746,7 @@ function FilterCard({
             onToggleValue={onToggleValue}
             onSelectAll={() => onSelectAll(mergedValues)}
             onDeselectAll={onDeselectAll}
+            conflictingFilterLabels={conflictingFilterLabels}
           />
         ) : f.type === 'number' ? (
           <NumberBody filter={f} onUpdateValue={onUpdateValue} onUpdateOperator={onUpdateOperator} />
@@ -796,6 +826,7 @@ function MultiSelectBody({
   onToggleValue,
   onSelectAll,
   onDeselectAll,
+  conflictingFilterLabels,
 }: {
   values: string[];
   filteredValues: string[];
@@ -805,9 +836,26 @@ function MultiSelectBody({
   onToggleValue: (val: string) => void;
   onSelectAll: () => void;
   onDeselectAll: () => void;
+  conflictingFilterLabels?: string[];
 }) {
+  // When the cascading distinct query yields no values BUT other filters
+  // are constraining it, surface the combination explicitly so the user
+  // knows which filter to relax. Without this signal the user just sees
+  // "Loading values…" and assumes the filter is broken.
+  const showConflictBanner =
+    values.length === 0
+    && (conflictingFilterLabels?.length ?? 0) > 0;
   return (
     <div>
+      {showConflictBanner && (
+        <div className="mb-2 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
+          <p className="font-medium">No values match current filter combination.</p>
+          <p className="mt-0.5 text-amber-700">
+            Try relaxing: {conflictingFilterLabels!.slice(0, 3).join(', ')}
+            {conflictingFilterLabels!.length > 3 ? ` (+${conflictingFilterLabels!.length - 3} more)` : ''}
+          </p>
+        </div>
+      )}
       {/* Search */}
       {values.length > 8 && (
         <div className="relative mb-2">
@@ -838,7 +886,11 @@ function MultiSelectBody({
       {/* Checkboxes */}
       <div className="max-h-48 overflow-y-auto space-y-0.5">
         {filteredValues.length === 0 ? (
-          <p className="text-xs text-text-quaternary italic py-1">{values.length === 0 ? 'Loading values…' : 'No match'}</p>
+          <p className="text-xs text-text-quaternary italic py-1">
+            {values.length === 0
+              ? (showConflictBanner ? 'No matching values' : 'Loading values…')
+              : 'No match'}
+          </p>
         ) : (
           filteredValues.map(val => {
             const checked = selected.includes(val);
@@ -895,8 +947,10 @@ function NumberBody({
         <option value="lt">&lt; less than</option>
         <option value="lte">≤ less or equal</option>
         <option value="between">↔ between</option>
+        <option value="is_null">∅ is empty</option>
+        <option value="is_not_null">≠∅ is not empty</option>
       </select>
-      {f.operator === 'between' ? (
+      {f.operator === 'is_null' || f.operator === 'is_not_null' ? null : f.operator === 'between' ? (
         <div className="flex items-center gap-1.5">
           <input
             type="number"
@@ -969,8 +1023,10 @@ function DateBody({
             <option value="gte">≥ on or after</option>
             <option value="lt">&lt; before</option>
             <option value="lte">≤ on or before</option>
+            <option value="is_null">∅ is empty</option>
+            <option value="is_not_null">≠∅ is not empty</option>
           </select>
-          {f.operator === 'between' ? (
+          {f.operator === 'is_null' || f.operator === 'is_not_null' ? null : f.operator === 'between' ? (
             <div className="space-y-1.5">
               <DateInput
                 value={Array.isArray(f.value) ? f.value[0] ?? '' : ''}

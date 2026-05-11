@@ -53,36 +53,9 @@ export interface WorkspaceLoginResponse {
   app_user: WorkspaceAppUser;
 }
 
-export interface WorkboardFormSpec {
-  title?: string | null;
-  submit_label?: string | null;
-  fields: Array<Record<string, unknown>>;
-  lookups: Record<string, Array<{ label: string; value: unknown }>>;
-  primary_key_columns: string[];
-  audit?: Record<string, unknown>;
-  rls?: Record<string, unknown>;
-}
-
-export interface WorkboardListResponse {
-  columns: string[];
-  rows: Array<Record<string, unknown>>;
-  page: number;
-  page_size: number;
-  list_view?: Record<string, unknown>;
-}
-
 export interface DocBlockRendered {
   type: string;
   [key: string]: unknown;
-}
-
-export interface DocViewRendered {
-  id: string;
-  title?: string | null;
-  page?: Record<string, unknown> | null;
-  blocks: DocBlockRendered[];
-  context?: Record<string, unknown>;
-  missing?: boolean;
 }
 
 // ── Mini-app contracts ──────────────────────────────────────────────────
@@ -151,6 +124,7 @@ export interface ListScreenResponse {
   page: number;
   page_size: number;
   list_view?: Record<string, unknown>;
+  column_labels?: Record<string, string>;
 }
 
 export interface DocScreenResponse {
@@ -190,60 +164,6 @@ export const workspaceApi = {
   },
   async getMenu(token: string): Promise<WorkspaceMenuResponse> {
     const r = await client.get(`/public/workspaces/${token}/menu`);
-    return r.data;
-  },
-  async getForm(token: string, workboardId: number): Promise<WorkboardFormSpec> {
-    const r = await client.get(
-      `/public/workspaces/${token}/workboards/${workboardId}/form`,
-    );
-    return r.data;
-  },
-  async listRows(
-    token: string,
-    workboardId: number,
-    body: {
-      page?: number;
-      page_size?: number;
-      filters?: Array<Record<string, unknown>>;
-    } = {},
-  ): Promise<WorkboardListResponse> {
-    const r = await client.post(
-      `/public/workspaces/${token}/workboards/${workboardId}/rows/list`,
-      body,
-    );
-    return r.data;
-  },
-  async insertRow(
-    token: string,
-    workboardId: number,
-    values: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    const r = await client.post(
-      `/public/workspaces/${token}/workboards/${workboardId}/rows`,
-      { values },
-    );
-    return r.data;
-  },
-  async updateRow(
-    token: string,
-    workboardId: number,
-    pk: Record<string, unknown>,
-    values: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    const r = await client.patch(
-      `/public/workspaces/${token}/workboards/${workboardId}/rows`,
-      { pk, values },
-    );
-    return r.data;
-  },
-  async getDoc(
-    token: string,
-    workboardId: number,
-    viewId: string,
-  ): Promise<DocViewRendered> {
-    const r = await client.get(
-      `/public/workspaces/${token}/workboards/${workboardId}/doc/${viewId}`,
-    );
     return r.data;
   },
 

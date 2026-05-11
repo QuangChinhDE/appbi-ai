@@ -1,9 +1,9 @@
-"""
+﻿"""
 Public (unauthenticated) endpoints for shared dashboard links.
 
-POST /public/dashboards/{token}/auth               → exchange password for session token
-GET  /public/dashboards/{token}                    → dashboard + chart configs
-GET  /public/dashboards/{token}/charts/{chart_id}/data → chart query data
+POST /public/dashboards/{token}/auth               â†’ exchange password for session token
+GET  /public/dashboards/{token}                    â†’ dashboard + chart configs
+GET  /public/dashboards/{token}/charts/{chart_id}/data â†’ chart query data
 
 Password-protected links require a session token obtained from /auth.
 Session tokens are JWTs signed with the app SECRET_KEY, valid for 2 hours.
@@ -44,7 +44,6 @@ if settings.WORKBOARDS_ENABLED:
     from app.modules.workboards.services.rls_service import (
         identity_from_app_user,
     )
-    from app.modules.workboards.services.runtime_service import WorkboardRuntimeService
     from app.modules.workboards.services.write_service import (
         WorkboardValidationError,
         WorkboardWriteError,
@@ -68,7 +67,7 @@ _limiter = Limiter(key_func=get_remote_address)
 logger = get_logger(__name__)
 _pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# 2 hours — covers a full business meeting/presentation session without excessive re-auth
+# 2 hours â€” covers a full business meeting/presentation session without excessive re-auth
 # friction, while limiting the exposure window for forgotten open browser tabs.
 PUBLIC_SESSION_SECONDS = 7200
 
@@ -178,7 +177,135 @@ def _build_public_calendar_filter_fields(db: Session, dash: Dashboard) -> list[d
     }]
 
 
-def _build_public_filter_fields(db: Session, dash: Dashboard) -> list[dict]:
+def _resolve_semantic_field_metadata(
+    db: Session,
+    dataset_id: int,
+    semantic_field: str,
+    dataset_models: dict[int, dict] | None = None,
+) -> dict | None:
+    """Resolve label/type/tableLabel for a `view.field` semantic ref from the dataset model.
+
+    Returns a partial column dict, or None when the field cannot be resolved.
+    Mutates `dataset_models` cache when provided.
+    """
+    if not isinstance(semantic_field, str) or "." not in semantic_field:
+        return None
+    view_name, field_name = semantic_field.split(".", 1)
+
+    cache = dataset_models if dataset_models is not None else {}
+    if dataset_id not in cache:
+        model = get_dataset_model(db, dataset_id)
+        if not model:
+            return None
+        cache[dataset_id] = model
+    model = cache.get(dataset_id) or {}
+
+    view = next(
+        (
+            item for item in (model.get("views") or [])
+            if isinstance(item, dict) and item.get("name") == view_name
+        ),
+        None,
+    )
+    if not isinstance(view, dict):
+        return None
+
+    dimension = next(
+        (
+            item for item in (view.get("dimensions") or [])
+            if isinstance(item, dict) and item.get("name") == field_name
+        ),
+        None,
+    )
+
+    label = field_name
+    dim_type = None
+    if isinstance(dimension, dict):
+        label = dimension.get("label") or field_name
+        dim_type = dimension.get("type")
+
+    return {
+        "key": semantic_field,
+        "name": field_name,
+        "label": label,
+        "tableLabel": view.get("table_display_name") or view.get("name"),
+        "type": _semantic_dimension_to_filter_type(dim_type),
+        "datasetId": dataset_id,
+        "semanticField": semantic_field,
+    }
+
+
+def _build_filter_fields_from_public_filters(
+    db: Session,
+    dash: Dashboard,
+    public_filters: list[dict],
+) -> list[dict]:
+    """Slicer-model column list: one slot per unique (datasetId, semanticField)
+    in `public_filters`, in the order DA configured them."""
+    dataset_models: dict[int, dict] = {}
+    total_dashboard_chart_count = len(dash.dashboard_charts or [])
+    seen: set[tuple[int, str]] = set()
+    out: list[dict] = []
+
+    for filter_condition in public_filters:
+        if not isinstance(filter_condition, dict):
+            continue
+        dataset_id = filter_condition.get("datasetId")
+        if not isinstance(dataset_id, int):
+            continue
+        refs = _public_filter_semantic_refs(filter_condition)
+        if not refs:
+            continue
+        semantic_field = refs[0]
+        key = (dataset_id, semantic_field)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        column = _resolve_semantic_field_metadata(
+            db, dataset_id, semantic_field, dataset_models=dataset_models,
+        )
+        if not column:
+            continue
+
+        # Honor explicit filter type override from DA (e.g. date stored as text but
+        # configured as a date filter in Edit Public Link).
+        explicit_type = filter_condition.get("type")
+        if isinstance(explicit_type, str) and explicit_type:
+            column["type"] = explicit_type
+
+        # Collect any linkedFields/cross-dataset hints provided by DA so the FE can
+        # fan out the filter to other datasets (e.g. global Date over all models).
+        linked_fields = filter_condition.get("linkedFields")
+        if isinstance(linked_fields, list):
+            extra = [str(ref) for ref in linked_fields if isinstance(ref, str) and "." in ref and ref != semantic_field]
+            if extra:
+                column["defaultLinkedFields"] = extra
+
+        column["chartCoverage"] = total_dashboard_chart_count
+        column["datasetChartCount"] = total_dashboard_chart_count
+        column["sharedAcrossDataset"] = True
+        out.append(column)
+
+    return out
+
+
+def _build_public_filter_fields(
+    db: Session,
+    dash: Dashboard,
+    public_filters: list[dict] | None = None,
+) -> list[dict]:
+    """Public-link filter columns.
+
+    Slicer model (Looker/PowerBI): when the link has `filters_config` (Access filters)
+    configured, the returned slots are EXACTLY those fields â€” one card per unique
+    (datasetId, semanticField) referenced by `public_filters`, in the order DA defined.
+    Legacy fallback: when no `public_filters`, scan chart bindings (preserves
+    behavior for older shares that never configured Access filters).
+    """
+    if public_filters:
+        return _build_filter_fields_from_public_filters(db, dash, public_filters)
+
     dataset_models: dict[int, dict] = {}
     dataset_join_key_fields: dict[int, set[str]] = {}
     columns: dict[str, dict] = {}
@@ -333,6 +460,29 @@ def _sanitize_public_viewer_filters(
     return sanitized
 
 
+def _dedupe_filters_by_field(filters: list[dict]) -> list[dict]:
+    """Dedupe filter list by (datasetId, semanticField); later entries win.
+
+    Used to combine DA-defined access filters with viewer overrides so the
+    viewer's value supersedes the default rather than AND-ing into an empty
+    set (e.g. Level=3 AND Level=1).
+    """
+    by_key: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for index, item in enumerate(filters):
+        if not isinstance(item, dict):
+            continue
+        refs = _public_filter_semantic_refs(item)
+        semantic_field = refs[0] if refs else None
+        dataset_id = item.get("datasetId")
+        # Fallback identity for items without resolvable field â€” keep them all.
+        key = (dataset_id, semantic_field) if semantic_field else ("__unkeyed__", index)
+        if key not in by_key:
+            order.append(key)
+        by_key[key] = item
+    return [by_key[key] for key in order]
+
+
 def _create_public_session(link_token: str) -> str:
     payload = {
         "sub": link_token,
@@ -373,7 +523,7 @@ def _get_dashboard_by_token(
         if link.max_access_count and (link.access_count or 0) >= link.max_access_count:
             raise HTTPException(status_code=status.HTTP_410_GONE, detail="This shared link has reached its access limit.")
 
-        # Check password protection — require a valid session token
+        # Check password protection â€” require a valid session token
         if link.password_hash:
             if not session_token or not _verify_public_session(session_token, token):
                 raise HTTPException(
@@ -460,7 +610,7 @@ def get_public_dashboard(
         ChartService.hydrate_runtime_config(db, dashboard_chart.chart, auto_generate=False)
     # Expose the link-specific filters so the frontend can display filter badges
     dash.public_filters_config = public_filters
-    dash.available_filter_fields = _build_public_filter_fields(db, dash)
+    dash.available_filter_fields = _build_public_filter_fields(db, dash, public_filters)
     dash.public_link_name = link_name
     # Strip the admin-only ai_bot_key before sending to public viewers.
     # Replace it with a safe boolean so the AI bot UI can skip key entry.
@@ -541,19 +691,21 @@ if settings.WORKBOARDS_ENABLED:
             db,
             session_token=x_public_session,
         )
-        mode = "view" if link.get("mode") == "view" else "form"
+        # Mini-app contract: a public link is just an authenticated handle
+        # on a workboard. The FE consumes ``workboard.layout`` (screens[])
+        # and drives everything through the workspace screen endpoints.
         payload = {
             "workboard": {
                 "id": workboard.id,
                 "name": workboard.name,
                 "description": workboard.description,
+                "slug": workboard.slug,
+                "layout": workboard.layout_json or {},
             },
             "link": {
                 "id": str(link.get("id")),
                 "name": str(link.get("name") or workboard.name),
                 "token": token,
-                "mode": mode,
-                "view_id": link.get("view_id"),
                 "is_active": bool(link.get("is_active", True)),
                 "has_password": bool(link.get("password_hash")),
                 "access_count": int(link.get("access_count") or 0),
@@ -561,25 +713,7 @@ if settings.WORKBOARDS_ENABLED:
                 "created_at": link.get("created_at"),
                 "updated_at": link.get("updated_at"),
             },
-            "mode": mode,
         }
-        if mode == "form":
-            payload["form"] = WorkboardRuntimeService.render_form(db, workboard)
-        else:
-            view_id = str(link.get("view_id") or "")
-            if not view_id:
-                raise HTTPException(status_code=400, detail="Shared workboard view is not configured.")
-            rendered = WorkboardRuntimeService.render_view(
-                db,
-                workboard,
-                view_id,
-                page=1,
-                page_size=50,
-                filters=[],
-            )
-            if rendered.get("missing"):
-                raise HTTPException(status_code=404, detail="Shared workboard view not found.")
-            payload["rendered_view"] = rendered
         return payload
 
 
@@ -598,8 +732,6 @@ if settings.WORKBOARDS_ENABLED:
             session_token=x_public_session,
             track_access=False,
         )
-        if link.get("mode") == "view":
-            raise HTTPException(status_code=400, detail="This shared workboard link is read-only.")
         values = body.get("values") if isinstance(body, dict) else None
         if not isinstance(values, dict):
             raise HTTPException(status_code=400, detail="values is required.")
@@ -618,7 +750,7 @@ if settings.WORKBOARDS_ENABLED:
         }
 
 
-    # ── Workspace public endpoints ────────────────────────────────────────
+    # â”€â”€ Workspace public endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     #
     # Workspaces are the public face of a project's mini-app. End-users
     # (workers, foremen, drivers) authenticate against the project's own
@@ -734,7 +866,7 @@ if settings.WORKBOARDS_ENABLED:
         """Resolve the active app_user dict for a workspace request.
 
         Order:
-          1. Workspace-cookie session (the standard flow — set by /login or
+          1. Workspace-cookie session (the standard flow â€” set by /login or
              by the admin preview-session endpoint).
           2. For ``access_mode='internal'`` workspaces only: any valid AppBI
              Bearer token in the Authorization header. The AppBI user is
@@ -810,7 +942,7 @@ if settings.WORKBOARDS_ENABLED:
 
     @router.post("/workspaces/{token}/logout")
     def workspace_logout(token: str, response: Response, db: Session = Depends(get_db)):
-        # Don't 404 here — let users clear their cookie even if the
+        # Don't 404 here â€” let users clear their cookie even if the
         # workspace was deleted, otherwise they'd be stuck.
         response.delete_cookie(
             key=_workspace_cookie_name(token),
@@ -831,8 +963,8 @@ if settings.WORKBOARDS_ENABLED:
             access_mode = (ws.access_mode or "internal")
             if access_mode == "internal":
                 detail = (
-                    "Workspace này chỉ mở cho AppBI staff đã đăng nhập. "
-                    "Đăng nhập AppBI rồi mở lại."
+                    "Workspace nÃ y chá»‰ má»Ÿ cho AppBI staff Ä‘Ã£ Ä‘Äƒng nháº­p. "
+                    "ÄÄƒng nháº­p AppBI rá»“i má»Ÿ láº¡i."
                 )
             else:
                 detail = "Sign in to access this workspace."
@@ -916,7 +1048,7 @@ if settings.WORKBOARDS_ENABLED:
             access_mode = (workspace.access_mode or "internal")
             if access_mode == "internal":
                 detail = (
-                    "Workspace này chỉ mở cho AppBI staff đã đăng nhập."
+                    "Workspace nÃ y chá»‰ má»Ÿ cho AppBI staff Ä‘Ã£ Ä‘Äƒng nháº­p."
                 )
             else:
                 detail = "Sign in to use this workspace."
@@ -943,7 +1075,7 @@ if settings.WORKBOARDS_ENABLED:
 
         When ``app_user`` is supplied and the workboard has a per-workboard
         ``app_users_config`` override, callers from a different user table
-        are rejected with 403 — guards against an authenticated nurse
+        are rejected with 403 â€” guards against an authenticated nurse
         poking around a drivers-only mini-app by id.
         """
         configured_slugs = {
@@ -982,205 +1114,14 @@ if settings.WORKBOARDS_ENABLED:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=(
-                    "Tài khoản này thuộc bảng người dùng khác — không truy cập "
-                    "được mini-app này."
+                    "TÃ i khoáº£n nÃ y thuá»™c báº£ng ngÆ°á»i dÃ¹ng khÃ¡c â€” khÃ´ng truy cáº­p "
+                    "Ä‘Æ°á»£c mini-app nÃ y."
                 ),
             )
         return wb
 
 
-    @router.get("/workspaces/{token}/workboards/{workboard_id}/form")
-    def workspace_get_form(
-        token: str,
-        workboard_id: int,
-        request: Request,
-        db: Session = Depends(get_db),
-    ):
-        ws = _load_workspace_or_404(db, token)
-        app_user = _require_workspace_app_user(request, ws, db=db)
-        wb = _resolve_workboard_for_workspace(
-            db, ws, workboard_id, request=request, app_user=app_user
-        )
-        return WorkboardRuntimeService.render_form(db, wb)
-
-
-    @router.post("/workspaces/{token}/workboards/{workboard_id}/rows/list")
-    def workspace_list_rows(
-        token: str,
-        workboard_id: int,
-        body: dict | None,
-        request: Request,
-        db: Session = Depends(get_db),
-    ):
-        ws = _load_workspace_or_404(db, token)
-        app_user = _require_workspace_app_user(request, ws, db=db)
-        wb = _resolve_workboard_for_workspace(
-            db, ws, workboard_id, request=request, app_user=app_user
-        )
-        body = body or {}
-        identity = identity_from_app_user(app_user)
-        return WorkboardRuntimeService.list_rows(
-            db,
-            wb,
-            page=int(body.get("page") or 1),
-            page_size=int(body.get("page_size") or 50),
-            filters=body.get("filters") or [],
-            identity=identity,
-        )
-
-
-    @router.post("/workspaces/{token}/workboards/{workboard_id}/rows")
-    def workspace_insert_row(
-        token: str,
-        workboard_id: int,
-        body: dict,
-        request: Request,
-        db: Session = Depends(get_db),
-    ):
-        ws = _load_workspace_or_404(db, token)
-        app_user = _require_workspace_app_user(request, ws, db=db)
-        wb = _resolve_workboard_for_workspace(
-            db, ws, workboard_id, request=request, app_user=app_user
-        )
-        from app.modules.workboards.services.rls_service import enforce_write_access
-        from app.modules.workboards.schemas import LayoutJson as _Layout
-
-        try:
-            layout = _Layout.model_validate(wb.layout_json or {})
-        except Exception:
-            layout = _Layout()
-        identity = identity_from_app_user(app_user)
-        values = enforce_write_access(
-            layout.rls,
-            identity,
-            op="insert",
-            row_values=body.get("values") if isinstance(body, dict) else None,
-        )
-        if not isinstance(values, dict):
-            raise HTTPException(status_code=400, detail="values is required.")
-        try:
-            result = WorkboardWriteService.insert_row(db, wb, values, None)
-        except WorkboardValidationError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail={"message": str(exc), "violations": exc.violations},
-            ) from exc
-        except WorkboardWriteError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-        return {"action": "insert", **result}
-
-
-    @router.patch("/workspaces/{token}/workboards/{workboard_id}/rows")
-    def workspace_update_row(
-        token: str,
-        workboard_id: int,
-        body: dict,
-        request: Request,
-        db: Session = Depends(get_db),
-    ):
-        ws = _load_workspace_or_404(db, token)
-        app_user = _require_workspace_app_user(request, ws, db=db)
-        wb = _resolve_workboard_for_workspace(
-            db, ws, workboard_id, request=request, app_user=app_user
-        )
-
-        from app.modules.workboards.services.rls_service import (
-            build_rls_filter,
-            enforce_write_access,
-        )
-        from app.modules.workboards.schemas import LayoutJson as _Layout
-
-        try:
-            layout = _Layout.model_validate(wb.layout_json or {})
-        except Exception:
-            layout = _Layout()
-        identity = identity_from_app_user(app_user)
-
-        pk = body.get("pk") if isinstance(body, dict) else None
-        values = enforce_write_access(
-            layout.rls,
-            identity,
-            op="update",
-            row_values=body.get("values") if isinstance(body, dict) else None,
-        )
-
-        # Make sure the targeted row is one this app_user is allowed to see;
-        # otherwise a worker could update someone else's row by guessing PKs.
-        rls_filters, allowed = build_rls_filter(layout.rls, identity)
-        if not allowed:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You don't have access to that row.",
-            )
-        if rls_filters:
-            existing = WorkboardRuntimeService.list_rows(
-                db,
-                wb,
-                page=1,
-                page_size=1,
-                filters=[
-                    *(
-                        [
-                            {"field": k, "operator": "eq", "value": v}
-                            for k, v in (pk or {}).items()
-                        ]
-                    ),
-                    *rls_filters,
-                ],
-                identity=identity,
-            )
-            if not (existing.get("rows") or []):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="You don't have access to that row.",
-                )
-
-        try:
-            result = WorkboardWriteService.update_row(
-                db, wb, pk or {}, values, None,
-            )
-        except WorkboardValidationError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail={"message": str(exc), "violations": exc.violations},
-            ) from exc
-        except WorkboardWriteError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-        return {"action": "update", **result}
-
-
-    @router.get("/workspaces/{token}/workboards/{workboard_id}/doc/{view_id}")
-    def workspace_render_doc(
-        token: str,
-        workboard_id: int,
-        view_id: str,
-        request: Request,
-        db: Session = Depends(get_db),
-    ):
-        ws = _load_workspace_or_404(db, token)
-        app_user = _require_workspace_app_user(request, ws, db=db)
-        wb = _resolve_workboard_for_workspace(
-            db, ws, workboard_id, request=request, app_user=app_user
-        )
-        identity = identity_from_app_user(app_user)
-        rendered = WorkboardRuntimeService.render_doc(
-            db,
-            wb,
-            view_id=view_id,
-            user=None,
-            view_filters=None,
-            identity=identity,
-            app_user_payload=app_user,
-        )
-        if rendered.get("missing"):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Doc view '{view_id}' not found",
-            )
-        return rendered
-
-
-    # ── Mini-app screen-based endpoints ───────────────────────────────────
+    # â”€â”€ Mini-app screen-based endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     #
     # The "screens" model is the modern public runtime: instead of one form
     # + one list per workboard, the workboard holds N screens (form/list/
@@ -1383,7 +1324,7 @@ def get_public_filter_distinct_values(
         track_access=False,
     )
 
-    public_filter_fields = _build_public_filter_fields(db, dash)
+    public_filter_fields = _build_public_filter_fields(db, dash, public_filters)
     allowed_field = next(
         (
             item for item in public_filter_fields
@@ -1416,10 +1357,10 @@ def get_public_filter_distinct_values(
         viewer_filters,
     )
 
-    combined_filters = [
+    combined_filters = _dedupe_filters_by_field([
         *[item for item in (public_filters or []) if isinstance(item, dict)],
         *sanitized_viewer_filters,
-    ]
+    ])
 
     try:
         return {
@@ -1444,7 +1385,7 @@ def get_public_filter_distinct_values(
 
 @router.get("/dashboards/{token}/charts/{chart_id}/data", response_model=ChartDataResponse)
 # Each dashboard page load fires one request per chart tile in parallel
-# (easily 15–20 for an HTML-imported dashboard), plus re-fetches on every
+# (easily 15â€“20 for an HTML-imported dashboard), plus re-fetches on every
 # filter/page change. The previous 30/min ceiling was trivial to exceed
 # for a single honest viewer, so keep it generous but still enough to
 # block automated scraping.
@@ -1501,10 +1442,10 @@ def get_public_chart_data(
                 detail=f"Invalid filters parameter: {exc}",
             ) from exc
 
-    combined_filters = [
+    combined_filters = _dedupe_filters_by_field([
         *[item for item in (public_filters or []) if isinstance(item, dict)],
         *viewer_filters,
-    ]
+    ])
 
     try:
         return ChartService.get_chart_data(
@@ -1523,7 +1464,7 @@ def get_public_chart_data(
         )
 
 
-# ── Dashboard AI Bot endpoints ────────────────────────────────────────────────
+# â”€â”€ Dashboard AI Bot endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #
 # These endpoints power the BYOK AI chat widget on public dashboard pages.
 # The user's API key is passed in X-User-Ai-Key and is NEVER stored or logged.
@@ -1547,7 +1488,7 @@ def get_dashboard_ai_context(
     The AI bot fetches this once on first open, caches it client-side for
     the session, and sends a snapshot with each chat turn.
     """
-    from app.services import dashboard_ai_service  # local import — optional feature
+    from app.services import dashboard_ai_service  # local import â€” optional feature
 
     dash, public_filters, _, appearance_config = _get_dashboard_by_token(
         token,
@@ -1592,7 +1533,7 @@ async def chat_dashboard_ai(
     Returns a text/event-stream (SSE) response.
     """
     from fastapi.responses import StreamingResponse
-    from app.services import dashboard_ai_service  # local import — optional feature
+    from app.services import dashboard_ai_service  # local import â€” optional feature
 
     dash, public_filters, _, appearance_config = _get_dashboard_by_token(
         token,
@@ -1675,7 +1616,7 @@ async def chat_dashboard_ai(
     )
 
 
-# ── Agentic AI Bot endpoints (v2) ─────────────────────────────────────────────
+# â”€â”€ Agentic AI Bot endpoints (v2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #
 # These endpoints back the new agentic flow built in
 # ``app.services.dashboard_ai_bot``. They coexist with the legacy
@@ -1745,10 +1686,10 @@ def get_dashboard_ai_recon(
 
 class _AiAgentChatBody(BaseModel):
     messages: list[dict]
-    # Phase A — confirmed user briefing (domain, role, focus, timeframe).
+    # Phase A â€” confirmed user briefing (domain, role, focus, timeframe).
     # Optional: if missing, agent runs without briefing customisation.
     briefing: dict | None = None
-    # Phase B — conversation state from previous turns. Optional first turn.
+    # Phase B â€” conversation state from previous turns. Optional first turn.
     state: dict | None = None
 
 
@@ -1758,7 +1699,7 @@ class _AiBriefingGuessQuery(BaseModel):
 
 
 class _AiBriefingBriefBody(BaseModel):
-    """Confirmed briefing — backend uses it (+ recon) to call BYOK LLM and
+    """Confirmed briefing â€” backend uses it (+ recon) to call BYOK LLM and
     produce an Executive Brief paragraph.
     """
     briefing: dict
@@ -1772,9 +1713,9 @@ def get_dashboard_ai_pdf(
     db: Session = Depends(get_db),
     x_public_session: str | None = Header(default=None),
 ):
-    """Render the dashboard as a multi-page PDF — one page per chart plus a
+    """Render the dashboard as a multi-page PDF â€” one page per chart plus a
     cover page. The user can download this and re-feed it into ANY LLM
-    (Claude, ChatGPT) for offline analysis — same data, "real images" the
+    (Claude, ChatGPT) for offline analysis â€” same data, "real images" the
     way the user described.
     """
     from app.services.dashboard_ai_bot.advanced_tools import (
@@ -1990,7 +1931,7 @@ async def post_dashboard_ai_briefing_brief(
     )
 
 
-# ── AI Chat Session persistence ────────────────────────────────────────────────
+# â”€â”€ AI Chat Session persistence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.get("/dashboards/{token}/ai/session/{session_key}")
 async def load_ai_chat_session(
@@ -2002,7 +1943,7 @@ async def load_ai_chat_session(
 ):
     """Load a persisted chat session by session_key.
 
-    Returns 404 when no session exists yet — the frontend treats this as a
+    Returns 404 when no session exists yet â€” the frontend treats this as a
     fresh conversation.  The public-link auth check ensures the viewer is
     allowed to see this dashboard before returning any messages.
     """
@@ -2107,7 +2048,7 @@ async def clear_ai_chat_session(
 ):
     """Clear a chat session's messages/state while keeping the session_key.
 
-    Used when the viewer clicks "Xóa lịch sử".
+    Used when the viewer clicks "XÃ³a lá»‹ch sá»­".
     """
     from app.models.ai_chat_session import AiChatSession
     from datetime import datetime
@@ -2144,7 +2085,7 @@ async def chat_dashboard_ai_agent(
 ):
     """Run an agentic chat turn. Streams typed SSE events.
 
-    Honors the dashboard's public filters automatically — every tool the
+    Honors the dashboard's public filters automatically â€” every tool the
     agent calls applies the same filters the dashboard is currently showing.
     """
     import json as _json
@@ -2179,7 +2120,7 @@ async def chat_dashboard_ai_agent(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="messages is required.")
 
     # Sanitize: strip any tool/assistant turns referencing chart_ids outside
-    # this dashboard (defensive — clients shouldn't send these but we guard).
+    # this dashboard (defensive â€” clients shouldn't send these but we guard).
     allowed_chart_ids = {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id}
     safe_messages: list[dict] = []
     for msg in messages:
@@ -2197,7 +2138,7 @@ async def chat_dashboard_ai_agent(
         content = msg.get("content")
         if content is not None:
             out["content"] = str(content)
-        # Drop any tool_calls echoed back — agent treats turns as fresh
+        # Drop any tool_calls echoed back â€” agent treats turns as fresh
         safe_messages.append(out)
 
     if not safe_messages:
@@ -2211,7 +2152,7 @@ async def chat_dashboard_ai_agent(
     from app.services.dashboard_ai_bot.conversation_state import ConversationState as _ConvState
     briefing_obj = _Briefing.from_dict(body.briefing or {}) if body.briefing else None
     state_obj = _ConvState.from_dict(body.state or {}) if body.state is not None else _ConvState()
-    # Briefing on the state may be older than what FE sent — sync to caller's
+    # Briefing on the state may be older than what FE sent â€” sync to caller's
     # current briefing so role/focus changes take effect immediately.
     if briefing_obj is not None:
         state_obj.briefing = briefing_obj

@@ -144,9 +144,16 @@ CATEGORY_VALUE_CHART_TYPES = {
 async def list_charts(
     dataset_id: int | None = None,
     dataset_table_id: int | None = None,
+    summary: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """List charts. Filter by dataset or specific table when narrowing scope."""
+    """List charts. Filter by dataset or specific table when narrowing scope.
+
+    Default returns the full chart records (config payload included — a list
+    of 40+ charts can exceed 500KB). Pass `summary=True` to keep only
+    id/name/chart_type/dataset_table_id/owner plus a one-line role summary,
+    which is enough to choose which chart to inspect with `get_chart`.
+    """
     items = await _request(
         "GET",
         _query_path(
@@ -157,7 +164,36 @@ async def list_charts(
             },
         ),
     )
+    if summary and isinstance(items, list):
+        return {"items": [_summarize_chart_item(item) for item in items]}
     return {"items": items}
+
+
+def _summarize_chart_item(chart: Any) -> dict[str, Any]:
+    if not isinstance(chart, dict):
+        return {"raw_type": type(chart).__name__}
+    config = chart.get("config") or {}
+    role = (
+        config.get("customRoleConfig")
+        if str(config.get("queryMode") or "").lower() == "custom"
+        else config.get("generatedRoleConfig") or config.get("roleConfig")
+    ) or {}
+    return {
+        "id": chart.get("id"),
+        "name": chart.get("name"),
+        "chart_type": chart.get("chart_type"),
+        "dataset_table_id": chart.get("dataset_table_id"),
+        "owner": chart.get("owner") or chart.get("user_id"),
+        "role_summary": {
+            "dimension": role.get("dimension") or role.get("timeField"),
+            "breakdown": role.get("breakdown"),
+            "metric_fields": [
+                m.get("field")
+                for m in (role.get("metrics") or [])
+                if isinstance(m, dict)
+            ],
+        },
+    }
 
 
 @mcp.tool()
@@ -373,15 +409,18 @@ async def create_chart(
     # like 'orders.amount' would produce "orders.amount" (invalid SQL) and
     # cause a 500 in Explore.
     body["config"] = _unqualify_config_role_fields(body["config"])
-    runtime_issues = await _runtime_preview_preflight(
+    diag = await _runtime_preview_diagnose(
         dataset_table_id=int(dataset_table_id),
         chart_type=chart_type,
         config=body["config"],
     )
-    if runtime_issues:
+    if diag is not None:
         return {
             "status": "blocked_by_runtime_preview",
-            "warnings": runtime_issues,
+            "warnings": diag["errors"],
+            "raw_error": diag.get("raw_error"),
+            "root_cause": diag.get("root_cause"),
+            "resolution_options": diag.get("resolution_options"),
             "fix": (
                 "Adjust the chart config until preview_chart_data succeeds, then retry. "
                 "This guardrail prevents saving charts that later fail in Explore/runtime."
@@ -613,6 +652,33 @@ async def _runtime_preview_preflight(
     This catches runtime-invalid configs that pass symbolic semantic validation
     but still fail when the backend executes the chart query.
     """
+    diag = await _runtime_preview_diagnose(
+        dataset_table_id=dataset_table_id,
+        chart_type=chart_type,
+        config=config,
+    )
+    if diag is None:
+        return []
+    return diag["errors"]
+
+
+async def _runtime_preview_diagnose(
+    *,
+    dataset_table_id: int,
+    chart_type: str,
+    config: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Same as _runtime_preview_preflight but returns a structured diagnosis.
+
+    Returns None on success. On failure returns:
+      {
+        "errors": [str, ...],       # raw error strings for backwards compat
+        "raw_error": str,           # the backend exception message
+        "root_cause": str | None,   # pattern-matched cause code
+        "resolution_options": [...] # actionable next-steps
+      }
+    Use this when you want to surface a richer payload to the agent or user.
+    """
     try:
         await _request(
             "POST",
@@ -625,8 +691,93 @@ async def _runtime_preview_preflight(
             timeout_seconds=APPBI_LONG_TIMEOUT_SECONDS,
         )
     except RuntimeError as exc:
-        return [f"preview_chart_data failed for the final stored config: {exc}"]
-    return []
+        raw = str(exc)
+        diagnosis = _classify_preview_error(raw, config=config)
+        return {
+            "errors": [f"preview_chart_data failed for the final stored config: {raw}"],
+            "raw_error": raw,
+            **diagnosis,
+        }
+    return None
+
+
+_PREVIEW_ERROR_PATTERNS: tuple[tuple[str, str, str], ...] = (
+    # (regex/substring, root_cause, default_resolution_hint)
+    (
+        r"unrecognized name[: ]+['\"]?([A-Za-z_][A-Za-z0-9_]*)",
+        "UNRECOGNIZED_FIELD",
+        "The named field does not exist on the bound view's underlying SQL "
+        "table. Either rename it to an existing dimension/measure, or add it "
+        "to the bound view (commit_semantic_model) before retrying.",
+    ),
+    (
+        r"must be qualified with a dataset",
+        "BIGQUERY_UNQUALIFIED_TABLE",
+        "Backend emitted a SQL reference without the BigQuery "
+        "`project.dataset.` prefix. This is a known backend defect in the "
+        "explore SQL generator — file an issue tagged 'CTE qualifier' or "
+        "regenerate the dataset model after the fix lands.",
+    ),
+    (
+        r"column .* does not exist|no such column",
+        "COLUMN_NOT_IN_BOUND_VIEW",
+        "Field referenced in role_config is not a column on the bound view's "
+        "table. If it lives on a joined view, you must materialise it onto "
+        "the bound view first (chart runtime does not apply explore joins).",
+    ),
+    (
+        r"timeout|deadline exceeded",
+        "PREVIEW_TIMEOUT",
+        "Preview query ran past the backend timeout. Reduce dimension "
+        "cardinality, add a date filter to baseFilters, or lower the chart's "
+        "limit before retrying.",
+    ),
+)
+
+
+def _classify_preview_error(
+    raw: str, *, config: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Pattern-match a backend preview-data error and propose next steps.
+
+    Defensive — unknown errors return root_cause=None with the raw message
+    passed through to resolution_options as a single generic option.
+    """
+    import re as _re
+
+    lowered = raw.lower()
+    for pattern, code, hint in _PREVIEW_ERROR_PATTERNS:
+        if _re.search(pattern, lowered):
+            options = [{"option": code, "description": hint}]
+            # Field-specific enrichment for UNRECOGNIZED_FIELD: surface the
+            # offending field name back to the agent in a structured slot.
+            if code == "UNRECOGNIZED_FIELD":
+                match = _re.search(pattern, lowered)
+                if match and match.lastindex:
+                    options.append({
+                        "offending_field": match.group(1),
+                        "check_this": (
+                            "Confirm this field is in fields_by_table[].dimensions "
+                            "or fields_by_table[].chart_ready_measures for the "
+                            "chart's dataset_table_id. If it is a semantic "
+                            "measure with expression/filters, see "
+                            "agent_contract.chart_incompatible_measures."
+                        ),
+                    })
+            return {"root_cause": code, "resolution_options": options}
+    return {
+        "root_cause": None,
+        "resolution_options": [
+            {
+                "option": "INSPECT_RAW",
+                "description": (
+                    "Unrecognised preview error. Read the raw message and "
+                    "verify role_config field names against fields_by_table "
+                    "from propose_dashboard_blueprint."
+                ),
+            }
+        ],
+    }
 
 
 @mcp.tool()
@@ -686,15 +837,18 @@ async def update_chart(
                 ),
             }
         runtime_config = _unqualify_config_role_fields(effective_config)
-        runtime_issues = await _runtime_preview_preflight(
+        diag = await _runtime_preview_diagnose(
             dataset_table_id=effective_dataset_table_id,
             chart_type=effective_chart_type,
             config=runtime_config,
         )
-        if runtime_issues:
+        if diag is not None:
             return {
                 "status": "blocked_by_runtime_preview",
-                "warnings": runtime_issues,
+                "warnings": diag["errors"],
+                "raw_error": diag.get("raw_error"),
+                "root_cause": diag.get("root_cause"),
+                "resolution_options": diag.get("resolution_options"),
                 "fix": (
                     "Adjust the final stored config until preview_chart_data succeeds, "
                     "then retry the update."

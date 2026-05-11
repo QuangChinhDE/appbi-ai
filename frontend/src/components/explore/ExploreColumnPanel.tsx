@@ -42,6 +42,14 @@ function DimensionIcon({ type }: { type: string }) {
 interface ExploreColumnPanelProps {
   datasetId: number | null;
   selectedTableId: number | null;
+  /**
+   * Names of views reachable from the selected table via JOINs declared in
+   * the dataset's semantic explore. Views NOT in this set are still rendered,
+   * but disabled with a tooltip prompting the user to define a relationship
+   * in the Data Model tab. When `undefined`, all views are treated as
+   * reachable (back-compat for callers that don't yet pass the prop).
+   */
+  reachableViewNames?: Set<string>;
   onSelectDimension?: (dim: DimensionDefinition, viewName: string) => void;
   onSelectMeasure?: (measure: MeasureDefinition, viewName: string) => void;
 }
@@ -70,6 +78,7 @@ function measureTitle(measure: MeasureDefinition) {
 export function ExploreColumnPanel({
   datasetId,
   selectedTableId,
+  reachableViewNames,
   onSelectDimension,
   onSelectMeasure,
 }: ExploreColumnPanelProps) {
@@ -156,12 +165,17 @@ export function ExploreColumnPanel({
           const visibleDims = view.dimensions.filter((d) => !d.hidden);
           const visibleMeasures = view.measures.filter((m) => !m.hidden);
           const measureGroups = groupMeasures(visibleMeasures);
+          const isReachable = reachableViewNames === undefined || reachableViewNames.has(view.name);
+          const unreachableTitle = isReachable
+            ? undefined
+            : 'No JOIN defined between this view and the selected table. Open the Data Model tab to add a relationship.';
 
           return (
             <div key={view.id}>
               <button
                 onClick={() => toggleView(view.id)}
                 className="flex w-full items-center gap-1.5 px-4 py-1.5 text-caption font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
+                title={unreachableTitle}
               >
                 {isExpanded ? (
                   <ChevronDown className="h-3 w-3 text-text-quaternary" />
@@ -169,7 +183,12 @@ export function ExploreColumnPanel({
                   <ChevronRight className="h-3 w-3 text-text-quaternary" />
                 )}
                 <TableIcon className="h-3 w-3 text-text-quaternary" />
-                <span className="truncate">{view.table_display_name || view.name}</span>
+                <span className={`truncate ${isReachable ? '' : 'text-text-quaternary'}`}>
+                  {view.table_display_name || view.name}
+                </span>
+                {!isReachable && (
+                  <span className="rounded bg-surface-2 px-1 text-tiny text-text-quaternary">no join</span>
+                )}
                 <span className="ml-auto text-tiny text-text-quaternary">
                   {visibleDims.length}d · {visibleMeasures.length}m
                 </span>
@@ -185,9 +204,14 @@ export function ExploreColumnPanel({
                       {visibleDims.map((dim) => (
                         <button
                           key={dim.name}
-                          onClick={() => onSelectDimension?.(dim, view.name)}
-                          className="flex w-full items-center gap-2 rounded-sm px-4 py-1 text-caption text-text-secondary transition-colors hover:bg-brand/10 hover:text-brand"
-                          title={dim.description || dim.sql || dim.name}
+                          disabled={!isReachable}
+                          onClick={() => isReachable && onSelectDimension?.(dim, view.name)}
+                          className={`flex w-full items-center gap-2 rounded-sm px-4 py-1 text-caption transition-colors ${
+                            isReachable
+                              ? 'text-text-secondary hover:bg-brand/10 hover:text-brand'
+                              : 'cursor-not-allowed text-text-quaternary opacity-60'
+                          }`}
+                          title={unreachableTitle ?? dim.description ?? dim.sql ?? dim.name}
                         >
                           <DimensionIcon type={dim.type} />
                           <span className="truncate">{dim.label || dim.name}</span>
@@ -206,9 +230,14 @@ export function ExploreColumnPanel({
                           {groupMeasures.map((m) => (
                             <button
                               key={m.name}
-                              onClick={() => onSelectMeasure?.(m, view.name)}
-                              className="flex w-full items-center gap-2 rounded-sm px-4 py-1 text-caption text-text-secondary transition-colors hover:bg-warning/10 hover:text-warning"
-                              title={measureTitle(m)}
+                              disabled={!isReachable}
+                              onClick={() => isReachable && onSelectMeasure?.(m, view.name)}
+                              className={`flex w-full items-center gap-2 rounded-sm px-4 py-1 text-caption transition-colors ${
+                                isReachable
+                                  ? 'text-text-secondary hover:bg-warning/10 hover:text-warning'
+                                  : 'cursor-not-allowed text-text-quaternary opacity-60'
+                              }`}
+                              title={unreachableTitle ?? measureTitle(m)}
                             >
                               <Sigma className="h-3 w-3 shrink-0 text-warning" />
                               <span className="truncate">{m.label || m.name}</span>

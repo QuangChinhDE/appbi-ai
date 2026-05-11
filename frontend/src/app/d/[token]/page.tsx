@@ -230,6 +230,7 @@ export default function PublicDashboardPage() {
   const skipNextPageLoadRef = useRef<string | null>(null);
   const skipCrossFilterRefreshRef = useRef<string | null>(null);
   const appliedFilterSignatureRef = useRef(JSON.stringify([] as BaseFilter[]));
+  const seededFiltersForTokenRef = useRef<string | null>(null);
 
   const clearSessionTimer = useCallback(() => {
     if (sessionTimerRef.current) {
@@ -309,6 +310,22 @@ export default function PublicDashboardPage() {
     setChartData({});
     setChartErrors({});
   }, [appliedViewerFilters]);
+
+  // Slicer-model seed: when the dashboard payload arrives, populate viewer
+  // filters from the link's saved Access filters (DA-defined defaults).
+  // The seed runs once per token; viewer can change values but not the slot
+  // inventory (Add/Remove are hidden via lockSlots on the filter bar).
+  useEffect(() => {
+    if (!dashboard || !token) return;
+    if (seededFiltersForTokenRef.current === token) return;
+    const seeded = Array.isArray(dashboard.public_filters_config)
+      ? (dashboard.public_filters_config as BaseFilter[])
+      : [];
+    seededFiltersForTokenRef.current = token;
+    setDraftViewerFilters(seeded);
+    setAppliedViewerFilters(seeded);
+    appliedFilterSignatureRef.current = JSON.stringify(seeded);
+  }, [dashboard, token]);
 
   useEffect(() => {
     if (!crossFilterState) return;
@@ -604,7 +621,7 @@ export default function PublicDashboardPage() {
     ?? 'Shared dashboard';
   const viewerFiltersEnabled = appearance.allow_viewer_filters;
   const showPageTabs = appearance.show_page_tabs && dashboardPages.length > 1;
-  const showFilterControls = viewerFiltersEnabled && (availableFilterColumns.length > 0 || draftViewerFilters.length > 0);
+  const showFilterControls = viewerFiltersEnabled && availableFilterColumns.length > 0;
   const showLiveState = Boolean(pendingPageId || crossFilterState || chartLoadError || (chartsLoading && !isApplyingFilters));
 
   const handleApplyFilters = useCallback(() => {
@@ -802,6 +819,7 @@ export default function PublicDashboardPage() {
                     onReset={handleResetFilters}
                     isApplying={isApplyingFilters}
                     initialExpanded={false}
+                    lockSlots
                   />
                 </div>
               )}

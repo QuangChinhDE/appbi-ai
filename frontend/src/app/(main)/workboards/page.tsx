@@ -151,17 +151,12 @@ export default function WorkboardsPage() {
         description: description.trim() || undefined,
         dataset_id: datasetId,
         // Backend auto-picks the first physical table of this dataset and
-        // generates a v2 mini-app skeleton (empty screens[] — admin adds
-        // them in the Builder).
+        // generates a mini-app skeleton (empty screens[] — admin adds them
+        // in the Builder).
         layout_json: {
-          version: 2,
           screens: [],
           mini_app_nav: { mobile_kind: 'bottom_nav', desktop_kind: 'sidebar', items: [] },
           branding: { primary_color: '#2563eb' },
-          form: { fields: [] },
-          list: { columns: [], filters: [], page_size: 50, row_actions: [] },
-          doc_views: [],
-          rls: { enabled: false },
           audit: {},
         },
       });

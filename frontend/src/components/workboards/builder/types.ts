@@ -129,28 +129,17 @@ export interface BrandingSpec {
 }
 
 export interface MiniAppLayoutSpec {
-  version?: number;
   screens: ScreenSpec[];
   mini_app_nav: MiniAppNavSpec;
   branding?: BrandingSpec;
-  // Legacy fields (kept so we don't lose them on save).
-  form?: unknown;
-  list?: unknown;
-  doc_views?: unknown;
-  rls?: unknown;
   audit?: unknown;
   [key: string]: unknown;
 }
 
 export const DEFAULT_LAYOUT: MiniAppLayoutSpec = {
-  version: 2,
   screens: [],
   mini_app_nav: { mobile_kind: 'bottom_nav', desktop_kind: 'sidebar', items: [] },
   branding: { primary_color: '#2563eb' },
-  form: { fields: [] },
-  list: { columns: [] },
-  doc_views: [],
-  rls: { enabled: false },
   audit: {},
 };
 

@@ -14,7 +14,6 @@ import type { Dashboard } from '@/types/api';
 import type { BaseFilter } from '@/lib/filters';
 import type {
   WorkboardPublicPayload,
-  WorkboardWriteResult,
 } from '@/lib/api/workboards';
 
 // NEXT_PUBLIC_API_URL is baked as '/api/v1' (relative) so it works on any domain.
@@ -99,20 +98,6 @@ export const publicWorkboardApi = {
   get: async (token: string, sessionToken?: string): Promise<WorkboardPublicPayload> => {
     const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
     const res = await publicClient.get(`/public/workboards/${token}`, { headers });
-    return res.data;
-  },
-
-  submit: async (
-    token: string,
-    values: Record<string, unknown>,
-    sessionToken?: string,
-  ): Promise<WorkboardWriteResult> => {
-    const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
-    const res = await publicClient.post(
-      `/public/workboards/${token}/submit`,
-      { values },
-      { headers },
-    );
     return res.data;
   },
 };

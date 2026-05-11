@@ -898,17 +898,45 @@ export default function DashboardDetailPage() {
 
   const calendarDateColumns = React.useMemo<ColumnInfo[]>(() => {
     const totalDashboardChartCount = dashboard?.dashboard_charts?.length ?? 0;
+    // Collect EVERY semantic date/datetime field reachable from each chart
+    // — not just explicit calendarFieldMappings. The previous behaviour
+    // silently excluded any chart that lacked a calendar mapping, which is
+    // why BA reported "17/37 charts không chịu tác động bởi filter Date".
+    // The single global "Date" filter still acts as one logical control;
+    // its linkedFields fan out to every concrete semantic date field so
+    // ChartTile can resolve a matching field per chart via the existing
+    // canDeferFilterToChartSemanticBinding contract.
     const semanticFields = new Set<string>();
-    const chartsWithCalendar = new Set<number>();
+    const chartsWithDate = new Set<number>();
     const datasetIds = new Set<number>();
+
+    // First pass: collect date/datetime dimension names from every dataset model.
+    const dateDimensionFieldsByDataset = new Map<number, Set<string>>();
+    for (const [datasetId, model] of datasetModelsById.entries()) {
+      const dateFields = new Set<string>();
+      for (const view of model.views ?? []) {
+        for (const dim of view.dimensions ?? []) {
+          const dimType = String(dim.type ?? '').toLowerCase();
+          if (dimType === 'date' || dimType === 'datetime') {
+            dateFields.add(`${view.name}.${dim.name}`);
+          }
+        }
+      }
+      dateDimensionFieldsByDataset.set(datasetId, dateFields);
+    }
 
     for (const dashboardChart of dashboard?.dashboard_charts ?? []) {
       const binding = (dashboardChart.chart?.config as any)?.semanticBinding as
         | {
             datasetId?: number;
+            dimensionFields?: string[];
+            measureFields?: string[];
+            fieldMap?: Record<string, string>;
+            reachableFields?: string[];
             calendarFieldMappings?: Array<{
               semanticField?: string;
               calendarField?: string;
+              sourceField?: string;
             }>;
           }
         | undefined;
@@ -917,17 +945,48 @@ export default function DashboardDetailPage() {
         datasetIds.add(binding.datasetId);
       }
 
-      const dateMappings = (binding?.calendarFieldMappings ?? []).filter(
-        (mapping) => (
-          mapping?.calendarField === 'date'
-          && typeof mapping?.semanticField === 'string'
-          && mapping.semanticField.includes('.')
-        ),
-      );
-      if (dateMappings.length === 0) continue;
+      let chartHasDate = false;
 
-      chartsWithCalendar.add(dashboardChart.chart_id);
-      dateMappings.forEach((mapping) => semanticFields.add(String(mapping.semanticField)));
+      // Path A (legacy): explicit calendar mappings — keep so saved charts
+      // that rely on a calendar table continue to be filterable.
+      for (const mapping of binding?.calendarFieldMappings ?? []) {
+        if (mapping?.calendarField !== 'date') continue;
+        const sf = mapping.semanticField;
+        if (typeof sf === 'string' && sf.includes('.')) {
+          semanticFields.add(sf);
+          chartHasDate = true;
+        }
+      }
+
+      // Path B (new): any date/datetime semantic dimension that the chart
+      // can already see — directly bound (dimensionFields/measureFields/
+      // fieldMap values) or reachable via the explore join graph
+      // (reachableFields). This lets a Date filter target charts that
+      // don't go through a calendar table.
+      const datasetId = binding?.datasetId;
+      const dateFieldsForDataset = datasetId != null
+        ? dateDimensionFieldsByDataset.get(datasetId) ?? new Set<string>()
+        : new Set<string>();
+      if (dateFieldsForDataset.size > 0) {
+        const candidates = new Set<string>([
+          ...(binding?.dimensionFields ?? []),
+          ...(binding?.measureFields ?? []),
+          ...(Object.values(binding?.fieldMap ?? {}).filter(
+            (v): v is string => typeof v === 'string' && v.includes('.'),
+          )),
+          ...(binding?.reachableFields ?? []),
+        ]);
+        for (const candidate of candidates) {
+          if (dateFieldsForDataset.has(candidate)) {
+            semanticFields.add(candidate);
+            chartHasDate = true;
+          }
+        }
+      }
+
+      if (chartHasDate) {
+        chartsWithDate.add(dashboardChart.chart_id);
+      }
     }
 
     const orderedSemanticFields = Array.from(semanticFields).sort();
@@ -948,9 +1007,9 @@ export default function DashboardDetailPage() {
       semanticField: orderedSemanticFields[0],
       datasetId: firstDatasetId,
       defaultLinkedFields: orderedSemanticFields.slice(1),
-      chartCoverage: chartsWithCalendar.size,
+      chartCoverage: chartsWithDate.size,
       datasetChartCount: totalDashboardChartCount,
-      sharedAcrossDataset: totalDashboardChartCount > 0 && chartsWithCalendar.size === totalDashboardChartCount,
+      sharedAcrossDataset: totalDashboardChartCount > 0 && chartsWithDate.size === totalDashboardChartCount,
     }];
   }, [dashboard?.dashboard_charts, datasetModelsById]);
 

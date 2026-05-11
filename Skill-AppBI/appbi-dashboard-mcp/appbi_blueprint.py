@@ -156,6 +156,56 @@ SEMANTIC_MODEL_PLAN_SHAPE = {
 }
 
 
+# Maximum charts a single commit_dashboard_blueprint call can handle before
+# we refuse upfront. Empirically larger blueprints time out at the validation
+# stage because each chart runs a runtime preview query.
+_BLUEPRINT_MAX_CHARTS = 20
+
+
+def _measure_chart_compatibility(measure: dict[str, Any]) -> dict[str, Any]:
+    """Decide whether a semantic measure can be referenced directly in a chart.
+
+    Chart runtime (`build_live_agg_query` in live_query_service) uses
+    `role_config.metrics[].field` as a bare SQL column name on the bound
+    view. It does NOT compile semantic measure expressions or filtered
+    measures. So measures that carry `expression`, `filters`, or
+    `where_sql` are unusable in a chart's metric slot — they need a
+    workaround.
+
+    Returns: {"compatible": bool, "reason": str|None, "workaround": str|None}.
+    """
+    if not isinstance(measure, dict):
+        return {"compatible": False, "reason": "invalid_measure", "workaround": None}
+    has_expression = bool((measure.get("expression") or "").strip())
+    filters = measure.get("filters") or []
+    has_filters = isinstance(filters, list) and len(filters) > 0
+    has_where_sql = bool((measure.get("where_sql") or "").strip())
+    if has_expression:
+        return {
+            "compatible": False,
+            "reason": "computed_expression",
+            "workaround": (
+                "Materialise the expression as a derived dimension via a SQL "
+                "transformation on the bound table, then aggregate normally; "
+                "OR use execute_semantic_query (semantic engine path) which "
+                "DOES resolve expressions but is not the chart-render path."
+            ),
+        }
+    if has_filters or has_where_sql:
+        base_field = (measure.get("sql") or "").strip() or measure.get("name")
+        agg = (measure.get("type") or "count").lower()
+        return {
+            "compatible": False,
+            "reason": "filtered_measure",
+            "workaround": (
+                f"Use base aggregation '{agg}' on '{base_field}' with the same "
+                "predicate copied into role_config.filters / baseFilters. The "
+                "chart will produce identical numbers but stays renderable."
+            ),
+        }
+    return {"compatible": True, "reason": None, "workaround": None}
+
+
 DASHBOARD_BLUEPRINT_SHAPE = {
     "dataset_id": "<int>",
     "dashboard": {
@@ -776,21 +826,27 @@ async def propose_dashboard_blueprint(
     available_measures: list[dict[str, Any]] = []
     available_dimensions: list[dict[str, Any]] = []
     table_to_view: dict[int, dict[str, Any]] = {}
+    incompatible_measures: list[dict[str, Any]] = []
     for view in model.get("views") or []:
         view_name = view.get("name")
         if view.get("dataset_table_id") is not None:
             table_to_view[int(view["dataset_table_id"])] = view
         for measure in view.get("measures") or []:
-            available_measures.append(
-                {
-                    "qualified_name": f"{view_name}.{measure.get('name')}",
-                    "field": measure.get("name"),
-                    "view": view_name,
-                    "agg_type": measure.get("type"),
-                    "label": measure.get("label"),
-                    "description": measure.get("description"),
-                }
-            )
+            compat = _measure_chart_compatibility(measure)
+            entry = {
+                "qualified_name": f"{view_name}.{measure.get('name')}",
+                "field": measure.get("name"),
+                "view": view_name,
+                "agg_type": measure.get("type"),
+                "label": measure.get("label"),
+                "description": measure.get("description"),
+                "chart_compatible": compat["compatible"],
+            }
+            if not compat["compatible"]:
+                entry["incompatible_reason"] = compat["reason"]
+                entry["workaround"] = compat["workaround"]
+                incompatible_measures.append(entry)
+            available_measures.append(entry)
         for dim in view.get("dimensions") or []:
             available_dimensions.append(
                 {
@@ -812,6 +868,21 @@ async def propose_dashboard_blueprint(
             }
         )
 
+    # Per-table dimension catalogue so AI picks the right field for the right
+    # bound view without needing to read full view objects. Tightly indexed by
+    # dataset_table_id — matches how charts are bound at runtime.
+    dimensions_by_table: dict[int, list[str]] = {}
+    measures_by_table: dict[int, list[str]] = {}
+    for tid, view in table_to_view.items():
+        dimensions_by_table[tid] = [
+            str(d.get("name")) for d in (view.get("dimensions") or []) if d.get("name")
+        ]
+        measures_by_table[tid] = [
+            str(m.get("name"))
+            for m in (view.get("measures") or [])
+            if m.get("name") and _measure_chart_compatibility(m)["compatible"]
+        ]
+
     return {
         "stage": "propose_dashboard_blueprint",
         "dataset": {"id": dataset.get("id"), "name": dataset.get("name")},
@@ -822,6 +893,15 @@ async def propose_dashboard_blueprint(
         "table_bindings": [
             {"dataset_table_id": tid, "view_name": v.get("name")}
             for tid, v in table_to_view.items()
+        ],
+        "fields_by_table": [
+            {
+                "dataset_table_id": tid,
+                "view_name": table_to_view[tid].get("name"),
+                "chart_ready_measures": measures_by_table.get(tid, []),
+                "dimensions": dimensions_by_table.get(tid, []),
+            }
+            for tid in table_to_view
         ],
         "blueprint_template": DASHBOARD_BLUEPRINT_SHAPE,
         "rules": {
@@ -840,6 +920,44 @@ async def propose_dashboard_blueprint(
                 "Even though commit checks availability, write the "
                 "metric_definitions block — it makes the blueprint "
                 "self-explanatory in chat for the human reviewer."
+            ),
+        },
+        "agent_contract": {
+            "stored_queryMode": "generated",
+            "metric_field_resolution": (
+                "Chart engine treats role_config.metrics[].field as a bare SQL "
+                "column on the chart's bound view (the SemanticView matched by "
+                "dataset_table_id). Qualified 'view.field' references are "
+                "stripped to the bare name before storage."
+            ),
+            "joined_view_fields_blocked": (
+                "Joined-view fields (e.g. 'pipeline_name' from a view different "
+                "than the bound one) FAIL at chart query time even when the "
+                "explore reaches them. To use a joined field, materialise it as "
+                "a dimension on the bound view via a SQL transformation OR "
+                "switch the chart's bound view to the table that owns the field."
+            ),
+            "chart_incompatible_measures": [
+                {
+                    "qualified_name": m["qualified_name"],
+                    "reason": m["incompatible_reason"],
+                    "workaround": m["workaround"],
+                }
+                for m in incompatible_measures
+            ],
+            "chart_incompatible_measures_note": (
+                "Measures with expression/filters/where_sql cannot be referenced "
+                "directly in role_config.metrics[].field — chart runtime does "
+                "not resolve semantic measure SQL. Use the listed workaround "
+                "(typically: filtered measure → count_distinct + base + filters; "
+                "expression measure → materialise via transformation)."
+            )
+            if incompatible_measures
+            else "All semantic measures on this dataset are chart-compatible.",
+            "blueprint_chart_limit": (
+                "commit_dashboard_blueprint accepts up to "
+                f"{_BLUEPRINT_MAX_CHARTS} charts per call. Split multi-page "
+                "dashboards across multiple commits if needed."
             ),
         },
         "next_step": (
@@ -881,6 +999,25 @@ async def commit_dashboard_blueprint(
     if not isinstance(charts_plan, list) or not charts_plan:
         raise ValueError("blueprint.charts must be a non-empty list.")
 
+    if len(charts_plan) > _BLUEPRINT_MAX_CHARTS:
+        return {
+            "status": "blocked_by_chart_limit",
+            "chart_count": len(charts_plan),
+            "max_charts_per_commit": _BLUEPRINT_MAX_CHARTS,
+            "reason": (
+                f"Blueprint has {len(charts_plan)} charts which exceeds the "
+                f"per-commit ceiling of {_BLUEPRINT_MAX_CHARTS}. Each chart "
+                "runs a runtime preview during commit; oversized blueprints "
+                "time out before any chart is written."
+            ),
+            "fix": (
+                "Split the blueprint by page or section: commit the first "
+                f"{_BLUEPRINT_MAX_CHARTS} charts under one dashboard, then "
+                "issue follow-up commits whose dashboard payload reuses the "
+                "same id (or attach further charts via add_chart_to_dashboard)."
+            ),
+        }
+
     model = await _request("GET", f"/datasets/{int(dataset_id)}/model")
     if not (model.get("views") or []):
         return {
@@ -892,14 +1029,31 @@ async def commit_dashboard_blueprint(
         }
 
     # Build per-view measure + dimension indexes and a join-reachability map.
+    # `measure_index` only contains CHART-COMPATIBLE measures so commit refuses
+    # specs that reference computed/filtered measures, which would otherwise
+    # pass symbolic check but fail at runtime preview.
     measure_index: dict[str, set[str]] = {}
+    measure_incompat_index: dict[str, dict[str, dict[str, str]]] = {}
     dimension_index: dict[str, set[str]] = {}
     table_to_view_name: dict[int, str] = {}
     for view in model.get("views") or []:
         vname = str(view.get("name") or "")
-        measure_index[vname] = {
-            str(m.get("name")) for m in (view.get("measures") or []) if m.get("name")
-        }
+        chart_ready: set[str] = set()
+        incompat: dict[str, dict[str, str]] = {}
+        for m in (view.get("measures") or []):
+            if not isinstance(m, dict) or not m.get("name"):
+                continue
+            mname = str(m["name"])
+            compat = _measure_chart_compatibility(m)
+            if compat["compatible"]:
+                chart_ready.add(mname)
+            else:
+                incompat[mname] = {
+                    "reason": compat["reason"] or "",
+                    "workaround": compat["workaround"] or "",
+                }
+        measure_index[vname] = chart_ready
+        measure_incompat_index[vname] = incompat
         dimension_index[vname] = {
             str(d.get("name")) for d in (view.get("dimensions") or []) if d.get("name")
         }
@@ -1042,11 +1196,19 @@ async def commit_dashboard_blueprint(
                         f"'{qualified_view}' which has no SemanticView."
                     )
                 elif qualified_field not in measure_index[qualified_view]:
-                    errors.append(
-                        f"metrics[{m_index}].field='{field}' is not a measure "
-                        f"on view '{qualified_view}'. "
-                        f"Available: {sorted(measure_index[qualified_view])}."
-                    )
+                    incompat = measure_incompat_index.get(qualified_view, {}).get(qualified_field)
+                    if incompat:
+                        errors.append(
+                            f"metrics[{m_index}].field='{field}' is a "
+                            f"{incompat['reason']} measure and cannot be used "
+                            f"directly in a chart. Workaround: {incompat['workaround']}"
+                        )
+                    else:
+                        errors.append(
+                            f"metrics[{m_index}].field='{field}' is not a measure "
+                            f"on view '{qualified_view}'. "
+                            f"Available: {sorted(measure_index[qualified_view])}."
+                        )
                 elif qualified_view != view_name:
                     errors.append(
                         f"metrics[{m_index}].field='{field}' references joined "
@@ -1060,6 +1222,15 @@ async def commit_dashboard_blueprint(
                         "and chart has no resolvable view."
                     )
                 elif field not in measure_index.get(view_name, set()):
+                    incompat = measure_incompat_index.get(view_name, {}).get(field)
+                    if incompat:
+                        errors.append(
+                            f"metrics[{m_index}].field='{field}' is a "
+                            f"{incompat['reason']} measure on view "
+                            f"'{view_name}' and cannot be used directly in a "
+                            f"chart. Workaround: {incompat['workaround']}"
+                        )
+                        continue
                     errors.append(
                         f"metrics[{m_index}].field='{field}' is not a measure "
                         f"on the bound view '{view_name}'. "
@@ -1208,17 +1379,20 @@ async def commit_dashboard_blueprint(
     preview_validation: list[dict[str, Any]] = []
     for index, chart in enumerate(valid_specs):
         config = _build_chart_config_from_spec(chart)
-        preview_errors = await _runtime_preview_preflight(
+        diag = await _runtime_preview_diagnose(
             dataset_table_id=int(chart["dataset_table_id"]),
             chart_type=str(chart.get("chart_type") or "").upper(),
             config=config,
         )
-        if preview_errors:
+        if diag is not None:
             preview_validation.append(
                 {
                     "index": index,
                     "title": chart.get("title") or chart.get("name") or f"chart_{index}",
-                    "errors": preview_errors,
+                    "errors": diag["errors"],
+                    "raw_error": diag.get("raw_error"),
+                    "root_cause": diag.get("root_cause"),
+                    "resolution_options": diag.get("resolution_options"),
                     "valid": False,
                 }
             )
@@ -1722,20 +1896,28 @@ async def _runtime_preview_preflight(
     chart_type: str,
     config: dict[str, Any],
 ) -> list[str]:
-    try:
-        await _request(
-            "POST",
-            "/charts/preview-data",
-            json_body={
-                "dataset_table_id": int(dataset_table_id),
-                "chart_type": chart_type,
-                "config": config,
-            },
-            timeout_seconds=APPBI_LONG_TIMEOUT_SECONDS,
-        )
-    except RuntimeError as exc:
-        return [f"preview_chart_data failed for the final stored config: {exc}"]
-    return []
+    """Legacy str-list shape. Prefer _runtime_preview_diagnose for new callers."""
+    diag = await _runtime_preview_diagnose(
+        dataset_table_id=dataset_table_id,
+        chart_type=chart_type,
+        config=config,
+    )
+    return diag["errors"] if diag else []
+
+
+async def _runtime_preview_diagnose(
+    *,
+    dataset_table_id: int,
+    chart_type: str,
+    config: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Structured preview diagnosis — delegated to appbi_chart for shared impl."""
+    from appbi_chart import _runtime_preview_diagnose as _impl
+    return await _impl(
+        dataset_table_id=dataset_table_id,
+        chart_type=chart_type,
+        config=config,
+    )
 
 
 async def _rollback_created_charts(created_charts: list[dict[str, Any]]) -> dict[str, Any]:

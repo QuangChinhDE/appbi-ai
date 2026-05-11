@@ -27,6 +27,8 @@ const OPERATORS_BY_TYPE: Record<FilterType, { value: string; label: string }[]> 
     { value: 'eq',         label: 'Exactly on' },
     { value: 'gt',         label: 'After' },
     { value: 'lt',         label: 'Before' },
+    { value: 'is_null',    label: 'Is empty' },
+    { value: 'is_not_null',label: 'Is not empty' },
   ],
   number: [
     { value: 'eq',         label: 'Equals' },
@@ -36,6 +38,8 @@ const OPERATORS_BY_TYPE: Record<FilterType, { value: string; label: string }[]> 
     { value: 'gte',        label: 'Greater or equal' },
     { value: 'lt',         label: 'Less than' },
     { value: 'lte',        label: 'Less or equal' },
+    { value: 'is_null',    label: 'Is empty' },
+    { value: 'is_not_null',label: 'Is not empty' },
   ],
   text: [
     { value: 'contains',      label: 'Contains' },
@@ -43,12 +47,16 @@ const OPERATORS_BY_TYPE: Record<FilterType, { value: string; label: string }[]> 
     { value: 'neq',           label: 'Not equals' },
     { value: 'starts_with',   label: 'Starts with' },
     { value: 'not_contains',  label: 'Does not contain' },
+    { value: 'is_null',       label: 'Is empty' },
+    { value: 'is_not_null',   label: 'Is not empty' },
   ],
   dropdown: [
     { value: 'in',     label: 'Is any of' },
     { value: 'not_in', label: 'Is not any of' },
     { value: 'eq',     label: 'Is exactly' },
     { value: 'neq',    label: 'Is not' },
+    { value: 'is_null',    label: 'Is empty' },
+    { value: 'is_not_null',label: 'Is not empty' },
   ],
 };
 
@@ -255,6 +263,10 @@ function FilterRow({
         ))}
       </select>
 
+      {/* Null operators take no value input */}
+      {(filter.operator === 'is_null' || filter.operator === 'is_not_null') ? null : (
+      <>
+
       {/* ── DATE inputs ─────────────────────────────────────────────────────── */}
       {colType === 'date' && filter.operator === 'between' && (
         <div className="grid grid-cols-2 gap-1.5">
@@ -387,6 +399,8 @@ function FilterRow({
               className="w-full px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand outline-none"
             />
           )
+      )}
+      </>
       )}
     </div>
   );

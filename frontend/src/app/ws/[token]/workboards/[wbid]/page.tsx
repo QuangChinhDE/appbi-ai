@@ -1258,6 +1258,7 @@ function ListScreen({
   const cols = spec.columns ?? [];
   const rows = spec.rows ?? [];
   const lv = (spec.list_view as Record<string, unknown>) || {};
+  const colLabels = (spec.column_labels as Record<string, string>) || {};
   const rowActions =
     (lv.row_actions as Array<{
       id: string;
@@ -1286,7 +1287,7 @@ function ListScreen({
                     key={c}
                     className="px-3 py-2 text-left text-xs font-semibold text-slate-600"
                   >
-                    {c}
+                    {colLabels[c] ?? c}
                   </th>
                 ))}
                 {rowActions.length > 0 && (
@@ -1484,10 +1485,11 @@ function normalizeColumnGroups(
 function buildHeaderRows(
   columns: string[],
   columnGroups: unknown,
+  columnLabels: Record<string, string> = {},
 ): Array<Array<{ label: string; colSpan: number; rowSpan: number }>> {
   const groups = normalizeColumnGroups(columns, columnGroups);
   if (groups.length === 0) {
-    return [columns.map((column) => ({ label: column, colSpan: 1, rowSpan: 1 }))];
+    return [columns.map((column) => ({ label: columnLabels[column] ?? column, colSpan: 1, rowSpan: 1 }))];
   }
 
   const rows: Array<Array<{ label: string; colSpan: number; rowSpan: number }>> = [[], []];
@@ -1498,7 +1500,7 @@ function buildHeaderRows(
     const column = columns[index];
     const group = groupStart.get(column);
     if (!group) {
-      rows[0].push({ label: column, colSpan: 1, rowSpan: 2 });
+      rows[0].push({ label: columnLabels[column] ?? column, colSpan: 1, rowSpan: 2 });
       index += 1;
       continue;
     }
@@ -1508,7 +1510,7 @@ function buildHeaderRows(
       rowSpan: 1,
     });
     rows[1].push(
-      ...group.columns.map((member) => ({ label: member, colSpan: 1, rowSpan: 1 })),
+      ...group.columns.map((member) => ({ label: columnLabels[member] ?? member, colSpan: 1, rowSpan: 1 })),
     );
     index += group.columns.length;
   }
@@ -1522,9 +1524,11 @@ function DocDataTable({ block }: { block: Record<string, unknown> }) {
   const rows = (data.rows as Array<Record<string, unknown>>) || [];
   const footer = (data.footer_row as Record<string, unknown> | null) || null;
   const merges = (data.merges as Array<Record<string, unknown>>) || [];
+  const columnLabels = (block.column_labels as Record<string, string>) || {};
   const headerRows = buildHeaderRows(
     cols,
     data.column_groups ?? block.column_groups ?? [],
+    columnLabels,
   );
   const title = block.title ? String(block.title) : null;
 

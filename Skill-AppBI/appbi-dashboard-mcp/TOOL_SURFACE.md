@@ -49,7 +49,7 @@ Mục tiêu: import bảng từ source vào dataset, viết description đầy �
 
 | Tool | Type | Mục đích | Endpoint |
 |---|---|---|---|
-| `get_dataset` | 🟢 | Chi tiết 1 dataset | `GET /datasets/{id}` |
+| `get_dataset` | 🟢 | Chi tiết 1 dataset. `summary=True` để giảm payload (chỉ id/tables/column_count). | `GET /datasets/{id}` |
 | `list_dataset_tables` | 🟢 | List tables trong dataset | `GET /datasets/{id}/tables` |
 | `get_dataset_table` | 🟢 | Chi tiết 1 table (cột, type, description, sample) | `GET /datasets/{id}/tables/{tid}` |
 | `get_table_profile` | 🟢 | **(BACKEND P0 mới)** Schema + sample rows + column stats trong 1 call | `POST /datasets/{id}/tables/{tid}/profile` |
@@ -90,7 +90,7 @@ Mục tiêu: dựng layer ngữ nghĩa (views, joins, measures, dimensions) đ�
 | `list_semantic_explores` | 🟢 | List explores | `GET /semantic/explores` |
 | `get_semantic_explore` | 🟢 | Chi tiết explore | `GET /semantic/explores/{id}` |
 | `get_semantic_explore_by_name` | 🟢 | Lookup explore theo name | `GET /semantic/explores/by-name/{name}` |
-| `get_dataset_semantic_model` | 🟢 | Model gắn với 1 dataset | `GET /datasets/{id}/semantic-model` |
+| `get_dataset_model` | 🟢 | Model gắn với 1 dataset. `summary=True` để bỏ measure SQL + descriptions. | `GET /datasets/{id}/model` |
 | `get_distinct_field_values` | 🟢 | Distinct values của 1 semantic field (cho dropdown filter) | `GET /datasets/{id}/semantic-model/distinct-values` |
 | `preview_join` | 🟢 | **(BACKEND P1 mới)** Preview join 2 table (sample rows) trước khi tạo explore | `POST /datasets/{id}/tables/{tid}/join-preview` |
 
@@ -159,7 +159,7 @@ Current Explore chart contract:
 
 | Tool | Type | Mục đích | Endpoint |
 |---|---|---|---|
-| `list_charts` | 🟢 | List charts | `GET /charts` |
+| `list_charts` | 🟢 | List charts. `summary=True` để bỏ config blob (chỉ id/name/type/role_summary). | `GET /charts` |
 | `get_chart` | 🟢 | Chi tiết chart | `GET /charts/{id}` |
 | `preview_chart_data` | 🟢 | Run chart query → trả raw data (không lưu) | `POST /charts/preview-data` |
 | `get_chart_parameters` | 🟢 | List parameters của chart | `GET /charts/{id}/parameters` |
@@ -284,6 +284,22 @@ Nên dùng khi:
 | **Total** | **~90** |
 
 Hơi vượt target 60-70 nhưng phần lớn là `list_*`/`get_*` đọc thuần — không gây nhiễu chọn tool. Tool ghi (cần Claude quyết định cẩn thận) chỉ ~35.
+
+## Agent contract — critical conventions
+
+Đọc kỹ trước khi gọi `commit_dashboard_blueprint` hoặc `create_chart`:
+
+1. **`queryMode` stored is always `generated`.** `propose_dashboard_blueprint` build config với `queryMode: "generated"` + cùng `roleConfig` ở cả `roleConfig` và `generatedRoleConfig`. Đừng đổi.
+
+2. **`role_config.metrics[].field` là bare SQL column** trên bound view của chart, không phải `view.measure`. Qualifier `view.` bị strip trước khi lưu. Reference field từ joined view sẽ FAIL tại runtime (chart engine không apply explore joins).
+
+3. **Semantic measure với `expression` / `filters` / `where_sql` không dùng được trong chart metric.** `propose_dashboard_blueprint` đánh dấu `chart_compatible: false` + cung cấp `workaround` cụ thể. Commit refuses chart spec dùng những measure này với thông điệp rõ ràng.
+
+4. **Blueprint limit 20 charts per `commit_dashboard_blueprint` call.** Vượt sẽ bị refuse upfront với `blocked_by_chart_limit`. Split dashboard multi-page bằng nhiều commit (hoặc add_chart_to_dashboard cho phần dư).
+
+5. **Preview errors trả về `root_cause` + `resolution_options`** thay vì raw exception. Pattern-matched cho `UNRECOGNIZED_FIELD`, `BIGQUERY_UNQUALIFIED_TABLE`, `COLUMN_NOT_IN_BOUND_VIEW`, `PREVIEW_TIMEOUT`.
+
+6. **Heavy reads support `summary=True`** trên `get_dataset`, `get_dataset_model`, `list_charts` — dùng cho discovery, dùng default form chỉ khi cần payload đầy đủ.
 
 ## Backend endpoint mới cần thêm
 

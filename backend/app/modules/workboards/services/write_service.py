@@ -18,9 +18,9 @@ Design contract:
   UPDATE / DELETE statements add ``AND <lock_col> = <lock_token>`` to the
   WHERE clause and require exactly 1 affected row, otherwise raise
   :class:`OptimisticLockError`.
-* RLS. When ``layout.rls.enabled`` is true and ``owner_column`` is set,
-  INSERTs auto-fill that column with the current user id and
-  UPDATE/DELETE WHERE clauses are extended with the same predicate.
+* RLS lives in :mod:`screen_runtime`: writes are pre-filtered there using
+  the screen-bound ScreenRlsRule list, so this module sees only the values
+  the caller is allowed to write.
 """
 from __future__ import annotations
 
@@ -318,16 +318,6 @@ def _apply_audit_on_update(
     return out
 
 
-def _apply_rls_on_insert(
-    values: Dict[str, Any], layout: LayoutJson, user: Optional[User]
-) -> Dict[str, Any]:
-    if not layout.rls.enabled or not layout.rls.owner_column or user is None:
-        return values
-    out = dict(values)
-    out[layout.rls.owner_column] = str(user.id)
-    return out
-
-
 def _enforce_validation(
     rules: List[DatasetQualityRule], row: Dict[str, Any]
 ) -> List[Dict[str, Any]]:
@@ -363,7 +353,6 @@ def _build_where_pk(
     pk: Dict[str, Any],
     *,
     lock_token: Any = None,
-    rls_user_id: Optional[str] = None,
 ) -> Tuple[str, List[Any]]:
     if not pk:
         raise WorkboardWriteError("Primary key values are required")
@@ -382,11 +371,6 @@ def _build_where_pk(
             f"{_quote(ctx.workboard.optimistic_lock_column, ctx.dialect)} = %s"
         )
         params.append(lock_token)
-    if rls_user_id is not None:
-        owner_col = ctx.layout.rls.owner_column
-        if owner_col:
-            where_parts.append(f"{_quote(owner_col, ctx.dialect)} = %s")
-            params.append(rls_user_id)
     return " WHERE " + " AND ".join(where_parts), params
 
 
@@ -431,7 +415,6 @@ class WorkboardWriteService:
     ) -> Dict[str, Any]:
         ctx = _build_context(db, workboard)
         clean = _filter_to_allowed_columns(values, ctx.allowed_columns)
-        clean = _apply_rls_on_insert(clean, ctx.layout, user)
         now = datetime.now(timezone.utc)
         clean = _apply_audit_on_insert(clean, ctx.layout, user, now)
         warnings = _enforce_validation(ctx.rules, clean)
@@ -507,12 +490,6 @@ class WorkboardWriteService:
         # Validate the merged row (incoming values; cannot validate untouched cols).
         warnings = _enforce_validation(ctx.rules, clean)
 
-        rls_user = (
-            str(user.id)
-            if user is not None and ctx.layout.rls.enabled and ctx.layout.rls.owner_column
-            else None
-        )
-
         ds_type = (
             ctx.datasource.type.value
             if hasattr(ctx.datasource.type, "value")
@@ -533,7 +510,7 @@ class WorkboardWriteService:
                 returned_rows = [row] if row else []
             else:
                 where_sql, where_params = _build_where_pk(
-                    ctx, pk, lock_token=lock_token, rls_user_id=rls_user
+                    ctx, pk, lock_token=lock_token
                 )
                 sql, params = _build_update(ctx, clean, where_sql, where_params)
                 _, returned_rows, rowcount, _ = DataSourceConnectionService.execute_write(
@@ -577,11 +554,6 @@ class WorkboardWriteService:
         lock_token: Any = None,
     ) -> Dict[str, Any]:
         ctx = _build_context(db, workboard)
-        rls_user = (
-            str(user.id)
-            if user is not None and ctx.layout.rls.enabled and ctx.layout.rls.owner_column
-            else None
-        )
 
         ds_type = (
             ctx.datasource.type.value
@@ -601,7 +573,7 @@ class WorkboardWriteService:
                 )
             else:
                 where_sql, where_params = _build_where_pk(
-                    ctx, pk, lock_token=lock_token, rls_user_id=rls_user
+                    ctx, pk, lock_token=lock_token
                 )
                 sql, params = _build_delete(ctx, where_sql, where_params)
                 _, _, rowcount, _ = DataSourceConnectionService.execute_write(

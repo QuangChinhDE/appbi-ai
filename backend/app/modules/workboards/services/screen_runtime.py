@@ -1,10 +1,8 @@
-"""Mini-app screen runtime — read/write logic for the modern layout.
+"""Mini-app screen runtime — the single read/write entry point for workboards.
 
-The legacy ``runtime_service`` resolves a single primary table per
-workboard. Mini-app workboards bind each *screen* to its own table, so
-reads/writes have to look at the screen first to decide which table /
-filters / RLS rule applies. This module is the only place that knows
-how to do that.
+A workboard is a mini-app: an ordered list of screens, each bound to its
+own dataset table. This module resolves the screen first, then applies
+the right read / write / RLS logic for its kind (form / list / doc).
 
 Public API:
 * :func:`get_screen` — fetch a Screen by id, raising 404 if missing.
@@ -17,7 +15,9 @@ Each helper takes a ``CallerIdentity`` so RLS is consistently applied.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+import re
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -29,9 +29,8 @@ from app.modules.workboards.models import Workboard
 from app.modules.workboards.roles import is_owner_role
 from app.modules.workboards.schemas import (
     DataTableBlock,
+    FormField,
     LayoutJson,
-    RlsRoleRule,
-    RowLevelSecurity,
     Screen,
     ScreenRlsRule,
 )
@@ -40,21 +39,389 @@ from app.modules.workboards.services.rls_service import (
     build_rls_filter,
     enforce_write_access,
 )
-from app.modules.workboards.services.runtime_service import (
-    WorkboardRuntimeService,
-    _build_substitution_map,
-    _compute_merges,
-    _normalize_column_groups,
-    _compute_totals_row,
-    _filter_dicts,
-    _resolve_relationship_labels,
-    _substitute_strings_in_place,
-    _MAX_LOOKUP_ROWS,
-)
 from app.modules.workboards.services.write_service import WorkboardWriteService
 from app.services.live_query_service import LiveQueryService
 
 logger = get_logger(__name__)
+
+_MAX_LOOKUP_ROWS = 500
+_AGG_FNS = {"sum", "avg", "min", "max", "count"}
+
+
+# ── Generic helpers (formerly in runtime_service) ─────────────────────────
+
+def _filter_dicts(filters: Optional[List[Any]]) -> List[Dict[str, Any]]:
+    cleaned: List[Dict[str, Any]] = []
+    for item in filters or []:
+        if isinstance(item, dict):
+            cleaned.append(item)
+        elif hasattr(item, "model_dump"):
+            cleaned.append(item.model_dump())
+        elif hasattr(item, "dict"):
+            cleaned.append(item.dict())
+    return cleaned
+
+
+def _parse_total_spec(spec: str) -> tuple[str, str]:
+    """Parse ``"column"`` or ``"column:agg"`` → (column, agg). Default ``sum``."""
+    if not isinstance(spec, str):
+        return "", "sum"
+    text = spec.strip()
+    if not text:
+        return "", "sum"
+    if ":" in text:
+        col, agg = text.split(":", 1)
+        agg = agg.strip().lower()
+        if agg not in _AGG_FNS:
+            agg = "sum"
+        return col.strip(), agg
+    return text, "sum"
+
+
+def _coerce_number(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _compute_totals_row(
+    totals: List[str],
+    columns: List[str],
+    rows: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Produce a footer aggregations payload for the doc-table block.
+
+    Output shape: ``{rows: [{agg, label, values}, ...], single?: {col: number}}``.
+    The FE renders one ``<tr>`` per ``rows`` entry; when ``single`` is
+    present (each column has at most one agg) the FE can compact to a
+    one-row footer.
+    """
+    if not totals:
+        return None
+
+    by_agg: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    for spec in totals:
+        col, agg = _parse_total_spec(spec)
+        if not col or col not in columns:
+            continue
+        values = [_coerce_number(r.get(col)) for r in rows]
+        numeric = [v for v in values if v is not None]
+        if agg == "count":
+            value: Any = sum(1 for r in rows if r.get(col) is not None)
+        elif not numeric:
+            value = sum(1 for r in rows if r.get(col) is not None)
+        elif agg == "sum":
+            value = sum(numeric)
+        elif agg == "avg":
+            value = sum(numeric) / len(numeric)
+        elif agg == "min":
+            value = min(numeric)
+        elif agg == "max":
+            value = max(numeric)
+        else:
+            continue
+        bucket = by_agg.setdefault(agg, {})
+        bucket[col] = value
+        if agg not in order:
+            order.append(agg)
+
+    if not order:
+        return None
+
+    AGG_LABELS = {
+        "sum": "Tổng",
+        "avg": "TB",
+        "count": "Đếm",
+        "min": "Min",
+        "max": "Max",
+    }
+    footer_rows = [
+        {
+            "agg": agg,
+            "label": AGG_LABELS.get(agg, agg.upper()),
+            "values": by_agg[agg],
+        }
+        for agg in order
+    ]
+    counts: Dict[str, int] = {}
+    for fr in footer_rows:
+        for c in fr["values"]:
+            counts[c] = counts.get(c, 0) + 1
+    out: Dict[str, Any] = {"rows": footer_rows}
+    if all(v == 1 for v in counts.values()):
+        single: Dict[str, Any] = {}
+        for fr in footer_rows:
+            single.update(fr["values"])
+        out["single"] = single
+    return out
+
+
+def _compute_merges(
+    rows: List[Dict[str, Any]],
+    group_by: List[str],
+    columns: List[str],
+) -> List[Dict[str, Any]]:
+    """Return rowspan recipes (``{column, row_start, row_span}``) for
+    consecutive identical values in each group_by column.
+    """
+    if not rows or not group_by:
+        return []
+    valid = [c for c in group_by if c in columns]
+    if not valid:
+        return []
+    out: List[Dict[str, Any]] = []
+    for col in valid:
+        run_start = 0
+        run_value = rows[0].get(col)
+        for i in range(1, len(rows)):
+            current = rows[i].get(col)
+            if current != run_value:
+                if i - run_start > 1:
+                    out.append({"column": col, "row_start": run_start, "row_span": i - run_start})
+                run_start = i
+                run_value = current
+        if len(rows) - run_start > 1:
+            out.append({
+                "column": col,
+                "row_start": run_start,
+                "row_span": len(rows) - run_start,
+            })
+    return out
+
+
+def _normalize_column_groups(
+    columns: List[str],
+    column_groups: Optional[List[Any]],
+) -> List[Dict[str, Any]]:
+    """Keep only valid, contiguous column groups in display order."""
+    if not columns or not column_groups:
+        return []
+    order = {col: idx for idx, col in enumerate(columns)}
+    assigned: set[str] = set()
+    normalized: List[Dict[str, Any]] = []
+    for raw in column_groups or []:
+        if hasattr(raw, "model_dump"):
+            item = raw.model_dump()
+        elif isinstance(raw, dict):
+            item = raw
+        else:
+            continue
+        label = str(item.get("label") or "").strip()
+        raw_columns = item.get("columns") or []
+        if not label or not isinstance(raw_columns, list):
+            continue
+        cols: List[str] = []
+        seen_local: set[str] = set()
+        for raw_col in raw_columns:
+            col = str(raw_col or "").strip()
+            if (
+                col
+                and col in order
+                and col not in assigned
+                and col not in seen_local
+            ):
+                cols.append(col)
+                seen_local.add(col)
+        if len(cols) < 2:
+            continue
+        cols = sorted(cols, key=order.get)
+        indices = [order[col] for col in cols]
+        expected = list(range(indices[0], indices[0] + len(indices)))
+        if indices != expected:
+            continue
+        normalized.append({"label": label, "columns": cols})
+        assigned.update(cols)
+    return normalized
+
+
+def _build_substitution_map(
+    workboard: Workboard,
+    *,
+    app_user: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    return {
+        "app_user": dict(app_user or {}),
+        "now": now.isoformat(),
+        "today": now.date().isoformat(),
+        "workboard": {"id": workboard.id, "name": workboard.name},
+    }
+
+
+def _substitute_string(text: str, mapping: Dict[str, Any]) -> str:
+    if "{{" not in text:
+        return text
+
+    def _replace(match: "re.Match[str]") -> str:
+        path = match.group(1).strip()
+        cursor: Any = mapping
+        for part in path.split("."):
+            if isinstance(cursor, dict) and part in cursor:
+                cursor = cursor[part]
+            else:
+                return match.group(0)
+        return "" if cursor is None else str(cursor)
+
+    return re.sub(r"\{\{\s*([a-zA-Z0-9_.\-]+)\s*\}\}", _replace, text)
+
+
+def _substitute_strings_in_place(obj: Any, mapping: Dict[str, Any]) -> None:
+    """Recursively replace ``{{path.to.value}}`` placeholders inside strings."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(value, str):
+                obj[key] = _substitute_string(value, mapping)
+            else:
+                _substitute_strings_in_place(value, mapping)
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            if isinstance(item, str):
+                obj[i] = _substitute_string(item, mapping)
+            else:
+                _substitute_strings_in_place(item, mapping)
+
+
+def _resolve_relationship_labels(
+    db: Session,
+    *,
+    base_rows: List[Dict[str, Any]],
+    base_label_column: Optional[str],
+    base_join_column: str,
+    hops: List[Any],
+) -> Dict[Any, str]:
+    """Walk a relationship chain and build {primary_value → final_label}.
+
+    Each hop fetches its target table via LiveQueryService. The chain is
+    bounded (4 hops) and silently degrades to an empty mapping on any
+    failure — callers fall back to the single-hop label so the form never
+    breaks.
+    """
+    if not base_rows or not hops:
+        return {}
+    MAX_HOPS = 4
+    safe_hops = list(hops)[:MAX_HOPS]
+
+    cursor: Dict[Any, Any] = {}
+    for row in base_rows:
+        primary_val = row.get(base_join_column)
+        if primary_val is None:
+            continue
+        cursor[primary_val] = primary_val
+
+    last_label_col: Optional[str] = base_label_column
+    for hop in safe_hops:
+        if not cursor:
+            return {}
+        table = _load_table(db, hop.table_id)
+        if table is None:
+            return {}
+        datasource = _load_datasource(db, table)
+        if datasource is None:
+            return {}
+        try:
+            result = LiveQueryService.execute_preview_query(
+                datasource, table, limit=_MAX_LOOKUP_ROWS, offset=0, filters=[],
+            )
+        except Exception:
+            logger.exception("Nested lookup hop failed (table_id=%s)", hop.table_id)
+            return {}
+        rows_by_key: Dict[Any, Dict[str, Any]] = {
+            row.get(hop.value_column): row
+            for row in (result.get("rows") or [])
+            if row.get(hop.value_column) is not None
+        }
+        next_cursor: Dict[Any, Any] = {}
+        for current_key, primary_val in cursor.items():
+            row = rows_by_key.get(current_key)
+            if row is None:
+                continue
+            forward_value = row.get(hop.label_column) if hop.label_column else None
+            if forward_value is None:
+                forward_value = current_key
+            next_cursor[forward_value] = primary_val
+        cursor = next_cursor
+        last_label_col = hop.label_column
+
+    if last_label_col is None:
+        return {}
+    return {primary_val: str(label_val) for label_val, primary_val in cursor.items()}
+
+
+def _resolve_lookup_options(
+    db: Session, field: FormField
+) -> Optional[List[Dict[str, Any]]]:
+    """Materialize ``[{label, value}]`` options for a form field's lookup.
+
+    Returns ``None`` when the field has no lookup config (caller should
+    skip), an empty list when the lookup is misconfigured / unresolvable,
+    or the resolved options otherwise.
+    """
+    cfg = field.lookup
+    if cfg is None:
+        return None
+    if cfg.kind == "static":
+        return [
+            {
+                "label": (item.get("label") if isinstance(item, dict) else None) or "",
+                "value": item.get("value") if isinstance(item, dict) else item,
+            }
+            for item in (cfg.values or [])
+        ]
+    if cfg.kind == "dataset_table" and cfg.table_id:
+        table = _load_table(db, cfg.table_id)
+        if table is None:
+            return []
+        datasource = _load_datasource(db, table)
+        if datasource is None:
+            return []
+        try:
+            result = LiveQueryService.execute_preview_query(
+                datasource, table, limit=_MAX_LOOKUP_ROWS, offset=0, filters=[]
+            )
+        except Exception:
+            logger.exception(
+                "Lookup for field '%s' failed (table_id=%s)",
+                field.column,
+                cfg.table_id,
+            )
+            return []
+        value_col = cfg.value_column
+        label_col = cfg.label_column or value_col
+        if not value_col:
+            return []
+        base_rows = result.get("rows") or []
+        if cfg.relationship_path:
+            resolved_labels = _resolve_relationship_labels(
+                db,
+                base_rows=base_rows,
+                base_label_column=label_col,
+                base_join_column=cfg.relationship_path[0].value_column,
+                hops=cfg.relationship_path,
+            )
+            return [
+                {
+                    "label": resolved_labels.get(row.get(value_col))
+                    or str(row.get(label_col, "") or ""),
+                    "value": row.get(value_col),
+                }
+                for row in base_rows
+            ]
+        return [
+            {
+                "label": str(row.get(label_col, "") or ""),
+                "value": row.get(value_col),
+            }
+            for row in base_rows
+        ]
+    return []
 
 
 # ── Layout + screen lookup ────────────────────────────────────────────────
@@ -84,50 +451,6 @@ def is_screen_visible_for(screen: Screen, identity: CallerIdentity) -> bool:
         return True
     role = (identity.role or "").strip().lower()
     return any(r.strip().lower() == role for r in screen.visible_for_roles)
-
-
-# ── RLS adapter ───────────────────────────────────────────────────────────
-
-def _screen_rls(screen: Screen) -> RowLevelSecurity:
-    """Translate per-screen rules into the common RowLevelSecurity shape so
-    the existing RLS engine can be reused."""
-    if not screen.rls and screen.rls_default is None:
-        return RowLevelSecurity(enabled=False)
-
-    rules = [
-        RlsRoleRule(
-            role=r.role,
-            unrestricted=r.unrestricted,
-            filter_column=r.filter_column,
-            filter_value=r.filter_value,
-            can_create=r.can_create,
-            can_update=r.can_update,
-            can_delete=r.can_delete,
-            writable_columns=r.writable_columns,
-            readonly_columns=r.readonly_columns,
-        )
-        for r in screen.rls
-    ]
-    default: Optional[RlsRoleRule] = None
-    if screen.rls_default is not None:
-        d = screen.rls_default
-        default = RlsRoleRule(
-            role=d.role,
-            unrestricted=d.unrestricted,
-            filter_column=d.filter_column,
-            filter_value=d.filter_value,
-            can_create=d.can_create,
-            can_update=d.can_update,
-            can_delete=d.can_delete,
-            writable_columns=d.writable_columns,
-            readonly_columns=d.readonly_columns,
-        )
-    return RowLevelSecurity(
-        enabled=True,
-        owner_column=None,
-        app_user_rules=rules,
-        app_user_default=default,
-    )
 
 
 # ── Table helpers ─────────────────────────────────────────────────────────
@@ -260,7 +583,7 @@ def render_form_screen(
     # restricted to this screen's fields.
     lookups: Dict[str, List[Dict[str, Any]]] = {}
     for field in screen.form.fields:
-        opts = WorkboardRuntimeService._resolve_lookup_options(db, field)
+        opts = _resolve_lookup_options(db, field)
         if opts is not None:
             lookups[field.column] = opts
 
@@ -305,8 +628,9 @@ def insert_screen_row(
 
     # Apply field-level conditional rules (show_if / required_if) before RLS.
     cleaned_pre = _apply_field_conditions(screen, values, identity)
-    rls = _screen_rls(screen)
-    cleaned = enforce_write_access(rls, identity, op="insert", row_values=cleaned_pre)
+    cleaned = enforce_write_access(
+        screen.rls, screen.rls_default, identity, op="insert", row_values=cleaned_pre
+    )
     # Hand off to the existing write service, but point it at the screen's
     # table by temporarily swapping ``primary_table_id`` on the workboard
     # instance — the service reads it lazily, so this is safe within the
@@ -337,11 +661,14 @@ def update_screen_row(
         raise HTTPException(status_code=400, detail="Screen is not writable.")
 
     cleaned_pre = _apply_field_conditions(screen, values, identity)
-    rls = _screen_rls(screen)
-    cleaned = enforce_write_access(rls, identity, op="update", row_values=cleaned_pre)
+    cleaned = enforce_write_access(
+        screen.rls, screen.rls_default, identity, op="update", row_values=cleaned_pre
+    )
 
     # Make sure the targeted row passes RLS before touching it.
-    rls_filters, allowed = build_rls_filter(rls, identity)
+    rls_filters, allowed = build_rls_filter(
+        screen.rls, screen.rls_default, identity
+    )
     if not allowed:
         raise HTTPException(status_code=403, detail="You don't have access to that row.")
     if rls_filters:
@@ -396,8 +723,9 @@ def render_list_screen(
     if not table or not datasource:
         return {"columns": [], "rows": [], "page": page, "page_size": page_size}
 
-    rls = _screen_rls(screen)
-    rls_filters, allowed = build_rls_filter(rls, identity)
+    rls_filters, allowed = build_rls_filter(
+        screen.rls, screen.rls_default, identity
+    )
     if not allowed:
         return {"columns": [], "rows": [], "page": page, "page_size": page_size}
 
@@ -415,6 +743,7 @@ def render_list_screen(
         "page": page,
         "page_size": page_size,
         "list_view": screen.list.model_dump(),
+        "column_labels": screen.column_labels or {},
     }
 
 
@@ -431,17 +760,18 @@ def render_doc_screen(
     if screen.kind != "doc" or screen.doc is None:
         raise HTTPException(status_code=400, detail="Screen is not a doc.")
 
-    substitution = _build_substitution_map(
-        workboard, None, None, app_user=app_user_payload
-    )
+    substitution = _build_substitution_map(workboard, app_user=app_user_payload)
     rendered_blocks: List[Dict[str, Any]] = []
-    rls = _screen_rls(screen)
+    screen_column_labels = screen.column_labels or {}
     for block in screen.doc.blocks:
         payload = block.model_dump()
         if isinstance(block, DataTableBlock):
             payload["data"] = _resolve_doc_data_block(
-                db, workboard, screen, block, identity=identity, rls=rls
+                db, workboard, screen, block, identity=identity
             )
+        # Inject screen-level column_labels so frontend can show friendly names
+        if screen_column_labels and not payload.get("column_labels"):
+            payload["column_labels"] = screen_column_labels
         _substitute_strings_in_place(payload, substitution)
         rendered_blocks.append(payload)
 
@@ -462,7 +792,6 @@ def _resolve_doc_data_block(
     block: DataTableBlock,
     *,
     identity: CallerIdentity,
-    rls: RowLevelSecurity,
 ) -> Dict[str, Any]:
     # Doc blocks default to ``primary`` (the screen's table) but also
     # support ``lookup:<table_id>`` so a single doc screen can join over
@@ -492,7 +821,9 @@ def _resolve_doc_data_block(
         or (block.source.startswith("lookup:") and table_id == screen.table_id)
     )
     if is_primary:
-        rls_filters, allowed = build_rls_filter(rls, identity)
+        rls_filters, allowed = build_rls_filter(
+            screen.rls, screen.rls_default, identity
+        )
         if not allowed:
             return {"columns": [], "rows": []}
         filters = filters + rls_filters

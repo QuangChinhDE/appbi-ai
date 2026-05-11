@@ -54,8 +54,7 @@ from app.modules.workboards.schemas import (
 from app.modules.workboards.services import doc_export_service as doc_export
 from app.modules.workboards.services.app_user_service import is_default_pin_hash
 from app.services.audit_service import audit
-from app.modules.workboards.services.runtime_service import WorkboardRuntimeService
-from app.modules.workboards.services.crud_service import WorkboardService, load_layout_v2
+from app.modules.workboards.services.crud_service import WorkboardService
 from app.modules.workboards.services.public_links import WorkboardPublicLinkService
 from app.modules.workboards.services.write_service import (
     OptimisticLockError,
@@ -76,19 +75,6 @@ def _get_or_404(db: Session, workboard_id: int) -> Workboard:
     wb = WorkboardService.get_by_id(db, workboard_id)
     if not wb:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workboard not found")
-    return wb
-
-
-def _stamp_v2(wb: Workboard) -> Workboard:
-    """Inflate the workboard's stored layout_json to a v2 dict for responses.
-
-    The DB row is not modified; only the in-memory attribute is replaced so
-    downstream pydantic serialization sees v2 fields.
-    """
-    try:
-        wb.layout_json = load_layout_v2(wb)
-    except Exception:  # pragma: no cover — never block response on bad data
-        logger.exception("layout v2 upgrade failed for workboard %s", wb.id)
     return wb
 
 
@@ -118,7 +104,6 @@ def list_workboards(
     )
     for item in items:
         item.user_permission = get_effective_permission(db, current_user, item, "workboards")
-        _stamp_v2(item)
     stamp_owner_emails(db, items)
     return items
 
@@ -152,7 +137,7 @@ def create_workboard(
             response.headers["X-AppBI-Default-Owner-Username"] = username
             response.headers["X-AppBI-Default-Owner-Pin"] = pin
     wb.user_permission = "full"
-    return _stamp_v2(wb)
+    return wb
 
 
 @router.get("/{workboard_id}", response_model=WorkboardResponse)
@@ -163,7 +148,7 @@ def get_workboard(
 ):
     wb = _get_or_404(db, workboard_id)
     wb.user_permission = require_view_access(db, current_user, wb, "workboards")
-    return _stamp_v2(wb)
+    return wb
 
 
 @router.patch("/{workboard_id}", response_model=WorkboardResponse)
@@ -191,7 +176,6 @@ def update_workboard(
     )
     if updated:
         updated.user_permission = "full"
-        _stamp_v2(updated)
     return updated
 
 
@@ -239,7 +223,7 @@ def publish_workboard(
         resource_id=str(workboard_id),
     )
     wb.user_permission = "full"
-    return _stamp_v2(wb)
+    return wb
 
 
 @router.get("/{workboard_id}/public-links", response_model=List[WorkboardPublicLinkResponse])
@@ -271,18 +255,6 @@ def create_public_link(
         wb.is_published = True
         db.commit()
         db.refresh(wb)
-    if payload.mode == "view" and payload.view_id:
-        bundle = WorkboardRuntimeService.list_views(wb)
-        view = next((item for item in (bundle.get("views") or []) if item.get("id") == payload.view_id), None)
-        if not view:
-            raise HTTPException(status_code=404, detail=f"View '{payload.view_id}' not found")
-        if view.get("kind") not in {"table", "deck", "gallery"}:
-            raise HTTPException(
-                status_code=400,
-                detail="Public view links currently support table, deck, and gallery views only.",
-            )
-    if payload.mode == "view" and not payload.view_id:
-        raise HTTPException(status_code=400, detail="view_id is required when mode='view'")
     return WorkboardPublicLinkService.create_link(
         db,
         wb,
@@ -331,295 +303,6 @@ def delete_public_link(
     if not deleted:
         raise HTTPException(status_code=404, detail="Public link not found")
     return {"deleted": True}
-
-
-# ---------------------------------------------------------------------------
-# Runtime: form
-# ---------------------------------------------------------------------------
-
-@router.get("/{workboard_id}/form")
-def get_form_spec(
-    workboard_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    wb = _get_or_404(db, workboard_id)
-    require_view_access(db, current_user, wb, "workboards")
-    return WorkboardRuntimeService.render_form(db, wb)
-
-
-@router.get("/{workboard_id}/lookups/{field_column}")
-def get_lookup_options(
-    workboard_id: int,
-    field_column: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    wb = _get_or_404(db, workboard_id)
-    require_view_access(db, current_user, wb, "workboards")
-    spec = WorkboardRuntimeService.render_form(db, wb)
-    options = (spec.get("lookups") or {}).get(field_column)
-    if options is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No lookup configured for field '{field_column}'",
-        )
-    return {"field": field_column, "options": options}
-
-
-# ---------------------------------------------------------------------------
-# Runtime: rows (table view)
-# ---------------------------------------------------------------------------
-
-@router.post("/{workboard_id}/rows/list", response_model=WorkboardRowsResponse)
-def list_rows(
-    workboard_id: int,
-    payload: WorkboardRowsRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    wb = _get_or_404(db, workboard_id)
-    require_view_access(db, current_user, wb, "workboards")
-    page_size = payload.page_size or 50
-    result = WorkboardRuntimeService.list_rows(
-        db,
-        wb,
-        page=payload.page,
-        page_size=page_size,
-        filters=payload.filters,
-    )
-    return WorkboardRowsResponse(
-        columns=result.get("columns") or [],
-        rows=result.get("rows") or [],
-        page=result.get("page") or payload.page,
-        page_size=result.get("page_size") or page_size,
-        has_more=len(result.get("rows") or []) == (result.get("page_size") or page_size),
-    )
-
-
-@router.post("/{workboard_id}/rows", response_model=WorkboardWriteResult)
-def insert_row(
-    workboard_id: int,
-    payload: WorkboardRowPayload,
-    request: Request,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
-    try:
-        result = WorkboardWriteService.insert_row(db, wb, payload.values, current_user)
-    except WorkboardWriteError as exc:
-        raise _handle_write_exc(exc) from exc
-    audit(
-        db,
-        AuditAction.WORKBOARD_ROW_INSERTED,
-        request=request,
-        user_id=current_user.id,
-        resource_type="workboard",
-        resource_id=str(workboard_id),
-        details={"pk": result.get("pk")},
-    )
-    return WorkboardWriteResult(action="insert", **result)
-
-
-@router.patch("/{workboard_id}/rows", response_model=WorkboardWriteResult)
-def update_row(
-    workboard_id: int,
-    payload: WorkboardRowUpdatePayload,
-    request: Request,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
-    try:
-        result = WorkboardWriteService.update_row(
-            db,
-            wb,
-            payload.pk,
-            payload.values,
-            current_user,
-            lock_token=payload.lock_token,
-        )
-    except OptimisticLockError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    except WorkboardWriteError as exc:
-        raise _handle_write_exc(exc) from exc
-    audit(
-        db,
-        AuditAction.WORKBOARD_ROW_UPDATED,
-        request=request,
-        user_id=current_user.id,
-        resource_type="workboard",
-        resource_id=str(workboard_id),
-        details={"pk": payload.pk},
-    )
-    return WorkboardWriteResult(action="update", **result)
-
-
-@router.delete("/{workboard_id}/rows", response_model=WorkboardWriteResult)
-def delete_row(
-    workboard_id: int,
-    payload: WorkboardRowDeletePayload,
-    request: Request,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
-    try:
-        result = WorkboardWriteService.delete_row(
-            db, wb, payload.pk, current_user, lock_token=payload.lock_token
-        )
-    except OptimisticLockError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    except WorkboardWriteError as exc:
-        raise _handle_write_exc(exc) from exc
-    audit(
-        db,
-        AuditAction.WORKBOARD_ROW_DELETED,
-        request=request,
-        user_id=current_user.id,
-        resource_type="workboard",
-        resource_id=str(workboard_id),
-        details={"pk": payload.pk},
-    )
-    return WorkboardWriteResult(action="delete", **result)
-
-
-# ---------------------------------------------------------------------------
-# Runtime: doc views
-# ---------------------------------------------------------------------------
-
-@router.get("/{workboard_id}/doc/{view_id}")
-def render_doc_view(
-    workboard_id: int,
-    view_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    wb = _get_or_404(db, workboard_id)
-    require_view_access(db, current_user, wb, "workboards")
-    rendered = WorkboardRuntimeService.render_doc(
-        db, wb, view_id=view_id, user=current_user
-    )
-    if rendered.get("missing"):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Doc view '{view_id}' not found",
-        )
-    return rendered
-
-
-@router.get("/{workboard_id}/doc/{view_id}/export")
-def export_doc_view(
-    workboard_id: int,
-    view_id: str,
-    format: str = Query("html", pattern="^(html|pdf|excel)$"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    wb = _get_or_404(db, workboard_id)
-    require_view_access(db, current_user, wb, "workboards")
-    rendered = WorkboardRuntimeService.render_doc(
-        db, wb, view_id=view_id, user=current_user
-    )
-    if rendered.get("missing"):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Doc view '{view_id}' not found",
-        )
-    base_filename = f"{wb.slug or wb.name or 'workboard'}-{view_id}".replace(" ", "_")
-    if format == "html":
-        return Response(
-            content=doc_export.to_html(rendered),
-            media_type="text/html; charset=utf-8",
-        )
-    if format == "pdf":
-        return Response(
-            content=doc_export.to_pdf(rendered),
-            media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="{base_filename}.pdf"'},
-        )
-    if format == "excel":
-        return Response(
-            content=doc_export.to_excel(rendered),
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f'attachment; filename="{base_filename}.xlsx"'},
-        )
-    raise HTTPException(status_code=400, detail=f"Unsupported export format '{format}'")
-
-
-# ---------------------------------------------------------------------------
-# v2 — multi-table / multi-view runtime
-# ---------------------------------------------------------------------------
-
-@router.get("/{workboard_id}/v2/views")
-def list_v2_views(
-    workboard_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    wb = _get_or_404(db, workboard_id)
-    require_view_access(db, current_user, wb, "workboards")
-    return WorkboardRuntimeService.list_views(wb)
-
-
-@router.post("/{workboard_id}/v2/views/{view_id}/render")
-def render_v2_view(
-    workboard_id: int,
-    view_id: str,
-    payload: Optional[Dict[str, Any]] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    wb = _get_or_404(db, workboard_id)
-    require_view_access(db, current_user, wb, "workboards")
-    payload = payload or {}
-    result = WorkboardRuntimeService.render_view(
-        db,
-        wb,
-        view_id,
-        page=int(payload.get("page") or 1),
-        page_size=int(payload.get("page_size") or 50),
-        filters=payload.get("filters") or [],
-        pk=payload.get("pk"),
-    )
-    if result.get("missing"):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"View '{view_id}' not found",
-        )
-    return result
-
-
-@router.post("/{workboard_id}/v2/actions/{action_id}/execute")
-def execute_v2_action(
-    workboard_id: int,
-    action_id: str,
-    payload: Optional[Dict[str, Any]] = None,
-    request: Request = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
-    payload = payload or {}
-    result = WorkboardRuntimeService.execute_action(
-        db,
-        wb,
-        action_id,
-        row_pk=payload.get("pk"),
-        user=current_user,
-    )
-    if not result.get("ok") and result.get("error") == "action_not_found":
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Action '{action_id}' not found",
-        )
-    return result
-
 
 
 # ── Template export / import ──────────────────────────────────────────────

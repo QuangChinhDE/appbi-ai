@@ -30,178 +30,22 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# v1 → v2 layout upgrade
+# Layout normalisation
 # ---------------------------------------------------------------------------
 
-def upgrade_layout_to_v2(
-    raw: Optional[Dict[str, Any]],
-    *,
-    primary_table_id: Optional[int] = None,
-) -> Dict[str, Any]:
-    """Return a layout dict that is guaranteed to contain v2 sections.
-
-    v1 documents (or empty/missing) are wrapped: 1 entry in `tables[]`, a
-    `table` view from the legacy list, a `form` view from the legacy form,
-    and `nav.primary_view` pointing at the table view. The v1 fields
-    (form/list/doc_views) are preserved intact for back-compat.
-    """
-    base: Dict[str, Any] = copy.deepcopy(raw) if isinstance(raw, dict) else {}
-    base.setdefault("version", 1)
-    base.setdefault("form", {})
-    base.setdefault("list", {})
-    base.setdefault("doc_views", [])
-    base.setdefault("rls", {})
-    base.setdefault("audit", {})
-
-    has_v2_tables = bool(base.get("tables"))
-    has_v2_views = bool(base.get("views"))
-
-    # Always ensure the v2 keys exist (idempotent).
-    base.setdefault("branding", {})
-    base.setdefault("tables", [])
-    base.setdefault("refs", [])
-    base.setdefault("slices", [])
-    base.setdefault("actions", [])
-    base.setdefault("views", [])
-    base.setdefault("nav", {})
-    base.setdefault("security", {})
-
-    if has_v2_tables and has_v2_views:
-        # already v2 — just stamp the version
-        base["version"] = max(int(base.get("version") or 1), 2)
-        return base
-
-    # Auto-upgrade. Need at least primary_table_id to seed a table.
-    table_uuid = "primary"
-    if primary_table_id and not base["tables"]:
-        list_cfg = base.get("list") or {}
-        form_cfg = base.get("form") or {}
-        visible_cols = list(list_cfg.get("columns") or []) or [
-            (f.get("column") if isinstance(f, dict) else None)
-            for f in (form_cfg.get("fields") or [])
-        ]
-        visible_cols = [c for c in visible_cols if c]
-        column_config: Dict[str, Dict[str, Any]] = {}
-        for f in form_cfg.get("fields") or []:
-            if not isinstance(f, dict):
-                continue
-            col = f.get("column")
-            if not col:
-                continue
-            column_config[col] = {
-                "label": f.get("label"),
-                "required": bool(f.get("required") or False),
-                "editable": not bool(f.get("readonly") or False),
-                "show": True,
-                "show_in": ["table", "detail", "form"],
-                "enum_values": (
-                    [
-                        {"label": v.get("label") if isinstance(v, dict) else str(v),
-                         "value": v.get("value") if isinstance(v, dict) else v}
-                        for v in (f.get("lookup", {}).get("values") or [])
-                    ]
-                    if isinstance(f.get("lookup"), dict) and (f.get("lookup") or {}).get("kind") == "static"
-                    else None
-                ),
-            }
-        base["tables"] = [{
-            "id": table_uuid,
-            "table_id": primary_table_id,
-            "label": (base.get("branding") or {}).get("app_name") or "Primary",
-            "icon": "Table",
-            "pk": [],
-            "column_config": column_config,
-        }]
-
-    if not base["views"] and base["tables"]:
-        first_tbl = base["tables"][0]["id"]
-        list_cfg = base.get("list") or {}
-        form_cfg = base.get("form") or {}
-        base["views"] = [
-            {
-                "id": "view_table",
-                "label": "All rows",
-                "kind": "table",
-                "source": {"kind": "table", "id": first_tbl},
-                "position": "primary",
-                "icon": "Table",
-                "visible_columns": list(list_cfg.get("columns") or []) or None,
-                "sort": (
-                    [{"column": list_cfg.get("default_sort_column"),
-                      "direction": list_cfg.get("default_sort_direction") or "desc"}]
-                    if list_cfg.get("default_sort_column") else None
-                ),
-                "action_ids": [],
-                "config": {
-                    "page_size": int(list_cfg.get("page_size") or 50),
-                    "row_actions": list(list_cfg.get("row_actions") or []),
-                    "filters": list(list_cfg.get("filters") or []),
-                },
-            },
-            {
-                "id": "view_detail",
-                "label": "Detail",
-                "kind": "detail",
-                "source": {"kind": "table", "id": first_tbl},
-                "position": "system",
-                "icon": "FileText",
-                "action_ids": [],
-                "config": {},
-            },
-            {
-                "id": "view_form",
-                "label": "Add / Edit",
-                "kind": "form",
-                "source": {"kind": "table", "id": first_tbl},
-                "position": "menu",
-                "icon": "Edit",
-                "action_ids": [],
-                "config": {
-                    "title": form_cfg.get("title"),
-                    "submit_label": form_cfg.get("submit_label"),
-                    "fields": list(form_cfg.get("fields") or []),
-                },
-            },
-        ]
-
-    # nav defaults
-    nav = base.get("nav") or {}
-    if not nav.get("primary_view") and base["views"]:
-        primary = next(
-            (v for v in base["views"] if v.get("position") == "primary"),
-            base["views"][0],
-        )
-        nav["primary_view"] = primary["id"]
-    if not nav.get("menu_view_ids") and base["views"]:
-        nav["menu_view_ids"] = [
-            v["id"] for v in base["views"] if v.get("position") in ("primary", "menu")
-        ]
-    base["nav"] = nav
-
-    base["version"] = 2
-    return base
-
-
 def _normalize_layout(payload, *, primary_table_id: Optional[int] = None) -> dict:
-    """Coerce the layout payload into a canonical v2 dict for storage."""
+    """Coerce the layout payload into a canonical dict for storage.
+
+    Unknown keys are stripped by ``LayoutJson`` so the mini-app shape is
+    the only thing that survives in ``layout_json``.
+    """
     if payload is None:
-        raw: Dict[str, Any] = {}
-    elif isinstance(payload, LayoutJson):
-        raw = payload.model_dump(mode="json")
-    elif isinstance(payload, dict):
-        # validate then dump so unknown fields are stripped sensibly
-        raw = LayoutJson.model_validate(payload).model_dump(mode="json")
-    else:
-        raw = LayoutJson.model_validate(payload).model_dump(mode="json")
-    return upgrade_layout_to_v2(raw, primary_table_id=primary_table_id)
-
-
-def load_layout_v2(workboard: Workboard) -> Dict[str, Any]:
-    """Read-side helper: return a guaranteed-v2 layout dict."""
-    return upgrade_layout_to_v2(
-        workboard.layout_json or {},
-        primary_table_id=workboard.primary_table_id,
-    )
+        return LayoutJson().model_dump(mode="json")
+    if isinstance(payload, LayoutJson):
+        return payload.model_dump(mode="json")
+    if isinstance(payload, dict):
+        return LayoutJson.model_validate(payload).model_dump(mode="json")
+    return LayoutJson.model_validate(payload).model_dump(mode="json")
 
 
 def _columns_cache_list(table: DatasetTable) -> List[Dict[str, Any]]:
@@ -436,104 +280,15 @@ def _apply_default_layout(
     lookup_tables: List[Dict[str, Any]],
     related_tables: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Any]:
-    layout = _normalize_layout(raw_layout, primary_table_id=primary_table_id)
-    column_names = [str(item.get("name") or "") for item in columns if item.get("name")]
-    label_column = _pick_label_column(columns, primary_key_columns)
-    lookup_by_column = {str(item.get("column")): item for item in lookup_tables if item.get("column")}
+    """Return a mini-app layout for storage.
 
-    form_cfg = layout.setdefault("form", {})
-    if not form_cfg.get("fields"):
-        form_fields: List[Dict[str, Any]] = []
-        for column in columns:
-            name = str(column.get("name") or "").strip()
-            if not name:
-                continue
-            lookup = lookup_by_column.get(name)
-            is_pk = name in primary_key_columns
-            widget = _field_widget(column, is_lookup=lookup is not None)
-            field: Dict[str, Any] = {
-                "column": name,
-                "widget": widget,
-                "label": _humanize(name),
-                "required": bool(not column.get("nullable") and not is_pk),
-                "readonly": bool(is_pk),
-            }
-            if lookup:
-                field["lookup"] = {
-                    "kind": "dataset_table",
-                    "table_id": lookup["table_id"],
-                    "value_column": lookup["value_column"],
-                    "label_column": lookup["label_column"],
-                }
-            form_fields.append(field)
-        form_cfg["fields"] = form_fields
-    form_cfg.setdefault("submit_label", "Save")
-
-    list_cfg = layout.setdefault("list", {})
-    if not list_cfg.get("columns"):
-        list_cfg["columns"] = column_names[: min(8, len(column_names))]
-    list_cfg.setdefault("page_size", 50)
-    if not list_cfg.get("row_actions"):
-        list_cfg["row_actions"] = ["edit", "delete"]
-
-    tables = list(layout.get("tables") or [])
-    if not tables:
-        tables = [{"id": "primary", "table_id": primary_table_id}]
-    primary_app_table = tables[0]
-    primary_app_table["id"] = primary_app_table.get("id") or "primary"
-    primary_app_table["table_id"] = primary_table_id
-    primary_app_table["pk"] = list(primary_key_columns)
-    primary_app_table["label_column"] = label_column
-    column_config = dict(primary_app_table.get("column_config") or {})
-    for column in columns:
-        name = str(column.get("name") or "").strip()
-        if not name:
-            continue
-        existing = dict(column_config.get(name) or {})
-        existing.setdefault("label", _humanize(name))
-        existing.setdefault("required", bool(not column.get("nullable") and name not in primary_key_columns))
-        existing.setdefault("editable", name not in primary_key_columns)
-        existing.setdefault("show", True)
-        existing.setdefault("show_in", ["table", "detail", "form"])
-        lookup = lookup_by_column.get(name)
-        if lookup:
-            target_table = next(
-                (item for item in refs if item.get("from_column") == name),
-                None,
-            )
-            if target_table:
-                existing.setdefault("ref_table_id", target_table.get("to_table"))
-                existing.setdefault("ref_action", "navigate")
-        column_config[name] = existing
-    primary_app_table["column_config"] = column_config
-
-    existing_table_ids = {str(item.get("id")) for item in tables if item.get("id")}
-    for item in related_tables.values():
-        if item["id"] not in existing_table_ids:
-            tables.append(item)
-    layout["tables"] = tables
-    layout["refs"] = refs
-
-    views = list(layout.get("views") or [])
-    if views:
-        for view in views:
-            if not isinstance(view, dict):
-                continue
-            if view.get("kind") == "table":
-                view["visible_columns"] = view.get("visible_columns") or list_cfg.get("columns")
-                cfg = dict(view.get("config") or {})
-                cfg.setdefault("page_size", int(list_cfg.get("page_size") or 50))
-                cfg.setdefault("row_actions", list(list_cfg.get("row_actions") or []))
-                view["config"] = cfg
-            if view.get("kind") == "form":
-                cfg = dict(view.get("config") or {})
-                cfg["fields"] = list(form_cfg.get("fields") or [])
-                cfg.setdefault("submit_label", form_cfg.get("submit_label"))
-                view["config"] = cfg
-            if view.get("kind") == "detail":
-                view["visible_columns"] = view.get("visible_columns") or list_cfg.get("columns")
-    layout["views"] = views
-    return layout
+    The mini-app contract puts everything (form/list/doc + RLS) on screens
+    so this function no longer fabricates any default screens — empty
+    workboards start with an empty ``screens`` list and the builder/UI
+    creates them on demand. We just preserve whatever the caller provided
+    and let ``LayoutJson`` strip unknown keys.
+    """
+    return _normalize_layout(raw_layout, primary_table_id=primary_table_id)
 
 
 def _prepare_schema_defaults(

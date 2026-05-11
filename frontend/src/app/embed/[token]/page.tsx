@@ -226,6 +226,7 @@ export default function EmbedDashboardPage() {
   const skipNextPageLoadRef = useRef<string | null>(null);
   const skipCrossFilterRefreshRef = useRef<string | null>(null);
   const appliedFilterSignatureRef = useRef(JSON.stringify([] as BaseFilter[]));
+  const seededFiltersForTokenRef = useRef<string | null>(null);
 
   const clearTimer = useCallback(() => {
     if (sessionTimerRef.current) {
@@ -305,6 +306,21 @@ export default function EmbedDashboardPage() {
     setChartData({});
     setChartErrors({});
   }, [appliedViewerFilters]);
+
+  // Slicer-model seed: see d/[token]/page.tsx for rationale. DA-defined Access
+  // filters become the viewer's initial values; viewer can change them but
+  // cannot add/remove slots (lockSlots on the filter bar).
+  useEffect(() => {
+    if (!dashboard || !token) return;
+    if (seededFiltersForTokenRef.current === token) return;
+    const seeded = Array.isArray(dashboard.public_filters_config)
+      ? (dashboard.public_filters_config as BaseFilter[])
+      : [];
+    seededFiltersForTokenRef.current = token;
+    setDraftViewerFilters(seeded);
+    setAppliedViewerFilters(seeded);
+    appliedFilterSignatureRef.current = JSON.stringify(seeded);
+  }, [dashboard, token]);
 
   useEffect(() => {
     if (!crossFilterState) return;
@@ -580,7 +596,7 @@ export default function EmbedDashboardPage() {
   const viewerFiltersEnabled = appearance.allow_viewer_filters;
   const showPageTabs = appearance.show_page_tabs && dashboardPages.length > 1;
   const showEmbedHeader = true;
-  const showFilterControls = viewerFiltersEnabled && (availableFilterColumns.length > 0 || draftViewerFilters.length > 0);
+  const showFilterControls = viewerFiltersEnabled && availableFilterColumns.length > 0;
   const showLiveState = Boolean(pendingPageId || crossFilterState || chartLoadError || (chartsLoading && !isApplyingFilters));
   const showControlSurface = true;
 
@@ -755,6 +771,7 @@ export default function EmbedDashboardPage() {
                       onReset={handleResetFilters}
                       isApplying={isApplyingFilters}
                       initialExpanded={false}
+                      lockSlots
                     />
                   </div>
                 )}
