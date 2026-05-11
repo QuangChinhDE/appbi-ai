@@ -231,6 +231,85 @@ class GoogleSheetsConnector:
                 raise ValueError(f"Google Sheets append error: {str(e)}")
             return {h: row_values[i] for i, h in enumerate(headers)}
 
+    def append_rows(
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+        rows_values: List[Dict[str, Any]],
+        auto_pk_columns: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Append multiple rows in a single API call.
+
+        Reads headers once, converts all dicts to ordered row arrays, then
+        writes them in one ``values().append`` call.  Returns the list of
+        appended rows as dicts.
+        """
+        if not rows_values:
+            return {"appended": 0, "rows": []}
+        with _get_write_lock(spreadsheet_id):
+            headers, _ = self._read_headers_and_rows(spreadsheet_id, sheet_name)
+            if not headers:
+                raise ValueError(
+                    f"Sheet '{sheet_name}' has no header row — cannot append."
+                )
+
+            all_row_arrays: list[list[Any]] = []
+            result_rows: list[dict] = []
+            for values_by_col in rows_values:
+                filled = dict(values_by_col)
+                for pk_col in (auto_pk_columns or []):
+                    if pk_col in headers and not str(filled.get(pk_col, "")).strip():
+                        filled[pk_col] = str(_uuid.uuid4())
+                row_values = ["" if filled.get(h) is None else filled.get(h) for h in headers]
+                all_row_arrays.append(row_values)
+                result_rows.append({h: row_values[i] for i, h in enumerate(headers)})
+
+            body = {"values": all_row_arrays}
+            try:
+                self.service.spreadsheets().values().append(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"{sheet_name}!A:ZZ",
+                    valueInputOption="USER_ENTERED",
+                    insertDataOption="INSERT_ROWS",
+                    body=body,
+                ).execute()
+            except HttpError as e:
+                raise ValueError(f"Google Sheets batch append error: {str(e)}")
+            return {"appended": len(result_rows), "rows": result_rows}
+
+    def import_csv(
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+        csv_data: str,
+    ) -> Dict[str, Any]:
+        """Replace the content of a sheet tab with parsed CSV data.
+
+        The first CSV row is treated as the header row. Existing data in the
+        tab is overwritten from row 1 onward.
+        """
+        import csv
+        import io
+        reader = csv.reader(io.StringIO(csv_data.strip()))
+        all_rows = list(reader)
+        if not all_rows:
+            raise ValueError("CSV data is empty.")
+        body = {"values": all_rows}
+        try:
+            self.service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"{sheet_name}!A1",
+                valueInputOption="USER_ENTERED",
+                body=body,
+            ).execute()
+        except HttpError as e:
+            raise ValueError(f"Google Sheets CSV import error: {str(e)}")
+        return {
+            "sheet_name": sheet_name,
+            "header_row": all_rows[0] if all_rows else [],
+            "data_rows_written": max(0, len(all_rows) - 1),
+        }
+
     def _find_row_index(
         self,
         spreadsheet_id: str,

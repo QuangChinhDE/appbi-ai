@@ -90,8 +90,31 @@ async def _fallback_gsheet_table_profile(
 
 @mcp.tool()
 async def list_datasets(skip: int = 0, limit: int = 50) -> Any:
-    """List datasets visible to the current AppBI PAT."""
-    return await _request("GET", "/datasets/", params={"skip": skip, "limit": limit})
+    """List datasets visible to the current AppBI PAT.
+
+    Returns a structured list: {datasets: [{id, name, description, table_count}, ...], total}
+    so the caller can quickly find a dataset by id or name without parsing raw JSON blobs.
+    """
+    raw = await _request("GET", "/datasets/", params={"skip": skip, "limit": limit})
+    # Normalize to a clean list regardless of whether backend returns list or {items:...}
+    items = raw if isinstance(raw, list) else (raw.get("items") or raw.get("datasets") or [])
+    datasets = [
+        {
+            "id": ds.get("id"),
+            "name": ds.get("name"),
+            "description": ds.get("description") or "",
+            "table_count": len(ds.get("tables") or []),
+            "created_at": ds.get("created_at"),
+        }
+        for ds in items
+        if isinstance(ds, dict)
+    ]
+    return {
+        "datasets": datasets,
+        "total": len(datasets),
+        "skip": skip,
+        "limit": limit,
+    }
 
 
 @mcp.tool()
@@ -102,8 +125,54 @@ async def get_dataset(dataset_id: int) -> Any:
 
 @mcp.tool()
 async def list_dataset_tables(dataset_id: int) -> Any:
-    """List all tables attached to a dataset."""
-    return await _request("GET", f"/datasets/{dataset_id}/tables")
+    """List all tables attached to a dataset, with a sheet_exists flag for GSheets tabs.
+
+    For Google Sheets datasources, sheet_exists indicates whether the tab is
+    actually present in the live spreadsheet (validates against columns_cache state).
+    For non-GSheets tables, sheet_exists is always null.
+    """
+    tables = await _request("GET", f"/datasets/{dataset_id}/tables")
+    if not isinstance(tables, list):
+        return tables
+
+    # Try to get live sheet tabs for GSheets datasources
+    # Group tables by datasource_id to batch the tab list calls
+    from typing import Dict as _Dict
+    dsid_to_tabs: _Dict[int, Any] = {}
+
+    result = []
+    for table in tables:
+        if not isinstance(table, dict):
+            result.append(table)
+            continue
+
+        dsid = table.get("datasource_id")
+        source_kind = str(table.get("source_kind") or "")
+        sheet_exists: Any = None
+
+        if dsid is not None and source_kind == "physical_table":
+            # Lazily fetch tab list per datasource (cached in dsid_to_tabs)
+            if dsid not in dsid_to_tabs:
+                try:
+                    tabs_resp = await _request("GET", f"/datasources/{dsid}/gsheets/sheets")
+                    if isinstance(tabs_resp, list):
+                        dsid_to_tabs[dsid] = {str(t.get("title") or t.get("name") or ""): True for t in tabs_resp if isinstance(t, dict)}
+                    elif isinstance(tabs_resp, dict) and "sheets" in tabs_resp:
+                        dsid_to_tabs[dsid] = {str(s.get("title") or ""): True for s in tabs_resp["sheets"] if isinstance(s, dict)}
+                    else:
+                        dsid_to_tabs[dsid] = None  # not a GSheets datasource
+                except Exception:
+                    dsid_to_tabs[dsid] = None
+
+            tab_map = dsid_to_tabs.get(dsid)
+            if tab_map is not None:
+                # source_table_name for GSheets is the tab name
+                tab_name = str(table.get("source_table_name") or "")
+                sheet_exists = tab_map.get(tab_name, False)
+
+        result.append({**table, "sheet_exists": sheet_exists})
+
+    return result
 
 
 @mcp.tool()

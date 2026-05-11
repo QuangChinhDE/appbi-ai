@@ -660,9 +660,26 @@ async def propose_workboard_blueprint(
         "extra_context": extra_context,
         "table_profiles": parsed_profiles,
         "blueprint_template": template,
+        "schema_constraints": {
+            "IMPORTANT — read before filling the template": [
+                "sections: list[string] — e.g. ['Personal Info', 'Work Details']. NOT list of objects.",
+                "pages: list[string] — e.g. ['Page 1', 'Page 2']. NOT list of objects.",
+                "after_submit: {id: string, label: string, go_to_screen: string} | null — NOT a plain string.",
+                "select widget: values come from the column data in the sheet. Do NOT add inline options or lookup for a select widget.",
+                "filters[]: each filter has {column, operator, value}. There is no 'widget' key on filters.",
+                "lookup.kind: must be 'static' or 'dataset_table'. Use 'static' for hardcoded lists with lookup.values=[...]. Use 'dataset_table' for dynamic lookups with lookup.table_id + lookup.value_column.",
+                "lookup for text/select widgets: only use lookup when the field needs a dropdown. Omit lookup (set to null) for plain text inputs.",
+                "system columns (id, updated_at): do NOT include these in form fields. They are managed by the runtime.",
+                "visible_for_roles: list[string] — role names that can see this screen. Empty list = all roles.",
+                "rls[].filter_value: use '{{app_user.username}}' (double braces) to filter by logged-in user.",
+                "row_actions[].go_to_screen: must match an existing screen id exactly.",
+                "mini_app_nav.items: list of screen ids (strings), not screen objects.",
+                "CALL validate_workboard_blueprint(blueprint_json=...) BEFORE commit_workboard_blueprint to catch errors early.",
+            ]
+        },
         "next_step": (
             "Fill in the blueprint_template with real titles, roles, columns, and any additional screens. "
-            "Then call commit_workboard_blueprint with user_confirmed=False to preview."
+            "Then call validate_workboard_blueprint to check for errors before committing."
         ),
     }
 
@@ -731,6 +748,41 @@ async def commit_workboard_blueprint(
             f"Call create_app_users_batch(workboard_id={workboard_id}, ...) to add app users.",
             "Call link_workboard_to_workspace if you want a public workspace URL.",
         ],
+    }
+
+
+@mcp.tool()
+async def validate_workboard_blueprint(
+    blueprint_json: Dict[str, Any],
+) -> Any:
+    """Dry-run validate a blueprint without creating or modifying anything.
+
+    Call this BEFORE commit_workboard_blueprint to catch schema errors early.
+    Returns errors, warnings, and the normalized blueprint so you can inspect
+    and fix issues without spending a round-trip on a 422 response.
+
+    Common errors caught here:
+    - sections must be list[string], not list[{id, title}]
+    - after_submit must be {id, label, go_to_screen} | null, not a plain string
+    - select widget: values come from column data; do not use inline options
+    - filters[].widget is not a supported key
+    - lookup.kind must be 'static' or 'dataset_table'
+    - <<...>> placeholders left unfilled
+    - table_id not attached to the dataset
+    - go_to_screen references a non-existent screen id
+    """
+    result = await _normalize_and_validate_blueprint(blueprint_json)
+    ok = len(result["errors"]) == 0
+    return {
+        "ok": ok,
+        "errors": result["errors"],
+        "warnings": result["warnings"],
+        "normalized_blueprint": result["normalized_blueprint"] if ok else None,
+        "message": (
+            "Blueprint is valid — call commit_workboard_blueprint to create."
+            if ok
+            else f"Found {len(result['errors'])} error(s). Fix them before committing."
+        ),
     }
 
 

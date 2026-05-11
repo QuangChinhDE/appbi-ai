@@ -700,6 +700,14 @@ class GSheetAppendRequest(BaseModel):
     values: Dict[str, Any]  # {column_name: value}
 
 
+class GSheetAppendBatchRequest(BaseModel):
+    rows: List[Dict[str, Any]]  # list of {column_name: value}
+
+
+class GSheetImportCsvRequest(BaseModel):
+    csv_data: str  # raw CSV text; first row = headers
+
+
 @router.post("/{data_source_id}/gsheets/{sheet_name}/rows", status_code=status.HTTP_201_CREATED)
 def append_gsheets_row(
     data_source_id: int,
@@ -718,6 +726,53 @@ def append_gsheets_row(
     try:
         row = connector.append_row(spreadsheet_id, sheet_name, body.values)
         return {"ok": True, "sheet_name": sheet_name, "row": row}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/{data_source_id}/gsheets/{sheet_name}/rows/batch", status_code=status.HTTP_201_CREATED)
+def append_gsheets_rows_batch(
+    data_source_id: int,
+    sheet_name: str,
+    body: GSheetAppendBatchRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Append multiple rows to a sheet tab in a single API call.
+
+    ``rows`` is a list of dicts mapping column names to values.
+    All rows are written in one Google Sheets API request.
+    """
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    require_edit_access(db, current_user, ds, "data_sources")
+    try:
+        result = connector.append_rows(spreadsheet_id, sheet_name, body.rows)
+        return {"ok": True, "sheet_name": sheet_name, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/{data_source_id}/gsheets/{sheet_name}/import-csv", status_code=status.HTTP_200_OK)
+def import_csv_to_gsheet(
+    data_source_id: int,
+    sheet_name: str,
+    body: GSheetImportCsvRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Replace the content of a sheet tab with parsed CSV data.
+
+    The first CSV row is treated as the header. Existing data is overwritten.
+    """
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    require_edit_access(db, current_user, ds, "data_sources")
+    try:
+        result = connector.import_csv(spreadsheet_id, sheet_name, body.csv_data)
+        return {"ok": True, **result}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:

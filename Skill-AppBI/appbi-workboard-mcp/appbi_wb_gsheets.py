@@ -270,6 +270,82 @@ async def append_gsheet_row(
 
 
 @mcp.tool()
+async def append_gsheet_rows_batch(
+    datasource_id: int,
+    sheet_name: str,
+    rows: List[Dict[str, Any]],
+    user_confirmed: bool = False,
+) -> Any:
+    """Append multiple rows to a Google Sheet tab in a single API call.
+
+    Use this instead of calling append_gsheet_row repeatedly when seeding
+    reference data (e.g. 30+ lookup rows). Reduces N round-trips to 1.
+
+    ``rows`` is a list of dicts: [{col: value, ...}, ...].
+    This bypasses workboard RLS, audit, and validation rules.
+    """
+    plan = {
+        "action": "append_rows_batch",
+        "datasource_id": datasource_id,
+        "sheet_name": sheet_name,
+        "row_count": len(rows),
+        "preview_first_row": rows[0] if rows else None,
+        "warning": "This bypasses workboard runtime validation and RLS.",
+    }
+    scope_check = await _check_google_sheets_write_scope(datasource_id)
+    plan["google_oauth_write_scope"] = scope_check
+    if not user_confirmed:
+        return _requires_confirmation(plan)
+    if scope_check.get("blocking"):
+        return scope_check
+
+    return await _request(
+        "POST",
+        f"/datasources/{datasource_id}/gsheets/{sheet_name}/rows/batch",
+        json_body={"rows": rows},
+    )
+
+
+@mcp.tool()
+async def import_csv_to_gsheet(
+    datasource_id: int,
+    sheet_name: str,
+    csv_data: str,
+    user_confirmed: bool = False,
+) -> Any:
+    """Replace an entire Google Sheet tab with CSV data in one API call.
+
+    Use when you have a clean CSV (first row = headers) and want to overwrite
+    the tab completely. Avoids row-by-row seeding entirely.
+
+    ``csv_data`` is raw CSV text, e.g. "name,code\\nDept A,D01\\nDept B,D02"
+    This bypasses workboard RLS, audit, and validation rules.
+    """
+    # Quick parse to show preview in confirmation plan
+    lines = [line for line in csv_data.strip().splitlines() if line.strip()]
+    plan = {
+        "action": "import_csv_to_gsheet",
+        "datasource_id": datasource_id,
+        "sheet_name": sheet_name,
+        "header_row": lines[0] if lines else None,
+        "data_rows_count": max(0, len(lines) - 1),
+        "warning": "This OVERWRITES the entire sheet tab. Existing data will be replaced.",
+    }
+    scope_check = await _check_google_sheets_write_scope(datasource_id)
+    plan["google_oauth_write_scope"] = scope_check
+    if not user_confirmed:
+        return _requires_confirmation(plan)
+    if scope_check.get("blocking"):
+        return scope_check
+
+    return await _request(
+        "POST",
+        f"/datasources/{datasource_id}/gsheets/{sheet_name}/import-csv",
+        json_body={"csv_data": csv_data},
+    )
+
+
+@mcp.tool()
 async def update_gsheet_row(
     datasource_id: int,
     sheet_name: str,
