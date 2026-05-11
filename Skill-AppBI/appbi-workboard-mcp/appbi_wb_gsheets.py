@@ -409,3 +409,112 @@ async def delete_gsheet_row(
         f"/datasources/{datasource_id}/gsheets/{sheet_name}/rows",
         json_body={"pk": pk},
     )
+
+
+@mcp.tool()
+async def rename_gsheet_column(
+    datasource_id: int,
+    sheet_name: str,
+    old_name: str,
+    new_name: str,
+    user_confirmed: bool = False,
+) -> Any:
+    """Rename a column header in a Google Sheet tab (changes row 1 only).
+
+    Use this when you need to fix a column name mistake after a tab was
+    already created and data was appended.  If the dataset table profile
+    references this column by name, update it afterwards with
+    get_dataset_table_profile to confirm.
+
+    ``old_name`` must match the current header exactly (case-sensitive).
+    ``new_name`` must not already exist in the sheet.
+    """
+    plan = {
+        "action": "rename_gsheet_column",
+        "datasource_id": datasource_id,
+        "sheet_name": sheet_name,
+        "old_name": old_name,
+        "new_name": new_name,
+        "warning": "Renames only the header cell. Existing workboard queries that reference the old column name will break.",
+    }
+    scope_check = await _check_google_sheets_write_scope(datasource_id)
+    plan["google_oauth_write_scope"] = scope_check
+    if not user_confirmed:
+        return _requires_confirmation(plan)
+    if scope_check.get("blocking"):
+        return scope_check
+
+    return await _request(
+        "PATCH",
+        f"/datasources/{datasource_id}/gsheets/{sheet_name}/headers",
+        json_body={"old_name": old_name, "new_name": new_name},
+    )
+
+
+@mcp.tool()
+async def rename_gsheet_tab(
+    datasource_id: int,
+    sheet_name: str,
+    new_name: str,
+    user_confirmed: bool = False,
+) -> Any:
+    """Rename a Google Sheet tab (changes the tab title in the spreadsheet).
+
+    After renaming, re-attach the tab to the dataset using
+    attach_gsheet_tab_to_dataset with the new name, and detach the old
+    attachment with detach_table_from_dataset.
+
+    ``sheet_name`` is the current tab name; ``new_name`` must not already
+    exist in the same spreadsheet.
+    """
+    plan = {
+        "action": "rename_gsheet_tab",
+        "datasource_id": datasource_id,
+        "sheet_name": sheet_name,
+        "new_name": new_name,
+        "warning": "Renaming a tab breaks any dataset attachment that uses the old tab name. Detach the old attachment and re-attach with the new name.",
+    }
+    scope_check = await _check_google_sheets_write_scope(datasource_id)
+    plan["google_oauth_write_scope"] = scope_check
+    if not user_confirmed:
+        return _requires_confirmation(plan)
+    if scope_check.get("blocking"):
+        return scope_check
+
+    return await _request(
+        "PATCH",
+        f"/datasources/{datasource_id}/gsheets/{sheet_name}",
+        json_body={"new_name": new_name},
+    )
+
+
+@mcp.tool()
+async def clear_gsheet_rows(
+    datasource_id: int,
+    sheet_name: str,
+    user_confirmed: bool = False,
+) -> Any:
+    """Delete all data rows from a Google Sheet tab, keeping the header row.
+
+    Use this to reset a tab before re-importing fresh data.  Row 1
+    (headers) is preserved; rows 2+ are cleared permanently.
+
+    This is irreversible — confirm the action explicitly before calling.
+    """
+    plan = {
+        "action": "clear_gsheet_rows",
+        "datasource_id": datasource_id,
+        "sheet_name": sheet_name,
+        "warning": "All data rows will be permanently deleted. The header row (row 1) is preserved.",
+    }
+    scope_check = await _check_google_sheets_write_scope(datasource_id)
+    plan["google_oauth_write_scope"] = scope_check
+    if not user_confirmed:
+        return _requires_confirmation(plan)
+    if scope_check.get("blocking"):
+        return scope_check
+
+    return await _request(
+        "DELETE",
+        f"/datasources/{datasource_id}/gsheets/{sheet_name}/rows/all",
+    )

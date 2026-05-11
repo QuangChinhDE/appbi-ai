@@ -179,3 +179,41 @@ async def attach_gsheet_tab_to_dataset(
         description=description,
         user_confirmed=user_confirmed,
     )
+
+
+@mcp.tool()
+async def detach_table_from_dataset(
+    dataset_id: int,
+    table_id: int,
+    user_confirmed: bool = False,
+) -> Any:
+    """Remove a table attachment from a dataset.
+
+    Use this when the wrong tab was attached, or when a source table no
+    longer exists and you want to clean up the dataset.  The table record
+    is deleted from the dataset but the underlying data source is not
+    affected.
+
+    Obtain ``table_id`` from list_dataset_tables or get_dataset.
+    """
+    plan = {
+        "action": "detach_table_from_dataset",
+        "dataset_id": dataset_id,
+        "table_id": table_id,
+        "warning": "This removes the table from the dataset. Existing workboard screens that reference this table will break.",
+    }
+    if not user_confirmed:
+        return _requires_confirmation(plan)
+
+    return await _request("DELETE", f"/datasets/{dataset_id}/tables/{table_id}")
+
+
+@mcp.tool()
+async def check_dataset_source_status(dataset_id: int) -> Any:
+    """Check whether all tables attached to a dataset still exist in their source.
+
+    Returns a list of tables with a ``status`` field indicating ``ok``,
+    ``missing``, or ``error``.  Use this to diagnose stale or broken
+    dataset attachments after a Google Sheet tab is renamed or deleted.
+    """
+    return await _request("GET", f"/datasets/{dataset_id}/tables/source-status")

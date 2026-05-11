@@ -809,7 +809,16 @@ def update_gsheets_row(
 
 
 class GSheetDeleteRequest(BaseModel):
-    pk: Dict[str, Any]  # {pk_column: pk_value}
+    pk: Dict[str, Any]
+
+
+class GSheetRenameColumnRequest(BaseModel):
+    old_name: str
+    new_name: str
+
+
+class GSheetRenameTabRequest(BaseModel):
+    new_name: str  # {pk_column: pk_value}
 
 
 @router.delete("/{data_source_id}/gsheets/{sheet_name}/rows")
@@ -826,6 +835,65 @@ def delete_gsheets_row(
     try:
         row_num = connector.delete_row_by_pk(spreadsheet_id, sheet_name, body.pk)
         return {"ok": True, "sheet_name": sheet_name, "deleted_row": row_num}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.patch("/{data_source_id}/gsheets/{sheet_name}/headers")
+def rename_gsheets_column(
+    data_source_id: int,
+    sheet_name: str,
+    body: GSheetRenameColumnRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Rename a column header (row 1 cell) in a GSheet tab."""
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    require_edit_access(db, current_user, ds, "data_sources")
+    try:
+        result = connector.rename_column(spreadsheet_id, sheet_name, body.old_name, body.new_name)
+        return {"ok": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.patch("/{data_source_id}/gsheets/{sheet_name}")
+def rename_gsheets_tab(
+    data_source_id: int,
+    sheet_name: str,
+    body: GSheetRenameTabRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Rename a GSheet tab (changes the tab title in the spreadsheet)."""
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    require_edit_access(db, current_user, ds, "data_sources")
+    try:
+        result = connector.rename_tab(spreadsheet_id, sheet_name, body.new_name)
+        return {"ok": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.delete("/{data_source_id}/gsheets/{sheet_name}/rows/all")
+def clear_gsheets_rows(
+    data_source_id: int,
+    sheet_name: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Clear all data rows (row 2+) from a GSheet tab, preserving the header row."""
+    connector, spreadsheet_id, ds = _require_gsheets_ds(data_source_id, db, current_user)
+    require_edit_access(db, current_user, ds, "data_sources")
+    try:
+        result = connector.clear_data_rows(spreadsheet_id, sheet_name)
+        return {"ok": True, **result}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:

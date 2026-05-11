@@ -584,6 +584,116 @@ class GoogleSheetsConnector:
             "headers": headers or [],
         }
 
+    def rename_column(
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+        old_name: str,
+        new_name: str,
+    ) -> Dict[str, Any]:
+        """Rename a single column header in row 1 of a sheet tab."""
+        with _get_write_lock(spreadsheet_id):
+            headers, _ = self._read_headers_and_rows(spreadsheet_id, sheet_name)
+            if not headers:
+                raise ValueError(f"Sheet '{sheet_name}' has no header row.")
+            if old_name not in headers:
+                raise ValueError(
+                    f"Column '{old_name}' not found in sheet '{sheet_name}'. "
+                    f"Available columns: {headers}"
+                )
+            if new_name in headers and new_name != old_name:
+                raise ValueError(
+                    f"Column '{new_name}' already exists in sheet '{sheet_name}'."
+                )
+            col_index = headers.index(old_name)
+            col_letter = _col_index_to_letter(col_index)
+            cell_range = f"{sheet_name}!{col_letter}1"
+            try:
+                self.service.spreadsheets().values().update(
+                    spreadsheetId=spreadsheet_id,
+                    range=cell_range,
+                    valueInputOption="RAW",
+                    body={"values": [[new_name]]},
+                ).execute()
+            except HttpError as e:
+                raise ValueError(f"Google Sheets rename column error: {str(e)}")
+            return {
+                "old_name": old_name,
+                "new_name": new_name,
+                "col_index": col_index,
+                "sheet_name": sheet_name,
+            }
+
+    def rename_tab(
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+        new_sheet_name: str,
+    ) -> Dict[str, Any]:
+        """Rename a sheet tab using batchUpdate → updateSheetProperties."""
+        try:
+            spreadsheet = self.service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id
+            ).execute()
+            sheet_id: Optional[int] = None
+            for sheet in spreadsheet.get("sheets", []):
+                if sheet["properties"]["title"] == sheet_name:
+                    sheet_id = sheet["properties"]["sheetId"]
+                    break
+            if sheet_id is None:
+                raise ValueError(f"Sheet '{sheet_name}' not found in spreadsheet.")
+            existing_titles = [s["properties"]["title"] for s in spreadsheet.get("sheets", [])]
+            if new_sheet_name in existing_titles and new_sheet_name != sheet_name:
+                raise ValueError(
+                    f"A sheet named '{new_sheet_name}' already exists in the spreadsheet."
+                )
+            self.service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={
+                    "requests": [
+                        {
+                            "updateSheetProperties": {
+                                "properties": {
+                                    "sheetId": sheet_id,
+                                    "title": new_sheet_name,
+                                },
+                                "fields": "title",
+                            }
+                        }
+                    ]
+                },
+            ).execute()
+        except HttpError as e:
+            raise ValueError(f"Google Sheets rename tab error: {str(e)}")
+        return {"old_name": sheet_name, "new_name": new_sheet_name}
+
+    def clear_data_rows(
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+    ) -> Dict[str, Any]:
+        """Clear all data rows (row 2+), keeping the header row in row 1."""
+        with _get_write_lock(spreadsheet_id):
+            try:
+                self.service.spreadsheets().values().clear(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"{sheet_name}!A2:ZZ",
+                    body={},
+                ).execute()
+            except HttpError as e:
+                raise ValueError(f"Google Sheets clear rows error: {str(e)}")
+            return {"sheet_name": sheet_name, "cleared": True}
+
+
+def _col_index_to_letter(index: int) -> str:
+    """Convert 0-based column index to sheet column letter (A, B, ..., Z, AA, ...)."""
+    letters = ""
+    n = index + 1
+    while n > 0:
+        n, remainder = divmod(n - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
 
 def create_google_sheets_connector(config: Dict[str, Any]) -> GoogleSheetsConnector:
     """
