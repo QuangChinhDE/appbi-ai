@@ -124,19 +124,28 @@ async def get_dataset(dataset_id: int) -> Any:
 
 
 @mcp.tool()
-async def list_dataset_tables(dataset_id: int) -> Any:
-    """List all tables attached to a dataset, with a sheet_exists flag for GSheets tabs.
+async def list_dataset_tables(dataset_id: int, check_sheet_exists: bool = False) -> Any:
+    """List all tables attached to a dataset.
 
-    For Google Sheets datasources, sheet_exists indicates whether the tab is
-    actually present in the live spreadsheet (validates against columns_cache state).
-    For non-GSheets tables, sheet_exists is always null.
+    By default returns only the stored table metadata (fast, no extra API calls).
+
+    Set check_sheet_exists=True ONLY when you need to diagnose stale state —
+    e.g. a tab was registered in the dataset but you suspect it was deleted from
+    the spreadsheet. This triggers a live call to /datasources/{id}/gsheets/sheets
+    per datasource and adds a sheet_exists: true/false/null field to each row.
+
+    For creating a new workboard: leave check_sheet_exists=False (default).
+    You only need the table ids and column names, not live sheet validation.
     """
     tables = await _request("GET", f"/datasets/{dataset_id}/tables")
     if not isinstance(tables, list):
         return tables
 
-    # Try to get live sheet tabs for GSheets datasources
-    # Group tables by datasource_id to batch the tab list calls
+    # Fast path: no live sheet check needed
+    if not check_sheet_exists:
+        return tables
+
+    # Slow path: live sheet_exists check — only when explicitly requested
     from typing import Dict as _Dict
     dsid_to_tabs: _Dict[int, Any] = {}
 
@@ -151,7 +160,6 @@ async def list_dataset_tables(dataset_id: int) -> Any:
         sheet_exists: Any = None
 
         if dsid is not None and source_kind == "physical_table":
-            # Lazily fetch tab list per datasource (cached in dsid_to_tabs)
             if dsid not in dsid_to_tabs:
                 try:
                     tabs_resp = await _request("GET", f"/datasources/{dsid}/gsheets/sheets")
@@ -166,7 +174,6 @@ async def list_dataset_tables(dataset_id: int) -> Any:
 
             tab_map = dsid_to_tabs.get(dsid)
             if tab_map is not None:
-                # source_table_name for GSheets is the tab name
                 tab_name = str(table.get("source_table_name") or "")
                 sheet_exists = tab_map.get(tab_name, False)
 
