@@ -71,7 +71,8 @@ install-docker-and-run.sh
 # Release hygiene: local artifacts, sensitive backups, non-runtime references
 .artifacts/
 .env.bak.*
-Skill-AppBI/
+Skill-AppBI/old/
+Skill-AppBI/*.zip
 dashboard_example/
 demo_dataset/
 *.workboard.json
