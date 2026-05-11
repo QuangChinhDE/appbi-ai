@@ -29,6 +29,8 @@ from app.modules.workboards.models import Workboard
 from app.modules.workboards.roles import is_owner_role
 from app.modules.workboards.schemas import (
     DataTableBlock,
+    DataTablePivot,
+    DataTableUnpivot,
     FormField,
     LayoutJson,
     Screen,
@@ -749,6 +751,137 @@ def render_list_screen(
 
 # ── Doc screen ────────────────────────────────────────────────────────────
 
+def _apply_data_table_transform(
+    columns: List[str],
+    rows: List[Dict[str, Any]],
+    transform: Optional[Any],
+) -> tuple[List[str], List[Dict[str, Any]]]:
+    """Apply pivot/unpivot in memory.
+
+    Returns a fresh ``(columns, rows)`` pair; the input is not mutated.
+    Raises ``HTTPException(422)`` when the transform refers to missing
+    columns or when a pivot would explode beyond ``max_columns``. The
+    transform runs on the *fetched* rows so it respects ``max_rows`` and
+    the screen's RLS filters set on the underlying query.
+    """
+    if transform is None:
+        return columns, rows
+
+    if isinstance(transform, DataTableUnpivot):
+        id_cols = [c for c in transform.id_columns if c in columns]
+        value_cols = [c for c in transform.value_columns if c in columns]
+        if not value_cols:
+            raise HTTPException(
+                status_code=422,
+                detail="Unpivot: none of value_columns exist in the source.",
+            )
+        var_name = transform.var_name
+        value_name = transform.value_name
+        if var_name in id_cols or value_name in id_cols or var_name == value_name:
+            raise HTTPException(
+                status_code=422,
+                detail="Unpivot var_name/value_name must not collide with id_columns or each other.",
+            )
+        new_cols = id_cols + [var_name, value_name]
+        new_rows: List[Dict[str, Any]] = []
+        for row in rows:
+            id_part = {c: row.get(c) for c in id_cols}
+            for vc in value_cols:
+                cell = row.get(vc)
+                if transform.drop_nulls and cell is None:
+                    continue
+                new_row = dict(id_part)
+                new_row[var_name] = vc
+                new_row[value_name] = cell
+                new_rows.append(new_row)
+        return new_cols, new_rows
+
+    if isinstance(transform, DataTablePivot):
+        idx_cols = [c for c in transform.index if c in columns]
+        if len(idx_cols) != len(transform.index):
+            missing = [c for c in transform.index if c not in columns]
+            raise HTTPException(
+                status_code=422,
+                detail=f"Pivot index columns missing from source: {missing}",
+            )
+        if transform.columns not in columns:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Pivot columns key '{transform.columns}' not in source.",
+            )
+        if transform.values not in columns:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Pivot values column '{transform.values}' not in source.",
+            )
+
+        pivot_keys_order: List[str] = []
+        seen_keys: set[str] = set()
+        # ``buckets[index_tuple][pivot_key]`` accumulates raw cell values.
+        buckets: Dict[tuple, Dict[str, List[Any]]] = {}
+        index_order: List[tuple] = []
+        first_seen: Dict[tuple, Dict[str, Any]] = {}
+
+        for row in rows:
+            key_raw = row.get(transform.columns)
+            if key_raw is None:
+                continue
+            pivot_key = str(key_raw)
+            if pivot_key not in seen_keys:
+                if len(pivot_keys_order) >= transform.max_columns:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"Pivot exceeded max_columns={transform.max_columns} "
+                            f"distinct values of '{transform.columns}'. "
+                            "Raise max_columns or pre-filter the source."
+                        ),
+                    )
+                seen_keys.add(pivot_key)
+                pivot_keys_order.append(pivot_key)
+            idx_tuple = tuple(row.get(c) for c in idx_cols)
+            if idx_tuple not in buckets:
+                buckets[idx_tuple] = {}
+                index_order.append(idx_tuple)
+                first_seen[idx_tuple] = {c: row.get(c) for c in idx_cols}
+            buckets[idx_tuple].setdefault(pivot_key, []).append(row.get(transform.values))
+
+        agg = transform.agg
+
+        def _aggregate(cells: List[Any]) -> Any:
+            if not cells:
+                return transform.fill_value
+            if agg == "count":
+                return sum(1 for v in cells if v is not None)
+            if agg == "first":
+                return cells[0]
+            numeric = [_coerce_number(v) for v in cells]
+            numeric = [v for v in numeric if v is not None]
+            if not numeric:
+                return transform.fill_value
+            if agg == "sum":
+                return sum(numeric)
+            if agg == "avg":
+                return sum(numeric) / len(numeric)
+            if agg == "min":
+                return min(numeric)
+            if agg == "max":
+                return max(numeric)
+            return transform.fill_value
+
+        new_cols = idx_cols + pivot_keys_order
+        new_rows = []
+        for idx_tuple in index_order:
+            row_out = dict(first_seen[idx_tuple])
+            cells_map = buckets[idx_tuple]
+            for pk in pivot_keys_order:
+                row_out[pk] = _aggregate(cells_map.get(pk, []))
+            new_rows.append(row_out)
+        return new_cols, new_rows
+
+    return columns, rows
+
+
 def render_doc_screen(
     db: Session,
     workboard: Workboard,
@@ -833,6 +966,12 @@ def _resolve_doc_data_block(
     )
     all_columns: List[str] = result.get("columns") or []
     rows: List[Dict[str, Any]] = result.get("rows") or []
+    # Pivot/unpivot first so column projection, group_by merges and totals
+    # operate on the *reported* shape — not the raw source shape.
+    if block.transform is not None:
+        all_columns, rows = _apply_data_table_transform(
+            all_columns, rows, block.transform
+        )
     selected = [c for c in (block.columns or []) if c in all_columns] or all_columns
     if selected != all_columns:
         rows = [{c: row.get(c) for c in selected} for row in rows]
@@ -856,6 +995,64 @@ def _resolve_doc_data_block(
     if footer:
         payload["footer_row"] = footer
     return payload
+
+
+# ── Doc data-table export ─────────────────────────────────────────────────
+
+def export_doc_data_block_to_excel(
+    db: Session,
+    workboard: Workboard,
+    screen: Screen,
+    block_index: int,
+    *,
+    identity: CallerIdentity,
+) -> tuple[bytes, str]:
+    """Render the *displayed* table of a doc ``data_table`` block to XLSX.
+
+    Returns ``(content, filename)``. Only blocks with
+    ``allow_export_excel=True`` are exportable; the same RLS as on-screen
+    rendering applies because we go through :func:`_resolve_doc_data_block`.
+    """
+    if screen.kind != "doc" or screen.doc is None:
+        raise HTTPException(status_code=400, detail="Screen is not a doc.")
+    blocks = screen.doc.blocks
+    if block_index < 0 or block_index >= len(blocks):
+        raise HTTPException(status_code=404, detail="Block not found.")
+    block = blocks[block_index]
+    if not isinstance(block, DataTableBlock):
+        raise HTTPException(status_code=400, detail="Block is not a data_table.")
+    if not block.allow_export_excel:
+        raise HTTPException(status_code=403, detail="Excel export is disabled for this block.")
+
+    data = _resolve_doc_data_block(db, workboard, screen, block, identity=identity)
+    columns: List[str] = data.get("columns") or []
+    rows: List[Dict[str, Any]] = data.get("rows") or []
+
+    # Reuse the dataset exporter so cell coercion stays consistent.
+    from app.services.dataset_excel_export_service import (
+        export_dataset_table_to_excel,
+        sanitize_excel_sheet_title,
+    )
+
+    def _fetch_page(_limit: int, offset: int) -> Dict[str, Any]:
+        if offset == 0:
+            return {"columns": columns, "rows": rows}
+        return {"columns": columns, "rows": []}
+
+    sheet_title = sanitize_excel_sheet_title(
+        block.title or screen.title or f"block_{block_index + 1}"
+    )
+    result = export_dataset_table_to_excel(
+        _fetch_page,
+        sheet_title=sheet_title,
+        page_size=max(len(rows), 1),
+        max_rows=max(len(rows), 1),
+    )
+    # Compose a filename like "workboard-slug__screen-id__block-2.xlsx".
+    safe_screen = re.sub(r"[^A-Za-z0-9_.-]+", "_", screen.id) or "screen"
+    safe_wb = re.sub(r"[^A-Za-z0-9_.-]+", "_", workboard.slug or workboard.name or "workboard")
+    filename = f"{safe_wb}__{safe_screen}__block-{block_index + 1}.xlsx"
+    return result.content, filename
 
 
 # ── Public app shell payload ──────────────────────────────────────────────

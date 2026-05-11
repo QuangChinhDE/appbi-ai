@@ -102,6 +102,8 @@ export default function DocScreenEditor({
             max_rows: 200,
             show_index: false,
             title: '',
+            transform: null,
+            allow_export_excel: false,
           }
         : type === 'text'
         ? { type, content: '', align: 'left' }
@@ -567,7 +569,305 @@ function DataTableEditor({
           onChange={(next) => onChange({ totals: next })}
         />
       </div>
+
+      <TransformEditor
+        sourceColumns={tableCols.map((c) => c.name)}
+        transform={
+          (block as { transform?: TransformSpec | null }).transform ?? null
+        }
+        onChange={(next) => onChange({ transform: next ?? null } as Partial<DocBlockSpec>)}
+      />
+
+      <Lbl label="Cho phép xuất Excel bảng này?">
+        <select
+          value={block.allow_export_excel ? 'yes' : 'no'}
+          onChange={(event) =>
+            onChange({ allow_export_excel: event.target.value === 'yes' })
+          }
+          className={INPUT}
+        >
+          <option value="no">Không</option>
+          <option value="yes">Có — hiện nút tải Excel</option>
+        </select>
+      </Lbl>
     </div>
+  );
+}
+
+// ─── Pivot / Unpivot editor ──────────────────────────────────────────────
+
+type UnpivotSpec = {
+  kind: 'unpivot';
+  id_columns?: string[];
+  value_columns?: string[];
+  var_name?: string;
+  value_name?: string;
+  drop_nulls?: boolean;
+};
+
+type PivotSpec = {
+  kind: 'pivot';
+  index?: string[];
+  columns?: string;
+  values?: string;
+  agg?: 'sum' | 'avg' | 'min' | 'max' | 'count' | 'first';
+  max_columns?: number;
+  fill_value?: unknown;
+};
+
+type TransformSpec = UnpivotSpec | PivotSpec;
+
+function TransformEditor({
+  sourceColumns,
+  transform,
+  onChange,
+}: {
+  sourceColumns: string[];
+  transform: TransformSpec | null;
+  onChange: (next: TransformSpec | null) => void;
+}) {
+  const kind: 'none' | 'unpivot' | 'pivot' = transform?.kind ?? 'none';
+  const colOptions = sourceColumns.map((name) => ({ value: name, label: name }));
+
+  const setKind = (next: 'none' | 'unpivot' | 'pivot') => {
+    if (next === 'none') {
+      onChange(null);
+      return;
+    }
+    if (next === 'unpivot') {
+      onChange({
+        kind: 'unpivot',
+        id_columns: [],
+        value_columns: [],
+        var_name: 'variable',
+        value_name: 'value',
+        drop_nulls: true,
+      });
+      return;
+    }
+    onChange({
+      kind: 'pivot',
+      index: [],
+      columns: sourceColumns[0] ?? '',
+      values: sourceColumns[1] ?? '',
+      agg: 'sum',
+      max_columns: 50,
+    });
+  };
+
+  return (
+    <BuilderSubsection
+      title="Pivot / Unpivot (tuỳ chọn)"
+      description="Chuyển dạng dữ liệu ngay khi render báo cáo — không động vào DB hay Google Sheet. Áp dụng trước khi chọn cột hiển thị / tính tổng."
+    >
+      <Lbl label="Chế độ">
+        <select
+          value={kind}
+          onChange={(event) =>
+            setKind(event.target.value as 'none' | 'unpivot' | 'pivot')
+          }
+          className={INPUT}
+        >
+          <option value="none">Không biến đổi</option>
+          <option value="unpivot">Unpivot (wide → long)</option>
+          <option value="pivot">Pivot (long → wide)</option>
+        </select>
+      </Lbl>
+
+      {transform?.kind === 'unpivot' && (
+        <div className="mt-2 space-y-2">
+          <Lbl label="Cột giữ nguyên (id_columns)">
+            {sourceColumns.length > 0 ? (
+              <CheckboxMultiSelect
+                options={colOptions}
+                selectedValues={transform.id_columns ?? []}
+                onChange={(next) =>
+                  onChange({ ...transform, id_columns: next })
+                }
+                columns={3}
+              />
+            ) : (
+              <input
+                value={(transform.id_columns ?? []).join(', ')}
+                onChange={(event) =>
+                  onChange({
+                    ...transform,
+                    id_columns: event.target.value
+                      .split(',')
+                      .map((item) => item.trim())
+                      .filter(Boolean),
+                  })
+                }
+                className={INPUT}
+              />
+            )}
+          </Lbl>
+          <Lbl label="Cột cần unpivot (value_columns)">
+            {sourceColumns.length > 0 ? (
+              <CheckboxMultiSelect
+                options={colOptions}
+                selectedValues={transform.value_columns ?? []}
+                onChange={(next) =>
+                  onChange({ ...transform, value_columns: next })
+                }
+                columns={3}
+              />
+            ) : (
+              <input
+                value={(transform.value_columns ?? []).join(', ')}
+                onChange={(event) =>
+                  onChange({
+                    ...transform,
+                    value_columns: event.target.value
+                      .split(',')
+                      .map((item) => item.trim())
+                      .filter(Boolean),
+                  })
+                }
+                className={INPUT}
+              />
+            )}
+          </Lbl>
+          <div className={BUILDER_GRID_3}>
+            <Lbl label="Tên cột biến (var_name)">
+              <input
+                value={transform.var_name ?? 'variable'}
+                onChange={(event) =>
+                  onChange({ ...transform, var_name: event.target.value })
+                }
+                className={INPUT}
+              />
+            </Lbl>
+            <Lbl label="Tên cột giá trị (value_name)">
+              <input
+                value={transform.value_name ?? 'value'}
+                onChange={(event) =>
+                  onChange({ ...transform, value_name: event.target.value })
+                }
+                className={INPUT}
+              />
+            </Lbl>
+            <Lbl label="Bỏ ô null?">
+              <select
+                value={transform.drop_nulls === false ? 'no' : 'yes'}
+                onChange={(event) =>
+                  onChange({
+                    ...transform,
+                    drop_nulls: event.target.value === 'yes',
+                  })
+                }
+                className={INPUT}
+              >
+                <option value="yes">Có</option>
+                <option value="no">Không</option>
+              </select>
+            </Lbl>
+          </div>
+        </div>
+      )}
+
+      {transform?.kind === 'pivot' && (
+        <div className="mt-2 space-y-2">
+          <Lbl label="Cột giữ nguyên / index (gộp theo)">
+            {sourceColumns.length > 0 ? (
+              <CheckboxMultiSelect
+                options={colOptions}
+                selectedValues={transform.index ?? []}
+                onChange={(next) => onChange({ ...transform, index: next })}
+                columns={3}
+              />
+            ) : (
+              <input
+                value={(transform.index ?? []).join(', ')}
+                onChange={(event) =>
+                  onChange({
+                    ...transform,
+                    index: event.target.value
+                      .split(',')
+                      .map((item) => item.trim())
+                      .filter(Boolean),
+                  })
+                }
+                className={INPUT}
+              />
+            )}
+          </Lbl>
+          <div className={BUILDER_GRID_3}>
+            <Lbl label="Cột làm header (columns)">
+              <select
+                value={transform.columns ?? ''}
+                onChange={(event) =>
+                  onChange({ ...transform, columns: event.target.value })
+                }
+                className={INPUT}
+              >
+                <option value="">— chọn —</option>
+                {sourceColumns.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </Lbl>
+            <Lbl label="Cột giá trị (values)">
+              <select
+                value={transform.values ?? ''}
+                onChange={(event) =>
+                  onChange({ ...transform, values: event.target.value })
+                }
+                className={INPUT}
+              >
+                <option value="">— chọn —</option>
+                {sourceColumns.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </Lbl>
+            <Lbl label="Aggregation">
+              <select
+                value={transform.agg ?? 'sum'}
+                onChange={(event) =>
+                  onChange({
+                    ...transform,
+                    agg: event.target.value as PivotSpec['agg'],
+                  })
+                }
+                className={INPUT}
+              >
+                <option value="sum">sum</option>
+                <option value="avg">avg</option>
+                <option value="min">min</option>
+                <option value="max">max</option>
+                <option value="count">count</option>
+                <option value="first">first</option>
+              </select>
+            </Lbl>
+            <Lbl label="Max cột pivot">
+              <input
+                type="number"
+                min={1}
+                max={200}
+                value={Number(transform.max_columns ?? 50)}
+                onChange={(event) =>
+                  onChange({
+                    ...transform,
+                    max_columns: Math.max(1, Number(event.target.value) || 50),
+                  })
+                }
+                className={INPUT}
+              />
+            </Lbl>
+          </div>
+          <p className="text-[11px] text-slate-500">
+            Lưu ý: pivot chỉ chạy trong bộ nhớ trên tối đa <b>max_rows</b> dòng
+            đã fetch. Distinct values của cột header vượt <b>max cột pivot</b>{' '}
+            sẽ báo lỗi 422.
+          </p>
+        </div>
+      )}
+    </BuilderSubsection>
   );
 }
 

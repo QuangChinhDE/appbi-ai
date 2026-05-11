@@ -231,4 +231,29 @@ export const workspaceApi = {
     );
     return r.data;
   },
+  async exportDocBlockExcel(
+    token: string,
+    workboardId: number,
+    screenId: string,
+    blockIndex: number,
+  ): Promise<{ blob: Blob; filename: string }> {
+    const r = await client.get(
+      `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/blocks/${blockIndex}/export.xlsx`,
+      { responseType: 'blob' },
+    );
+    const disposition = String(r.headers['content-disposition'] || '');
+    let filename = `export-${screenId}-block-${blockIndex + 1}.xlsx`;
+    const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
+    if (utf8Match) {
+      try {
+        filename = decodeURIComponent(utf8Match[1]);
+      } catch {
+        // keep fallback
+      }
+    } else if (asciiMatch) {
+      filename = asciiMatch[1];
+    }
+    return { blob: r.data as Blob, filename };
+  },
 };

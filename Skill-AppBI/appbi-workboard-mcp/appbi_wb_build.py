@@ -113,11 +113,50 @@ _BLUEPRINT_TEMPLATE = {
                 },
                 "doc": None,
             },
+            # OPTIONAL: keep this screen only if the mini-app needs a
+            # report / dashboard view. Otherwise delete this dict.
+            # See get_doc_screen_examples() for richer patterns (pivot,
+            # unpivot, 2-row header, totals, group_by, Excel export).
+            {
+                "id": "report-view",
+                "kind": "doc",
+                "title": "<<report_title>>",
+                "icon": "BarChart2",
+                "description": None,
+                "table_id": "<<dataset_table_id>>",
+                "primary_key_columns": ["id"],
+                "visible_for_roles": [],
+                "show_in_nav": True,
+                "column_labels": {},  # {"db_col": "Nhãn hiển thị"}
+                "rls": [],
+                "rls_default": None,
+                "form": None,
+                "list": None,
+                "doc": {
+                    "page": {"size": "A4", "orientation": "landscape", "margin_mm": 10},
+                    "blocks": [
+                        {
+                            "type": "data_table",
+                            "source": "primary",
+                            "title": "<<table_title>>",
+                            "columns": ["<<col1>>", "<<col2>>"],
+                            "column_groups": [],          # 2-row header groups; see examples
+                            "filters_from_view": True,
+                            "totals": [],                 # subset of columns to SUM at the bottom
+                            "group_by": [],               # subset of columns to merge equal-value rows
+                            "max_rows": 500,
+                            "show_index": False,
+                            "transform": None,            # null | unpivot | pivot — see examples
+                            "allow_export_excel": False,  # set True to show "Xuất Excel" button
+                        }
+                    ],
+                },
+            },
         ],
         "mini_app_nav": {
             "mobile_kind": "bottom_nav",
             "desktop_kind": "sidebar",
-            "items": ["entry-form", "list-view"],
+            "items": ["entry-form", "list-view", "report-view"],
         },
     },
     "app_users_template": [
@@ -344,6 +383,228 @@ def _blueprint_from_existing_workboard(
     return merged
 
 
+# ---------------------------------------------------------------------------
+# Doc (báo cáo) screen validation
+# ---------------------------------------------------------------------------
+
+_DOC_BLOCK_TYPES = {
+    "header",
+    "kv_grid",
+    "data_table",
+    "text",
+    "spacer",
+    "signature",
+    "footer",
+}
+
+_TRANSFORM_KINDS = {"unpivot", "pivot"}
+
+
+def _validate_doc_screen(
+    *,
+    screen: Dict[str, Any],
+    screen_path: str,
+    screen_table_columns: List[str],
+    errors: List[str],
+    warnings: List[str],
+) -> None:
+    doc = screen.get("doc")
+    if not isinstance(doc, dict):
+        # already reported as "no doc spec" upstream
+        return
+
+    # page block (optional but if present must be dict)
+    page = doc.get("page")
+    if page is not None and not isinstance(page, dict):
+        errors.append(f"{screen_path}.doc.page must be an object")
+
+    blocks = doc.get("blocks")
+    if not isinstance(blocks, list) or not blocks:
+        errors.append(f"{screen_path}.doc.blocks must be a non-empty list")
+        return
+
+    table_cols = set(screen_table_columns or [])
+    has_data_table = False
+
+    for b_idx, block in enumerate(blocks):
+        bpath = f"{screen_path}.doc.blocks[{b_idx}]"
+        if not isinstance(block, dict):
+            errors.append(f"{bpath} must be an object")
+            continue
+        btype = str(block.get("type") or "").strip()
+        if btype not in _DOC_BLOCK_TYPES:
+            errors.append(
+                f"{bpath}.type={btype!r} is not one of {sorted(_DOC_BLOCK_TYPES)}"
+            )
+            continue
+
+        if btype == "data_table":
+            has_data_table = True
+            _validate_data_table_block(
+                block=block,
+                path=bpath,
+                table_cols=table_cols,
+                errors=errors,
+                warnings=warnings,
+            )
+        elif btype == "kv_grid":
+            items = block.get("items") or []
+            if not isinstance(items, list):
+                errors.append(f"{bpath}.items must be a list of {{label, value}}")
+        elif btype == "signature":
+            slots = block.get("slots") or []
+            if not isinstance(slots, list):
+                errors.append(f"{bpath}.slots must be a list of {{label, role?}}")
+        # header / text / spacer / footer have only optional scalar fields — no extra checks.
+
+    if not has_data_table:
+        warnings.append(
+            f"{screen_path}.doc has no data_table block — the report will be static text only."
+        )
+
+
+def _validate_data_table_block(
+    *,
+    block: Dict[str, Any],
+    path: str,
+    table_cols: set,
+    errors: List[str],
+    warnings: List[str],
+) -> None:
+    source = str(block.get("source") or "primary").strip()
+    block["source"] = source or "primary"
+
+    if not source.startswith("lookup:") and source != "primary":
+        errors.append(
+            f"{path}.source must be 'primary' or 'lookup:<table_id>' (got {source!r})"
+        )
+
+    # When source is primary AND we know the bound table's columns, validate
+    # columns / column_groups / totals / group_by reference real columns.
+    check_cols = (source == "primary") and bool(table_cols)
+
+    cols_list = block.get("columns") or []
+    if not isinstance(cols_list, list):
+        errors.append(f"{path}.columns must be a list[string]")
+        cols_list = []
+    if check_cols:
+        missing = [c for c in cols_list if c and c not in table_cols]
+        if missing:
+            errors.append(f"{path}.columns references unknown columns: {missing}")
+
+    # column_groups (2-row header)
+    for g_idx, grp in enumerate(block.get("column_groups") or []):
+        gpath = f"{path}.column_groups[{g_idx}]"
+        if not isinstance(grp, dict):
+            errors.append(f"{gpath} must be an object {{label, columns}}")
+            continue
+        if not str(grp.get("label") or "").strip():
+            errors.append(f"{gpath}.label is required")
+        gcols = grp.get("columns") or []
+        if not isinstance(gcols, list) or not gcols:
+            errors.append(f"{gpath}.columns must be a non-empty list[string]")
+            continue
+        # Each grouped col must also appear in the block's columns list.
+        if cols_list:
+            outside = [c for c in gcols if c not in cols_list]
+            if outside:
+                errors.append(
+                    f"{gpath}.columns has entries not in {path}.columns: {outside}"
+                )
+        if check_cols:
+            missing = [c for c in gcols if c not in table_cols]
+            if missing:
+                errors.append(f"{gpath}.columns references unknown columns: {missing}")
+
+    # totals / group_by must be subsets of the block's columns
+    for key in ("totals", "group_by"):
+        vals = block.get(key) or []
+        if not isinstance(vals, list):
+            errors.append(f"{path}.{key} must be a list[string]")
+            continue
+        if cols_list:
+            outside = [v for v in vals if v not in cols_list]
+            if outside:
+                errors.append(
+                    f"{path}.{key} has entries not in {path}.columns: {outside}"
+                )
+
+    # transform (pivot / unpivot)
+    transform = block.get("transform")
+    if transform is not None:
+        if not isinstance(transform, dict):
+            errors.append(f"{path}.transform must be an object or null")
+            return
+        kind = str(transform.get("kind") or "").strip()
+        if kind not in _TRANSFORM_KINDS:
+            errors.append(
+                f"{path}.transform.kind must be one of {sorted(_TRANSFORM_KINDS)} (got {kind!r})"
+            )
+            return
+        if kind == "unpivot":
+            id_cols = transform.get("id_columns") or []
+            val_cols = transform.get("value_columns") or []
+            if not isinstance(id_cols, list):
+                errors.append(f"{path}.transform.id_columns must be a list[string]")
+            if not isinstance(val_cols, list) or not val_cols:
+                errors.append(
+                    f"{path}.transform.value_columns must be a non-empty list[string]"
+                )
+            if check_cols:
+                missing = [c for c in [*id_cols, *val_cols] if c not in table_cols]
+                if missing:
+                    errors.append(
+                        f"{path}.transform references unknown columns: {missing}"
+                    )
+            var_name = transform.get("var_name", "variable")
+            value_name = transform.get("value_name", "value")
+            if var_name == value_name:
+                errors.append(
+                    f"{path}.transform.var_name and value_name must differ"
+                )
+        elif kind == "pivot":
+            index = transform.get("index") or []
+            cols_field = transform.get("columns")
+            vals_field = transform.get("values")
+            if not isinstance(index, list) or not index:
+                errors.append(
+                    f"{path}.transform.index must be a non-empty list[string]"
+                )
+            if not isinstance(cols_field, str) or not cols_field:
+                errors.append(
+                    f"{path}.transform.columns must be a non-empty string"
+                )
+            if not isinstance(vals_field, str) or not vals_field:
+                errors.append(
+                    f"{path}.transform.values must be a non-empty string"
+                )
+            agg = transform.get("agg", "sum")
+            if agg not in {"sum", "avg", "min", "max", "count", "first"}:
+                errors.append(
+                    f"{path}.transform.agg must be one of sum/avg/min/max/count/first"
+                )
+            max_cols = transform.get("max_columns", 50)
+            if not isinstance(max_cols, int) or not (1 <= max_cols <= 200):
+                errors.append(
+                    f"{path}.transform.max_columns must be int in [1, 200]"
+                )
+            if check_cols:
+                refs = [*index]
+                if isinstance(cols_field, str):
+                    refs.append(cols_field)
+                if isinstance(vals_field, str):
+                    refs.append(vals_field)
+                missing = [c for c in refs if c not in table_cols]
+                if missing:
+                    errors.append(
+                        f"{path}.transform references unknown columns: {missing}"
+                    )
+
+    # allow_export_excel must be bool
+    if "allow_export_excel" in block and not isinstance(block["allow_export_excel"], bool):
+        errors.append(f"{path}.allow_export_excel must be a boolean")
+
+
 async def _normalize_and_validate_blueprint(blueprint_json: Dict[str, Any]) -> Dict[str, Any]:
     errors: List[str] = []
     warnings: List[str] = []
@@ -423,13 +684,29 @@ async def _normalize_and_validate_blueprint(blueprint_json: Dict[str, Any]) -> D
             errors.append(f"screens[{index}] kind=form but no form spec")
         if kind == "list" and not screen.get("list"):
             errors.append(f"screens[{index}] kind=list but no list spec")
+        if kind == "doc" and not screen.get("doc"):
+            errors.append(f"screens[{index}] kind=doc but no doc spec (page + blocks)")
 
         table_id = screen.get("table_id")
         if isinstance(table_id, str) and table_id.isdigit():
             table_id = int(table_id)
             screen["table_id"] = table_id
-        if kind in ("form", "list") and isinstance(table_id, int) and table_by_id and table_id not in table_by_id:
+        if kind in ("form", "list", "doc") and isinstance(table_id, int) and table_by_id and table_id not in table_by_id:
             errors.append(f"screens[{index}].table_id={table_id} is not attached to dataset {dataset_id}")
+
+        # Resolve the bound table's column list once for both list/doc column checks.
+        screen_table_columns: List[str] = []
+        if isinstance(table_id, int) and table_by_id.get(table_id):
+            screen_table_columns = _table_columns(table_by_id[table_id])
+
+        # Validate column_labels keys reference real columns.
+        column_labels = screen.get("column_labels") or {}
+        if isinstance(column_labels, dict) and screen_table_columns:
+            unknown_labels = [c for c in column_labels.keys() if c not in screen_table_columns]
+            if unknown_labels:
+                errors.append(
+                    f"screens[{index}].column_labels references unknown columns: {unknown_labels}"
+                )
 
         pk_columns = [str(item).strip() for item in (screen.get("primary_key_columns") or []) if str(item).strip()]
         if not pk_columns and default_pk:
@@ -476,6 +753,18 @@ async def _normalize_and_validate_blueprint(blueprint_json: Dict[str, Any]) -> D
                 errors.append(
                     f"screens[{index}].form.after_submit.go_to_screen='{target}' does not match any screen id"
                 )
+
+        # ------------------------------------------------------------------
+        # Doc (báo cáo) screen validation
+        # ------------------------------------------------------------------
+        if kind == "doc":
+            _validate_doc_screen(
+                screen=screen,
+                screen_path=f"screens[{index}]",
+                screen_table_columns=screen_table_columns,
+                errors=errors,
+                warnings=warnings,
+            )
 
     nav = layout.setdefault("mini_app_nav", {})
     if "default" in nav:
@@ -675,12 +964,286 @@ async def propose_workboard_blueprint(
                 "row_actions[].go_to_screen: must match an existing screen id exactly.",
                 "mini_app_nav.items: list of screen ids (strings), not screen objects.",
                 "CALL validate_workboard_blueprint(blueprint_json=...) BEFORE commit_workboard_blueprint to catch errors early.",
-            ]
+            ],
+            "doc / báo cáo screens": [
+                "kind='doc' requires `doc: {page, blocks[]}`. Set form=null and list=null on that screen.",
+                "Allowed block.type values: header, kv_grid, data_table, text, spacer, signature, footer.",
+                "data_table.source: 'primary' (the screen's table_id) or 'lookup:<table_id>'. Default 'primary'.",
+                "data_table.columns / column_groups[*].columns / totals / group_by: must all be real columns of the bound table.",
+                "column_groups create a 2-row header (e.g. NHẬP HÀNG / XUẤT BÁN / TỒN KHO grouping monthly metric columns).",
+                "column_labels at the SCREEN level (not block) maps {db_column: 'Nhãn hiển thị'} for friendly headers in both list and doc.",
+                "data_table.transform=null by default. Use {kind:'unpivot', id_columns, value_columns, var_name, value_name} to flatten a wide Google Sheet (e.g. t1..t12 → one row per month).",
+                "data_table.transform={kind:'pivot', index:[...], columns:'col', values:'col', agg:'sum'|'avg'|'min'|'max'|'count'|'first', max_columns:1..200} to build a matrix from long data.",
+                "data_table.allow_export_excel=true exposes a 'Xuất Excel' download button on the mini-app block. Off by default.",
+                "totals SUMs the listed columns in a footer row; group_by merges equal-value rows into spanned cells (good for hierarchical reports).",
+                "CALL get_doc_screen_examples() to see annotated, copy-pasteable snippets for common report patterns.",
+            ],
         },
         "next_step": (
             "Fill in the blueprint_template with real titles, roles, columns, and any additional screens. "
+            "If a report screen is needed, call get_doc_screen_examples() for ready-to-adapt patterns. "
             "Then call validate_workboard_blueprint to check for errors before committing."
         ),
+    }
+
+
+@mcp.tool()
+async def get_doc_screen_examples() -> Any:
+    """Return annotated examples of `kind='doc'` (báo cáo) screens.
+
+    Use this when the user asks for a report, dashboard panel, pivot table,
+    multi-row header, monthly cross-tab, or Excel-exportable summary. The
+    examples cover: simple flat report, 2-row grouped header, unpivot of a
+    wide Google Sheet, pivot of a long fact table, and Excel export toggle.
+    Copy the relevant `screen` dict into `layout_json.screens[]`, adapt
+    `id` / `title` / `table_id` / `columns`, then call
+    `validate_workboard_blueprint` and `commit_workboard_blueprint`.
+    """
+    examples = [
+        {
+            "name": "1. Simple flat report (no grouping, no transform)",
+            "when_to_use": "Read-only printable view of one table with chosen columns and a totals row.",
+            "screen": {
+                "id": "report-simple",
+                "kind": "doc",
+                "title": "Báo cáo doanh thu",
+                "icon": "FileText",
+                "table_id": 123,
+                "primary_key_columns": ["id"],
+                "visible_for_roles": ["quan_ly"],
+                "show_in_nav": True,
+                "column_labels": {"ngay": "Ngày", "doanh_thu": "Doanh thu (VND)"},
+                "rls": [],
+                "rls_default": None,
+                "form": None,
+                "list": None,
+                "doc": {
+                    "page": {"size": "A4", "orientation": "portrait", "margin_mm": 15},
+                    "blocks": [
+                        {"type": "header", "title": "Doanh thu tháng 5", "align": "center"},
+                        {
+                            "type": "data_table",
+                            "source": "primary",
+                            "title": "Chi tiết theo ngày",
+                            "columns": ["ngay", "khu_vuc", "doanh_thu"],
+                            "filters_from_view": True,
+                            "totals": ["doanh_thu"],
+                            "group_by": [],
+                            "max_rows": 500,
+                            "show_index": True,
+                            "transform": None,
+                            "allow_export_excel": True,
+                        },
+                        {"type": "footer", "left": "Hệ thống AppBI", "right": "Trang {page}/{total}"},
+                    ],
+                },
+            },
+        },
+        {
+            "name": "2. 2-row grouped header (CTSP-style monthly report)",
+            "when_to_use": "Wide table where contiguous columns share a parent label (NHẬP / XUẤT / TỒN, T1..T12, etc.).",
+            "screen": {
+                "id": "report-nxt",
+                "kind": "doc",
+                "title": "Báo cáo NXT thành phẩm",
+                "icon": "BarChart2",
+                "table_id": 126,
+                "primary_key_columns": ["id"],
+                "visible_for_roles": ["quan_ly", "ke_toan"],
+                "show_in_nav": True,
+                "column_labels": {
+                    "thang": "Tháng", "ngay": "Ngày", "noi_dung": "Nội dung",
+                    "nh_sp1": "SP1", "nh_sp2": "SP2",
+                    "xb_sp1": "SP1", "xb_sp2": "SP2",
+                    "ton_sp1": "SP1", "ton_sp2": "SP2",
+                },
+                "rls": [], "rls_default": None,
+                "form": None, "list": None,
+                "doc": {
+                    "page": {"size": "A4", "orientation": "landscape", "margin_mm": 10},
+                    "blocks": [
+                        {
+                            "type": "data_table",
+                            "source": "primary",
+                            "title": "NXT Thành phẩm 2026",
+                            # cols outside any group span 2 header rows automatically
+                            "columns": [
+                                "thang", "ngay", "noi_dung",
+                                "nh_sp1", "nh_sp2",
+                                "xb_sp1", "xb_sp2",
+                                "ton_sp1", "ton_sp2",
+                            ],
+                            "column_groups": [
+                                {"label": "NHẬP HÀNG", "columns": ["nh_sp1", "nh_sp2"]},
+                                {"label": "XUẤT BÁN", "columns": ["xb_sp1", "xb_sp2"]},
+                                {"label": "TỒN KHO",  "columns": ["ton_sp1", "ton_sp2"]},
+                            ],
+                            "filters_from_view": True,
+                            "totals": ["nh_sp1", "nh_sp2", "xb_sp1", "xb_sp2"],
+                            "group_by": ["thang"],
+                            "max_rows": 1000,
+                            "show_index": False,
+                            "transform": None,
+                            "allow_export_excel": True,
+                        },
+                    ],
+                },
+            },
+        },
+        {
+            "name": "3. Unpivot wide → long (Google Sheet with t1..t12 columns)",
+            "when_to_use": "Source has one column per month/category. The report wants a flat (ma, thang, so_luong) shape to feed totals/group_by.",
+            "screen": {
+                "id": "report-unpivot",
+                "kind": "doc",
+                "title": "Doanh số theo tháng (dạng dài)",
+                "icon": "Repeat",
+                "table_id": 130,
+                "primary_key_columns": ["id"],
+                "visible_for_roles": [],
+                "show_in_nav": True,
+                "column_labels": {},
+                "rls": [], "rls_default": None,
+                "form": None, "list": None,
+                "doc": {
+                    "page": {"size": "A4", "orientation": "portrait", "margin_mm": 15},
+                    "blocks": [
+                        {
+                            "type": "data_table",
+                            "source": "primary",
+                            "title": "Doanh số 12 tháng",
+                            # After unpivot: columns = id_columns + [var_name, value_name]
+                            "columns": ["ma_sp", "thang", "so_luong"],
+                            "column_groups": [],
+                            "filters_from_view": True,
+                            "totals": ["so_luong"],
+                            "group_by": ["ma_sp"],
+                            "max_rows": 5000,
+                            "show_index": False,
+                            "transform": {
+                                "kind": "unpivot",
+                                "id_columns": ["ma_sp"],
+                                "value_columns": [
+                                    "t1", "t2", "t3", "t4", "t5", "t6",
+                                    "t7", "t8", "t9", "t10", "t11", "t12",
+                                ],
+                                "var_name": "thang",
+                                "value_name": "so_luong",
+                                "drop_nulls": True,
+                            },
+                            "allow_export_excel": False,
+                        },
+                    ],
+                },
+            },
+        },
+        {
+            "name": "4. Pivot long → wide (cross-tab from a fact table)",
+            "when_to_use": "Source is long (ma_sp, thang, so_luong). The report wants a matrix where each tháng is its own column.",
+            "screen": {
+                "id": "report-pivot",
+                "kind": "doc",
+                "title": "Cross-tab doanh số theo tháng",
+                "icon": "Grid3x3",
+                "table_id": 131,
+                "primary_key_columns": ["id"],
+                "visible_for_roles": [],
+                "show_in_nav": True,
+                "column_labels": {},
+                "rls": [], "rls_default": None,
+                "form": None, "list": None,
+                "doc": {
+                    "page": {"size": "A4", "orientation": "landscape", "margin_mm": 10},
+                    "blocks": [
+                        {
+                            "type": "data_table",
+                            "source": "primary",
+                            "title": "Matrix doanh số",
+                            # After pivot the column set = index + one column per distinct value of `columns`.
+                            # Leave the block's `columns` empty so the runtime emits all generated cols.
+                            "columns": [],
+                            "column_groups": [],
+                            "filters_from_view": True,
+                            "totals": [],
+                            "group_by": [],
+                            "max_rows": 5000,
+                            "show_index": False,
+                            "transform": {
+                                "kind": "pivot",
+                                "index": ["ma_sp"],
+                                "columns": "thang",
+                                "values": "so_luong",
+                                "agg": "sum",
+                                "max_columns": 50,
+                                "fill_value": 0,
+                            },
+                            "allow_export_excel": True,
+                        },
+                    ],
+                },
+            },
+        },
+        {
+            "name": "5. Mixed report (header + KV grid + table + signature)",
+            "when_to_use": "Printable single-page document (biên bản, phiếu xuất kho, hợp đồng mini).",
+            "screen": {
+                "id": "report-doc-print",
+                "kind": "doc",
+                "title": "Phiếu xuất kho",
+                "icon": "FileText",
+                "table_id": 140,
+                "primary_key_columns": ["id"],
+                "visible_for_roles": [],
+                "show_in_nav": False,
+                "column_labels": {},
+                "rls": [], "rls_default": None,
+                "form": None, "list": None,
+                "doc": {
+                    "page": {"size": "A4", "orientation": "portrait", "margin_mm": 20},
+                    "blocks": [
+                        {"type": "header", "title": "PHIẾU XUẤT KHO", "subtitle": "Số: PX-2026-001", "align": "center"},
+                        {"type": "kv_grid", "columns": 2, "items": [
+                            {"label": "Ngày", "value": "{{row.ngay}}"},
+                            {"label": "Khách hàng", "value": "{{row.khach_hang}}"},
+                            {"label": "Kho", "value": "{{row.ma_kho}}"},
+                            {"label": "Lý do", "value": "{{row.ly_do}}"},
+                        ]},
+                        {"type": "spacer", "height_mm": 5},
+                        {
+                            "type": "data_table",
+                            "source": "primary",
+                            "title": "Chi tiết hàng",
+                            "columns": ["ma_sp", "ten_sp", "so_luong", "don_gia", "thanh_tien"],
+                            "filters_from_view": True,
+                            "totals": ["thanh_tien"],
+                            "group_by": [], "max_rows": 200, "show_index": True,
+                            "transform": None, "allow_export_excel": False,
+                        },
+                        {"type": "spacer", "height_mm": 10},
+                        {"type": "signature", "slots": [
+                            {"label": "Người lập phiếu"},
+                            {"label": "Thủ kho", "role": "thu_kho"},
+                            {"label": "Người nhận hàng"},
+                        ]},
+                        {"type": "footer", "left": "AppBI", "right": "Trang {page}/{total}"},
+                    ],
+                },
+            },
+        },
+    ]
+    return {
+        "doc_block_types": sorted(_DOC_BLOCK_TYPES),
+        "transform_kinds": sorted(_TRANSFORM_KINDS),
+        "aggregations": ["sum", "avg", "min", "max", "count", "first"],
+        "examples": examples,
+        "tips": [
+            "Always set form=null and list=null on a doc screen — extra='forbid' will reject mistaken specs otherwise.",
+            "column_labels lives on the SCREEN, not on the data_table block. The label map covers both list and doc renderings.",
+            "Use group_by to merge equal-value cells vertically (typical for 'tháng' columns in monthly reports).",
+            "Set allow_export_excel=true only when the screen role is allowed to download data. The runtime returns 403 if false.",
+            "transform=unpivot is in-memory after the fetch — keep max_rows large enough so all source rows survive the unpivot.",
+            "transform=pivot caps columns via max_columns (default 50). Increase up to 200 for wider monthly matrices.",
+        ],
     }
 
 

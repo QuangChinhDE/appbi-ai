@@ -137,6 +137,27 @@ working mini-app with forms, list views, app users, and workspace links.
 7. Google Sheets writes require OAuth scope https://www.googleapis.com/auth/spreadsheets; spreadsheet ownership does not replace OAuth write scope.
 8. Raw GSheets row tools are for setup/repair only; they bypass workboard runtime validation and RLS.
 
+## Report / doc screens (báo cáo)
+
+When the user wants a report, dashboard panel, pivot, cross-tab, printable
+document, or Excel export, use `kind="doc"` screens. ALWAYS call
+`get_doc_screen_examples()` first to fetch annotated patterns:
+
+  - simple flat report with totals row
+  - 2-row grouped header (NHẬP/XUẤT/TỒN style)
+  - unpivot wide → long (Google Sheet with t1..t12 columns)
+  - pivot long → wide (cross-tab matrix)
+  - printable doc with header / kv_grid / signature blocks
+
+Key rules for `kind="doc"`:
+  - Set `form=null` and `list=null` on the screen. The screen must have `doc: {page, blocks[]}`.
+  - Allowed block.type: header, kv_grid, data_table, text, spacer, signature, footer.
+  - `column_labels` lives on the SCREEN (not the block) and maps {db_col: "Nhãn hiển thị"}.
+  - `data_table.transform` is null OR {kind:"unpivot", id_columns, value_columns, var_name, value_name}
+    OR {kind:"pivot", index[], columns, values, agg, max_columns, fill_value}.
+  - `data_table.allow_export_excel=true` exposes a "Xuất Excel" button; off by default.
+  - `column_groups[].columns` must be a contiguous subset of `data_table.columns`.
+
 ## Confirmation model
 
 Every write tool supports preview-then-confirm:

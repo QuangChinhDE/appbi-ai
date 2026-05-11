@@ -22,6 +22,7 @@ import {
   CheckCircle2,
   ClipboardEdit,
   ClipboardList,
+  Download,
   Eye,
   Factory,
   FileText,
@@ -749,7 +750,7 @@ function ScreenContainer({
     );
   }
   if (data.kind === 'doc') {
-    return <DocScreen spec={data} />;
+    return <DocScreen spec={data} token={token} workboardId={workboardId} />;
   }
   return null;
 }
@@ -1331,17 +1332,44 @@ function ListScreen({
 
 // ── Doc screen (consumes merges + footer_row) ───────────────────────────
 
-function DocScreen({ spec }: { spec: DocScreenResponse }) {
+function DocScreen({
+  spec,
+  token,
+  workboardId,
+}: {
+  spec: DocScreenResponse;
+  token: string;
+  workboardId: number;
+}) {
   return (
     <div className="w-full space-y-3 rounded-xl bg-white p-6 shadow-sm">
       {(spec.blocks || []).map((b, i) => (
-        <DocBlock key={i} block={b} />
+        <DocBlock
+          key={i}
+          block={b}
+          token={token}
+          workboardId={workboardId}
+          screenId={spec.screen_id}
+          blockIndex={i}
+        />
       ))}
     </div>
   );
 }
 
-function DocBlock({ block }: { block: Record<string, unknown> }) {
+function DocBlock({
+  block,
+  token,
+  workboardId,
+  screenId,
+  blockIndex,
+}: {
+  block: Record<string, unknown>;
+  token: string;
+  workboardId: number;
+  screenId: string;
+  blockIndex: number;
+}) {
   const t = String(block.type || '');
   if (t === 'header') {
     const align = (block.align as string) || 'center';
@@ -1400,7 +1428,15 @@ function DocBlock({ block }: { block: Record<string, unknown> }) {
     );
   }
   if (t === 'data_table') {
-    return <DocDataTable block={block} />;
+    return (
+      <DocDataTable
+        block={block}
+        token={token}
+        workboardId={workboardId}
+        screenId={screenId}
+        blockIndex={blockIndex}
+      />
+    );
   }
   if (t === 'footer') {
     return (
@@ -1518,7 +1554,19 @@ function buildHeaderRows(
   return rows;
 }
 
-function DocDataTable({ block }: { block: Record<string, unknown> }) {
+function DocDataTable({
+  block,
+  token,
+  workboardId,
+  screenId,
+  blockIndex,
+}: {
+  block: Record<string, unknown>;
+  token: string;
+  workboardId: number;
+  screenId: string;
+  blockIndex: number;
+}) {
   const data = (block.data as Record<string, unknown>) || {};
   const cols = (data.columns as string[]) || [];
   const rows = (data.rows as Array<Record<string, unknown>>) || [];
@@ -1531,6 +1579,40 @@ function DocDataTable({ block }: { block: Record<string, unknown> }) {
     columnLabels,
   );
   const title = block.title ? String(block.title) : null;
+  const allowExport = Boolean(block.allow_export_excel);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const onExport = async () => {
+    if (exporting) return;
+    setExportError(null);
+    setExporting(true);
+    try {
+      const { blob, filename } = await workspaceApi.exportDocBlockExcel(
+        token,
+        workboardId,
+        screenId,
+        blockIndex,
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err: unknown) {
+      const apiError = err as ApiErrorLike;
+      setExportError(
+        typeof apiError.response?.data?.detail === 'string'
+          ? apiError.response.data.detail
+          : 'Không xuất được Excel.',
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const rowspanMap = new Map<string, number>();
   const hidden = new Set<string>();
@@ -1545,8 +1627,29 @@ function DocDataTable({ block }: { block: Record<string, unknown> }) {
 
   return (
     <div>
-      {title && (
-        <h3 className="mb-1 text-sm font-semibold text-slate-800">{title}</h3>
+      {(title || allowExport) && (
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-800">{title || ''}</h3>
+          {allowExport && (
+            <button
+              type="button"
+              onClick={onExport}
+              disabled={exporting}
+              className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              title="Tải Excel"
+            >
+              {exporting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Download className="h-3.5 w-3.5" />
+              )}
+              <span>{exporting ? 'Đang xuất…' : 'Xuất Excel'}</span>
+            </button>
+          )}
+        </div>
+      )}
+      {exportError && (
+        <p className="mb-2 text-xs text-rose-600">{exportError}</p>
       )}
       <div className="overflow-x-auto rounded-lg border border-slate-200">
         <table className="w-full border-collapse text-sm">

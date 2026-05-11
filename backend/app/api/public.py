@@ -1198,6 +1198,46 @@ if settings.WORKBOARDS_ENABLED:
         raise HTTPException(status_code=400, detail=f"Unsupported screen kind '{screen.kind}'.")
 
 
+    @router.get(
+        "/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/blocks/{block_index}/export.xlsx"
+    )
+    def workspace_screen_doc_block_export(
+        token: str,
+        workboard_id: int,
+        screen_id: str,
+        block_index: int,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        """Stream a doc data_table block as XLSX (opt-in per block)."""
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
+        identity = identity_from_app_user(app_user)
+        layout = screen_runtime.parse_layout(wb)
+        screen = screen_runtime.get_screen(layout, screen_id)
+        if not screen_runtime.is_screen_visible_for(screen, identity):
+            raise HTTPException(status_code=403, detail="You don't have access to that screen.")
+        content, filename = screen_runtime.export_doc_data_block_to_excel(
+            db, wb, screen, block_index, identity=identity
+        )
+        from urllib.parse import quote
+        return Response(
+            content=content,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            headers={
+                "Content-Disposition": (
+                    f"attachment; filename*=UTF-8''{quote(filename)}"
+                ),
+                "Cache-Control": "no-store",
+            },
+        )
+
+
     @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/list")
     def workspace_screen_list_rows(
         token: str,

@@ -167,6 +167,50 @@ class DataTableColumnGroup(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class DataTableUnpivot(BaseModel):
+    """Unpivot wide → long.
+
+    A "wide" source like ``(ma_kho, ngay, t1, t2, …, t12)`` becomes a "long"
+    table ``(ma_kho, ngay, thang, so_luong)`` where each of the listed
+    ``value_columns`` becomes one row with its column name in ``var_name``
+    and its cell value in ``value_name``. Useful when the source is a
+    Google Sheet with one column per month and the report wants a flat
+    pivot-friendly shape.
+    """
+
+    kind: Literal["unpivot"]
+    id_columns: List[str] = Field(default_factory=list)
+    value_columns: List[str] = Field(default_factory=list, min_length=1)
+    var_name: str = Field(default="variable", min_length=1, max_length=64)
+    value_name: str = Field(default="value", min_length=1, max_length=64)
+    drop_nulls: bool = True
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class DataTablePivot(BaseModel):
+    """Pivot long → wide (in-memory after fetch).
+
+    Builds one column per distinct value of ``columns`` and aggregates
+    ``values`` per ``(index…, columns)`` combination. ``max_columns`` is
+    a safety cap — exceeding it raises 422 so a runaway pivot can't blow
+    up the FE.
+    """
+
+    kind: Literal["pivot"]
+    index: List[str] = Field(default_factory=list, min_length=1)
+    columns: str = Field(..., min_length=1)
+    values: str = Field(..., min_length=1)
+    agg: Literal["sum", "avg", "min", "max", "count", "first"] = "sum"
+    max_columns: int = Field(default=50, ge=1, le=200)
+    fill_value: Optional[Any] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+DataTableTransform = Union[DataTableUnpivot, DataTablePivot]
+
+
 class DataTableBlock(BaseModel):
     type: Literal["data_table"]
     source: str = Field(
@@ -181,6 +225,19 @@ class DataTableBlock(BaseModel):
     max_rows: int = Field(default=500, ge=1, le=5000)
     show_index: bool = False
     title: Optional[str] = None
+    # Optional pivot/unpivot transform applied AFTER fetch but BEFORE
+    # column projection, group_by merges and totals. Lets a wide source
+    # be reported in long form (unpivot) or a long source be reported as
+    # a matrix (pivot) without touching the underlying DB / Google Sheet.
+    transform: Optional[DataTableTransform] = Field(
+        default=None,
+        discriminator="kind",
+    )
+    # When true the mini-app runtime shows a download button on this
+    # block that exports the *rendered* table (post-transform) to XLSX.
+    # Off by default so reports don't leak data unless the builder
+    # opted in.
+    allow_export_excel: bool = False
 
     model_config = ConfigDict(extra="forbid")
 

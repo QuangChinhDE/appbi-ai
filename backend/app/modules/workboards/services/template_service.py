@@ -477,6 +477,25 @@ def _rename_doc_columns(
                     group["columns"] = _rename_col_list(
                         group.get("columns"), old_table_id, column_map
                     )
+        transform = block.get("transform")
+        if isinstance(transform, dict):
+            t_kind = transform.get("kind")
+            if t_kind == "unpivot":
+                for key in ("id_columns", "value_columns"):
+                    if key in transform:
+                        transform[key] = _rename_col_list(
+                            transform.get(key), old_table_id, column_map
+                        )
+            elif t_kind == "pivot":
+                if "index" in transform:
+                    transform["index"] = _rename_col_list(
+                        transform.get("index"), old_table_id, column_map
+                    )
+                for key in ("columns", "values"):
+                    if isinstance(transform.get(key), str):
+                        transform[key] = _rename_col(
+                            transform.get(key), old_table_id, column_map
+                        )
 
 
 def _rename_lookup_columns(
