@@ -15,6 +15,7 @@ Each helper takes a ``CallerIdentity`` so RLS is consistently applied.
 """
 from __future__ import annotations
 
+import itertools
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -755,17 +756,17 @@ def _apply_data_table_transform(
     columns: List[str],
     rows: List[Dict[str, Any]],
     transform: Optional[Any],
-) -> tuple[List[str], List[Dict[str, Any]]]:
+) -> tuple[List[str], List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """Apply pivot/unpivot in memory.
 
-    Returns a fresh ``(columns, rows)`` pair; the input is not mutated.
+    Returns ``(columns, rows, extra)`` where ``extra`` may contain
+    ``column_groups`` and ``column_labels`` when a multi-level pivot is
+    performed. The input is not mutated.
     Raises ``HTTPException(422)`` when the transform refers to missing
-    columns or when a pivot would explode beyond ``max_columns``. The
-    transform runs on the *fetched* rows so it respects ``max_rows`` and
-    the screen's RLS filters set on the underlying query.
+    columns or when a pivot would explode beyond ``max_columns``.
     """
     if transform is None:
-        return columns, rows
+        return columns, rows, None
 
     if isinstance(transform, DataTableUnpivot):
         id_cols = [c for c in transform.id_columns if c in columns]
@@ -794,7 +795,7 @@ def _apply_data_table_transform(
                 new_row[var_name] = vc
                 new_row[value_name] = cell
                 new_rows.append(new_row)
-        return new_cols, new_rows
+        return new_cols, new_rows, None
 
     if isinstance(transform, DataTablePivot):
         idx_cols = [c for c in transform.index if c in columns]
@@ -804,47 +805,22 @@ def _apply_data_table_transform(
                 status_code=422,
                 detail=f"Pivot index columns missing from source: {missing}",
             )
-        if transform.columns not in columns:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Pivot columns key '{transform.columns}' not in source.",
-            )
+        col_dims: List[str] = (
+            [transform.columns]
+            if isinstance(transform.columns, str)
+            else list(transform.columns)
+        )
+        for _dim in col_dims:
+            if _dim not in columns:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Pivot columns key '{_dim}' not in source.",
+                )
         if transform.values not in columns:
             raise HTTPException(
                 status_code=422,
                 detail=f"Pivot values column '{transform.values}' not in source.",
             )
-
-        pivot_keys_order: List[str] = []
-        seen_keys: set[str] = set()
-        # ``buckets[index_tuple][pivot_key]`` accumulates raw cell values.
-        buckets: Dict[tuple, Dict[str, List[Any]]] = {}
-        index_order: List[tuple] = []
-        first_seen: Dict[tuple, Dict[str, Any]] = {}
-
-        for row in rows:
-            key_raw = row.get(transform.columns)
-            if key_raw is None:
-                continue
-            pivot_key = str(key_raw)
-            if pivot_key not in seen_keys:
-                if len(pivot_keys_order) >= transform.max_columns:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=(
-                            f"Pivot exceeded max_columns={transform.max_columns} "
-                            f"distinct values of '{transform.columns}'. "
-                            "Raise max_columns or pre-filter the source."
-                        ),
-                    )
-                seen_keys.add(pivot_key)
-                pivot_keys_order.append(pivot_key)
-            idx_tuple = tuple(row.get(c) for c in idx_cols)
-            if idx_tuple not in buckets:
-                buckets[idx_tuple] = {}
-                index_order.append(idx_tuple)
-                first_seen[idx_tuple] = {c: row.get(c) for c in idx_cols}
-            buckets[idx_tuple].setdefault(pivot_key, []).append(row.get(transform.values))
 
         agg = transform.agg
 
@@ -869,17 +845,140 @@ def _apply_data_table_transform(
                 return max(numeric)
             return transform.fill_value
 
-        new_cols = idx_cols + pivot_keys_order
-        new_rows = []
-        for idx_tuple in index_order:
-            row_out = dict(first_seen[idx_tuple])
-            cells_map = buckets[idx_tuple]
-            for pk in pivot_keys_order:
-                row_out[pk] = _aggregate(cells_map.get(pk, []))
-            new_rows.append(row_out)
-        return new_cols, new_rows
+        if len(col_dims) == 1:
+            # ── Single-dimension pivot (original behaviour) ─────────────
+            pivot_keys_order: List[str] = []
+            seen_keys: set[str] = set()
+            # ``buckets[index_tuple][pivot_key]`` accumulates raw cell values.
+            buckets: Dict[tuple, Dict[str, List[Any]]] = {}
+            index_order: List[tuple] = []
+            first_seen: Dict[tuple, Dict[str, Any]] = {}
 
-    return columns, rows
+            for row in rows:
+                key_raw = row.get(col_dims[0])
+                if key_raw is None:
+                    continue
+                pivot_key = str(key_raw)
+                if pivot_key not in seen_keys:
+                    if len(pivot_keys_order) >= transform.max_columns:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                f"Pivot exceeded max_columns={transform.max_columns} "
+                                f"distinct values of '{col_dims[0]}'. "
+                                "Raise max_columns or pre-filter the source."
+                            ),
+                        )
+                    seen_keys.add(pivot_key)
+                    pivot_keys_order.append(pivot_key)
+                idx_tuple = tuple(row.get(c) for c in idx_cols)
+                if idx_tuple not in buckets:
+                    buckets[idx_tuple] = {}
+                    index_order.append(idx_tuple)
+                    first_seen[idx_tuple] = {c: row.get(c) for c in idx_cols}
+                buckets[idx_tuple].setdefault(pivot_key, []).append(row.get(transform.values))
+
+            new_cols = idx_cols + pivot_keys_order
+            new_rows: List[Dict[str, Any]] = []
+            for idx_tuple in index_order:
+                row_out = dict(first_seen[idx_tuple])
+                cells_map = buckets[idx_tuple]
+                for pk in pivot_keys_order:
+                    row_out[pk] = _aggregate(cells_map.get(pk, []))
+                new_rows.append(row_out)
+            return new_cols, new_rows, None
+
+        # ── Multi-dimension pivot (generates 2-level column headers) ────
+        # Composite key separator — unlikely to appear in real data values.
+        _SEP = "__|__"
+
+        # Gather ordered distinct values for each column dimension.
+        dim_vals: List[List[str]] = [[] for _ in col_dims]
+        dim_seen_sets: List[set] = [set() for _ in col_dims]
+        for row in rows:
+            for i, _dim in enumerate(col_dims):
+                v = row.get(_dim)
+                if v is None:
+                    continue
+                k = str(v)
+                if k not in dim_seen_sets[i]:
+                    dim_seen_sets[i].add(k)
+                    dim_vals[i].append(k)
+
+        # Build ordered composite keys (Cartesian product in dim order).
+        composite_keys: List[str] = []
+        composite_key_combos: List[tuple] = []
+        composite_set: set = set()
+        for combo in itertools.product(*dim_vals):
+            ck = _SEP.join(combo)
+            if ck not in composite_set:
+                if len(composite_keys) >= transform.max_columns:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"Pivot exceeded max_columns={transform.max_columns}. "
+                            "Raise max_columns or pre-filter the source."
+                        ),
+                    )
+                composite_set.add(ck)
+                composite_keys.append(ck)
+                composite_key_combos.append(combo)
+
+        # Collect buckets: index_tuple → composite_key → [values].
+        buckets_ml: Dict[tuple, Dict[str, List[Any]]] = {}
+        index_order_ml: List[tuple] = []
+        first_seen_ml: Dict[tuple, Dict[str, Any]] = {}
+        for row in rows:
+            parts: List[str] = []
+            skip = False
+            for _dim in col_dims:
+                v = row.get(_dim)
+                if v is None:
+                    skip = True
+                    break
+                parts.append(str(v))
+            if skip:
+                continue
+            ck = _SEP.join(parts)
+            idx_tuple = tuple(row.get(c) for c in idx_cols)
+            if idx_tuple not in buckets_ml:
+                buckets_ml[idx_tuple] = {}
+                index_order_ml.append(idx_tuple)
+                first_seen_ml[idx_tuple] = {c: row.get(c) for c in idx_cols}
+            buckets_ml[idx_tuple].setdefault(ck, []).append(row.get(transform.values))
+
+        new_cols_ml = idx_cols + composite_keys
+        new_rows_ml: List[Dict[str, Any]] = []
+        for idx_tuple in index_order_ml:
+            row_out = dict(first_seen_ml[idx_tuple])
+            cells_map_ml = buckets_ml[idx_tuple]
+            for ck in composite_keys:
+                row_out[ck] = _aggregate(cells_map_ml.get(ck, []))
+            new_rows_ml.append(row_out)
+
+        # Build column_groups: one group per first-dimension value.
+        extra_groups: List[Dict[str, Any]] = []
+        for first_val in dim_vals[0]:
+            group_cols = [
+                ck
+                for ck, combo in zip(composite_keys, composite_key_combos)
+                if combo[0] == first_val
+            ]
+            if group_cols:
+                extra_groups.append({"label": first_val, "columns": group_cols})
+
+        # column_labels: composite key → last dimension value (display label).
+        col_labels: Dict[str, str] = {
+            ck: combo[-1]
+            for ck, combo in zip(composite_keys, composite_key_combos)
+        }
+
+        return new_cols_ml, new_rows_ml, {
+            "column_groups": extra_groups,
+            "column_labels": col_labels,
+        }
+
+    return columns, rows, None
 
 
 def render_doc_screen(
@@ -968,8 +1067,9 @@ def _resolve_doc_data_block(
     rows: List[Dict[str, Any]] = result.get("rows") or []
     # Pivot/unpivot first so column projection, group_by merges and totals
     # operate on the *reported* shape — not the raw source shape.
+    _pivot_extra: Optional[Dict[str, Any]] = None
     if block.transform is not None:
-        all_columns, rows = _apply_data_table_transform(
+        all_columns, rows, _pivot_extra = _apply_data_table_transform(
             all_columns, rows, block.transform
         )
     selected = [c for c in (block.columns or []) if c in all_columns] or all_columns
@@ -985,9 +1085,13 @@ def _resolve_doc_data_block(
                 ),
             )
     payload: Dict[str, Any] = {"columns": selected, "rows": rows}
-    column_groups = _normalize_column_groups(selected, block.column_groups)
+    _cg_source = (_pivot_extra or {}).get("column_groups") or block.column_groups
+    column_groups = _normalize_column_groups(selected, _cg_source)
     if column_groups:
         payload["column_groups"] = column_groups
+    _auto_labels = (_pivot_extra or {}).get("column_labels")
+    if _auto_labels:
+        payload["column_labels"] = _auto_labels
     merges = _compute_merges(rows, block.group_by, selected)
     if merges:
         payload["merges"] = merges

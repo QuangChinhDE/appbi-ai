@@ -191,6 +191,7 @@ export default function DocScreenEditor({
               key={idx}
               block={block}
               tables={tables}
+              screenTableId={screen.table_id ?? null}
               isFirst={idx === 0}
               isLast={idx === blocks.length - 1}
               onChange={(patch) => updateBlock(idx, patch)}
@@ -213,6 +214,7 @@ export default function DocScreenEditor({
 function BlockRow({
   block,
   tables,
+  screenTableId,
   isFirst,
   isLast,
   onChange,
@@ -222,6 +224,7 @@ function BlockRow({
 }: {
   block: DocBlockSpec;
   tables: DatasetTableInfo[];
+  screenTableId: number | null;
   isFirst: boolean;
   isLast: boolean;
   onChange: (patch: Partial<DocBlockSpec>) => void;
@@ -306,7 +309,7 @@ function BlockRow({
 
       {block.type === 'kv_grid' && <KvGridEditor block={block} onChange={onChange} />}
       {block.type === 'data_table' && (
-        <DataTableEditor block={block} tables={tables} onChange={onChange} />
+        <DataTableEditor block={block} tables={tables} screenTableId={screenTableId} onChange={onChange} />
       )}
 
       {block.type === 'signature' && (
@@ -408,16 +411,18 @@ function KvGridEditor({
 function DataTableEditor({
   block,
   tables,
+  screenTableId,
   onChange,
 }: {
   block: DocBlockSpec;
   tables: DatasetTableInfo[];
+  screenTableId: number | null;
   onChange: (patch: Partial<DocBlockSpec>) => void;
 }) {
   const source = String(block.source || 'primary');
   const sourceTableId =
     source === 'primary'
-      ? null
+      ? (screenTableId ?? null)
       : source.startsWith('lookup:')
       ? Number(source.split(':')[1])
       : null;

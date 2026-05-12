@@ -199,7 +199,7 @@ class DataTablePivot(BaseModel):
 
     kind: Literal["pivot"]
     index: List[str] = Field(default_factory=list, min_length=1)
-    columns: str = Field(..., min_length=1)
+    columns: Union[str, List[str]] = Field(..., description="Column key (str) or list of keys for multi-level pivot")
     values: str = Field(..., min_length=1)
     agg: Literal["sum", "avg", "min", "max", "count", "first"] = "sum"
     max_columns: int = Field(default=50, ge=1, le=200)

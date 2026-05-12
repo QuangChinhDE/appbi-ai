@@ -1677,7 +1677,10 @@ function DocDataTable({
   const rows = (data.rows as Array<Record<string, unknown>>) || [];
   const footer = (data.footer_row as Record<string, unknown> | null) || null;
   const merges = (data.merges as Array<Record<string, unknown>>) || [];
-  const columnLabels = (block.column_labels as Record<string, string>) || {};
+  const columnLabels = {
+    ...(data.column_labels as Record<string, string> | null),
+    ...(block.column_labels as Record<string, string> | null),
+  } as Record<string, string>;
   const headerRows = buildHeaderRows(
     cols,
     data.column_groups ?? block.column_groups ?? [],
