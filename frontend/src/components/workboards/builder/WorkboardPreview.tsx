@@ -57,7 +57,7 @@ export default function WorkboardPreview({ workboard }: Props) {
         setActiveWorkspace(ordered[0] ?? null);
         setSessionReady(false);
       } catch (e: unknown) {
-        setError(getApiErrorMessage(e, 'Không tải được workspaces.'));
+        setError(getApiErrorMessage(e, 'Could not load workspaces.'));
       } finally {
         if (alive) setLoading(false);
       }
@@ -84,7 +84,7 @@ export default function WorkboardPreview({ workboard }: Props) {
       setSessionReady(true);
       setIframeKey((k) => k + 1);
     } catch (e: unknown) {
-      setError(getApiErrorMessage(e, 'Không tạo được preview session.'));
+      setError(getApiErrorMessage(e, 'Could not create preview session.'));
     } finally {
       setSessionLoading(false);
     }
@@ -108,12 +108,12 @@ export default function WorkboardPreview({ workboard }: Props) {
       <div className="mx-auto max-w-2xl p-8">
         <div className="rounded-xl border border-warning/30 bg-warning/10 p-5 text-caption text-warning">
           <h2 className="mb-1 text-body font-emphasis">
-            Chưa có workspace nào để chạy preview
+            No workspace is available for preview
           </h2>
           <p>
-            Tạo workspace ở Settings → Workspaces. Mặc định là{' '}
+            Create a workspace in Settings → Workspaces. The default mode is{' '}
             <code className="rounded bg-warning/20 px-1">public_app_users</code>{' '}
-            (cần chọn bảng người dùng trong dataset cho mini-app).
+            (requires selecting a user table in the dataset for the mini-app).
           </p>
         </div>
       </div>
@@ -162,14 +162,14 @@ export default function WorkboardPreview({ workboard }: Props) {
               className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1.5 text-caption"
             />
             <p className="mt-1 text-tiny text-text-tertiary">
-              Nhập một username thực trong bảng app_users của workspace, hoặc
-              để trống để backend tự chọn user active đầu tiên.
+              Enter a real username from the workspace app_users table, or leave
+              it blank so the backend picks the first active user.
             </p>
           </>
         ) : (
           <p className="mt-4 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5 text-tiny text-text-tertiary">
-            Workspace internal — preview chạy bằng tài khoản AppBI của bạn,
-            không cần chọn user.
+            Internal workspace - preview runs as your AppBI account, so no user
+            selection is needed.
           </p>
         )}
 
@@ -183,7 +183,7 @@ export default function WorkboardPreview({ workboard }: Props) {
           ) : (
             <UserCheck className="h-3.5 w-3.5" />
           )}
-          {sessionLoading ? 'Tạo phiên…' : 'Bắt đầu preview'}
+          {sessionLoading ? 'Creating session...' : 'Start preview'}
         </button>
 
         {sessionReady && (
@@ -204,7 +204,7 @@ export default function WorkboardPreview({ workboard }: Props) {
             className="mt-2 flex w-full items-center justify-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-1.5 text-tiny text-text-secondary hover:bg-surface-2"
           >
             <ExternalLink className="h-3 w-3" />
-            Mở tab mới
+            Open in a new tab
           </a>
         )}
 
@@ -215,7 +215,7 @@ export default function WorkboardPreview({ workboard }: Props) {
         )}
 
         <div className="mt-5 border-t border-[rgb(var(--border-line))] pt-3 text-tiny text-text-tertiary">
-          Preview dùng chính bảng app users của workspace đang chọn, nên không phụ thuộc vào tên user mẫu cố định.
+          Preview uses the selected workspace app users table, so it does not depend on a fixed sample username.
         </div>
       </aside>
 
@@ -225,7 +225,7 @@ export default function WorkboardPreview({ workboard }: Props) {
             <div>
               <UserCheck className="mx-auto mb-3 h-8 w-8 text-text-tertiary" />
               <p className="text-body text-text-secondary">
-                Chọn user + bấm Bắt đầu preview để mở mini-app trong iframe
+                Pick a user and start preview to open the mini-app in the iframe
               </p>
             </div>
           </div>

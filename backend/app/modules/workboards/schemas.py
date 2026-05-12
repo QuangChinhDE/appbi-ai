@@ -211,6 +211,25 @@ class DataTablePivot(BaseModel):
 DataTableTransform = Union[DataTableUnpivot, DataTablePivot]
 
 
+class DataTableColumnMeta(BaseModel):
+    """Optional per-column presentation metadata written by the builder.
+
+    The runtime currently still consumes `columns`, `group_by`, `totals`
+    as the canonical contract — the builder derives those arrays from
+    `column_metadata` and ships both, so this block is purely additive
+    until the runtime is taught to read it.
+    """
+
+    label: Optional[str] = None
+    width_px: Optional[int] = Field(default=None, ge=1, le=2000)
+    format: Optional[str] = None
+    align: Optional[Literal["left", "center", "right"]] = None
+    total: Optional[Literal["sum", "avg", "count", "min", "max"]] = None
+    merge: Optional[bool] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class DataTableBlock(BaseModel):
     type: Literal["data_table"]
     source: str = Field(
@@ -219,6 +238,7 @@ class DataTableBlock(BaseModel):
     )
     columns: List[str] = Field(default_factory=list)
     column_groups: List[DataTableColumnGroup] = Field(default_factory=list)
+    column_metadata: Dict[str, DataTableColumnMeta] = Field(default_factory=dict)
     filters_from_view: bool = True
     totals: List[str] = Field(default_factory=list)
     group_by: List[str] = Field(default_factory=list)

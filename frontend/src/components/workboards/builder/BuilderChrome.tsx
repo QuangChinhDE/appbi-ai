@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { ChevronDown } from 'lucide-react';
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
@@ -41,7 +42,7 @@ export function BuilderSection({
     <section className={cx(BUILDER_PANEL, className)}>
       <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <h2 className="text-caption font-emphasis uppercase tracking-wider text-text-quaternary">
+          <h2 className="text-caption font-emphasis text-text-primary">
             {title}
           </h2>
           {description ? (
@@ -72,13 +73,250 @@ export function BuilderSubsection({
     <div className={cx(BUILDER_SUBPANEL, className)}>
       <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <h3 className="text-tiny font-medium text-text-secondary">{title}</h3>
+          <h3 className="text-caption font-medium text-text-secondary">{title}</h3>
           {description ? (
             <p className="mt-1 max-w-2xl text-tiny text-text-tertiary">{description}</p>
           ) : null}
         </div>
         {action ? <div className="flex flex-wrap items-center gap-2">{action}</div> : null}
       </div>
+      {children}
+    </div>
+  );
+}
+
+export function BuilderTopBar({
+  title,
+  children,
+  className,
+}: {
+  title: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cx(
+        'flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-3.5 py-2.5',
+        className,
+      )}
+    >
+      <span className="shrink-0 text-caption font-emphasis text-text-secondary">
+        {title}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+export function BuilderTopBarItem({
+  label,
+  children,
+  className,
+}: {
+  label: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <label className={cx('flex min-w-0 items-center gap-1.5', className)}>
+      <span className="shrink-0 text-caption text-text-tertiary">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+export function BuilderCollapsibleAdvanced({
+  title,
+  description,
+  defaultOpen,
+  children,
+}: {
+  title: string;
+  description?: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <details
+      className="group rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 open:bg-surface-1"
+      open={defaultOpen}
+    >
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-caption font-medium text-text-secondary hover:text-text-primary">
+        <span className="flex min-w-0 items-center gap-2">
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 -rotate-90 text-text-tertiary transition-transform group-open:rotate-0" />
+          <span className="min-w-0 truncate">
+            {title}
+            <span className="ml-1.5 rounded bg-surface-2 px-1.5 py-0.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+              advanced
+            </span>
+          </span>
+        </span>
+      </summary>
+      <div className="border-t border-[rgb(var(--border-line))] px-3 py-3">
+        {description && <p className="mb-3 text-tiny text-text-tertiary">{description}</p>}
+        {children}
+      </div>
+    </details>
+  );
+}
+
+export function BuilderObjectEditor({
+  children,
+  className,
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cx(
+        'grid gap-3 lg:grid-cols-[240px_minmax(0,1fr)]',
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+export function BuilderNavigator({
+  title,
+  description,
+  children,
+  className,
+}: {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <aside className={cx(BUILDER_PANEL, 'p-3', className)}>
+      <div className="mb-3">
+        <h2 className="text-caption font-emphasis text-text-primary">{title}</h2>
+        {description ? <p className="mt-0.5 text-tiny text-text-tertiary">{description}</p> : null}
+      </div>
+      <div className="space-y-4">{children}</div>
+    </aside>
+  );
+}
+
+export function BuilderNavigatorGroup({
+  title,
+  action,
+  children,
+}: {
+  title: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section>
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <h3 className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+          {title}
+        </h3>
+        {action ? <div className="flex shrink-0 items-center gap-1">{action}</div> : null}
+      </div>
+      <div className="space-y-1">{children}</div>
+    </section>
+  );
+}
+
+export function BuilderNavigatorItem({
+  icon,
+  label,
+  subtitle,
+  badge,
+  active,
+  onClick,
+  action,
+}: {
+  icon?: React.ReactNode;
+  label: string;
+  subtitle?: string;
+  badge?: React.ReactNode;
+  active?: boolean;
+  onClick: () => void;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div
+      className={cx(
+        'group flex min-h-10 items-center gap-1.5 rounded-md border px-2 py-1.5 text-left transition-colors',
+        active
+          ? 'border-brand/40 bg-brand/10'
+          : 'border-transparent hover:bg-surface-2',
+      )}
+    >
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+      >
+        {icon ? <span className="shrink-0 text-text-tertiary">{icon}</span> : null}
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-caption font-medium text-text-primary">{label}</span>
+            {badge ? <span className="shrink-0">{badge}</span> : null}
+          </span>
+          {subtitle ? (
+            <span className="block truncate text-tiny text-text-tertiary">{subtitle}</span>
+          ) : null}
+        </span>
+      </button>
+      {action ? <div className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">{action}</div> : null}
+    </div>
+  );
+}
+
+export function BuilderInspectorPanel({
+  icon,
+  title,
+  subtitle,
+  action,
+  children,
+  className,
+}: {
+  icon?: React.ReactNode;
+  title: string;
+  subtitle?: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={cx(BUILDER_PANEL, 'p-4', className)}>
+      <header className="mb-4 flex items-start justify-between gap-3 border-b border-[rgb(var(--border-line))] pb-3">
+        <div className="flex min-w-0 items-start gap-2">
+          {icon ? <span className="mt-0.5 shrink-0 text-text-tertiary">{icon}</span> : null}
+          <div className="min-w-0">
+            <h2 className="truncate text-body font-emphasis text-text-primary">{title}</h2>
+            {subtitle ? <p className="mt-0.5 text-tiny text-text-tertiary">{subtitle}</p> : null}
+          </div>
+        </div>
+        {action ? <div className="flex shrink-0 items-center gap-2">{action}</div> : null}
+      </header>
+      {children}
+    </section>
+  );
+}
+
+export function BuilderEmptyHint({
+  children,
+  className,
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cx(
+        'rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-0 px-4 py-5 text-center text-tiny text-text-tertiary',
+        className,
+      )}
+    >
       {children}
     </div>
   );
@@ -112,7 +350,7 @@ export function BuilderActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cx(
-        'inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-tiny font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+        'inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-caption font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
         variantClass,
         className,
       )}
@@ -125,7 +363,7 @@ export function BuilderActionButton({
 /** Compact "data source" picker shown at the top of every screen editor.
  *  A 1-line strip — label on the left, dropdown on the right — so users
  *  see immediately which table the screen reads/writes without diving
- *  into a separate "Dữ liệu" tab. */
+ *  into a separate data tab. */
 export function DataSourcePicker({
   tableId,
   tables,
@@ -139,14 +377,14 @@ export function DataSourcePicker({
 }) {
   return (
     <div className="flex items-center gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
-      <span className="shrink-0 text-tiny font-emphasis text-text-secondary">Bảng dữ liệu</span>
+      <span className="shrink-0 text-caption font-emphasis text-text-secondary">Data source</span>
       <select
         value={tableId ?? ''}
         onChange={(event) => onChange(event.target.value ? Number(event.target.value) : null)}
         disabled={disabled}
-        className="min-h-8 flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1 text-caption text-text-primary focus:border-brand focus:outline-none"
+        className="min-h-9 flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1 text-caption text-text-primary focus:border-brand focus:outline-none"
       >
-        <option value="">— chọn bảng —</option>
+        <option value="">— pick a table —</option>
         {tables.map((table) => (
           <option key={table.id} value={table.id}>
             {table.display_name} ({table.source_table_name})

@@ -1882,7 +1882,10 @@ def get_distinct_field_values(
         from app.services.semantic_join_resolver import SemanticJoinResolver
 
         model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
-        resolver = SemanticJoinResolver(db, model, view_name)
+        # Use bidirectional=True so views that are normally join *targets*
+        # (e.g. "users" in orders→users) can still reach the explore base
+        # view when resolving cascading filter conditions.
+        resolver = SemanticJoinResolver(db, model, view_name, bidirectional=True)
         view_cache: dict[str, SemanticView | None] = {}
         materialized_steps: dict[tuple[str, str], str] = {}
         join_clauses: list[str] = []

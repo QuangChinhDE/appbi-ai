@@ -1293,15 +1293,22 @@ if settings.WORKBOARDS_ENABLED:
         if not screen_runtime.is_screen_visible_for(screen, identity):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
         body = body or {}
-        return screen_runtime.render_list_screen(
-            db,
-            wb,
-            screen,
-            identity=identity,
-            page=int(body.get("page") or 1),
-            page_size=int(body.get("page_size") or 50),
-            extra_filters=body.get("filters") or [],
-        )
+        return {
+            **screen_runtime.render_list_screen(
+                db,
+                wb,
+                screen,
+                identity=identity,
+                page=int(body.get("page") or 1),
+                page_size=int(body["page_size"]) if body.get("page_size") else None,
+                extra_filters=body.get("filters") or [],
+            ),
+            "screen_id": screen.id,
+            "kind": "list",
+            "title": screen.title,
+            "icon": screen.icon,
+            "description": screen.description,
+        }
 
 
     @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/rows")

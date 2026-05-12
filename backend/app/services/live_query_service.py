@@ -994,12 +994,22 @@ def _get_bigquery_earliest_partition_date(
     return _get_bigquery_partition_metadata(config, source_table_name).get("earliest_partition_date")
 
 
-def _build_preview_sql(base_sql: str, limit: int, offset: int,
-                       filters: list | None = None, dialect: str = "postgresql") -> str:
+def _build_preview_sql(
+    base_sql: str,
+    limit: int,
+    offset: int,
+    filters: list | None = None,
+    dialect: str = "postgresql",
+    sort_column: str | None = None,
+    sort_direction: str | None = None,
+) -> str:
     where = _build_where_clause(filters or [], dialect)
     inner = f"SELECT * FROM ({base_sql}) AS _appbi_live"
     if where:
         inner += f" WHERE {where}"
+    if sort_column:
+        direction = "ASC" if str(sort_direction or "").lower() == "asc" else "DESC"
+        inner += f" ORDER BY {_quote_identifier(sort_column, dialect)} {direction}"
     sql = f"{inner} LIMIT {int(limit)}"
     if offset:
         sql += f" OFFSET {int(offset)}"
@@ -1018,6 +1028,8 @@ class LiveQueryService:
         limit: int = 100,
         offset: int = 0,
         filters: list | None = None,
+        sort_column: str | None = None,
+        sort_direction: str | None = None,
     ) -> Dict[str, Any]:
         """Preview dataset rows directly from the source with cache + cost guard."""
         ds_type = datasource.type if isinstance(datasource.type, str) else datasource.type.value
@@ -1034,6 +1046,8 @@ class LiveQueryService:
             "limit": limit,
             "offset": offset,
             "filters": [f if isinstance(f, dict) else f.dict() for f in (filters or [])],
+            "sort_column": sort_column,
+            "sort_direction": sort_direction,
             "transformations": getattr(db_table, "transformations", None) or [],
             "type_overrides": normalize_type_overrides(getattr(db_table, "type_overrides", None)),
         }
@@ -1085,7 +1099,16 @@ class LiveQueryService:
                         bigquery_partition_meta=partition_metadata,
                     )
                     filter_dicts = [f if isinstance(f, dict) else f.dict() for f in (filters or [])]
-                    sql = _build_preview_sql(plan.sql, limit, offset, filter_dicts, dialect)
+                    effective_sort = sort_column if sort_column in plan.output_columns else None
+                    sql = _build_preview_sql(
+                        plan.sql,
+                        limit,
+                        offset,
+                        filter_dicts,
+                        dialect,
+                        sort_column=effective_sort,
+                        sort_direction=sort_direction,
+                    )
                     estimated_bytes = _estimate_bigquery_bytes(config, sql)
                     max_bytes = settings.BQ_MAX_BYTES_SCANNED
                     if estimated_bytes > max_bytes:
@@ -1133,7 +1156,16 @@ class LiveQueryService:
                     apply_type_overrides=True,
                 )
                 filter_dicts = [f if isinstance(f, dict) else f.dict() for f in (filters or [])]
-                sql = _build_preview_sql(plan.sql, limit, offset, filter_dicts, dialect)
+                effective_sort = sort_column if sort_column in plan.output_columns else None
+                sql = _build_preview_sql(
+                    plan.sql,
+                    limit,
+                    offset,
+                    filter_dicts,
+                    dialect,
+                    sort_column=effective_sort,
+                    sort_direction=sort_direction,
+                )
                 estimated_bytes = _estimate_bigquery_bytes(config, sql)
                 max_bytes = settings.BQ_MAX_BYTES_SCANNED
                 if estimated_bytes > max_bytes:
@@ -1163,7 +1195,16 @@ class LiveQueryService:
         else:
             plan = build_live_base_query_plan(datasource, db_table, apply_type_overrides=True)
             filter_dicts = [f if isinstance(f, dict) else f.dict() for f in (filters or [])]
-            sql = _build_preview_sql(plan.sql, limit, offset, filter_dicts, dialect)
+            effective_sort = sort_column if sort_column in plan.output_columns else None
+            sql = _build_preview_sql(
+                plan.sql,
+                limit,
+                offset,
+                filter_dicts,
+                dialect,
+                sort_column=effective_sort,
+                sort_direction=sort_direction,
+            )
 
             if ds_type == "bigquery":
                 estimated_bytes = _estimate_bigquery_bytes(config, sql)

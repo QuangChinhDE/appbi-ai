@@ -1,7 +1,7 @@
 /**
  * ScreenEditor — center pane of the builder.
  *
- * Three tabs (Form / Quyền / Nâng cao). Screen-level meta (title, description,
+ * Three tabs (Form / Permissions / Advanced). Screen-level meta (title, description,
  * show-in-nav) lives in a popover triggered from the sidebar gear icon, not
  * here. The active screen kind drives the Form-tab content; Data-table
  * picking moved into that tab too so users don't bounce between tabs.
@@ -12,7 +12,7 @@ import React, { useState } from 'react';
 
 import { Tabs, type TabItem } from '@/components/ui/Tabs';
 import { BUILDER_GRID_2, BuilderSection } from './BuilderChrome';
-import { CheckboxMultiSelect } from './BuilderValueControls';
+import { CheckboxMultiSelect, MultiColumnPicker } from './BuilderValueControls';
 import { buildAppUserRoleOptions, normalizeAppUserRole } from './appUserRoles';
 import type { ScreenSpec } from './types';
 import FormScreenEditor from './FormScreenEditor';
@@ -43,7 +43,7 @@ type TabId = 'form' | 'permission' | 'advanced';
 
 const KIND_LABELS: Record<ScreenSpec['kind'], string> = {
   form: 'Form',
-  list: 'Danh sách',
+  list: 'List',
   doc: 'Document',
   dashboard: 'Dashboard',
 };
@@ -76,12 +76,15 @@ export default function ScreenEditor({
       label: screenLabel,
       badge: badge(fieldCount ?? columnCount ?? blockCount),
     },
-    { key: 'permission', label: 'Quyền', badge: badge(ruleCount) },
-    { key: 'advanced', label: 'Nâng cao' },
+    { key: 'permission', label: 'Permissions', badge: badge(ruleCount) },
+    { key: 'advanced', label: 'Advanced' },
   ];
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4">
+    // No max-width here — the outer pane (WorkboardBuilder) handles
+    // sensible centering with max-w-screen-2xl so this layout fills the
+    // available pane width when the Live Preview is collapsed.
+    <div className="w-full space-y-4">
       {/* items-center vertically centers the toggle pill against the tabs
           row. Tabs already render their own bottom border. */}
       <div className="flex items-center justify-between gap-3">
@@ -157,8 +160,8 @@ function ModeToggle({
   // the surrounding underline tabs — same active treatment (surface-1 chip
   // with linear shadow) and same hover, no ad-hoc styling.
   const items: TabItem<BuilderMode>[] = [
-    { key: 'basic', label: 'Cơ bản' },
-    { key: 'advanced', label: 'Nâng cao' },
+    { key: 'basic', label: 'Basic' },
+    { key: 'advanced', label: 'Advanced' },
   ];
   return <Tabs<BuilderMode> items={items} value={mode} onChange={onChange} variant="pill" size="sm" />;
 }
@@ -189,33 +192,33 @@ function PermissionTab({
     <div className="space-y-4">
       {/* Behaviour banner — what each role gets by default */}
       <div className="rounded-lg border border-info/20 bg-info/5 px-3 py-2.5 text-tiny text-text-secondary">
-        <div className="font-medium text-text-primary">Mặc định theo vai trò</div>
+        <div className="font-medium text-text-primary">Defaults by role</div>
         <ul className="mt-1 space-y-0.5">
           <li>
-            • <span className="font-medium">Owner</span> — luôn toàn quyền, bỏ qua mọi rule. Không cần cấu hình.
+            • <span className="font-medium">Owner</span> — always full access, ignores all rules. No config needed.
           </li>
           <li>
-            • <span className="font-medium">Admin</span> — thấy mọi dòng dữ liệu. Chỉ thêm rule khi muốn giới hạn riêng.
+            • <span className="font-medium">Admin</span> — sees every row. Add a rule only to narrow Admin access.
           </li>
           <li>
-            • <span className="font-medium">User</span> — bị giới hạn theo rule bên dưới (mặc định không thấy gì nếu không có rule cho User).
+            • <span className="font-medium">User</span> — restricted by the rules below (no User rule = User sees nothing).
           </li>
         </ul>
       </div>
 
       {screen.kind === 'dashboard' ? (
         <BuilderSection
-          title="Quy tắc theo vai trò"
-          description="Dashboard nhúng dùng cơ chế filter / quyền riêng của module Dashboard — không có RLS theo dòng ở đây. Chỉ giới hạn ai vào được màn hình ở phần dưới."
+          title="Role rules"
+          description="Embedded dashboards use the Dashboard module's own filter / permission pipeline — no row-level RLS here. Restrict who can open the screen below."
         >
           <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2.5 text-tiny text-text-tertiary">
-            Không cần cấu hình RLS cho màn hình Dashboard.
+            RLS is not used for Dashboard screens.
           </p>
         </BuilderSection>
       ) : (
         <BuilderSection
-          title="Quy tắc theo vai trò"
-          description="Mỗi rule = một vai trò + phạm vi xem/sửa/xoá. Owner bị ẩn vì luôn full quyền."
+          title="Role rules"
+          description="Each rule = one role + view/edit/delete scope. Owner is hidden because it always has full access."
         >
           <RlsEditor screen={screen} tables={tables} onChange={onChange} />
         </BuilderSection>
@@ -223,8 +226,8 @@ function PermissionTab({
 
       {mode === 'advanced' && (
         <BuilderSection
-          title="Vai trò được vào màn hình (advanced)"
-          description="Để trống = ai đăng nhập cũng vào được (đúng với rule ở trên). Chọn cụ thể nếu muốn giới hạn ngay từ menu."
+          title="Roles allowed to open this screen (advanced)"
+          description="Empty = every signed-in user can open it (subject to the rules above). Pick specific roles to gate at the menu level."
         >
           <CheckboxMultiSelect
             options={roleOptions}
@@ -254,11 +257,11 @@ function AdvancedTab({
   return (
     <div className="space-y-4">
       <BuilderSection
-        title="Định danh & icon"
-        description="Các thuộc tính kỹ thuật. Chỉ chỉnh khi bạn biết mình đang làm gì."
+        title="Identifier & icon"
+        description="Technical attributes. Only touch these if you know what you're doing."
       >
         <div className={BUILDER_GRID_2}>
-          <Field label="ID (slug nội bộ)">
+          <Field label="ID (internal slug)">
             <input
               value={screen.id}
               onChange={(event) =>
@@ -267,33 +270,29 @@ function AdvancedTab({
               className={INPUT}
             />
           </Field>
-          <Field label="Tên icon (Lucide)">
+          <Field label="Icon name (Lucide)">
             <input
               value={screen.icon || ''}
               onChange={(event) => onChange({ ...screen, icon: event.target.value })}
               className={INPUT}
-              placeholder="ClipboardEdit, ListChecks, FileText..."
+              placeholder="ClipboardEdit, ListChecks, FileText…"
             />
           </Field>
         </div>
       </BuilderSection>
 
       <BuilderSection
-        title="Cột định danh (primary key)"
-        description="Cột dùng để xác định 1 dòng duy nhất. Chỉ cần đặt khi muốn cho phép sửa/xoá dòng."
+        title="Primary key columns"
+        description="Columns that uniquely identify a row. Required only if you want to allow edit / delete."
       >
         {tableCols.length > 0 ? (
-          <CheckboxMultiSelect
-            options={tableCols.map((column) => ({
-              value: column.name,
-              label: column.name,
-              description: column.type,
-            }))}
-            selectedValues={screen.primary_key_columns || []}
+          <MultiColumnPicker
+            sourceColumns={tableCols.map((column) => column.name)}
+            value={screen.primary_key_columns || []}
             onChange={(primaryKeyColumns) =>
               onChange({ ...screen, primary_key_columns: primaryKeyColumns })
             }
-            columns={2}
+            placeholder="Pick primary-key columns…"
           />
         ) : (
           <input
@@ -308,7 +307,7 @@ function AdvancedTab({
               })
             }
             className={INPUT}
-            placeholder="vd: shift_id"
+            placeholder="e.g. shift_id"
           />
         )}
       </BuilderSection>
@@ -332,7 +331,7 @@ export function Lbl({
 }) {
   return (
     <label className={`block ${className ?? ''}`}>
-      <span className="mb-1 block text-tiny font-emphasis text-text-secondary">
+      <span className="mb-1 block text-caption font-emphasis text-text-secondary">
         {label}
       </span>
       {children}
@@ -351,7 +350,7 @@ function Field({
 }) {
   return (
     <label className={`block ${className ?? ''}`}>
-      <span className="mb-1 block text-tiny font-emphasis text-text-secondary">
+      <span className="mb-1 block text-caption font-emphasis text-text-secondary">
         {label}
       </span>
       {children}

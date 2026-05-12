@@ -3,7 +3,7 @@
  *
  * Layout: left rail (screens list) · center (tabbed ScreenEditor) · right
  * (Live Preview iframe). RLS used to live in a separate right panel; it now
- * sits inside the "Quyền" tab of the ScreenEditor so the builder has only
+ * sits inside the "Permissions" tab of the ScreenEditor so the builder has only
  * two visible panes (editor + preview).
  */
 'use client';
@@ -171,9 +171,9 @@ export default function WorkboardBuilder({ workboard }: Props) {
           ? current
           : nextLayout.screens[0]?.id || null,
       );
-      toast.success('Đã đổi dataset cho Mini App');
+      toast.success('Mini-app dataset changed');
     } catch (err: unknown) {
-      toast.error(getApiErrorMessage(err, 'Không đổi được dataset.'));
+      toast.error(getApiErrorMessage(err, 'Could not change dataset.'));
     }
   };
 
@@ -251,8 +251,8 @@ export default function WorkboardBuilder({ workboard }: Props) {
   const addScreen = (kind: ScreenKind) => {
     const id = `screen-${Date.now().toString(36)}`;
     const titleByKind: Record<ScreenKind, string> = {
-      form: 'Form mới',
-      list: 'Danh sách',
+      form: 'New form',
+      list: 'List',
       doc: 'Document',
       dashboard: 'Dashboard',
     };
@@ -273,7 +273,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
       show_in_nav: true,
       rls: [],
     };
-    if (kind === 'form') base.form = { fields: [], submit_label: 'Lưu', initial_values: {} };
+    if (kind === 'form') base.form = { fields: [], submit_label: 'Save', initial_values: {} };
     if (kind === 'list') base.list = { columns: [], page_size: 50, row_actions: [] };
     if (kind === 'doc') base.doc = { blocks: [], page: { size: 'A4', orientation: 'portrait', margin_mm: 15 } };
     if (kind === 'dashboard') {
@@ -292,7 +292,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
   };
 
   const deleteScreen = (id: string) => {
-    if (!confirm('Xoá screen này?')) return;
+    if (!confirm('Delete this screen?')) return;
     setLayout((curr) => {
       const next = curr.screens.filter((s) => s.id !== id);
       return {
@@ -319,16 +319,16 @@ export default function WorkboardBuilder({ workboard }: Props) {
                 Mini-app
               </h3>
               <p className="mt-0.5 text-caption text-text-secondary">
-                {totalScreens} màn hình
+                {totalScreens} screens
                 {screensWithIssues > 0 && (
-                  <span className="ml-1 text-warning">• {screensWithIssues} cần sửa</span>
+                  <span className="ml-1 text-warning">• {screensWithIssues} need attention</span>
                 )}
               </p>
             </div>
             <button
               onClick={() => setShowAppSettings(true)}
               className="rounded-md p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
-              title="Thiết lập app (branding, navigation)"
+              title="App settings (branding, navigation)"
             >
               <Settings className="h-3.5 w-3.5" />
             </button>
@@ -353,15 +353,15 @@ export default function WorkboardBuilder({ workboard }: Props) {
             </div>
           ) : (
             <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-6 text-center text-tiny text-text-tertiary">
-              Chưa có màn hình nào.
+              No screens yet.
               <br />
-              Thêm màn hình đầu tiên ở dưới.
+              Add the first screen below.
             </p>
           )}
 
           <div className="mt-3 border-t border-[rgb(var(--border-line))] pt-3">
             <p className="mb-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-              + Thêm màn hình
+              + Add screen
             </p>
             <div className="grid grid-cols-2 gap-1">
               <AddBtn icon={ClipboardEdit} label="Form" onClick={() => addScreen('form')} />
@@ -398,7 +398,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
           <button
             type="button"
             onClick={togglePreview}
-            title="Mở Live Preview"
+            title="Open Live Preview"
             className="absolute right-3 top-3 z-10 flex h-7 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 text-tiny text-text-secondary shadow-sm hover:bg-surface-2 hover:text-text-primary"
           >
             <Eye className="h-3.5 w-3.5" />
@@ -413,7 +413,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
         ) : !activeScreen ? (
           <PickAScreenHint screens={layout.screens} onPick={setActiveScreenId} />
         ) : (
-          <div className="px-6 py-5 lg:px-10 lg:py-7">
+          <div className="mx-auto w-full max-w-screen-2xl px-4 py-5 sm:px-6 lg:px-8 xl:px-10">
             <ScreenEditor
               screen={activeScreen}
               allScreens={layout.screens}
@@ -468,7 +468,7 @@ function AutosaveFooter({
     return (
       <div className="flex items-center gap-1.5 text-tiny text-info">
         <Loader2 className="h-3 w-3 animate-spin" />
-        Đang lưu…
+        Saving...
       </div>
     );
   }
@@ -476,7 +476,7 @@ function AutosaveFooter({
     return (
       <div className="flex items-center gap-1.5 text-tiny text-warning">
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning" />
-        Đang gõ — lưu sau ~1s
+        Editing - saves in ~1s
       </div>
     );
   }
@@ -484,7 +484,7 @@ function AutosaveFooter({
     return (
       <div className="flex items-start gap-1 text-tiny text-danger" title={error || ''}>
         <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
-        Lỗi lưu — chỉnh tiếp để thử lại
+        Save failed - edit again to retry
       </div>
     );
   }
@@ -492,14 +492,14 @@ function AutosaveFooter({
     return (
       <div className="flex items-center gap-1.5 text-tiny text-success">
         <CheckCircle2 className="h-3 w-3" />
-        Đã đồng bộ {savedAt.toLocaleTimeString()}
+        Synced {savedAt.toLocaleTimeString()}
       </div>
     );
   }
   return (
     <div className="flex items-center gap-1.5 text-tiny text-text-tertiary">
       <Save className="h-3 w-3" />
-      Tự động lưu khi bạn thay đổi
+      Auto-saves as you edit
     </div>
   );
 }
@@ -522,32 +522,31 @@ function WelcomeEmptyState({
             <Sparkles className="h-4 w-4" />
           </div>
           <h2 className="text-h4 font-emphasis text-text-primary">
-            Bắt đầu xây mini-app
+            Start building the mini-app
           </h2>
         </div>
         <p className="mb-5 text-caption text-text-secondary">
-          Mini-app gồm các <strong>màn hình</strong> (form nhập, danh sách, document, dashboard) liên kết với nhau.
-          Bắt đầu bằng một trong các màn hình dưới đây — sau đó bấm &quot;Lưu thay đổi&quot;
-          rồi vào tab <strong>Preview</strong> để dùng thử.
+          A mini-app is made of connected <strong>screens</strong> (data-entry forms, lists, documents, and dashboards).
+          Start with one of the screen types below, then use <strong>Live Preview</strong> to try it.
         </p>
 
         <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
           <StarterCard
             icon={ClipboardEdit}
-            title="Form nhập liệu"
-            description="Một bảng với form thêm/sửa, rất hợp cho quy trình ghi nhận dữ liệu hàng ngày."
+            title="Data-entry form"
+            description="A table-backed form for creating or editing daily operational records."
             onClick={() => onAdd('form')}
           />
           <StarterCard
             icon={ListChecks}
-            title="Danh sách"
-            description="Hiện rows đã nhập, có filter + hành động (mở chi tiết, xoá...)."
+            title="List"
+            description="Show entered rows with filters and row actions such as open, edit, or delete."
             onClick={() => onAdd('list')}
           />
           <StarterCard
             icon={FileText}
             title="Document"
-            description="Trang in A4 có header, KPI, bảng có merge cells + chữ ký + footer tổng hợp."
+            description="Printable pages with headers, KPI blocks, data tables, signatures, and footers."
             onClick={() => onAdd('doc')}
           />
         </div>
@@ -555,7 +554,7 @@ function WelcomeEmptyState({
         <div className="mt-5 flex items-start gap-2 rounded-lg border border-info/20 bg-info/5 p-3">
           <HelpCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-info" />
           <div className="text-caption text-text-secondary">
-            <strong>Mẹo:</strong> Đặt branding (logo, màu, tên app) trước qua{' '}
+            <strong>Tip:</strong> Set branding (logo, color, app name) first in{' '}
             <button
               type="button"
               onClick={onOpenSettings}
@@ -563,7 +562,7 @@ function WelcomeEmptyState({
             >
               App settings
             </button>
-            . Mini-app sẽ hiện brand đó trên màn hình login + header runtime.
+            . The mini-app uses it on the login screen and runtime header.
           </div>
         </div>
       </div>
@@ -596,7 +595,7 @@ function StarterCard({
         <p className="mt-1 text-tiny text-text-tertiary">{description}</p>
       </div>
       <span className="mt-auto flex items-center gap-1 text-tiny font-emphasis text-brand opacity-0 transition-opacity group-hover:opacity-100">
-        <Plus className="h-3 w-3" /> Thêm màn hình này
+        <Plus className="h-3 w-3" /> Add this screen
       </span>
     </button>
   );
@@ -613,10 +612,10 @@ function PickAScreenHint({
     <div className="mx-auto max-w-2xl px-6 py-10">
       <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5">
         <h3 className="mb-1 text-body font-emphasis text-text-primary">
-          Chọn màn hình để chỉnh sửa
+          Pick a screen to edit
         </h3>
         <p className="mb-3 text-caption text-text-secondary">
-          Mini-app này có {screens.length} màn hình. Click thẻ dưới để mở editor.
+          This mini-app has {screens.length} screens. Click a card below to open its editor.
         </p>
         <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
           {screens.map((s) => {
@@ -721,7 +720,7 @@ function ScreenListItem({
         } ${
           menuOpen ? 'bg-surface-2 text-text-primary' : 'text-text-tertiary hover:bg-surface-2 hover:text-text-primary'
         }`}
-        title="Thao tác"
+        title="Actions"
       >
         <MoreVertical className="h-3.5 w-3.5" />
       </button>
@@ -733,7 +732,7 @@ function ScreenListItem({
         >
           <MenuItem
             icon={<Settings className="h-3.5 w-3.5" />}
-            label="Thiết lập màn hình"
+            label="Screen settings"
             onClick={() => {
               setMenuOpen(false);
               setSettingsOpen(true);
@@ -742,7 +741,7 @@ function ScreenListItem({
           {onMoveUp && (
             <MenuItem
               icon={<ArrowUp className="h-3.5 w-3.5" />}
-              label="Di chuyển lên"
+              label="Move up"
               onClick={() => {
                 setMenuOpen(false);
                 onMoveUp();
@@ -752,7 +751,7 @@ function ScreenListItem({
           {onMoveDown && (
             <MenuItem
               icon={<ArrowDown className="h-3.5 w-3.5" />}
-              label="Di chuyển xuống"
+              label="Move down"
               onClick={() => {
                 setMenuOpen(false);
                 onMoveDown();
@@ -762,7 +761,7 @@ function ScreenListItem({
           <div className="my-1 border-t border-[rgb(var(--border-line))]" />
           <MenuItem
             icon={<Trash2 className="h-3.5 w-3.5" />}
-            label="Xoá màn hình"
+            label="Delete screen"
             danger
             onClick={() => {
               setMenuOpen(false);
@@ -827,20 +826,20 @@ function ScreenSettingsPopover({
     >
       <div className="mb-2 flex items-center justify-between">
         <h4 className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-          Thiết lập màn hình
+          Screen settings
         </h4>
         <button
           onClick={onClose}
           className="rounded p-0.5 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
-          title="Đóng"
+          title="Close"
         >
-          ×
+          X
         </button>
       </div>
       <div className="space-y-2">
         <label className="block">
           <span className="mb-1 block text-tiny font-emphasis text-text-secondary">
-            Tên màn hình
+            Screen name
           </span>
           <input
             value={screen.title}
@@ -850,7 +849,7 @@ function ScreenSettingsPopover({
         </label>
         <label className="block">
           <span className="mb-1 block text-tiny font-emphasis text-text-secondary">
-            Mô tả ngắn
+            Short description
           </span>
           <textarea
             value={screen.description || ''}
@@ -868,7 +867,7 @@ function ScreenSettingsPopover({
             }
             className="h-3.5 w-3.5"
           />
-          Hiển thị trong menu
+          Show in navigation
         </label>
       </div>
     </div>
@@ -880,10 +879,10 @@ function StatusDot({ status }: { status: ScreenStatus }) {
     status === 'ok' ? 'bg-success' : status === 'warn' ? 'bg-warning' : 'bg-danger';
   const label =
     status === 'ok'
-      ? 'Đã cấu hình đầy đủ'
+      ? 'Configured'
       : status === 'warn'
-      ? 'Còn thiếu fields/columns/blocks'
-      : 'Chưa chọn bảng dữ liệu';
+      ? 'Missing fields, columns, or blocks'
+      : 'Data source not selected';
   return (
     <span
       className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${cls}`}

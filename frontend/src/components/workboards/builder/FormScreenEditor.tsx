@@ -1,14 +1,27 @@
 /**
- * FormScreenEditor - Form screen editor (compact, Vietnamese, mode-aware).
+ * FormScreenEditor - object-based form configuration.
  */
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, GripVertical, Plus, Trash2 } from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronDown,
+  ChevronRight,
+  ClipboardList,
+  FileInput,
+  GripVertical,
+  LayoutList,
+  Plus,
+  Route,
+  Trash2,
+} from 'lucide-react';
 
 import {
-  CheckboxMultiSelect,
   FixedExpressionInput,
+  MultiColumnPicker,
+  SingleColumnPicker,
   type SelectOption,
 } from './BuilderValueControls';
 import {
@@ -16,8 +29,13 @@ import {
   BUILDER_GRID_3,
   BUILDER_GRID_4,
   BuilderActionButton,
+  BuilderEmptyHint,
   BuilderIconButton,
-  BuilderSection,
+  BuilderInspectorPanel,
+  BuilderNavigator,
+  BuilderNavigatorGroup,
+  BuilderNavigatorItem,
+  BuilderObjectEditor,
   DataSourcePicker,
 } from './BuilderChrome';
 import type { FormFieldSpec, ScreenSpec } from './types';
@@ -42,54 +60,37 @@ interface Props {
   onFocusFieldHandled?: () => void;
 }
 
-interface FormPage {
-  id: number;
-  title: string;
-  description?: string;
-}
+type FormSpec = NonNullable<ScreenSpec['form']>;
+type FormPage = NonNullable<FormSpec['pages']>[number];
+type LookupRuntime = NonNullable<FormFieldSpec['lookup']>;
+type FormActiveItem = 'layout' | 'submit' | 'initial' | `field:${number}`;
 
-interface FieldRuntimeExtras {
-  section?: string | null;
-  page?: number | null;
-  show_if?: string | null;
-  required_if?: string | null;
-  readonly_if?: string | null;
-  computed_from_dataset?: string | null;
-}
-
-type LookupRuntime = NonNullable<FormFieldSpec['lookup']> & {
-  relationship_path?: unknown[] | null;
+type RelationshipHop = {
+  table_id?: number | null;
+  value_column?: string | null;
+  label_column?: string | null;
 };
 
+const EMPTY_FORM: FormSpec = { fields: [], initial_values: {} };
+
 const WIDGETS: { value: FormFieldSpec['widget']; label: string }[] = [
-  { value: 'text', label: 'Văn bản' },
-  { value: 'textarea', label: 'Văn bản dài' },
-  { value: 'number', label: 'Số' },
-  { value: 'select', label: 'Chọn 1 (tĩnh)' },
-  { value: 'lookup', label: 'Chọn 1 (từ bảng)' },
-  { value: 'date', label: 'Ngày' },
-  { value: 'datetime', label: 'Ngày giờ' },
-  { value: 'checkbox', label: 'Bật/Tắt' },
+  { value: 'text', label: 'Text' },
+  { value: 'textarea', label: 'Long text' },
+  { value: 'number', label: 'Number' },
+  { value: 'select', label: 'Select (static)' },
+  { value: 'lookup', label: 'Select (from table)' },
+  { value: 'date', label: 'Date' },
+  { value: 'datetime', label: 'Date + time' },
+  { value: 'checkbox', label: 'On / off' },
 ];
 
 const COMMON_EXPRESSION_OPTIONS: SelectOption[] = [
-  { value: '{{app_user.username}}', label: 'User đang đăng nhập (username)' },
-  { value: '{{app_user.full_name}}', label: 'User đang đăng nhập (họ tên)' },
-  { value: '{{app_user.role}}', label: 'Vai trò user đang đăng nhập' },
-  { value: '{{today}}', label: 'Hôm nay' },
-  { value: '{{now}}', label: 'Bây giờ' },
+  { value: '{{app_user.username}}', label: 'Signed-in user - username' },
+  { value: '{{app_user.full_name}}', label: 'Signed-in user - full name' },
+  { value: '{{app_user.role}}', label: 'Signed-in user - role' },
+  { value: '{{today}}', label: 'Today' },
+  { value: '{{now}}', label: 'Now' },
 ];
-
-function cx(...parts: Array<string | false | null | undefined>): string {
-  return parts.filter(Boolean).join(' ');
-}
-
-function getFieldExtra<T>(
-  field: FormFieldSpec,
-  key: keyof FieldRuntimeExtras,
-): T | undefined {
-  return (field as FormFieldSpec & FieldRuntimeExtras)[key] as T | undefined;
-}
 
 function widgetLabel(widget: FormFieldSpec['widget']): string {
   return WIDGETS.find((item) => item.value === widget)?.label || widget;
@@ -142,14 +143,6 @@ function CollapsibleGroup({
   );
 }
 
-function EmptyHint({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-0 px-4 py-6 text-center text-tiny text-text-tertiary">
-      {children}
-    </div>
-  );
-}
-
 export default function FormScreenEditor({
   screen,
   allScreens,
@@ -160,43 +153,42 @@ export default function FormScreenEditor({
   focusFieldColumn,
   onFocusFieldHandled,
 }: Props) {
-  const form = screen.form || { fields: [] };
+  const form = screen.form || EMPTY_FORM;
   const fields = form.fields || [];
   const tableCols = tables.find((table) => table.id === screen.table_id)?.columns ?? [];
   const fieldColumnOptions = Array.from(
     new Set(fields.map((field) => field.column).filter(Boolean)),
   );
-  const pages = (((form as { pages?: FormPage[] }).pages) || []) as FormPage[];
-  const sections = (((form as { sections?: string[] }).sections) || []) as string[];
+  const pages = form.pages || [];
+  const sections = form.sections || [];
   const initialValues = form.initial_values || {};
   const initialEntries = Object.entries(initialValues);
+  const isMultiStep = pages.length > 0;
 
-  const [activeFieldIndex, setActiveFieldIndex] = useState(0);
+  const [activeItem, setActiveItem] = useState<FormActiveItem>('layout');
+  const activeFieldIndex = activeItem.startsWith('field:')
+    ? Number(activeItem.slice('field:'.length))
+    : -1;
+  const activeField = activeFieldIndex >= 0 ? fields[activeFieldIndex] : null;
 
   useEffect(() => {
+    if (!activeItem.startsWith('field:')) return;
     if (fields.length === 0) {
-      if (activeFieldIndex !== 0) setActiveFieldIndex(0);
-      return;
+      setActiveItem('layout');
+    } else if (activeFieldIndex > fields.length - 1) {
+      setActiveItem(`field:${fields.length - 1}`);
     }
-    if (activeFieldIndex > fields.length - 1) {
-      setActiveFieldIndex(fields.length - 1);
-    }
-  }, [activeFieldIndex, fields.length]);
+  }, [activeFieldIndex, activeItem, fields.length]);
 
-  // React to focus-field requests from live preview.
   useEffect(() => {
     if (!focusFieldColumn) return;
     const idx = fields.findIndex((field) => field.column === focusFieldColumn);
-    if (idx >= 0) {
-      setActiveFieldIndex(idx);
-    }
+    if (idx >= 0) setActiveItem(`field:${idx}`);
     onFocusFieldHandled?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusFieldColumn]);
 
-  const activeField = fields[activeFieldIndex];
-
-  const updateForm = (patch: Partial<NonNullable<ScreenSpec['form']>>) =>
+  const updateForm = (patch: Partial<FormSpec>) =>
     onChange({ ...screen, form: { ...form, ...patch } });
 
   const updateField = (index: number, patch: Partial<FormFieldSpec>) => {
@@ -206,8 +198,8 @@ export default function FormScreenEditor({
   };
 
   const addField = () => {
-    const usedColumns = new Set(fields.map((f) => f.column));
-    const unusedCol = tableCols.find((c) => !usedColumns.has(c.name));
+    const usedColumns = new Set(fields.map((field) => field.column));
+    const unusedCol = tableCols.find((column) => !usedColumns.has(column.name));
     const column = unusedCol?.name || `field_${fields.length + 1}`;
     updateForm({
       fields: [
@@ -215,40 +207,37 @@ export default function FormScreenEditor({
         { column, widget: 'text', label: column, required: false },
       ],
     });
-    setActiveFieldIndex(fields.length);
+    setActiveItem(`field:${fields.length}`);
   };
 
   const removeField = (index: number) => {
-    updateForm({ fields: fields.filter((_, itemIndex) => itemIndex !== index) });
-    setActiveFieldIndex((current) => {
-      if (current > index) return current - 1;
-      return Math.max(0, Math.min(current, fields.length - 2));
-    });
+    const nextFields = fields.filter((_, itemIndex) => itemIndex !== index);
+    updateForm({ fields: nextFields });
+    if (activeFieldIndex === index) {
+      setActiveItem(
+        nextFields.length > 0
+          ? `field:${Math.max(0, Math.min(index, nextFields.length - 1))}`
+          : 'layout',
+      );
+    } else if (activeFieldIndex > index) {
+      setActiveItem(`field:${activeFieldIndex - 1}`);
+    }
   };
 
   const moveField = (index: number, direction: -1 | 1) => {
-    const next = [...fields];
     const target = index + direction;
-    if (target < 0 || target >= next.length) return;
+    if (target < 0 || target >= fields.length) return;
+    const next = [...fields];
     [next[index], next[target]] = [next[target], next[index]];
     updateForm({ fields: next });
-    setActiveFieldIndex((current) => {
-      if (current === index) return target;
-      if (current === target) return index;
-      return current;
-    });
+    if (activeFieldIndex === index) setActiveItem(`field:${target}`);
+    else if (activeFieldIndex === target) setActiveItem(`field:${index}`);
   };
 
-  const setPages = (next: FormPage[]) =>
-    updateForm({ pages: next } as unknown as Partial<NonNullable<ScreenSpec['form']>>);
-  const setSections = (next: string[]) =>
-    updateForm({ sections: next } as unknown as Partial<NonNullable<ScreenSpec['form']>>);
-
-  const updateInitialValue = (oldKey: string, newKey: string, value: string) => {
+  const updateInitialValue = (oldKey: string, newKey: string, value: unknown) => {
     const next: Record<string, unknown> = {};
     for (const [key, current] of initialEntries) {
-      if (key === oldKey) next[newKey] = value;
-      else next[key] = current;
+      next[key === oldKey ? newKey : key] = key === oldKey ? value : current;
     }
     updateForm({ initial_values: next });
   };
@@ -268,7 +257,104 @@ export default function FormScreenEditor({
   const allFieldsUsed =
     fieldColumnOptions.length > 0 && fieldColumnOptions.every((column) => column in initialValues);
 
-  const isMultiStep = pages.length > 0;
+  const renderInspector = () => {
+    if (activeItem === 'layout') {
+      return (
+        <BuilderInspectorPanel
+          icon={<LayoutList className="h-4 w-4" />}
+          title="Form layout"
+          subtitle="Structure the form before configuring individual fields."
+        >
+          <FormLayoutInspector
+            pages={pages}
+            sections={sections}
+            isMultiStep={isMultiStep}
+            onPagesChange={(next) => updateForm({ pages: next })}
+            onSectionsChange={(next) => updateForm({ sections: next })}
+          />
+        </BuilderInspectorPanel>
+      );
+    }
+
+    if (activeItem === 'submit') {
+      return (
+        <BuilderInspectorPanel
+          icon={<Route className="h-4 w-4" />}
+          title="Submit flow"
+          subtitle="Control the save button and what happens after a successful submit."
+        >
+          <SubmitFlowInspector
+            screen={screen}
+            form={form}
+            allScreens={allScreens}
+            fieldColumnOptions={fieldColumnOptions}
+            onChange={updateForm}
+          />
+        </BuilderInspectorPanel>
+      );
+    }
+
+    if (activeItem === 'initial') {
+      return (
+        <BuilderInspectorPanel
+          icon={<FileInput className="h-4 w-4" />}
+          title="Initial values"
+          subtitle="Pre-fill form fields when the screen opens."
+        >
+          <InitialValuesInspector
+            entries={initialEntries}
+            fieldOptions={fieldColumnOptions}
+            allValues={initialValues}
+            allFieldsUsed={allFieldsUsed}
+            onAdd={addInitialValue}
+            onChange={updateInitialValue}
+            onRemove={removeInitialValue}
+          />
+        </BuilderInspectorPanel>
+      );
+    }
+
+    if (activeField) {
+      return (
+        <BuilderInspectorPanel
+          icon={<ClipboardList className="h-4 w-4" />}
+          title={activeField.label?.trim() || activeField.column}
+          subtitle={`${widgetLabel(activeField.widget)} - column ${activeField.column}${
+            activeField.readonly ? ' - readonly' : ''
+          }`}
+          action={
+            <BuilderIconButton
+              onClick={() => removeField(activeFieldIndex)}
+              title="Delete field"
+              variant="danger"
+            >
+              <Trash2 className="h-3.5 w-3.5 text-danger" />
+            </BuilderIconButton>
+          }
+        >
+          <FieldInspector
+            field={activeField}
+            tableCols={tableCols}
+            tables={tables}
+            pageOptions={pages}
+            sectionOptions={sections}
+            mode={mode}
+            onChange={(patch) => updateField(activeFieldIndex, patch)}
+          />
+        </BuilderInspectorPanel>
+      );
+    }
+
+    return (
+      <BuilderInspectorPanel
+        icon={<ClipboardList className="h-4 w-4" />}
+        title="Fields"
+        subtitle="Add a field to start configuring the form body."
+      >
+        <BuilderEmptyHint>No fields yet. Add one from the left panel.</BuilderEmptyHint>
+      </BuilderInspectorPanel>
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -278,16 +364,187 @@ export default function FormScreenEditor({
         onChange={(nextId) => onChange({ ...screen, table_id: nextId })}
       />
 
-      {/* ── Sections (always visible — hay dùng) ─────────────────── */}
-      <BuilderSection
-        title="Nhóm nội dung"
-        description="Đặt tên các nhóm để gom field cùng chủ đề trong form. Để trống nếu chỉ là 1 nhóm."
-      >
-        <Lbl label="Tên nhóm (cách nhau bằng dấu phẩy)">
+      {!screen.table_id ? (
+        <BuilderEmptyHint className="text-left">
+          Pick a primary data source before adding fields. Form fields are bound to columns
+          in that table.
+        </BuilderEmptyHint>
+      ) : null}
+
+      <BuilderObjectEditor>
+        <BuilderNavigator
+          title="Form objects"
+          description="Select a setup area or a field, then edit its details on the right."
+        >
+          <BuilderNavigatorGroup title="Setup">
+            <BuilderNavigatorItem
+              icon={<LayoutList className="h-3.5 w-3.5" />}
+              label="Form layout"
+              subtitle={
+                isMultiStep
+                  ? `${pages.length} steps - ${sections.length} groups`
+                  : `${sections.length} groups`
+              }
+              active={activeItem === 'layout'}
+              onClick={() => setActiveItem('layout')}
+            />
+            <BuilderNavigatorItem
+              icon={<Route className="h-3.5 w-3.5" />}
+              label="Submit flow"
+              subtitle={form.after_submit?.go_to_screen ? 'Navigate after save' : 'Stay on this screen'}
+              active={activeItem === 'submit'}
+              onClick={() => setActiveItem('submit')}
+            />
+            {(mode === 'advanced' || initialEntries.length > 0) && (
+              <BuilderNavigatorItem
+                icon={<FileInput className="h-3.5 w-3.5" />}
+                label="Initial values"
+                subtitle={`${initialEntries.length} preset${initialEntries.length === 1 ? '' : 's'}`}
+                active={activeItem === 'initial'}
+                onClick={() => setActiveItem('initial')}
+              />
+            )}
+          </BuilderNavigatorGroup>
+
+          <BuilderNavigatorGroup
+            title={`Fields (${fields.length})`}
+            action={
+              <button
+                type="button"
+                onClick={addField}
+                className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand"
+                title="Add field"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            }
+          >
+            {tablesLoading ? (
+              <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-2 text-tiny text-text-tertiary">
+                Loading source columns...
+              </p>
+            ) : fields.length === 0 ? (
+              <BuilderEmptyHint className="px-3 py-4">No fields yet.</BuilderEmptyHint>
+            ) : (
+              fields.map((field, index) => (
+                <FormFieldNavigatorItem
+                  key={`${field.column}:${index}`}
+                  field={field}
+                  active={activeItem === `field:${index}`}
+                  canMoveUp={index > 0}
+                  canMoveDown={index < fields.length - 1}
+                  onSelect={() => setActiveItem(`field:${index}`)}
+                  onMoveUp={() => moveField(index, -1)}
+                  onMoveDown={() => moveField(index, 1)}
+                  onRemove={() => removeField(index)}
+                />
+              ))
+            )}
+          </BuilderNavigatorGroup>
+        </BuilderNavigator>
+
+        {renderInspector()}
+      </BuilderObjectEditor>
+    </div>
+  );
+}
+
+function FormFieldNavigatorItem({
+  field,
+  active,
+  onSelect,
+  onMoveUp,
+  onMoveDown,
+  onRemove,
+  canMoveUp,
+  canMoveDown,
+}: {
+  field: FormFieldSpec;
+  active: boolean;
+  onSelect: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onRemove: () => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+}) {
+  const title = field.label?.trim() || field.column;
+  const typeShort = widgetLabel(field.widget);
+
+  return (
+    <BuilderNavigatorItem
+      icon={<GripVertical className="h-3.5 w-3.5" />}
+      label={title}
+      subtitle={`${typeShort} - ${field.column}${field.required ? ' - required' : ''}`}
+      active={active}
+      onClick={onSelect}
+      badge={
+        field.readonly ? (
+          <span className="rounded bg-surface-2 px-1 text-tiny text-text-tertiary">readonly</span>
+        ) : null
+      }
+      action={
+        <div className="flex items-center">
+          {canMoveUp && (
+            <button
+              type="button"
+              onClick={onMoveUp}
+              className="rounded p-0.5 hover:bg-surface-1"
+              title="Move up"
+            >
+              <ArrowUp className="h-3 w-3 text-text-tertiary" />
+            </button>
+          )}
+          {canMoveDown && (
+            <button
+              type="button"
+              onClick={onMoveDown}
+              className="rounded p-0.5 hover:bg-surface-1"
+              title="Move down"
+            >
+              <ArrowDown className="h-3 w-3 text-text-tertiary" />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onRemove}
+            className="rounded p-0.5 hover:bg-danger/10"
+            title="Delete"
+          >
+            <Trash2 className="h-3 w-3 text-danger" />
+          </button>
+        </div>
+      }
+    />
+  );
+}
+
+function FormLayoutInspector({
+  pages,
+  sections,
+  isMultiStep,
+  onPagesChange,
+  onSectionsChange,
+}: {
+  pages: FormPage[];
+  sections: string[];
+  isMultiStep: boolean;
+  onPagesChange: (next: FormPage[]) => void;
+  onSectionsChange: (next: string[]) => void;
+}) {
+  const addStep = () => {
+    const nextId = Math.max(0, ...pages.map((page) => page.id)) + 1;
+    onPagesChange([...pages, { id: nextId, title: `Step ${nextId}` }]);
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className={BUILDER_GRID_2}>
+        <Lbl label="Group names">
           <input
             value={sections.join(', ')}
             onChange={(event) =>
-              setSections(
+              onSectionsChange(
                 event.target.value
                   .split(',')
                   .map((item) => item.trim())
@@ -295,64 +552,68 @@ export default function FormScreenEditor({
               )
             }
             className={INPUT}
-            placeholder="Phiếu nhập, Khối lượng, Chất lượng, Khác"
+            placeholder="Header, Quantities, Quality, Other"
           />
         </Lbl>
-
-        {/* Multi-step toggle */}
-        <div className="mt-3 flex items-center gap-3">
-          <label className="inline-flex items-center gap-2 text-tiny text-text-secondary">
-            <input
-              type="checkbox"
-              checked={isMultiStep}
-              onChange={(event) => {
-                if (event.target.checked) {
-                  setPages([{ id: 1, title: 'Bước 1' }]);
-                } else {
-                  setPages([]);
-                }
-              }}
-              className="h-3 w-3"
-            />
-            Form nhiều bước (wizard)
-          </label>
-          {isMultiStep && (
-            <BuilderActionButton
-              onClick={() =>
-                setPages([
-                  ...pages,
-                  { id: pages.length + 1, title: `Bước ${pages.length + 1}` },
-                ])
+        <Lbl label="Form flow">
+          <select
+            value={isMultiStep ? 'multi_step' : 'single_page'}
+            onChange={(event) => {
+              if (event.target.value === 'multi_step') {
+                onPagesChange(isMultiStep ? pages : [{ id: 1, title: 'Step 1' }]);
+              } else {
+                onPagesChange([]);
               }
-            >
-              <Plus className="h-3 w-3" /> Thêm bước
-            </BuilderActionButton>
-          )}
-        </div>
+            }}
+            className={INPUT}
+          >
+            <option value="single_page">Single page</option>
+            <option value="multi_step">Multi-step wizard</option>
+          </select>
+        </Lbl>
+      </div>
 
-        {isMultiStep && (
-          <div className="mt-3 space-y-2">
+      {isMultiStep ? (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-caption font-medium text-text-secondary">Steps</h3>
+            <BuilderActionButton onClick={addStep}>
+              <Plus className="h-3.5 w-3.5" />
+              Add step
+            </BuilderActionButton>
+          </div>
+          <div className="space-y-2">
             {pages.map((page, index) => (
               <div
                 key={page.id}
-                className="flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2"
+                className="grid gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2 sm:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)_auto]"
               >
-                <span className="rounded bg-surface-2 px-2 py-0.5 text-tiny text-text-secondary">
-                  Bước {page.id}
+                <span className="self-center rounded bg-surface-2 px-2 py-1 text-tiny text-text-secondary">
+                  {page.id}
                 </span>
                 <input
                   value={page.title}
                   onChange={(event) => {
                     const next = [...pages];
                     next[index] = { ...next[index], title: event.target.value };
-                    setPages(next);
+                    onPagesChange(next);
                   }}
                   className={INPUT}
-                  placeholder="Tên bước"
+                  placeholder="Step title"
+                />
+                <input
+                  value={page.description || ''}
+                  onChange={(event) => {
+                    const next = [...pages];
+                    next[index] = { ...next[index], description: event.target.value || null };
+                    onPagesChange(next);
+                  }}
+                  className={INPUT}
+                  placeholder="Optional description"
                 />
                 <BuilderIconButton
-                  onClick={() => setPages(pages.filter((_, i) => i !== index))}
-                  title="Xoá bước"
+                  onClick={() => onPagesChange(pages.filter((_, itemIndex) => itemIndex !== index))}
+                  title="Delete step"
                   variant="danger"
                 >
                   <Trash2 className="h-3.5 w-3.5 text-danger" />
@@ -360,257 +621,156 @@ export default function FormScreenEditor({
               </div>
             ))}
           </div>
-        )}
-      </BuilderSection>
+        </div>
+      ) : (
+        <BuilderEmptyHint className="text-left">
+          Single-page forms can still use groups. Turn on multi-step mode when the form
+          has a clear step-by-step workflow.
+        </BuilderEmptyHint>
+      )}
+    </div>
+  );
+}
 
-      {/* ── Fields (chính) ───────────────────────────────────────── */}
-      <BuilderSection
-        title={`Trường dữ liệu (${fields.length})`}
-        description="Bên trái: danh sách field gọn. Bên phải: chi tiết của field đang chọn."
-        action={
-          <BuilderActionButton variant="brand" onClick={addField}>
-            <Plus className="h-3.5 w-3.5" />
-            Thêm field
-          </BuilderActionButton>
-        }
-      >
-        {tablesLoading ? (
-          <p className="text-tiny text-text-tertiary">Đang tải cột bảng dữ liệu…</p>
-        ) : fields.length === 0 ? (
-          <EmptyHint>Chưa có field nào. Bấm &quot;Thêm field&quot; ở trên.</EmptyHint>
-        ) : (
-          <div className="wb-inspector">
-            <CompactFieldList
-              fields={fields}
-              activeIndex={activeFieldIndex}
-              onSelect={setActiveFieldIndex}
-              onMoveUp={(index) => moveField(index, -1)}
-              onMoveDown={(index) => moveField(index, 1)}
-              onRemove={removeField}
+function SubmitFlowInspector({
+  screen,
+  form,
+  allScreens,
+  fieldColumnOptions,
+  onChange,
+}: {
+  screen: ScreenSpec;
+  form: FormSpec;
+  allScreens: ScreenSpec[];
+  fieldColumnOptions: string[];
+  onChange: (patch: Partial<FormSpec>) => void;
+}) {
+  return (
+    <div className={BUILDER_GRID_2}>
+      <Lbl label="Submit button label">
+        <input
+          value={form.submit_label || ''}
+          onChange={(event) => onChange({ submit_label: event.target.value })}
+          className={INPUT}
+          placeholder="Save"
+        />
+      </Lbl>
+      <Lbl label="After successful save">
+        <select
+          value={form.after_submit?.go_to_screen || ''}
+          onChange={(event) =>
+            onChange({
+              after_submit: event.target.value
+                ? {
+                    id: form.after_submit?.id || 'after-submit',
+                    label: form.after_submit?.label || 'Saved',
+                    go_to_screen: event.target.value,
+                    carry: form.after_submit?.carry || [],
+                  }
+                : null,
+            })
+          }
+          className={INPUT}
+        >
+          <option value="">Stay on this screen</option>
+          {allScreens
+            .filter((item) => item.id !== screen.id)
+            .map((item) => (
+              <option key={item.id} value={item.id}>
+                Go to: {item.title}
+              </option>
+            ))}
+        </select>
+      </Lbl>
+      {form.after_submit?.go_to_screen && (
+        <Lbl label="Carry values to the next screen" className="wb-col-span-2">
+          {fieldColumnOptions.length > 0 ? (
+            <MultiColumnPicker
+              sourceColumns={fieldColumnOptions}
+              value={form.after_submit.carry || []}
+              onChange={(carry) =>
+                onChange({
+                  after_submit: { ...form.after_submit!, carry },
+                })
+              }
+              placeholder="Pick columns to carry over..."
+              emptyHint="No fields available to carry."
             />
-
-            {activeField ? (
-              <FieldInspector
-                field={activeField}
-                tableCols={tableCols}
-                tables={tables}
-                pageOptions={pages}
-                sectionOptions={sections}
-                mode={mode}
-                onChange={(patch) => updateField(activeFieldIndex, patch)}
-              />
-            ) : (
-              <EmptyHint>Chọn 1 field để chỉnh.</EmptyHint>
-            )}
-          </div>
-        )}
-      </BuilderSection>
-
-      {/* ── Submit flow ──────────────────────────────────────────── */}
-      <BuilderSection
-        title="Sau khi bấm lưu"
-        description="Tên nút lưu và hành vi sau khi user submit thành công."
-      >
-        <div className={BUILDER_GRID_2}>
-          <Lbl label="Tên nút lưu">
+          ) : (
             <input
-              value={form.submit_label || ''}
-              onChange={(event) => updateForm({ submit_label: event.target.value })}
-              className={INPUT}
-              placeholder="Lưu phiếu"
-            />
-          </Lbl>
-          <Lbl label="Sau khi lưu thành công">
-            <select
-              value={form.after_submit?.go_to_screen || ''}
+              value={(form.after_submit.carry || []).join(', ')}
               onChange={(event) =>
-                updateForm({
-                  after_submit: event.target.value
-                    ? {
-                        id: form.after_submit?.id || 'after-submit',
-                        label: form.after_submit?.label || 'Đã lưu',
-                        go_to_screen: event.target.value,
-                        carry: form.after_submit?.carry || [],
-                      }
-                    : null,
+                onChange({
+                  after_submit: {
+                    ...form.after_submit!,
+                    carry: event.target.value
+                      .split(',')
+                      .map((item) => item.trim())
+                      .filter(Boolean),
+                  },
                 })
               }
               className={INPUT}
-            >
-              <option value="">Ở lại màn hình này</option>
-              {allScreens
-                .filter((item) => item.id !== screen.id)
-                .map((item) => (
-                  <option key={item.id} value={item.id}>
-                    Chuyển đến: {item.title}
-                  </option>
-                ))}
-            </select>
-          </Lbl>
-          {form.after_submit?.go_to_screen && (
-            <Lbl label="Giữ lại giá trị (truyền sang màn sau)" className="wb-col-span-2">
-              {fieldColumnOptions.length > 0 ? (
-                <CheckboxMultiSelect
-                  options={fieldColumnOptions.map((column) => ({
-                    value: column,
-                    label: column,
-                  }))}
-                  selectedValues={form.after_submit.carry || []}
-                  onChange={(carry) =>
-                    updateForm({
-                      after_submit: { ...form.after_submit!, carry },
-                    })
-                  }
-                  columns={2}
-                  emptyMessage="Chưa có field nào để truyền."
-                />
-              ) : (
-                <input
-                  value={(form.after_submit.carry || []).join(', ')}
-                  onChange={(event) =>
-                    updateForm({
-                      after_submit: {
-                        ...form.after_submit!,
-                        carry: event.target.value
-                          .split(',')
-                          .map((item) => item.trim())
-                          .filter(Boolean),
-                      },
-                    })
-                  }
-                  className={INPUT}
-                  placeholder="vd: shift_id"
-                />
-              )}
-            </Lbl>
+              placeholder="e.g. shift_id"
+            />
           )}
-        </div>
-      </BuilderSection>
-
-      {/* ── Initial values (gọn lại) ─────────────────────────────── */}
-      <BuilderSection
-        title={`Giá trị mặc định (${initialEntries.length})`}
-        description="Mỗi dòng = 1 cột nhận giá trị tự điền khi mở form."
-        action={
-          <BuilderActionButton
-            onClick={addInitialValue}
-            disabled={fieldColumnOptions.length === 0 || allFieldsUsed}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Thêm giá trị mặc định
-          </BuilderActionButton>
-        }
-      >
-        {initialEntries.length === 0 ? (
-          <EmptyHint>Chưa có giá trị mặc định nào.</EmptyHint>
-        ) : (
-          <div className="space-y-2">
-            {initialEntries.map(([key, value]) => (
-              <InitialValueRow
-                key={key}
-                fieldKey={key}
-                value={value}
-                fieldOptions={fieldColumnOptions}
-                allValues={initialValues}
-                onChange={updateInitialValue}
-                onRemove={() => removeInitialValue(key)}
-              />
-            ))}
-          </div>
-        )}
-      </BuilderSection>
+        </Lbl>
+      )}
     </div>
   );
 }
 
-// ── Compact field list ───────────────────────────────────────────────────
-
-function CompactFieldList({
-  fields,
-  activeIndex,
-  onSelect,
-  onMoveUp,
-  onMoveDown,
+function InitialValuesInspector({
+  entries,
+  fieldOptions,
+  allValues,
+  allFieldsUsed,
+  onAdd,
+  onChange,
   onRemove,
 }: {
-  fields: FormFieldSpec[];
-  activeIndex: number;
-  onSelect: (index: number) => void;
-  onMoveUp: (index: number) => void;
-  onMoveDown: (index: number) => void;
-  onRemove: (index: number) => void;
+  entries: Array<[string, unknown]>;
+  fieldOptions: string[];
+  allValues: Record<string, unknown>;
+  allFieldsUsed: boolean;
+  onAdd: () => void;
+  onChange: (oldKey: string, newKey: string, value: unknown) => void;
+  onRemove: (key: string) => void;
 }) {
   return (
-    <div className="overflow-hidden rounded-md border border-[rgb(var(--border-line))] bg-surface-0">
-      {fields.map((field, index) => {
-        const isActive = index === activeIndex;
-        const title = field.label?.trim() || field.column;
-        const typeShort = widgetLabel(field.widget);
-        return (
-          <div
-            key={`${field.column}:${index}`}
-            className={cx(
-              'group flex h-8 items-center gap-1.5 border-b border-[rgb(var(--border-line))] px-2 last:border-b-0',
-              isActive ? 'bg-brand/10' : 'hover:bg-surface-2',
-            )}
-          >
-            <GripVertical className="h-3 w-3 shrink-0 text-text-quaternary" />
-            <button
-              type="button"
-              onClick={() => onSelect(index)}
-              className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-              title={`${title} · ${typeShort}${field.required ? ' · Bắt buộc' : ''}`}
-            >
-              {field.required ? (
-                <span className="text-danger" aria-label="Bắt buộc">
-                  *
-                </span>
-              ) : (
-                <span className="w-1.5" />
-              )}
-              <span className="min-w-0 flex-1 truncate text-caption text-text-primary">
-                {title}
-              </span>
-              <span className="shrink-0 text-[11px] text-text-quaternary">{typeShort}</span>
-            </button>
-            <div className="flex items-center opacity-0 group-hover:opacity-100">
-              {index > 0 && (
-                <button
-                  type="button"
-                  onClick={() => onMoveUp(index)}
-                  className="rounded p-0.5 hover:bg-surface-1"
-                  title="Lên"
-                >
-                  <ArrowUp className="h-3 w-3 text-text-tertiary" />
-                </button>
-              )}
-              {index < fields.length - 1 && (
-                <button
-                  type="button"
-                  onClick={() => onMoveDown(index)}
-                  className="rounded p-0.5 hover:bg-surface-1"
-                  title="Xuống"
-                >
-                  <ArrowDown className="h-3 w-3 text-text-tertiary" />
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => onRemove(index)}
-                className="rounded p-0.5 hover:bg-danger/10"
-                title="Xoá"
-              >
-                <Trash2 className="h-3 w-3 text-danger" />
-              </button>
-            </div>
-          </div>
-        );
-      })}
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-tiny text-text-tertiary">
+          One row per field to pre-fill with a fixed value or expression.
+        </p>
+        <BuilderActionButton
+          onClick={onAdd}
+          disabled={fieldOptions.length === 0 || allFieldsUsed}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add value
+        </BuilderActionButton>
+      </div>
+      {entries.length === 0 ? (
+        <BuilderEmptyHint>No initial values yet.</BuilderEmptyHint>
+      ) : (
+        <div className="space-y-2">
+          {entries.map(([key, value]) => (
+            <InitialValueRow
+              key={key}
+              fieldKey={key}
+              value={value}
+              fieldOptions={fieldOptions}
+              allValues={allValues}
+              onChange={onChange}
+              onRemove={() => onRemove(key)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
-
-// ── Initial value row ────────────────────────────────────────────────────
 
 function InitialValueRow({
   fieldKey,
@@ -624,7 +784,7 @@ function InitialValueRow({
   value: unknown;
   fieldOptions: string[];
   allValues: Record<string, unknown>;
-  onChange: (oldKey: string, newKey: string, value: string) => void;
+  onChange: (oldKey: string, newKey: string, value: unknown) => void;
   onRemove: () => void;
 }) {
   const availableFieldOptions = [
@@ -637,7 +797,7 @@ function InitialValueRow({
       {fieldOptions.length > 0 ? (
         <select
           value={fieldKey}
-          onChange={(event) => onChange(fieldKey, event.target.value, String(value ?? ''))}
+          onChange={(event) => onChange(fieldKey, event.target.value, value)}
           className={INPUT}
         >
           {availableFieldOptions.map((option) => (
@@ -649,26 +809,24 @@ function InitialValueRow({
       ) : (
         <input
           value={fieldKey}
-          onChange={(event) => onChange(fieldKey, event.target.value, String(value ?? ''))}
+          onChange={(event) => onChange(fieldKey, event.target.value, value)}
           className={INPUT}
-          placeholder="Tên cột"
+          placeholder="Column name"
         />
       )}
       <FixedExpressionInput
         value={value}
         onChange={(next) => onChange(fieldKey, fieldKey, next)}
-        fixedPlaceholder="Giá trị cố định"
-        expressionPlaceholder="vd: {{app_user.username}}"
+        fixedPlaceholder="Fixed value"
+        expressionPlaceholder="e.g. {{app_user.username}}"
         expressionOptions={COMMON_EXPRESSION_OPTIONS}
       />
-      <BuilderIconButton onClick={onRemove} title="Xoá" variant="danger">
+      <BuilderIconButton onClick={onRemove} title="Delete" variant="danger">
         <Trash2 className="h-3.5 w-3.5 text-danger" />
       </BuilderIconButton>
     </div>
   );
 }
-
-// ── Field inspector — 3 groups (Hiển thị / Quy tắc / Nâng cao) ────────────
 
 function FieldInspector({
   field,
@@ -687,213 +845,182 @@ function FieldInspector({
   mode: BuilderMode;
   onChange: (patch: Partial<FormFieldSpec>) => void;
 }) {
-  const sectionValue = getFieldExtra<string>(field, 'section') || '';
-  const pageValue = getFieldExtra<number>(field, 'page') ?? null;
-  const computedValue = getFieldExtra<string>(field, 'computed_from_dataset') || '';
+  const sectionValue = field.section || '';
+  const pageValue = field.page ?? null;
+  const computedValue = field.computed_from_dataset || '';
 
   return (
-    <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-4">
-      {/* Header — single line, label + meta on the right */}
-      <div className="mb-3 flex items-center gap-2 border-b border-[rgb(var(--border-line))] pb-2">
-        <span className="truncate text-caption font-medium text-text-primary">
-          {field.label?.trim() || field.column}
-        </span>
-        {field.required ? (
-          <span className="text-danger" title="Bắt buộc">
-            *
-          </span>
-        ) : null}
-        <span className="ml-auto truncate text-[11px] text-text-quaternary">
-          {widgetLabel(field.widget)}
-          {field.readonly ? ' · chỉ đọc' : ''} · cột {field.column}
-        </span>
-      </div>
-
-      <div className="space-y-3">
-        {/* Group 1 — Hiển thị */}
-        <CollapsibleGroup title="Hiển thị">
-          <div className={BUILDER_GRID_4}>
-            <Lbl label="Cột dữ liệu">
-              <select
+    <div className="space-y-3">
+      <CollapsibleGroup title="Basic">
+        <div className={BUILDER_GRID_3}>
+          <Lbl label="Column">
+            {tableCols.length > 0 ? (
+              <SingleColumnPicker
+                sourceColumns={tableCols.map((column) => column.name)}
+                value={field.column}
+                onChange={(next) => onChange({ column: next || field.column })}
+                clearable={false}
+                labelByValue={Object.fromEntries(
+                  tableCols.map((column) => [
+                    column.name,
+                    column.type ? `${column.name} (${column.type})` : column.name,
+                  ]),
+                )}
+              />
+            ) : (
+              <input
                 value={field.column}
                 onChange={(event) => onChange({ column: event.target.value })}
                 className={INPUT}
-              >
-                {tableCols.length === 0 && <option value={field.column}>{field.column}</option>}
-                {tableCols.map((col) => (
-                  <option key={col.name} value={col.name}>
-                    {col.name}{col.type ? ` (${col.type})` : ''}
-                  </option>
-                ))}
-              </select>
-            </Lbl>
-            <Lbl label="Nhãn hiển thị">
-              <input
-                value={field.label || ''}
-                onChange={(event) => onChange({ label: event.target.value })}
-                className={INPUT}
               />
-            </Lbl>
-            <Lbl label="Loại nhập">
-              <select
-                value={field.widget}
-                onChange={(event) =>
-                  onChange({ widget: event.target.value as FormFieldSpec['widget'] })
-                }
-                className={INPUT}
-              >
-                {WIDGETS.map((widget) => (
-                  <option key={widget.value} value={widget.value}>
-                    {widget.label}
-                  </option>
-                ))}
-              </select>
-            </Lbl>
-            <Lbl label="Nhóm nội dung">
-              <select
-                value={sectionValue}
-                onChange={(event) =>
-                  onChange({ section: event.target.value || null } as Partial<FormFieldSpec>)
-                }
-                className={INPUT}
-              >
-                <option value="">Không thuộc nhóm</option>
-                {sectionOptions.map((section) => (
-                  <option key={section} value={section}>
-                    {section}
-                  </option>
-                ))}
-              </select>
-            </Lbl>
-            {pageOptions.length > 0 && (
-              <Lbl label="Bước">
-                <select
-                  value={pageValue ?? ''}
-                  onChange={(event) =>
-                    onChange({
-                      page: event.target.value ? Number(event.target.value) : null,
-                    } as Partial<FormFieldSpec>)
-                  }
-                  className={INPUT}
-                >
-                  <option value="">Bước mặc định</option>
-                  {pageOptions.map((page) => (
-                    <option key={page.id} value={page.id}>
-                      {page.id}. {page.title}
-                    </option>
-                  ))}
-                </select>
-              </Lbl>
             )}
-            <Lbl label="Placeholder">
-              <input
-                value={field.placeholder || ''}
-                onChange={(event) => onChange({ placeholder: event.target.value })}
-                className={INPUT}
-              />
-            </Lbl>
-            <Lbl label="Help text">
-              <input
-                value={field.help_text || ''}
-                onChange={(event) => onChange({ help_text: event.target.value })}
-                className={INPUT}
-              />
-            </Lbl>
-          </div>
-        </CollapsibleGroup>
-
-        {/* Group 2 — Quy tắc */}
-        <CollapsibleGroup title="Quy tắc">
-          <div className="flex flex-wrap gap-2">
-            <ToggleChip
-              label="Bắt buộc"
-              checked={!!field.required}
-              onChange={(checked) => onChange({ required: checked })}
-            />
-            <ToggleChip
-              label="Chỉ đọc"
-              checked={!!field.readonly}
-              onChange={(checked) => onChange({ readonly: checked })}
-            />
-          </div>
-          <Lbl label="Giá trị mặc định">
-            <FixedExpressionInput
-              value={field.default}
-              onChange={(next) => onChange({ default: next })}
-              fixedPlaceholder="Giá trị cố định"
-              expressionPlaceholder="vd: {{app_user.username}}"
-              expressionOptions={COMMON_EXPRESSION_OPTIONS}
+          </Lbl>
+          <Lbl label="Display label">
+            <input
+              value={field.label || ''}
+              onChange={(event) => onChange({ label: event.target.value })}
+              className={INPUT}
             />
           </Lbl>
+          <Lbl label="Input type">
+            <select
+              value={field.widget}
+              onChange={(event) =>
+                onChange({ widget: event.target.value as FormFieldSpec['widget'] })
+              }
+              className={INPUT}
+            >
+              {WIDGETS.map((widget) => (
+                <option key={widget.value} value={widget.value}>
+                  {widget.label}
+                </option>
+              ))}
+            </select>
+          </Lbl>
+        </div>
+      </CollapsibleGroup>
+
+      <CollapsibleGroup title="Display">
+        <div className={BUILDER_GRID_4}>
+          <Lbl label="Content group">
+            <select
+              value={sectionValue}
+              onChange={(event) => onChange({ section: event.target.value || null })}
+              className={INPUT}
+            >
+              <option value="">No group</option>
+              {sectionOptions.map((section) => (
+                <option key={section} value={section}>
+                  {section}
+                </option>
+              ))}
+            </select>
+          </Lbl>
+          {pageOptions.length > 0 && (
+            <Lbl label="Step">
+              <select
+                value={pageValue ?? ''}
+                onChange={(event) =>
+                  onChange({
+                    page: event.target.value ? Number(event.target.value) : null,
+                  })
+                }
+                className={INPUT}
+              >
+                <option value="">Default step</option>
+                {pageOptions.map((page) => (
+                  <option key={page.id} value={page.id}>
+                    {page.id}. {page.title}
+                  </option>
+                ))}
+              </select>
+            </Lbl>
+          )}
+          <Lbl label="Placeholder">
+            <input
+              value={field.placeholder || ''}
+              onChange={(event) => onChange({ placeholder: event.target.value })}
+              className={INPUT}
+            />
+          </Lbl>
+          <Lbl label="Help text">
+            <input
+              value={field.help_text || ''}
+              onChange={(event) => onChange({ help_text: event.target.value })}
+              className={INPUT}
+            />
+          </Lbl>
+        </div>
+      </CollapsibleGroup>
+
+      <CollapsibleGroup title="Rules">
+        <div className="flex flex-wrap gap-2">
+          <ToggleChip
+            label="Required"
+            checked={!!field.required}
+            onChange={(checked) => onChange({ required: checked })}
+          />
+          <ToggleChip
+            label="Readonly"
+            checked={!!field.readonly}
+            onChange={(checked) => onChange({ readonly: checked })}
+          />
+        </div>
+        <Lbl label="Default value">
+          <FixedExpressionInput
+            value={field.default}
+            onChange={(next) => onChange({ default: next })}
+            fixedPlaceholder="Fixed value"
+            expressionPlaceholder="e.g. {{app_user.username}}"
+            expressionOptions={COMMON_EXPRESSION_OPTIONS}
+          />
+        </Lbl>
+      </CollapsibleGroup>
+
+      {(field.widget === 'select' || field.widget === 'lookup') && (
+        <CollapsibleGroup title="Options">
+          <LookupEditor field={field} tables={tables} mode={mode} onChange={onChange} />
         </CollapsibleGroup>
+      )}
 
-        {/* Group 3 — Nâng cao (chỉ hiện ở mode advanced) */}
-        {mode === 'advanced' && (
-          <CollapsibleGroup title="Nâng cao" defaultOpen={false}>
-            <div className={BUILDER_GRID_4}>
-              <Lbl label="Hiện khi (show_if)">
-                <input
-                  value={String(getFieldExtra<string>(field, 'show_if') || '')}
-                  onChange={(event) =>
-                    onChange({ show_if: event.target.value || null } as Partial<FormFieldSpec>)
-                  }
-                  className={INPUT}
-                  placeholder="[status] == 'open'"
-                />
-              </Lbl>
-              <Lbl label="Bắt buộc khi (required_if)">
-                <input
-                  value={String(getFieldExtra<string>(field, 'required_if') || '')}
-                  onChange={(event) =>
-                    onChange({
-                      required_if: event.target.value || null,
-                    } as Partial<FormFieldSpec>)
-                  }
-                  className={INPUT}
-                  placeholder="[defect_qty] > 0"
-                />
-              </Lbl>
-              <Lbl label="Chỉ đọc khi (readonly_if)">
-                <input
-                  value={String(getFieldExtra<string>(field, 'readonly_if') || '')}
-                  onChange={(event) =>
-                    onChange({
-                      readonly_if: event.target.value || null,
-                    } as Partial<FormFieldSpec>)
-                  }
-                  className={INPUT}
-                  placeholder="[submitted] == true"
-                />
-              </Lbl>
-              <Lbl label="Tự tính từ dataset" className="wb-col-span-2">
-                <select
-                  value={computedValue}
-                  onChange={(event) =>
-                    onChange({
-                      computed_from_dataset: event.target.value || null,
-                    } as Partial<FormFieldSpec>)
-                  }
-                  className={INPUT}
-                >
-                  <option value="">Không dùng</option>
-                  {tableCols.map((column) => (
-                    <option key={column.name} value={column.name}>
-                      {column.name}
-                    </option>
-                  ))}
-                </select>
-              </Lbl>
-            </div>
-          </CollapsibleGroup>
-        )}
-
-        {/* Lookup config */}
-        {(field.widget === 'select' || field.widget === 'lookup') && (
-          <CollapsibleGroup title="Tuỳ chọn (nguồn lookup)">
-            <LookupEditor field={field} tables={tables} mode={mode} onChange={onChange} />
-          </CollapsibleGroup>
-        )}
-      </div>
+      {mode === 'advanced' && (
+        <CollapsibleGroup title="Advanced" defaultOpen={false}>
+          <div className={BUILDER_GRID_4}>
+            <Lbl label="Show when (show_if)">
+              <input
+                value={field.show_if || ''}
+                onChange={(event) => onChange({ show_if: event.target.value || null })}
+                className={INPUT}
+                placeholder="[status] == 'open'"
+              />
+            </Lbl>
+            <Lbl label="Required when (required_if)">
+              <input
+                value={field.required_if || ''}
+                onChange={(event) => onChange({ required_if: event.target.value || null })}
+                className={INPUT}
+                placeholder="[defect_qty] > 0"
+              />
+            </Lbl>
+            <Lbl label="Readonly when (readonly_if)">
+              <input
+                value={field.readonly_if || ''}
+                onChange={(event) => onChange({ readonly_if: event.target.value || null })}
+                className={INPUT}
+                placeholder="[submitted] == true"
+              />
+            </Lbl>
+            <Lbl label="Auto-compute from dataset" className="wb-col-span-2">
+              <SingleColumnPicker
+                sourceColumns={tableCols.map((column) => column.name)}
+                value={computedValue || null}
+                onChange={(next) => onChange({ computed_from_dataset: next })}
+                placeholder="Not used"
+              />
+            </Lbl>
+          </div>
+        </CollapsibleGroup>
+      )}
     </div>
   );
 }
@@ -909,89 +1036,69 @@ function LookupEditor({
   mode: BuilderMode;
   onChange: (patch: Partial<FormFieldSpec>) => void;
 }) {
-  const lookup = (field.lookup || { kind: 'static', values: [] }) as LookupRuntime;
-  const relationshipPath = lookup.relationship_path || [];
+  const lookup: LookupRuntime = field.lookup || { kind: 'static', values: [] };
   const lookupTable = tables.find((table) => table.id === lookup.table_id);
   const lookupCols = lookupTable?.columns ?? [];
 
   return (
     <div className="space-y-3">
       <div className={BUILDER_GRID_2}>
-        <Lbl label="Kiểu nguồn">
+        <Lbl label="Source kind">
           <select
             value={lookup.kind}
             onChange={(event) =>
               onChange({
                 lookup: {
                   ...lookup,
-                  kind: event.target.value as 'static' | 'dataset_table',
+                  kind: event.target.value as LookupRuntime['kind'],
                 },
               })
             }
             className={INPUT}
           >
-            <option value="static">Danh sách cố định</option>
-            <option value="dataset_table">Từ bảng dữ liệu</option>
+            <option value="static">Static list</option>
+            <option value="dataset_table">From dataset table</option>
           </select>
         </Lbl>
 
         {lookup.kind === 'dataset_table' && (
-          <Lbl label="Bảng nguồn">
-            <select
-              value={lookup.table_id ?? ''}
-              onChange={(event) =>
+          <Lbl label="Source table">
+            <SingleColumnPicker
+              sourceColumns={tables.map((table) => String(table.id))}
+              value={lookup.table_id != null ? String(lookup.table_id) : null}
+              onChange={(next) =>
                 onChange({
                   lookup: {
                     ...lookup,
-                    table_id: event.target.value ? Number(event.target.value) : null,
+                    table_id: next ? Number(next) : null,
                   },
                 })
               }
-              className={INPUT}
-            >
-              <option value="">— chọn bảng —</option>
-              {tables.map((table) => (
-                <option key={table.id} value={table.id}>
-                  {table.display_name}
-                </option>
-              ))}
-            </select>
+              placeholder="-- pick a table --"
+              labelByValue={Object.fromEntries(
+                tables.map((table) => [String(table.id), table.display_name]),
+              )}
+            />
           </Lbl>
         )}
 
         {lookup.kind === 'dataset_table' && (
           <>
-            <Lbl label="Cột giá trị">
-              <select
-                value={lookup.value_column || ''}
-                onChange={(event) =>
-                  onChange({ lookup: { ...lookup, value_column: event.target.value } })
-                }
-                className={INPUT}
-              >
-                <option value="">— chọn cột —</option>
-                {lookupCols.map((column) => (
-                  <option key={column.name} value={column.name}>
-                    {column.name}
-                  </option>
-                ))}
-              </select>
+            <Lbl label="Value column">
+              <SingleColumnPicker
+                sourceColumns={lookupCols.map((column) => column.name)}
+                value={lookup.value_column || null}
+                onChange={(next) => onChange({ lookup: { ...lookup, value_column: next || '' } })}
+                placeholder="-- pick a column --"
+              />
             </Lbl>
-            <Lbl label="Cột hiển thị">
-              <select
-                value={lookup.label_column || ''}
-                onChange={(event) =>
-                  onChange({ lookup: { ...lookup, label_column: event.target.value } })
-                }
-                className={INPUT}
-              >
-                <option value="">Mặc định = cột giá trị</option>
-                {lookupCols.map((column) => (
-                  <option key={column.name} value={column.name}>
-                    {column.name}
-                  </option>
-                ))}
-              </select>
+            <Lbl label="Display column">
+              <SingleColumnPicker
+                sourceColumns={lookupCols.map((column) => column.name)}
+                value={lookup.label_column || null}
+                onChange={(next) => onChange({ lookup: { ...lookup, label_column: next || '' } })}
+                placeholder="Default = value column"
+              />
             </Lbl>
           </>
         )}
@@ -1006,13 +1113,13 @@ function LookupEditor({
         <RelationshipPathEditor
           tableId={lookup.table_id ?? null}
           tables={tables}
-          path={relationshipPath}
+          path={(lookup.relationship_path || []) as RelationshipHop[]}
           onChange={(next) =>
             onChange({
               lookup: {
                 ...lookup,
                 relationship_path: next,
-              } as FormFieldSpec['lookup'],
+              },
             })
           }
         />
@@ -1020,12 +1127,6 @@ function LookupEditor({
     </div>
   );
 }
-
-type RelationshipHop = {
-  table_id?: number | null;
-  value_column?: string | null;
-  label_column?: string | null;
-};
 
 function RelationshipPathEditor({
   tableId,
@@ -1035,14 +1136,19 @@ function RelationshipPathEditor({
 }: {
   tableId: number | null;
   tables: DatasetTableInfo[];
-  path: unknown[];
-  onChange: (next: unknown[]) => void;
+  path: RelationshipHop[];
+  onChange: (next: RelationshipHop[]) => void;
 }) {
-  const [suggestions, setSuggestions] = React.useState<Array<Record<string, unknown>>>([]);
-  const [loading, setLoading] = React.useState(false);
+  const [suggestions, setSuggestions] = useState<Array<Record<string, unknown>>>([]);
+  const [loading, setLoading] = useState(false);
+  const defaultRelationshipTable = tables.find((table) => table.columns.length > 0);
+  const defaultRelationshipColumn = defaultRelationshipTable?.columns[0]?.name || null;
 
-  React.useEffect(() => {
-    if (!tableId) return;
+  useEffect(() => {
+    if (!tableId) {
+      setSuggestions([]);
+      return;
+    }
     setLoading(true);
     fetch(`/api/v1/workboard-relationships?from_table_id=${tableId}`, {
       credentials: 'include',
@@ -1053,166 +1159,123 @@ function RelationshipPathEditor({
       .finally(() => setLoading(false));
   }, [tableId]);
 
-  const typedPath = path as RelationshipHop[];
-
   const updateHop = (index: number, patch: Partial<RelationshipHop>) => {
-    const next = typedPath.map((hop, i) => (i === index ? { ...hop, ...patch } : hop));
+    const next = path.map((hop, itemIndex) =>
+      itemIndex === index ? { ...hop, ...patch } : hop,
+    );
     onChange(next);
   };
-  const removeHop = (index: number) =>
-    onChange(typedPath.filter((_, i) => i !== index));
-  const addHop = () =>
-    onChange([
-      ...typedPath,
-      { table_id: null, value_column: null, label_column: null } as RelationshipHop,
-    ]);
 
   return (
     <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
-      <div className="mb-1 flex items-center justify-between gap-2">
-        <span className="text-tiny font-emphasis text-text-secondary">
-          Quan hệ lồng (advanced)
-        </span>
-        <span className="text-[11px] text-text-tertiary">
-          Đi qua nhiều bảng để lấy nhãn hiển thị
-        </span>
+      <div className="mb-2">
+        <div className="text-tiny font-emphasis text-text-secondary">
+          Nested relationships
+        </div>
+        <p className="mt-0.5 text-tiny text-text-tertiary">
+          Optional chain for resolving display labels through related tables.
+        </p>
       </div>
-      <p className="mb-3 text-[11px] text-text-tertiary">
-        Mỗi bước chọn 1 bảng đích kèm cột khoá và cột hiển thị. Nhãn cuối cùng
-        sẽ là “Cột hiển thị” của bước cuối.
-      </p>
 
       {loading ? (
-        <p className="mb-3 text-tiny text-text-tertiary">Đang tải gợi ý quan hệ…</p>
+        <p className="mb-3 text-tiny text-text-tertiary">Loading relationship suggestions...</p>
       ) : suggestions.length > 0 ? (
-        <div className="mb-3">
-          <div className="mb-1 text-[11px] font-emphasis text-text-tertiary">
-            Gợi ý nhanh từ dataset
-          </div>
-          <div className="grid gap-1.5">
-            {suggestions.map((suggestion, index) => {
-              const targetDisplay = String(suggestion.target_table_display || 'Bảng đích');
-              const fromCol = String(suggestion.from_column || '');
-              const toCol = String(suggestion.to_column || '');
-              const labelCol =
-                (suggestion.suggested_label_columns as string[] | undefined)?.[0] || null;
-              return (
-                <button
-                  key={index}
-                  type="button"
-                  onClick={() =>
-                    onChange([
-                      {
-                        table_id: suggestion.target_table_id,
-                        value_column: toCol,
-                        label_column: labelCol,
-                      },
-                    ])
-                  }
-                  className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2 text-left text-tiny hover:border-brand"
-                  title="Bấm để dùng quan hệ này"
-                >
-                  <span className="font-emphasis text-text-primary">→ {targetDisplay}</span>
-                  <span className="block text-[11px] text-text-tertiary">
-                    Nối qua: <code className="font-mono">{fromCol}</code> ={' '}
-                    <code className="font-mono">{toCol}</code>
-                    {labelCol ? (
-                      <>
-                        {' '}
-                        · Hiển thị: <code className="font-mono">{labelCol}</code>
-                      </>
-                    ) : null}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+        <div className="mb-3 space-y-1.5">
+          {suggestions.map((suggestion, index) => {
+            const targetDisplay = String(suggestion.target_table_display || 'Target table');
+            const toCol = String(suggestion.to_column || '');
+            const labelCol =
+              (suggestion.suggested_label_columns as string[] | undefined)?.[0] || null;
+            return (
+              <button
+                key={index}
+                type="button"
+                onClick={() =>
+                  onChange([
+                    {
+                      table_id: Number(suggestion.target_table_id),
+                      value_column: toCol,
+                      label_column: labelCol,
+                    },
+                  ])
+                }
+                className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2 text-left text-tiny hover:border-brand"
+              >
+                <span className="font-emphasis text-text-primary">Use {targetDisplay}</span>
+                <span className="block text-text-tertiary">
+                  Join key: <code className="font-mono">{toCol || 'unknown'}</code>
+                  {labelCol ? (
+                    <>
+                      {' '}
+                      - Label: <code className="font-mono">{labelCol}</code>
+                    </>
+                  ) : null}
+                </span>
+              </button>
+            );
+          })}
         </div>
       ) : null}
 
-      {typedPath.length > 0 ? (
+      {path.length > 0 ? (
         <div className="space-y-2">
-          {typedPath.map((hop, index) => {
-            const targetTable = tables.find((t) => t.id === Number(hop.table_id));
+          {path.map((hop, index) => {
+            const targetTable = tables.find((table) => table.id === Number(hop.table_id));
             const cols = targetTable?.columns ?? [];
             return (
               <div
                 key={index}
                 className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2.5"
               >
-                <div className="mb-2 flex items-center gap-2">
-                  <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[11px] font-emphasis text-brand">
-                    Bước {index + 1}
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="rounded bg-brand/10 px-2 py-0.5 text-tiny font-emphasis text-brand">
+                    Step {index + 1}
                   </span>
                   <BuilderIconButton
-                    onClick={() => removeHop(index)}
-                    title="Xoá bước này"
+                    onClick={() => onChange(path.filter((_, itemIndex) => itemIndex !== index))}
+                    title="Delete step"
                     variant="danger"
-                    className="ml-auto"
                   >
                     <Trash2 className="h-3.5 w-3.5 text-danger" />
                   </BuilderIconButton>
                 </div>
                 <div className={BUILDER_GRID_3}>
-                  <Lbl label="Bảng đích">
-                    <select
-                      value={hop.table_id ?? ''}
-                      onChange={(event) =>
+                  <Lbl label="Target table">
+                    <SingleColumnPicker
+                      sourceColumns={tables.map((table) => String(table.id))}
+                      value={hop.table_id != null ? String(hop.table_id) : null}
+                      onChange={(next) => {
+                        const nextTable = tables.find((table) => String(table.id) === next);
+                        const firstColumn = nextTable?.columns[0]?.name || null;
                         updateHop(index, {
-                          table_id: event.target.value ? Number(event.target.value) : null,
-                          value_column: null,
+                          table_id: next ? Number(next) : null,
+                          value_column: firstColumn,
                           label_column: null,
-                        })
-                      }
-                      className={INPUT}
-                    >
-                      <option value="">— chọn bảng —</option>
-                      {tables.map((table) => (
-                        <option key={table.id} value={table.id}>
-                          {table.display_name}
-                        </option>
-                      ))}
-                    </select>
+                        });
+                      }}
+                      placeholder="-- pick a table --"
+                      clearable={false}
+                      labelByValue={Object.fromEntries(
+                        tables.map((table) => [String(table.id), table.display_name]),
+                      )}
+                    />
                   </Lbl>
-                  <Lbl label="Cột khoá (nối với bước trước)">
-                    <select
-                      value={hop.value_column || ''}
-                      onChange={(event) =>
-                        updateHop(index, { value_column: event.target.value || null })
-                      }
-                      className={INPUT}
-                      disabled={!targetTable}
-                    >
-                      <option value="">
-                        {targetTable ? '— chọn cột —' : 'Chọn bảng trước'}
-                      </option>
-                      {cols.map((column) => (
-                        <option key={column.name} value={column.name}>
-                          {column.name}
-                          {column.type ? ` (${column.type})` : ''}
-                        </option>
-                      ))}
-                    </select>
+                  <Lbl label="Join key">
+                    <SingleColumnPicker
+                      sourceColumns={cols.map((column) => column.name)}
+                      value={hop.value_column || null}
+                      onChange={(next) => updateHop(index, { value_column: next })}
+                      placeholder={targetTable ? '-- pick a column --' : 'Pick a table first'}
+                      clearable={false}
+                    />
                   </Lbl>
-                  <Lbl label="Cột hiển thị (nhãn cho user)">
-                    <select
-                      value={hop.label_column || ''}
-                      onChange={(event) =>
-                        updateHop(index, { label_column: event.target.value || null })
-                      }
-                      className={INPUT}
-                      disabled={!targetTable}
-                    >
-                      <option value="">
-                        {targetTable ? 'Mặc định = cột khoá' : 'Chọn bảng trước'}
-                      </option>
-                      {cols.map((column) => (
-                        <option key={column.name} value={column.name}>
-                          {column.name}
-                          {column.type ? ` (${column.type})` : ''}
-                        </option>
-                      ))}
-                    </select>
+                  <Lbl label="Display column">
+                    <SingleColumnPicker
+                      sourceColumns={cols.map((column) => column.name)}
+                      value={hop.label_column || null}
+                      onChange={(next) => updateHop(index, { label_column: next })}
+                      placeholder={targetTable ? 'Default = join key' : 'Pick a table first'}
+                    />
                   </Lbl>
                 </div>
               </div>
@@ -1220,18 +1283,27 @@ function RelationshipPathEditor({
           })}
         </div>
       ) : (
-        <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] p-3 text-center text-tiny text-text-tertiary">
-          Chưa có bước nào. Chọn 1 gợi ý ở trên hoặc thêm bước thủ công.
-        </p>
+        <BuilderEmptyHint>No relationship steps yet.</BuilderEmptyHint>
       )}
 
       <BuilderActionButton
-        onClick={addHop}
-        variant="brand"
+        onClick={() =>
+          defaultRelationshipTable && defaultRelationshipColumn
+            ? onChange([
+                ...path,
+                {
+                  table_id: defaultRelationshipTable.id,
+                  value_column: defaultRelationshipColumn,
+                  label_column: null,
+                },
+              ])
+            : undefined
+        }
+        disabled={!defaultRelationshipTable || !defaultRelationshipColumn}
         className="mt-3 w-full justify-center"
       >
         <Plus className="h-3.5 w-3.5" />
-        Thêm bước
+        Add step
       </BuilderActionButton>
     </div>
   );
@@ -1255,7 +1327,7 @@ function StaticValuesEditor({
 
   return (
     <div className="space-y-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
-      <div className="text-tiny font-emphasis text-text-secondary">Danh sách lựa chọn</div>
+      <div className="text-tiny font-emphasis text-text-secondary">Choices</div>
       {values.length > 0 ? (
         <div className="space-y-2">
           {values.map((value, index) => (
@@ -1263,18 +1335,18 @@ function StaticValuesEditor({
               <input
                 value={value.label}
                 onChange={(event) => update(index, { label: event.target.value })}
-                placeholder="Nhãn hiển thị"
+                placeholder="Display label"
                 className={INPUT}
               />
               <input
                 value={String(value.value ?? '')}
                 onChange={(event) => update(index, { value: event.target.value })}
-                placeholder="Giá trị"
+                placeholder="Value"
                 className={INPUT}
               />
               <BuilderIconButton
-                onClick={() => onChange(values.filter((_, i) => i !== index))}
-                title="Xoá"
+                onClick={() => onChange(values.filter((_, itemIndex) => itemIndex !== index))}
+                title="Delete"
                 variant="danger"
               >
                 <Trash2 className="h-3.5 w-3.5 text-danger" />
@@ -1283,11 +1355,11 @@ function StaticValuesEditor({
           ))}
         </div>
       ) : (
-        <p className="text-tiny text-text-tertiary">Chưa có lựa chọn nào.</p>
+        <BuilderEmptyHint>No choices yet.</BuilderEmptyHint>
       )}
       <BuilderActionButton onClick={() => onChange([...values, { label: '', value: '' }])}>
         <Plus className="h-3.5 w-3.5" />
-        Thêm lựa chọn
+        Add choice
       </BuilderActionButton>
     </div>
   );

@@ -28,9 +28,9 @@ import type { ScreenRlsRuleSpec, ScreenSpec } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
 
 const RLS_FILTER_VAR_OPTIONS: SelectOption[] = [
-  { value: '{{app_user.username}}', label: 'User đang đăng nhập (username)' },
-  { value: '{{app_user.full_name}}', label: 'User đang đăng nhập (họ tên)' },
-  { value: '{{app_user.role}}', label: 'Vai trò user đang đăng nhập' },
+  { value: '{{app_user.username}}', label: 'Signed-in user - username' },
+  { value: '{{app_user.full_name}}', label: 'Signed-in user - full name' },
+  { value: '{{app_user.role}}', label: 'Signed-in user - role' },
 ];
 
 interface DatasetTableInfo {
@@ -74,17 +74,17 @@ export default function RlsEditor({
   return (
     <div>
       <div className="mb-3 rounded-md border border-info/20 bg-info/5 p-2.5 text-tiny text-text-secondary">
-        <p className="font-emphasis text-text-primary">Quy tắc xem dữ liệu theo vai trò</p>
+        <p className="font-emphasis text-text-primary">Role-based data access rules</p>
         <p className="mt-0.5">
-          Mỗi quy tắc cho một <em>vai trò</em> (user / admin / …) biết được phép
-          xem, thêm, sửa, xoá những dòng nào. Mặc định: Owner và Admin thấy mọi
-          dòng. Vai trò khác chỉ thấy đúng những dòng mà <em>cột lọc</em> khớp
-          với <em>giá trị so khớp</em>.
+          Each rule tells one <em>role</em> (user / admin / ...) which rows it can
+          view, create, update, or delete. By default, Owner and Admin see every
+          row. Other roles only see rows where the <em>filter column</em> matches
+          the <em>match value</em>.
         </p>
         <p className="mt-1 text-[11px] text-text-tertiary">
-          Ví dụ: cột lọc <code className="font-mono">created_by</code> + giá trị{' '}
-          <code className="font-mono">{'{{app_user.username}}'}</code> = mỗi
-          user chỉ thấy đúng các dòng do mình tạo.
+          Example: filter column <code className="font-mono">created_by</code> + match value{' '}
+          <code className="font-mono">{'{{app_user.username}}'}</code> = each
+          user only sees rows they created.
         </p>
       </div>
 
@@ -100,8 +100,8 @@ export default function RlsEditor({
         ))}
         {rules.length === 0 && (
           <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] p-3 text-center text-tiny text-text-tertiary">
-            Chưa có quy tắc nào. Mặc định: chỉ Owner / Admin thấy mọi dòng; User
-            không thấy gì cho đến khi bạn thêm rule.
+            No rules yet. Default: only Owner / Admin can see every row; User sees
+            nothing until you add a rule.
           </p>
         )}
       </div>
@@ -112,7 +112,7 @@ export default function RlsEditor({
         className="mt-3 w-full justify-center"
       >
         <Plus className="h-3.5 w-3.5" />
-        Thêm quy tắc
+        Add rule
       </BuilderActionButton>
     </div>
   );
@@ -150,7 +150,7 @@ function RuleCard({
   };
 
   return (
-    <BuilderSubsection title="Quy tắc" className="p-2.5">
+    <BuilderSubsection title="Rule" className="p-2.5">
       <div className="mb-2 flex items-center gap-2">
         <select
           value={normalizedRole}
@@ -164,14 +164,14 @@ function RuleCard({
             </option>
           ))}
         </select>
-        <BuilderIconButton onClick={onRemove} title="Xoá quy tắc" variant="danger">
+        <BuilderIconButton onClick={onRemove} title="Delete rule" variant="danger">
           <Trash2 className="h-3.5 w-3.5 text-danger" />
         </BuilderIconButton>
       </div>
 
       {isAdmin ? (
         <p className="mb-2 rounded-md border border-info/20 bg-info/5 px-2 py-1.5 text-tiny text-text-secondary">
-          Admin mặc định thấy mọi dòng — không cần đặt cột lọc.
+          Admin sees every row by default - no filter column is needed.
         </p>
       ) : (
         <label className="mb-2 flex items-center gap-1.5 text-tiny text-text-secondary">
@@ -181,20 +181,20 @@ function RuleCard({
             onChange={(e) => onChange({ unrestricted: e.target.checked })}
             className="h-3 w-3"
           />
-          Không giới hạn (xem mọi dòng)
+          Unrestricted (see every row)
         </label>
       )}
 
       {!effectiveUnrestricted && (
         <>
           <div className={BUILDER_GRID_2}>
-            <Lbl label="Cột lọc">
+            <Lbl label="Filter column">
               <select
                 value={rule.filter_column || ''}
                 onChange={(e) => onChange({ filter_column: e.target.value || null })}
                 className={INPUT}
               >
-                <option value="">— chọn cột —</option>
+                <option value="">— pick a column —</option>
                 {tableCols.map((c) => (
                   <option key={c.name} value={c.name}>
                     {c.name}
@@ -202,19 +202,19 @@ function RuleCard({
                 ))}
               </select>
             </Lbl>
-            <Lbl label="Giá trị so khớp">
+            <Lbl label="Match value">
               <FixedExpressionInput
                 value={rule.filter_value}
                 onChange={(next) => onChange({ filter_value: next })}
-                fixedPlaceholder="vd: HN, branch-01, …"
-                expressionPlaceholder="vd: {{app_user.username}}"
+                fixedPlaceholder="e.g. HN, branch-01, ..."
+                expressionPlaceholder="e.g. {{app_user.username}}"
                 expressionOptions={RLS_FILTER_VAR_OPTIONS}
               />
             </Lbl>
           </div>
           {rule.filter_column && rule.filter_value ? (
             <p className="mt-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-[11px] text-text-secondary">
-              Vai trò <strong>{normalizedRole}</strong> chỉ thấy các dòng có{' '}
+              Role <strong>{normalizedRole}</strong> only sees rows where{' '}
               <code className="font-mono text-text-primary">
                 {rule.filter_column}
               </code>{' '}
@@ -230,41 +230,41 @@ function RuleCard({
 
       <div className="mt-2">
         <div className="mb-1 text-[11px] font-emphasis text-text-tertiary">
-          Vai trò này được phép làm gì với các dòng thấy được?
+          What can this role do with visible rows?
         </div>
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-tiny text-text-secondary">
-          <label className="flex items-center gap-1" title="Cho phép thêm dòng mới">
+          <label className="flex items-center gap-1" title="Allow creating new rows">
             <input
               type="checkbox"
               checked={rule.can_create !== false}
               onChange={(e) => onChange({ can_create: e.target.checked })}
               className="h-3 w-3"
             />
-            Thêm dòng
+            Create rows
           </label>
-          <label className="flex items-center gap-1" title="Cho phép sửa dòng">
+          <label className="flex items-center gap-1" title="Allow updating rows">
             <input
               type="checkbox"
               checked={rule.can_update !== false}
               onChange={(e) => onChange({ can_update: e.target.checked })}
               className="h-3 w-3"
             />
-            Sửa dòng
+            Update rows
           </label>
-          <label className="flex items-center gap-1" title="Cho phép xoá dòng">
+          <label className="flex items-center gap-1" title="Allow deleting rows">
             <input
               type="checkbox"
               checked={!!rule.can_delete}
               onChange={(e) => onChange({ can_delete: e.target.checked })}
               className="h-3 w-3"
             />
-            Xoá dòng
+            Delete rows
           </label>
         </div>
       </div>
 
       <div className="mt-2">
-        <Lbl label="Cột chỉ đọc (vai trò này không sửa được)">
+        <Lbl label="Readonly columns (this role cannot edit)">
           <input
             value={(rule.readonly_columns || []).join(', ')}
             onChange={(e) =>
@@ -276,7 +276,7 @@ function RuleCard({
               })
             }
             className={INPUT}
-            placeholder="Tên cột, cách nhau dấu phẩy — vd: id, created_at"
+            placeholder="Column names, comma-separated - e.g. id, created_at"
           />
         </Lbl>
       </div>

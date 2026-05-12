@@ -2,17 +2,17 @@ export const APP_USER_ROLE_OPTIONS = [
   {
     value: 'user',
     label: 'User',
-    description: 'Người dùng cuối, phạm vi dữ liệu theo cấu hình dataset/RLS.',
+    description: 'End user, with data scope controlled by dataset/RLS settings.',
   },
   {
     value: 'admin',
     label: 'Admin',
-    description: 'Vai trò quản trị vận hành, dùng cho các màn hình quản lý.',
+    description: 'Operations admin role, used for management screens.',
   },
   {
     value: 'owner',
     label: 'Owner',
-    description: 'Toàn quyền trong mini-app, bỏ qua giới hạn role/RLS.',
+    description: 'Full access inside the mini-app, bypassing role/RLS limits.',
   },
 ] as const;
 
@@ -48,7 +48,7 @@ export function buildAppUserRoleOptions(extraRoles?: Array<string | null | undef
     extras.set(normalized, {
       value: normalized,
       label: normalized,
-      description: 'Legacy role đang tồn tại trên workboard này.',
+      description: 'Legacy role already present on this workboard.',
     });
   }
   return [...APP_USER_ROLE_OPTIONS, ...extras.values()];

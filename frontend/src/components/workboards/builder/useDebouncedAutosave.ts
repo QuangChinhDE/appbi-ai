@@ -14,7 +14,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { workboardApi } from '@/lib/api/workboards';
+import { workboardApi, type WorkboardLayoutJson } from '@/lib/api/workboards';
 import type { MiniAppLayoutSpec } from './types';
 
 export type AutosaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
@@ -28,6 +28,11 @@ export interface UseAutosaveResult {
 }
 
 const DEBOUNCE_MS = 1200;
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+  return typeof detail === 'string' ? detail : fallback;
+}
 
 export function useDebouncedAutosave(
   workboardId: number,
@@ -56,13 +61,13 @@ export function useDebouncedAutosave(
     setErrorMessage(null);
     try {
       await workboardApi.update(workboardId, {
-        layout_json: layoutRef.current as any,
+        layout_json: layoutRef.current as unknown as Partial<WorkboardLayoutJson>,
       });
       setStatus('saved');
       setSavedAt(new Date());
-    } catch (err: any) {
+    } catch (err: unknown) {
       setStatus('error');
-      setErrorMessage(err?.response?.data?.detail || 'Không lưu được.');
+      setErrorMessage(getErrorMessage(err, 'Could not save.'));
     }
   };
 

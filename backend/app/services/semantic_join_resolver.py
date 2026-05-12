@@ -72,10 +72,12 @@ class SemanticJoinResolver:
         db: Session,
         model: SemanticModel | None,
         base_node: str,
+        bidirectional: bool = False,
     ) -> None:
         self._db = db
         self._model = model
         self._base_node = base_node
+        self._bidirectional = bidirectional
         # adjacency: from_node -> list[JoinEdge]
         self._adj: dict[str, list[JoinEdge]] = {}
         # node_id -> view_name (so we can find dimensions/measures)
@@ -98,6 +100,23 @@ class SemanticJoinResolver:
                     continue
                 self._adj.setdefault(edge.from_node, []).append(edge)
                 self._node_to_view.setdefault(edge.to_node, edge.to_view)
+                # In bidirectional mode add a reverse edge so views that are
+                # normally only join *targets* can reach the base view.  We
+                # only do this for simple column-equality joins because the
+                # sql_on template cannot be reliably reversed.
+                if self._bidirectional and edge.from_column and edge.to_column:
+                    reverse = JoinEdge(
+                        from_node=edge.to_node,
+                        to_node=edge.from_node,
+                        to_view=edge.from_node,
+                        type="left",
+                        sql_on="",
+                        from_column=edge.to_column,
+                        to_column=edge.from_column,
+                        relationship=edge.relationship,
+                    )
+                    self._adj.setdefault(reverse.from_node, []).append(reverse)
+                    self._node_to_view.setdefault(reverse.to_node, reverse.to_view)
 
     @staticmethod
     def _edge_from_join_dict(from_view: str, join: dict) -> JoinEdge | None:

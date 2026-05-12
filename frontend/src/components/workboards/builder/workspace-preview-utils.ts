@@ -56,7 +56,7 @@ export function sortPreviewWorkspaces(
 
 export function describePreviewIdentity(ws: WorkspaceLite): string {
   if (getAccessMode(ws) === 'internal') {
-    return 'Preview chạy bằng tài khoản AppBI của bạn (workspace internal).';
+    return 'Preview runs as your AppBI account (internal workspace).';
   }
-  return 'Preview chạy với app_user mẫu chọn theo role bên dưới.';
+  return 'Preview runs as the sample app_user selected by role below.';
 }

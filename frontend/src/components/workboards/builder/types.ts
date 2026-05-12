@@ -43,7 +43,18 @@ export interface FormFieldSpec {
     table_id?: number | null;
     value_column?: string | null;
     label_column?: string | null;
+    relationship_path?: Array<{
+      table_id?: number | null;
+      value_column?: string | null;
+      label_column?: string | null;
+    }> | null;
   } | null;
+  section?: string | null;
+  page?: number | null;
+  show_if?: string | null;
+  required_if?: string | null;
+  readonly_if?: string | null;
+  computed_from_dataset?: string | null;
 }
 
 export interface FormScreenSpecBuilt {
@@ -51,6 +62,13 @@ export interface FormScreenSpecBuilt {
   submit_label?: string | null;
   after_submit?: ScreenAction | null;
   initial_values?: Record<string, unknown>;
+  pages?: Array<{
+    id: number;
+    title: string;
+    description?: string | null;
+    show_if?: string | null;
+  }>;
+  sections?: string[];
 }
 
 export interface ListFilterSpec {
@@ -79,6 +97,27 @@ export interface DocBlockSpec {
     | 'signature'
     | 'footer';
   [key: string]: unknown;
+}
+
+/**
+ * Per-column metadata for `data_table` blocks. The builder stores this on
+ * `data_table.column_metadata[colName]`; runtime still receives the
+ * canonical `columns: string[]` plus derived `group_by` / `totals` arrays
+ * so legacy backends stay compatible.
+ */
+export interface DataTableColumnMeta {
+  /** Friendly header label. Empty/missing = use the raw column name. */
+  label?: string;
+  /** Pixel width hint for the runtime/exporters. */
+  width_px?: number | null;
+  /** 'number' | 'integer' | 'currency' | 'percent' | 'date' | 'datetime' | 'text' */
+  format?: string | null;
+  /** Header & body alignment. */
+  align?: 'left' | 'center' | 'right' | null;
+  /** Footer aggregation to compute for this column. */
+  total?: 'sum' | 'avg' | 'count' | 'min' | 'max' | null;
+  /** When true, the runtime merges consecutive identical cells in this column. */
+  merge?: boolean;
 }
 
 export interface DocScreenSpecBuilt {

@@ -55,7 +55,7 @@ export default function AppSettingsEditor({
               Dataset
             </h3>
             <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
-              <Lbl label="Dataset đang dùng">
+              <Lbl label="Active dataset">
                 <select
                   value={selectedDatasetId}
                   onChange={(e) => setSelectedDatasetId(Number(e.target.value))}
@@ -74,12 +74,12 @@ export default function AppSettingsEditor({
                 onClick={() => onDatasetChange(selectedDatasetId)}
                 className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-1.5 text-caption font-emphasis text-text-secondary hover:border-brand hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {datasetChangePending ? 'Đang đổi...' : 'Đổi dataset'}
+                {datasetChangePending ? 'Changing...' : 'Change dataset'}
               </button>
             </div>
             {datasetChanged && (
               <p className="mt-2 text-tiny text-warning">
-                Các screen đang trỏ vào bảng không thuộc dataset mới sẽ được bỏ trống để bạn map lại.
+                Screens currently pointing to tables outside the new dataset will be cleared so you can map them again.
               </p>
             )}
           </section>
@@ -89,7 +89,7 @@ export default function AppSettingsEditor({
               Branding
             </h3>
             <div className="grid grid-cols-2 gap-3">
-              <Lbl label="Tên app">
+              <Lbl label="App name">
                 <input
                   value={branding.app_name || ''}
                   onChange={(e) =>
@@ -99,10 +99,10 @@ export default function AppSettingsEditor({
                     })
                   }
                   className={INPUT}
-                  placeholder="vd: Nhật ký sản xuất"
+                  placeholder="e.g. Production log"
                 />
               </Lbl>
-              <Lbl label="Màu chính (hex)">
+              <Lbl label="Primary color (hex)">
                 <input
                   value={branding.primary_color || ''}
                   onChange={(e) =>
@@ -161,8 +161,8 @@ export default function AppSettingsEditor({
                   }
                   className={INPUT}
                 >
-                  <option value="bottom_nav">Bottom nav (5 tab dưới)</option>
-                  <option value="drawer">Drawer (sidebar trượt)</option>
+                  <option value="bottom_nav">Bottom nav (5 tabs)</option>
+                  <option value="drawer">Drawer (slide-out sidebar)</option>
                 </select>
               </Lbl>
               <Lbl label="Layout desktop">
@@ -179,7 +179,7 @@ export default function AppSettingsEditor({
                   }
                   className={INPUT}
                 >
-                  <option value="sidebar">Sidebar trái</option>
+                  <option value="sidebar">Left sidebar</option>
                   <option value="top_tabs">Top tabs</option>
                 </select>
               </Lbl>

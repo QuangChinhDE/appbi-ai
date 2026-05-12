@@ -742,6 +742,8 @@ function ScreenContainer({
     return (
       <ListScreen
         spec={data}
+        token={token}
+        workboardId={workboardId}
         accent={accent}
         onAction={(action, row) => {
           if (action.go_to_screen) {
@@ -1351,20 +1353,42 @@ function CellDisplay({ value }: { value: unknown }) {
 
 function ListScreen({
   spec,
+  token,
+  workboardId,
   accent,
   onAction,
 }: {
   spec: ListScreenResponse;
+  token: string;
+  workboardId: number;
   accent: string;
   onAction: (
     action: { go_to_screen?: string | null; carry?: string[] },
     row: Record<string, unknown>,
   ) => void;
 }) {
-  const cols = spec.columns ?? [];
-  const rows = spec.rows ?? [];
-  const lv = (spec.list_view as Record<string, unknown>) || {};
-  const colLabels = (spec.column_labels as Record<string, string>) || {};
+  type RuntimeFilter = {
+    column: string;
+    kind: 'text' | 'select' | 'date_range' | 'number_range';
+    label?: string | null;
+  };
+
+  const [current, setCurrent] = useState<ListScreenResponse>(spec);
+  const [filterValues, setFilterValues] = useState<Record<string, string>>({});
+  const [filterLoading, setFilterLoading] = useState(false);
+
+  useEffect(() => {
+    setCurrent(spec);
+    setFilterValues({});
+  }, [spec]);
+
+  const cols = current.columns ?? [];
+  const rows = current.rows ?? [];
+  const lv = (current.list_view as Record<string, unknown>) || {};
+  const colLabels = (current.column_labels as Record<string, string>) || {};
+  const configuredFilters = ((lv.filters as RuntimeFilter[] | undefined) || []).filter(
+    (item) => item?.column,
+  );
   const rowActions =
     (lv.row_actions as Array<{
       id: string;
@@ -1372,7 +1396,58 @@ function ListScreen({
       go_to_screen?: string | null;
       carry?: string[];
     }>) ?? [];
-  const empty = (lv.empty_state_message as string | undefined) || 'Chưa có dữ liệu.';
+  const empty = (lv.empty_state_message as string | undefined) || 'No data yet.';
+
+  const buildApiFilters = (values: Record<string, string>) => {
+    const apiFilters: Array<Record<string, unknown>> = [];
+    configuredFilters.forEach((filter, index) => {
+      const key = String(index);
+      if (filter.kind === 'date_range' || filter.kind === 'number_range') {
+        const from = values[`${key}:from`];
+        const to = values[`${key}:to`];
+        if (from || to) {
+          apiFilters.push({
+            field: filter.column,
+            operator: 'between',
+            value: [from || null, to || null],
+          });
+        }
+        return;
+      }
+      const value = values[key];
+      if (!value) return;
+      apiFilters.push({
+        field: filter.column,
+        operator: filter.kind === 'text' ? 'contains' : 'eq',
+        value,
+      });
+    });
+    return apiFilters;
+  };
+
+  const reloadRows = async (values: Record<string, string>) => {
+    setFilterLoading(true);
+    try {
+      const next = await workspaceApi.listScreenRows(token, workboardId, current.screen_id, {
+        page: 1,
+        page_size: Number(lv.page_size || current.page_size || 50),
+        filters: buildApiFilters(values),
+      });
+      setCurrent((prev) => ({ ...prev, ...next }));
+      setFilterValues(values);
+    } finally {
+      setFilterLoading(false);
+    }
+  };
+
+  const applyFilters = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void reloadRows(filterValues);
+  };
+
+  const clearFilters = () => {
+    void reloadRows({});
+  };
 
   return (
     <div className="w-full rounded-xl bg-white shadow-sm">
@@ -1380,6 +1455,91 @@ function ListScreen({
         <div className="border-b border-slate-100 px-4 py-3 text-sm text-slate-500">
           {spec.description}
         </div>
+      )}
+      {configuredFilters.length > 0 && (
+        <form
+          onSubmit={applyFilters}
+          className="border-b border-slate-100 bg-slate-50/70 px-4 py-3"
+        >
+          <div className="grid gap-2 md:grid-cols-3">
+            {configuredFilters.map((filter, index) => {
+              const key = String(index);
+              const label = filter.label || filter.column;
+              if (filter.kind === 'date_range' || filter.kind === 'number_range') {
+                const type = filter.kind === 'date_range' ? 'date' : 'number';
+                return (
+                  <div key={key} className="grid grid-cols-2 gap-2">
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-slate-600">
+                        {label} from
+                      </span>
+                      <input
+                        type={type}
+                        value={filterValues[`${key}:from`] || ''}
+                        onChange={(event) =>
+                          setFilterValues((prev) => ({
+                            ...prev,
+                            [`${key}:from`]: event.target.value,
+                          }))
+                        }
+                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm outline-none focus:border-slate-400"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-slate-600">
+                        {label} to
+                      </span>
+                      <input
+                        type={type}
+                        value={filterValues[`${key}:to`] || ''}
+                        onChange={(event) =>
+                          setFilterValues((prev) => ({
+                            ...prev,
+                            [`${key}:to`]: event.target.value,
+                          }))
+                        }
+                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm outline-none focus:border-slate-400"
+                      />
+                    </label>
+                  </div>
+                );
+              }
+              return (
+                <label key={key} className="block">
+                  <span className="mb-1 block text-xs font-medium text-slate-600">
+                    {label}
+                  </span>
+                  <input
+                    value={filterValues[key] || ''}
+                    onChange={(event) =>
+                      setFilterValues((prev) => ({ ...prev, [key]: event.target.value }))
+                    }
+                    placeholder={filter.kind === 'select' ? 'Exact value' : 'Search'}
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm outline-none focus:border-slate-400"
+                  />
+                </label>
+              );
+            })}
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              type="submit"
+              disabled={filterLoading}
+              className="rounded-md px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+              style={{ backgroundColor: accent }}
+            >
+              {filterLoading ? 'Loading...' : 'Apply filters'}
+            </button>
+            <button
+              type="button"
+              onClick={clearFilters}
+              disabled={filterLoading || Object.keys(filterValues).length === 0}
+              className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 disabled:opacity-50"
+            >
+              Clear
+            </button>
+          </div>
+        </form>
       )}
       {rows.length === 0 ? (
         <div className="p-10 text-center text-sm text-slate-500">{empty}</div>
@@ -1398,7 +1558,7 @@ function ListScreen({
                 ))}
                 {rowActions.length > 0 && (
                   <th className="px-3 py-2 text-right text-xs font-semibold text-slate-600">
-                    Hành động
+                    Actions
                   </th>
                 )}
               </tr>

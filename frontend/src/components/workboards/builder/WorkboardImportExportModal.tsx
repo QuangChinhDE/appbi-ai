@@ -84,7 +84,7 @@ function ExportPanel({
         );
         if (alive) setBundle(r.data);
       } catch (err: unknown) {
-        toast.error(getApiErrorMessage(err, 'Không export được.'));
+        toast.error(getApiErrorMessage(err, 'Could not export.'));
       } finally {
         if (alive) setLoading(false);
       }
@@ -114,9 +114,9 @@ function ExportPanel({
     if (!bundle) return;
     try {
       await navigator.clipboard.writeText(JSON.stringify(bundle, null, 2));
-      toast.success('Đã copy vào clipboard');
+      toast.success('Copied to clipboard');
     } catch {
-      toast.error('Trình duyệt không cho copy');
+      toast.error('The browser blocked clipboard copy');
     }
   };
 
@@ -135,7 +135,7 @@ function ExportPanel({
       footer={
         <>
           <Button variant="ghost" size="sm" onClick={onClose}>
-            Đóng
+            Close
           </Button>
           <Button variant="secondary" size="sm" onClick={handleCopy} disabled={!bundle}>
             Copy JSON
@@ -147,7 +147,7 @@ function ExportPanel({
             onClick={handleDownload}
             disabled={!bundle}
           >
-            Tải file .json
+            Download .json
           </Button>
         </>
       }
@@ -157,13 +157,13 @@ function ExportPanel({
           <Loader2 className="h-5 w-5 animate-spin text-text-tertiary" />
         </div>
       ) : !bundle ? (
-        <p className="text-caption text-text-tertiary">Không có dữ liệu.</p>
+        <p className="text-caption text-text-tertiary">No data.</p>
       ) : (
         <div className="space-y-4">
           <div className="rounded-md border border-info/20 bg-info/5 p-3 text-caption text-text-secondary">
-            File export gồm: layout đầy đủ + snapshot tất cả{' '}
-            <strong>{tableCount}</strong> bảng được tham chiếu (tên bảng + cột).
-            Khi import vào instance khác, AppBI sẽ cho map lại bảng/cột trước khi tạo.
+            Export includes the full layout plus a snapshot of all{' '}
+            <strong>{tableCount}</strong> referenced tables (table names + columns).
+            When importing into another instance, AppBI lets you remap tables/columns before creating it.
           </div>
 
           <label className="flex items-start gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3 text-caption">
@@ -175,26 +175,26 @@ function ExportPanel({
             />
             <div>
               <div className="font-medium text-text-primary">
-                Kèm credentials (PIN hash) cho {bundle.app_users?.length ?? 0} app user
+                Include credentials (PIN hashes) for {bundle.app_users?.length ?? 0} app users
               </div>
               <div className="mt-0.5 text-tiny text-text-tertiary">
-                Default OFF — bảo vệ trường hợp file bị share. Bật khi cần
-                bundle dùng được ngay sau import (vd. demo hoặc seed dữ liệu).
-                Khi tắt, admin phải reset PIN cho từng user sau import.
+                Default OFF to keep shared files safer. Turn this on only when the
+                bundle must work immediately after import, such as demos or seed data.
+                When off, an admin must reset each user PIN after import.
               </div>
             </div>
           </label>
 
           <div className="grid grid-cols-4 gap-3">
             <Stat label="Screens" value={screens.length} />
-            <Stat label="Bảng tham chiếu" value={tableCount} />
+            <Stat label="Referenced tables" value={tableCount} />
             <Stat label="App users" value={bundle.app_users?.length ?? 0} />
             <Stat label="Bundle version" value={String(bundle.bundle_version ?? 1)} />
           </div>
 
           <div>
             <h4 className="mb-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-              Bảng có trong bundle
+              Tables in bundle
             </h4>
             <div className="space-y-1">
               {Object.entries(tablesMeta).map(([id, m]) => (
@@ -208,7 +208,7 @@ function ExportPanel({
                       {m.display_name || m.source_table_name || `Table ${id}`}
                     </div>
                     <div className="truncate text-tiny text-text-quaternary">
-                      {m.source_table_name} · {m.columns?.length || 0} cột ·
+                      {m.source_table_name} · {m.columns?.length || 0} columns ·
                       dataset: {m.dataset_name || '?'}
                     </div>
                   </div>

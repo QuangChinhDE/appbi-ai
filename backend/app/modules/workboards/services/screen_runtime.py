@@ -715,7 +715,7 @@ def render_list_screen(
     *,
     identity: CallerIdentity,
     page: int = 1,
-    page_size: int = 50,
+    page_size: Optional[int] = None,
     extra_filters: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     if screen.kind != "list" or screen.list is None or screen.table_id is None:
@@ -733,16 +733,31 @@ def render_list_screen(
         return {"columns": [], "rows": [], "page": page, "page_size": page_size}
 
     page = max(int(page or 1), 1)
-    page_size = min(max(int(page_size or 50), 1), 500)
+    configured_page_size = getattr(screen.list, "page_size", None) or 50
+    page_size = min(max(int(page_size or configured_page_size or 50), 1), 500)
     offset = (page - 1) * page_size
     merged = _filter_dicts(extra_filters) + rls_filters
+    sort_column = getattr(screen.list, "default_sort_column", None)
+    sort_direction = getattr(screen.list, "default_sort_direction", None) or "desc"
 
     result = LiveQueryService.execute_preview_query(
-        datasource, table, limit=page_size, offset=offset, filters=merged
+        datasource,
+        table,
+        limit=page_size,
+        offset=offset,
+        filters=merged,
+        sort_column=sort_column,
+        sort_direction=sort_direction,
     )
+    all_columns: List[str] = result.get("columns") or []
+    selected_columns = [c for c in (screen.list.columns or []) if c in all_columns] or all_columns
+    rows = [
+        {column: row.get(column) for column in selected_columns}
+        for row in (result.get("rows") or [])
+    ]
     return {
-        "columns": result.get("columns") or [],
-        "rows": result.get("rows") or [],
+        "columns": selected_columns,
+        "rows": rows,
         "page": page,
         "page_size": page_size,
         "list_view": screen.list.model_dump(),

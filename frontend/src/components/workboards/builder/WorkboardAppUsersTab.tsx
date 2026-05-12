@@ -378,7 +378,7 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
       const rows = await workboardApi.listAppUsers(workboard.id);
       setUsers(rows);
     } catch (err: unknown) {
-      setError(getApiErrorMessage(err, 'Không tải được danh sách user.'));
+      setError(getApiErrorMessage(err, 'Could not load users.'));
     } finally {
       setLoadingUsers(false);
     }
@@ -462,10 +462,10 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
         <UserCircle2 className="h-4 w-4 text-text-tertiary" />
         <h2 className="text-sm font-medium text-text-primary">App users</h2>
         <span className="text-tiny text-text-tertiary">
-          {users.length} {users.length === 1 ? 'user' : 'users'} đăng nhập được mini-app này
+          {users.length} {users.length === 1 ? 'user' : 'users'} can sign in to this mini-app
         </span>
         <span className="rounded bg-surface-2 px-1.5 py-0.5 text-tiny text-text-secondary">
-          Role chuẩn: user / admin / owner
+          Standard roles: user / admin / owner
         </span>
         <div className="flex-1" />
         <div className="relative">
@@ -473,12 +473,12 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Tìm theo username, tên, role..."
+            placeholder="Search username, name, role..."
             className="h-7 w-56 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 pl-7 pr-2 text-tiny"
           />
         </div>
         <Button size="sm" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setEditing('new')}>
-          Thêm user
+          Add user
         </Button>
       </div>
 
@@ -488,11 +488,11 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
             <div className="flex items-start gap-2">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <div>
-                Owner mặc định{' '}
+                Default owner{' '}
                 <strong>
                   {ownersUsingDefaultPin.map((user) => user.username).join(', ')}
                 </strong>{' '}
-                vẫn đang dùng PIN mặc định <strong>123456</strong>. Hãy đổi PIN trong mục sửa user.
+                is still using the default PIN <strong>123456</strong>. Change the PIN in edit user.
               </div>
             </div>
           </div>
@@ -511,8 +511,8 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
             <UserCircle2 className="mx-auto h-8 w-8 text-text-quaternary" />
             <p className="mt-2 text-caption text-text-secondary">
               {users.length === 0
-                ? 'Chưa có user nào. Bấm "Thêm user" để tạo tài khoản đầu tiên.'
-                : 'Không có user nào khớp tìm kiếm.'}
+                ? 'No users yet. Click "Add user" to create the first account.'
+                : 'No users match the search.'}
             </p>
           </div>
         ) : (
@@ -539,7 +539,7 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
                         <span>{user.username}</span>
                         {isOwnerUsingDefaultPin(user) && (
                           <span
-                            title="Owner này vẫn đang dùng PIN mặc định 123456"
+                            title="This owner is still using the default PIN 123456"
                             className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-danger text-[10px] font-bold leading-none text-white"
                           >
                             !
@@ -564,14 +564,14 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
                       {user.active ? (
                         <CheckCircle2 className="h-3.5 w-3.5 text-success" />
                       ) : (
-                        <span className="text-tiny text-text-tertiary">tắt</span>
+                        <span className="text-tiny text-text-tertiary">off</span>
                       )}
                       {!user.has_pin && (
                         <span
-                          title="Chưa có PIN, admin cần reset trước khi user đăng nhập được"
+                          title="No PIN yet; an admin must reset it before this user can sign in"
                           className="ml-1.5 inline-flex rounded bg-warning/10 px-1.5 py-0.5 text-tiny text-warning"
                         >
-                          chưa PIN
+                          no PIN
                         </span>
                       )}
                     </td>
@@ -579,14 +579,14 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
                       <button
                         onClick={() => setEditing(user)}
                         className="mr-1 rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
-                        title="Sửa"
+                        title="Edit"
                       >
                         <Pencil className="h-3.5 w-3.5" />
                       </button>
                       <button
                         onClick={() => setPendingDelete(user)}
                         className="rounded p-1 text-text-tertiary hover:bg-danger/10 hover:text-danger"
-                        title="Xóa"
+                        title="Delete"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -618,12 +618,12 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
         <Modal
           isOpen
           onClose={() => setPendingDelete(null)}
-          title={`Xóa user "${pendingDelete.username}"?`}
+          title={`Delete user "${pendingDelete.username}"?`}
           size="sm"
           footer={
             <>
               <Button variant="ghost" size="sm" onClick={() => setPendingDelete(null)}>
-                Hủy
+                Cancel
               </Button>
               <Button
                 variant="danger"
@@ -631,21 +631,21 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
                 onClick={async () => {
                   try {
                     await workboardApi.deleteAppUser(workboard.id, pendingDelete.id);
-                    toast.success('Đã xóa user');
+                    toast.success('User deleted');
                     setPendingDelete(null);
                     void loadUsers();
                   } catch (err) {
-                    toast.error(getApiErrorMessage(err, 'Xóa thất bại.'));
+                    toast.error(getApiErrorMessage(err, 'Delete failed.'));
                   }
                 }}
               >
-                Xóa
+                Delete
               </Button>
             </>
           }
         >
           <p className="text-body text-text-secondary">
-            Tài khoản này sẽ không đăng nhập được nữa. Hành động này không thể hoàn tác.
+            This account will no longer be able to sign in. This action cannot be undone.
           </p>
         </Modal>
       )}
@@ -760,11 +760,11 @@ function AppUserEditModal({
   const handleSave = async () => {
     setError(null);
     if (!username.trim()) {
-      setError('Username không được rỗng.');
+      setError('Username is required.');
       return;
     }
     if (isCreate && !pin) {
-      setError('PIN bắt buộc khi tạo user mới.');
+      setError('PIN is required when creating a new user.');
       return;
     }
 
@@ -792,7 +792,7 @@ function AppUserEditModal({
           context,
         };
         await workboardApi.createAppUser(workboardId, payload);
-        toast.success('Đã tạo user');
+        toast.success('User created');
       } else {
         const payload: WorkboardAppUserUpdate = {
           username: username.trim(),
@@ -803,11 +803,11 @@ function AppUserEditModal({
         };
         if (pin) payload.pin = pin;
         await workboardApi.updateAppUser(workboardId, user!.id, payload);
-        toast.success('Đã cập nhật user');
+        toast.success('User updated');
       }
       onSaved();
     } catch (err: unknown) {
-      setError(getApiErrorMessage(err, 'Lưu thất bại.'));
+      setError(getApiErrorMessage(err, 'Save failed.'));
     } finally {
       setSubmitting(false);
     }
@@ -822,15 +822,15 @@ function AppUserEditModal({
     <Modal
       isOpen
       onClose={onClose}
-      title={isCreate ? 'Tạo user mới' : `Sửa user "${user?.username}"`}
+      title={isCreate ? 'Create user' : `Edit user "${user?.username}"`}
       size="md"
       footer={
         <>
           <Button variant="ghost" size="sm" onClick={onClose}>
-            Hủy
+            Cancel
           </Button>
           <Button variant="primary" size="sm" onClick={handleSave} loading={submitting} disabled={submitting}>
-            {isCreate ? 'Tạo' : 'Lưu'}
+            {isCreate ? 'Create' : 'Save'}
           </Button>
         </>
       }
@@ -842,19 +842,19 @@ function AppUserEditModal({
             <Input
               value={username}
               onChange={(event) => setUsername(event.target.value)}
-              placeholder="vd: cn01"
+              placeholder="e.g. cn01"
               autoFocus={isCreate}
             />
           </label>
           <label className="block">
             <span className="mb-1 block text-tiny font-medium text-text-secondary">
-              {isCreate ? 'PIN *' : 'PIN (để trống = giữ nguyên)'}
+              {isCreate ? 'PIN *' : 'PIN (blank = keep current)'}
             </span>
             <Input
               type="password"
               value={pin}
               onChange={(event) => setPin(event.target.value)}
-              placeholder={isCreate ? 'PIN đăng nhập' : 'Đặt PIN mới...'}
+              placeholder={isCreate ? 'Sign-in PIN' : 'Set a new PIN...'}
             />
           </label>
           <label className="block">
@@ -862,7 +862,7 @@ function AppUserEditModal({
             <Input
               value={fullName}
               onChange={(event) => setFullName(event.target.value)}
-              placeholder="Nguyễn Văn A"
+              placeholder="Jane Doe"
             />
           </label>
           <label className="block">
@@ -889,18 +889,18 @@ function AppUserEditModal({
             onChange={(event) => setActive(event.target.checked)}
             className="h-3.5 w-3.5"
           />
-          Active (cho phép đăng nhập)
+          Active (allow sign-in)
         </label>
 
         <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
           <div className="mb-2">
-            <h3 className="text-tiny font-medium text-text-secondary">Phân quyền theo dataset</h3>
+            <h3 className="text-tiny font-medium text-text-secondary">Dataset access</h3>
             <p className="text-tiny text-text-tertiary">
-              Các field bên dưới được lấy từ cấu hình RLS hiện có của workboard. Chọn trực tiếp từ dữ liệu thay vì nhập tay.
+              The fields below come from the current workboard RLS config. Pick values directly from data instead of typing them by hand.
             </p>
             {isOwnerAppUserRole(role) && (
               <p className="mt-1 text-tiny text-success">
-                Role owner có toàn quyền trong mini-app. Các field dưới đây chỉ là context bổ sung nếu cần.
+                Owner has full access in the mini-app. The fields below are optional context only.
               </p>
             )}
           </div>
@@ -908,11 +908,11 @@ function AppUserEditModal({
           {loadingAccess ? (
             <div className="flex items-center gap-2 text-tiny text-text-tertiary">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Đang tải access options từ dataset...
+              Loading access options from the dataset...
             </div>
           ) : effectiveAccessFields.length === 0 ? (
             <p className="text-tiny text-text-tertiary">
-              Chưa phát hiện field phân quyền nào từ RLS. Bạn vẫn có thể dùng phần context bổ sung ở dưới.
+              No access fields were detected from RLS. You can still use additional context below.
             </p>
           ) : (
             <div className="space-y-3">
@@ -939,7 +939,7 @@ function AppUserEditModal({
                         }}
                         className="h-9 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 text-caption"
                       >
-                        <option value="">— Chọn giá trị —</option>
+                        <option value="">— Pick a value —</option>
                         {field.options.map((option) => (
                           <option key={option.key} value={option.key}>
                             {option.label}
@@ -955,14 +955,14 @@ function AppUserEditModal({
                             [field.key]: event.target.value,
                           }))
                         }
-                        placeholder={`Nhập ${field.label.toLowerCase()}`}
+                        placeholder={`Enter ${field.label.toLowerCase()}`}
                       />
                     )}
                     <p className="mt-1 text-tiny text-text-tertiary">
-                      Dùng cho role: {field.roles.map((roleValue) => formatAppUserRoleLabel(roleValue)).join(', ')}
+                      Used by role: {field.roles.map((roleValue) => formatAppUserRoleLabel(roleValue)).join(', ')}
                     </p>
                     <p className="text-tiny text-text-quaternary">
-                      Nguồn: {field.sources.map((source) => `${source.screenTitle} → ${source.column}`).join(' | ')}
+                      Source: {field.sources.map((source) => `${source.screenTitle} → ${source.column}`).join(' | ')}
                     </p>
                   </label>
                 );
@@ -974,19 +974,19 @@ function AppUserEditModal({
         <div>
           <div className="mb-1.5 flex items-center justify-between">
             <span className="text-tiny font-medium text-text-secondary">
-              Context bổ sung (advanced)
+              Additional context (advanced)
             </span>
             <button
               type="button"
               onClick={addRow}
               className="inline-flex items-center gap-1 text-tiny text-brand hover:underline"
             >
-              <Plus className="h-3 w-3" /> Thêm key
+              <Plus className="h-3 w-3" /> Add key
             </button>
           </div>
           {contextRows.length === 0 ? (
             <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-1 p-2 text-tiny text-text-tertiary">
-              Không có context bổ sung.
+              No additional context.
             </p>
           ) : (
             <div className="space-y-1">
@@ -1007,7 +1007,7 @@ function AppUserEditModal({
                   <button
                     onClick={() => removeRow(index)}
                     className="rounded p-1 text-text-tertiary hover:bg-danger/10 hover:text-danger"
-                    title="Xóa row"
+                    title="Delete row"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -1017,7 +1017,7 @@ function AppUserEditModal({
           )}
           {advancedSuggestions.length > 0 && (
             <p className="mt-1 text-tiny text-text-tertiary">
-              Gợi ý từ layout: {advancedSuggestions.map((key) => (
+              Suggested from layout: {advancedSuggestions.map((key) => (
                 <code key={key} className="mx-0.5 rounded bg-surface-2 px-1">{key}</code>
               ))}
             </p>

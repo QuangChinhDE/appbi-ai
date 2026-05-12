@@ -1,25 +1,24 @@
 /**
- * DashboardScreenEditor - configure a workboard screen that embeds an AppBI
- * Dashboard.
+ * DashboardScreenEditor — configure a workboard screen that embeds an
+ * AppBI Dashboard.
  *
- * Layout (matches the user's mental model):
- *
+ * Layout:
  *   1. Pick a dashboard (or paste a share token for manual mode).
- *   2. "Map theo role": list of dashboard filter slots that should be filled
- *      with the viewing app_user.role. One row per slot. No value here —
- *      backend substitutes role at provision time.
- *   3. "Filter cố định": list of slots with a hard-coded value applied to
- *      every managed link regardless of role.
- *
- * The Dashboard module's own filter pipeline handles the resulting filters
- * unchanged — workboard does not pin/lock anything special server-side.
+ *   2. Role mapping — slots filled with viewing app_user.role.
+ *   3. Static filters — hard-coded slot values for every role.
+ *   4. Advanced — password + iframe height.
  */
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { ExternalLink, Lock, Plus, RefreshCw, Trash2 } from 'lucide-react';
 
-import { BuilderSection } from './BuilderChrome';
+import {
+  BuilderCollapsibleAdvanced,
+  BuilderSection,
+  BuilderTopBar,
+  BuilderTopBarItem,
+} from './BuilderChrome';
 import { INPUT, Lbl } from './ScreenEditor';
 import type {
   DashboardRoleFilterMappingSpec,
@@ -81,10 +80,16 @@ export default function DashboardScreenEditor({
     onChange({ ...screen, dashboard: { ...dashboard, ...patch } });
 
   const isManaged = typeof dashboard.dashboard_id === 'number' && dashboard.dashboard_id > 0;
-  const mapping = dashboard.role_filter_mapping ?? [];
-  const staticFilters = dashboard.static_filters ?? [];
+  const mapping = useMemo(
+    () => dashboard.role_filter_mapping ?? [],
+    [dashboard.role_filter_mapping],
+  );
+  const staticFilters = useMemo(
+    () => dashboard.static_filters ?? [],
+    [dashboard.static_filters],
+  );
 
-  // ── Accessible dashboard list (slim) ────────────────────────────────────
+  // ── Accessible dashboard list ───────────────────────────────────────
   const [accessible, setAccessible] = useState<AccessibleDashboard[]>([]);
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
@@ -96,7 +101,7 @@ export default function DashboardScreenEditor({
       const res = await apiClient.get('/dashboards/accessible-summary');
       setAccessible(Array.isArray(res.data) ? (res.data as AccessibleDashboard[]) : []);
     } catch (err) {
-      setListError(getApiErrorMessage(err, 'Không tải được danh sách dashboard.'));
+      setListError(getApiErrorMessage(err, 'Failed to load accessible dashboards.'));
     } finally {
       setListLoading(false);
     }
@@ -111,7 +116,7 @@ export default function DashboardScreenEditor({
     [accessible, dashboard.dashboard_id],
   );
 
-  // ── Filter fields for the picked dashboard ──────────────────────────────
+  // ── Filter fields for the picked dashboard ──────────────────────────
   const [filterFields, setFilterFields] = useState<FilterField[]>([]);
   const [fieldsLoading, setFieldsLoading] = useState(false);
   const [fieldsError, setFieldsError] = useState<string | null>(null);
@@ -134,7 +139,7 @@ export default function DashboardScreenEditor({
         setHasPublicFiltersConfig(Boolean(res.data.has_public_filters_config));
       } catch (err) {
         if (!alive) return;
-        setFieldsError(getApiErrorMessage(err, 'Không tải được danh sách cột filter của dashboard.'));
+        setFieldsError(getApiErrorMessage(err, 'Failed to load dashboard filter fields.'));
       } finally {
         if (alive) setFieldsLoading(false);
       }
@@ -150,13 +155,10 @@ export default function DashboardScreenEditor({
     return m;
   }, [filterFields]);
 
-  // ── Mode switching ──────────────────────────────────────────────────────
+  // ── Mode switching ──────────────────────────────────────────────────
 
   const switchToManaged = (dashboardId: number) => {
-    update({
-      dashboard_id: dashboardId,
-      share_token: null,
-    });
+    update({ dashboard_id: dashboardId, share_token: null });
   };
 
   const switchToManual = () => {
@@ -168,7 +170,7 @@ export default function DashboardScreenEditor({
     });
   };
 
-  // ── Role mapping CRUD ───────────────────────────────────────────────────
+  // ── Slot helpers ────────────────────────────────────────────────────
 
   const usedSlotKeys = useMemo(() => {
     const s = new Set<string>();
@@ -202,8 +204,6 @@ export default function DashboardScreenEditor({
   const removeMapping = (idx: number) =>
     update({ role_filter_mapping: mapping.filter((_, i) => i !== idx) });
 
-  // ── Static filter CRUD ──────────────────────────────────────────────────
-
   const addStaticFilter = () => {
     const next = firstUnusedField();
     if (!next) return;
@@ -232,29 +232,14 @@ export default function DashboardScreenEditor({
   const managedTokensByRole = dashboard.managed_links || {};
   const managedRoles = Object.keys(managedTokensByRole).filter((r) => r !== '__default__');
 
-  // ── Render ──────────────────────────────────────────────────────────────
+  const hasAdvanced = !!dashboard.password || dashboard.height_px != null;
 
   return (
     <div className="space-y-4">
-      <BuilderSection
-        title="Dashboard nhúng"
-        description="Chọn 1 dashboard bạn có quyền xem. Workboard tự sinh public link riêng theo từng role của app_user — không cần ai vào module Dashboard tạo link trước."
-        action={
-          <button
-            type="button"
-            onClick={() => void refreshList()}
-            disabled={listLoading}
-            className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-tiny text-text-secondary hover:bg-surface-2 disabled:opacity-50"
-            title="Refresh danh sách dashboard"
-          >
-            <RefreshCw className={`h-3 w-3 ${listLoading ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
-        }
-      >
-        <Lbl label="Dashboard">
+      {/* Source mode strip — top bar */}
+      <BuilderTopBar title="Source">
+        <BuilderTopBarItem label="Dashboard" className="flex-1">
           <select
-            className={INPUT}
             value={isManaged ? String(dashboard.dashboard_id) : '__manual__'}
             onChange={(event) => {
               const v = event.target.value;
@@ -266,8 +251,9 @@ export default function DashboardScreenEditor({
               }
             }}
             disabled={listLoading}
+            className="h-9 min-w-0 flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 text-caption"
           >
-            <option value="__manual__">— Paste share token thủ công —</option>
+            <option value="__manual__">— Paste share token manually —</option>
             {accessible.map((d) => (
               <option key={d.id} value={d.id}>
                 {d.name}
@@ -275,42 +261,55 @@ export default function DashboardScreenEditor({
               </option>
             ))}
           </select>
-          {listError && <p className="mt-1 text-tiny text-danger">{listError}</p>}
-          {!listError && !listLoading && accessible.length === 0 && (
-            <p className="mt-1 text-tiny text-text-tertiary">
-              Bạn chưa có dashboard nào được chia sẻ. Tạo một dashboard trước hoặc dùng chế độ paste token bên dưới.
-            </p>
-          )}
-        </Lbl>
+        </BuilderTopBarItem>
+        <button
+          type="button"
+          onClick={() => void refreshList()}
+          disabled={listLoading}
+          className="inline-flex h-9 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 text-caption text-text-secondary hover:bg-surface-2 disabled:opacity-50"
+          title="Refresh accessible dashboards"
+        >
+          <RefreshCw className={`h-3 w-3 ${listLoading ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
+      </BuilderTopBar>
 
-        {selectedDashboard && (
-          <div className="rounded-md border border-info/20 bg-info/5 px-3 py-2 text-tiny text-text-secondary">
-            <div className="font-emphasis text-text-primary">{selectedDashboard.name}</div>
-            {selectedDashboard.description && (
-              <div className="mt-0.5">{selectedDashboard.description}</div>
-            )}
-            <div className="mt-1 text-text-tertiary">
-              {fieldsLoading
-                ? 'Đang tải danh sách cột filter…'
-                : fieldsError
-                  ? fieldsError
-                  : filterFields.length === 0
-                    ? 'Dashboard này chưa expose cột filter nào — chỉ embed nguyên dashboard, không có map role hay filter cố định. Vào Dashboard cấu hình Access filter trước, sau đó Refresh.'
-                    : `${filterFields.length} cột filter khả dụng${
-                        hasPublicFiltersConfig
-                          ? ' (lấy từ Access filter DA đã cấu hình)'
-                          : ' (suy ra từ chart bindings)'
-                      }.`}
-            </div>
+      {listError && (
+        <p className="text-tiny text-danger">{listError}</p>
+      )}
+      {!listError && !listLoading && accessible.length === 0 && (
+        <p className="rounded-md border border-info/20 bg-info/5 px-3 py-2 text-tiny text-text-secondary">
+          You have no shared dashboards. Create one first or use paste-token mode below.
+        </p>
+      )}
+
+      {selectedDashboard && (
+        <div className="rounded-md border border-info/20 bg-info/5 px-3 py-2 text-tiny text-text-secondary">
+          <div className="font-emphasis text-text-primary">{selectedDashboard.name}</div>
+          {selectedDashboard.description && (
+            <div className="mt-0.5">{selectedDashboard.description}</div>
+          )}
+          <div className="mt-1 text-text-tertiary">
+            {fieldsLoading
+              ? 'Loading filter fields…'
+              : fieldsError
+                ? fieldsError
+                : filterFields.length === 0
+                  ? 'This dashboard exposes no filter columns — only a plain embed, no role mapping or static filters. Configure Access filters in the Dashboard first, then Refresh.'
+                  : `${filterFields.length} filter columns available${
+                      hasPublicFiltersConfig
+                        ? ' (from configured Access filters)'
+                        : ' (inferred from chart bindings)'
+                    }.`}
           </div>
-        )}
-      </BuilderSection>
+        </div>
+      )}
 
       {isManaged && (
         <>
           <BuilderSection
-            title="Map theo role"
-            description="Mỗi dòng = 1 cột filter của dashboard sẽ được tự động fill bằng role của app_user đang xem. Backend tự sinh link riêng cho từng role."
+            title={`Role mapping (${mapping.length})`}
+            description="Each row = one dashboard filter slot to be auto-filled with the viewing app_user's role. Backend mints a separate public link per role."
             action={
               <button
                 type="button"
@@ -318,15 +317,15 @@ export default function DashboardScreenEditor({
                 disabled={
                   filterFields.length === 0 || mapping.length >= filterFields.length
                 }
-                className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-tiny text-text-secondary hover:bg-surface-2 disabled:opacity-50"
+                className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-caption text-text-secondary hover:bg-surface-2 disabled:opacity-50"
               >
-                <Plus className="h-3 w-3" /> Thêm mapping
+                <Plus className="h-3 w-3" /> Add mapping
               </button>
             }
           >
             {mapping.length === 0 && (
               <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-2.5 text-tiny text-text-tertiary">
-                Chưa map cột nào — mọi role thấy cùng dữ liệu. Thêm mapping để mỗi role chỉ thấy phần của mình.
+                No mappings yet — every role sees the same data. Add a mapping so each role only sees its own slice.
               </p>
             )}
 
@@ -352,7 +351,7 @@ export default function DashboardScreenEditor({
                     >
                       {orphan && (
                         <option value={key} disabled>
-                          ⚠ {m.semanticField} (không còn trong dashboard)
+                          ⚠ {m.semanticField} (no longer on dashboard)
                         </option>
                       )}
                       {filterFields.map((opt) => {
@@ -374,12 +373,12 @@ export default function DashboardScreenEditor({
                       <option value="neq">≠</option>
                       <option value="contains">contains</option>
                     </select>
-                    <span className="text-tiny text-text-tertiary">← app_user.role</span>
+                    <span className="text-caption text-text-tertiary">← app_user.role</span>
                     <button
                       type="button"
                       onClick={() => removeMapping(idx)}
                       className="ml-auto rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-danger"
-                      title="Xoá mapping"
+                      title="Delete mapping"
                     >
                       <Trash2 className="h-3 w-3" />
                     </button>
@@ -390,22 +389,22 @@ export default function DashboardScreenEditor({
           </BuilderSection>
 
           <BuilderSection
-            title="Filter cố định"
-            description="Filter có giá trị tĩnh, áp cho mọi role. Ví dụ: chỉ hiện dữ liệu của năm 2026, chỉ trạng thái 'active'..."
+            title={`Static filters (${staticFilters.length})`}
+            description="Hard-coded slot values applied for every role. e.g. only year 2026, only status='active'."
             action={
               <button
                 type="button"
                 onClick={addStaticFilter}
                 disabled={filterFields.length === 0}
-                className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-tiny text-text-secondary hover:bg-surface-2 disabled:opacity-50"
+                className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-caption text-text-secondary hover:bg-surface-2 disabled:opacity-50"
               >
-                <Plus className="h-3 w-3" /> Thêm filter
+                <Plus className="h-3 w-3" /> Add filter
               </button>
             }
           >
             {staticFilters.length === 0 && (
               <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-2.5 text-tiny text-text-tertiary">
-                Chưa có filter cố định. Thêm khi muốn pin một giá trị cho mọi role.
+                No static filters yet. Add one when you want to pin a value across every role.
               </p>
             )}
 
@@ -437,7 +436,7 @@ export default function DashboardScreenEditor({
                     >
                       {orphan && (
                         <option value={key} disabled>
-                          ⚠ {f.semanticField} (không còn trong dashboard)
+                          ⚠ {f.semanticField} (no longer on dashboard)
                         </option>
                       )}
                       {filterFields.map((opt) => {
@@ -467,7 +466,7 @@ export default function DashboardScreenEditor({
                     </select>
                     <input
                       className={`${INPUT} flex-1 min-w-[140px]`}
-                      placeholder={isMulti ? 'Nhiều giá trị, cách nhau dấu phẩy' : 'Giá trị'}
+                      placeholder={isMulti ? 'Multiple values, comma-separated' : 'Value'}
                       value={Array.isArray(f.value) ? f.value.join(', ') : String(f.value ?? '')}
                       onChange={(event) => {
                         const raw = event.target.value;
@@ -481,7 +480,7 @@ export default function DashboardScreenEditor({
                       type="button"
                       onClick={() => removeStaticFilter(idx)}
                       className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-danger"
-                      title="Xoá filter"
+                      title="Delete filter"
                     >
                       <Trash2 className="h-3 w-3" />
                     </button>
@@ -493,8 +492,8 @@ export default function DashboardScreenEditor({
 
           {managedRoles.length > 0 && (
             <BuilderSection
-              title={`Public link đã sinh (${managedRoles.length + (managedTokensByRole['__default__'] ? 1 : 0)})`}
-              description="Tự động cập nhật mỗi khi bạn lưu workboard hoặc thêm/xoá app_user."
+              title={`Generated public links (${managedRoles.length + (managedTokensByRole['__default__'] ? 1 : 0)})`}
+              description="Auto-refreshed whenever you save the workboard or add/remove an app_user."
             >
               <ul className="space-y-0.5 text-tiny text-text-tertiary">
                 {managedRoles.map((role) => (
@@ -508,7 +507,7 @@ export default function DashboardScreenEditor({
                       className="inline-flex items-center gap-0.5 text-brand hover:underline"
                     >
                       <ExternalLink className="h-3 w-3" />
-                      mở thử
+                      open
                     </a>
                   </li>
                 ))}
@@ -523,7 +522,7 @@ export default function DashboardScreenEditor({
                       className="inline-flex items-center gap-0.5 text-brand hover:underline"
                     >
                       <ExternalLink className="h-3 w-3" />
-                      mở thử
+                      open
                     </a>
                   </li>
                 )}
@@ -535,13 +534,13 @@ export default function DashboardScreenEditor({
 
       {!isManaged && (
         <BuilderSection
-          title="Share token thủ công"
-          description="Paste share_token có sẵn (do bạn hoặc người khác đã tạo trong Dashboard share dialog). Mini-app nhúng nguyên link — không có managed link, không map role, không filter cố định."
+          title="Manual share token"
+          description="Paste an existing share_token (from the Dashboard share dialog). The mini-app embeds the link as-is — no managed links, role mapping, or static filters."
         >
           <Lbl label="Share token / URL">
             <input
               className={INPUT}
-              placeholder="Ví dụ: abc123xyz hoặc https://.../embed/abc123xyz"
+              placeholder="e.g. abc123xyz or https://…/embed/abc123xyz"
               value={dashboard.share_token || ''}
               onChange={(event) =>
                 update({ share_token: extractTokenFromInput(event.target.value) || null })
@@ -556,50 +555,57 @@ export default function DashboardScreenEditor({
               className="inline-flex items-center gap-1 text-tiny font-emphasis text-brand hover:underline"
             >
               <ExternalLink className="h-3 w-3" />
-              Mở thử /embed/{dashboard.share_token} trong tab mới
+              Open /embed/{dashboard.share_token} in a new tab
             </a>
           )}
         </BuilderSection>
       )}
 
-      <BuilderSection title="Tuỳ chọn iframe" description="Áp dụng cho cả 2 chế độ.">
-        <Lbl label="Mật khẩu chung (nếu có)">
-          <div className="relative">
-            <input
-              type="text"
-              className={`${INPUT} pl-7`}
-              placeholder="Để trống nếu link không bảo vệ"
-              value={dashboard.password || ''}
-              onChange={(event) => update({ password: event.target.value || null })}
-            />
-            <Lock className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-text-tertiary" />
-          </div>
-          <p className="mt-1 text-tiny text-text-tertiary">
-            Áp cho TẤT CẢ managed link sinh ra. Mini-app tự auth thay app_user.
-          </p>
-        </Lbl>
+      {/* Advanced — iframe options (applies in both modes) */}
+      <BuilderCollapsibleAdvanced
+        title="Iframe options"
+        description="Shared password and fixed height — applied to whichever embed mode is active."
+        defaultOpen={hasAdvanced}
+      >
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Lbl label="Shared password (if any)">
+            <div className="relative">
+              <input
+                type="text"
+                className={`${INPUT} pl-7`}
+                placeholder="Leave blank for unprotected links"
+                value={dashboard.password || ''}
+                onChange={(event) => update({ password: event.target.value || null })}
+              />
+              <Lock className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-text-tertiary" />
+            </div>
+            <p className="mt-1 text-tiny text-text-tertiary">
+              Applied to ALL managed links generated. Mini-app auto-authenticates on the user&apos;s behalf.
+            </p>
+          </Lbl>
 
-        <Lbl label="Chiều cao iframe (px) — tuỳ chọn">
-          <input
-            type="number"
-            min={200}
-            max={4000}
-            className={INPUT}
-            placeholder="Để trống để tự co theo nội dung dashboard"
-            value={dashboard.height_px ?? ''}
-            onChange={(event) => {
-              const raw = event.target.value;
-              const n = Number(raw);
-              update({
-                height_px:
-                  raw === '' || !Number.isFinite(n)
-                    ? null
-                    : Math.max(200, Math.min(4000, Math.trunc(n))),
-              });
-            }}
-          />
-        </Lbl>
-      </BuilderSection>
+          <Lbl label="Iframe height (px)">
+            <input
+              type="number"
+              min={200}
+              max={4000}
+              className={INPUT}
+              placeholder="Auto (fit content)"
+              value={dashboard.height_px ?? ''}
+              onChange={(event) => {
+                const raw = event.target.value;
+                const n = Number(raw);
+                update({
+                  height_px:
+                    raw === '' || !Number.isFinite(n)
+                      ? null
+                      : Math.max(200, Math.min(4000, Math.trunc(n))),
+                });
+              }}
+            />
+          </Lbl>
+        </div>
+      </BuilderCollapsibleAdvanced>
     </div>
   );
 }

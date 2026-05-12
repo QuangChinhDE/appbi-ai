@@ -200,7 +200,7 @@ export default function BuilderLivePreview({
       setSessionReady(true);
       setIframeKey((k) => k + 1);
     } catch (err: unknown) {
-      setSessionError(getApiErrorMessage(err, 'Không tạo được phiên preview.'));
+      setSessionError(getApiErrorMessage(err, 'Could not create preview session.'));
     } finally {
       setSessionLoading(false);
     }
@@ -283,7 +283,7 @@ export default function BuilderLivePreview({
         <button
           onClick={onToggle}
           className="rounded-md p-1 text-text-tertiary hover:bg-surface-2"
-          title="Đóng Live Preview"
+          title="Close Live Preview"
         >
           <ChevronRight className="h-3.5 w-3.5" />
         </button>
@@ -341,7 +341,7 @@ export default function BuilderLivePreview({
           {isInternal && (
             <span
               className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny text-text-tertiary"
-              title="Workspace internal — chạy bằng tài khoản AppBI"
+              title="Internal workspace - preview runs as the AppBI staff account"
             >
               Internal · AppBI staff
             </span>
@@ -379,7 +379,7 @@ export default function BuilderLivePreview({
               target="_blank"
               rel="noreferrer"
               className="rounded-md p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
-              title="Mở tab mới"
+              title="Open in a new tab"
             >
               <ExternalLink className="h-3.5 w-3.5" />
             </a>
@@ -396,9 +396,9 @@ export default function BuilderLivePreview({
         ) : workspaces.length === 0 ? (
           <Centered>
             <div className="max-w-xs rounded-md border border-warning/30 bg-warning/10 p-3 text-tiny text-warning">
-              Chưa có workspace nào để chạy live preview. Tạo workspace ở
-              Settings → Workspaces — mặc định <code>public_app_users</code>{' '}
-              cần chọn bảng người dùng cho mini-app.
+              No workspace is available for live preview. Create one in
+              Settings → Workspaces. The default <code>public_app_users</code>{' '}
+              mode needs a user table selected for the mini-app.
             </div>
           </Centered>
         ) : sessionError ? (
@@ -406,14 +406,14 @@ export default function BuilderLivePreview({
             <div className="max-w-xs rounded-md border border-danger/30 bg-danger/10 p-3 text-tiny text-danger">
               <div className="mb-2 flex items-center gap-1">
                 <AlertCircle className="h-3 w-3" />
-                Lỗi
+                Error
               </div>
               {sessionError}
               <button
                 onClick={startSession}
                 className="mt-2 text-tiny text-brand hover:underline"
               >
-                Thử lại
+                Try again
               </button>
             </div>
           </Centered>
@@ -421,7 +421,7 @@ export default function BuilderLivePreview({
           <Centered>
             <div className="text-center">
               <Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin text-text-tertiary" />
-              <p className="text-tiny text-text-tertiary">Đang tạo phiên preview…</p>
+              <p className="text-tiny text-text-tertiary">Creating preview session...</p>
             </div>
           </Centered>
         ) : previewUrl ? (
@@ -467,7 +467,7 @@ function SyncBadge({
     return (
       <span className="flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-tiny text-warning">
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning" />
-        Đang gõ…
+        Editing...
       </span>
     );
   }
@@ -475,7 +475,7 @@ function SyncBadge({
     return (
       <span className="flex items-center gap-1 rounded-full bg-info/10 px-2 py-0.5 text-tiny text-info">
         <Loader2 className="h-2.5 w-2.5 animate-spin" />
-        Đang lưu…
+        Saving...
       </span>
     );
   }
@@ -483,10 +483,10 @@ function SyncBadge({
     return (
       <span
         className="flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-tiny text-success"
-        title={`Lưu lúc ${savedAt.toLocaleTimeString()}`}
+        title={`Saved at ${savedAt.toLocaleTimeString()}`}
       >
         <CheckCircle2 className="h-2.5 w-2.5" />
-        Đã đồng bộ
+        Synced
       </span>
     );
   }
@@ -497,7 +497,7 @@ function SyncBadge({
         title={error || ''}
       >
         <AlertCircle className="h-2.5 w-2.5" />
-        Lỗi lưu
+        Save failed
       </span>
     );
   }

@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, Plus, X } from 'lucide-react';
 
 import { BUILDER_INPUT } from './BuilderChrome';
 
@@ -53,10 +53,10 @@ function VariableInsertButton({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        title="Chèn biến động vào biểu thức"
-        className="inline-flex h-9 shrink-0 items-center gap-0.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 text-tiny font-medium text-text-secondary hover:bg-surface-2 hover:text-text-primary"
+        title="Insert a dynamic variable into the expression"
+        className="inline-flex h-9 shrink-0 items-center gap-0.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 text-caption font-medium text-text-secondary hover:bg-surface-2 hover:text-text-primary"
       >
-        + Biến
+        + Variable
         <ChevronDown className="h-3 w-3" />
       </button>
       {open && (
@@ -69,7 +69,7 @@ function VariableInsertButton({
                 onInsert(option.value);
                 setOpen(false);
               }}
-              className="block w-full px-2.5 py-1.5 text-left text-tiny hover:bg-surface-2"
+              className="block w-full px-2.5 py-1.5 text-left text-caption hover:bg-surface-2"
             >
               <span className="block text-text-primary">{option.label}</span>
               <span className="block truncate font-mono text-[11px] text-text-tertiary">
@@ -151,6 +151,266 @@ export function CheckboxMultiSelect({
   );
 }
 
+/**
+ * Searchable multi-select for picking column-like values. Renders as a
+ * wrapping chip input that opens a popover with a search box — much
+ * friendlier than a grid of checkboxes when the source list is wide
+ * (50+ columns is common in real datasets).
+ *
+ * Use this for any "pick N items from a list of names" picker; for
+ * short lists of tagged options with descriptions (e.g. user roles),
+ * CheckboxMultiSelect still reads better.
+ */
+export function MultiColumnPicker({
+  sourceColumns,
+  value,
+  onChange,
+  placeholder = 'Click to add columns…',
+  emptyHint,
+}: {
+  sourceColumns: string[];
+  value: string[];
+  onChange: (next: string[]) => void;
+  placeholder?: string;
+  /** Optional override for the empty-popover message. */
+  emptyHint?: string;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [query, setQuery] = React.useState('');
+  const wrapRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) {
+        setOpen(false);
+        setQuery('');
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  const selected = new Set(value);
+  const queryNorm = query.trim().toLowerCase();
+  const candidates = sourceColumns.filter((c) => !selected.has(c));
+  const filtered = queryNorm
+    ? candidates.filter((c) => c.toLowerCase().includes(queryNorm))
+    : candidates;
+
+  const toggle = (name: string) => {
+    if (selected.has(name)) onChange(value.filter((c) => c !== name));
+    else onChange([...value, name]);
+  };
+
+  const remove = (name: string) => onChange(value.filter((c) => c !== name));
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full min-h-9 flex-wrap items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1.5 text-left text-caption text-text-secondary hover:border-brand/30"
+      >
+        {value.length === 0 && (
+          <span className="text-text-tertiary">{placeholder}</span>
+        )}
+        {value.map((name) => (
+          <span
+            key={name}
+            className="inline-flex items-center gap-1 rounded bg-brand/10 px-1.5 py-0.5 text-caption text-brand"
+          >
+            {name}
+            <span
+              role="button"
+              tabIndex={-1}
+              onClick={(event) => {
+                event.stopPropagation();
+                remove(name);
+              }}
+              className="flex cursor-pointer items-center justify-center rounded hover:bg-brand/20"
+              title="Remove"
+            >
+              <X className="h-3 w-3" />
+            </span>
+          </span>
+        ))}
+        <ChevronDown
+          className={`ml-auto h-3.5 w-3.5 text-text-tertiary transition-transform ${
+            open ? 'rotate-180' : ''
+          }`}
+        />
+      </button>
+
+      {open && (
+        <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-72 overflow-y-auto rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-md">
+          <div className="sticky top-0 border-b border-[rgb(var(--border-line))] bg-surface-1 p-2">
+            <input
+              autoFocus
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={`Search ${candidates.length} options…`}
+              className="h-7 w-full rounded border border-[rgb(var(--border-line))] bg-surface-0 px-2 text-caption"
+            />
+          </div>
+          {filtered.length === 0 ? (
+            <p className="px-2 py-3 text-center text-caption text-text-tertiary">
+              {emptyHint ??
+                (candidates.length === 0 ? 'All options selected.' : 'No match.')}
+            </p>
+          ) : (
+            <div className="p-1">
+              {filtered.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  onClick={() => toggle(name)}
+                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-caption text-text-secondary hover:bg-surface-2 hover:text-text-primary"
+                >
+                  <Plus className="h-3 w-3 text-text-tertiary" />
+                  {name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Single-value sibling of MultiColumnPicker. Renders as a chip showing
+ * the current value (or a placeholder when empty), with the same
+ * popover search as the multi-select picker so the builder UI looks
+ * consistent across all "pick from a list" controls.
+ *
+ * Use this when the field holds at most one value (e.g. "after submit
+ * go to", "sort column", "value column"). For free-form text or numeric
+ * inputs, stick with a native input — chips imply enumeration.
+ */
+export function SingleColumnPicker({
+  sourceColumns,
+  value,
+  onChange,
+  placeholder = 'Click to pick…',
+  emptyHint,
+  clearable = true,
+  /** Optional pretty labels: by `value` → display string. */
+  labelByValue,
+}: {
+  sourceColumns: string[];
+  value: string | null | undefined;
+  onChange: (next: string | null) => void;
+  placeholder?: string;
+  emptyHint?: string;
+  /** When false, omits the clear button (use for required pickers). */
+  clearable?: boolean;
+  labelByValue?: Record<string, string>;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [query, setQuery] = React.useState('');
+  const wrapRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) {
+        setOpen(false);
+        setQuery('');
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  const queryNorm = query.trim().toLowerCase();
+  const filtered = queryNorm
+    ? sourceColumns.filter((c) => c.toLowerCase().includes(queryNorm)
+        || (labelByValue?.[c] || '').toLowerCase().includes(queryNorm))
+    : sourceColumns;
+
+  const display = value ? (labelByValue?.[value] ?? value) : null;
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full min-h-9 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1.5 text-left text-caption text-text-secondary hover:border-brand/30"
+      >
+        {value && display ? (
+          <span className="inline-flex max-w-full items-center gap-1 rounded bg-brand/10 px-1.5 py-0.5 text-caption text-brand">
+            <span className="truncate">{display}</span>
+            {clearable && (
+              <span
+                role="button"
+                tabIndex={-1}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onChange(null);
+                }}
+                className="flex cursor-pointer items-center justify-center rounded hover:bg-brand/20"
+                title="Clear"
+              >
+                <X className="h-3 w-3" />
+              </span>
+            )}
+          </span>
+        ) : (
+          <span className="text-text-tertiary">{placeholder}</span>
+        )}
+        <ChevronDown
+          className={`ml-auto h-3.5 w-3.5 text-text-tertiary transition-transform ${
+            open ? 'rotate-180' : ''
+          }`}
+        />
+      </button>
+
+      {open && (
+        <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-72 overflow-y-auto rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-md">
+          <div className="sticky top-0 border-b border-[rgb(var(--border-line))] bg-surface-1 p-2">
+            <input
+              autoFocus
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={`Search ${sourceColumns.length} options…`}
+              className="h-7 w-full rounded border border-[rgb(var(--border-line))] bg-surface-0 px-2 text-caption"
+            />
+          </div>
+          {filtered.length === 0 ? (
+            <p className="px-2 py-3 text-center text-caption text-text-tertiary">
+              {emptyHint ?? (sourceColumns.length === 0 ? 'No options.' : 'No match.')}
+            </p>
+          ) : (
+            <div className="p-1">
+              {filtered.map((name) => {
+                const isActive = name === value;
+                return (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => {
+                      onChange(name);
+                      setOpen(false);
+                      setQuery('');
+                    }}
+                    className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-caption hover:bg-surface-2 ${
+                      isActive ? 'bg-brand/10 text-brand' : 'text-text-secondary hover:text-text-primary'
+                    }`}
+                  >
+                    {labelByValue?.[name] ?? name}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function FixedExpressionInput({
   value,
   onChange,
@@ -201,7 +461,7 @@ export function FixedExpressionInput({
     // grids like wb-row-key-value (no helper text below — that pushed the
     // row taller than its siblings and made columns visually misaligned).
     <div className="flex w-full items-center gap-1">
-      <div className="flex h-9 shrink-0 overflow-hidden rounded-md border border-[rgb(var(--border-line))] bg-surface-1 text-tiny">
+      <div className="flex h-9 shrink-0 overflow-hidden rounded-md border border-[rgb(var(--border-line))] bg-surface-1 text-caption">
         {(['fixed', 'expression'] as const).map((nextMode) => (
           <button
             key={nextMode}
@@ -209,8 +469,8 @@ export function FixedExpressionInput({
             onClick={() => setMode(nextMode)}
             title={
               nextMode === 'fixed'
-                ? 'Giá trị cố định (gõ trực tiếp)'
-                : 'Biểu thức động (chèn biến)'
+                ? 'Fixed value (typed directly)'
+                : 'Dynamic expression (insert variables)'
             }
             className={`inline-flex h-full items-center px-2 font-medium transition-colors ${
               mode === nextMode
