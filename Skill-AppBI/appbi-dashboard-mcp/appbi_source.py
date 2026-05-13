@@ -15,7 +15,7 @@ from appbi_core import (
     Context,
     _clamp_int,
     _request,
-    mcp,
+    tool,
 )
 
 
@@ -24,7 +24,7 @@ from appbi_core import (
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool({"report", "dataset"})
 async def list_data_sources(ctx: Context | None = None) -> dict[str, Any]:
     """List every data source the authenticated user can view.
 
@@ -36,7 +36,7 @@ async def list_data_sources(ctx: Context | None = None) -> dict[str, Any]:
     return {"items": items}
 
 
-@mcp.tool()
+@tool({"report", "dataset"})
 async def get_data_source(
     data_source_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -44,7 +44,7 @@ async def get_data_source(
     return await _request("GET", f"/datasources/{int(data_source_id)}")
 
 
-@mcp.tool()
+@tool("dataset")
 async def test_data_source_connection(
     data_source_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -72,7 +72,7 @@ async def test_data_source_connection(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool({"report", "dataset"})
 async def inspect_source_schema(
     data_source_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -90,7 +90,7 @@ async def inspect_source_schema(
     return await _request("GET", f"/datasources/{int(data_source_id)}/schema")
 
 
-@mcp.tool()
+@tool({"report", "dataset"})
 async def inspect_source_table(
     data_source_id: int,
     schema_name: str,
@@ -114,7 +114,7 @@ async def inspect_source_table(
     return await _request("GET", path)
 
 
-@mcp.tool()
+@tool("dataset")
 async def get_watermark_candidates(
     data_source_id: int,
     schema_name: str,
@@ -136,7 +136,7 @@ async def get_watermark_candidates(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("dataset")
 async def run_source_query(
     data_source_id: int,
     sql_query: str,
@@ -166,7 +166,7 @@ async def run_source_query(
     return await _request("POST", "/datasources/query", json_body=body)
 
 
-@mcp.tool()
+@tool("dataset")
 async def validate_source_sql(
     data_source_id: int,
     sql_query: str,

@@ -61,7 +61,7 @@ from appbi_core import (
     _request,
     _requires_confirmation,
     logger,
-    mcp,
+    tool,
 )
 
 
@@ -257,7 +257,7 @@ DASHBOARD_BLUEPRINT_SHAPE = {
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool({"report", "explore"})
 async def propose_semantic_model(
     dataset_id: int,
     business_intent: str,
@@ -418,7 +418,7 @@ async def propose_semantic_model(
     }
 
 
-@mcp.tool()
+@tool({"report", "explore"})
 async def commit_semantic_model(
     plan_json: str,
     user_confirmed: bool = False,
@@ -837,7 +837,7 @@ async def commit_semantic_model(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("report")
 async def propose_dashboard_blueprint(
     dataset_id: int,
     business_intent: str,
@@ -1029,7 +1029,7 @@ async def propose_dashboard_blueprint(
     }
 
 
-@mcp.tool()
+@tool("report")
 async def commit_dashboard_blueprint(
     blueprint_json: str,
     user_confirmed: bool = False,
@@ -1122,21 +1122,6 @@ async def commit_dashboard_blueprint(
         if view.get("dataset_table_id") is not None:
             table_to_view_name[int(view["dataset_table_id"])] = vname
 
-    # explore_reachable_views[base_view_name] = set of all view names reachable
-    # via that explore's joins (includes base view itself).
-    explore_reachable_views: dict[str, set[str]] = {}
-    for explore in model.get("explores") or []:
-        base = str(explore.get("base_view_name") or "")
-        if not base:
-            continue
-        reachable = {base}
-        for join in explore.get("joins") or []:
-            jv = str(join.get("view") or "").strip()
-            if jv:
-                reachable.add(jv)
-        # Union with any existing entry so multiple explores on same base merge.
-        explore_reachable_views[base] = explore_reachable_views.get(base, set()) | reachable
-
     # Required dimension-like role fields per chart type.
     _CHART_REQUIRED_DIMENSION_FIELDS: dict[str, list[str]] = {
         "BAR": ["dimension"], "HORIZONTAL_BAR": ["dimension"],
@@ -1159,46 +1144,6 @@ async def commit_dashboard_blueprint(
         "dimension", "breakdown", "timeField", "scatterX", "scatterY",
         "tableRowDimension", "tableColumnDimension",
     }
-
-    def _check_dim_field(
-        role_config: dict[str, Any],
-        key: str,
-        view_name: str | None,
-        reachable: set[str],
-        errors: list[str],
-    ) -> None:
-        val = str(role_config.get(key) or "").strip()
-        if not val:
-            errors.append(f"role_config.{key} is required but missing.")
-            return
-        q_view, q_field = _split_qualified(val)
-        target_view = q_view if q_view else view_name
-        if target_view is None:
-            errors.append(f"role_config.{key}='{val}': cannot resolve view.")
-            return
-        if q_view and q_view not in reachable:
-            errors.append(
-                f"role_config.{key}='{val}' references view '{q_view}' "
-                "which is not reachable via the chart's explore joins."
-            )
-            return
-        check_field = q_field if q_view else val
-        # Accept qualified references (view.field) - they are already
-        # resolved above.  For unqualified names just check the bound view.
-        if q_view:
-            if check_field not in dimension_index.get(q_view, set()):
-                avail = sorted(dimension_index.get(q_view, set()))
-                errors.append(
-                    f"role_config.{key}='{val}' is not a dimension on view "
-                    f"'{q_view}'. Available: {avail}."
-                )
-        else:
-            if check_field not in dimension_index.get(target_view, set()):
-                avail = sorted(dimension_index.get(target_view, set()))
-                errors.append(
-                    f"role_config.{key}='{val}' is not a dimension on view "
-                    f"'{target_view}'. Available: {avail}."
-                )
 
     validation: list[dict[str, Any]] = []
     valid_specs: list[dict[str, Any]] = []
@@ -1225,8 +1170,6 @@ async def commit_dashboard_blueprint(
             )
 
         view_name = table_to_view_name.get(dtid) if dtid is not None else None
-        reachable_views = explore_reachable_views.get(view_name or "", set()) if view_name else set()
-
         role_config = chart.get("role_config") or {}
 
         # ── 1. Chart-type role shape check (required dimension-like fields) ──
@@ -1271,12 +1214,6 @@ async def commit_dashboard_blueprint(
                             f"on view '{qualified_view}'. "
                             f"Available: {sorted(measure_index[qualified_view])}."
                         )
-                elif qualified_view != view_name:
-                    errors.append(
-                        f"metrics[{m_index}].field='{field}' references joined "
-                        f"view '{qualified_view}'. Saved charts currently support "
-                        f"only measures from the bound view '{view_name}'."
-                    )
             else:
                 if view_name is None:
                     errors.append(
@@ -1307,13 +1244,7 @@ async def commit_dashboard_blueprint(
                     continue  # absence already caught by required_dim_keys check
                 q_view, q_field = _split_qualified(val)
                 target_view = q_view if q_view else view_name
-                if q_view and q_view != view_name:
-                    errors.append(
-                        f"role_config.{dim_key}='{val}' references joined view "
-                        f"'{q_view}'. Saved charts currently support only fields "
-                        f"from the bound view '{view_name}'."
-                    )
-                elif q_view:
+                if q_view:
                     if q_field not in dimension_index.get(q_view, set()):
                         errors.append(
                             f"role_config.{dim_key}='{val}' is not a dimension "
@@ -1342,12 +1273,6 @@ async def commit_dashboard_blueprint(
                     errors.append(
                         f"role_config.{metric_key}.field='{field}' references view "
                         f"'{qualified_view}' which has no SemanticView."
-                    )
-                elif qualified_view != view_name:
-                    errors.append(
-                        f"role_config.{metric_key}.field='{field}' references joined "
-                        f"view '{qualified_view}'. Saved charts currently support "
-                        f"only measures from the bound view '{view_name}'."
                     )
                 elif qualified_field not in measure_index.get(qualified_view, set()):
                     errors.append(
@@ -1380,12 +1305,6 @@ async def commit_dashboard_blueprint(
                     errors.append(
                         f"role_config.selectedColumns[{col_index}]='{field}' references "
                         f"view '{qualified_view}' which has no SemanticView."
-                    )
-                elif qualified_view != view_name:
-                    errors.append(
-                        f"role_config.selectedColumns[{col_index}]='{field}' references "
-                        f"joined view '{qualified_view}'. Saved charts currently support "
-                        f"only fields from the bound view '{view_name}'."
                     )
                 elif (
                     qualified_field not in dimension_index.get(qualified_view, set())
@@ -1586,7 +1505,7 @@ async def commit_dashboard_blueprint(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("all")
 async def audit_chart_semantic_health(
     dataset_id: int | None = None,
     ctx: Context | None = None,
@@ -1681,7 +1600,7 @@ async def audit_chart_semantic_health(
     }
 
 
-@mcp.tool()
+@tool("all")
 async def repair_chart_semantic_binding(
     chart_id: int,
     dataset_table_id: int | None = None,
@@ -1932,13 +1851,11 @@ def _build_chart_config_from_spec(chart_spec: dict[str, Any]) -> dict[str, Any]:
     the full Explore config with queryMode/roleConfig/generatedRoleConfig
     triplet. Build it here so the blueprint stays human-readable.
 
-    IMPORTANT: role_config field names are stripped of 'view.' qualifiers
-    before storage. The backend's LiveQueryService uses them as raw SQL
-    column identifiers; qualified names like 'orders.amount' would cause
-    a 500 in Explore because the backend wraps them as \"orders.amount\"
-    (invalid SQL column reference).
+    IMPORTANT: preserve qualified semantic refs (`view.field`) when they
+    are present. The backend chart runtime now decides whether the chart
+    stays on the legacy single-table path or routes to semantic runtime.
     """
-    role_config = _unqualify_role_config(dict(chart_spec.get("role_config") or {}))
+    role_config = dict(chart_spec.get("role_config") or {})
     chart_type = str(chart_spec.get("chart_type") or "").upper()
     return {
         "chartType": chart_type,

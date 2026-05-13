@@ -15,11 +15,11 @@ from appbi_core import (
     _drop_none,
     _request,
     _requires_confirmation,
-    mcp,
+    tool,
 )
 
 
-@mcp.tool()
+@tool("all")
 async def list_quality_rules(
     dataset_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -30,7 +30,7 @@ async def list_quality_rules(
     return {"items": items}
 
 
-@mcp.tool()
+@tool("all")
 async def get_quality_summary(
     dataset_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -40,7 +40,7 @@ async def get_quality_summary(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def create_quality_rule(
     dataset_id: int,
     table_id: int,
@@ -96,7 +96,7 @@ async def create_quality_rule(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def create_quality_rules_bulk(
     dataset_id: int,
     rules: list[dict[str, Any]],
@@ -137,7 +137,7 @@ async def create_quality_rules_bulk(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def update_quality_rule(
     dataset_id: int,
     rule_id: int,
@@ -162,7 +162,7 @@ async def update_quality_rule(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def delete_quality_rule(
     dataset_id: int,
     rule_id: int,
@@ -184,7 +184,7 @@ async def delete_quality_rule(
     return {"status": "deleted", "rule_id": int(rule_id)}
 
 
-@mcp.tool()
+@tool("all")
 async def trigger_quality_run(
     dataset_id: int,
     user_confirmed: bool = False,
@@ -204,7 +204,7 @@ async def trigger_quality_run(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def list_quality_runs(
     dataset_id: int, limit: int = 20, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -216,7 +216,7 @@ async def list_quality_runs(
     return {"items": items}
 
 
-@mcp.tool()
+@tool("all")
 async def get_quality_run(
     dataset_id: int,
     run_id: int,

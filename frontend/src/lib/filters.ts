@@ -148,8 +148,10 @@ export interface DashboardFilterableJoinLike {
   origin?: string;
   from_view?: string;
   from_column?: string;
+  from_columns?: string[];
   view?: string;
   to_column?: string;
+  to_columns?: string[];
 }
 
 export interface DashboardFilterableExploreLike {
@@ -275,20 +277,31 @@ export function getFilterDisplayLabel(
 export function collectJoinKeySemanticFields(model: DashboardFilterableModelLike | null | undefined): Set<string> {
   const fields = new Set<string>();
 
+  const normalizeColumns = (values?: string[] | null, fallback?: string) => {
+    const source = values?.length ? values : (fallback ? [fallback] : []);
+    return source
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
+  };
+
   for (const explore of model?.explores ?? []) {
     for (const join of explore.joins ?? []) {
       if (join?.origin === 'auto_calendar') continue;
 
       const fromView = String(join?.from_view || explore?.base_view_name || '').trim();
-      const fromColumn = String(join?.from_column || '').trim();
       const toView = String(join?.view || '').trim();
-      const toColumn = String(join?.to_column || '').trim();
+      const fromColumns = normalizeColumns(join?.from_columns, join?.from_column);
+      const toColumns = normalizeColumns(join?.to_columns, join?.to_column);
 
-      if (fromView && fromColumn) {
-        fields.add(`${fromView}.${fromColumn}`);
+      if (fromView) {
+        for (const fromColumn of fromColumns) {
+          fields.add(`${fromView}.${fromColumn}`);
+        }
       }
-      if (toView && toColumn) {
-        fields.add(`${toView}.${toColumn}`);
+      if (toView) {
+        for (const toColumn of toColumns) {
+          fields.add(`${toView}.${toColumn}`);
+        }
       }
     }
   }

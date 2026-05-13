@@ -1,20 +1,18 @@
 'use client';
 
 /**
- * RelationshipDialog — Modal for adding / editing a join between two tables.
+ * RelationshipDialog - Modal for adding / editing a join between two tables.
  * Opened from DataModelCanvas when the user wants to define a relationship.
  */
 
-import React, { useState, useEffect, useRef } from 'react';
-import { ArrowRight, Link2 } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowRight, Link2, Plus, Trash2 } from 'lucide-react';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import {
   useDatasetModelJoinSuggestion,
   type DatasetModelView,
   type AddJoinParams,
 } from '@/hooks/use-dataset-model';
-
-// ─── Types ────────────────────────────────────────────────────────────────────
 
 export type JoinType = 'left' | 'inner' | 'right' | 'full';
 export type RelationshipType =
@@ -23,11 +21,18 @@ export type RelationshipType =
   | 'many_to_one'
   | 'many_to_many';
 
+type JoinPair = {
+  fromColumn: string;
+  toColumn: string;
+};
+
 export interface RelationshipDialogValue {
   fromViewId: number;
   toViewId: number;
   fromColumn: string;
   toColumn: string;
+  fromColumns?: string[];
+  toColumns?: string[];
   joinType: JoinType;
   relationship: RelationshipType;
   alias?: string | null;
@@ -39,12 +44,9 @@ interface RelationshipDialogProps {
   onSave: (value: Omit<AddJoinParams, 'datasetId'>) => Promise<void>;
   datasetId: number;
   views: DatasetModelView[];
-  /** Pre-fill when editing an existing join */
   initialValue?: Partial<RelationshipDialogValue>;
   isSaving?: boolean;
 }
-
-// ─── Constants ────────────────────────────────────────────────────────────────
 
 const JOIN_TYPE_OPTIONS: { value: JoinType; label: string }[] = [
   { value: 'left', label: 'LEFT JOIN' },
@@ -60,13 +62,11 @@ const RELATIONSHIP_OPTIONS: {
   to: string;
   disabled?: boolean;
 }[] = [
-  { value: 'one_to_one', label: '1 : 1  —  One to One', from: '1', to: '1' },
-  { value: 'one_to_many', label: '1 : N  —  One to Many', from: '1', to: 'N' },
-  { value: 'many_to_one', label: 'N : 1  —  Many to One', from: 'N', to: '1' },
-  { value: 'many_to_many', label: 'N : N  —  Unsupported', from: 'N', to: 'N', disabled: true },
+  { value: 'one_to_one', label: '1 : 1  -  One to One', from: '1', to: '1' },
+  { value: 'one_to_many', label: '1 : N  -  One to Many', from: '1', to: 'N' },
+  { value: 'many_to_one', label: 'N : 1  -  Many to One', from: 'N', to: '1' },
+  { value: 'many_to_many', label: 'N : N  -  Unsupported', from: 'N', to: 'N', disabled: true },
 ];
-
-// ─── Select component (native <select> wrapper) ───────────────────────────────
 
 function Select({
   value,
@@ -85,8 +85,8 @@ function Select({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className={`w-full px-3 py-2 text-sm border border-[rgb(var(--border-strong))] rounded-md bg-surface-1
-        focus:outline-none focus:ring-2 focus:ring-brand focus:border-transparent
+      className={`w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-2 text-sm
+        focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand
         disabled:bg-surface-2 disabled:text-text-quaternary ${className}`}
     >
       {placeholder && (
@@ -94,16 +94,56 @@ function Select({
           {placeholder}
         </option>
       )}
-      {options.map((o) => (
-        <option key={o.value} value={o.value} disabled={o.disabled}>
-          {o.label}
+      {options.map((option) => (
+        <option key={option.value} value={option.value} disabled={option.disabled}>
+          {option.label}
         </option>
       ))}
     </select>
   );
 }
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+function buildJoinPairsFromInitialValue(
+  initialValue?: Partial<RelationshipDialogValue>,
+): JoinPair[] {
+  const fromColumns = initialValue?.fromColumns?.length
+    ? initialValue.fromColumns
+    : (initialValue?.fromColumn ? [initialValue.fromColumn] : []);
+  const toColumns = initialValue?.toColumns?.length
+    ? initialValue.toColumns
+    : (initialValue?.toColumn ? [initialValue.toColumn] : []);
+
+  const pairCount = Math.max(fromColumns.length, toColumns.length, 1);
+  return Array.from({ length: pairCount }, (_, index) => ({
+    fromColumn: fromColumns[index] ?? '',
+    toColumn: toColumns[index] ?? '',
+  }));
+}
+
+function buildSelectionKey(
+  fromViewId: number | '',
+  toViewId: number | '',
+  joinPairs: JoinPair[],
+): string {
+  const pairsKey = joinPairs
+    .map((pair) => `${pair.fromColumn.trim()}=${pair.toColumn.trim()}`)
+    .join('|');
+  return `${fromViewId}|${toViewId}|${pairsKey}`;
+}
+
+function normalizeJoinPairLists(joinPairs: JoinPair[]): { fromColumns: string[]; toColumns: string[] } {
+  const normalizedPairs = joinPairs
+    .map((pair) => ({
+      fromColumn: pair.fromColumn.trim(),
+      toColumn: pair.toColumn.trim(),
+    }))
+    .filter((pair) => pair.fromColumn && pair.toColumn);
+
+  return {
+    fromColumns: normalizedPairs.map((pair) => pair.fromColumn),
+    toColumns: normalizedPairs.map((pair) => pair.toColumn),
+  };
+}
 
 export function RelationshipDialog({
   isOpen,
@@ -114,52 +154,37 @@ export function RelationshipDialog({
   initialValue,
   isSaving = false,
 }: RelationshipDialogProps) {
-  const [fromViewId, setFromViewId] = useState<number | ''>(
-    initialValue?.fromViewId ?? ''
-  );
-  const [toViewId, setToViewId] = useState<number | ''>(
-    initialValue?.toViewId ?? ''
-  );
-  const [fromColumn, setFromColumn] = useState(initialValue?.fromColumn ?? '');
-  const [toColumn, setToColumn] = useState(initialValue?.toColumn ?? '');
-  const [joinType, setJoinType] = useState<JoinType>(
-    initialValue?.joinType ?? 'left'
-  );
+  const [fromViewId, setFromViewId] = useState<number | ''>(initialValue?.fromViewId ?? '');
+  const [toViewId, setToViewId] = useState<number | ''>(initialValue?.toViewId ?? '');
+  const [joinPairs, setJoinPairs] = useState<JoinPair[]>(() => buildJoinPairsFromInitialValue(initialValue));
+  const [joinType, setJoinType] = useState<JoinType>(initialValue?.joinType ?? 'left');
   const [relationship, setRelationship] = useState<RelationshipType>(
-    initialValue?.relationship ?? 'many_to_one'
+    initialValue?.relationship ?? 'many_to_one',
   );
   const [alias, setAlias] = useState<string>(initialValue?.alias ?? '');
   const [error, setError] = useState('');
   const [relationshipTouched, setRelationshipTouched] = useState(false);
-  const [autoSuggestRelationship, setAutoSuggestRelationship] = useState(
-    !initialValue?.relationship
-  );
+  const [autoSuggestRelationship, setAutoSuggestRelationship] = useState(!initialValue?.relationship);
   const [previousSelectionKey, setPreviousSelectionKey] = useState('');
   const suppressSelectionResetRef = useRef(false);
 
-  // Derived selection key (computed before hooks so it can be used in dep array)
-  const selectionKey = `${fromViewId}|${toViewId}|${fromColumn}|${toColumn}`;
+  const selectionKey = buildSelectionKey(fromViewId, toViewId, joinPairs);
 
-  // Reset when dialog reopens
   useEffect(() => {
-    if (isOpen) {
-      setFromViewId(initialValue?.fromViewId ?? '');
-      setToViewId(initialValue?.toViewId ?? '');
-      setFromColumn(initialValue?.fromColumn ?? '');
-      setToColumn(initialValue?.toColumn ?? '');
-      setJoinType(initialValue?.joinType ?? 'left');
-      setRelationship(initialValue?.relationship ?? 'many_to_one');
-      setAlias(initialValue?.alias ?? '');
-      setError('');
-      setRelationshipTouched(false);
-      setAutoSuggestRelationship(!initialValue?.relationship);
-      setPreviousSelectionKey(
-        `${initialValue?.fromViewId ?? ''}|${initialValue?.toViewId ?? ''}|${initialValue?.fromColumn ?? ''}|${initialValue?.toColumn ?? ''}`
-      );
-      suppressSelectionResetRef.current = true;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen]);
+    if (!isOpen) return;
+    const nextPairs = buildJoinPairsFromInitialValue(initialValue);
+    setFromViewId(initialValue?.fromViewId ?? '');
+    setToViewId(initialValue?.toViewId ?? '');
+    setJoinPairs(nextPairs);
+    setJoinType(initialValue?.joinType ?? 'left');
+    setRelationship(initialValue?.relationship ?? 'many_to_one');
+    setAlias(initialValue?.alias ?? '');
+    setError('');
+    setRelationshipTouched(false);
+    setAutoSuggestRelationship(!initialValue?.relationship);
+    setPreviousSelectionKey(buildSelectionKey(initialValue?.fromViewId ?? '', initialValue?.toViewId ?? '', nextPairs));
+    suppressSelectionResetRef.current = true;
+  }, [initialValue, isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -173,15 +198,33 @@ export function RelationshipDialog({
     setAutoSuggestRelationship(true);
   }, [isOpen, previousSelectionKey, selectionKey]);
 
+  const fromView = views.find((view) => view.id === fromViewId);
+  const toView = views.find((view) => view.id === toViewId);
+
+  const fromColumns = fromView
+    ? fromView.dimensions.map((dimension) => ({ value: dimension.name, label: dimension.label || dimension.name }))
+    : [];
+  const toColumns = toView
+    ? toView.dimensions.map((dimension) => ({ value: dimension.name, label: dimension.label || dimension.name }))
+    : [];
+
+  const viewOptions = views.map((view) => ({
+    value: String(view.id),
+    label: view.table_display_name || view.name,
+  }));
+
+  const normalizedJoinPairs = useMemo(() => normalizeJoinPairLists(joinPairs), [joinPairs]);
   const shouldSuggestRelationship = Boolean(
     isOpen
     && datasetId > 0
     && fromViewId
     && toViewId
-    && fromColumn
-    && toColumn
     && fromViewId !== toViewId
+    && joinPairs.length > 0
+    && normalizedJoinPairs.fromColumns.length === joinPairs.length
+    && normalizedJoinPairs.toColumns.length === joinPairs.length,
   );
+
   const {
     data: joinSuggestion,
     isLoading: isSuggestingRelationship,
@@ -191,8 +234,10 @@ export function RelationshipDialog({
       ? {
           fromViewId: Number(fromViewId),
           toViewId: Number(toViewId),
-          fromColumn,
-          toColumn,
+          fromColumn: normalizedJoinPairs.fromColumns[0] ?? '',
+          toColumn: normalizedJoinPairs.toColumns[0] ?? '',
+          fromColumns: normalizedJoinPairs.fromColumns,
+          toColumns: normalizedJoinPairs.toColumns,
         }
       : null,
   );
@@ -202,39 +247,45 @@ export function RelationshipDialog({
     setRelationship(joinSuggestion.relationship);
   }, [autoSuggestRelationship, isOpen, joinSuggestion, relationshipTouched]);
 
-  // Early return AFTER all hooks — avoids Rules of Hooks violation
   if (!isOpen) return null;
 
-  const fromView = views.find((v) => v.id === fromViewId);
-  const toView = views.find((v) => v.id === toViewId);
-
-  // Build column lists from view dimensions (includes hidden cols like FK cols)
-  const fromColumns = fromView
-    ? fromView.dimensions.map((d) => ({ value: d.name, label: d.label || d.name }))
-    : [];
-  const toColumns = toView
-    ? toView.dimensions.map((d) => ({ value: d.name, label: d.label || d.name }))
-    : [];
-
-  const viewOptions = views.map((v) => ({
-    value: String(v.id),
-    label: v.table_display_name || v.name,
-  }));
-
-  // Auto-suggest "id" as the to_column when target table is selected
-  const handleToViewChange = (id: string) => {
-    setToViewId(Number(id));
-    const v = views.find((x) => x.id === Number(id));
-    if (v) {
-      const idCol = v.dimensions.find((d) => d.name === 'id');
-      if (idCol) setToColumn('id');
-    }
-  };
-
-  // Auto-suggest FK column when from view changes
   const handleFromViewChange = (id: string) => {
     setFromViewId(Number(id));
-    setFromColumn('');
+    setJoinPairs((current) => current.map((pair) => ({ ...pair, fromColumn: '' })));
+  };
+
+  const handleToViewChange = (id: string) => {
+    setToViewId(Number(id));
+    const targetView = views.find((view) => view.id === Number(id));
+    const defaultToColumn = targetView?.dimensions.find((dimension) => dimension.name === 'id')?.name ?? '';
+    setJoinPairs((current) =>
+      current.map((pair, index) => ({
+        ...pair,
+        toColumn: index === 0 && !pair.toColumn ? defaultToColumn : pair.toColumn,
+      })),
+    );
+  };
+
+  const handleJoinPairChange = (
+    index: number,
+    side: 'fromColumn' | 'toColumn',
+    value: string,
+  ) => {
+    setJoinPairs((current) =>
+      current.map((pair, pairIndex) =>
+        pairIndex === index ? { ...pair, [side]: value } : pair,
+      ),
+    );
+  };
+
+  const handleAddKey = () => {
+    setJoinPairs((current) => [...current, { fromColumn: '', toColumn: '' }]);
+  };
+
+  const handleRemoveKey = (index: number) => {
+    setJoinPairs((current) => (
+      current.length <= 1 ? current : current.filter((_, pairIndex) => pairIndex !== index)
+    ));
   };
 
   const handleSave = async () => {
@@ -243,32 +294,35 @@ export function RelationshipDialog({
       setError('Please select both tables.');
       return;
     }
-    if (!fromColumn || !toColumn) {
-      setError('Please select join columns for both tables.');
-      return;
-    }
     if (fromViewId === toViewId) {
       setError('Cannot join a table to itself.');
       return;
     }
+    if (normalizedJoinPairs.fromColumns.length !== joinPairs.length || normalizedJoinPairs.toColumns.length !== joinPairs.length) {
+      setError('Please select join columns for every key pair.');
+      return;
+    }
+
     try {
-      const aliasTrim = alias.trim();
+      const aliasTrimmed = alias.trim();
       await onSave({
         fromViewId: Number(fromViewId),
         toViewId: Number(toViewId),
-        fromColumn,
-        toColumn,
+        fromColumn: normalizedJoinPairs.fromColumns[0],
+        toColumn: normalizedJoinPairs.toColumns[0],
+        fromColumns: normalizedJoinPairs.fromColumns,
+        toColumns: normalizedJoinPairs.toColumns,
         joinType,
         relationship,
-        alias: aliasTrim || null,
+        alias: aliasTrimmed || null,
       });
       onClose();
-    } catch (e: any) {
-      setError(e?.response?.data?.detail || e?.message || 'Failed to save relationship.');
+    } catch (saveError: any) {
+      setError(saveError?.response?.data?.detail || saveError?.message || 'Failed to save relationship.');
     }
   };
 
-  const relOpt = RELATIONSHIP_OPTIONS.find((r) => r.value === relationship)!;
+  const relOpt = RELATIONSHIP_OPTIONS.find((option) => option.value === relationship)!;
   const suggestedRelationshipLabel = joinSuggestion
     ? RELATIONSHIP_OPTIONS.find((option) => option.value === joinSuggestion.relationship)?.label
     : null;
@@ -280,6 +334,10 @@ export function RelationshipDialog({
   const blockingMessage = joinSuggestion?.can_create === false
     ? (joinSuggestion.message || 'This relationship cannot be created.')
     : null;
+  const previewPairs = normalizedJoinPairs.fromColumns.map((fromColumn, index) => ({
+    fromColumn,
+    toColumn: normalizedJoinPairs.toColumns[index] ?? '',
+  }));
 
   return (
     <AppModalShell
@@ -288,7 +346,7 @@ export function RelationshipDialog({
       description="Define how two semantic views join and how their cardinality should be interpreted."
       icon={<Link2 className="h-5 w-5" />}
       maxWidthClass="max-w-[96vw]"
-      panelClassName="w-[560px]"
+      panelClassName="w-[640px]"
       bodyClassName="px-6 py-5"
       closeDisabled={isSaving}
       footer={(
@@ -296,7 +354,7 @@ export function RelationshipDialog({
           <button
             onClick={onClose}
             disabled={isSaving}
-            className="rounded-md border border-[rgb(var(--border-strong))] px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-2 transition-colors disabled:opacity-50"
+            className="rounded-md border border-[rgb(var(--border-strong))] px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-50"
           >
             Cancel
           </button>
@@ -306,16 +364,16 @@ export function RelationshipDialog({
               isSaving
               || !fromViewId
               || !toViewId
-              || !fromColumn
-              || !toColumn
+              || normalizedJoinPairs.fromColumns.length !== joinPairs.length
+              || normalizedJoinPairs.toColumns.length !== joinPairs.length
               || joinSuggestion?.can_create === false
             }
-            className="flex items-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-hover disabled:opacity-50"
           >
             {isSaving ? (
               <>
-                <span className="h-3.5 w-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                Saving…
+                <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                Saving...
               </>
             ) : (
               'Save Relationship'
@@ -325,179 +383,211 @@ export function RelationshipDialog({
       )}
     >
       <div className="space-y-5">
-          {/* Table selectors row */}
-          <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
-            {/* From table */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
-                From Table
-              </label>
-              <Select
-                value={String(fromViewId)}
-                onChange={handleFromViewChange}
-                options={viewOptions.filter((v) => v.value !== String(toViewId))}
-                placeholder="Select table…"
-              />
-            </div>
+        <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+              From Table
+            </label>
+            <Select
+              value={String(fromViewId)}
+              onChange={handleFromViewChange}
+              options={viewOptions.filter((option) => option.value !== String(toViewId))}
+              placeholder="Select table..."
+            />
+          </div>
 
-            {/* Arrow icon */}
-            <div className="flex items-center justify-center pb-0.5">
-              <div className="flex items-center gap-1 text-xs font-semibold text-brand bg-brand/10 px-2 py-1 rounded-full whitespace-nowrap">
-                <span>{relOpt.from}</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-                <span>{relOpt.to}</span>
+          <div className="flex items-center justify-center pb-0.5">
+            <div className="flex items-center gap-1 whitespace-nowrap rounded-full bg-brand/10 px-2 py-1 text-xs font-semibold text-brand">
+              <span>{relOpt.from}</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+              <span>{relOpt.to}</span>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+              To Table
+            </label>
+            <Select
+              value={String(toViewId)}
+              onChange={handleToViewChange}
+              options={viewOptions.filter((option) => option.value !== String(fromViewId))}
+              placeholder="Select table..."
+            />
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+              Join Keys
+            </label>
+            <button
+              type="button"
+              onClick={handleAddKey}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 text-text-secondary transition-colors hover:bg-surface-2"
+              title="Add another key pair"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+          </div>
+
+          {joinPairs.map((pair, index) => (
+            <div
+              key={`${index}-${pair.fromColumn}-${pair.toColumn}`}
+              className="grid grid-cols-[1fr_auto_1fr_auto] items-end gap-3"
+            >
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+                  From Column {joinPairs.length > 1 ? index + 1 : ''}
+                </label>
+                {fromColumns.length > 0 ? (
+                  <Select
+                    value={pair.fromColumn}
+                    onChange={(value) => handleJoinPairChange(index, 'fromColumn', value)}
+                    options={fromColumns}
+                    placeholder="Select column..."
+                  />
+                ) : (
+                  <input
+                    type="text"
+                    value={pair.fromColumn}
+                    onChange={(event) => handleJoinPairChange(index, 'fromColumn', event.target.value)}
+                    placeholder="e.g. user_id"
+                    className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-2 text-sm
+                      focus:outline-none focus:ring-2 focus:ring-brand"
+                  />
+                )}
+              </div>
+
+              <div className="flex items-center justify-center pb-0.5">
+                <span className="font-mono text-sm text-text-quaternary">=</span>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+                  To Column {joinPairs.length > 1 ? index + 1 : ''}
+                </label>
+                {toColumns.length > 0 ? (
+                  <Select
+                    value={pair.toColumn}
+                    onChange={(value) => handleJoinPairChange(index, 'toColumn', value)}
+                    options={toColumns}
+                    placeholder="Select column..."
+                  />
+                ) : (
+                  <input
+                    type="text"
+                    value={pair.toColumn}
+                    onChange={(event) => handleJoinPairChange(index, 'toColumn', event.target.value)}
+                    placeholder="e.g. id"
+                    className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-2 text-sm
+                      focus:outline-none focus:ring-2 focus:ring-brand"
+                  />
+                )}
+              </div>
+
+              <div className="flex items-center justify-center pb-0.5">
+                <button
+                  type="button"
+                  onClick={() => handleRemoveKey(index)}
+                  disabled={joinPairs.length <= 1}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 text-text-secondary transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+                  title="Remove key pair"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
               </div>
             </div>
+          ))}
+        </div>
 
-            {/* To table */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
-                To Table
-              </label>
-              <Select
-                value={String(toViewId)}
-                onChange={handleToViewChange}
-                options={viewOptions.filter((v) => v.value !== String(fromViewId))}
-                placeholder="Select table…"
-              />
-            </div>
-          </div>
-
-          {/* Column selectors row */}
-          <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-end">
-            {/* From column */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
-                Join Column
-              </label>
-              {fromColumns.length > 0 ? (
-                <Select
-                  value={fromColumn}
-                  onChange={setFromColumn}
-                  options={fromColumns}
-                  placeholder="Select column…"
-                />
-              ) : (
-                <input
-                  type="text"
-                  value={fromColumn}
-                  onChange={(e) => setFromColumn(e.target.value)}
-                  placeholder="e.g. user_id"
-                  className="w-full px-3 py-2 text-sm border border-[rgb(var(--border-strong))] rounded-md bg-surface-1
-                    focus:outline-none focus:ring-2 focus:ring-brand"
-                />
-              )}
-            </div>
-
-            {/* = sign */}
-            <div className="flex items-center justify-center pb-0.5">
-              <span className="text-text-quaternary font-mono text-sm">=</span>
-            </div>
-
-            {/* To column */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
-                Join Column
-              </label>
-              {toColumns.length > 0 ? (
-                <Select
-                  value={toColumn}
-                  onChange={setToColumn}
-                  options={toColumns}
-                  placeholder="Select column…"
-                />
-              ) : (
-                <input
-                  type="text"
-                  value={toColumn}
-                  onChange={(e) => setToColumn(e.target.value)}
-                  placeholder="e.g. id"
-                  className="w-full px-3 py-2 text-sm border border-[rgb(var(--border-strong))] rounded-md bg-surface-1
-                    focus:outline-none focus:ring-2 focus:ring-brand"
-                />
-              )}
-            </div>
-          </div>
-
-          {/* Relationship type + Join type */}
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
-                Relationship Type
-              </label>
-              <Select
-                value={relationship}
-                onChange={(v) => {
-                  setRelationship(v as RelationshipType);
-                  setRelationshipTouched(true);
-                  setAutoSuggestRelationship(false);
-                }}
-                options={RELATIONSHIP_OPTIONS.map((r) => ({
-                  value: r.value,
-                  label: r.label,
-                  disabled: r.disabled,
-                }))}
-              />
-              {(isSuggestingRelationship || suggestedRelationshipLabel) && (
-                <p className={`text-xs ${joinSuggestion?.can_create === false ? 'text-danger' : 'text-text-quaternary'}`}>
-                  {isSuggestingRelationship
-                    ? 'Checking join cardinality...'
-                    : `Suggested from current data: ${suggestedRelationshipLabel}${suggestedUniquenessLabel}`}
-                </p>
-              )}
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
-                Join Type
-              </label>
-              <Select
-                value={joinType}
-                onChange={(v) => setJoinType(v as JoinType)}
-                options={JOIN_TYPE_OPTIONS}
-              />
-            </div>
-          </div>
-
-          {/* Optional alias for role-playing dimensions */}
+        <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
-              Alias <span className="normal-case text-text-quaternary">(optional — for role-playing, e.g. "creator", "updater")</span>
+            <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+              Relationship Type
             </label>
-            <input
-              type="text"
-              value={alias}
-              onChange={(e) => setAlias(e.target.value)}
-              placeholder={toView ? `Leave blank to use "${toView.name}"` : 'e.g. creator, updater'}
-              className="w-full px-3 py-2 text-sm border border-[rgb(var(--border-strong))] rounded-md bg-surface-1
-                focus:outline-none focus:ring-2 focus:ring-brand"
+            <Select
+              value={relationship}
+              onChange={(value) => {
+                setRelationship(value as RelationshipType);
+                setRelationshipTouched(true);
+                setAutoSuggestRelationship(false);
+              }}
+              options={RELATIONSHIP_OPTIONS.map((option) => ({
+                value: option.value,
+                label: option.label,
+                disabled: option.disabled,
+              }))}
             />
-            <p className="text-xs text-text-quaternary">
-              Use this when the same table is joined more than once via different keys. Field references will use
-              the alias (e.g. <code>creator.email</code>) instead of the table name.
-            </p>
+            {(isSuggestingRelationship || suggestedRelationshipLabel) && (
+              <p className={`text-xs ${joinSuggestion?.can_create === false ? 'text-danger' : 'text-text-quaternary'}`}>
+                {isSuggestingRelationship
+                  ? 'Checking join cardinality...'
+                  : `Suggested from current data: ${suggestedRelationshipLabel}${suggestedUniquenessLabel}`}
+              </p>
+            )}
           </div>
 
-          {/* SQL preview */}
-          {fromView && toView && fromColumn && toColumn && (
-            <div className="rounded-md bg-surface-2 px-3 py-2 text-xs font-mono text-text-tertiary border border-[rgb(var(--border-line))]">
-              <span className="text-brand font-semibold uppercase">{joinType} JOIN</span>{' '}
-              <span className="text-text-secondary">{toView.table_display_name || toView.name}</span>{' '}
-              <span className="text-text-tertiary">ON</span>{' '}
-              <span className="text-text-secondary">
-                {fromView.table_display_name || fromView.name}.{fromColumn}
-              </span>{' '}
-              = <span className="text-text-secondary">
-                {toView.table_display_name || toView.name}.{toColumn}
-              </span>
-            </div>
-          )}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+              Join Type
+            </label>
+            <Select
+              value={joinType}
+              onChange={(value) => setJoinType(value as JoinType)}
+              options={JOIN_TYPE_OPTIONS}
+            />
+          </div>
+        </div>
 
-          {/* Error */}
-          {(blockingMessage || error) && (
-            <p className="text-sm text-danger bg-danger/10 rounded-md px-3 py-2">
-              {blockingMessage || error}
-            </p>
-          )}
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+            Alias <span className="normal-case text-text-quaternary">(optional - for role-playing, e.g. "creator", "updater")</span>
+          </label>
+          <input
+            type="text"
+            value={alias}
+            onChange={(event) => setAlias(event.target.value)}
+            placeholder={toView ? `Leave blank to use "${toView.name}"` : 'e.g. creator, updater'}
+            className="w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-3 py-2 text-sm
+              focus:outline-none focus:ring-2 focus:ring-brand"
+          />
+          <p className="text-xs text-text-quaternary">
+            Use this when the same table is joined more than once via different keys. Field references will use
+            the alias (e.g. <code>creator.email</code>) instead of the table name.
+          </p>
+        </div>
+
+        {fromView && toView && previewPairs.length > 0 && (
+          <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-xs font-mono text-text-tertiary">
+            <div className="mb-1">
+              <span className="font-semibold uppercase text-brand">{joinType} JOIN</span>{' '}
+              <span className="text-text-secondary">{toView.table_display_name || toView.name}</span>{' '}
+              <span className="text-text-tertiary">ON</span>
+            </div>
+            <div className="space-y-1">
+              {previewPairs.map((pair, index) => (
+                <div key={`${pair.fromColumn}-${pair.toColumn}-${index}`}>
+                  <span className="text-text-secondary">
+                    {fromView.table_display_name || fromView.name}.{pair.fromColumn}
+                  </span>{' '}
+                  ={' '}
+                  <span className="text-text-secondary">
+                    {toView.table_display_name || toView.name}.{pair.toColumn}
+                  </span>
+                  {index < previewPairs.length - 1 ? <span className="text-text-quaternary"> AND</span> : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {(blockingMessage || error) && (
+          <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">
+            {blockingMessage || error}
+          </p>
+        )}
       </div>
     </AppModalShell>
   );

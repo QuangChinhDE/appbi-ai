@@ -30,7 +30,7 @@ from appbi_core import (
     _query_path,
     _request,
     _requires_confirmation,
-    mcp,
+    tool,
 )
 
 
@@ -39,14 +39,14 @@ from appbi_core import (
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("explore")
 async def list_semantic_views(ctx: Context | None = None) -> dict[str, Any]:
     """List every semantic view across the workspace."""
     items = await _request("GET", "/semantic/views")
     return {"items": items}
 
 
-@mcp.tool()
+@tool("explore")
 async def get_semantic_view(
     view_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -54,14 +54,14 @@ async def get_semantic_view(
     return await _request("GET", f"/semantic/views/{int(view_id)}")
 
 
-@mcp.tool()
+@tool("explore")
 async def list_semantic_models(ctx: Context | None = None) -> dict[str, Any]:
     """List every semantic model. A model groups views + explores for a dataset."""
     items = await _request("GET", "/semantic/models")
     return {"items": items}
 
 
-@mcp.tool()
+@tool("explore")
 async def get_semantic_model(
     model_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -69,14 +69,14 @@ async def get_semantic_model(
     return await _request("GET", f"/semantic/models/{int(model_id)}")
 
 
-@mcp.tool()
+@tool({"report", "dataset", "explore"})
 async def list_semantic_explores(ctx: Context | None = None) -> dict[str, Any]:
     """List every explore. Charts target an explore by name."""
     items = await _request("GET", "/semantic/explores")
     return {"items": items}
 
 
-@mcp.tool()
+@tool({"report", "dataset", "explore"})
 async def get_semantic_explore(
     explore_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -84,7 +84,7 @@ async def get_semantic_explore(
     return await _request("GET", f"/semantic/explores/{int(explore_id)}")
 
 
-@mcp.tool()
+@tool({"report", "explore"})
 async def get_semantic_explore_by_name(
     explore_name: str, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -99,7 +99,7 @@ async def get_semantic_explore_by_name(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool({"report", "dataset", "explore"})
 async def get_dataset_model(
     dataset_id: int,
     summary: bool = False,
@@ -174,7 +174,7 @@ def _summarize_dataset_model(payload: Any) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@tool("explore")
 async def get_distinct_field_values(
     dataset_id: int,
     field: str,
@@ -202,7 +202,7 @@ async def get_distinct_field_values(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("explore")
 async def create_semantic_view(
     name: str,
     sql_table_name: str | None = None,
@@ -274,7 +274,7 @@ async def create_semantic_view(
     return await _request("POST", "/semantic/views", json_body=body)
 
 
-@mcp.tool()
+@tool("explore")
 async def update_semantic_view(
     view_id: int,
     patch: dict[str, Any],
@@ -299,7 +299,7 @@ async def update_semantic_view(
     )
 
 
-@mcp.tool()
+@tool("explore")
 async def delete_semantic_view(
     view_id: int,
     user_confirmed: bool = False,
@@ -321,7 +321,7 @@ async def delete_semantic_view(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("explore")
 async def create_semantic_model(
     name: str,
     dataset_id: int | None = None,
@@ -338,7 +338,7 @@ async def create_semantic_model(
     return await _request("POST", "/semantic/models", json_body=body)
 
 
-@mcp.tool()
+@tool("explore")
 async def update_semantic_model(
     model_id: int,
     patch: dict[str, Any],
@@ -356,7 +356,7 @@ async def update_semantic_model(
     )
 
 
-@mcp.tool()
+@tool("explore")
 async def delete_semantic_model(
     model_id: int,
     user_confirmed: bool = False,
@@ -378,7 +378,7 @@ async def delete_semantic_model(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("explore")
 async def create_semantic_explore(
     name: str,
     base_view_name: str,
@@ -423,7 +423,7 @@ async def create_semantic_explore(
     return await _request("POST", "/semantic/explores", json_body=body)
 
 
-@mcp.tool()
+@tool("explore")
 async def update_semantic_explore(
     explore_id: int,
     patch: dict[str, Any],
@@ -441,7 +441,7 @@ async def update_semantic_explore(
     )
 
 
-@mcp.tool()
+@tool("explore")
 async def delete_semantic_explore(
     explore_id: int,
     user_confirmed: bool = False,
@@ -465,13 +465,15 @@ async def delete_semantic_explore(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("explore")
 async def add_dataset_model_join(
     dataset_id: int,
     from_view_id: int,
     to_view_id: int,
-    from_column: str,
-    to_column: str,
+    from_column: str | None = None,
+    to_column: str | None = None,
+    from_columns: list[str] | None = None,
+    to_columns: list[str] | None = None,
     join_type: str = "left",
     relationship: str = "many_to_one",
     alias: str | None = None,
@@ -484,13 +486,15 @@ async def add_dataset_model_join(
     explore joins directly when working with the dataset-scoped visual model.
     """
     if not user_confirmed:
+        join_from = from_columns or ([from_column] if from_column else [])
+        join_to = to_columns or ([to_column] if to_column else [])
         return _requires_confirmation(
             "add_dataset_model_join",
             {
                 "dataset_id": int(dataset_id),
                 "from_view_id": int(from_view_id),
                 "to_view_id": int(to_view_id),
-                "on": f"{from_column} -> {to_column}",
+                "on": list(zip(join_from, join_to)) if join_from and join_to else None,
                 "join_type": join_type,
                 "relationship": relationship,
                 "alias": alias,
@@ -502,6 +506,8 @@ async def add_dataset_model_join(
             "to_view_id": int(to_view_id),
             "from_column": from_column,
             "to_column": to_column,
+            "from_columns": from_columns,
+            "to_columns": to_columns,
             "join_type": join_type,
             "relationship": relationship,
             "alias": alias,
@@ -512,13 +518,15 @@ async def add_dataset_model_join(
     )
 
 
-@mcp.tool()
+@tool("explore")
 async def remove_dataset_model_join(
     dataset_id: int,
     from_view_id: int,
     to_view_name: str,
     from_column: str | None = None,
     to_column: str | None = None,
+    from_columns: list[str] | None = None,
+    to_columns: list[str] | None = None,
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
@@ -542,6 +550,8 @@ async def remove_dataset_model_join(
                 "to_view_name": to_view_name,
                 "from_column": from_column,
                 "to_column": to_column,
+                "from_columns": ",".join(from_columns) if from_columns else None,
+                "to_columns": ",".join(to_columns) if to_columns else None,
             },
         ),
     )
@@ -552,7 +562,7 @@ async def remove_dataset_model_join(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool({"dataset", "explore"})
 async def generate_dataset_model(
     dataset_id: int,
     force: bool = False,
@@ -594,7 +604,7 @@ async def generate_dataset_model(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool({"report", "explore"})
 async def execute_semantic_query(
     explore: str,
     dimensions: list[str] | None = None,

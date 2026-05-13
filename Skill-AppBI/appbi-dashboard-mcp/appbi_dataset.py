@@ -21,7 +21,7 @@ from appbi_core import (
     _request,
     _requires_confirmation,
     _confirmation_required_for_destructive,
-    mcp,
+    tool,
 )
 
 
@@ -30,7 +30,7 @@ from appbi_core import (
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool({"report", "dataset", "explore"})
 async def list_datasets(ctx: Context | None = None) -> dict[str, Any]:
     """List every dataset the authenticated user can view.
 
@@ -42,7 +42,7 @@ async def list_datasets(ctx: Context | None = None) -> dict[str, Any]:
     return {"items": items}
 
 
-@mcp.tool()
+@tool({"report", "dataset", "explore"})
 async def get_dataset(
     dataset_id: int,
     summary: bool = False,
@@ -91,7 +91,7 @@ def _summarize_dataset(payload: Any) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@tool({"report", "dataset", "explore"})
 async def list_dataset_tables(
     dataset_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -100,7 +100,7 @@ async def list_dataset_tables(
     return {"items": items}
 
 
-@mcp.tool()
+@tool({"report", "dataset", "explore"})
 async def get_table_profile(
     dataset_id: int,
     table_id: int,
@@ -194,7 +194,7 @@ def _rebin_histogram(
     return merged
 
 
-@mcp.tool()
+@tool({"dataset", "explore"})
 async def get_table_description(
     dataset_id: int,
     table_id: int,
@@ -210,7 +210,7 @@ async def get_table_description(
     )
 
 
-@mcp.tool()
+@tool({"report", "dataset", "explore"})
 async def get_column_summary(
     dataset_id: int,
     table_id: int,
@@ -231,7 +231,7 @@ async def get_column_summary(
     return await _request("GET", path)
 
 
-@mcp.tool()
+@tool({"dataset", "explore"})
 async def get_dataset_dictionary(
     dataset_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -239,7 +239,7 @@ async def get_dataset_dictionary(
     return await _request("GET", f"/datasets/{int(dataset_id)}/dictionary")
 
 
-@mcp.tool()
+@tool({"dataset", "explore"})
 async def search_dataset_tables(
     query: str,
     dataset_id: int | None = None,
@@ -261,7 +261,7 @@ async def search_dataset_tables(
     )
 
 
-@mcp.tool()
+@tool("dataset")
 async def list_source_tables_for_dataset(
     datasource_id: int,
     ctx: Context | None = None,
@@ -281,7 +281,7 @@ async def list_source_tables_for_dataset(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool({"report", "dataset"})
 async def create_dataset(
     name: str,
     description: str | None = None,
@@ -304,7 +304,7 @@ async def create_dataset(
     return await _request("POST", "/datasets/", json_body=body)
 
 
-@mcp.tool()
+@tool("dataset")
 async def update_dataset(
     dataset_id: int,
     name: str | None = None,
@@ -327,7 +327,7 @@ async def update_dataset(
     )
 
 
-@mcp.tool()
+@tool("dataset")
 async def delete_dataset(
     dataset_id: int,
     user_confirmed: bool = False,
@@ -355,7 +355,7 @@ async def delete_dataset(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool({"report", "dataset"})
 async def add_table_to_dataset(
     dataset_id: int,
     display_name: str,
@@ -367,15 +367,29 @@ async def add_table_to_dataset(
     user_confirmed: bool = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Import one source table into a dataset.
+    """Add a table to a dataset. Covers 3 of the 4 dataset table kinds.
 
-    `source_kind` ∈ {'physical_table', 'sql_query', 'derived_table'}:
-      - physical_table: requires datasource_id + source_table_name
-                        (e.g. 'public.orders').
-      - sql_query    : requires datasource_id + source_query (SELECT ...).
-      - derived_table: requires source_query referencing other already-
-                        imported dataset tables. datasource_id MUST be
-                        omitted.
+    `source_kind` values (matches backend `DatasetTable.source_kind`):
+      - physical_table : pulled directly from a datasource.
+                         Requires datasource_id + source_table_name
+                         (e.g. 'public.orders').
+      - sql_query      : datasource-backed but defined by a SQL SELECT.
+                         Requires datasource_id + source_query.
+      - derived_table  : "calculated table" — SQL that references other
+                         tables ALREADY imported into this dataset.
+                         Requires source_query; datasource_id MUST be
+                         omitted (the dataset itself is the source).
+
+    Not handled by this tool:
+      - generated_calendar (date table). The backend creates the calendar
+        table automatically when you enable it via update_dataset() with
+        settings.calendar_dimension.enabled=true. Do NOT call this tool
+        with source_kind="generated_calendar".
+
+    Conceptual note (Power-BI users): there is no separate "measure
+    table" kind in AppBI. Measures are defined on a SemanticView (see
+    appbi_semantic.create_semantic_view / propose_semantic_model), not
+    on a dedicated table.
 
     Validation runs server-side; on the first call this tool returns a
     plan including the resolved source path so the user can sanity-check
@@ -408,7 +422,7 @@ async def add_table_to_dataset(
     )
 
 
-@mcp.tool()
+@tool("dataset")
 async def update_dataset_table(
     dataset_id: int,
     table_id: int,
@@ -453,7 +467,7 @@ async def update_dataset_table(
     )
 
 
-@mcp.tool()
+@tool("dataset")
 async def remove_table_from_dataset(
     dataset_id: int,
     table_id: int,
@@ -489,7 +503,7 @@ async def remove_table_from_dataset(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool({"report", "dataset"})
 async def update_table_description(
     dataset_id: int,
     table_id: int,
@@ -552,7 +566,7 @@ async def update_table_description(
     )
 
 
-@mcp.tool()
+@tool("dataset")
 async def update_dataset_dictionary(
     dataset_id: int,
     overview: str | None = None,

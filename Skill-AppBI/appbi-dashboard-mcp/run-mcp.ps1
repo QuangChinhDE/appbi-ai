@@ -1,6 +1,13 @@
+param(
+    [ValidateSet('all', 'report', 'dataset', 'explore')]
+    [string]$Profile = 'all'
+)
+
 $ErrorActionPreference = 'Stop'
 
 Set-Location $PSScriptRoot
+
+$env:APPBI_MCP_PROFILE = $Profile
 
 $envPath = Join-Path $PSScriptRoot '.env'
 

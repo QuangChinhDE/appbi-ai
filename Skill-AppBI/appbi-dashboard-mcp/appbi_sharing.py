@@ -17,7 +17,7 @@ from appbi_core import (
     _drop_none,
     _request,
     _requires_confirmation,
-    mcp,
+    tool,
 )
 
 
@@ -42,7 +42,7 @@ def _normalize_resource_type(resource_type: str) -> str:
     return norm
 
 
-@mcp.tool()
+@tool("all")
 async def list_resource_shares(
     resource_type: str,
     resource_id: str,
@@ -59,7 +59,7 @@ async def list_resource_shares(
     return {"items": items}
 
 
-@mcp.tool()
+@tool("all")
 async def share_resource(
     resource_type: str,
     resource_id: str,
@@ -109,7 +109,7 @@ async def share_resource(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def update_share_entry(
     resource_type: str,
     resource_id: str,
@@ -137,7 +137,7 @@ async def update_share_entry(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def revoke_share_entry(
     resource_type: str,
     resource_id: str,

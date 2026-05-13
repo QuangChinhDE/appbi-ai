@@ -197,10 +197,59 @@ defect; the canonical workflow below is designed to prevent it.
 """.strip()
 
 
+_VALID_PROFILES = {"report", "dataset", "explore", "all"}
+
+
+def _active_profiles() -> set[str]:
+    raw = os.getenv("APPBI_MCP_PROFILE", "all").strip().lower()
+    if not raw:
+        return {"all"}
+    parts = {p.strip() for p in raw.split(",") if p.strip()}
+    unknown = parts - _VALID_PROFILES
+    if unknown:
+        raise RuntimeError(
+            f"APPBI_MCP_PROFILE has unknown values: {sorted(unknown)}. "
+            f"Valid: {sorted(_VALID_PROFILES)}"
+        )
+    return parts or {"all"}
+
+
+ACTIVE_PROFILES = _active_profiles()
+logger_init = logging.getLogger("appbi_orchestrator_mcp")
+logger_init.info("MCP starting with profiles=%s", sorted(ACTIVE_PROFILES))
+
+
 mcp = FastMCP(
     "AppBI Orchestrator",
     instructions=_MCP_INSTRUCTIONS,
 )
+
+
+def tool(profiles: set[str] | tuple[str, ...] | list[str] | str):
+    """Register a tool only when its profile tag overlaps the active profile.
+
+    Usage:
+        @tool("report")
+        @tool({"report", "explore"})
+
+    Tools tagged with a profile not present in APPBI_MCP_PROFILE are skipped
+    at import time — they remain importable Python functions but FastMCP never
+    sees them, so they do not consume tool-schema tokens in Claude's context.
+
+    Profile `all` (default when env unset) registers everything — equivalent
+    to legacy `@mcp.tool()` behavior.
+    """
+    if isinstance(profiles, str):
+        tag_set = {profiles}
+    else:
+        tag_set = set(profiles)
+
+    def decorator(fn):
+        if "all" in ACTIVE_PROFILES or tag_set & ACTIVE_PROFILES:
+            return mcp.tool()(fn)
+        return fn
+
+    return decorator
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +404,7 @@ def _drop_none(payload: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool({"report", "dataset", "explore"})
 async def health_check(ctx: Context | None = None) -> dict[str, Any]:
     """Verify MCP can reach AppBI and the configured PAT is valid.
 
@@ -373,6 +422,8 @@ async def health_check(ctx: Context | None = None) -> dict[str, Any]:
 # Re-export for stage modules to import.
 __all__ = [
     "mcp",
+    "tool",
+    "ACTIVE_PROFILES",
     "Context",
     "logger",
     "_request",

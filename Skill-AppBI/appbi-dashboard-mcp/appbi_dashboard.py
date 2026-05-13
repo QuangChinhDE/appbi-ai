@@ -23,7 +23,7 @@ from appbi_core import (
     _drop_none,
     _request,
     _requires_confirmation,
-    mcp,
+    tool,
 )
 
 
@@ -32,14 +32,14 @@ from appbi_core import (
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("report")
 async def list_dashboards(ctx: Context | None = None) -> dict[str, Any]:
     """List every dashboard the authenticated user can view."""
     items = await _request("GET", "/dashboards/")
     return {"items": items}
 
 
-@mcp.tool()
+@tool("report")
 async def get_dashboard(
     dashboard_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -47,7 +47,7 @@ async def get_dashboard(
     return await _request("GET", f"/dashboards/{int(dashboard_id)}")
 
 
-@mcp.tool()
+@tool("report")
 async def get_dashboard_filter_fields(
     dashboard_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -72,7 +72,7 @@ async def get_dashboard_filter_fields(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def list_public_links(
     dashboard_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -102,7 +102,7 @@ async def list_public_links(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("report")
 async def create_dashboard(
     name: str,
     description: str | None = None,
@@ -151,7 +151,7 @@ async def create_dashboard(
     return await _request("POST", "/dashboards/", json_body=body)
 
 
-@mcp.tool()
+@tool("all")
 async def update_dashboard(
     dashboard_id: int,
     name: str | None = None,
@@ -196,7 +196,7 @@ async def update_dashboard(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def delete_dashboard(
     dashboard_id: int,
     user_confirmed: bool = False,
@@ -220,7 +220,7 @@ async def delete_dashboard(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("report")
 async def add_chart_to_dashboard(
     dashboard_id: int,
     chart_id: int,
@@ -260,7 +260,7 @@ async def add_chart_to_dashboard(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def add_widget_to_dashboard(
     dashboard_id: int,
     widget_type: str,
@@ -299,7 +299,7 @@ async def add_widget_to_dashboard(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def remove_chart_from_dashboard(
     dashboard_id: int,
     dashboard_chart_id: int,
@@ -327,7 +327,7 @@ async def remove_chart_from_dashboard(
     )
 
 
-@mcp.tool()
+@tool("report")
 async def update_dashboard_layout(
     dashboard_id: int,
     chart_layouts: list[dict[str, Any]],
@@ -359,7 +359,7 @@ async def update_dashboard_layout(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("report")
 async def add_dashboard_filter(
     dashboard_id: int,
     filter_def: dict[str, Any],
@@ -405,7 +405,7 @@ async def add_dashboard_filter(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def remove_dashboard_filter(
     dashboard_id: int,
     filter_id: str,
@@ -436,7 +436,7 @@ async def remove_dashboard_filter(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("report")
 async def create_public_link(
     dashboard_id: int,
     name: str,
@@ -484,7 +484,7 @@ async def create_public_link(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def update_public_link(
     dashboard_id: int,
     link_id: int,
@@ -526,7 +526,7 @@ async def update_public_link(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def delete_public_link(
     dashboard_id: int,
     link_id: int,

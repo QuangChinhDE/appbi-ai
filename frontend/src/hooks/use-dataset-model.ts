@@ -69,6 +69,8 @@ export interface JoinDefinition {
   from_view?: string;
   from_column?: string;
   to_column?: string;
+  from_columns?: string[];
+  to_columns?: string[];
   origin?: 'auto_fk' | 'auto_calendar' | 'manual';
   managed?: boolean;
   presentation_view?: string;
@@ -135,6 +137,33 @@ export interface JoinSuggestionResponse {
   message: string | null;
 }
 
+function normalizeJoinColumnList(values?: string[] | null, fallback?: string | null): string[] {
+  const source = values?.length ? values : (fallback ? [fallback] : []);
+  return source
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+}
+
+function buildJoinColumnPayload(params: {
+  fromColumn?: string | null;
+  toColumn?: string | null;
+  fromColumns?: string[] | null;
+  toColumns?: string[] | null;
+}) {
+  const fromColumns = normalizeJoinColumnList(params.fromColumns, params.fromColumn);
+  const toColumns = normalizeJoinColumnList(params.toColumns, params.toColumn);
+  return {
+    fromColumns,
+    toColumns,
+    payload: {
+      from_column: fromColumns[0],
+      to_column: toColumns[0],
+      from_columns: fromColumns,
+      to_columns: toColumns,
+    },
+  };
+}
+
 // ===== Query Keys =====
 
 export const modelKeys = {
@@ -145,9 +174,9 @@ export const modelKeys = {
     datasetId: number,
     fromViewId: number,
     toViewId: number,
-    fromColumn: string,
-    toColumn: string,
-  ) => [...modelKeys.detail(datasetId), 'join-suggestion', fromViewId, toViewId, fromColumn, toColumn] as const,
+    fromColumnsKey: string,
+    toColumnsKey: string,
+  ) => [...modelKeys.detail(datasetId), 'join-suggestion', fromViewId, toViewId, fromColumnsKey, toColumnsKey] as const,
 };
 
 // ===== Hooks =====
@@ -178,15 +207,15 @@ export async function fetchDatasetModelDistinctValues(
 
 export async function fetchDatasetModelJoinSuggestion(
   datasetId: number,
-  params: Pick<AddJoinParams, 'fromViewId' | 'toViewId' | 'fromColumn' | 'toColumn'>,
+  params: Pick<AddJoinParams, 'fromViewId' | 'toViewId' | 'fromColumn' | 'toColumn' | 'fromColumns' | 'toColumns'>,
 ) {
+  const { payload } = buildJoinColumnPayload(params);
   const response = await api.post<JoinSuggestionResponse>(
     `/datasets/${datasetId}/model/joins/suggestion`,
     {
       from_view_id: params.fromViewId,
       to_view_id: params.toViewId,
-      from_column: params.fromColumn,
-      to_column: params.toColumn,
+      ...payload,
     },
   );
   return response.data;
@@ -315,16 +344,18 @@ export function useUpdateModelExplore() {
 
 export function useDatasetModelJoinSuggestion(
   datasetId: number | null,
-  params: Pick<AddJoinParams, 'fromViewId' | 'toViewId' | 'fromColumn' | 'toColumn'> | null,
+  params: Pick<AddJoinParams, 'fromViewId' | 'toViewId' | 'fromColumn' | 'toColumn' | 'fromColumns' | 'toColumns'> | null,
 ) {
+  const normalizedFromColumns = normalizeJoinColumnList(params?.fromColumns, params?.fromColumn);
+  const normalizedToColumns = normalizeJoinColumnList(params?.toColumns, params?.toColumn);
   return useQuery({
     queryKey: params
       ? modelKeys.joinSuggestion(
           datasetId!,
           params.fromViewId,
           params.toViewId,
-          params.fromColumn,
-          params.toColumn,
+          normalizedFromColumns.join('|'),
+          normalizedToColumns.join('|'),
         )
       : [...modelKeys.all, 'join-suggestion', 'idle'],
     queryFn: () => fetchDatasetModelJoinSuggestion(datasetId!, params!),
@@ -333,8 +364,9 @@ export function useDatasetModelJoinSuggestion(
       && params !== null
       && params.fromViewId > 0
       && params.toViewId > 0
-      && Boolean(params.fromColumn)
-      && Boolean(params.toColumn),
+      && normalizedFromColumns.length > 0
+      && normalizedToColumns.length > 0
+      && normalizedFromColumns.length === normalizedToColumns.length,
     staleTime: 30_000,
     retry: false,
   });
@@ -348,6 +380,8 @@ export interface AddJoinParams {
   toViewId: number;
   fromColumn: string;
   toColumn: string;
+  fromColumns?: string[];
+  toColumns?: string[];
   joinType?: 'left' | 'inner' | 'right' | 'full';
   relationship?: 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many';
   /** Optional alias for role-playing joins (e.g. "creator", "updater" → users) */
@@ -358,13 +392,13 @@ export function useAddJoin() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (params: AddJoinParams) => {
+      const { payload } = buildJoinColumnPayload(params);
       const response = await api.post(
         `/datasets/${params.datasetId}/model/joins`,
         {
           from_view_id: params.fromViewId,
           to_view_id: params.toViewId,
-          from_column: params.fromColumn,
-          to_column: params.toColumn,
+          ...payload,
           join_type: params.joinType ?? 'left',
           relationship: params.relationship ?? 'many_to_one',
           ...(params.alias ? { alias: params.alias } : {}),
@@ -384,20 +418,25 @@ export interface RemoveJoinParams {
   toViewName: string;
   fromColumn?: string;
   toColumn?: string;
+  fromColumns?: string[];
+  toColumns?: string[];
 }
 
 export function useRemoveJoin() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (params: RemoveJoinParams) => {
+      const { payload, fromColumns, toColumns } = buildJoinColumnPayload(params);
       const response = await api.delete(
         `/datasets/${params.datasetId}/model/joins`,
         {
           params: {
             from_view_id: params.fromViewId,
             to_view_name: params.toViewName,
-            from_column: params.fromColumn,
-            to_column: params.toColumn,
+            from_column: payload.from_column,
+            to_column: payload.to_column,
+            from_columns: fromColumns.length ? fromColumns.join(',') : undefined,
+            to_columns: toColumns.length ? toColumns.join(',') : undefined,
           },
         }
       );

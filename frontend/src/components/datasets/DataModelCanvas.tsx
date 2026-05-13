@@ -190,12 +190,62 @@ function bezierMidpoint(
   return { mx, my };
 }
 
-/** Parse "${TABLE}.col = ${view}.col" from sql_on string. */
-function parseSqlOn(sqlOn: string): { fromCol: string; toCol: string } | null {
-  const m = sqlOn?.match(/\$\{TABLE\}\.([^\s=]+)\s*=\s*\$\{[^}]+\}\.([^\s=]+)/);
-  if (!m) return null;
-  const clean = (s: string) => s.replace(/["`[\]]/g, '');
-  return { fromCol: clean(m[1]), toCol: clean(m[2]) };
+function cleanJoinIdentifier(value: string): string {
+  return value.replace(/["`[\]]/g, '').trim();
+}
+
+/** Parse "${TABLE}.col = ${view}.col" pairs from sql_on string. */
+function parseSqlOnPairs(sqlOn: string): { fromCol: string; toCol: string }[] {
+  const pairs: { fromCol: string; toCol: string }[] = [];
+  const regex = /\$\{TABLE\}\.([^\s=()]+)\s*=\s*\$\{[^}]+\}\.([^\s=()]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(sqlOn || '')) !== null) {
+    pairs.push({
+      fromCol: cleanJoinIdentifier(match[1]),
+      toCol: cleanJoinIdentifier(match[2]),
+    });
+  }
+  return pairs;
+}
+
+function normalizeJoinColumns(join: {
+  from_column?: string;
+  to_column?: string;
+  from_columns?: string[];
+  to_columns?: string[];
+  sql_on?: string;
+}): { fromColumns: string[]; toColumns: string[] } {
+  const fromColumns = (join.from_columns ?? [])
+    .map((value) => cleanJoinIdentifier(String(value || '')))
+    .filter(Boolean);
+  const toColumns = (join.to_columns ?? [])
+    .map((value) => cleanJoinIdentifier(String(value || '')))
+    .filter(Boolean);
+
+  if (fromColumns.length > 0 && fromColumns.length === toColumns.length) {
+    return { fromColumns, toColumns };
+  }
+
+  const parsedPairs = parseSqlOnPairs(join.sql_on ?? '');
+  if (parsedPairs.length > 0) {
+    return {
+      fromColumns: parsedPairs.map((pair) => pair.fromCol),
+      toColumns: parsedPairs.map((pair) => pair.toCol),
+    };
+  }
+
+  const fallbackFrom = cleanJoinIdentifier(String(join.from_column || ''));
+  const fallbackTo = cleanJoinIdentifier(String(join.to_column || ''));
+  return {
+    fromColumns: fallbackFrom ? [fallbackFrom] : [],
+    toColumns: fallbackTo ? [fallbackTo] : [],
+  };
+}
+
+function summarizeJoinColumns(columns: string[]): string | undefined {
+  if (!columns.length) return undefined;
+  if (columns.length === 1) return columns[0];
+  return `${columns[0]} +${columns.length - 1}`;
 }
 
 function getViewLabel(view: Pick<DatasetModelView, 'name' | 'table_display_name'> | null | undefined): string {
@@ -569,10 +619,13 @@ interface ModelRelationship {
   fromViewName: string;
   toViewName: string;
   presentationViewName: string;
+  alias?: string;
   joinType: string;
   relationship?: string;
   fromCol?: string;
   toCol?: string;
+  fromCols: string[];
+  toCols: string[];
   origin?: string;
   managed: boolean;
   key: string;
@@ -598,7 +651,7 @@ function CalendarLayerBanner({
     const grouped = new Map<string, { id: number; label: string; fields: string[] }>();
 
     bindings.forEach((binding) => {
-      if (!binding.fromCol) return;
+      if (!binding.fromCols.length) return;
       const view = viewsByName[binding.fromViewName];
       const key = String(view?.id ?? binding.fromViewName);
       const current = grouped.get(key) ?? {
@@ -606,7 +659,7 @@ function CalendarLayerBanner({
         label: getViewLabel(view) || binding.fromViewName,
         fields: [],
       };
-      current.fields.push(binding.fromCol);
+      current.fields.push(...binding.fromCols);
       grouped.set(key, current);
     });
 
@@ -925,7 +978,7 @@ export function DataModelCanvas({
   const allRelationships = useMemo<ModelRelationship[]>(() => {
     return (model?.explores ?? []).flatMap((ex) =>
       (ex.joins ?? []).map((j) => {
-        const cols = parseSqlOn(j.sql_on ?? '');
+        const { fromColumns, toColumns } = normalizeJoinColumns(j);
         return {
           fromViewId:   ex.base_view_id,
           fromViewName: ex.base_view_name,
@@ -933,13 +986,16 @@ export function DataModelCanvas({
           presentationViewName:
             j.presentation_view
             ?? (j.origin === 'auto_calendar' ? calendarPresentationView?.name ?? j.view : j.view),
+          alias:        j.alias,
           joinType:     j.type ?? 'left',
           relationship: j.relationship,
-          fromCol:      j.from_column ?? cols?.fromCol,
-          toCol:        j.to_column   ?? cols?.toCol,
+          fromCol:      fromColumns[0],
+          toCol:        toColumns[0],
+          fromCols:     fromColumns,
+          toCols:       toColumns,
           origin:       j.origin,
           managed:      Boolean(j.managed),
-          key: `${ex.base_view_id}->${j.view}->${j.from_column ?? cols?.fromCol ?? ''}->${j.to_column ?? cols?.toCol ?? ''}`,
+          key: `${ex.base_view_id}->${j.view}->${j.alias ?? ''}->${fromColumns.join('|')}=>${toColumns.join('|')}`,
         };
       })
     );
@@ -968,16 +1024,24 @@ export function DataModelCanvas({
   const relationshipHighlights = useMemo<Record<number, Set<string>>>(() => {
     const h: Record<number, Set<string>> = {};
     for (const rel of relationships) {
-      if (rel.fromCol) (h[rel.fromViewId] ??= new Set()).add(rel.fromCol);
+      for (const fromCol of rel.fromCols) {
+        if (fromCol) (h[rel.fromViewId] ??= new Set()).add(fromCol);
+      }
       const tv = viewByName[rel.presentationViewName] ?? allViewsByName[rel.presentationViewName];
-      if (tv && rel.toCol) (h[tv.id] ??= new Set()).add(rel.toCol);
+      if (tv) {
+        for (const toCol of rel.toCols) {
+          if (toCol) (h[tv.id] ??= new Set()).add(toCol);
+        }
+      }
     }
     return h;
   }, [relationships, viewByName, allViewsByName]);
   const calendarHighlights = useMemo<Record<number, Set<string>>>(() => {
     const h: Record<number, Set<string>> = {};
     for (const rel of calendarRelationships) {
-      if (rel.fromCol) (h[rel.fromViewId] ??= new Set()).add(rel.fromCol);
+      for (const fromCol of rel.fromCols) {
+        if (fromCol) (h[rel.fromViewId] ??= new Set()).add(fromCol);
+      }
     }
     return h;
   }, [calendarRelationships]);
@@ -1083,6 +1147,8 @@ export function DataModelCanvas({
         toViewName: relationship.toViewName,
         fromColumn: relationship.fromCol,
         toColumn: relationship.toCol,
+        fromColumns: relationship.fromCols,
+        toColumns: relationship.toCols,
       });
       setSelectedRelKey(null);
       toast.success(removingDateLink ? 'Date link removed' : 'Relationship removed');
@@ -1334,11 +1400,11 @@ export function DataModelCanvas({
             <span className="text-xs text-brand truncate">
               <span className="font-medium">{getViewLabel(selectedFromView)}</span>
               <span className="text-brand">.</span>
-              <span className="font-semibold">{selectedRelationship.fromCol ?? '?'}</span>
+              <span className="font-semibold">{summarizeJoinColumns(selectedRelationship.fromCols) ?? '?'}</span>
               {' → '}
               <span className="font-medium">{getViewLabel(selectedToView)}</span>
               <span className="text-brand">.</span>
-              <span className="font-semibold">{selectedRelationship.toCol ?? '?'}</span>
+              <span className="font-semibold">{summarizeJoinColumns(selectedRelationship.toCols) ?? '?'}</span>
               {' · '}
               {selectedRelationship.relationship?.replace(/_/g, ':') ?? 'N:1'}
               {' · '}

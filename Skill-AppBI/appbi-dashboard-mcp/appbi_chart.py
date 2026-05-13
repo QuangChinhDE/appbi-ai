@@ -22,7 +22,7 @@ from appbi_core import (
     _query_path,
     _request,
     _requires_confirmation,
-    mcp,
+    tool,
 )
 
 SUPPORTED_CHART_TYPE_GROUPS: dict[str, tuple[str, ...]] = {
@@ -140,7 +140,7 @@ CATEGORY_VALUE_CHART_TYPES = {
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("report")
 async def list_charts(
     dataset_id: int | None = None,
     dataset_table_id: int | None = None,
@@ -196,13 +196,13 @@ def _summarize_chart_item(chart: Any) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@tool("report")
 async def get_chart(chart_id: int, ctx: Context | None = None) -> dict[str, Any]:
     """Fetch one chart's full record (config, dataset_table_id, owner)."""
     return await _request("GET", f"/charts/{int(chart_id)}")
 
 
-@mcp.tool()
+@tool("all")
 async def get_chart_data(
     chart_id: int,
     filters_json: str | None = None,
@@ -230,7 +230,7 @@ async def get_chart_data(
     )
 
 
-@mcp.tool()
+@tool("report")
 async def preview_chart_data(
     dataset_table_id: int,
     chart_type: str,
@@ -269,7 +269,7 @@ async def preview_chart_data(
     return await _request("POST", "/charts/preview-data", json_body=body)
 
 
-@mcp.tool()
+@tool("all")
 async def get_chart_description(
     chart_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -277,7 +277,7 @@ async def get_chart_description(
     return await _request("GET", f"/charts/{int(chart_id)}/description")
 
 
-@mcp.tool()
+@tool("all")
 async def list_chart_parameters(
     chart_id: int, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -286,7 +286,7 @@ async def list_chart_parameters(
     return {"items": items}
 
 
-@mcp.tool()
+@tool("all")
 async def search_charts(
     query: str, limit: int = 10, ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -318,7 +318,7 @@ async def search_charts(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("report")
 async def create_chart(
     name: str,
     chart_type: str,
@@ -336,12 +336,11 @@ async def create_chart(
     Use `create_chart` only for one-off charts the user explicitly asked
     for outside that flow (e.g. "add this single KPI tile to dashboard X").
 
-    Hard gate: every metric in `config.roleConfig.metrics[].field` must
-    resolve to a measure on the SemanticView bound to `dataset_table_id`
-    and the final stored config must stay on that bound view.
-    Charts with ad-hoc metrics render in the dashboard but disappear
-    from Explore and the dataset model UI — the same defect users
-    repeatedly report. The pre-flight check below prevents that.
+    Hard gate: every referenced semantic field must resolve to a real
+    dimension/measure in the live semantic catalog. Qualified refs such
+    as `orders.customer_name` or `creator.email` are preserved; the
+    backend chart runtime decides whether the chart stays on the legacy
+    single-table path or routes to semantic runtime with JOIN handling.
 
     `bypass_semantic_check=True` is an escape hatch for the rare case
     where the user wants the chart created anyway (legacy data
@@ -384,9 +383,10 @@ async def create_chart(
                 "status": "blocked_by_semantic_check",
                 "warnings": semantic_warnings,
                 "fix": (
-                    "Either: (a) add the missing measures to the bound "
-                    "SemanticView via update_semantic_view / "
-                    "propose_semantic_model, then retry; or (b) pass "
+                    "Either: (a) fix the chart so every referenced field "
+                    "exists in the semantic model; (b) extend the semantic "
+                    "model first via update_semantic_view / "
+                    "propose_semantic_model; or (c) pass "
                     "bypass_semantic_check=True after explaining the "
                     "tradeoff to the user."
                 ),
@@ -404,11 +404,6 @@ async def create_chart(
                 "semantic_check": "passed" if not semantic_warnings else "bypassed",
             },
         )
-    # Strip 'view.' qualifiers from role_config fields before storing.
-    # LiveQueryService uses them as raw SQL column identifiers; qualified names
-    # like 'orders.amount' would produce "orders.amount" (invalid SQL) and
-    # cause a 500 in Explore.
-    body["config"] = _unqualify_config_role_fields(body["config"])
     diag = await _runtime_preview_diagnose(
         dataset_table_id=int(dataset_table_id),
         chart_type=chart_type,
@@ -441,6 +436,12 @@ async def _semantic_preflight(
     chart is safe to create. Reads `/semantic/views` once (cheap, no
     per-dataset scan) and uses the view whose `dataset_table_id`
     matches.
+
+    This pre-flight is intentionally lighter than backend runtime:
+    - unqualified refs must exist on the bound/base view
+    - qualified refs may target any real semantic view
+    - actual join-path / semantic-runtime compatibility is enforced by
+      `preview_chart_data`, which is the canonical backend authority
     """
     try:
         views = await _request("GET", "/semantic/views")
@@ -509,13 +510,6 @@ async def _semantic_preflight(
                     f"metrics[{index}].field='{field}' references view "
                     f"'{view_part}' which has no SemanticView."
                 )
-            elif view_part != bound_view_name:
-                issues.append(
-                    f"metrics[{index}].field='{field}' references joined view "
-                    f"'{view_part}'. Saved charts currently support only fields from "
-                    f"the bound view '{bound_view_name}' because Explore/runtime stores "
-                    "bare column names."
-                )
             elif name_part not in measure_index[view_part]:
                 available = sorted(measure_index[view_part])
                 issues.append(
@@ -546,12 +540,6 @@ async def _semantic_preflight(
                     f"role_config.{dim_key}='{val}' references view "
                     f"'{view_part}' which has no SemanticView."
                 )
-            elif view_part != bound_view_name:
-                issues.append(
-                    f"role_config.{dim_key}='{val}' references joined view "
-                    f"'{view_part}'. Saved charts currently support only fields from "
-                    f"the bound view '{bound_view_name}'."
-                )
             elif field_part not in dimension_index[view_part]:
                 available = sorted(dimension_index[view_part])
                 issues.append(
@@ -580,12 +568,6 @@ async def _semantic_preflight(
                     f"role_config.{metric_key}.field='{field}' references view "
                     f"'{view_part}' which has no SemanticView."
                 )
-            elif view_part != bound_view_name:
-                issues.append(
-                    f"role_config.{metric_key}.field='{field}' references joined "
-                    f"view '{view_part}'. Saved charts currently support only fields "
-                    f"from the bound view '{bound_view_name}'."
-                )
             elif name_part not in measure_index[view_part]:
                 available = sorted(measure_index[view_part])
                 issues.append(
@@ -613,12 +595,6 @@ async def _semantic_preflight(
                 issues.append(
                     f"role_config.selectedColumns[{index}]='{field}' references view "
                     f"'{view_part}' which has no SemanticView."
-                )
-            elif view_part != bound_view_name:
-                issues.append(
-                    f"role_config.selectedColumns[{index}]='{field}' references "
-                    f"joined view '{view_part}'. Saved charts currently support only "
-                    f"fields from the bound view '{bound_view_name}'."
                 )
             elif (
                 name_part not in dimension_index.get(view_part, set())
@@ -780,7 +756,7 @@ def _classify_preview_error(
     }
 
 
-@mcp.tool()
+@tool("all")
 async def update_chart(
     chart_id: int,
     name: str | None = None,
@@ -832,15 +808,14 @@ async def update_chart(
                 "status": "blocked_by_semantic_check",
                 "warnings": semantic_warnings,
                 "fix": (
-                    "Adjust the chart to use measures and fields from the bound view, "
-                    "or update the semantic model first, then retry."
+                    "Adjust the chart so every referenced field exists in the "
+                    "semantic model, or update the semantic model first, then retry."
                 ),
             }
-        runtime_config = _unqualify_config_role_fields(effective_config)
         diag = await _runtime_preview_diagnose(
             dataset_table_id=effective_dataset_table_id,
             chart_type=effective_chart_type,
-            config=runtime_config,
+            config=effective_config,
         )
         if diag is not None:
             return {
@@ -855,7 +830,7 @@ async def update_chart(
                 ),
             }
         if "config" in changes:
-            changes["config"] = runtime_config
+            changes["config"] = effective_config
 
     if not user_confirmed:
         return _requires_confirmation(
@@ -873,7 +848,7 @@ async def update_chart(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def delete_chart(
     chart_id: int,
     user_confirmed: bool = False,
@@ -890,7 +865,7 @@ async def delete_chart(
     return {"status": "deleted", "chart_id": int(chart_id)}
 
 
-@mcp.tool()
+@tool("report")
 async def update_chart_description(
     chart_id: int,
     auto_description: str | None = None,
@@ -946,7 +921,7 @@ async def update_chart_description(
     )
 
 
-@mcp.tool()
+@tool("all")
 async def upsert_chart_metadata(
     chart_id: int,
     metadata: dict[str, Any],
@@ -981,7 +956,7 @@ async def upsert_chart_metadata(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("all")
 async def replace_chart_parameters(
     chart_id: int,
     parameters: list[dict[str, Any]],

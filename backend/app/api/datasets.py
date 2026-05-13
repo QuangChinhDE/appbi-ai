@@ -3021,6 +3021,43 @@ def get_dataset_model_distinct_values(
         raise HTTPException(status_code=500, detail="Failed to load distinct values.")
 
 
+def _coerce_join_column_values(raw_value: Any) -> list[str]:
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, str):
+        candidates = [part.strip() for part in raw_value.split(",")]
+    elif isinstance(raw_value, (list, tuple, set)):
+        candidates = [str(part).strip() for part in raw_value]
+    else:
+        candidates = [str(raw_value).strip()]
+    return [candidate for candidate in candidates if candidate]
+
+
+def _extract_join_column_payload(
+    payload: dict[str, Any],
+    *,
+    require_pairs: bool = True,
+) -> tuple[list[str], list[str]]:
+    from_columns = _coerce_join_column_values(payload.get("from_columns"))
+    to_columns = _coerce_join_column_values(payload.get("to_columns"))
+
+    if not from_columns and payload.get("from_column") is not None:
+        from_columns = _coerce_join_column_values(payload.get("from_column"))
+    if not to_columns and payload.get("to_column") is not None:
+        to_columns = _coerce_join_column_values(payload.get("to_column"))
+
+    if not from_columns and not to_columns and not require_pairs:
+        return [], []
+    if not from_columns or not to_columns:
+        raise HTTPException(status_code=422, detail="Missing fields: {'from_column', 'to_column'}")
+    if len(from_columns) != len(to_columns):
+        raise HTTPException(
+            status_code=422,
+            detail="Join key definitions must have the same number of source and target columns",
+        )
+    return from_columns, to_columns
+
+
 @router.put(
     "/{dataset_id}/model/views/{view_id}",
     summary="Update a semantic view (dimensions/measures)",
@@ -3184,6 +3221,7 @@ def suggest_model_join(
     """
     Inspect two semantic views + columns and suggest the relationship shape.
     Body: {from_view_id, to_view_id, from_column, to_column}
+    or    {from_view_id, to_view_id, from_columns, to_columns}
     """
     from app.services.dataset_model_service import suggest_join_relationship
 
@@ -3192,10 +3230,11 @@ def suggest_model_join(
         raise HTTPException(status_code=404, detail="Dataset not found")
     require_view_access(db, current_user, dataset_obj, "datasets")
 
-    required = {"from_view_id", "to_view_id", "from_column", "to_column"}
+    required = {"from_view_id", "to_view_id"}
     missing = required - set(payload.keys())
     if missing:
         raise HTTPException(status_code=422, detail=f"Missing fields: {missing}")
+    from_columns, to_columns = _extract_join_column_payload(payload)
 
     try:
         return suggest_join_relationship(
@@ -3203,8 +3242,10 @@ def suggest_model_join(
             dataset_id=dataset_id,
             from_view_id=int(payload["from_view_id"]),
             to_view_id=int(payload["to_view_id"]),
-            from_column=payload["from_column"],
-            to_column=payload["to_column"],
+            from_column=from_columns[0],
+            to_column=to_columns[0],
+            from_columns=from_columns,
+            to_columns=to_columns,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -3226,6 +3267,7 @@ def add_model_join(
     """
     Add or update a join/relationship between two semantic views.
     Body: {from_view_id, to_view_id, from_column, to_column, join_type, relationship}
+    or    {from_view_id, to_view_id, from_columns, to_columns, join_type, relationship}
     """
     from app.services.dataset_model_service import add_join
 
@@ -3234,10 +3276,11 @@ def add_model_join(
         raise HTTPException(status_code=404, detail="Dataset not found")
     require_edit_access(db, current_user, dataset_obj, "datasets")
 
-    required = {"from_view_id", "to_view_id", "from_column", "to_column"}
+    required = {"from_view_id", "to_view_id"}
     missing = required - set(payload.keys())
     if missing:
         raise HTTPException(status_code=422, detail=f"Missing fields: {missing}")
+    from_columns, to_columns = _extract_join_column_payload(payload)
 
     try:
         alias_value = payload.get("alias")
@@ -3248,8 +3291,10 @@ def add_model_join(
             dataset_id=dataset_id,
             from_view_id=int(payload["from_view_id"]),
             to_view_id=int(payload["to_view_id"]),
-            from_column=payload["from_column"],
-            to_column=payload["to_column"],
+            from_column=from_columns[0],
+            to_column=to_columns[0],
+            from_columns=from_columns,
+            to_columns=to_columns,
             join_type=payload.get("join_type", "left"),
             relationship=payload.get("relationship", "many_to_one"),
             alias=alias_value,
@@ -3272,6 +3317,8 @@ def remove_model_join(
     to_view_name: str = Query(..., description="View name of the target table"),
     from_column: Optional[str] = Query(None, description="Optional source column for an exact join match"),
     to_column: Optional[str] = Query(None, description="Optional target column for an exact join match"),
+    from_columns: Optional[str] = Query(None, description="Optional comma-separated source columns for an exact composite join match"),
+    to_columns: Optional[str] = Query(None, description="Optional comma-separated target columns for an exact composite join match"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -3284,6 +3331,15 @@ def remove_model_join(
     require_edit_access(db, current_user, dataset_obj, "datasets")
 
     try:
+        match_from_columns, match_to_columns = _extract_join_column_payload(
+            {
+                "from_columns": from_columns,
+                "to_columns": to_columns,
+                "from_column": from_column,
+                "to_column": to_column,
+            },
+            require_pairs=False,
+        )
         result = remove_join(
             db,
             dataset_id,
@@ -3291,6 +3347,8 @@ def remove_model_join(
             to_view_name,
             from_column=from_column,
             to_column=to_column,
+            from_columns=match_from_columns,
+            to_columns=match_to_columns,
         )
         return result
     except ValueError as e:

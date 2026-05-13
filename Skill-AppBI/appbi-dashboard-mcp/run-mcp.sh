@@ -3,6 +3,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+PROFILE="${1:-${APPBI_MCP_PROFILE:-all}}"
+case "${PROFILE}" in
+    all|report|dataset|explore) ;;
+    *)
+        echo "Invalid profile '${PROFILE}'. Use one of: all, report, dataset, explore." >&2
+        exit 2
+        ;;
+esac
+export APPBI_MCP_PROFILE="${PROFILE}"
+
 if [[ ! -f .env ]]; then
     echo "Missing .env. Copy .env.example to .env and fill APPBI_BASE_URL + APPBI_PAT first." >&2
     exit 1

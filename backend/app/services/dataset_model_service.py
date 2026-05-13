@@ -59,7 +59,7 @@ _VALID_RELATIONSHIP_TYPES = {
 }
 
 
-_JOIN_SQL_ON_RE = re.compile(r"\$\{TABLE\}\.([^\s=]+)\s*=\s*\$\{[^}]+\}\.([^\s=]+)")
+_JOIN_SQL_ON_RE = re.compile(r"\$\{TABLE\}\.([^\s=()]+)\s*=\s*\$\{[^}]+\}\.([^\s=()]+)")
 
 
 def _singularize(name: str) -> str:
@@ -185,13 +185,124 @@ def _clean_join_identifier(raw: str | None) -> str | None:
     return str(raw).strip().strip('"').strip("`").strip("[]")
 
 
-def _parse_join_columns(sql_on: str | None) -> tuple[str | None, str | None]:
+def _clean_join_identifier_values(raw_values: Any) -> list[str]:
+    if raw_values is None:
+        return []
+    if isinstance(raw_values, str):
+        values = [raw_values]
+    elif isinstance(raw_values, (list, tuple, set)):
+        values = list(raw_values)
+    else:
+        values = [raw_values]
+
+    cleaned: list[str] = []
+    for value in values:
+        normalized = _clean_join_identifier(value)
+        if normalized:
+            cleaned.append(normalized)
+    return cleaned
+
+
+def _dedupe_join_pairs(pairs: list[tuple[str | None, str | None]]) -> list[tuple[str, str]]:
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_from, raw_to in pairs:
+        from_column = _clean_join_identifier(raw_from)
+        to_column = _clean_join_identifier(raw_to)
+        if not from_column or not to_column:
+            continue
+        pair = (from_column, to_column)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        deduped.append(pair)
+    return deduped
+
+
+def _parse_join_column_pairs(sql_on: str | None) -> list[tuple[str, str]]:
     if not sql_on:
+        return []
+    return _dedupe_join_pairs(
+        [
+            (_clean_join_identifier(match.group(1)), _clean_join_identifier(match.group(2)))
+            for match in _JOIN_SQL_ON_RE.finditer(sql_on)
+        ]
+    )
+
+
+def _parse_join_columns(sql_on: str | None) -> tuple[str | None, str | None]:
+    pairs = _parse_join_column_pairs(sql_on)
+    if not pairs:
         return None, None
-    match = _JOIN_SQL_ON_RE.search(sql_on)
-    if not match:
-        return None, None
-    return _clean_join_identifier(match.group(1)), _clean_join_identifier(match.group(2))
+    return pairs[0]
+
+
+def _normalize_requested_join_columns(
+    *,
+    from_columns: Any = None,
+    to_columns: Any = None,
+    from_column: str | None = None,
+    to_column: str | None = None,
+    require_pairs: bool = True,
+) -> tuple[list[str], list[str]]:
+    normalized_from = _clean_join_identifier_values(from_columns)
+    normalized_to = _clean_join_identifier_values(to_columns)
+
+    if not normalized_from and from_column is not None:
+        cleaned_from = _clean_join_identifier(from_column)
+        if cleaned_from:
+            normalized_from = [cleaned_from]
+    if not normalized_to and to_column is not None:
+        cleaned_to = _clean_join_identifier(to_column)
+        if cleaned_to:
+            normalized_to = [cleaned_to]
+
+    if not normalized_from and not normalized_to and not require_pairs:
+        return [], []
+    if not normalized_from or not normalized_to:
+        raise ValueError("Please select join columns for both tables")
+    if len(normalized_from) != len(normalized_to):
+        raise ValueError("Join key definitions must have the same number of source and target columns")
+
+    pairs = _dedupe_join_pairs(list(zip(normalized_from, normalized_to)))
+    if not pairs and require_pairs:
+        raise ValueError("Please select join columns for both tables")
+    return [pair[0] for pair in pairs], [pair[1] for pair in pairs]
+
+
+def _join_columns_from_definition(join: dict[str, Any]) -> tuple[list[str], list[str]]:
+    pairs = _dedupe_join_pairs(
+        list(
+            zip(
+                _clean_join_identifier_values(join.get("from_columns")),
+                _clean_join_identifier_values(join.get("to_columns")),
+            )
+        )
+    )
+    if not pairs:
+        scalar_from = _clean_join_identifier(join.get("from_column"))
+        scalar_to = _clean_join_identifier(join.get("to_column"))
+        if scalar_from and scalar_to:
+            pairs = [(scalar_from, scalar_to)]
+    if not pairs:
+        pairs = _parse_join_column_pairs(join.get("sql_on"))
+    return [pair[0] for pair in pairs], [pair[1] for pair in pairs]
+
+
+def _join_pairs_signature(from_columns: list[str], to_columns: list[str]) -> tuple[tuple[str, str], ...]:
+    return tuple((from_columns[index], to_columns[index]) for index in range(min(len(from_columns), len(to_columns))))
+
+
+def _build_join_sql_on(
+    *,
+    target_placeholder: str,
+    from_columns: list[str],
+    to_columns: list[str],
+) -> str:
+    return " AND ".join(
+        f"${{TABLE}}.{from_columns[index]} = ${{{target_placeholder}}}.{to_columns[index]}"
+        for index in range(min(len(from_columns), len(to_columns)))
+    )
 
 
 def _normalize_join_type(join_type: str | None) -> str:
@@ -288,21 +399,21 @@ def _would_create_join_cycle(
 
 def _normalize_join(join: dict, base_view_name: str, base_fields: set[str] | None = None) -> dict | None:
     normalized = dict(join)
-    from_column = _clean_join_identifier(normalized.get("from_column"))
-    to_column = _clean_join_identifier(normalized.get("to_column"))
-
-    if not from_column or not to_column:
-        parsed_from, parsed_to = _parse_join_columns(normalized.get("sql_on"))
-        from_column = from_column or parsed_from
-        to_column = to_column or parsed_to
+    from_columns, to_columns = _join_columns_from_definition(normalized)
+    from_column = from_columns[0] if from_columns else None
+    to_column = to_columns[0] if to_columns else None
 
     if normalized.get("from_view") and normalized.get("from_view") != base_view_name:
         return None
 
-    if base_fields is not None and from_column and from_column not in base_fields:
-        return None
+    if base_fields is not None:
+        for candidate in from_columns:
+            if candidate not in base_fields:
+                return None
 
     normalized["from_view"] = base_view_name
+    normalized["from_columns"] = from_columns
+    normalized["to_columns"] = to_columns
     if from_column:
         normalized["from_column"] = from_column
     if to_column:
@@ -511,7 +622,7 @@ def _sanitize_join_definitions(
     valid_target_view_names: Set[str],
 ) -> List[dict]:
     sanitized: List[dict] = []
-    seen: Set[tuple[str, str | None, str | None]] = set()
+    seen: Set[tuple[str, str | None, tuple[tuple[str, str], ...]]] = set()
 
     for join in joins or []:
         normalized = _normalize_join(join, base_view_name, base_fields)
@@ -522,10 +633,9 @@ def _sanitize_join_definitions(
         if not target_view_name or target_view_name not in valid_target_view_names:
             continue
 
-        parsed_from, parsed_to = _parse_join_columns(normalized.get("sql_on"))
-        join_from = _clean_join_identifier(normalized.get("from_column")) or parsed_from
-        join_to = _clean_join_identifier(normalized.get("to_column")) or parsed_to
-        key = (target_view_name, join_from, join_to)
+        join_from_columns, join_to_columns = _join_columns_from_definition(normalized)
+        join_alias = str(normalized.get("alias") or "").strip() or None
+        key = (target_view_name, join_alias, _join_pairs_signature(join_from_columns, join_to_columns))
         if key in seen:
             continue
         seen.add(key)
@@ -713,8 +823,7 @@ def _detect_fk_joins(
             joins_by_source.setdefault(current_view.name, [])
             existing = any(
                 join.get("view") == ref_view.name
-                and join.get("from_column") == raw_col_name
-                and join.get("to_column") == "id"
+                and _join_pairs_signature(*_join_columns_from_definition(join)) == ((raw_col_name, "id"),)
                 for join in joins_by_source[current_view.name]
             )
             if existing:
@@ -729,6 +838,8 @@ def _detect_fk_joins(
                 "from_view": current_view.name,
                 "from_column": raw_col_name,
                 "to_column": "id",
+                "from_columns": [raw_col_name],
+                "to_columns": ["id"],
                 "origin": "auto_fk",
                 "managed": True,
             })
@@ -809,6 +920,8 @@ def _build_calendar_role_views(
                 "from_view": source_view.name,
                 "from_column": column_name,
                 "to_column": "date",
+                "from_columns": [column_name],
+                "to_columns": ["date"],
                 "origin": "auto_calendar",
                 "managed": True,
                 "calendar_role": role_view.name,
@@ -824,13 +937,16 @@ def _merge_join_definitions(
     auto_joins: List[dict],
 ) -> List[dict]:
     merged: List[dict] = []
-    seen: Set[tuple[str, str | None, str | None]] = set()
+    seen: Set[tuple[str, str | None, tuple[tuple[str, str], ...]]] = set()
 
     for join in [*manual_joins, *auto_joins]:
-        parsed_from, parsed_to = _parse_join_columns(join.get("sql_on"))
-        join_from = _clean_join_identifier(join.get("from_column")) or parsed_from
-        join_to = _clean_join_identifier(join.get("to_column")) or parsed_to
-        key = (str(join.get("view") or ""), join_from, join_to)
+        join_from_columns, join_to_columns = _join_columns_from_definition(join)
+        join_alias = str(join.get("alias") or "").strip() or None
+        key = (
+            str(join.get("view") or ""),
+            join_alias,
+            _join_pairs_signature(join_from_columns, join_to_columns),
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -908,6 +1024,8 @@ def _detect_joins(tables: List[DatasetTable]) -> list:
                         "from_view": current_display,
                         "from_column": raw_col_name,
                         "to_column": "id",
+                        "from_columns": [raw_col_name],
+                        "to_columns": ["id"],
                         "_source_table": current_display,  # Internal, stripped before save
                     })
 
@@ -1304,8 +1422,10 @@ def add_join(
     dataset_id: int,
     from_view_id: int,
     to_view_id: int,
-    from_column: str,
-    to_column: str,
+    from_column: str | None = None,
+    to_column: str | None = None,
+    from_columns: list[str] | None = None,
+    to_columns: list[str] | None = None,
     join_type: str = "left",
     relationship: str = "many_to_one",
     alias: str | None = None,
@@ -1321,6 +1441,15 @@ def add_join(
         raise ValueError("One or both views not found")
     if from_view_id == to_view_id:
         raise ValueError("Cannot join a view to itself")
+
+    normalized_from_columns, normalized_to_columns = _normalize_requested_join_columns(
+        from_columns=from_columns,
+        to_columns=to_columns,
+        from_column=from_column,
+        to_column=to_column,
+    )
+    primary_from_column = normalized_from_columns[0]
+    primary_to_column = normalized_to_columns[0]
 
     # Validate both views belong to this dataset/model scope.
     from_table = db.query(DatasetTable).filter(
@@ -1355,8 +1484,10 @@ def add_join(
         dataset_id=dataset_id,
         from_view_id=from_view_id,
         to_view_id=to_view_id,
-        from_column=from_column,
-        to_column=to_column,
+        from_column=primary_from_column,
+        to_column=primary_to_column,
+        from_columns=normalized_from_columns,
+        to_columns=normalized_to_columns,
     )
     if not join_validation.get("can_create"):
         raise ValueError(str(join_validation.get("message") or "Relationship cannot be created"))
@@ -1392,24 +1523,28 @@ def add_join(
         "view": to_view.name,
         "alias": alias_clean,
         "type": normalized_join_type,
-        "sql_on": f"${{TABLE}}.{from_column} = ${{{placeholder_target}}}.{to_column}",
+        "sql_on": _build_join_sql_on(
+            target_placeholder=placeholder_target,
+            from_columns=normalized_from_columns,
+            to_columns=normalized_to_columns,
+        ),
         "relationship": normalized_relationship,
         "from_view": from_view.name,
-        "from_column": from_column,
-        "to_column": to_column,
+        "from_column": primary_from_column,
+        "to_column": primary_to_column,
+        "from_columns": normalized_from_columns,
+        "to_columns": normalized_to_columns,
     }
 
     # Update an exact existing join, otherwise append so one pair of tables can
     # carry multiple explicit relationships on different columns or aliases.
     for i, j in enumerate(joins):
-        existing_from, existing_to = _parse_join_columns(j.get("sql_on"))
-        join_from = _clean_join_identifier(j.get("from_column")) or existing_from
-        join_to = _clean_join_identifier(j.get("to_column")) or existing_to
+        join_from_columns, join_to_columns = _join_columns_from_definition(j)
         existing_alias = (j.get("alias") or "").strip() or None
         if (
             j.get("view") == to_view.name
-            and join_from == from_column
-            and join_to == to_column
+            and _join_pairs_signature(join_from_columns, join_to_columns)
+            == _join_pairs_signature(normalized_from_columns, normalized_to_columns)
             and existing_alias == alias_clean
         ):
             joins[i] = new_join
@@ -1465,15 +1600,17 @@ def _resolve_semantic_view_table(
     return db_table, datasource, live_table
 
 
-def _profile_join_column(
+def _profile_join_columns(
     db: Session,
     *,
     dataset_obj: Dataset,
     dataset_id: int,
     view: SemanticView,
-    column_name: str,
+    column_names: list[str],
 ) -> dict[str, Any]:
-    from app.services.column_summary_service import get_column_summary
+    from app.services.dataset_relation_service import resolve_dataset_table_relation
+    from app.services.datasource_service import DataSourceConnectionService
+    from app.services.live_query_service import _dialect_for_ds_type, _quote_identifier
 
     _, datasource, live_table = _resolve_semantic_view_table(
         db,
@@ -1481,10 +1618,42 @@ def _profile_join_column(
         dataset_id=dataset_id,
         view=view,
     )
-    summary = get_column_summary(datasource, live_table, column_name, top_limit=5)
-    total_rows = int(summary.total_rows or 0)
-    null_count = int(summary.null_count or 0)
-    distinct_count = int(summary.distinct_count or 0)
+    relation = resolve_dataset_table_relation(datasource, live_table)
+    ds_type = datasource.type.value if hasattr(datasource.type, "value") else str(datasource.type)
+    dialect = _dialect_for_ds_type(ds_type)
+    quoted_columns = [_quote_identifier(column_name, dialect) for column_name in column_names]
+    select_columns_sql = ", ".join(quoted_columns)
+    non_null_predicate = " AND ".join(f"{column_sql} IS NOT NULL" for column_sql in quoted_columns)
+
+    sql = f"""
+WITH source AS (
+    {relation.sql}
+),
+non_null_rows AS (
+    SELECT {select_columns_sql}
+    FROM source
+    WHERE {non_null_predicate}
+),
+distinct_rows AS (
+    SELECT DISTINCT {select_columns_sql}
+    FROM non_null_rows
+)
+SELECT
+    (SELECT COUNT(*) FROM source) AS total_rows,
+    (SELECT COUNT(*) FROM non_null_rows) AS non_null_rows,
+    (SELECT COUNT(*) FROM distinct_rows) AS distinct_count
+"""
+    _, rows, _ = DataSourceConnectionService.execute_query(
+        ds_type,
+        datasource.config,
+        sql,
+        timeout_seconds=30,
+    )
+    first_row = rows[0] if rows else {}
+    total_rows = int(first_row.get("total_rows") or 0)
+    non_null_rows = int(first_row.get("non_null_rows") or 0)
+    distinct_count = int(first_row.get("distinct_count") or 0)
+    null_count = max(total_rows - non_null_rows, 0)
     non_null_rows = max(total_rows - null_count, 0)
 
     has_profiled_values = non_null_rows > 0
@@ -1504,8 +1673,10 @@ def suggest_join_relationship(
     dataset_id: int,
     from_view_id: int,
     to_view_id: int,
-    from_column: str,
-    to_column: str,
+    from_column: str | None = None,
+    to_column: str | None = None,
+    from_columns: list[str] | None = None,
+    to_columns: list[str] | None = None,
 ) -> dict[str, Any]:
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if dataset_obj is None:
@@ -1522,17 +1693,23 @@ def suggest_join_relationship(
     if from_view_id == to_view_id:
         raise ValueError("Cannot join a view to itself")
 
-    normalized_from_column = _clean_join_identifier(from_column)
-    normalized_to_column = _clean_join_identifier(to_column)
-    if not normalized_from_column or not normalized_to_column:
-        raise ValueError("Please select join columns for both tables")
+    normalized_from_columns, normalized_to_columns = _normalize_requested_join_columns(
+        from_columns=from_columns,
+        to_columns=to_columns,
+        from_column=from_column,
+        to_column=to_column,
+    )
+    normalized_from_column = normalized_from_columns[0]
+    normalized_to_column = normalized_to_columns[0]
 
     from_fields = _field_names_for_view(from_view)
     to_fields = _field_names_for_view(to_view)
-    if normalized_from_column not in from_fields:
-        raise ValueError(f"Column '{normalized_from_column}' does not exist on view '{from_view.name}'")
-    if normalized_to_column not in to_fields:
-        raise ValueError(f"Column '{normalized_to_column}' does not exist on view '{to_view.name}'")
+    for candidate in normalized_from_columns:
+        if candidate not in from_fields:
+            raise ValueError(f"Column '{candidate}' does not exist on view '{from_view.name}'")
+    for candidate in normalized_to_columns:
+        if candidate not in to_fields:
+            raise ValueError(f"Column '{candidate}' does not exist on view '{to_view.name}'")
 
     from_table = db.query(DatasetTable).filter(
         DatasetTable.id == from_view.dataset_table_id,
@@ -1555,28 +1732,28 @@ def suggest_join_relationship(
         )
 
     try:
-        from_profile = _profile_join_column(
+        from_profile = _profile_join_columns(
             db,
             dataset_obj=dataset_obj,
             dataset_id=dataset_id,
             view=from_view,
-            column_name=normalized_from_column,
+            column_names=normalized_from_columns,
         )
-        to_profile = _profile_join_column(
+        to_profile = _profile_join_columns(
             db,
             dataset_obj=dataset_obj,
             dataset_id=dataset_id,
             view=to_view,
-            column_name=normalized_to_column,
+            column_names=normalized_to_columns,
         )
     except Exception as exc:
         logger.warning(
             "Falling back to heuristic join suggestion for dataset %s (%s.%s -> %s.%s): %s",
             dataset_id,
             from_view.name,
-            normalized_from_column,
+            ",".join(normalized_from_columns),
             to_view.name,
-            normalized_to_column,
+            ",".join(normalized_to_columns),
             exc,
         )
         from_profile = {
@@ -1637,6 +1814,8 @@ def remove_join(
     to_view_name: str,
     from_column: str | None = None,
     to_column: str | None = None,
+    from_columns: list[str] | None = None,
+    to_columns: list[str] | None = None,
 ) -> dict:
     """Remove a join from one semantic view to another."""
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
@@ -1654,19 +1833,23 @@ def remove_join(
     if not explore:
         raise ValueError("Explore not found for this view")
 
-    normalized_from = _clean_join_identifier(from_column)
-    normalized_to = _clean_join_identifier(to_column)
+    match_from_columns, match_to_columns = _normalize_requested_join_columns(
+        from_columns=from_columns,
+        to_columns=to_columns,
+        from_column=from_column,
+        to_column=to_column,
+        require_pairs=False,
+    )
+    match_signature = _join_pairs_signature(match_from_columns, match_to_columns)
 
     def should_remove(join: dict) -> bool:
         if join.get("view") != to_view_name:
             return False
-        if normalized_from is None and normalized_to is None:
+        if not match_signature:
             return True
 
-        parsed_from, parsed_to = _parse_join_columns(join.get("sql_on"))
-        join_from = _clean_join_identifier(join.get("from_column")) or parsed_from
-        join_to = _clean_join_identifier(join.get("to_column")) or parsed_to
-        return join_from == normalized_from and join_to == normalized_to
+        join_from_columns, join_to_columns = _join_columns_from_definition(join)
+        return _join_pairs_signature(join_from_columns, join_to_columns) == match_signature
 
     matching_joins = [join for join in (explore.joins or []) if should_remove(join)]
     blocked_joins = [
@@ -1681,7 +1864,8 @@ def remove_join(
         join for join in matching_joins if join.get("origin") == "auto_calendar"
     ]
     for join in auto_calendar_joins:
-        parsed_from, _ = _parse_join_columns(join.get("sql_on"))
+        join_from_columns, _ = _join_columns_from_definition(join)
+        parsed_from = join_from_columns[0] if join_from_columns else None
         source_field = (
             _clean_join_identifier(join.get("calendar_source_field"))
             or _clean_join_identifier(join.get("from_column"))

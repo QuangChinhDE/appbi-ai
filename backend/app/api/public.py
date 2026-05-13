@@ -95,14 +95,30 @@ def _collect_join_key_fields(model: dict | None) -> set[str]:
                 continue
 
             from_view = str(join.get("from_view") or base_view_name or "").strip()
-            from_column = str(join.get("from_column") or "").strip()
             to_view = str(join.get("view") or "").strip()
-            to_column = str(join.get("to_column") or "").strip()
+            from_columns = [
+                str(value).strip()
+                for value in (join.get("from_columns") or [])
+                if str(value).strip()
+            ]
+            to_columns = [
+                str(value).strip()
+                for value in (join.get("to_columns") or [])
+                if str(value).strip()
+            ]
+            if not from_columns and join.get("from_column"):
+                from_columns = [str(join.get("from_column") or "").strip()]
+            if not to_columns and join.get("to_column"):
+                to_columns = [str(join.get("to_column") or "").strip()]
 
-            if from_view and from_column:
-                fields.add(f"{from_view}.{from_column}")
-            if to_view and to_column:
-                fields.add(f"{to_view}.{to_column}")
+            if from_view:
+                for from_column in from_columns:
+                    if from_column:
+                        fields.add(f"{from_view}.{from_column}")
+            if to_view:
+                for to_column in to_columns:
+                    if to_column:
+                        fields.add(f"{to_view}.{to_column}")
 
     return fields
 

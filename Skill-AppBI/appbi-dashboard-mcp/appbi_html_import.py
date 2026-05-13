@@ -39,7 +39,7 @@ from appbi_core import (
     _drop_none,
     _requires_confirmation,
     logger,
-    mcp,
+    tool,
 )
 
 # ---------------------------------------------------------------------------
@@ -307,7 +307,7 @@ MAP_POINT, MAP_REGION
 """.strip()
 
 
-@mcp.tool()
+@tool("all")
 async def get_html_dashboard_spec(ctx: Context | None = None) -> dict[str, Any]:
     """Return the full AppBI Import Plan v1 HTML specification.
 
@@ -326,7 +326,7 @@ async def get_html_dashboard_spec(ctx: Context | None = None) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("all")
 async def analyze_html_import(
     html_content: str,
     source_mode: str,
@@ -428,7 +428,7 @@ async def analyze_html_import(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@tool("all")
 async def build_dashboard_from_html(
     analysis_json: str,
     source_mode: str,
